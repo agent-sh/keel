@@ -10,7 +10,7 @@
   let went = false;
   setInterval(async () => {
     const at = document.activeElement;
-    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length}`);
+    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")}`);
     const m = location.pathname.match(/^\/s\/([\w-]+)$/);
     if (!m || shown) return;
     const r = await fetch(`/api/sessions/${m[1]}/artifacts`).then((x) => x.json()).catch(() => null);
@@ -29,6 +29,48 @@
     say("FRAME shown");
     setTimeout(() => f.remove(), 45000);
   }, 1000);
+  // The review's loop case: on a session titled for it, a content frame (as an artifact's, or as
+  // the preview's) whose script asks for the keyboard as fast as it can. What each side got is
+  // said twice a second.
+  let loop = "";
+  let frameChars = 0, frameFocus = 0;
+  addEventListener("message", (e) => { if (e.data && e.data.frameChars !== undefined) { frameChars = e.data.frameChars; frameFocus = e.data.frameFocus; } });
+  setInterval(async () => {
+    const m = location.pathname.match(/^\/s\/([\w-]+)$/);
+    if (!m) return;
+    if (loop !== m[1]) {
+      const title = await fetch(`/api/sessions/${m[1]}?events=0`).then((x) => x.json()).then((x) => x.session.title).catch(() => "");
+      const kind = /takes the keyboard \((artifact|preview)\)/.exec(title);
+      if (!kind || loop === m[1]) return;
+      loop = m[1];
+      frameChars = frameFocus = 0;
+      const f = document.createElement("iframe");
+      f.setAttribute("sandbox", kind[1] === "preview" ? "allow-scripts allow-forms allow-modals allow-popups allow-downloads" : "allow-scripts");
+      f.setAttribute("data-content-frame", "");
+      f.setAttribute("allow", "focus-without-user-activation 'none'");
+      f.style.cssText = "position:fixed;right:1rem;bottom:14rem;width:20rem;height:8rem;z-index:99;background:#fff";
+      f.srcdoc = "<body><input id=i autofocus><script>let foc = 0; const i = document.getElementById('i'); addEventListener('focus', () => foc++); setInterval(() => { window.focus(); i.focus(); i.click(); }, 0); setInterval(() => parent.postMessage({ frameChars: i.value.length, frameFocus: foc }, '*'), 200);</" + "script></body>";
+      document.body.append(f);
+      // (As the page's own frames do when the page stops one that keeps taking the keyboard.)
+      f.addEventListener("keel-frame-stopped", () => { say("LOOP stopped"); f.remove(); });
+      setInterval(() => { if (location.pathname !== `/s/${m[1]}`) f.remove(); }, 500);
+      say(`LOOP shown kind=${kind[1]}`);
+    }
+    const box = document.querySelector("textarea");
+    say(`LOOP at=${m[1]} box=${box ? box.value.length : -1} frameChars=${frameChars} frameFocus=${frameFocus} active=${document.activeElement ? document.activeElement.tagName : ""}`);
+  }, 500);
+  // Calls between browsers: a local page has no use for them, and they must find no address here.
+  setTimeout(() => {
+    if (typeof RTCPeerConnection === "undefined") return say("RTC none");
+    try {
+      const pc = new RTCPeerConnection();
+      let n = 0;
+      pc.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) n++; };
+      pc.createDataChannel("probe");
+      pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => {});
+      setTimeout(() => { say(`RTC candidates=${n}`); pc.close(); }, 4000);
+    } catch (e) { say("RTC none"); }
+  }, 3000);
   // The app's answers to what this script asked of the clipboard.
   addEventListener("keel-shell", (e) => {
     const d = e.detail || {};
@@ -44,7 +86,9 @@
     // The same address as a file to keep: a download, and the page stays. A second press offers
     // the file as the page offers one: a link to keep it, which is no navigation.
     if (e.key === "F10" && raw && !went) { went = true; say("GOING-DOWNLOAD"); location.href = `${raw}&download=1`; }
-    else if (e.key === "F10" && raw) { say("OFFERING"); const a = document.createElement("a"); a.href = `${raw}&download=1`; a.download = "shell-probe.html"; document.body.append(a); a.click(); a.remove(); }
+    else if (e.key === "F10" && raw) { say("OFFERING"); const a = document.createElement("a"); a.href = `${raw}&download=1`; a.download = "shell-probe.html"; document.body.append(a); a.click(); a.remove();
+      // And once more by itself, when the owner's press is long past: a script keeps no file.
+      setTimeout(() => { say("OFFERING-LATE"); const b = document.createElement("a"); b.href = `${raw}&download=1`; b.download = "shell-probe.html"; document.body.append(b); b.click(); b.remove(); }, 12000); }
     // A copy at this press, and one four seconds later that no press allowed.
     if (e.key === "F7") { copy(9001, "copied-by-the-check"); setTimeout(() => copy(9002, "planted-without-a-press"), 4000); }
     // A paste at this press, of a picture no larger than the page keeps one.

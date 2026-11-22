@@ -98,8 +98,12 @@ started: the first page says so.
   it on whatever the desktop says, `0` never. The window's own bar and
   controls, and the system web view's page, are accessible always.
 - **Links and files.** A link out of Keel opens in your browser. A file the
-  page offers is saved to your downloads folder, under a free name. A copied
+  page offers is saved to your downloads folder, under a free name, when you
+  pressed a key or a button in that window a moment before. A copied
   screenshot pastes into the message box.
+- **Drafts.** What you typed in a message box is kept where the end of the
+  window's own process cannot take its last seconds: a window that comes
+  back after its drawing program stopped has it.
 
 ## How it fits the daemon
 
@@ -142,11 +146,13 @@ may use it:
 | A link out of the daemon's origin | The owner's click. A scripted click or `window.open` without one does nothing. (Qt says of a window asked for whether the owner asked, and says nothing of a link in the main frame: there the owner's press in that window, within a second, is what counts.) | Opens in the browser: http and https only. No other scheme starts a program. |
 | A new window for a place of the page | The owner's click on a link to it, or the page's `window` message. | A window of the app, capped as above. |
 | Clipboard, read | The top frame, by a keyed `paste` message, within a second of the owner's own key or button press in that window: the paste key when the event carried nothing (a copied picture), or Paste in the page's menu. | The app reads the clipboard itself and hands its text and picture to that page, the picture no larger than the page keeps one (scaled and encoded off the main loop). The engine reads it for nobody: script has no clipboard through it (WebKit's asynchronous clipboard is off; Qt's clipboard access for script is off) and every permission request is refused, in every frame. |
-| The keyboard, for a frame of content (an artifact's page, the preview of a port) | The owner: a press with the pointer over the frame, or Tab into it. | The page's side, in a tab too (`ui/src/lib/frames.ts`): a frame the owner left takes no keyboard until they come back to it, and a focus the frame asks for itself goes back to what had it. So a paste aimed at the message box does not land in a frame. |
+| The keyboard, for a frame of content (an artifact's page, the preview of a port) | The owner: a press in the frame, or Tab into it. | Both engines refuse a frame the focus it was not given (WebKit by itself; Qt's Chromium by the permissions policy `focus-without-user-activation`, which the Qt program turns on and every content frame carries): a frame that asks for the keyboard in a loop gets none of what the owner types. A frame the owner pressed in a moment ago may still be given the focus it asks for under Chromium, and in a browser tab an engine may not refuse at all: there the page's side decides (`ui/src/lib/frames.ts`). A focus the frame asks for itself goes back to what had it, and a frame that takes it a second time is taken off the page, with a line in its place and a button that shows it again; the keyboard is then where it was. |
 | Clipboard, write | The top frame, by a keyed `copying` message within a second of the owner's press, then `copy` with the text within thirty seconds, once. | The app writes the text. A copy no press announced is refused. Under WebKit a frame can still copy its own selection inside the owner's click in it, as in a browser; under Qt no script copies, and the owner's own copy key and menu do. |
 | Permission requests (clipboard, location, camera, microphone, notifications, pointer lock, screen capture, full screen) | Nobody. | Refused, always, and none is remembered. |
-| Downloads | The page, and a frame the page allows downloads in (the preview of a port you opened). An HTML artifact's frame cannot. | Saved to the downloads folder under a free name: never over a file, never outside that folder, never into the home folder. |
+| Downloads | The page, and a frame the page allows downloads in (the preview of a port you opened), within ten seconds of the owner's key or button press in that window. An HTML artifact's frame cannot, and a script alone keeps nothing. | Saved to the downloads folder under a free name: never over a file, never outside that folder, never into the home folder. |
 | Print, `alert`, `confirm`, `prompt`, a password prompt | Nobody: the page draws its own dialogs. | The engine's dialogs are not shown. |
+| Calls between browsers (WebRTC), the engine's own files (`qrc:`) | Nobody. | The system web view has no such calls; the Qt engine's find no address of this machine, and its own files are served to no page. |
+| The Qt program's pipe to the app, its debugging port, its sandbox | The Qt program alone; a developer who starts the app with `--devtools`. | The pipe is moved off the program's standard descriptors, closed on exec: no process the engine starts (a page's script runs in one) inherits a way to write the app a line. Without `--devtools`, what the environment asks of the engine's debugging port and sandbox (`QTWEBENGINE_REMOTE_DEBUGGING`, `QTWEBENGINE_DISABLE_SANDBOX`, the like flags) is not taken, and that is said once on standard error. |
 | File chooser, a file dropped on the page, a drag out of it | The owner's own act, as in a browser. | The frame under the pointer gets what the owner gave it. |
 | Context menu | The owner. | Copy, paste and the like; no navigation, no "open in a new window", no "save page", no source view, no inspector (unless `--devtools`; without it the Qt engine's debugging port is not opened either). |
 | The app tells the page (`keel-shell` events) | The app only. | A place to show, the daemon's state, the text size keys. |
@@ -176,8 +182,14 @@ decisions between them (`main.rs`). The engine sits behind two traits in
   `links.rs`: `test/paths.txt`, checked by `cargo test` and by
   `keel-desktop-qt --self-test`), that no window opens by itself, and that
   every permission request is refused. When the app goes away the other
-  program ends with it; when the other program stops under the app, the app
-  starts it again and the windows come back on the page.
+  program ends with it. When the other program stops under the app, or stops
+  answering, the app starts it again and the windows come back where they
+  were; what a line or an ending of the other program means is tied to the
+  start it came from, so a program that was replaced is heard no more. A
+  program that stops before it drew anything cannot draw here: the app draws
+  its windows itself for the rest of the run, and says so once. A page whose
+  own process ends is loaded again and says so; one that ends four times in
+  a minute is left, with a button in the bar.
 
 Another engine implements `Engine` and `View`. What that takes:
 
@@ -233,16 +245,19 @@ the engine. The page is told which engine draws it (`keelShell.engine`:
 ## Check
 
 ```bash
-desktop/test/e2e.sh                         # in a hidden native Wayland GNOME desktop, with the engine the app picks
+desktop/test/e2e.sh                         # in a hidden X11 desktop, with the engine the app picks
 KEEL_DESKTOP_ENGINE=webkit desktop/test/e2e.sh   # the same checks with the system web view (or qt)
-KEEL_E2E_BACKEND=x11 desktop/test/e2e.sh    # in a hidden X11 desktop
+KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   # in a hidden native Wayland desktop (KWin)
 KEEL_URL=... bunx playwright test test/e2e/shell.spec.ts    # the page's side, in Chromium
 ```
 
 `e2e.sh` never touches your screen or your daemon: it starts a scratch daemon
-with the scripted model, a hidden workspace (`agent-workspace-linux`), and
-stand-ins for the tray host and the notification service on that workspace's
-bus. It proves the window, a daemon restart under it, the tray count, a
+with the scripted model, a hidden workspace (`agent-workspace-linux`, its X11
+or its KWin session: the check starts no desktop shell of a whole session,
+which under your account could reach your own session's services), and
+stand-ins for the tray host, the notification service and the desktop's word
+on a screen reader on that workspace's bus. A signal it sends goes only to a
+process it started itself. It proves the window, a daemon restart under it, the tray count, a
 notification's click, a second launch, a link, the text size keys, the
 remembered size and the start button, and leaves screenshots in the folder
 it prints. It also plays what must not work: HTML in a sandboxed frame that
@@ -253,11 +268,19 @@ request waiting, quitting the daemon with a turn at work, a frame the owner
 clicked in racing the owner's paste for the clipboard, a copy and a paste
 with no press behind them, the main frame at an artifact's own address, a
 lock whose pid was given to another process, and an address that is not this
-machine's. With the Qt engine it also stops the program that draws the
-windows and expects them back on the page. With another
-app in front it checks focus: a launch that carries the desktop's activation
-token brings Keel's window to the front, and one without it, or with a
-made-up one, does not.
+machine's. On both engines a frame asks for the keyboard as fast as it can
+while 41 characters are typed into the message box, and a script offers a
+file with no press. With the Qt engine it also stops the program that draws
+the windows and expects them back where they were with what was typed a
+moment before, flips the desktop's word on a screen reader ten times and
+times a second launch, ends a page's own process four times, looks at what
+the engine's processes hold of the pipe to the app, asks the environment for
+the debugging port and no sandbox, and starts a Qt that cannot start and one
+that stops before it drew (`test/e2e-more.sh`). With another
+app in front it checks focus under Wayland: a launch that carries the
+desktop's activation token brings Keel's window to the front; one without
+it, or with a made-up one, does not where the desktop refuses it (some let an
+app you have just used come forward by itself, and the check notes that).
 
 `KEEL_DESKTOP_INSTANCE=Name` runs an app of another name beside yours: it
 owns `io.github.agent_sh.Keel.Name` on the session bus, so its launches never
@@ -288,6 +311,19 @@ names the Qt engine's program when it is not beside the app.
 - A window of the Qt engine draws its own bar and has no frame of the
   desktop's: floating, it has a line around it and no shadow; it is resized
   from its edges.
+- The caret in a window of the Qt engine stands still. A blinking caret
+  wakes the whole drawing path twice a second in a window nobody types in,
+  and this engine reads the blink once, as a page starts, so it cannot be
+  rested after the last key as the desktop's own fields are.
+  `KEEL_DESKTOP_CARET_BLINK=1` keeps the desktop's blink.
+- A session's own window that you close is kept by the Qt program, hidden
+  and empty, for the next one you open: this engine does not give back the
+  buffers of a page whose process went. Its memory comes back when it has
+  rested.
+- A very large picture pasted in a window of the Qt engine holds the window
+  for as long as the clipboard takes to hand it over: the toolkit reads the
+  clipboard on the thread that draws. (The system web view's window reads it
+  as it comes.)
 - Each engine keeps the page's own storage in a folder of its own, so the
   theme, the text size and the panes are set once per engine.
 - Not proven by the check, which has no real pointer or input method: a file

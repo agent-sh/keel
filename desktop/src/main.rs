@@ -83,7 +83,7 @@ struct Shell {
     place: Where,
     prefs: RefCell<Prefs>,
     /// What draws the page: the only part that names an engine (view.rs).
-    engine: Box<dyn Engine>,
+    engine: RefCell<Box<dyn Engine>>,
     link: RefCell<Link>,
     url: RefCell<String>,
     main: RefCell<Option<Rc<dyn View>>>,
@@ -135,7 +135,7 @@ impl Shell {
 
     fn apply_look(&self) {
         let look = self.prefs.borrow().look.clone();
-        self.engine.look(&look);
+        self.engine.borrow().look(&look);
         for w in self.windows() {
             w.look(&look);
         }
@@ -145,7 +145,34 @@ impl Shell {
         let p = self.prefs.borrow().clone();
         let size = if main { (p.width, p.height) } else { ((p.width * 2 / 3).max(720), (p.height * 9 / 10).max(560)) };
         let opening = Opening { main, size, maximized: main && p.maximized, look: p.look, tray: self.tray_available(), devtools: self.devtools };
-        self.engine.open(opening, Rc::new(|win, ask| with_shell(|s| s.asked(win, ask))))
+        self.engine.borrow().open(opening, Rc::new(|win, ask| with_shell(|s| s.asked(win, ask))))
+    }
+
+    /// The Qt engine's program stopped before it drew anything: it cannot draw here. The app
+    /// draws its windows itself from now on, each in the place it was asked for.
+    fn fall_back(self: &Rc<Self>) {
+        let engine: Box<dyn Engine> = Box::new(window::WebKit::new(&self.app, &prefs::dir(), |path| with_shell(|s| s.note_done("download", serde_json::json!({ "to": path })))));
+        *self.engine.borrow_mut() = engine;
+        self.apply_look();
+        self.note_done("engine", serde_json::json!({ "name": "webkit", "after": "qt" }));
+        let was = self.main.borrow_mut().take();
+        if let Some(old) = was {
+            let win = self.new_window(true);
+            win.want(&old.wanted());
+            *self.main.borrow_mut() = Some(win.clone());
+            self.fill(&win);
+            win.present(None);
+            old.close();
+        }
+        let were = std::mem::take(&mut *self.others.borrow_mut());
+        for old in were {
+            let win = self.new_window(false);
+            win.want(&old.wanted());
+            self.others.borrow_mut().push(win.clone());
+            self.fill(&win);
+            win.present(None);
+            old.close();
+        }
     }
 
     /// Puts a window on what the daemon's state allows: the page, or the calm page while it is away.
@@ -422,7 +449,7 @@ impl Shell {
                 s.note_done("confirm", serde_json::json!({ "question": question, "detail": detail }));
                 // The window comes up under the question, so it is seen.
                 s.open(None, false);
-                s.engine.confirm(&question, &detail, "Stop Keel", Box::new(|yes| {
+                s.engine.borrow().confirm(&question, &detail, "Stop Keel", Box::new(|yes| {
                     with_shell(|s| {
                         s.note_done("confirmed", serde_json::json!({ "stop": yes }));
                         if yes {
@@ -499,7 +526,7 @@ fn engine_for(app: &gtk::Application, asked: Option<&str>, devtools: bool) -> Bo
     let dir = prefs::dir();
     let downloaded = |path: &std::path::Path| with_shell(|s| s.note_done("download", serde_json::json!({ "to": path })));
     if asked != Some("webkit") {
-        match qt::Qt::start(&dir, &instance::bus_name(), devtools, |what, v| with_shell(|s| s.note_done(what, v))) {
+        match qt::Qt::start(&dir, &instance::bus_name(), devtools, |what, v| with_shell(|s| s.note_done(what, v)), || with_shell(|s| s.fall_back())) {
             Some(engine) => return Box::new(engine),
             None if asked == Some("qt") => eprintln!("keel-desktop: Qt WebEngine is not there to draw the page (keel-desktop-qt beside the app, and the distribution's Qt WebEngine): using the system web view"),
             None => {}
@@ -554,7 +581,7 @@ fn main() -> glib::ExitCode {
             app: app.clone(),
             place: place.clone(),
             prefs: RefCell::new(prefs),
-            engine,
+            engine: RefCell::new(engine),
             link: RefCell::new(Link::Down),
             url: RefCell::new(daemon::find(&place).url),
             main: RefCell::new(None),
@@ -573,7 +600,7 @@ fn main() -> glib::ExitCode {
             log: std::env::var_os("KEEL_DESKTOP_LOG").map(PathBuf::from),
         });
         shell.apply_look();
-        shell.note_done("engine", serde_json::json!({ "name": shell.engine.name() }));
+        shell.note_done("engine", serde_json::json!({ "name": shell.engine.borrow().name() }));
         SHELL.with(|s| *s.borrow_mut() = Some(shell.clone()));
 
         if let Some(conn) = app.dbus_connection() {
@@ -605,7 +632,8 @@ fn main() -> glib::ExitCode {
         }
         // The app lives on with its windows closed while the tray shows its mark.
         std::mem::forget(app.hold());
-        daemon::watch(place.clone(), shell.engine.name(), |e| on_main(move |s| s.told(e)));
+        let drawn_by = shell.engine.borrow().name();
+        daemon::watch(place.clone(), drawn_by, |e| on_main(move |s| s.told(e)));
     });
 
     let first = Cell::new(true);

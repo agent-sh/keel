@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 pub const GESTURE: Duration = Duration::from_secs(1);
 /// How long a copy the press allowed may take to arrive (its text may have to be fetched first).
 pub const PERMIT: Duration = Duration::from_secs(30);
+/// How long after the owner's press in a window a file the page offers is kept (the daemon has
+/// to answer first). The Qt engine's program has the same time (KEEP_MS in ../qt/main.cpp).
+pub const KEEP: Duration = Duration::from_secs(10);
 
 /// The size a picture is handed to the page at: its own, or scaled down so its longer side is
 /// `edge` (the size the page keeps a picture at: it would scale a larger one down itself).
@@ -21,9 +24,12 @@ pub fn fit(width: i32, height: i32, edge: i32) -> (i32, i32) {
     (((width as f64 * scale).round() as i32).max(1), ((height as f64 * scale).round() as i32).max(1))
 }
 
-/// Whether the formats a clipboard offers name a picture.
-pub fn names_picture<'a>(mut mimes: impl Iterator<Item = &'a str>) -> bool {
-    mimes.any(|m| m.starts_with("image/"))
+/// The form a clipboard's picture is asked for in, when its formats name one: the first of
+/// these it offers, else whatever picture form it names.
+pub fn picture_format<'a>(mimes: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    const WANTED: [&str; 6] = ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff", "image/gif"];
+    let offered: Vec<&str> = mimes.filter(|m| m.starts_with("image/")).collect();
+    WANTED.iter().find_map(|w| offered.iter().find(|m| *m == w).copied()).or_else(|| offered.first().copied())
 }
 
 #[derive(Default)]
@@ -41,6 +47,12 @@ impl Gate {
     /// Whether the owner pressed a key or a button in the window just now.
     pub fn pressed(&self, now: Instant) -> bool {
         self.input.is_some_and(|t| now.saturating_duration_since(t) <= GESTURE)
+    }
+
+    /// A file to keep: saved only when the owner pressed in the window a moment before. A script,
+    /// in the page or in a frame the page lets keep files, saves nothing by itself.
+    pub fn may_keep(&self, now: Instant) -> bool {
+        self.input.is_some_and(|t| now.saturating_duration_since(t) <= KEEP)
     }
 
     /// A paste: the clipboard is read only at the owner's own press.
@@ -80,10 +92,23 @@ mod tests {
     // The review's case: bytes that are no picture, offered as one, read as an empty clipboard.
     #[test]
     fn a_clipboard_that_offers_a_picture_is_known_by_its_formats() {
-        assert!(names_picture(["text/plain", "image/png"].into_iter()));
-        assert!(names_picture(["image/jpeg"].into_iter()));
-        assert!(!names_picture(["text/plain", "text/html", "UTF8_STRING"].into_iter()));
-        assert!(!names_picture(std::iter::empty()));
+        assert_eq!(picture_format(["text/plain", "image/jpeg", "image/png"].into_iter()), Some("image/png"));
+        assert_eq!(picture_format(["image/jpeg"].into_iter()), Some("image/jpeg"));
+        assert_eq!(picture_format(["text/plain", "image/x-xcf"].into_iter()), Some("image/x-xcf"));
+        assert_eq!(picture_format(["text/plain", "text/html", "UTF8_STRING"].into_iter()), None);
+        assert_eq!(picture_format(std::iter::empty()), None);
+    }
+
+    // The review's case: a script in a preview frame saved a file with no press.
+    #[test]
+    fn a_file_is_kept_only_a_moment_after_the_owners_press() {
+        let t0 = Instant::now();
+        let mut gate = Gate::default();
+        assert!(!gate.may_keep(t0));
+        gate.input(t0);
+        assert!(gate.may_keep(t0 + Duration::from_secs(3)));
+        assert!(gate.may_keep(t0 + KEEP));
+        assert!(!gate.may_keep(t0 + KEEP + Duration::from_millis(1)));
     }
 
     #[test]

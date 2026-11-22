@@ -54,6 +54,12 @@ addEventListener("click", (e) => {
     }, ms);
   }
 });
+// The engine's own files (the channel's library) are not a frame's to load.
+const lib = document.createElement("script");
+lib.src = "qrc:/qtwebchannel/qwebchannel.js";
+lib.onload = () => say("ENGINE-FILE loaded");
+lib.onerror = () => say("ENGINE-FILE refused");
+document.head.append(lib);
 // A click no owner made.
 document.getElementById("out").click();
 try { window.open("https://example.com/opened-by-a-frame"); } catch (e) {}

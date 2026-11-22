@@ -16,8 +16,13 @@
 # the clipboard, the main frame at an artifact's own address, a lock whose pid
 # was given to another process, and an address that is not this machine's.
 #
-#   desktop/test/e2e.sh                   native Wayland GNOME workspace
-#   KEEL_E2E_BACKEND=x11 desktop/test/e2e.sh   an X11 workspace (also checks a session's own window)
+#   desktop/test/e2e.sh                         an X11 workspace
+#   KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   a native Wayland workspace (KWin): also the clipboard's
+#                                               picture and the focus a launch's activation token gives
+#
+# The workspace is one of those two. The check starts no desktop shell of a
+# whole session (GNOME Shell and the like): such a shell, started a second
+# time under one account, can reach that account's own session services.
 #
 # Needs: agent-workspace-linux, gjs, gdbus, curl, python3, bun, and the builds
 # (dist/keel from `bun scripts/build.ts`, desktop/dist/keel-desktop from
@@ -30,7 +35,8 @@ ID=io.github.agent_sh.Keel
 # the machine (the owner's installed app included), and no other reaches it.
 export KEEL_DESKTOP_INSTANCE="Check$$"
 BUS="$ID.$KEEL_DESKTOP_INSTANCE"
-BACKEND=${KEEL_E2E_BACKEND:-gnome}
+BACKEND=${KEEL_E2E_BACKEND:-x11}
+case "$BACKEND" in x11|kwin) ;; *) echo "KEEL_E2E_BACKEND is x11 or kwin (see the top of this file)"; exit 2 ;; esac
 SHELL_BIN=${KEEL_DESKTOP_BIN:-$REPO/desktop/dist/keel-desktop}
 KEEL=${KEEL_BIN:-$REPO/dist/keel}
 D=${KEEL_E2E_DIR:-$(mktemp -d -t keel-desktop-e2e.XXXXXX)}
@@ -56,6 +62,21 @@ app_pids() { for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/envi
 app_pid() { local p; p=$(app_pids | tail -1); echo "${p:-0}"; }
 # the process that owns the app's windows: the app, or the program that draws them for it (the Qt engine)
 win_pid() { local a q; a=$(app_pid); q=$(pgrep -x keel-desktop-qt -P "$a" 2> /dev/null | tail -1); echo "${q:-$a}"; }
+# A signal goes only to a process this check started: a pid above 1 whose command line names the
+# check's folder, its scripts or its daemon's address, or whose environment names its app's
+# folder. A pid that was not found (0), or one another program has by now, gets none.
+mine() {
+  local p=${1:-0} up=0
+  [ "$p" -gt 1 ] 2> /dev/null || return 1
+  # (Itself, or a process it descends from: an engine's sandboxed child shows nothing of itself.)
+  while [ "${p:-0}" -gt 1 ] && [ "$up" -lt 6 ]; do
+    tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -qF -e "$HERE/" -e "$D" -e "${URL:-no-address-yet}" && return 0
+    tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -q "^KEEL_DESKTOP_DIR=$D" && return 0
+    p=$(awk '/^PPid:/{print $2}' "/proc/$p/status" 2> /dev/null); up=$((up + 1))
+  done
+  return 1
+}
+sig() { mine "$2" && kill "$1" "$2" 2> /dev/null; }
 logged() { grep -c "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null || true; }
 last() { grep "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null | tail -1; }
 # a picture of the app's largest window alone (of the whole desktop with `all`)
@@ -105,7 +126,7 @@ cleanup() {
   [ -n "${WS_UP:-}" ] && (eval "$ENVSH"; KEEL_DESKTOP_DIR="$D/shell" "$SHELL_BIN" --quit > /dev/null 2>&1)
   for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -qx "KEEL_DESKTOP_DIR=$D/owners-app" && kill "$p"; done
   daemon_down > /dev/null 2>&1
-  for f in "$D"/host-*.pid; do [ -s "$f" ] && kill "$(cat "$f")" 2> /dev/null; done
+  for f in "$D"/host-*.pid; do [ -s "$f" ] && sig -TERM "$(cat "$f")"; done
   [ -n "${WS_UP:-}" ] && $A stop --id "$WS" > /dev/null 2>&1
   echo "evidence: $D"
 }
@@ -131,6 +152,11 @@ else [ -n "${WAYLAND_DISPLAY:-}" ] && { [ "${WAYLAND_DISPLAY:-}" != "$HOST_WAYLA
 [ "$BACKEND" = x11 ] && export GDK_BACKEND=x11
 ( gjs -m "$HERE/tray-host.js" > "$D/tray-host.out" 2>&1 & echo $! > "$D/host-tray.pid" )
 ( gjs -m "$HERE/notify-host.js" > "$D/notify-host.out" 2>&1 & echo $! > "$D/host-notify.pid" )
+# (And one for the desktop's word on a screen reader, where the workspace's bus has none of its own.)
+if ! gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Get org.a11y.Status ScreenReaderEnabled > /dev/null 2>&1; then
+  ( gjs -m "$HERE/a11y-host.js" > "$D/a11y-host.out" 2>&1 & echo $! > "$D/host-a11y.pid" )
+  wait_for 10 "grep -q READY '$D/a11y-host.out'" || { echo "the stand-in accessibility bus did not start"; exit 2; }
+fi
 wait_for 10 "grep -q READY '$D/tray-host.out' && grep -q READY '$D/notify-host.out'" || { echo "the stand-in hosts did not start"; exit 2; }
 
 export KEEL_DESKTOP_DIR="$D/shell" KEEL_URL="$URL" KEEL_STATE_DIR="$D/dev/state" KEEL_BIN="$D/keel" KEEL_DESKTOP_LOG="$D/shell.jsonl" KEEL_DESKTOP_NO_BROWSER=1
@@ -150,6 +176,11 @@ shows() { api /api/shell | grep -q '"acks":true'; }
 
 # A reader of the app's stream that is not the app, attached before it: it must hold no alert.
 (curl -sN -m 900 "$URL/api/shell/events" > "$D/reader.out" 2>&1 & echo $! > "$D/host-reader.pid")
+
+# The environment the app is started in asks the Qt engine for its debugging port and for no
+# sandbox: neither may be taken without --devtools (checked in e2e-more.sh).
+for _ in 1 2 3 4 5 6; do DEBUG_PORT=$((44200 + RANDOM % 1700)); listening "$DEBUG_PORT" || break; done
+export QTWEBENGINE_CHROMIUM_FLAGS="--remote-debugging-port=$DEBUG_PORT" QTWEBENGINE_DISABLE_SANDBOX=1
 
 # --- 1. the window
 launch
@@ -221,12 +252,12 @@ check "the reader of the stream that is not the app was handed no alert" "! grep
 # (A session that is not on screen: the daemon sends no desktop alert for the one the owner is looking at.)
 quiet=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: not on screen","text":"One line."}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
 sleep 3
-kill -STOP "$(app_pid)"
+sig -STOP "$(app_pid)"
 stopped=$(api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$quiet\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["alert"]["id"])')
 check "with the app stopped by a signal, the alert is not recorded as shown and the app is detached" "wait_for 10 '[ \"\$(delivery $stopped)\" = failed ]' && ! shows"
-kill -CONT "$(app_pid)"
+sig -CONT "$(app_pid)"
 check "the app attaches again when it runs on" "wait_for 20 shows"
-kill "$(cat "$D/host-notify.pid")"; sleep 1
+sig -TERM "$(cat "$D/host-notify.pid")"; sleep 1
 unshown=$(api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$quiet\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["alert"]["id"])')
 check "with no notification service, the alert is not recorded as shown" "wait_for 10 '[ \"\$(delivery $unshown)\" = failed ]'"
 ( gjs -m "$HERE/notify-host.js" >> "$D/notify-host.out" 2>&1 & echo $! > "$D/host-notify.pid" ); sleep 1
@@ -336,9 +367,13 @@ fi
 kept=$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l); notes=$(logged download)
 $A key --id "$WS" F10 > /dev/null 2>&1
 check "a file the page offers is saved to the downloads folder under a free name, and the page stays" "wait_for 10 \"[ \\\"\\\$(ls '$D/apphome/Downloads' | wc -l)\\\" = $((kept + 1)) ] && [ \\\"\\\$(logged download)\\\" = $((notes + 1)) ]\" && sleep 2 && ls '$D/apphome/Downloads' | grep -q '^shell-probe' && [ -z \"\$(ls -A '$D/apphome' | grep -v '^Downloads\$' | grep -i probe)\" ] && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
+# The same file offered by a script alone, twelve seconds after the owner's last press: nothing is kept.
+# (No key and no click in between: the probe offers it by itself.)
+before=$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l)
+if wait_for 20 "said OFFERING-LATE | grep -q LATE" && sleep 4 && [ "$(ls "$D/apphome/Downloads" | wc -l)" = "$before" ]; then ok "a file a script offers with no press of the owner's is not kept"; else fail "a file a script offers with no press of the owner's is not kept (the folder holds $(ls "$D/apphome/Downloads" | wc -l), held $before)"; fi
 
 # --- 5d. focus: a launch with the desktop's activation token brings the window in front of another app, and only then
-if [ "$BACKEND" = gnome ]; then
+if [ "$BACKEND" = kwin ]; then
   active() { $A active-window --id "$WS" 2> /dev/null | py 'import json,sys; print((json.load(sys.stdin).get("active_window") or {}).get("title", ""))'; }
   ( gjs -m "$HERE/other-app.js" "$D/token" > "$D/other-app.out" 2>&1 & echo $! > "$D/host-other.pid" )
   wait_for 10 "grep -q READY '$D/other-app.out'"; sleep 1
@@ -347,12 +382,20 @@ if [ "$BACKEND" = gnome ]; then
   check "another app has the keyboard" "wait_for 5 \"active | grep -q 'Another app'\""
   env -u XDG_ACTIVATION_TOKEN -u DESKTOP_STARTUP_ID "$SHELL_BIN"
   XDG_ACTIVATION_TOKEN=made-up-token "$SHELL_BIN"
-  check "a launch without the desktop's token, or with a made-up one, does not take the keyboard from it" "sleep 2; active | grep -q 'Another app'"
+  sleep 2
+  if active | grep -q 'Another app'; then ok "a launch without the desktop's token, or with a made-up one, does not take the keyboard from it"
+  else
+    # Without a token the desktop decides, and some let an app the owner has just used come
+    # forward when its toolkit asks with a token of its own. The other app gets the keyboard back.
+    echo "# note: this desktop let a launch without its token come forward (the app's toolkit asked by itself, on the owner's last press in it)"
+    $A focus-window --id "$WS" "$oid" > /dev/null 2>&1
+    wait_for 5 "active | grep -q 'Another app'" || true
+  fi
   $A key --id "$WS" t > /dev/null 2>&1
   wait_for 5 "[ -s '$D/token' ]"
   XDG_ACTIVATION_TOKEN=$(cat "$D/token") "$SHELL_BIN"
   check "a launch with the desktop's token brings Keel's window to the front" "wait_for 5 \"active | grep -q 'Keel'\" && last present | grep -q '\"token\":true'"
-  kill "$(cat "$D/host-other.pid")" 2> /dev/null
+  sig -TERM "$(cat "$D/host-other.pid")"
 else
   echo "# note: focus on a launch with the desktop's activation token is checked under the native Wayland backend"
 fi
@@ -423,20 +466,19 @@ check "a session opens in a window of its own (the app has $(windows) windows)" 
 for w in json.load(sys.stdin).get("windows", []): print("# window:", w.get("title"), w["geometry"])'
 sleep 4; shot 11-session-window-dark all
 check "the session's window does not fight for the place it shows (no error from the page)" "! api '/api/errors?limit=100' | grep -qi 'replaceState\|history'"
-if [ "$BACKEND" = gnome ] && [ "$ENGINE" != qt ]; then
-  echo "# note: under the headless GNOME workspace a second web view of one process is given no size (a bare WebKitGTK window shows the same), so the session window's content is checked under KEEL_E2E_BACKEND=x11, and with the Qt engine"
-else
-  check "the session's window shows its session, with the app's object" "wait_for 15 \"tail -n +$((said_before + 1)) '$D/shell.out' | grep -aq '^PROBE AT $URL/s/$other shell=object'\""
-fi
+check "the session's window shows its session, with the app's object" "wait_for 15 \"tail -n +$((said_before + 1)) '$D/shell.out' | grep -aq '^PROBE AT $URL/s/$other shell=object'\""
 
 # --- 10b. the Qt engine's program stops under the app: it is started again and the windows come back
 if [ "$ENGINE" = qt ]; then
   drew=$(win_pid); loads=$(logged load)
-  kill -9 "$drew"
+  sig -KILL "$drew"
   check "the program that draws the windows was killed: the app starts it again and both windows come back on the page" "wait_for 30 \"[ \\\"\\\$(win_pid)\\\" != $drew ] && [ \\\"\\\$(win_pid)\\\" != \\\"\\\$(app_pid)\\\" ] && [ \\\"\\\$(windows)\\\" = 2 ] && [ \\\"\\\$(logged load)\\\" -ge $((loads + 2)) ]\" && [ \"\$(app_pids | wc -l)\" = 1 ]"
   said_before=$(wc -l < "$D/shell.out")
   check "and the page in them is the app's again" "wait_for 15 \"tail -n +$((said_before + 1)) '$D/shell.out' | grep -aq '^PROBE AT $URL/s/$other shell=object'\""
 fi
+
+# --- 10c. what the review of the Qt engine asked for (a frame that asks for the keyboard in a loop, on both engines; the rest for Qt)
+. "$HERE/e2e-more.sh"
 
 # --- 11. a stranger on the daemon's port while the daemon is down is never sent the token
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
@@ -473,7 +515,7 @@ wait_for 10 "grep -q 'event: hello' '$D/first-shell.out'"
 check "the shell that attached first is the one handed the alerts" "grep -A1 'event: hello' '$D/first-shell.out' | grep -q '\"takes\":true'"
 launch
 check "the app, attached second, is told another takes the alerts, and its menu says so" "wait_for 30 \"last takes | grep -q '\\\"takes\\\":false'\" && wait_for 10 \"menu | grep -q 'Another Keel app shows the notifications'\""
-kill "$(cat "$D/host-first.pid")" 2> /dev/null
+sig -TERM "$(cat "$D/host-first.pid")"
 check "when the first leaves, the app is told the alerts are its own" "wait_for 20 \"last takes | grep -q '\\\"takes\\\":true'\" && wait_for 10 \"! menu | grep -q 'Another Keel app shows the notifications'\""
 
 # --- 14. the other keel-desktop was never reached: one launch of its own, no window raised, not quit

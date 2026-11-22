@@ -71,20 +71,21 @@ window.dialog.message .dialog-action-area button:focus {{ outline: 2px solid {ne
     )
 }
 
-/// A picture as PNG, scaled down to fit `edge` on its longer side when it is larger. It runs
-/// off the main loop: a large picture takes a while to encode.
-fn png_within(texture: &gdk::Texture, edge: Option<i32>) -> Option<(Vec<u8>, i32, i32)> {
-    let (w, h) = (texture.width(), texture.height());
+/// A picture's bytes as the clipboard gave them, as PNG no larger than `edge` on its longer side:
+/// (the PNG, its width and height, the width and height it came with). Decoded, scaled and
+/// encoded here, off the main loop: a large picture takes a while at each.
+fn picture_within(bytes: &glib::Bytes, png: bool, edge: Option<i32>) -> Option<(Vec<u8>, i32, i32, i32, i32)> {
+    use gtk::gdk_pixbuf::{InterpType, Pixbuf};
+    let whole = Pixbuf::from_stream(&gio::MemoryInputStream::from_bytes(bytes), gio::Cancellable::NONE).ok()?;
+    let (w, h) = (whole.width(), whole.height());
     let (nw, nh) = edge.map_or((w, h), |e| crate::clip::fit(w, h, e));
     if (nw, nh) == (w, h) {
-        return Some((texture.save_to_png_bytes().to_vec(), w, h));
+        // (A PNG that needs no scaling goes as it is.)
+        let out = if png { bytes.to_vec() } else { whole.save_to_bufferv("png", &[]).ok()? };
+        return Some((out, w, h, w, h));
     }
-    let mut pixels = gdk::TextureDownloader::new(texture);
-    pixels.set_format(gdk::MemoryFormat::R8g8b8a8);
-    let (bytes, stride) = pixels.download_bytes();
-    let whole = gtk::gdk_pixbuf::Pixbuf::from_bytes(&bytes, gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, w, h, stride as i32);
-    let small = whole.scale_simple(nw, nh, gtk::gdk_pixbuf::InterpType::Bilinear)?;
-    small.save_to_bufferv("png", &[]).ok().map(|png| (png, nw, nh))
+    let small = whole.scale_simple(nw, nh, InterpType::Bilinear)?;
+    small.save_to_bufferv("png", &[]).ok().map(|out| (out, nw, nh, w, h))
 }
 
 /// The pattern of the engine's user scripts for an origin: its scheme and host, any port
@@ -115,6 +116,8 @@ pub struct WebKit {
     session: webkit::NetworkSession,
     css: gtk::CssProvider,
     next: Cell<u32>,
+    /// The windows, for what the session hears of a view (a file to keep).
+    wins: Rc<RefCell<Vec<Weak<Win>>>>,
 }
 
 impl WebKit {
@@ -126,7 +129,17 @@ impl WebKit {
         }
         let session = webkit::NetworkSession::new(dir.join("web").to_str(), dir.join("web-cache").to_str());
         let on_download = Rc::new(on_download);
+        let wins: Rc<RefCell<Vec<Weak<Win>>>> = Rc::default();
+        let known = wins.clone();
         session.connect_download_started(move |_, download| {
+            // A file is kept only when the owner pressed in that window a moment before: a script,
+            // in the page or in a frame the page lets keep files, saves nothing by itself.
+            let from = download.web_view();
+            let pressed = known.borrow().iter().filter_map(Weak::upgrade).any(|w| Some(&w.view) == from.as_ref() && w.gate.borrow().may_keep(Instant::now()));
+            if !pressed {
+                download.cancel();
+                return;
+            }
             let on_download = on_download.clone();
             download.connect_decide_destination(move |d, suggested| {
                 let folder = downloads();
@@ -137,7 +150,7 @@ impl WebKit {
                 true
             });
         });
-        Self { app: app.clone(), session, css, next: Cell::new(1) }
+        Self { app: app.clone(), session, css, next: Cell::new(1), wins }
     }
 }
 
@@ -148,7 +161,8 @@ impl Engine for WebKit {
 
     fn open(&self, opening: Opening, ask: Asked) -> Rc<dyn View> {
         let id = self.next.replace(self.next.get() + 1);
-        Win::new(&self.app, &self.session, id, opening, ask)
+        self.wins.borrow_mut().retain(|w| w.strong_count() > 0);
+        Win::new(&self.app, &self.session, id, opening, ask, &self.wins)
     }
 
     fn look(&self, look: &Look) {
@@ -205,7 +219,7 @@ fn rgba(hex: &str) -> gdk::RGBA {
 }
 
 impl Win {
-    fn new(app: &gtk::Application, session: &webkit::NetworkSession, id: u32, opening: Opening, ask: Asked) -> Rc<dyn View> {
+    fn new(app: &gtk::Application, session: &webkit::NetworkSession, id: u32, opening: Opening, ask: Asked, wins: &Rc<RefCell<Vec<Weak<Win>>>>) -> Rc<dyn View> {
         let Opening { main, size, maximized, look, tray, devtools } = opening;
         // What a closure of the window asks goes out as the view it is.
         let ask: Rc<dyn Fn(&Rc<Win>, Ask)> = Rc::new(move |win, what| {
@@ -288,6 +302,7 @@ impl Win {
         });
 
         *win.me.borrow_mut() = Rc::downgrade(&win);
+        wins.borrow_mut().push(Rc::downgrade(&win));
 
         // The page's title is the window's name on the desktop (the overview, the task switcher).
         let w = win.window.clone();
@@ -513,33 +528,37 @@ impl Win {
 
     /// What the clipboard holds, read by the app and handed to the page that asked: its text,
     /// and a picture as PNG, no larger than the page keeps one. Nothing else of the web view ever
-    /// sees it. The picture is scaled and encoded off the main loop.
+    /// sees it. The picture's bytes are read as they come, and decoded, scaled and encoded off
+    /// the main loop: the window goes on answering while a large one is made ready.
     fn paste(self: &Rc<Self>, id: u64, edge: Option<i32>) {
         let clipboard = self.window.clipboard();
         let (win, board) = (self.clone(), clipboard.clone());
         clipboard.read_text_async(gio::Cancellable::NONE, move |text| {
             let text = text.ok().flatten().map(|t| t.to_string());
-            // Whether the clipboard says it holds a picture, whatever comes of reading it.
-            let offered = crate::clip::names_picture(board.formats().mime_types().iter().map(|m| m.as_str()));
-            board.read_texture_async(gio::Cancellable::NONE, move |texture| {
-                let Some(texture) = texture.ok().flatten() else {
-                    // A clipboard that says it holds a picture and gave none: the picture could not
-                    // be read, which is said, not passed off as an empty clipboard.
-                    let failed = offered;
-                    return win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": [], "failed": failed } }));
-                };
-                let (width, height) = (texture.width(), texture.height());
+            // Whether the clipboard says it holds a picture, and in which form it is asked for.
+            let offered: Vec<String> = board.formats().mime_types().iter().map(|m| m.to_string()).collect();
+            let Some(kind) = crate::clip::picture_format(offered.iter().map(String::as_str)) else {
+                return win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": [] } }));
+            };
+            let png = kind == "image/png";
+            board.read_async(&[kind], glib::Priority::DEFAULT, gio::Cancellable::NONE, move |read| {
                 glib::spawn_future_local(async move {
-                    let images: Vec<Value> = gio::spawn_blocking(move || png_within(&texture, edge))
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|(png, w, h)| serde_json::json!({ "type": "image/png", "data": glib::base64_encode(&png).to_string(), "width": w, "height": h }))
-                        .into_iter()
-                        .collect();
-                    // A picture that could not be made ready is said, not dropped.
-                    let failed = images.is_empty();
-                    win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": images, "failed": failed, "from": [width, height] } }));
+                    let mut made = None;
+                    if let Ok((stream, _)) = read {
+                        let into = gio::MemoryOutputStream::new_resizable();
+                        let all = into.splice_future(&stream, gio::OutputStreamSpliceFlags::CLOSE_SOURCE | gio::OutputStreamSpliceFlags::CLOSE_TARGET, glib::Priority::DEFAULT).await;
+                        if all.is_ok() {
+                            let bytes = into.steal_as_bytes();
+                            made = gio::spawn_blocking(move || picture_within(&bytes, png, edge)).await.ok().flatten();
+                        }
+                    }
+                    // A picture the clipboard offered and that could not be made ready is said, not
+                    // passed off as an empty clipboard.
+                    match made {
+                        Some((out, w, h, from_w, from_h)) => win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "failed": false, "from": [from_w, from_h],
+                            "images": [{ "type": "image/png", "data": glib::base64_encode(&out).to_string(), "width": w, "height": h }] } })),
+                        None => win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": [], "failed": true } })),
+                    }
                 });
             });
         });

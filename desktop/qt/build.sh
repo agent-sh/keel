@@ -27,6 +27,14 @@ build=${KEEL_QT_BUILD_DIR:-build}
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' ../Cargo.toml | head -1)
 mkdir -p "$build" "$out"
 "$moc" main.cpp -o "$build/main.moc"
+# Qt's headers are the system's: the warnings asked for are this program's own.
+cflags=$(printf '%s' "$cflags" | sed 's/\(^\| \)-I/\1-isystem /g')
+# The linker: mold, else lld, else the compiler's own.
+linker=
+for l in mold lld; do
+  if command -v "$l" > /dev/null || command -v "ld.$l" > /dev/null; then linker="-fuse-ld=$l"; break; fi
+done
 # shellcheck disable=SC2086
-${CXX:-c++} -std=c++17 -O2 -fPIC -Wall -Wextra -DKEEL_VERSION="\"$version\"" $cflags -I"$build" main.cpp -o "$out/keel-desktop-qt" $libs
+${CXX:-c++} -std=c++23 -O2 -fPIC -Wall -Wextra -Wconversion -Wshadow -Wimplicit-fallthrough -D_GLIBCXX_ASSERTIONS \
+  -DKEEL_VERSION="\"$version\"" $cflags -I"$build" main.cpp -o "$out/keel-desktop-qt" $linker $libs
 echo "built $out/keel-desktop-qt $version"

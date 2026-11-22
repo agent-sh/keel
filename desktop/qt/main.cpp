@@ -42,12 +42,14 @@
 #include <QPushButton>
 #include <QSocketNotifier>
 #include <QStandardPaths>
+#include <QStyleHints>
 #include <QThreadPool>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVariantAnimation>
 #include <QWebChannel>
 #include <QWebEngineDownloadRequest>
+#include <QWebEngineHistory>
 #include <QWebEngineLoadingInfo>
 #include <QWebEngineNewWindowRequest>
 #include <QWebEnginePage>
@@ -59,8 +61,14 @@
 #include <QWebEngineView>
 #include <QWindow>
 #include <QtWebEngineCore/qtwebenginecoreglobal.h>
+#include <QMutex>
+#include <QWebEngineUrlRequestInfo>
+#include <QWebEngineUrlRequestInterceptor>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <fcntl.h>
+#include <memory>
 #include <unistd.h>
 
 #ifndef KEEL_VERSION
@@ -73,11 +81,45 @@
 // costs no frames. (QTWEBENGINE_CHROMIUM_FLAGS with a --js-flags of the owner's own is left as it is.)
 static const int HEAP_MB = 256;
 
+// A file the page offers is kept when the owner pressed a key or a button in that window this
+// long before, at most (the same time ../src/clip.rs gives the other engine).
+static const qint64 KEEP_MS = 10000;
+
+// The pipe to the app. It is this program's alone: `main` moves it off descriptor 1 before the
+// engine starts, with close-on-exec, so no process the engine starts (a renderer runs the page's
+// script) inherits a way to write the app a line. Descriptor 1 is the null device from then on.
+static int appPipe = STDOUT_FILENO;
+static int appIn = STDIN_FILENO;
+
 static void say(const QJsonObject &m)
 {
+    static QMutex one;
     const QByteArray line = QJsonDocument(m).toJson(QJsonDocument::Compact) + '\n';
-    ::fwrite(line.constData(), 1, size_t(line.size()), stdout);
-    ::fflush(stdout);
+    // (A line whole, also when the thread that reads a picture says one at the same time.)
+    const QMutexLocker held(&one);
+    for (qsizetype done = 0; done < line.size();) {
+        const ssize_t n = ::write(appPipe, line.constData() + done, size_t(line.size() - done));
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return;
+        done += n;
+    }
+}
+
+// Moves a descriptor of the pipes to the app off its standard number, closed on exec, and puts
+// the null device in its place.
+static int keepPrivate(int fd, int flags)
+{
+    const int own = ::fcntl(fd, F_DUPFD_CLOEXEC, 3);
+    if (own < 0)
+        return fd;
+    const int null = ::open("/dev/null", flags | O_CLOEXEC);
+    if (null >= 0) {
+        ::dup2(null, fd);
+        ::close(null);
+    }
+    return own;
 }
 
 // ---- The places of the page (the rule of ../src/links.rs) -------------------------------------
@@ -196,7 +238,8 @@ static QString rgba(const QString &hex, double a)
 class Bridge : public QObject {
     Q_OBJECT
 public:
-    Bridge(int win, bool probing, QObject *parent) : QObject(parent), win(win), probing(probing) {}
+    Bridge(int ofWin, bool measured, QObject *parent) : QObject(parent), win(ofWin), probing(measured) {}
+    int win; // the window it speaks for (a window kept for the next one asked for is given a new number)
 public slots:
     void post(const QString &s) { say({{"t", "said"}, {"win", win}, {"s", s}}); }
     // The reports of the measurer's script, when the app runs with one.
@@ -207,7 +250,6 @@ public slots:
     }
 
 private:
-    int win;
     bool probing;
 };
 
@@ -245,7 +287,7 @@ public:
     int win;
     bool devtools, probing;
 
-    Page(QWebEngineProfile *profile, int win, bool devtools, bool probing, QObject *parent) : QWebEnginePage(profile, parent), win(win), devtools(devtools), probing(probing) {}
+    Page(QWebEngineProfile *profile, int ofWin, bool inspected, bool measured, QObject *parent) : QWebEnginePage(profile, parent), win(ofWin), devtools(inspected), probing(measured) {}
 
 protected:
     // Where a navigation goes. The main frame shows the app's own away page, or a place of the
@@ -294,7 +336,7 @@ public:
 protected:
     void contextMenuEvent(QContextMenuEvent *e) override
     {
-        QMenu *menu = createStandardContextMenu();
+        std::unique_ptr<QMenu> menu(createStandardContextMenu());
         using A = QWebEnginePage;
         for (const A::WebAction a : {A::Back, A::Forward, A::Reload, A::ReloadAndBypassCache, A::Stop, A::OpenLinkInThisWindow, A::OpenLinkInNewWindow, A::OpenLinkInNewTab,
                                      A::OpenLinkInNewBackgroundTab, A::DownloadLinkToDisk, A::DownloadImageToDisk, A::DownloadMediaToDisk, A::ViewSource, A::SavePage})
@@ -310,13 +352,12 @@ protected:
         }
         while (!menu->actions().isEmpty() && menu->actions().constLast()->isSeparator())
             menu->removeAction(menu->actions().constLast());
-        if (menu->actions().isEmpty()) {
-            delete menu;
+        if (menu->actions().isEmpty())
             return;
-        }
         menu->setAttribute(Qt::WA_DeleteOnClose);
         menu->setStyleSheet(menuStyle);
         menu->popup(e->globalPos());
+        (void)menu.release(); // it deletes itself when it closes
     }
 };
 
@@ -328,7 +369,7 @@ public:
     enum Kind { Minimize, Maximize, Restore, Close };
     Kind kind;
     const Look *look;
-    Control(Kind kind, const Look *look, QWidget *parent) : QAbstractButton(parent), kind(kind), look(look)
+    Control(Kind what, const Look *colors, QWidget *parent) : QAbstractButton(parent), kind(what), look(colors)
     {
         setFocusPolicy(Qt::NoFocus);
         setCursor(Qt::ArrowCursor);
@@ -381,7 +422,7 @@ class Dot : public QWidget {
 public:
     const Look *look;
     QVariantAnimation pulse;
-    Dot(const Look *look, QWidget *parent) : QWidget(parent), look(look)
+    Dot(const Look *colors, QWidget *parent) : QWidget(parent), look(colors)
     {
         pulse.setStartValue(0.3);
         pulse.setKeyValueAt(0.5, 1.0);
@@ -409,6 +450,11 @@ protected:
 // the settings portal ("appmenu:minimize,maximize,close").
 static QString buttonLayout()
 {
+    // (Read once: the call may wait on the desktop, and every window asks.)
+    static QString known;
+    if (!known.isEmpty())
+        return known;
+    known = ":minimize,maximize,close";
     QDBusInterface portal("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings");
     portal.setTimeout(400);
     const QDBusMessage r = portal.call("Read", "org.gnome.desktop.wm.preferences", "button-layout");
@@ -417,9 +463,9 @@ static QString buttonLayout()
         for (int i = 0; i < 3 && v.canConvert<QDBusVariant>(); i++)
             v = v.value<QDBusVariant>().variant();
         if (v.typeId() == QMetaType::QString && v.toString().contains(':'))
-            return v.toString();
+            known = v.toString();
     }
-    return ":minimize,maximize,close";
+    return known;
 }
 
 // The bar the app owns above the page: the app's name, the daemon's state, and the window's
@@ -435,7 +481,7 @@ public:
     QList<Control *> controls;
     Control *maximize = nullptr;
 
-    Bar(const Look *look, QWidget *parent) : QWidget(parent), look(look)
+    Bar(const Look *colors, QWidget *parent) : QWidget(parent), look(colors)
     {
         setAttribute(Qt::WA_StyledBackground, false);
         auto *row = new QHBoxLayout(this);
@@ -589,9 +635,10 @@ public:
     View *view;
     Page *page;
     QTimer sized;
-    QWebEngineView *inspector = nullptr;
+    Bridge *bridge = nullptr;
+    std::unique_ptr<QWebEngineView> inspector;
 
-    Win(int id, QWebEngineProfile *profile, const Look *look, bool devtools, bool probing) : id(id), look(look)
+    Win(int number, QWebEngineProfile *profile, const Look *colors, bool devtools, bool probing) : id(number), look(colors)
     {
         setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
         setWindowTitle("Keel");
@@ -627,42 +674,69 @@ public:
         page->setBackgroundColor(QColor(look->bg));
 
         auto *channel = new QWebChannel(page);
-        channel->registerObject("keel", new Bridge(id, probing, page));
+        bridge = new Bridge(id, probing, page);
+        channel->registerObject("keel", bridge);
         page->setWebChannel(channel);
 
         // The engine grants content nothing: not the clipboard, not a device, not a place.
         connect(page, &QWebEnginePage::permissionRequested, this, [](QWebEnginePermission p) { p.deny(); });
         // No window opens by itself: the app is told the address and whether the owner asked.
-        connect(page, &QWebEnginePage::newWindowRequested, this, [id](QWebEngineNewWindowRequest &r) {
+        connect(page, &QWebEnginePage::newWindowRequested, this, [this](QWebEngineNewWindowRequest &r) {
             say({{"t", "nav"}, {"win", id}, {"kind", "new-window"}, {"url", r.requestedUrl().toString(QUrl::FullyEncoded)}, {"gesture", r.isUserInitiated()}});
         });
-        connect(page, &QWebEnginePage::loadingChanged, this, [id](const QWebEngineLoadingInfo &info) {
+        connect(page, &QWebEnginePage::loadingChanged, this, [this](const QWebEngineLoadingInfo &info) {
             if (info.status() == QWebEngineLoadingInfo::LoadStartedStatus)
                 return;
             const char *how = info.status() == QWebEngineLoadingInfo::LoadSucceededStatus ? "ok" : info.status() == QWebEngineLoadingInfo::LoadFailedStatus ? "failed" : "stopped";
             say({{"t", "loaded"}, {"win", id}, {"url", info.url().toString(QUrl::FullyEncoded)}, {"how", how}, {"code", info.errorCode()}});
         });
-        connect(page, &QWebEnginePage::urlChanged, this, [id](const QUrl &url) { say({{"t", "url"}, {"win", id}, {"url", url.toString(QUrl::FullyEncoded)}}); });
+        connect(page, &QWebEnginePage::urlChanged, this, [this](const QUrl &url) { say({{"t", "url"}, {"win", id}, {"url", url.toString(QUrl::FullyEncoded)}}); });
         // The page's title is the window's name on the desktop (the overview, the task switcher).
         connect(page, &QWebEnginePage::titleChanged, this, [this](const QString &t) { setWindowTitle(t.isEmpty() || t.startsWith("data:") || t.startsWith("about:") ? "Keel" : t); });
-        connect(page, &QWebEnginePage::renderProcessTerminated, this, [this, id](QWebEnginePage::RenderProcessTerminationStatus, int) {
-            say({{"t", "crashed"}, {"win", id}});
-            if (page->mode == Page::App)
-                QTimer::singleShot(0, page, [this] { view->reload(); });
+        // The page's own process ended (a crash, or the script heap's bound): the app is told, and
+        // says whether the page is loaded again (it counts: a page that keeps ending is left).
+        connect(page, &QWebEnginePage::renderProcessTerminated, this, [this](QWebEnginePage::RenderProcessTerminationStatus status, int code) {
+            static const char *names[] = {"normal", "abnormal", "crashed", "killed"};
+            say({{"t", "crashed"}, {"win", id}, {"status", names[std::clamp(int(status), 0, 3)]}, {"code", code}});
         });
-        connect(bar, &Bar::startAsked, this, [id] { say({{"t", "start"}, {"win", id}}); });
+        connect(bar, &Bar::startAsked, this, [this] { say({{"t", "start"}, {"win", id}}); });
         if (devtools) {
-            inspector = new QWebEngineView;
+            inspector = std::make_unique<QWebEngineView>();
             inspector->setWindowTitle("Keel inspector");
             inspector->resize(1100, 700);
             page->setDevToolsPage(inspector->page());
-            connect(page->action(QWebEnginePage::InspectElement), &QAction::triggered, inspector, &QWidget::show);
+            connect(page->action(QWebEnginePage::InspectElement), &QAction::triggered, inspector.get(), &QWidget::show);
         }
         sized.setSingleShot(true);
         sized.setInterval(250);
         connect(&sized, &QTimer::timeout, this, [this] { tellSize(); });
     }
-    ~Win() override { delete inspector; }
+    // A window the owner closed is not destroyed: this engine keeps the buffers of a page whose
+    // process went (two a window, for the life of the program; a bare program of a window and a
+    // web view shows the same, and so does discarding the page or sending it to another
+    // process), while a window that is hidden and shown again keeps what it has. It is emptied
+    // in place and put aside, and the next window asked for is this one under a new number. Its
+    // page's process stays, and gives its memory back by itself when it has rested.
+    void retire()
+    {
+        hide();
+        page->mode = Page::Away;
+        page->origin.clear();
+        page->scripts().clear();
+        view->setUrl(QUrl("about:blank"));
+        bar->title->setText("Keel");
+        bar->pill->hide();
+        bar->start->hide();
+        setWindowTitle("Keel");
+    }
+    void renumber(int number)
+    {
+        id = number;
+        page->win = number;
+        bridge->win = number;
+        page->history()->clear();
+        setWindowState(Qt::WindowNoState);
+    }
 
     void tellSize() { say({{"t", "size"}, {"win", id}, {"w", width()}, {"h", height()}, {"maximized", isMaximized()}}); }
 
@@ -797,17 +871,18 @@ public:
     Look look;
     bool devtools = false, probing = false;
     QHash<int, Win *> wins;
+    QList<Win *> spare; // closed windows, kept for the next one asked for (see Win::retire)
     QByteArray pending;
-    QHash<int, qint64> pressed;
+    QHash<int, qint64> pressed, lastPress;
     Qt::Edges gripping;
     bool gripped = false;
 
-    Host(QWebEngineProfile *profile, bool devtools, bool probing) : profile(profile), devtools(devtools), probing(probing)
+    Host(QWebEngineProfile *pages, bool inspected, bool measured) : profile(pages), devtools(inspected), probing(measured)
     {
-        auto *in = new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, this);
+        auto *in = new QSocketNotifier(appIn, QSocketNotifier::Read, this);
         connect(in, &QSocketNotifier::activated, this, [this, in] {
             char buf[65536];
-            const ssize_t n = ::read(STDIN_FILENO, buf, sizeof buf);
+            const ssize_t n = ::read(appIn, buf, sizeof buf);
             if (n <= 0) {
                 // The app is gone: its windows go with it. (Not quit(): that asks every window to
                 // close first, and a window here leaves the answer to the app.)
@@ -816,6 +891,11 @@ public:
                 return;
             }
             pending.append(buf, n);
+            // The app's lines are short. One that never ends is not the app's.
+            if (pending.size() > 64 * 1024 * 1024 && !pending.contains('\n')) {
+                ::fprintf(stderr, "keel-desktop-qt: a line of the app's that did not end was dropped\n");
+                pending.clear();
+            }
             for (qsizetype at; (at = pending.indexOf('\n')) >= 0;) {
                 const QJsonObject m = QJsonDocument::fromJson(pending.left(at)).object();
                 pending.remove(0, at + 1);
@@ -825,9 +905,17 @@ public:
         });
         // A file the page offers is saved to the downloads folder under a free name: never over
         // a file, never outside that folder, never into the home folder.
-        connect(profile, &QWebEngineProfile::downloadRequested, this, [](QWebEngineDownloadRequest *d) {
+        // And only at the owner's press in that window, a moment before: a script, in the page or in
+        // a frame the page lets keep files, saves nothing by itself.
+        connect(profile, &QWebEngineProfile::downloadRequested, this, [this](QWebEngineDownloadRequest *d) {
             if (d->isSavePageDownload())
                 return;
+            const auto *from = qobject_cast<Page *>(d->page());
+            if (!from || QDateTime::currentMSecsSinceEpoch() - lastPress.value(from->win) > KEEP_MS) {
+                say({{"t", "download-refused"}, {"win", from ? from->win : 0}});
+                d->cancel();
+                return;
+            }
             const QString home = QDir::homePath();
             QString folder = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
             if (folder.isEmpty() || QDir(folder) == QDir(home))
@@ -849,7 +937,12 @@ public:
             const int id = m["win"].toInt();
             if (wins.contains(id))
                 return;
-            w = new Win(id, profile, &look, devtools, probing);
+            if (spare.isEmpty()) {
+                w = new Win(id, profile, &look, devtools, probing);
+            } else {
+                w = spare.takeLast();
+                w->renumber(id);
+            }
             wins.insert(id, w);
             w->restyle();
             w->resize(std::max(360, m["w"].toInt(1280)), std::max(240, m["h"].toInt(860)));
@@ -861,6 +954,9 @@ public:
                 x->restyle();
         } else if (t == "quit") {
             QCoreApplication::exit(0);
+        } else if (t == "ping") {
+            // (Answered from the loop that draws: a program that hangs does not answer.)
+            say({{"t", "pong"}});
         } else if (t == "confirm") {
             const int id = m["id"].toInt();
             QWidget *over = QApplication::activeWindow();
@@ -886,6 +982,8 @@ public:
             script(w, senderScript());
             w->bar->title->setText("Keel");
             w->view->setHtml(m["html"].toString(), QUrl("about:blank"));
+        } else if (t == "reload") {
+            w->view->reload();
         } else if (t == "js") {
             w->page->runJavaScript(m["src"].toString());
         } else if (t == "pill") {
@@ -893,6 +991,7 @@ public:
             w->bar->pillText->setText(m["text"].toString());
             w->bar->dot->setVisible(m["dot"].toBool());
             w->bar->pill->setToolTip(m["tip"].toString());
+            w->bar->start->setText(m["label"].toString("Start"));
             w->bar->start->setVisible(m["start"].toBool());
         } else if (t == "present") {
             // With the desktop's activation token of the request the window takes the focus;
@@ -910,8 +1009,9 @@ public:
         } else if (t == "close") {
             wins.remove(w->id);
             pressed.remove(w->id);
-            w->hide();
-            w->deleteLater();
+            lastPress.remove(w->id);
+            w->retire();
+            spare << w;
         } else if (t == "clip-read") {
             read(w->id, m["id"].toDouble(), m["edge"].toInt());
         }
@@ -992,6 +1092,7 @@ protected:
         // (A button's release too: a click is made of both, however long the button was held.)
         if (type == QEvent::KeyPress || type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease) {
             const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            lastPress.insert(w->id, now);
             if (now - pressed.value(w->id) > 120) {
                 pressed.insert(w->id, now);
                 say({{"t", "input"}, {"win", w->id}});
@@ -1065,6 +1166,55 @@ protected:
     }
 };
 
+// The engine's flags from the environment, without the ones that open its debugging port or take
+// its sandbox off (a quoted value is one word). What was left out is added to `dropped`.
+static QByteArray ownFlags(const QByteArray &inherited, QStringList *dropped)
+{
+    static const char *never[] = {"--remote-debugging", "--remote-allow-origins", "--no-sandbox", "--disable-web-security", "--disable-seccomp-filter-sandbox",
+                                  "--disable-setuid-sandbox", "--disable-namespace-sandbox", "--disable-gpu-sandbox", "--single-process"};
+    QByteArray kept, word;
+    char quote = 0;
+    const auto take = [&] {
+        if (word.isEmpty())
+            return;
+        bool drop = false;
+        for (const char *n : never)
+            drop = drop || word.startsWith(n);
+        if (drop)
+            *dropped << QString::fromUtf8(word);
+        else
+            kept += (kept.isEmpty() ? "" : " ") + word;
+        word.clear();
+    };
+    for (const char c : inherited) {
+        if (quote) {
+            quote = c == quote ? 0 : quote;
+            word += c;
+        } else if (c == '"' || c == '\'') {
+            quote = c;
+            word += c;
+        } else if (c == ' ' || c == '\t' || c == '\n') {
+            take();
+        } else {
+            word += c;
+        }
+    }
+    take();
+    return kept;
+}
+
+// The engine serves its own files (the channel's library among them) to any frame that asks by
+// their address. This program reads the one it needs itself: no page gets any.
+class OwnFiles : public QWebEngineUrlRequestInterceptor {
+public:
+    using QWebEngineUrlRequestInterceptor::QWebEngineUrlRequestInterceptor;
+    void interceptRequest(QWebEngineUrlRequestInfo &info) override
+    {
+        if (info.requestUrl().scheme() == "qrc")
+            info.block(true);
+    }
+};
+
 // `--self-test FILE`: the table of paths the main frame may and may not show (lines of
 // "ok PATH" and "no PATH"), the same one the app's own rule is tested with.
 static int selfTest(const QString &file)
@@ -1088,7 +1238,12 @@ static int selfTest(const QString &file)
         }
     }
     ::printf("%d of %d paths decided as the table says\n", n - bad, n);
-    return bad || !n ? 1 : 0;
+    // And the flags this program does not take from the environment.
+    QStringList dropped;
+    const QByteArray kept = ownFlags("--remote-debugging-port=9222 --js-flags=\"--a --b\" --no-sandbox  --disable-gpu --remote-allow-origins=* --disable-web-security", &dropped);
+    const bool flagsRight = kept == "--js-flags=\"--a --b\" --disable-gpu" && dropped.size() == 4;
+    ::printf("the flags of the environment: %s\n", flagsRight ? "kept and dropped as they should be" : "WRONG");
+    return bad || !n || !flagsRight ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -1120,9 +1275,9 @@ int main(int argc, char **argv)
         ::fprintf(stderr, "keel-desktop-qt: the windows of keel-desktop; it is started by the app, not by hand\n");
         return 2;
     }
-    // This program runs at all: every library it needs was found. The app waits for this line
-    // before it chooses this engine.
-    say({{"t", "ready"}});
+    // The pipes to the app are this program's alone from here on (see `say`).
+    appPipe = keepPrivate(STDOUT_FILENO, O_WRONLY);
+    appIn = keepPrivate(STDIN_FILENO, O_RDONLY);
 
     // The engine's own accessibility tree is built for a screen reader, when the desktop says one
     // is on (the app reads that and passes it). Otherwise it is left off, as a browser leaves it:
@@ -1130,12 +1285,32 @@ int main(int argc, char **argv)
     // which is most of what several long panes cost. The window's own controls stay accessible.
     if (!reader && !qEnvironmentVariableIsSet("QTWEBENGINE_ENABLE_LINUX_ACCESSIBILITY"))
         qputenv("QTWEBENGINE_ENABLE_LINUX_ACCESSIBILITY", "0");
-    // The engine's debugging port is for a developer who asked for the inspector.
-    if (!devtools)
-        qunsetenv("QTWEBENGINE_REMOTE_DEBUGGING");
+    // What the environment the app was started in may not do to the engine without a word: open
+    // its debugging port, or take its sandbox off. A developer asks for the inspector by name.
+    QStringList dropped;
     QByteArray flags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+    if (!devtools) {
+        for (const char *name : {"QTWEBENGINE_REMOTE_DEBUGGING", "QTWEBENGINE_DISABLE_SANDBOX"}) {
+            if (qEnvironmentVariableIsSet(name)) {
+                qunsetenv(name);
+                dropped << name;
+            }
+        }
+        flags = ownFlags(flags, &dropped);
+        if (!dropped.isEmpty())
+            ::fprintf(stderr, "keel-desktop-qt: not taken from the environment (start the app with --devtools for the inspector): %s\n", qPrintable(dropped.join(' ')));
+    }
     if (!flags.contains("--js-flags"))
         flags += " --js-flags=--max-old-space-size=" + QByteArray::number(HEAP_MB);
+    // A frame of content gets the keyboard by the owner's own act in it, never by asking: the
+    // engine refuses a frame of another origin (a sandboxed one is) the focus it was not given.
+    // Without this a frame that asks in a loop takes every key the owner types into the page.
+    if (flags.contains("--enable-blink-features="))
+        flags.replace("--enable-blink-features=", "--enable-blink-features=BlockingFocusWithoutUserActivation,");
+    else
+        flags += " --enable-blink-features=BlockingFocusWithoutUserActivation";
+    // A local page has no use for calls between browsers: they find no address of this machine.
+    flags += " --force-webrtc-ip-handling-policy=disable_non_proxied_udp";
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS", flags);
 
     QApplication::setDesktopFileName(appId);
@@ -1143,19 +1318,32 @@ int main(int argc, char **argv)
     QApplication::setApplicationName("Keel");
     QApplication::setQuitOnLastWindowClosed(false);
 
+    // The caret stands still. A blinking caret wakes the whole drawing path twice a second in a
+    // window nobody is typing in (most of what an idle window with the message box in focus
+    // costs), and the engine reads the blink once, as a page starts: it cannot be rested after
+    // the owner's last key, as the desktop's own fields rest theirs. KEEL_DESKTOP_CARET_BLINK=1
+    // keeps the desktop's blink.
+    if (qgetenv("KEEL_DESKTOP_CARET_BLINK") != "1")
+        QGuiApplication::styleHints()->setCursorFlashTime(0);
     auto *profile = new QWebEngineProfile("keel", &app);
     profile->setPersistentStoragePath(dir + "/qt-web");
     profile->setCachePath(dir + "/qt-cache");
     profile->setHttpUserAgent(profile->httpUserAgent() + " Keel/" KEEL_VERSION);
     // A permission is never kept: each request is refused as it comes.
     profile->setPersistentPermissionsPolicy(QWebEngineProfile::PersistentPermissionsPolicy::AskEveryTime);
+    profile->setUrlRequestInterceptor(new OwnFiles(profile));
+    // This program runs and its engine is up: a display, the engine's own process, its profile.
+    // The app waits for this line before it chooses this engine.
+    say({{"t", "ready"}});
     say({{"t", "engine"}, {"qt", qVersion()}, {"chromium", qWebEngineChromiumVersion()}, {"patched", qWebEngineChromiumSecurityPatchVersion()}});
 
     Host host(profile, devtools, probing);
     const int code = app.exec();
     // The windows go before the profile their pages belong to.
     qDeleteAll(host.wins);
+    qDeleteAll(host.spare);
     host.wins.clear();
+    host.spare.clear();
     return code;
 }
 
