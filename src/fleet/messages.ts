@@ -271,7 +271,10 @@ export class Messages {
     if (!a.local) return this.sendRemote(a.machine_id, a.machine, a.session.id, text, wake, sender);
     const m = this.receive(a.session, text, sender, wake, true);
     const title = a.session.title || a.session.id;
-    const said = m.state === "held" ? `Held for the owner before it reaches ${title}: ${m.reason}.` : m.state === "queued" ? `Queued for ${title} (id ${m.id}).` : `Delivered to ${title}.`;
+    // Why it waits, so a queued message is not taken for a delivered one.
+    const why = this.engine.isHeld(a.session.id) ? "the owner stopped that session, and it reads the message when they resume it"
+      : this.engine.isRunning(a.session.id) ? "that session is working and reads it after its current turn" : "it is in that session's queue";
+    const said = m.state === "held" ? `Held for the owner before it reaches ${title}: ${m.reason}.` : m.state === "queued" ? `Queued for ${title} (id ${m.id}): ${why}.` : `Delivered to ${title}.`;
     return { text: said, machine: "local", session: a.session.id, message_id: m.id, state: m.state };
   }
 

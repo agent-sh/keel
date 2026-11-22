@@ -15,6 +15,7 @@ import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
 import * as snooze from "./snooze.ts";
+import * as undelivered from "./undelivered.ts";
 import { afterCallOff, afterTurn, capture, clip, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
@@ -112,6 +113,7 @@ function init(deps: Deps) {
       alerts.readWhere("ask_id", askId, sessionId);
       if (answered) snooze.end(deps.store.session(sessionId)?.parent_id ?? sessionId, "the owner answered");
     },
+    inputDropped: (rows, why, session) => undelivered.inputDropped(rows, why, session),
     turnStart: (s) => agents.onTurnStart(s.id),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
@@ -142,6 +144,9 @@ function init(deps: Deps) {
     taskRenames.told(f.session.id);
     agents.onSessionDeleted(f.session.id);
   });
+
+  // An archived session reads nothing more: what others sent it is told to them as not delivered.
+  deps.bus.on((f) => { if (f.t === "session" && !f.deleted && f.session.archived) try { undelivered.onArchived(f.session); } catch (e) { capture(e, { at: "undelivered message", session: f.session.id }); } });
 
   // A goal's verifier archived or deleted while its verification waits on it: the verification ends there.
   deps.bus.on((f) => { if (f.t === "session") verifierSession(f.session, !!f.deleted); });

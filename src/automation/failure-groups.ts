@@ -14,7 +14,9 @@ import { clip, inert } from "./core.ts";
 // agent: an agent ended as failed. turn: a turn of the session itself ended on
 // an error. provider: one model request failed (a retry may have passed).
 // tool: a tool call returned a failure. wait: a wait timed out. loop: a loop's run failed.
-export type FailureKind = "agent" | "turn" | "provider" | "tool" | "wait" | "loop";
+// message: a message the session sent was taken and then could not be delivered
+// (its ref is who it was for).
+export type FailureKind = "agent" | "turn" | "provider" | "tool" | "wait" | "loop" | "message";
 // Where it happened: an agent of the session (its id and title), or the session
 // itself. `n`: its occurrences. `owed`: the ones the session's model is still to
 // be given. `told`: the ones it was given, or that stopped mattering.
@@ -245,8 +247,9 @@ export type Known = (id: string) => { gone?: boolean; where?: string } | undefin
 
 // The agents an entry tells of, the one that failed last first. `skip`: agents
 // whose own report is in the same input (see render).
+// (A message's ref is who it was for: named also when that agent's report goes along.)
 const tellable = (g: FailureGroup, skip: Set<string>) =>
-  g.refs.filter((r) => r.owed > 0 && isAgent(r) && !skip.has(r.id)).reverse().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  g.refs.filter((r) => r.owed > 0 && isAgent(r) && (g.kind === "message" || !skip.has(r.id))).reverse().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
 const othersOf = (g: FailureGroup) => g.refs.find((r) => r.id === OTHERS && r.owed > 0);
 
 // What `b` says that `a`, the line of the agent that failed last, does not: a
@@ -284,6 +287,7 @@ function headOf(g: FailureGroup, refs: FailureRef[]): string {
     return `${g.cls} failed ${plural(sum(refs) + (others?.owed ?? 0), "time")} on one cause in ${who}`;
   }
   if (g.kind === "turn") return `A turn of this session ended on an error${cls}${g.owed > 1 ? `, ${g.owed} times` : ""}`;
+  if (g.kind === "message") return `${g.owed === 1 ? "A message this session sent was" : `${g.owed} messages this session sent were`} not delivered`;
   return `${g.kind} ${g.cls}: ${plural(g.owed, "failure")}`;
 }
 
@@ -379,7 +383,8 @@ export function render(groups: FailureGroup[], now: number, reported = new Set<s
   }
   const left = loud.length - shown.length;
   // The agents the entries tell of whose timeline is there to read, the last to fail first.
-  const readable = shown.flatMap((g) => tellable(g, reported)).filter((r) => !known?.(r.id)?.gone).sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  // (Who a message was for did not fail: its timeline is not where to look.)
+  const readable = shown.flatMap((g) => (g.kind === "message" ? [] : tellable(g, reported))).filter((r) => !known?.(r.id)?.gone).sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
   const text = `${NOTICE_HEAD}\n<failures>\n${inert(parts.join("\n"), "failures")}\n</failures>${left ? `\n${plural(left, "more cause")} of failure ${left === 1 ? "is" : "are"} not listed here.` : ""}${tracePointer(readable[0]?.id, short > 0, session)}`;
   return {
     text: shown.length ? text : null,

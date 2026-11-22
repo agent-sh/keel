@@ -22,7 +22,10 @@ export const turnRoutes: RouteModule = (deps) => {
       DELETE: (req: any) => {
         if (!sessionOr404(req.params.id)) return bad("no such session", 404);
         // A prompt Send now has taken is no longer in the queue to clear.
-        for (const q of engine.queued(req.params.id)) store.dequeue(q.id);
+        // What another session sent is told to it as not delivered (drop).
+        const rows = engine.queued(req.params.id);
+        for (const q of rows) if (!q.meta) store.dequeue(q.id);
+        engine.drop(rows, "removed");
         engine.emitQueue(req.params.id);
         return json(queueBody(req.params.id));
       },
@@ -72,7 +75,10 @@ export const turnRoutes: RouteModule = (deps) => {
       DELETE: (req: any) => {
         if (engine.isSending(req.params.qid)) return bad("this queued prompt is already sending", 409);
         const q = store.queueItem(req.params.qid);
-        if (!q || q.session_id !== req.params.id || !store.dequeue(q.id)) return bad("no such queued prompt (it may have been sent)", 404);
+        if (!q || q.session_id !== req.params.id) return bad("no such queued prompt (it may have been sent)", 404);
+        // A row another session sent: its sender is told it was removed unread.
+        if (q.meta) engine.drop([q], "removed");
+        else if (!store.dequeue(q.id)) return bad("no such queued prompt (it may have been sent)", 404);
         engine.emitQueue(q.session_id);
         return json(queueBody(q.session_id));
       },
