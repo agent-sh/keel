@@ -1,6 +1,7 @@
 import { automationRoutes } from "../../automation/index.ts";
 import type { RouteModule } from "../app.ts";
 import { checkpointRoutes } from "./checkpoints.ts";
+import { lspRoutes } from "./lsp.ts";
 import { codeModeRoutes } from "./codemode.ts";
 import { draftRoutes } from "./drafts.ts";
 import { errorRoutes } from "./errors.ts";
@@ -67,6 +68,7 @@ export const routeModules: RouteModule[] = [
   trustRoutes, // protected files are watched around calls the gate let through
   nestedRoutes, // after trust: nested instruction files go through its filter
   checkpointRoutes,
+  lspRoutes, // after trust and checkpoints: an edit's result gets its diagnostics last
   workspaceRoutes,
   pwaRoutes,
   remoteRoutes,

@@ -337,6 +337,25 @@ export class Tracer {
     this.waits.set(key, span);
   }
 
+  // A wait of the session's running turn that is already over (an edit's
+  // wait for a language server): a span of its own under the turn, with what
+  // it cost and what it gave.
+  waited(sessionId: string, name: string, startMs: number, endMs: number, attrs: Record<string, unknown>) {
+    try {
+      if (!this.isRunning(sessionId)) return;
+      const s = this.store.session(sessionId);
+      const turn = s && this.lastTurn(sessionId);
+      if (!s || !turn) return;
+      const parent = this.ensureTurn(s, turn);
+      this.store.db.run(
+        "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', ?, ?, ?, 'ok', ?)",
+        [newSpanId(), parent.trace, parent.span, sessionId, name, startMs, endMs, JSON.stringify({ ...attrs, turn_event: turn.id })],
+      );
+    } catch {
+      // A wait that could not be recorded is a gap in a trace, never a failure of the turn.
+    }
+  }
+
   // The daemon itself did not answer for a while (src/admin/stall.ts): each
   // turn that ran then gets the stall as a span of its own, with what took
   // the time, so a trace with a hole in it says whose hole it was.
