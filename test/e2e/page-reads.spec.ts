@@ -166,15 +166,14 @@ test("what changed before the page's socket opened is shown once it opens", asyn
   let made: string | undefined;
   try {
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
-    // What the page reads without its socket, a second after it loaded (the states among it), is
-    // answered before anything changes. Waited for by its answer, not by a time after the row shows:
-    // a page that paints its list early made that wait end before the read began.
-    const read = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/state");
+    // A second after it loads, with no socket yet, the page reads its features' state once (the next
+    // test): that read is answered before anything changes here, so what changes is told by no read.
+    // (Waited for by its answers, not by a time: a page that loaded fast had it still ahead.)
+    const read = Promise.all(["/api/state", "/api/approvals"].map((path) => page.waitForResponse((r) => r.request().method() === "GET" && new URL(r.url()).pathname === path)));
     await page.goto(`http://127.0.0.1:${(front.address() as { port: number }).port}/`);
     const row = page.locator(`[data-testid="session-row"][data-session="${session.id}"]`);
     await expect(row).toBeVisible();
     await read;
-    await page.evaluate(() => new Promise((r) => setTimeout(r, 300))); // and the reads made with it
     // The session asks for an approval while the socket is still on its way.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch asked.txt" } }])}` } });
     await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/approvals`)).json()).approvals.length, { timeout: 30_000 }).toBe(1);
