@@ -2,15 +2,29 @@
 // own config folder), for what the shared daemon cannot be given: a state
 // written before it starts, a stop and a start.
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 export const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
+// The folder a spec's own daemon gives its sessions: beside its state folder,
+// never the state folder itself. A session's tools write nothing into Keel's
+// own state (the gate refuses it, in every mode), and no real session works
+// there. Made when asked for, kept across the spec's restarts of its daemon,
+// and removed when the spec's worker ends.
+const folders = new Set<string>();
+export function sessionsFolder(state: string): string {
+  const ws = `${state.replace(/\/+$/, "")}-ws`;
+  mkdirSync(ws, { recursive: true });
+  if (!folders.size) process.on("exit", () => { for (const d of folders) try { rmSync(d, { recursive: true, force: true }); } catch {} });
+  folders.add(ws);
+  return ws;
+}
+
 // `dev`: the page as a development build (it has the counters a spec reads).
 export function daemon(state: string, port = 0, dev = false): Promise<{ proc: ChildProcess; url: string }> {
   mkdirSync(state, { recursive: true });
-  const proc = spawn("bun", ["src/main.ts", "serve", ...(dev ? ["--dev"] : []), "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", state], {
+  const proc = spawn("bun", ["src/main.ts", "serve", ...(dev ? ["--dev"] : []), "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
     env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off" },
     stdio: ["ignore", "pipe", "pipe"],
   });

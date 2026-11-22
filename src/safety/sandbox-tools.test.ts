@@ -135,6 +135,20 @@ test("Keel's own state is never written by a session's tool: by path, a link, a 
   expect(await through(session, "Write", { file_path: join(state, "artifacts", session.id, "report.md"), content: "x" })).toBe("ran");
   gate.setPerm(session.id, { mode: "full-auto", sandbox: "workspace-write" });
   expect(await through(session, "Write", { file_path: join(state, "artifacts", session.id, "report.md"), content: "x" })).toBe("ran");
+  // A session pointed at Keel's state folder itself, or at a folder inside it, hears why nothing it writes there
+  // lands: its tools and its commands' plain writes, by a path written out and by one relative to its folder.
+  for (const [folder, said] of [[state, "is Keel's state folder"], [join(state, "logs"), "is inside Keel's state folder"]] as const) {
+    mkdirSync(folder, { recursive: true });
+    const there = store.createSession({ model: "fixture:m", workspace: folder });
+    for (const mode of ["ask", "auto-edits", "full-auto"] as Mode[]) {
+      gate.setPerm(there.id, { mode, sandbox: "off" });
+      for (const got of [await through(there, "Write", { file_path: join(folder, "ran.txt"), content: "x" }), await through(there, "Bash", { command: `echo ran >> ${join(folder, "ran.txt")}` }), await through(there, "Bash", { command: "echo ran >> ran.txt" })]) {
+        expect([folder, mode, got]).toEqual([folder, mode, expect.stringMatching(new RegExp(`^refused: .*this session's own folder, .*, ${said}: nothing there is a session's to write, and a session that changes files needs a folder of its own outside it`))]);
+      }
+      // (Reading there is as anywhere: a command that only reads runs.)
+      expect([folder, mode, await through(there, "Bash", { command: "ls" })]).toEqual([folder, mode, "ran"]);
+    }
+  }
 }, 120_000);
 
 test("Keel's own config is the owner's own card in the asking modes; in Full auto it runs, and a sandbox there keeps its file tools out of it: every family's tools, a link, a hard link, a command's plain write", async () => {

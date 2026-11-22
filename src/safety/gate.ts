@@ -436,7 +436,10 @@ export class Gate {
     if (s.path !== (ownFolders()[0] as string)) return { where: "config", why: config };
     if (scratch.some((d) => contains(d, path))) return null;
     if (contains(workspace, path) && contains(realOf(join(this.store.stateDir, "worktrees")), workspace) && workspace !== realOf(join(this.store.stateDir, "worktrees"))) return null;
-    return { where: "state", why: `it changes ${path}, one of Keel's own files (its store, its token and keys, other sessions' files)` };
+    // A session whose own folder is Keel's state folder, or inside it, hears why nothing it writes there lands: the
+    // folder it was pointed at is the daemon's, and a session that changes files needs one of its own outside it.
+    const ownFolder = contains(s.path, workspace) ? ` (this session's own folder, ${workspace}, is ${workspace === s.path ? "Keel's state folder" : "inside Keel's state folder"}: nothing there is a session's to write, and a session that changes files needs a folder of its own outside it)` : "";
+    return { where: "state", why: `it changes ${path}, one of Keel's own files (its store, its token and keys, other sessions' files)${ownFolder}` };
   }
 
   // What a session's commands write beside its folder: its outputs, and its artifacts folder (made when missing).

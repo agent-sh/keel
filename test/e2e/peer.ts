@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { sessionsFolder } from "./own-daemon.ts";
 
 export async function peerProblem(request: APIRequestContext, peer: string): Promise<string | null> {
   const fix = "start a second daemon with a state of its own (scripts/dev.sh <another port>) and set KEEL_PEER_URL and KEEL_PEER_ROOT";
@@ -87,7 +88,8 @@ export async function emptyKeel(dir: string): Promise<{ url: string; state: stri
 export function ownDaemon(state: string, port = 0, more: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string; port: number }> {
   for (const d of ["config", "home/run", "stores", "tmp"]) mkdirSync(join(state, d), { recursive: true });
   writeFileSync(join(state, "ssh_config"), "");
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", state], {
+  // (Its sessions work beside the state folder, not in it: sessionsFolder.)
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
     env: {
       PATH: process.env.PATH ?? "", TMPDIR: process.env.TMPDIR ?? join(state, "tmp"), LANG: "C.UTF-8", HOME: join(state, "home"),
       KEEL_KEYRING_SERVICE: "keel-scratch-empty", DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", XDG_RUNTIME_DIR: join(state, "home/run"), KEEL_CRED_GET: "/bin/false",

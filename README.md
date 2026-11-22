@@ -586,7 +586,11 @@ through a hard link or through `..`:
   either. This is not a check of the work: it keeps a session from
   corrupting the store of the daemon it runs in, and the refusal says so.
   The session's own artifacts folder and a worktree Keel made for it are
-  its own.
+  its own. A session you point at the state folder itself, or at a folder
+  inside it, can read there and write nothing: the refusal says the
+  session's own folder is Keel's, and that a session that changes files
+  needs a folder of its own outside it. Such a session is not refused when
+  it is made: reading Keel's logs from one is a fair use.
 - Its config folder (skills, hooks, MCP servers, agents, plugins, the
   sandbox's lists, settings) is yours alone to change. A session you ask to
   write a skill or add a hook there gets your card in Ask, Auto edits and

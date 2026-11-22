@@ -99,7 +99,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
       { name: "NoSuchTool", input: { x: 1 } },
     ])}`);
     const approval = await open("Needs approval", "ask");
-    await send(approval, calls([bash(`echo asked >> ${join(state, "asked.txt")}`)]));
+    await send(approval, calls([bash(`echo asked >> ${join(`${state}-ws`, "asked.txt")}`)]));
     const question = await open("Asks a question");
     await send(question, calls([{ name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which database should hold the queue?", options: [{ label: "SQLite" }, { label: "Valkey" }], multiSelect: false }] } }]));
     // The one that spends most: long replies, done before the report is read.

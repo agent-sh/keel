@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { sessionsFolder } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a daemon restart does not lose a running turn. A crash (SIGKILL)
@@ -11,11 +12,15 @@ import { shoot } from "./shots.ts";
 // short drain and the next daemon continues it the same way. This spec runs
 // its own daemons on a scratch state folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
+// The folder a daemon's sessions work in: beside its state folder (a session's commands and tools write nothing into
+// Keel's own state: the gate refuses it without a card, in every mode).
+const ws = sessionsFolder;
 
 // `bin`: run that compiled binary instead of the source; `bind`: a fixed address
 // (a page reconnects by itself only to the address it was loaded from).
 function daemon(state: string, extra: Record<string, string> = {}, opts: { bin?: string; bind?: string } = {}): Promise<{ proc: ChildProcess; url: string }> {
-  const args = ["serve", "--bind", opts.bind ?? "127.0.0.1:0", "--state-dir", state, "--workspace", state];
+  // (Its sessions work beside the state folder, not in it: what their commands write is in ws(state).)
+  const args = ["serve", "--bind", opts.bind ?? "127.0.0.1:0", "--state-dir", state, "--workspace", ws(state)];
   const proc = spawn(opts.bin ?? "bun", opts.bin ? args : ["src/main.ts", ...args], {
     // A config folder of its own unless the run names one: never the owner's.
     env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", ...extra },
@@ -121,7 +126,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     const turns = [
       { title: "Cut during a command", mode: "full-auto", text: "script:long-tool" },
       { title: "Cut while the model answered", mode: "full-auto", text: `script:hold ${gate}` },
-      { title: "Cut at an approval", mode: "ask", text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: `echo asked >> ${join(state, "asked.txt")}` } }])}` },
+      { title: "Cut at an approval", mode: "ask", text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: `echo asked >> ${join(ws(state), "asked.txt")}` } }])}` },
       { title: "Cut during two commands", mode: "full-auto", text: `script:batch ${JSON.stringify([sleep(40), sleep(41)])}` },
     ];
     const ids: string[] = [];
@@ -733,8 +738,8 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     const { session } = await call("/api/sessions", { model: "scripted:stand-in" });
     const sid = session.id;
     await call(`/api/sessions/${sid}/permissions`, { mode: "ask" }, "PUT");
-    const mark = (n: number) => ({ name: "Bash", input: { command: `echo ran-${n} >> ${join(state, "ran.txt")}` } });
-    const ran = () => (existsSync(join(state, "ran.txt")) ? readFileSync(join(state, "ran.txt"), "utf8") : "");
+    const mark = (n: number) => ({ name: "Bash", input: { command: `echo ran-${n} >> ${join(ws(state), "ran.txt")}` } });
+    const ran = () => (existsSync(join(ws(state), "ran.txt")) ? readFileSync(join(ws(state), "ran.txt"), "utf8") : "");
 
     await page.goto(`${d.url}/s/${sid}`);
     await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
@@ -802,7 +807,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     // still runs, then the daemon dies. The denial and its reason reach the
     // model after the restart; the call that was running is told its command runs on.
     expect((await call("/api/permissions/grants", { session_id: sid, kind: "shell", pattern: "sleep *", lifetime: "session" })).status).toBe(201);
-    const denied = join(state, "denied.txt");
+    const denied = join(ws(state), "denied.txt");
     await page.getByTestId("composer").fill(`script:batch ${JSON.stringify([{ name: "Bash", input: { command: "sleep 20" } }, { name: "Bash", input: { command: `echo no > ${denied}` } }])}`);
     await page.getByTestId("composer").press("Enter");
     await expect(card).toHaveCount(1, { timeout: 15_000 });
@@ -1245,7 +1250,7 @@ test("cards that wait on the owner hold neither a drain nor the turns continued 
     const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
     const asker = await make("A question", "full-auto", calls([question]));
     const planner = await make("A plan", "plan", calls([{ name: "present_plan", input: { plan: "1. Read.\n2. Change." } }]));
-    const gated = await make("An approval", "ask", calls([{ name: "Bash", input: { command: `echo ran >> ${join(state, "ran.txt")}` } }]));
+    const gated = await make("An approval", "ask", calls([{ name: "Bash", input: { command: `echo ran >> ${join(ws(state), "ran.txt")}` } }]));
     const open = async (extra: string[] = []) => [
       (await call(`/api/sessions/${asker}/questions`, undefined, "GET")).pending as string[],
       ((await call(`/api/sessions/${planner}/plan`, undefined, "GET")).open as { id: string }[]).map((c) => c.id),
@@ -1264,7 +1269,7 @@ test("cards that wait on the owner hold neither a drain nor the turns continued 
     expect(took).toBeLessThan(3_000);
     d = await daemon(state, env);
     await expect.poll(() => open(), { timeout: 30_000 }).toEqual(cards);
-    expect(existsSync(join(state, "ran.txt"))).toBe(false);
+    expect(existsSync(join(ws(state), "ran.txt"))).toBe(false);
 
     // A session at work, then one more question (the newest session, first in line after a restart).
     const worker = await make("At work", "full-auto", "script:long-tool");
@@ -1311,7 +1316,7 @@ test("a secret card, a call blocked on an asking agent and a program's card do n
     const wait = { name: "wait_agent", input: {} };
     const secret = await make("Asks for a secret", "full-auto", calls([{ name: "request_secret", input: { name: "SPEC_TOKEN", purpose: "a spec" } }]));
     const parent = await make("Blocked on its agent", "full-auto", calls([{ name: "spawn_agent", input: { message: `Color helper\n${calls([question])}` } }, wait, wait, wait, wait]));
-    const coder = await make("A card inside a program", "ask", calls([{ name: "run_code", input: { code: `await tools.Bash({ command: "echo ran >> ${join(state, "code.txt")}" }); return "done";` } }]));
+    const coder = await make("A card inside a program", "ask", calls([{ name: "run_code", input: { code: `await tools.Bash({ command: "echo ran >> ${join(ws(state), "code.txt")}" }); return "done";` } }]));
     const secrets = async () => ((await call(`/api/sessions/${secret}/secrets`, undefined, "GET")).requests as { id: string }[]).map((r) => r.id);
     const cardsOf = async (all = false) => ((await call(`/api/sessions/${coder}/approvals${all ? "?all" : ""}`, undefined, "GET")).approvals as { id: string; state: string; tool: string }[]);
     await expect.poll(async () => (await call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents?.[0]?.session_id, { timeout: 30_000 }).toBeTruthy();
@@ -1340,7 +1345,7 @@ test("a secret card, a call blocked on an asking agent and a program's card do n
       // The program's card closed at the first stop, nothing ran, and an answer says so.
       expect(await cardsOf()).toEqual([]);
       expect((await cardsOf(true)).filter((a) => a.tool === "Bash").map((a) => [a.id, a.state])).toEqual([[inner!.id, "cancelled"]]);
-      expect(existsSync(join(state, "code.txt"))).toBe(false);
+      expect(existsSync(join(ws(state), "code.txt"))).toBe(false);
     }
     expect((await call(`/api/sessions/${coder}/approvals/${inner!.id}`, { choice: "once" })).status).toBe(409);
   } finally {

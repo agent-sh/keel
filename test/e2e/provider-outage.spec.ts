@@ -2,6 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { sessionsFolder } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a model provider that cannot be reached makes a turn wait and go on
@@ -242,7 +243,7 @@ function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
     KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: STAND_IN, KEEL_DRAIN_MS: "300",
     TACIT_BIN: join(process.cwd(), "test/e2e/fixtures/tacit-standin.sh"), TACIT_STANDIN_STORE: join(state, "tacit-store"),
   };
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", state], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)], { env, stdio: ["ignore", "pipe", "pipe"] });
   return new Promise((resolve, reject) => {
     let out = "";
     const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
