@@ -1,29 +1,27 @@
 // How many messages of the owner's wait in a session's queue, for its row in
-// the list. The daemon tells every page of a queue that changes; a queue that
-// was there before the page opened is told only for the sessions the page
-// holds, so a row that may have one (its session is at work or stopped) asks
-// once, without the transcript: two requests at a time, a dozen at most per
-// connection (a list of hundreds asks no more), and again after a reconnect,
-// when a queue may have changed unseen. The count belongs in the state the
-// daemon tells of every session (`queued` beside `watch`): with it there this
-// file asks nothing.
+// the list. Counts come with /api/state at open and reconnect. A queue frame
+// or a full session read can be newer, but a copy from before the snapshot
+// must not hide what happened while the page was away, including a clear.
 import { useEffect, useSyncExternalStore } from "react";
 import { splitId } from "./fleet-ids.ts";
-import { api, onFeature, useStore } from "./store.ts";
+import { api, onFeature, queueCount, useStore } from "./store.ts";
 
+// Older daemons do not include counts. Keep the bounded reads for them only.
 const AT_ONCE = 2, CAP = 12;
 const read = new Map<string, number>();
 const waiting: string[] = [];
 const subs = new Set<() => void>();
-let running = 0, asked = 0;
+let running = 0, asked = 0, connection = 0;
 
 function next() {
   while (running < AT_ONCE && waiting.length && asked < CAP) {
     const id = waiting.shift()!;
     running++;
     asked++;
+    const at = connection;
+    const keep = (n: number) => { if (at === connection) read.set(id, n); };
     api<{ queue?: unknown[] }>(`/api/sessions/${id}?events=0`)
-      .then((r) => read.set(id, r.queue?.length ?? 0), () => read.set(id, 0)) // a session gone meanwhile has none
+      .then((r) => keep(r.queue?.length ?? 0), () => keep(0))
       .finally(() => { running--; subs.forEach((f) => f()); next(); });
   }
 }
@@ -33,12 +31,13 @@ function ask(id: string) {
   next();
 }
 // The page was cut off and is back: what it read once may be stale, and it may ask again.
-onFeature({ reconnect: () => { read.clear(); waiting.length = 0; asked = 0; subs.forEach((f) => f()); } });
+onFeature({ reconnect: () => { connection++; read.clear(); waiting.length = 0; asked = 0; subs.forEach((f) => f()); } });
 
 export function useQueued(id: string, maybe: boolean): number {
-  const live = useStore((s) => s.queues[id]?.queue.length);
+  const local = !splitId(id);
+  const heard = useStore((s) => queueCount(s, id));
+  const legacy = useStore((s) => s.queueSnapshot !== undefined && s.queueSnapshot.counts === undefined);
   const once = useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => read.get(id));
-  // Another machine's queue is its own daemon's to tell. (Asked again when what was read is dropped.)
-  useEffect(() => { if (maybe && live === undefined && once === undefined && !splitId(id)) ask(id); }, [id, maybe, live, once]);
-  return live ?? once ?? 0;
+  useEffect(() => { if (local && legacy && maybe && heard === undefined && once === undefined) ask(id); }, [id, local, legacy, maybe, heard, once]);
+  return heard ?? (legacy ? once : undefined) ?? 0;
 }

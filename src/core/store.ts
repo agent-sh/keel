@@ -312,6 +312,9 @@ export class Store {
       const none = (where: string) => !!this.db.query<{ n: number }, []>(`SELECT EXISTS(SELECT 1 FROM events) AND NOT EXISTS(${where}) AS n`).get()!.n;
       if (none("SELECT 1 FROM events WHERE parent IS NOT NULL")) this.db.exec(`UPDATE events SET parent = (SELECT e2.id FROM events e2 WHERE e2.session_id = events.session_id AND e2.seq < events.seq ORDER BY e2.seq DESC LIMIT 1)`);
       if (none("SELECT 1 FROM sessions WHERE head IS NOT NULL")) this.db.exec(`UPDATE sessions SET head = (SELECT id FROM events WHERE session_id = sessions.id ORDER BY seq DESC LIMIT 1)`);
+      // Replace the old session-only index without touching any queued prompts.
+      if (this.db.query("PRAGMA index_info(queue_session)").all().length === 1) this.db.exec("DROP INDEX queue_session");
+      this.db.exec("CREATE INDEX IF NOT EXISTS queue_session ON queue(session_id, steer DESC, pos)");
     }).immediate();
     // Images of a queued or steered prompt (JSON), so a queued screenshot is not lost.
     if (!this.columnExists("queue", "images")) this.db.exec("ALTER TABLE queue ADD COLUMN images TEXT");
@@ -1061,6 +1064,21 @@ export class Store {
       .query<any, [string]>("SELECT * FROM queue WHERE session_id = ? ORDER BY steer DESC, pos")
       .all(session_id)
       .map(queueRow);
+  }
+
+  // Count from the index, not the rows that carry message text and images.
+  // `sending` is the set of prompts Send now has taken but not yet removed.
+  queueCounts(sending: Iterable<string> = []): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const { session_id, n } of this.db.query<{ session_id: string; n: number }, []>("SELECT session_id, count(*) AS n FROM queue GROUP BY session_id").all()) out.set(session_id, n);
+    for (const id of sending) {
+      const of = this.db.query<{ session_id: string }, [string]>("SELECT session_id FROM queue WHERE id = ?").get(id)?.session_id;
+      if (!of) continue;
+      const n = (out.get(of) ?? 0) - 1;
+      if (n > 0) out.set(of, n);
+      else out.delete(of);
+    }
+    return out;
   }
 
   // `meta`: who sent it when not the owner (an origin, a kind), stored with the prompt when it leaves the queue.

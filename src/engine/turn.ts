@@ -416,8 +416,6 @@ export class Engine {
     store.migrate("CREATE TABLE IF NOT EXISTS queue_holds (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
     if (!store.columnExists("queue_holds", "by")) store.migrate("ALTER TABLE queue_holds ADD COLUMN by TEXT");
     this.held = new Map(store.db.query<{ session_id: string; by: string | null }, []>("SELECT session_id, by FROM queue_holds").all().map((r) => [r.session_id, r.by]));
-    // A session's rows are read at every step and counted for every agent listed.
-    store.migrate("CREATE INDEX IF NOT EXISTS queue_session ON queue(session_id)");
     store.migrate("CREATE TABLE IF NOT EXISTS queue_owed (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
     this.owed = new Set(store.db.query<{ session_id: string }, []>("SELECT session_id FROM queue_owed").all().map((r) => r.session_id));
     // The inputs a sender named with a key of its own: each is stored once (claim).
@@ -520,6 +518,11 @@ export class Engine {
   queued(id: string): QueueItem[] {
     const q = this.store.queue(id);
     return this.sending.size ? q.filter((x) => !this.sending.has(x.id)) : q;
+  }
+
+  // How many prompts wait in each session, as the owner sees them.
+  queuedCounts(): Map<string, number> {
+    return this.store.queueCounts(this.sending);
   }
 
   // A queued prompt leaves the queue and enters the history in one write: a

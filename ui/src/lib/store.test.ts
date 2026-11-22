@@ -549,3 +549,25 @@ test("a state says as of the loss it is from, and one told since the page is hea
   expect([staleOf("s", since, true, 1_500, 2_000), staleOf("old", since, true, 900, 2_000)]).toEqual([2_000, 1_000]);
   expect(staleOf("s", since, true, 2_500, 2_000)).toBeNull();
 });
+
+test("a queue count orders by daemon rev without changing the full queue", async () => {
+  const { queueCount, tellQueueCounts } = await import("./store.ts");
+  const { remoteId } = await import("./fleet-ids.ts");
+  const id = "unopened", peer = remoteId("peer", id);
+  const count = (key = id) => queueCount(getState(), key);
+  const queued = (key: string) => [{ id: "prompt", session_id: key, text: "later", steer: false, pos: 1, created: 1 }];
+  apply({ t: "queue", session_id: id, queue: queued(id), held: true, rev: 2_000 });
+  apply({ t: "queue", session_id: peer, queue: queued(peer), held: true, rev: 10 });
+  tellQueueCounts(undefined, 2_001); // older daemon: no authoritative counts
+  expect([count(), count("unknown")]).toEqual([1, undefined]);
+  // The restarted daemon's bus rev starts higher. The page missed a clear.
+  tellQueueCounts({}, 3_000);
+  expect([count(), count(peer)]).toEqual([0, 1]);
+  expect(getState().queues[id]).toMatchObject({ queue: queued(id), held: true });
+  apply({ t: "queue", session_id: id, queue: [], held: false, rev: 3_002 });
+  tellQueueCounts({ [id]: 1 }, 3_001); // a live zero wins over an older nonzero
+  expect(count()).toBe(0);
+  tellQueueCounts({ [id]: 2 }, 3_003);
+  tellQueueCounts({ [id]: 1 }, 3_001); // an older HTTP answer arrives last
+  expect(count()).toBe(2);
+});

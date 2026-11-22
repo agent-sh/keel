@@ -1,5 +1,5 @@
-import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { expect, test, type WebSocketRoute } from "./isolate.ts";
+import { ask, shoot } from "./shots.ts";
 import { connect, createServer, type Socket } from "node:net";
 
 // Feature: what the page asks the daemon for. A session at work costs no
@@ -261,5 +261,67 @@ test("what waits on the owner shows while the socket is still held", async ({ pa
     for (const id of ids) await request.delete(`/api/sessions/${id}`);
     for (const s of pipes) s.destroy();
     front.close();
+  }
+});
+
+// An unopened session has no cursor to replay. Its badge catches up from /api/state.
+test("unopened queue badges catch up on reconnect without replacing a newer frame", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "needs the scripted provider to hold turns on an approval");
+  const ids: string[] = [];
+  const mk = async (title: string) => {
+    const { session: { id } } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title } })).json();
+    ids.push(id);
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: ask("Run echo ready.", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo ready" } }])}`) } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals.length).toBe(1);
+    return id as string;
+  };
+  const enqueue = async (id: string) => {
+    const res = await request.post(`/api/sessions/${id}/messages`, { data: { text: "Wait behind the approval", mode: "queue" } });
+    await expect(res).toBeOK();
+    return (await res.json()).queued.id as string;
+  };
+  let socket: WebSocketRoute | undefined, cut = false, hold = false;
+  const taken = Promise.withResolvers<void>(), reply = Promise.withResolvers<void>();
+  try {
+    const removed = await mk("Queue cleared while away"), added = await mk("Queue grew after the snapshot");
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      if (cut) return void ws.close({ code: 4000 });
+      ws.connectToServer();
+      socket = ws;
+    });
+    await page.route("**/api/state", async (route) => {
+      if (!hold) return route.fallback();
+      hold = false;
+      const response = await route.fetch();
+      taken.resolve();
+      await reply.promise;
+      await route.fulfill({ response });
+    });
+    const first = page.waitForResponse((res) => new URL(res.url()).pathname === "/api/state");
+    await page.goto("/");
+    await first;
+    const row = (id: string) => page.locator(`[data-testid="session-row"][data-session="${id}"]`);
+    await expect(row(removed)).toHaveAttribute("data-watch", "need");
+    const badge = (id: string) => row(id).getByTestId("row-queued");
+    const prompt = await enqueue(removed);
+    await expect(badge(removed)).toHaveText("1"); // the page cached a live queue frame
+
+    cut = true;
+    await socket!.close({ code: 4000 });
+    await expect(await request.delete(`/api/sessions/${removed}/queue/${prompt}`)).toBeOK();
+    hold = true;
+    cut = false;
+    await taken.promise; // the reconnect snapshot was read with both queues empty
+    await enqueue(added);
+    await expect(badge(added)).toHaveText("1");
+    reply.resolve();
+    await expect(badge(removed)).toHaveCount(0); // that snapshot repairs the missed clear
+    await expect(badge(added)).toHaveText("1"); // but does not undo a newer frame
+    await shoot(page, "page-reads-02-queue-reconnect");
+  } finally {
+    reply.resolve();
+    for (const id of ids) await request.delete(`/api/sessions/${id}`);
   }
 });

@@ -4,8 +4,9 @@
 // status, a card opening or closing, an agent, a wait) marks it to be read
 // again; a state that really changed goes out as one frame.
 //
-// GET /api/state -> { states: { [session id]: SessionState }, rev }
-//   every session that is not archived, agents' sessions included.
+// GET /api/state -> { states: { [session id]: SessionState }, queued: { [session id]: number }, rev }
+//   Every session that is not archived, agents' sessions included. If `queued` is present,
+//   a missing count means zero. Counts and states reflect the same bus rev.
 // Frame: { t: "feature", name: "state", session_id, data: SessionState | null }
 //   (null: the session is gone).
 // GET /api/stuck?after=SECONDS&format=text -> { as_of, after, items }
@@ -29,6 +30,11 @@ const SWEEP_MS = 5000;
 // another). Its row is read at a glance, so a change from one step to the next
 // is told at most this often; a change of the word itself is told at once.
 const STEP_MS = 600;
+
+// Only queues of sessions in the snapshot. An empty map is still an answer.
+export function queuedFor(states: Record<string, object>, counts: Map<string, number>): Record<string, number> {
+  return Object.fromEntries([...counts].filter(([id]) => Object.hasOwn(states, id)));
+}
 
 export class StateBoard {
   // What the listeners were last told of each session, as sent. Only a telling writes it: a read
@@ -184,7 +190,11 @@ export const stateRoutes: RouteModule = (deps) => {
   g.__keelStateSweep = setInterval(() => b.sweep(), SWEEP_MS);
   g.__keelStateSweep.unref?.();
   return {
-    "/api/state": { GET: () => Response.json({ states: b.all(), rev: deps.bus.rev() }) },
+    "/api/state": { GET: () => {
+      const states = b.all();
+      const queued = queuedFor(states, deps.engine.queuedCounts());
+      return Response.json({ states, queued, rev: deps.bus.rev() });
+    } },
     "/api/stuck": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;

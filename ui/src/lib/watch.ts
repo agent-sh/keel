@@ -13,7 +13,7 @@ import { useAuto } from "./automation.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
 import { sendDrafts, unsentOf, useShelfVersion } from "./send-drafts.ts";
-import { actions, api, downSince, getState, lastLoss, newer, onFeature, readAtOpen, reportError, useStaleSince, useStore } from "./store.ts";
+import { actions, api, downSince, getState, lastLoss, newer, onFeature, readAtOpen, reportError, tellQueueCounts, useStaleSince, useStore } from "./store.ts";
 import { useReach } from "./reach.ts";
 import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
 
@@ -117,7 +117,7 @@ export function useToldSince(): string[] {
 }
 
 export async function loadStates() {
-  const r = await api<{ states: Record<string, SessionState>; rev?: number }>("/api/state");
+  const r = await api<{ states: Record<string, SessionState>; queued?: Record<string, number>; rev?: number }>("/api/state");
   toldNow("all");
   // The snapshot is every session this daemon tells of: one it leaves out (archived or
   // deleted while the page was away) is told no more, unless a newer frame says otherwise.
@@ -126,6 +126,7 @@ export async function loadStates() {
   for (const [id, st] of Object.entries(told)) if (splitId(id) || (!(id in r.states) && !newer(`${id}:state`, r.rev, true))) next[id] = st;
   for (const [id, st] of Object.entries(r.states)) next[id] = newer(`${id}:state`, r.rev, true) || !told[id] ? st : told[id]!;
   setTold(next);
+  tellQueueCounts(r.queued, r.rev);
 }
 // The states of another machine's sessions, as its daemon told them: with the relay's snapshot,
 // and with every list of that machine's sessions this daemon serves. `rev`: that daemon's bus rev

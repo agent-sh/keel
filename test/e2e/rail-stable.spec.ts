@@ -670,19 +670,19 @@ test("what changes elsewhere waits for the hand, is said at the list's foot, and
   const state = async (id: string) => ((await (await request.get("/api/state")).json()).states ?? {})[id]?.watch as string | undefined;
   try {
     const reader = await mk("Reading: design notes", dirs.mid), r1 = await mk("Mid task 1: tidy the logs", dirs.mid), r2 = await mk("Mid task 2: review the patch", dirs.mid), r3 = await mk("Mid task 3: update the docs", dirs.mid);
-    // Fourteen that wait on a timer (each may hold a queued message, so each row would ask for its queue).
+    // Fourteen that wait on a timer (each may hold a queued message).
     const waiting: string[] = [];
     for (let i = 1; i <= 14; i++) waiting.push(await mk(`Wait ${i}: check the deploy`, dirs.wait, script([{ name: "wait_for", input: { kind: "timer", seconds: 900, note: "check the deploy" } }])));
     await expect.poll(() => state(waiting.at(-1)!), { timeout: 30_000 }).toBe("wait");
 
-    // A page load asks for the queue of a dozen rows at most, however many could have one.
+    // A page load gets the counts with its states, without reading any waiting session.
     const bare: string[] = [];
-    page.on("request", (r) => { const u = new URL(r.url()); if (r.method() === "GET" && /^\/api\/sessions\/[0-9a-f-]{20,}$/.test(u.pathname) && u.searchParams.get("events") === "0") bare.push(u.pathname); });
+    page.on("request", (r) => {
+      const u = new URL(r.url());
+      if (r.method() === "GET" && u.searchParams.get("events") === "0" && waiting.some((id) => u.pathname === `/api/sessions/${id}`)) bare.push(u.pathname);
+    });
     await page.goto(`/s/${reader}`);
     await expect(row(waiting[0]!)).toHaveAttribute("data-watch", "wait");
-    await expect.poll(() => bare.length).toBe(12);
-    await page.waitForTimeout(1200);
-    expect(bare.length, "requests for a row's queue after the page loaded").toBe(12);
 
     // 1. One of the owner's folders, folded on another device while the pointer is in the list
     // ("By my folders"): no row moves under the hand. It folds when the hand has left.
@@ -762,6 +762,7 @@ test("what changes elsewhere waits for the hand, is said at the list's foot, and
     // The arrivals are above it now, in their folder, first in the list.
     expect(await list.locator('[data-testid="session-row"]').evaluateAll((els, id) => els.findIndex((e) => e.getAttribute("data-session") === id), came.at(-1)!)).toBe(0);
     await shoot(page, "rail-stable-12-settled-around-the-row");
+    expect(bare, "requests for a row's queue after the page loaded").toEqual([]);
     void r3;
   } finally {
     for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }

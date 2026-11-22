@@ -71,7 +71,9 @@ type State = {
   // How many models the daemon lists, known from the first read on.
   modelCount: number;
   providers: ProvidersReport | null;
-  queues: Record<string, { queue: QueueItem[]; held: boolean }>;
+  queues: Record<string, { queue: QueueItem[]; held: boolean; rev?: number }>;
+  // The local rail's counts, not the bodies read by the composer and timeline.
+  queueSnapshot?: { counts?: Record<string, number>; rev?: number };
   status: Record<string, TurnStatus>;
 };
 
@@ -322,7 +324,7 @@ export const actions = {
       sessions: newer(`${id}:session`, r.rev, true) ? { ...state.sessions, [id]: loc.session } : state.sessions,
       // An answer without a transcript adds nothing to one the page no longer holds (deleted meanwhile).
       events: loc.events || state.events[id] ? { ...state.events, [id]: mergeEvents(mergeEvents(state.events[id] ?? [], loc.events ?? []), early) } : state.events,
-      queues: newer(`${id}:queue`, r.rev, true) ? { ...state.queues, [id]: { queue: r.queue, held: r.held } } : state.queues,
+      queues: newer(`${id}:queue`, r.rev, true) ? { ...state.queues, [id]: { queue: r.queue, held: r.held, rev: r.rev } } : state.queues,
       status: r.status && newer(`${id}:status`, r.rev, true) ? { ...state.status, [id]: r.status } : state.status,
       drafts,
     });
@@ -595,6 +597,18 @@ export function newer(key: string, rev: number | undefined, tie = false): boolea
   revs.set(key, rev);
   return true;
 }
+export function tellQueueCounts(counts: Record<string, number> | undefined, rev: number | undefined) {
+  if (!newer("local:queue-counts", rev, true)) return;
+  set({ queueSnapshot: { counts, rev } });
+}
+
+export function queueCount(s: State, id: string): number | undefined {
+  const live = s.queues[id];
+  const snap = s.queueSnapshot;
+  // A snapshot includes the effects at its rev. Peers have their own revs.
+  if (snap?.counts && !splitId(id) && (live?.rev ?? 0) <= (snap.rev ?? 0)) return snap.counts[id] ?? 0;
+  return live?.queue.length;
+}
 const draftLog = new Map<string, { n: number; frames: Frame[] }>();
 
 // How a frame changes a session's streamed draft (undefined: it does not).
@@ -729,7 +743,7 @@ export function apply(f: Frame) {
     if (f.rev !== undefined && f.rev <= (revs.get(`${f.session_id}:draft`) ?? 0)) return;
     set({ drafts: { ...state.drafts, [f.session_id]: draftStep(state.drafts[f.session_id] ?? {}, f)! } });
   } else if (f.t === "queue") {
-    if (newer(`${f.session_id}:queue`, f.rev)) set({ queues: { ...state.queues, [f.session_id]: { queue: f.queue, held: f.held } } });
+    if (newer(`${f.session_id}:queue`, f.rev)) set({ queues: { ...state.queues, [f.session_id]: { queue: f.queue, held: f.held, rev: f.rev } } });
   } else if (f.t === "status") {
     if (!newer(`${f.session_id}:status`, f.rev)) return;
     const d = draftStep(state.drafts[f.session_id] ?? {}, f);
