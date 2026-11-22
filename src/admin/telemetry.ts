@@ -293,8 +293,12 @@ export class Telemetry {
                 h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail, cache_ms, exp_id, arm, toolset, speed, effort)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(...(row as any[])).lastInsertRowid);
-      // (The ledger's newest row is this one: the running total knows it as its own.)
-      if (this.totals && id > this.totals.top) this.totals.top = id;
+      // The ledger's newest row is this one, and the running total knows it as its own when it
+      // follows the last one it knew. A row between the two is another connection's, written while
+      // this one waited: the sums are read from the ledger again at the next check.
+      const t = this.totals;
+      if (t && id === t.top + 1) t.top = id;
+      else if (t && id > t.top) this.totals = undefined;
     });
     // (The row with the greatest time is the last: a request that began before the one kept does not replace it.)
     if (r.outcome === "ok" && p.purpose === "turn" && !((this.lastTurnCall.get(p.session)?.ts ?? -1) > p.t0)) {

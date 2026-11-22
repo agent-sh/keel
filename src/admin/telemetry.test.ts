@@ -224,6 +224,13 @@ test("the running spend total equals the summed ledger after random requests", (
   other.close();
   const after = same();
   expect(after.day.usd).toBeGreaterThan(5);
+  // Also one written while a request of this daemon's was under way: the daemon's own row comes after it,
+  // and being the ledger's newest does not hide the other.
+  const third = new Database(join(store.stateDir, "keel.db"));
+  third.run("INSERT INTO telemetry_calls (session_id, ts, model, cost, unpriced, outcome) VALUES (?, ?, 'p:main', 7, 0, 'ok')", [s.id, Date.now()]);
+  third.close();
+  send();
+  expect(same().day.usd).toBeGreaterThan(after.day.usd + 6.99);
   // The day turns: the day's sum starts again, the month's goes on.
   const tomorrow = new Date(day + 30 * 3_600_000);
   const next = t.spend(tomorrow), want = spendOf(store.db, limits, tomorrow);
