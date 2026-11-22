@@ -115,7 +115,12 @@ export class PluginProcess {
     // (its output closed, it exited), crashed() already said so, and that is
     // also what failed the call this start was waiting on.
     this.ready = this.boot().catch((e) => {
-      if (this.state === "starting") this.crashed(`start failed: ${(e as Error).message}`);
+      if (this.state !== "starting") return;
+      // A process that ended before it was written to (the write fails with
+      // EPIPE) ended as one whose output closed: the same words, whichever
+      // of the two is seen first.
+      const gone = (e as { code?: string }).code === "EPIPE" || /\bEPIPE\b/.test((e as Error).message);
+      this.crashed(gone ? "its output ended" : `start failed: ${(e as Error).message}`);
     });
   }
 
