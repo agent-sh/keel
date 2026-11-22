@@ -167,7 +167,9 @@ test("a session whose folder is gone is a state, not a failure", async ({ page, 
   const errorsBefore = (await (await request.get("/api/errors?resolved=0")).json()).errors.map((e: any) => `${e.id}:${e.count}`);
   const turns = (await (await request.get(`/api/sessions/${s.id}/checkpoints`)).json()).turns;
   const diffUrl = `/api/sessions/${s.id}/checkpoints/diff?turn=${turns[0].turn}`;
-  const diffBefore = await (await request.get(diffUrl)).json();
+  // (The turn's closing snapshot is recorded a moment after its end is visible: the diff is read once it is whole.)
+  let diffBefore: any;
+  await expect.poll(async () => !!(diffBefore = await (await request.get(diffUrl)).json()).incomplete, { timeout: 15_000 }).toBe(false);
   rmSync(ws, { recursive: true, force: true });
 
   expect((await request.get(`/api/sessions/${s.id}/permissions`)).status()).toBe(200);
