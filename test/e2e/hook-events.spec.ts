@@ -176,7 +176,9 @@ test("every hook event fires", async ({ page, request }) => {
   await fired("UserPromptExpansion");
   expect(given("UserPromptExpansion")[0]).toMatchObject({ expansion_type: "slash_command", command_name: "greet", command_args: "the crew", prompt: expect.stringContaining("Say hello to the crew.") });
 
-  // The owner compacts; the session starts again for the next prompt.
+  // The owner compacts; the session starts again for the next prompt. (The turn's end is stored
+  // before its hooks have run and the engine lets the session go: a compaction is refused until then.)
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}?events=0`)).json()).running, { timeout: 30_000 }).toBe(false);
   expect((await request.post(`/api/sessions/${id}/compact`, { data: { focus: "the greeting" } })).ok()).toBe(true);
   await fired("PreCompact");
   await fired("PostCompact");
