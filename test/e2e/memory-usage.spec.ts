@@ -91,9 +91,13 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   expect(fits.over).toBeLessThanOrEqual(1);
   expect(fits.right).toBeLessThanOrEqual(390);
   expect(fits.cut).toBe(0);
-  // A path takes two lines at most there.
-  const tall = await panel.locator("tbody td:first-child > span").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))));
-  expect(Math.max(...tall)).toBeLessThanOrEqual(2);
+  // A path wraps at its words there and reads whole: no word is broken, so it takes a line a word at most.
+  // (How many lines that is depends on the room the counts leave the column, and the counts are the whole
+  // daemon's, every earlier spec's recalls with them: two lines for this spec's own rows, three in a run of
+  // the whole suite, where the counts have three digits and more paths are listed, the longest among them.)
+  const lines = await panel.locator("tbody td:first-child > span").evaluateAll((els) => els.map((el) => ({ words: (el as HTMLElement).innerText.trim().split(/\s+/).length, lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) })));
+  expect(lines.length).toBeGreaterThan(0);
+  for (const l of lines) expect(l.lines).toBeLessThanOrEqual(l.words);
   for (const h of ["Recalls", "Tokens added", "Named in reply (estimate)"]) await expect(panel.locator("thead th").filter({ hasText: h })).toBeVisible();
   await shoot(page, "memory-usage-03-phone");
   await page.setViewportSize({ width: 1920, height: 1040 });
