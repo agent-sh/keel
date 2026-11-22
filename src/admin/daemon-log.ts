@@ -7,6 +7,7 @@
 // daemon's story across restarts (the log is kept per day and read back at a
 // start: logs.ts). The words are here; the callers say when.
 import type { AgentRecord } from "../automation/agents.ts";
+import { scrubbed } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
 import { logAt } from "./logs.ts";
 import { dur } from "./timeline-rows.ts";
@@ -24,12 +25,16 @@ export function sayAt(at: { session: string; turn?: string }, line: string, leve
 
 const LINE = 400;
 const clip = (s: string, n = LINE) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-const list = (names: string[], max = 8) => (names.length > max ? `${names.slice(0, max).join(", ")} and ${names.length - max} more` : names.join(", "));
-const title = (t: string | undefined) => { const s = (t ?? "").replace(/\s+/g, " ").trim(); return s ? `"${s.length > 48 ? `${s.slice(0, 47)}…` : s}"` : "an untitled session"; };
+// A value that came from outside (a title, a name, a reason, a failure's words, a path): scrubbed
+// whole, before it is cut or put in a line. A cut can leave half a key that no pattern knows, so
+// the scrub never runs on a cut text; the log's sinks scrub the finished line once more (logs.ts).
+const val = (v: unknown) => scrubbed(String(v ?? "")).replace(/\s+/g, " ").trim();
+const list = (names: string[], max = 8) => { const all = names.map(val); return all.length > max ? `${all.slice(0, max).join(", ")} and ${all.length - max} more` : all.join(", "); };
+const title = (t: string | undefined) => { const s = val(t); return s ? `"${s.length > 48 ? `${s.slice(0, 47)}…` : s}"` : "an untitled session"; };
 
 export const startLine = (o: { revision: string; pid: number; url: string; state: string; config: string; client?: boolean }) =>
   // Two folders' paths: its own, longer bound.
-  clip(`[daemon] started${o.client ? " as a client" : ""}: Keel ${o.revision}, pid ${o.pid}, at ${o.url}; state ${o.state}; config ${o.config}`, 1200);
+  clip(`[daemon] started${o.client ? " as a client" : ""}: Keel ${o.revision}, pid ${o.pid}, at ${val(o.url)}; state ${val(o.state)}; config ${val(o.config)}`, 1200);
 
 // `available`: providers with credentials and how many models each listed. `failed`: the ones whose listing failed.
 export function providersLine(p: { available: { id: string; models: number }[]; failed: string[]; unset: number }): string {
@@ -47,11 +52,11 @@ export function mcpLine(servers: { name: string; state: string }[]): string {
 }
 
 export const drainLine = (o: { restart: boolean; running: number; timeoutMs: number; reason?: string }) =>
-  clip(`[daemon] draining for a ${o.restart ? "restart" : "stop"}${o.reason ? ` (${o.reason})` : ""}: ${o.running ? `${o.running} turn${o.running === 1 ? "" : "s"} running get${o.running === 1 ? "s" : ""} up to ${dur(o.timeoutMs)}` : "no turn is running"}`);
+  clip(`[daemon] draining for a ${o.restart ? "restart" : "stop"}${o.reason ? ` (${val(o.reason)})` : ""}: ${o.running ? `${o.running} turn${o.running === 1 ? "" : "s"} running get${o.running === 1 ? "s" : ""} up to ${dur(o.timeoutMs)}` : "no turn is running"}`);
 export const backupLine = (o: { ok: boolean; ms: number; name?: string; error?: string }) =>
-  clip(o.ok ? `[daemon] backup before the restart made in ${dur(o.ms)}${o.name ? `: ${o.name}` : ""}` : `[daemon] backup before the restart failed after ${dur(o.ms)}: ${o.error ?? "no reason given"}; the restart is called off`);
+  clip(o.ok ? `[daemon] backup before the restart made in ${dur(o.ms)}${o.name ? `: ${val(o.name)}` : ""}` : `[daemon] backup before the restart failed after ${dur(o.ms)}: ${o.error ? val(o.error) : "no reason given"}; the restart is called off`);
 export const exitLine = (o: { restart: boolean; parked: number; upMs: number; reason?: string }) =>
-  clip(`[daemon] ${o.restart ? `restarting${o.reason ? ` (${o.reason})` : ""}` : "stopping cleanly"} after ${dur(o.upMs)} up${o.parked ? `: ${o.parked} turn${o.parked === 1 ? "" : "s"} parked for the next start` : ""}`);
+  clip(`[daemon] ${o.restart ? `restarting${o.reason ? ` (${val(o.reason)})` : ""}` : "stopping cleanly"} after ${dur(o.upMs)} up${o.parked ? `: ${o.parked} turn${o.parked === 1 ? "" : "s"} parked for the next start` : ""}`);
 
 // What a settings change changed, by section and key. A value is shown only
 // when it is a number, a boolean or null: a string may be a key, a header or
@@ -72,17 +77,21 @@ export function settingsChanges(before: Record<string, any>, after: Record<strin
 }
 export const settingsLine = (changes: string[]) => clip(`[daemon] settings changed: ${list(changes, 12)}`);
 
-export const stopLine = (by: string | undefined) => `[turn] stopped by ${!by || by === "owner" ? "the owner" : by === "hook" ? "a hook" : by}`;
+export const stopLine = (by: string | undefined) => clip(`[turn] stopped by ${!by || by === "owner" ? "the owner" : by === "hook" ? "a hook" : val(by)}`);
 
 const ENDED: Record<string, string> = { completed: "reported", failed: "failed", stopped: "was stopped", incomplete: "ended without finishing" };
 // An agent's start and end, on its parent's session. Null for a state that is neither.
-export function agentLine(a: Pick<AgentRecord, "title" | "type" | "status" | "created" | "ended" | "end_reason" | "background" | "machine">, was: string | undefined): string | null {
+// `since`: when this process began. A start is said of an agent made in this process, an end of
+// one that ended in it: a daemon that starts again hears of every agent it holds (the ones still
+// running, parked or long ended) and says neither of them twice.
+export function agentLine(a: Pick<AgentRecord, "title" | "type" | "status" | "created" | "ended" | "end_reason" | "background" | "machine">, was: string | undefined, since = 0): string | null {
   if (was === undefined && (a.status === "running" || a.status === "waiting")) {
-    return clip(`[agent] started: ${title(a.title)} (${a.type}${a.background ? ", in the background" : ""}${a.machine ? `, on ${a.machine}` : ""})`);
+    if (a.created < since) return null;
+    return clip(`[agent] started: ${title(a.title)} (${val(a.type)}${a.background ? ", in the background" : ""}${a.machine ? `, on ${val(a.machine)}` : ""})`);
   }
-  if (a.ended && was !== a.status && a.status !== "running" && a.status !== "waiting") {
+  if (a.ended && a.ended >= since && was !== a.status && a.status !== "running" && a.status !== "waiting") {
     const took = a.ended > a.created ? ` after ${dur(a.ended - a.created)}` : "";
-    return clip(`[agent] ended: ${title(a.title)} ${ENDED[a.status] ?? a.status}${took}${a.end_reason && a.status !== "completed" ? ` (${a.end_reason})` : ""}`);
+    return clip(`[agent] ended: ${title(a.title)} ${ENDED[a.status] ?? a.status}${took}${a.end_reason && a.status !== "completed" ? ` (${val(a.end_reason)})` : ""}`);
   }
   return null;
 }

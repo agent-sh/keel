@@ -1,6 +1,8 @@
 // Secret values kept out of what is written outside the Store: job sidecars and
 // logs, spill files, trace rows. The secrets feature registers the redactor
 // (src/server/routes/secrets.ts); without it text passes through unchanged.
+import { credentialName, detect, entropy } from "../safety/secrets.ts";
+
 export type Concealer = {
   // Text with every known secret value (and anything that looks like one) as its placeholder.
   text(s: string, sessionId: string | null): string;
@@ -21,17 +23,46 @@ export function concealDeep<T>(v: T, sessionId: string | null = null): T {
 export const secretPairs = (): [string, string][] => current?.pairs() ?? [];
 
 // Anything shaped like a credential, whoever's it is and whether or not Keel
-// knows it: a bearer token, a key in a query, and the key forms of the common
-// providers and hosts. Wider than the vault's rules on purpose (those issue a
-// placeholder that can be sent again, so they must be exact): this is for
-// text that is only read, where a string that merely looks like a key costs
-// nothing to hide.
-const KEY_SHAPES = /\b(?:(?:sk|xai|AIza)[-_A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/g;
+// knows it. This runs on text that is read (a failure's line, a sample, a
+// notice to a model, the log), so it must hide a key and leave ordinary text
+// alone: a file name, a hash, an id, `key=value` in a sentence. Two passes:
+// the vault's own detection (exact token formats, a password in a URL, an
+// Authorization header, a private key, a random value assigned to a
+// credential's name: src/safety/secrets.ts), then the common prefixes in a
+// looser length, for a key the exact formats miss (a cut one, a new format).
+// A prefix counts only in its real form after a word boundary (`sk-`, not any
+// word that starts "sk"), and a `key=` only as a name of its own with a value
+// that mixes letters and digits.
+const KEY_SHAPES = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[abposr]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}\b|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/g;
+// `sk-`, `xai-` and `AIza` also open ordinary names (sk-learn-notebooks-2026): a key has a
+// run of ten or more letters and digits mixed between its hyphens, a name has words and a number.
+const PREFIXED = /\b(?:sk-|xai-|AIza)[A-Za-z0-9_-]{16,}/g;
+const mixedRun = (m: string) => m.split("-").some((seg) => seg.length >= 10 && /[A-Za-z]/.test(seg) && /\d/.test(seg));
+const BEARER = /(\bbearer\s+)(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{12,}/gi;
+const NAMED = /(?<![\w-])((?:(?:x-)?api[_-]?key|key|(?:access|auth|id|refresh)[_-]?token|token|secret|password|passwd|sig|signature)=)(?=[^&\s"']*[A-Za-z])(?=[^&\s"']*\d)[^&\s"']{8,}/gi;
+// A random value given to a credential's name, whatever follows it (the vault's rule wants the
+// value to end at a space or a quote, since its placeholder is sent again; a failure's line
+// goes on with a colon or a comma: `SECRET_KEY = abc123...: rejected`). The name decides, as there.
+const ASSIGNED = /(?<![\w.-])([A-Za-z_][\w.-]*)(["']?[ \t]*(?:=>|:=|=|:)[ \t]*["']?)([A-Za-z0-9_\-+/.~!@#%^*]{12,200}={0,3})/g;
+const randomValue = (v: string) => /[A-Za-z]/.test(v) && /\d/.test(v) && entropy(v) >= 3.5 && !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(v);
+function assigned(text: string): string {
+  const re = new RegExp(ASSIGNED.source, "g");
+  let out = "", from = 0;
+  for (let m: RegExpExecArray | null; (m = re.exec(text));) {
+    // A candidate that is not one gives its text back: the next may start inside it.
+    if (!credentialName(m[1]!) || !randomValue(m[3]!)) { re.lastIndex = m.index + 1; continue; }
+    out += text.slice(from, m.index) + m[1] + m[2] + HIDDEN;
+    from = m.index + m[0].length;
+  }
+  return out + text.slice(from);
+}
+const HIDDEN = "<redacted>";
 export function keyShaped(text: string): string {
-  return text
-    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1<redacted>")
-    .replace(/((?:api[_-]?)?key=)[^&\s"]+/gi, "$1<redacted>")
-    .replace(KEY_SHAPES, "<redacted>");
+  if (!text) return text;
+  let out = text;
+  const hits = detect(text);
+  for (let i = hits.length - 1; i >= 0; i--) out = out.slice(0, hits[i]!.start) + HIDDEN + out.slice(hits[i]!.end);
+  return assigned(out).replace(BEARER, `$1${HIDDEN}`).replace(NAMED, `$1${HIDDEN}`).replace(KEY_SHAPES, HIDDEN).replace(PREFIXED, (m) => (mixedRun(m) ? HIDDEN : m));
 }
 // The one scrub of what is stored about a failure (an error row, a span's
 // error, a failure's sample, a tool's failure line), applied where it is

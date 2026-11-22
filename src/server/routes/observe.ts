@@ -163,7 +163,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   bus.on((f) => {
     if (f.t !== "feature" || f.name !== "automation" || f.data?.kind !== "agent" || !f.data.data?.id) return;
     const a = f.data.data;
-    const line = agentLine(a, agentState.get(a.id));
+    const line = agentLine(a, agentState.get(a.id), Math.floor(performance.timeOrigin));
     // Kept after its end too (a later frame of an ended agent says nothing again); the oldest go past a bound.
     agentState.delete(a.id);
     agentState.set(a.id, a.status);

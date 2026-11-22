@@ -2,7 +2,8 @@
 // session and turn of the code that wrote it, kept in memory (the last LINES)
 // for the live view and appended to one file per day under the state folder
 // (the last DAYS kept), where an agent can read it. Keys and tokens are
-// redacted before a line is kept anywhere.
+// redacted before a line goes anywhere: the console prints the same scrubbed
+// text the file gets (standard output is the journal under a service unit).
 //
 // The files are the log; the memory is its newest end. A start reads that end
 // back from the files, and a question about a time the memory no longer holds
@@ -12,7 +13,8 @@ import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync,
 import { join } from "node:path";
 import { localDay, zoned, type Zoned } from "../core/clock.ts";
 import { errorScope } from "../core/errors.ts";
-import { scrub } from "../providers/http.ts";
+import { scrubbed } from "../core/conceal.ts";
+import { runMode } from "../core/runmode.ts";
 
 // `session`, `turn`: where the code that wrote the line ran (its turn_start event), when it ran in one.
 export type LogLine = { ts: number; level: "debug" | "info" | "warn" | "error"; text: string; session?: string; turn?: string };
@@ -30,6 +32,10 @@ const fmt = (a: unknown[]) => a.map((x) => (typeof x === "string" ? x : x instan
 function safeJson(x: unknown) {
   try { return JSON.stringify(x); } catch { return String(x); }
 }
+
+// A console call's arguments as the one line every sink gets: the secrets Keel knows as their
+// placeholders, anything else shaped like a key hidden, bounded.
+export const logText = (a: unknown[]): string => scrubbed(fmt(a)).slice(0, 20_000);
 
 const dayOf = (ts: number) => new Date(ts).toISOString().slice(0, 10);
 const fileOf = (dir: string, day: string) => join(dir, `keel-${day}.log`);
@@ -73,10 +79,16 @@ export function installLogs(stateDir: string) {
     const orig = (console as any)[m].bind(console);
     st.orig[m] = orig;
     (console as any)[m] = (...a: unknown[]) => {
-      orig(...a);
+      // A daemon a command runs inside its own process: the console is the command's output, not a log.
+      if (runMode.client) return orig(...a);
+      // One text for both sinks: what goes to standard output (the journal, under a service unit)
+      // is what the file gets, scrubbed before either sees it.
+      let text: string;
+      try { text = logText(a); } catch { text = "(a log line that could not be formatted)"; }
+      orig(text);
       try {
         const at = errorScope.getStore();
-        keep({ ts: Date.now(), level, text: scrub(fmt(a)).slice(0, 20_000), ...(at?.session ? { session: at.session, ...(at.turn ? { turn: at.turn } : {}) } : {}) });
+        keep({ ts: Date.now(), level, text, ...(at?.session ? { session: at.session, ...(at.turn ? { turn: at.turn } : {}) } : {}) });
       } catch {}
     };
   }
