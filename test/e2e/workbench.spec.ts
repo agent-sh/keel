@@ -310,7 +310,8 @@ test("the side panel sits beside the conversation when the pane has room, else l
     await page.keyboard.press("Control+Shift+E");
     await expect(side).toHaveAttribute("data-mode", "beside");
     await expect(station.locator(".k-session")).not.toHaveAttribute("inert");
-    expect(await measure()).toMatchObject({ strip: 0, page: 0 });
+    // (The panel's width goes into the row of panes a frame after the panel says it is beside: measured until the row stands.)
+    await expect.poll(async () => { const m = await measure(); return { strip: m.strip, page: m.page }; }).toEqual({ strip: 0, page: 0 });
     await close.focus();
     await page.keyboard.press("Escape");
     await expect(side).toBeVisible();
