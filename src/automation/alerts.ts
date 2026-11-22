@@ -448,6 +448,8 @@ function file(x: Filing): Alert | undefined {
   // hides or removes an alert of this one's.
   const origin = x.far ? " AND json_extract(data, '$.far.machine') = ?" : " AND far_id IS NULL";
   const theirs = x.far ? [x.far.machine] : [];
+  // One commit for the row it replaces, its number and the row itself (they were three); what is told of it goes out after.
+  const made = store.db.transaction(() => {
   let asked: number | undefined;
   if (key && decision) {
     asked = store.db.query<{ t: number | null }, string[]>(`SELECT MIN(ts) AS t FROM alerts WHERE kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
@@ -507,6 +509,10 @@ function file(x: Filing): Alert | undefined {
   });
   store.db.query(`INSERT INTO alerts (id, ts, kind, ${col}, title, body, read, data, channels, delivery, rev, kept, far_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`)
     .run(a.id, a.ts, kind, sid, a.title, a.body, a.read ? 1 : 0, stored ? JSON.stringify(stored) : null, JSON.stringify(sendTo), delivery ? JSON.stringify(delivery) : null, a.rev, x.far ? farKey(x.far.machine, x.far.id) : null);
+    return { a, sendTo, flags };
+  })();
+  if (!made) return undefined;
+  const { a, sendTo, flags } = made;
   // An ask is open from the moment it is raised: its card waits.
   if (ASK_KINDS.includes(kind) && waits(a)) a.open = true;
   emit("alert", a);

@@ -1105,7 +1105,9 @@ export class Engine {
   // captured as this turn's (src/core/errors.ts).
   private openTurn(id: string, data: unknown) {
     this.cancelContinue(id);
-    const ev = this.append(id, "turn_start", data);
+    return this.opened(id, this.append(id, "turn_start", data));
+  }
+  private opened(id: string, ev: StoredEvent) {
     this.turns.set(id, ev.id);
     const scope = errorScope.getStore();
     if (scope?.session === id) scope.turn = ev.id;
@@ -1751,10 +1753,14 @@ export class Engine {
       readMaterial: (items, question, callId) => this.readMaterial(id, items, question, signal, callId),
       readBudget: () => readBudget(this.readerHost(id)) };
 
-    this.setPhase(id, "working");
     const t0 = Date.now();
     let usage: Usage = emptyUsage();
-    this.openTurn(id, { model: session.model, effort: st.effort });
+    // One commit: the session works from its turn's first event on (the two frames go out after it, in their order).
+    this.cancelContinue(id);
+    const began = this.store.atomic(id, () => ({ s: this.store.updateSession(id, { phase: "working" }), ev: this.store.append(id, "turn_start", { model: session.model, effort: st.effort }) }));
+    this.bus.emit({ t: "session", session: began.s });
+    this.emitEvent(began.ev);
+    this.opened(id, began.ev);
     let reason = "end_turn";
     let cuts = 0;
     let fellBack = false;
@@ -2506,7 +2512,9 @@ export class Engine {
     const kept = this.ratioKept.get(model);
     if (!now && kept !== undefined && Math.abs(ratio - kept) < kept / 100) return;
     this.ratioKept.set(model, ratio);
-    this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [model, ratio, Date.now()]);
+    // (Read at a start only: written with the other side rows, src/core/side.ts.)
+    const at = Date.now();
+    this.store.side.later("a model's bytes a token", () => void this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [model, ratio, at]));
   }
 
   // The owner's words kept verbatim through a compaction: OWNER_WORDS_BYTES,
