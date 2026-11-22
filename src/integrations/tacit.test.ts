@@ -747,17 +747,33 @@ test("the answers of one step's reads each get a block of their own; a line long
   st.set("len", 6000);
   st.set("mode", "lagtool");
   const from = w.asked.filter((r) => r.session === s).length;
+  const calls = () => w.tacit.stats().hooks["pre-tool"];
+  const ended = () => Object.values(calls().outcomes).reduce((a, b) => a + b, 0);
+  const [endedBefore, lateBefore] = [ended(), calls().late];
   await w.say(s, "reads tools=r1+r2+r3");
   st.set("mode", "ok");
+  // The store's three answers are in. (The request after the reads waits for each as long as a tool call is
+  // waited for and goes on; three store processes at once on a loaded machine can take longer than that, and
+  // the last answer then comes after the turn: it is waited for here, not assumed to have come.)
+  for (const t0 = performance.now(); ended() < endedBefore + 3 && performance.now() - t0 < 30_000;) await Bun.sleep(10);
+  expect(ended()).toBe(endedBefore + 3);
   const next = w.asked.filter((r) => r.session === s)[from + 1]!.messages;
+  const rules = ["rule-kw1", "rule-kw2", "rule-kw3"];
   expect(w.store.events(s).filter((e) => e.kind === "tool_result").some((e) => JSON.stringify(e.data.results).includes("rule-kw"))).toBe(false);
-  expect(w.names(next)).toEqual(expect.arrayContaining(["rule-kw1", "rule-kw2", "rule-kw3"]));
-  expect(w.tacit.owed(s)).toBe(0);
+  // Answered within the wait, all three are in the request after the reads. One that came later is owed:
+  // it is in that request or waits for the next one, never lost.
+  if (calls().late === lateBefore) {
+    expect(w.names(next)).toEqual(expect.arrayContaining(rules));
+    expect(w.tacit.owed(s)).toBe(0);
+  } else if (!rules.every((r) => w.names(next).includes(r))) expect(w.tacit.owed(s)).toBeGreaterThan(0);
   // A fact of 25,000 characters: its start in the prompt's block, the rest with the next requests, all of it.
   st.set("len", 25000);
   await w.say(s, "long kw9");
-  for (let i = 0; i < 4 && w.tacit.owed(s); i++) await w.say(s, "go on");
+  for (let i = 0; i < 6 && w.tacit.owed(s); i++) await w.say(s, "go on");
   expect(w.tacit.owed(s)).toBe(0);
+  // Each rule reached the model, once.
+  expect(w.names(w.last(s))).toEqual(expect.arrayContaining(rules));
+  for (const r of rules) expect(w.copies(s, r)).toBe(1);
   const xs = (w.last(s).match(/x{100,}/g) ?? []).reduce((n, m) => n + m.length, 0);
   expect(xs).toBe(3 * 6000 + 25000);
 }), 60_000);
