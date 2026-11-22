@@ -15,7 +15,14 @@
 //   - with no word within `ACK_WAIT_MS` the shell is detached (its stream is
 //     closed, so a live app attaches again) and the daemon shows the alert
 //     itself. A word that comes late takes the daemon's own notification down
-//     again, so one alert is never left on screen twice.
+//     again, so one alert is never left on screen twice;
+//   - one shell takes the alerts: the one attached longest that acknowledges.
+//     Any other is handed none and is told so (`takes` in its hello, and a
+//     `takes` event when it becomes the one), so an app that came second can
+//     say that another program shows the notifications. The daemon cannot
+//     tell the owner's app from another program of the same account that
+//     speaks as one: whichever attached first takes them, and the other
+//     knows.
 export type ShellInfo = { engine: string; version: string; since: number; acks: boolean };
 type Shell = ShellInfo & { stream: string; put(event: string, data: unknown): boolean; close(): void };
 
@@ -30,30 +37,44 @@ const waiting = (g.__keelShellAcks ??= new Map<number, Waiting>());
 export const shellAttached = () => shells.size > 0;
 // One that will show a notification and say so.
 export const shellShows = () => [...shells.values()].some((s) => s.acks);
-export const shellList = (): ShellInfo[] => [...shells.values()].map(({ engine, version, since, acks }) => ({ engine, version, since, acks }));
+// The one that takes the alerts: attached longest among those that acknowledge.
+const taker = () => [...shells].find(([, s]) => s.acks);
+export const shellTakes = (stream: string) => taker()?.[1].stream === stream;
+export const shellList = (): (ShellInfo & { takes: boolean })[] => { const t = taker()?.[0]; return [...shells].map(([id, { engine, version, since, acks }]) => ({ engine, version, since, acks, takes: id === t })); };
+// After a shell left: the one that takes the alerts from now on is told, when it is another.
+function left(was: number | undefined) {
+  const now = taker();
+  if (now && now[0] !== was && !now[1].put("takes", { takes: true })) { shells.delete(now[0]); left(now[0]); }
+}
 
 // `stream`: a word of this stream alone (its hello carries it), which its acknowledgements
 // must name. Returns what detaches it.
 export function attachShell(info: Omit<ShellInfo, "since">, put: Shell["put"], close: () => void = () => {}, stream: string = crypto.randomUUID()): () => void {
   const id = (g.__keelShellSeq = (g.__keelShellSeq ?? 0) + 1);
   shells.set(id, { ...info, since: Date.now(), stream, put, close });
-  return () => void shells.delete(id);
+  return () => { const was = taker()?.[0]; if (shells.delete(id) && was === id) left(id); };
 }
 
 function drop(id: number) {
   const s = shells.get(id);
+  const was = taker()?.[0];
   shells.delete(id);
   try { s?.close(); } catch {}
+  if (was === id) left(id);
 }
 
-// Hands a notification to the app: true once a shell said it showed it.
-// False when none did in time (the caller then shows it itself). `late` runs
-// if the word comes after that.
+// Hands a notification to the app: true once the shell that takes the alerts said it showed
+// it. False when it did not in time (the caller then shows it itself, and that shell is
+// detached: the next attached takes the alerts from the next one on). `late` runs if the word
+// comes after that.
 export async function handShell(data: Record<string, unknown>, opts: { wait?: number; late?: () => void } = {}): Promise<boolean> {
-  for (const [id, s] of [...shells]) {
-    if (!s.acks) continue;
+  for (;;) {
+    const first = taker();
+    if (!first) return false;
+    const [id, s] = first;
     const ack = (g.__keelShellAckSeq = (g.__keelShellAckSeq ?? 0) + 1);
     const shown = new Promise<boolean>((done) => waiting.set(ack, { stream: s.stream, done, late: opts.late }));
+    // A stream that is gone was no shell any more: the next one is the first.
     if (!s.put("notify", { ...data, ack })) { waiting.delete(ack); drop(id); continue; }
     const timer = setTimeout(() => { const w = waiting.get(ack); if (w) { w.timedOut = true; w.done(false); } }, opts.wait ?? ACK_WAIT_MS);
     const ok = await shown;
@@ -62,8 +83,8 @@ export async function handShell(data: Record<string, unknown>, opts: { wait?: nu
     // It stays in `waiting` for a while, so a late word is known for what it is.
     setTimeout(() => waiting.delete(ack), 60_000).unref?.();
     drop(id);
+    return false;
   }
-  return false;
 }
 
 // The app's word that it showed the notification numbered `ack`, from the stream it was handed to.

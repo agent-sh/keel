@@ -10,7 +10,9 @@
 //      is attached while it is open. ?engine= and ?version= name it; ?acks=1
 //      says it shows notifications and posts each one's number back. Only
 //      such a shell is handed alerts (src/server/shell.ts).
-//        hello    { pid, started_ms, needs, snooze_until, stream }   stream: a word of this stream alone
+//        hello    { pid, started_ms, needs, snooze_until, stream, takes }   stream: a word of this stream alone;
+//                 takes: this shell is the one handed the alerts (the one attached longest that acknowledges)
+//        takes    { takes: true }        the shell before this one left: the alerts are this one's now
 //        needs    { n }                  what waits on the owner, counted as the page's title counts it
 //        notify   { key, alert, title, body, urgency, kind, ack }   show this (one per key, the next replaces it)
 //        withdraw { key }                take the key's notification down
@@ -22,7 +24,7 @@ import * as snooze from "../../automation/snooze.ts";
 import { isLocal } from "../../safety/presence.ts";
 import type { Frame } from "../../core/types.ts";
 import type { RouteModule } from "../app.ts";
-import { ackShell, attachShell, shellAttached, shellList, tellShells } from "../shell.ts";
+import { ackShell, attachShell, shellAttached, shellList, shellTakes, tellShells } from "../shell.ts";
 import { board } from "./state.ts";
 
 const json = (v: unknown, status = 200) => Response.json(v, { status });
@@ -84,8 +86,8 @@ export const shellRoutes: RouteModule = (deps) => {
             fill();
             told = count();
             const word = crypto.randomUUID();
-            put("hello", { pid: process.pid, started_ms: Math.round(Date.now() - process.uptime() * 1000), needs: told, snooze_until: snooze.global()?.until_ms ?? null, stream: word });
             detach = attachShell({ engine: (q.get("engine") ?? "").slice(0, 40), version: (q.get("version") ?? "").slice(0, 40), acks: q.get("acks") === "1" }, put, () => { clearInterval(ping); try { c.close(); } catch {} }, word);
+            put("hello", { pid: process.pid, started_ms: Math.round(Date.now() - process.uptime() * 1000), needs: told, snooze_until: snooze.global()?.until_ms ?? null, stream: word, takes: shellTakes(word) });
             // Under the server's idle timeout, and how a shell that died is noticed.
             ping = setInterval(() => { try { c.enqueue(enc.encode(": ping\n\n")); } catch { stop(); } }, 5000);
             req.signal.addEventListener("abort", () => { stop(); try { c.close(); } catch {} }, { once: true });

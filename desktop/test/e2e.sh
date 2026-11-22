@@ -423,6 +423,19 @@ shot 13-refused-address-dark
 $A key --id "$WS" Return > /dev/null 2>&1; sleep 3
 check "Return starts nothing there" "[ ! -e '$D/stub-ran' ] && [ \"\$(logged start)\" = \"$starts\" ]"
 
+# --- 13. one shell takes the alerts: an app that attached second is told, and takes them when the first leaves
+(eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+rm -f "$D/dev/state/daemon.lock"
+wait_for 20 "! listening $PORT" # the stranger of section 11 lets go of the port
+daemon_up
+(curl -sN -m 120 "$URL/api/shell/events?acks=1&engine=another" > "$D/first-shell.out" 2>&1 & echo $! > "$D/host-first.pid")
+wait_for 10 "grep -q 'event: hello' '$D/first-shell.out'"
+check "the shell that attached first is the one handed the alerts" "grep -A1 'event: hello' '$D/first-shell.out' | grep -q '\"takes\":true'"
+launch
+check "the app, attached second, is told another takes the alerts, and its menu says so" "wait_for 30 \"last takes | grep -q '\\\"takes\\\":false'\" && wait_for 10 \"menu | grep -q 'Another Keel app shows the notifications'\""
+kill "$(cat "$D/host-first.pid")" 2> /dev/null
+check "when the first leaves, the app is told the alerts are its own" "wait_for 20 \"last takes | grep -q '\\\"takes\\\":true'\" && wait_for 10 \"! menu | grep -q 'Another Keel app shows the notifications'\""
+
 # --- 14. the other keel-desktop was never reached: one launch of its own, no window raised, not quit
 check "nothing the check launched reached the other keel-desktop" "[ \"\$(grep -c '\"what\":\"command\"' '$D/owners-app.jsonl')\" = 1 ] && ! grep -q '\"what\":\"present\"\|\"what\":\"quit\"\|\"what\":\"pick\"' '$D/owners-app.jsonl' && [ -n \"\$(owners_pid)\" ]"
 (unset KEEL_DESKTOP_INSTANCE; KEEL_DESKTOP_DIR="$D/owners-app" "$SHELL_BIN" --quit > /dev/null 2>&1)

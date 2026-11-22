@@ -58,6 +58,8 @@ pub enum Event {
     Notify { key: String, alert: String, title: String, body: String, urgent: bool, ack: Option<u64>, stream: String },
     Withdraw(String),
     Snooze(Option<i64>),
+    /// Whether this app is the one the daemon hands the alerts to (another shell attached first takes them).
+    Takes(bool),
 }
 
 /// Where the daemon is and where it keeps its state.
@@ -269,6 +271,7 @@ fn told(event: &str, data: &str, stream: &str) -> Option<Event> {
         "notify" => Event::Notify { key: s("key"), alert: s("alert"), title: s("title"), body: s("body"), urgent: v.get("urgency").and_then(Value::as_u64) == Some(2), ack: v.get("ack").and_then(Value::as_u64), stream: stream.to_string() },
         "withdraw" => Event::Withdraw(s("key")),
         "snooze" => Event::Snooze(v.get("until_ms").and_then(Value::as_i64)),
+        "takes" => Event::Takes(v.get("takes")?.as_bool()?),
         _ => return None,
     })
 }
@@ -308,6 +311,8 @@ pub fn watch(w: Where, engine: &'static str, tell: impl Fn(Event) + Send + 'stat
                         if let Some(e) = told("snooze", &serde_json::json!({ "until_ms": v.get("snooze_until") }).to_string(), &stream) {
                             tell(e);
                         }
+                        // (A daemon that does not say hands the alerts to every app that acknowledges.)
+                        tell(Event::Takes(v.get("takes").and_then(Value::as_bool).unwrap_or(true)));
                     }
                     if let Some(e) = told(event, data, &stream) {
                         tell(e);
@@ -578,6 +583,8 @@ mod tests {
         }
         assert!(matches!(told("snooze", r#"{"until_ms":null}"#, ""), Some(Event::Snooze(None))));
         assert!(matches!(told("snooze", r#"{"until_ms":99}"#, ""), Some(Event::Snooze(Some(99)))));
+        assert!(matches!(told("takes", r#"{"takes":true}"#, ""), Some(Event::Takes(true))));
+        assert!(told("takes", "{}", "").is_none());
         assert!(told("unknown", "{}", "").is_none());
         assert!(told("needs", "garbage", "").is_none());
     }

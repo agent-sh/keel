@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ackShell, attachShell, handShell, shellAttached, shellList, shellShows, tellShells } from "./shell.ts";
+import { ackShell, attachShell, handShell, shellAttached, shellList, shellShows, shellTakes, tellShells } from "./shell.ts";
 
 // An app whose stream's word is its name: it acknowledges with that word.
 const app = (got: string[], name: string, shown = false) =>
@@ -38,13 +38,41 @@ test("an app that does not say it showed the alert loses it, and is detached", a
   expect(got).toEqual(["stopped notify a", "stopped closed"]);
   expect(shellAttached()).toBe(false);
 
-  // The next app in line gets it when the first says nothing.
+  // The next app in line does not get that alert (the daemon shows it); it takes the alerts from the next one on, and is told.
   app(got, "stopped");
   const detach = app(got, "live", true);
-  expect(await handShell({ alert: "b" }, { wait: 30 })).toBe(true);
-  expect(got.slice(2)).toEqual(["stopped notify b", "stopped closed", "live notify b"]);
-  expect(shellList().map((s) => s.version)).toEqual(["live"]);
+  expect(await handShell({ alert: "b" }, { wait: 30 })).toBe(false);
+  expect(got.slice(2)).toEqual(["stopped notify b", "stopped closed", "live takes undefined"]);
+  expect(shellList().map((s) => [s.version, s.takes])).toEqual([["live", true]]);
+  expect(await handShell({ alert: "c" }, { wait: 30 })).toBe(true);
+  expect(got.at(-1)).toBe("live notify c");
   detach();
+});
+
+// The review's case: a second program of the same account attaches as a shell that acknowledges
+// and answers with its own word. One shell takes the alerts, the one attached first; the other
+// is handed none, and knows it.
+test("one shell takes the alerts, and another is told it does not", async () => {
+  const got: string[] = [];
+  const detachApp = app(got, "the-app", true);
+  const detachOther = app(got, "another", true);
+  expect([shellTakes("the-app"), shellTakes("another"), shellTakes("nobody")]).toEqual([true, false, false]);
+  expect(shellList().map((s) => [s.version, s.takes])).toEqual([["the-app", true], ["another", false]]);
+  for (const alert of ["a", "b", "c"]) expect(await handShell({ alert }, { wait: 200 })).toBe(true);
+  expect(got).toEqual(["the-app notify a", "the-app notify b", "the-app notify c"]);
+  // The first leaves: the other is told the alerts are its own now, and gets the next.
+  detachApp();
+  expect(got.at(-1)).toBe("another takes undefined");
+  expect(shellTakes("another")).toBe(true);
+  expect(await handShell({ alert: "d" }, { wait: 200 })).toBe(true);
+  expect(got.at(-1)).toBe("another notify d");
+  detachOther();
+  // A reader that does not acknowledge never takes them, however long it has been attached.
+  const detachReader = attachShell({ engine: "", version: "reader", acks: false }, () => true, () => {}, "reader");
+  const detachLate = app(got, "late", true);
+  expect([shellTakes("reader"), shellTakes("late")]).toEqual([false, true]);
+  detachReader();
+  detachLate();
 });
 
 // A reader of the stream that is not the app (it never said it acknowledges) holds no alert at all.

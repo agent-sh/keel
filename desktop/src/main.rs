@@ -93,6 +93,8 @@ struct Shell {
     note: RefCell<String>,
     /// The daemon's address is not this machine's: the app does not speak to it and starts nothing there.
     refused: Cell<bool>,
+    /// Another program attached to the daemon as its app first: the daemon hands the alerts to it.
+    elsewhere: Cell<bool>,
     /// The desktop's activation token of the request being served: it lets the window take the focus.
     token: RefCell<Option<String>>,
     devtools: bool,
@@ -123,7 +125,7 @@ impl Shell {
 
     fn show_tray(&self) {
         if let Some(t) = self.tray.borrow().as_ref() {
-            t.show(Shown { needs: self.needs.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get() });
+            t.show(Shown { needs: self.needs.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get() });
             self.note_done("tray", serde_json::json!({ "needs": self.needs.get(), "paused": self.paused(), "headline": tray::headline(&t.shown()) }));
         }
     }
@@ -372,6 +374,12 @@ impl Shell {
                 }
                 self.note_done("withdraw", serde_json::json!({ "key": key }));
             }
+            Event::Takes(takes) => {
+                if self.elsewhere.replace(!takes) == takes {
+                    self.note_done("takes", serde_json::json!({ "takes": takes }));
+                    self.show_tray();
+                }
+            }
             Event::Snooze(until) => {
                 self.paused_until.set(until);
                 if let Some(ms) = until.map(|t| t - now_ms()).filter(|ms| *ms > 0) {
@@ -539,6 +547,7 @@ fn main() -> glib::ExitCode {
             // Known before the first window: an address the app does not speak to says so in its first page.
             note: RefCell::new(daemon::refusal(&daemon::find(&place).url).unwrap_or_default()),
             refused: Cell::new(daemon::refusal(&daemon::find(&place).url).is_some()),
+            elsewhere: Cell::new(false),
             token: RefCell::new(None),
             devtools,
             log: std::env::var_os("KEEL_DESKTOP_LOG").map(PathBuf::from),

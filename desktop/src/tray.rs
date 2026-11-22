@@ -69,6 +69,8 @@ pub struct Shown {
     pub link: Link,
     /// The daemon's address is not this machine's: there is nothing here to start.
     pub refused: bool,
+    /// Another program attached to the daemon as its app before this one: the alerts go there.
+    pub elsewhere: bool,
 }
 
 /// The first line of the menu and the mark's tooltip.
@@ -99,6 +101,9 @@ pub fn menu(s: &Shown) -> Vec<(i32, String, bool, Option<Pick>)> {
             m.push((4, "New Session".into(), true, Some(Pick::New)));
             m.push((5, String::new(), true, None));
             m.push(if s.paused { (6, "Resume Notifications".into(), true, Some(Pick::Resume)) } else { (7, "Pause Notifications for an Hour".into(), true, Some(Pick::Pause)) });
+            if s.elsewhere {
+                m.push((12, "Another Keel app shows the notifications".into(), false, None));
+            }
         }
         Link::Down if !s.refused => m.push((8, "Start Keel".into(), true, Some(Pick::Start))),
         Link::Down => {}
@@ -203,7 +208,7 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(conn: &gio::DBusConnection, symbolic: bool, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
-        let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down, refused: false }));
+        let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down, refused: false, elsewhere: false }));
         let revision = Rc::new(Cell::new(1u32));
         let available = Rc::new(Cell::new(false));
         let on_pick = Rc::new(on_pick);
@@ -374,7 +379,7 @@ mod tests {
     use super::*;
 
     fn s(needs: u32, paused: bool, link: Link) -> Shown {
-        Shown { needs, paused, link, refused: false }
+        Shown { needs, paused, link, refused: false, elsewhere: false }
     }
 
     #[test]
@@ -401,6 +406,10 @@ mod tests {
         assert_eq!(picks(&s(0, true, Link::Up)), [Pick::Open, Pick::New, Pick::Resume, Pick::Quit, Pick::QuitAll]);
         assert_eq!(picks(&s(2, false, Link::Down)), [Pick::Open, Pick::Start, Pick::Quit]);
         assert_eq!(picks(&s(2, false, Link::Restarting)), [Pick::Open, Pick::Quit]);
+        // Another program attached first and takes the alerts: the menu says so, on a line that does nothing.
+        let told = menu(&Shown { elsewhere: true, ..s(0, false, Link::Up) });
+        assert!(told.iter().any(|(_, label, enabled, pick)| label == "Another Keel app shows the notifications" && !enabled && pick.is_none()));
+        assert!(!menu(&s(0, false, Link::Up)).iter().any(|(_, label, _, _)| label.starts_with("Another")));
         // An address the app does not speak to: nothing to start there.
         assert_eq!(picks(&Shown { refused: true, ..s(0, false, Link::Down) }), [Pick::Open, Pick::Quit]);
         // Ids are one per item, so a click on an old menu never picks another item.
