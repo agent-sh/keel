@@ -741,6 +741,8 @@ inboxCounts.get = unreadCounts;
 // read from the table while none is held (after a start that is not known, so the first look reads).
 let withheldMaybe = true;
 let withheldAt = 0;
+// When the next look at the held-back notifications is due (the daemon's tick rests until then when it is idle): none when none is held.
+export const withheldDue = (): number | undefined => (withheldMaybe ? withheldAt + 3000 : undefined);
 export function tickWithheld(now = Date.now()) {
   if (!withheldMaybe || now - withheldAt < 3000) return;
   withheldAt = now;

@@ -715,6 +715,23 @@ function probeFailed(w: WaitRecord, e: unknown) {
   if (Date.now() >= w.deadline) settle(w.id, "timeout", timedOut(w, msg));
 }
 
+// When the next pass over the active waits has something to do (the daemon's
+// tick sleeps until then while it is idle): a timer at its time, a probe a
+// period after the last one, a probe in flight at its limit, a monitor at
+// every pass, and each at its deadline at the latest.
+export function nextDue(now = Date.now()): number | undefined {
+  let at: number | undefined;
+  for (const w of list(undefined, 0)) {
+    const st = live.get(w.id);
+    const t = isMonitor(w.kind) ? now
+      : st?.probing ? (st.probing.late ? w.deadline : Math.min(w.deadline, st.probing.started + limitOf(w.kind)))
+      : w.kind === "timer" ? Math.min(w.deadline, (w.spec as Extract<WaitSpec, { kind: "timer" }>).at_ms ?? now)
+      : Math.min(w.deadline, (st?.lastProbe ?? 0) + (kinds.get(w.kind)?.every ?? PROBE_MS[w.kind] ?? 0));
+    at = at === undefined ? t : Math.min(at, t);
+  }
+  return at;
+}
+
 // One pass over the active waits. It never waits for a probe: a probe that
 // asks something outside the process answers later, and until it does (or is
 // stopped at its limit) its wait is not probed again, so a slow target holds

@@ -14,6 +14,7 @@
 //   for that window, whether or not the owner was away. format=text as above.
 // DELETE /api/away   the owner has seen the digest: it is not shown again.
 // Content-free: titles, states, classes, counts, durations and ids.
+import { wentDownAt } from "../../admin/life.ts";
 import { awayGap, bindPresence, digest, digestText, Presence, TICK_MS, type AwayWindow } from "../../admin/away.ts";
 import { daemonFacts } from "../../admin/daemon-facts.ts";
 import { zonedStamp } from "../../core/clock.ts";
@@ -41,7 +42,7 @@ export const overviewRoutes: RouteModule = ({ store, engine }) => {
   const presence = new Presence({
     load: () => store.db.query<{ value: string }, []>("SELECT value FROM admin_meta WHERE key = 'owner_presence'").get()?.value ?? null,
     save: (v) => void store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES ('owner_presence', ?)").run(v),
-  });
+  }, undefined, undefined, wentDownAt());
   bindPresence(presence);
   // The daemon notes that it runs: a note that comes late is time it was down or asleep, which is no absence.
   const g = globalThis as { __keelPresenceTick?: ReturnType<typeof setInterval> };

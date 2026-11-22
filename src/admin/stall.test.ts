@@ -3,7 +3,7 @@
 // row says.
 import { afterEach, expect, test } from "bun:test";
 import { describeStall, dropBeat, during, inFlight, shareBeat, type Stall, StallMonitor, timed, TurnWatch } from "./stall.ts";
-import { ALLOW_MASK } from "./stall-beat.ts";
+import { ALLOW_MASK, IDLE_ALLOW } from "./stall-beat.ts";
 import { type Cause, decide, type Sample, unknown, UNSEEN } from "./stall-cause.ts";
 
 const real = performance.now;
@@ -191,7 +191,8 @@ test("work that begins while the timer waits out its idle second brings the next
   try {
     clock.working = false;
     m.start();
-    expect(allow()).toBe(1000);
+    // Idle, the loop promises no time: the watcher looks for itself.
+    expect(allow()).toBe(IDLE_ALLOW);
     // A request arrives: the watcher is told to expect the next beat within the short period.
     const open = inFlight({}, () => "answering GET /api/sessions");
     expect(allow()).toBe(100);
@@ -225,10 +226,10 @@ test("the loop tells its watcher when it will beat next, and at once when a sect
     expect(inside.v).not.toBe(working.v);
     expect(read().allow).toBe(30);
     expect(read().v).not.toBe(inside.v);
-    // Idle, the promise is a second.
+    // Idle, it promises no time.
     clock.working = false;
     for (let i = 0; i < 60; i++) { pass(100); m.tick(); }
-    expect(read().allow).toBe(1000);
+    expect(read().allow).toBe(IDLE_ALLOW);
     // A monitor whose timer is stopped promises nothing: the watcher reads a zero and expects no beat.
     m.stop();
     expect(read().v).toBe(0);
@@ -284,4 +285,56 @@ test("the timer fires ten times a second while the daemon works and once a secon
   for (let i = 0; i < 60; i++) { pass(100); m.tick(); }
   expect(m.period()).toBe(100);
   open();
+});
+
+test("an idle daemon's timer sleeps until the next thing is due, and a stall the watcher saw meanwhile is reported once", () => {
+  const watch = new TurnWatch();
+  const clock = { now: (epoch += 1_000_000), cpu: 0, idle: 10_000 };
+  performance.now = () => clock.now;
+  const seen: Stall[] = [];
+  const noted: Stall[] = [];
+  const working: boolean[] = [];
+  const m = new StallMonitor({
+    report: (s) => void seen.push(s), note: (s) => void noted.push(s), turns: (when) => watch.at(when),
+    working: () => false, tick: (w) => void working.push(w), idleMs: () => clock.idle, thresholdMs: 1000, cpu: () => clock.cpu,
+  });
+  m.start();
+  m.stop();
+  const pass = (ms: number, busy = ms) => { clock.now += ms; clock.cpu += busy; };
+  // Working for a moment after its start, then idle: the sleep is what the tick says, between the short period and ten seconds.
+  for (let i = 0; i < 60; i++) { pass(100, 0); m.tick(); }
+  expect(m.period()).toBe(10_000);
+  clock.idle = 2_500;
+  expect(m.period()).toBe(2_500);
+  clock.idle = 0;
+  expect(m.period()).toBe(100);
+  clock.idle = 60_000;
+  expect(m.period()).toBe(10_000);
+  // Whatever rides on the tick is told whether the daemon works.
+  expect(working.at(-1)).toBe(false);
+  // A stall of 2.4 s began and ended while the timer slept: no tick was late for it, the watcher's word makes the row.
+  pass(3_000);
+  const s = m.unsaid(2_400)!;
+  expect(s).toMatchObject({ ms: 2_400, window_ms: 3_400, in_flight: [] });
+  expect(describeStall(s).message).toBe("Daemon unresponsive for 2.4 s: blocked by its own code, outside anything it times");
+  expect(seen).toEqual([s]);
+  // The same stall told twice, or found by the tick a moment later, is one row.
+  expect(m.unsaid(2_400)).toBeUndefined();
+  pass(200, 0);
+  clock.now += 2_000;
+  expect(m.tick()).toBeUndefined();
+  expect(seen.length).toBe(1);
+  // One the tick found first is not told again by the watcher; a short one is a note.
+  pass(10_000, 0);
+  m.tick();
+  // The timer slept its ten seconds and fired 1.8 s late.
+  pass(10_000 + 1_800);
+  expect(m.tick()).toMatchObject({ ms: 1_800 });
+  expect(m.unsaid(1_800)).toBeUndefined();
+  expect(seen.length).toBe(2);
+  pass(5_000, 0);
+  expect(m.unsaid(400)).toBeUndefined();
+  expect(noted.map((x) => x.ms)).toEqual([400]);
+  expect(m.unsaid(100)).toBeUndefined();
+  expect(noted.length).toBe(1);
 });

@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { commands } from "./cli/index.ts";
 import { topHelp, unknownCommand } from "./cli/help.ts";
 import { parseBind } from "./core/bind.ts";
+import { withoutCollectorTimer } from "./core/relaunch.ts";
 import { buildId, versionLine } from "./core/build.ts";
 import { configDir } from "./providers/config.ts";
 import { startLine } from "./admin/daemon-log.ts";
@@ -58,6 +59,8 @@ if ("error" in bind) {
 }
 
 const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void>; __keelStartSaid?: boolean };
+// Before anything is claimed or opened: the daemon runs without the runtime's collector timer.
+if (!g.__keelSignals) withoutCollectorTimer();
 // A daemon that could not start ends here, with what went wrong. Left alone it
 // serves nothing and stays: it holds the state folder, the modules it loaded
 // keep it alive and take its signals, and under --hot the process waits for an

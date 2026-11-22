@@ -15,6 +15,9 @@ ExecStart=@EXEC@
 # ones that do not are parked and continue after the next start.
 Environment=KEEL_SUPERVISED=systemd
 Environment=KEEL_DRAIN_MS=600000
+# The runtime's collector timer is off (the daemon asks the collector itself:
+# an idle daemon then makes a few wakeups a second, not two hundred).
+Environment=BUN_GC_TIMER_DISABLE=1
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGTERM

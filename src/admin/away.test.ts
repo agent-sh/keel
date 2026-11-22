@@ -104,6 +104,29 @@ test("an absence is the gap between two inputs, and the time the owner was there
   expect(new Presence({ load: () => "{not json", save: () => {} }, GAP, T0).window(T0)).toBeNull();
 });
 
+test("a daemon nobody is at writes its record only when it changed, and the next start reads when it went down from the sign of life", () => {
+  let v: string | null = null;
+  let saves = 0;
+  const io = { load: () => v, save: (x: string) => { v = x; saves++; } };
+  const p = new Presence(io, GAP, T0);
+  stays(p, T0, T0 + MIN);
+  // The owner leaves; the daemon runs three hours more with nobody there: a note every minute, the record written every fifteen.
+  const before = saves;
+  runs(p, T0 + MIN, T0 + 3 * H);
+  expect(saves - before).toBe(12);
+  // It is killed at three hours and comes back four hours later. The record's last note may be fourteen minutes old;
+  // the sign of life says when it went down. The owner returns a minute after the start: away from their last input, the time down in it.
+  const down = T0 + 3 * H, up = down + 4 * H;
+  const next = new Presence(io, GAP, up, down);
+  next.seen(up + MIN);
+  expect(next.window(up + 2 * MIN)).toEqual({ spans: [{ from: T0 + MIN, to: up + MIN }], present: true });
+  // Without the sign of life the time since the record's last note counts as time not running: here that hides nothing either,
+  // since the owner had been away for hours before it.
+  const blindly = new Presence({ load: () => v, save: () => {} }, GAP, up);
+  blindly.seen(up + MIN);
+  expect(blindly.window(up + 2 * MIN)?.spans.length).toBe(1);
+});
+
 const sid = (n: number) => `01a1fd4b-73d5-7478-a92a-${String(n).padStart(12, "0")}`;
 const row = (n: number, r: Partial<OverviewRow> & { title: string }): OverviewRow => ({ id: sid(n), watch: "done", agents: 0, approvals: 0, parked: 0, ...r });
 const page = (sessions: OverviewRow[], hidden = 0): Overview => ({ as_of: T0 + 9 * H, since: T0, until: T0 + 9 * H, hidden, totals: { turns: 0, failed: 0, agents: {}, cost: 0 }, sessions });

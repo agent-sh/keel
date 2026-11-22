@@ -7,11 +7,12 @@
 // that gave the daemon no processor, and those need opposite fixes.
 //
 // A thread of its own can look while the loop is held
-// (stall-watch-worker.ts). It reads one shared number ten times a second,
-// and nothing else while the loop is well. When the loop is late, it samples
-// the main thread from Linux's /proc until the loop runs again. The loop
-// then asks what the samples say (stall-cause.ts) and puts the answer in the
-// stall's row.
+// (stall-watch-worker.ts). It reads one shared number ten times a second
+// while the daemon works (once a second while it is idle, when it also looks
+// at the main thread itself), and nothing else while the loop is well. When
+// the loop is late, it samples the main thread from Linux's /proc until the
+// loop runs again. The loop then asks what the samples say (stall-cause.ts)
+// and puts the answer in the stall's row.
 //
 // - It never holds the loop: the loop writes a number and posts a message;
 //   the answer comes as a message, and a row whose answer does not come
@@ -33,7 +34,8 @@
 import { askerCell, askerLabels } from "../core/asker.ts";
 import { realOf } from "../core/paths.ts";
 import { type Arch, type Cause, type Dirs, STOPPED, unknown } from "./stall-cause.ts";
-import { dropBeat, shareBeat } from "./stall.ts";
+import { SENT } from "./stall-beat.ts";
+import { dropBeat, nudge, shareBeat } from "./stall.ts";
 import { onLabels, statementCell } from "../core/statement-label.ts";
 
 declare const __KEEL_STALLWATCH_JS__: string | undefined;
@@ -76,6 +78,8 @@ export class StallWatch {
   // The last SIGCONT, on the monotonic clock: a stall that ends with one was a stop by a signal.
   private continued = 0;
   private onCont = () => { this.continued = performance.now(); };
+  // A stall the watcher saw while the loop was idle and no timer of the loop's was due (StallMonitor.unsaid).
+  onHeld?: (ms: number) => void;
 
   constructor(private dirs: Dirs, private onError: (e: unknown) => void = () => {}, private workerProgram?: string, private askMs = ASK_MS) {}
 
@@ -87,7 +91,7 @@ export class StallWatch {
     if (this.worker || this.off || this.stopped) return;
     if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64")) { this.off = NOT_HERE; return; }
     let w: Worker;
-    const cells = new SharedArrayBuffer(8);
+    const cells = new SharedArrayBuffer(16);
     try {
       w = new Worker(this.workerProgram ?? programUrl());
     } catch (e) {
@@ -95,9 +99,10 @@ export class StallWatch {
     }
     (w as Worker & { unref?: () => void }).unref?.(); // the thread never holds the process open
     w.onmessage = (ev: MessageEvent) => {
-      const m = ev.data as { ready: true; tid?: number } | { id: number; cause: Cause } | { error: string };
+      const m = ev.data as { ready: true; tid?: number } | { id: number; cause: Cause } | { error: string } | { held: { ms: number } };
       if ("error" in m) return this.fail(new Error(`The stall watcher stopped: ${m.error}`));
       if ("ready" in m) { this.tid = m.tid; return; }
+      if ("held" in m) { try { this.onHeld?.(m.held.ms); } catch (e) { this.onError(e); } return; }
       const done = this.asked.get(m.id);
       this.asked.delete(m.id);
       this.unanswered = 0;
@@ -109,13 +114,21 @@ export class StallWatch {
     this.worker = w;
     shareBeat((this.cells = new Int32Array(cells)));
     // A descriptor's link under /proc is a real path: the folders are compared as where their links land.
-    w.postMessage({ start: { beat: cells, stmt: statementCell.buffer, ask: askerCell.buffer, dirs: { state: realOf(this.dirs.state), config: realOf(this.dirs.config) }, arch: process.arch as Arch } });
+    this.post(w, { start: { beat: cells, stmt: statementCell.buffer, ask: askerCell.buffer, dirs: { state: realOf(this.dirs.state), config: realOf(this.dirs.config) }, arch: process.arch as Arch } });
     // The labels of the store's statements, as they are made: a sample says which statement the loop was in.
-    const unlabel = onLabels((id, text) => { try { w.postMessage({ label: [id, text] }); } catch {} });
+    const unlabel = onLabels((id, text) => { try { this.post(w, { label: [id, text] }); } catch {} });
     // And of who asked for a read that holds the loop (src/core/asker.ts): the sample says that too.
-    const unask = askerLabels((id, text) => { try { w.postMessage({ asker: [id, text] }); } catch {} });
+    const unask = askerLabels((id, text) => { try { this.post(w, { asker: [id, text] }); } catch {} });
     this.unlabel = () => { unlabel(); unask(); };
     process.on("SIGCONT", this.onCont);
+  }
+
+  // The thread blocks between its looks and takes a message only when it is
+  // told one waits: the count of messages sent, and its wait ended.
+  private post(w: Worker, m: unknown) {
+    if (this.cells) Atomics.add(this.cells, SENT, 1);
+    w.postMessage(m);
+    if (this.cells) nudge(this.cells);
   }
 
   // Reported once; from then on a stall says the watcher is off.
@@ -164,7 +177,7 @@ export class StallWatch {
         if (c.shares.some((s) => s.kind === "stopped") && !continued()) setTimeout(named, 50);
         else named();
       });
-      try { w.postMessage({ ask: id, ms, window_ms: windowMs }); } catch (e) { this.asked.get(id)?.(undefined); this.fail(e); }
+      try { this.post(w, { ask: id, ms, window_ms: windowMs }); } catch (e) { this.asked.get(id)?.(undefined); this.fail(e); }
     });
   }
 }

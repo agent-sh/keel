@@ -17,6 +17,7 @@
 //   the `stuck` section of the daemon settings (model_s, tool_s; 120 and 600).
 import type { Frame } from "../../core/types.ts";
 import { STUCK_AFTER, stuckOf, stuckText, type After, type StuckItem } from "../../core/stuck.ts";
+import { joinPulse } from "../../core/pulse.ts";
 import type { SessionState } from "../../core/watch.ts";
 import { registerSettings } from "../../admin/settings.ts";
 import { factsOf, lens, progressOf, sessionState, stuckAfter, type Lens } from "../../automation/state.ts";
@@ -165,6 +166,8 @@ export class StateBoard {
   }
 
   // Sessions that are not at rest are read again: what ended without a frame shows within the sweep.
+  // Whether a session is not at rest (the sweep has something to read).
+  restless(): boolean { return this.live.size > 0; }
   sweep() {
     for (const id of this.live) this.touch(id);
   }
@@ -183,12 +186,11 @@ export const stateRoutes: RouteModule = (deps) => {
     deps.store.migrate("CREATE INDEX IF NOT EXISTS approvals_pending ON approvals(created, id) WHERE state = 'pending'");
   }
   const b = (board = new StateBoard(deps));
-  const g = globalThis as { __keelStateOff?: () => void; __keelStateSweep?: ReturnType<typeof setInterval> };
+  const g = globalThis as { __keelStateOff?: () => void };
   g.__keelStateOff?.();
   g.__keelStateOff = deps.bus.on((f) => b.onFrame(f));
-  clearInterval(g.__keelStateSweep);
-  g.__keelStateSweep = setInterval(() => b.sweep(), SWEEP_MS);
-  g.__keelStateSweep.unref?.();
+  // On the daemon's one tick: while it is idle the sweep comes only while a session is not at rest.
+  joinPulse("state sweep", () => b.sweep(), { every: SWEEP_MS, due: (now) => (b.restless() ? now : undefined) });
   return {
     "/api/state": { GET: () => {
       const states = b.all();

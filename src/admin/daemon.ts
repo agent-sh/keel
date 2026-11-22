@@ -12,15 +12,17 @@ import { flushAll } from "../automation/core.ts";
 import { buildInfo } from "../core/build.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { pidBorn, pidHolds, pidLive, pidState } from "../core/pid.ts";
+import { relaunchArgv } from "../core/relaunch.ts";
 import { addAdmission } from "../server/admission.ts";
 import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
+import { IDLE_MAX_MS, pulse } from "../core/pulse.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
 import { describeStall, type Stall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
 
-export { claimState };
+export { claimState, relaunchArgv };
 
 const LOCK = "daemon.lock";
 
@@ -195,14 +197,6 @@ export function lockHolder(stateDir: string): number | undefined {
   } catch { return undefined; }
 }
 
-// The command that starts this daemon again: a compiled binary is its own
-// path; under bun it is bun with its flags (--hot) and the script.
-export function relaunchArgv(): string[] {
-  const a = process.argv;
-  if (a[1]?.startsWith("/$bunfs/") || a[1]?.startsWith("B:/~BUN/")) return [process.execPath, ...a.slice(2)];
-  return [process.execPath, ...process.execArgv, ...a.slice(1)];
-}
-
 // What a draining daemon takes besides GET, since none of it starts work:
 // its own (errors, awake, the drain), a read whose question is in the body
 // (which paths of a reply are files, what the transcript marks on its
@@ -317,7 +311,8 @@ export class Daemon {
   // stack: the code that held the loop is not on it any more.
   // It is started once the server listens (src/server/start.ts): the start-up
   // itself is not a stall of a daemon that was answering. Its timer is the
-  // daemon's one periodic timer: the sign of life is written from it.
+  // daemon's one periodic timer: the sign of life and the rest of what the
+  // daemon does by the clock run from it.
   // What took the time comes from the watcher's thread (stall-watch.ts),
   // asked once the loop runs again: the row waits for its answer, never the
   // loop, and is written without one when none comes.
@@ -344,14 +339,26 @@ export class Daemon {
       this.stalls.length = Math.min(this.stalls.length, STALLS_KEPT);
       this.emit();
     };
+    // The monitor's timer is the daemon's one tick (src/core/pulse.ts): what
+    // the daemon does by the clock runs from it, and when the daemon is
+    // idle it rests until the first of those is due.
+    const beats = pulse();
     const monitor = new StallMonitor({
       turns: (when) => watch.at(when),
       working: () => watch.running(),
-      tick: beatLife,
+      tick: (working) => beats.tick(working),
+      idleMs: () => beats.delay(false),
       report: (stall) => void told(stall, true).catch((e) => this.deps.errors.capture("server", e, { at: "stall report" })),
       note: (stall) => void told(stall, false).catch(() => {}),
     });
     watchWith(monitor);
+    beats.drivenBy(() => monitor.wake());
+    // The sign of life: a second apart when the daemon works, the tick's longest rest apart when it is idle, and the sign says which.
+    beats.join("sign of life", () => beatLife(monitor.working() ? 1000 : IDLE_MAX_MS), { every: 1000 });
+    // The collector is asked once a second for as long as the daemon works (the runtime's own timer for it is off: src/core/relaunch.ts).
+    beats.join("collector", () => { if (monitor.working()) Bun.gc(false); }, { every: 1000 });
+    // A stall that began when the loop was idle, seen by the watcher alone.
+    sight.onHeld = (ms) => void monitor.unsaid(ms);
     return monitor;
   }
 

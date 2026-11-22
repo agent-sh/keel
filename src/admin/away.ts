@@ -26,8 +26,13 @@ import { dur } from "./timeline-rows.ts";
 
 // The gap that makes an absence. Longer than the 20 s between a page's reports.
 export const awayGap = () => Number(process.env.KEEL_AWAY_MS) || 5 * 60_000;
-// How often the daemon notes that it runs (and writes the record down).
+// How often the daemon notes that it runs. The record is written down then
+// only when it changed (the owner's last input, an absence, time not
+// running), and at the latest every SAVE_MS: when the daemon went down is
+// read from its sign of life at the next start (src/admin/life.ts), so a
+// daemon nobody is at writes nothing for this.
 export const TICK_MS = 60_000;
+const SAVE_MS = 15 * TICK_MS;
 // A note this late means the daemon was not running in between.
 const LATE_MS = TICK_MS * 2.5;
 // Absences kept until dismissed: past this the oldest goes, and so does one
@@ -45,8 +50,13 @@ export class Presence {
   private blind = 0; // time since `last` the daemon was not running: no absence is read off it
   private away: Absence[] = []; // the closed absences not dismissed yet
 
+  private saved = "";
+  private savedAt = 0;
+
   // `now`: when this daemon starts. The time since the last daemon's last note is time not running.
-  constructor(private io: { load(): string | null; save(v: string): void }, private gap = awayGap(), now = Date.now()) {
+  // `downAt`: when the daemon before this one went down, when its sign of life says: it ran until then,
+  // whatever the record's last note says.
+  constructor(private io: { load(): string | null; save(v: string): void }, private gap = awayGap(), now = Date.now(), downAt?: number) {
     try {
       const k = JSON.parse(io.load() ?? "null") as Partial<Kept> | null;
       if (typeof k?.last === "number") this.last = k.last;
@@ -54,10 +64,14 @@ export class Presence {
       if (typeof k?.blind === "number" && k.blind > 0) this.blind = k.blind;
       if (Array.isArray(k?.away)) this.away = k.away.filter((a) => typeof a?.from === "number" && typeof a?.to === "number" && a.to > a.from).slice(-ABSENCES);
     } catch { /* a record that does not parse is no record */ }
-    this.tick(now);
+    if (typeof downAt === "number" && downAt <= now && (this.alive === null || downAt > this.alive)) this.alive = downAt;
+    this.note(now);
+    this.save(now);
   }
 
-  private save() {
+  private save(now = Date.now()) {
+    this.saved = JSON.stringify([this.last, this.blind, this.away]);
+    this.savedAt = now;
     this.io.save(JSON.stringify({ last: this.last, alive: this.alive, blind: this.blind, away: this.away } satisfies Kept));
   }
 
@@ -69,7 +83,7 @@ export class Presence {
   }
   tick(now = Date.now()) {
     this.note(now);
-    this.save();
+    if (now - this.savedAt >= SAVE_MS || JSON.stringify([this.last, this.blind, this.away]) !== this.saved) this.save(now);
   }
 
   private gone(until: number) { return this.last !== null && until - this.last - this.blind >= this.gap; }
@@ -84,7 +98,7 @@ export class Presence {
     if (back) this.away = [...this.away, { from: this.last!, to: at }].slice(-ABSENCES);
     this.last = at;
     this.blind = 0;
-    if (back) this.save();
+    if (back) this.save(now);
   }
 
   // The absences to tell of: those not dismissed, and the one going on.

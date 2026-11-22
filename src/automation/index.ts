@@ -29,6 +29,7 @@ import { verifierSession } from "./verify.ts";
 import * as waits from "./waits.ts";
 import * as silent from "./silent.ts";
 import { liveAgents } from "./state.ts";
+import { joinPulse } from "../core/pulse.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
 import { forwardedStanding, isLocal } from "../safety/presence.ts";
@@ -298,12 +299,15 @@ function init(deps: Deps) {
     process.on("exit", () => waits.stopAll());
   }
 
-  clearInterval(g.__keelAutomationTick);
-  g.__keelAutomationTick = setInterval(() => {
+  // One pass a second while the daemon works, on its one tick (src/core/pulse.ts). While it is idle the
+  // pass comes when something is due (a wait's next probe, a timer, a loop's next run, the end of a
+  // snooze) and every ten seconds at the latest; what is scheduled through a request or a turn wakes the tick.
+  g.__keelAutomationLeave?.();
+  g.__keelAutomationLeave = joinPulse("automation", () => {
     // A notification held back while the owner attended its session goes out when they no longer do.
     alerts.tickWithheld();
-    // Most seconds nothing is active: one indexed query says so and the
-    // tick ends there (each step below would find nothing to do).
+    // Most passes find nothing active: one indexed query says so and the
+    // pass ends there (each step below would find nothing to do).
     if (!busy(deps)) return;
     waits.tick().catch((e) => capture(e, { at: "waits tick" }));
     try {
@@ -315,7 +319,19 @@ function init(deps: Deps) {
     } catch (e) {
       capture(e, { at: "tick" });
     }
-  }, 1000);
+  }, { every: 1000, due: (now) => nextDue(deps, now) });
+}
+
+// When the next pass has something to do, for the tick's sleep while the daemon is idle: the first of
+// the active waits' next times, the loops' next runs, the snoozes' ends and the next look at a notification that was held back. Nothing: nothing is
+// scheduled (agents' time limits are minutes, and are looked at with the tick's longest sleep).
+export function nextDue(deps: Deps, now: number): number | undefined {
+  const r = deps.store.db.query<{ waits: number; loop: number | null; snooze: number | null }, []>(`SELECT
+    EXISTS (SELECT 1 FROM waits WHERE status = 'active') AS waits,
+    (SELECT MIN(next_ms) FROM loops WHERE enabled = 1 AND next_ms IS NOT NULL) AS loop,
+    (SELECT MIN(until_ms) FROM snoozes WHERE until_ms IS NOT NULL) AS snooze`).get();
+  const times = [r?.waits ? waits.nextDue(now) : undefined, r?.loop ?? undefined, r?.snooze ?? undefined, alerts.withheldDue()].filter((t): t is number => typeof t === "number");
+  return times.length ? Math.min(...times) : undefined;
 }
 
 function busy(deps: Deps): boolean {

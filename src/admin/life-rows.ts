@@ -9,7 +9,8 @@ import type { CutState, CutTurn } from "../engine/hooks.ts";
 // runtime or the machine went down); its time is its last sign of life.
 // `crash`: the process ended itself on a failure (`code`: its exit code).
 // `signal`: a stop signal from outside (SIGTERM, SIGINT) stopped it: nobody asked Keel to stop.
-export type Before = { pid: number; started_ms: number; down_ms: number; how: "killed" | "restart" | "stop" | "crash" | "signal"; code?: number };
+// `within_ms`: a killed daemon that was idle wrote its sign of life this far apart: it went down at `down_ms` or within this long after.
+export type Before = { pid: number; started_ms: number; down_ms: number; how: "killed" | "restart" | "stop" | "crash" | "signal"; code?: number; within_ms?: number };
 // `left`: nothing went on with it (its session is archived, say); it is as the cut left it.
 // `why`: for a held turn the reason; for one that went on by other means, what the means were.
 // `earlier`: an earlier stop cut it, and it was still waiting to be decided when this start came.
@@ -66,7 +67,7 @@ export function restartSummary(r: Restart): string {
   if (!b) return `The daemon started at ${clock(r.up_ms)} ${zoneLabel(r.up_ms)}. How the one before it ended is not known: ${r.unknown ?? "nothing is known"}; ${r.turns.length ? `${r.turns.length} turn${r.turns.length > 1 ? "s were" : " was"} found cut: ${tally(r.turns)}` : "no turn was found cut"}.`;
   const how = b.how === "crash" && b.code !== undefined ? `${HOW.crash} (exit code ${b.code})` : HOW[b.how];
   const [down, up] = zonedPair(b.down_ms, r.up_ms, (ts) => clock(ts, r.up_ms));
-  return `The daemon ${how} at ${b.how === "killed" ? "about " : ""}${down} and came back at ${up} (down ${span(Math.max(0, r.up_ms - b.down_ms))}); ${cut}.${old}`;
+  return `The daemon ${how} at ${b.how === "killed" ? "about " : ""}${down}${b.how === "killed" && b.within_ms ? ` (it was idle: within ${span(b.within_ms)} after)` : ""} and came back at ${up} (down ${span(Math.max(0, r.up_ms - b.down_ms))}); ${cut}.${old}`;
 }
 
 // Where a turn was cut: the step, what it was at, and how long it had run.

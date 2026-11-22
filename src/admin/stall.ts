@@ -15,18 +15,25 @@
 // log line only, so the smaller ones leave a trail without a row each.
 //
 // The timer fires ten times a second while the daemon works (a turn runs, a
-// request is open or was a moment ago) and once a second while it is idle,
-// so an idle daemon wakes for it once a second. Idle, a stall outside
-// anything timed is measured up to a second short.
+// request is open or was a moment ago). While it is idle the timer is the
+// daemon's one periodic tick (src/core/pulse.ts): it sleeps until something
+// is due, ten seconds at the longest, and work that begins (a request, a
+// timed section, a turn) brings it forward to the short period at once. A
+// stall that begins with such work is measured from its start. One that
+// begins in code nothing times while the daemon is idle (a callback of a
+// timer, a child's end) may fall between two ticks: the watcher looks at the
+// loop's thread once a second then, and tells the loop of a stall it saw
+// (StallMonitor.unsaid), measured up to a second short.
 //
 // What took the time is not decided here: the loop cannot look at itself
 // while it is held. A watcher on a thread of its own does (stall-watch.ts):
 // the loop writes a beat it reads, at every tick and around every timed
 // section, and the row carries what the watcher saw of the main thread
 // meanwhile (stall-cause.ts).
-import { packBeat } from "./stall-beat.ts";
+import { KICK, packBeat, packIdle } from "./stall-beat.ts";
 import { type Cause, UNSEEN } from "./stall-cause.ts";
 import { secs } from "./stall-rows.ts";
+import { IDLE_MAX_MS } from "../core/pulse.ts";
 
 const G = globalThis as { __keelStall?: State; __keelStallMonitor?: StallMonitor };
 
@@ -34,6 +41,8 @@ export const STALL_MS = Number(process.env.KEEL_STALL_MS) > 0 ? Number(process.e
 export const STALL_LOG_MS = STALL_MS / 4;
 const TICK_MS = 100;
 const IDLE_TICK_MS = 1000;
+// The watcher's word and the timer's for one stall come this close together.
+const SAME_MS = 1500;
 // After the last request or frame, the daemon counts as working this long.
 const WORKING_MS = 5000;
 // A section's own time that is worth naming as what the daemon was busy with.
@@ -50,11 +59,27 @@ type Section = { label: string; ms: number };
 // it: a call of its own, or a machine that did not run it).
 // `beat`: the number the watcher reads; `due`: when the next tick is due; `depth`: timed sections open.
 // `wake`: set while the timer is armed for its idle second: work that begins then brings the next tick forward.
-type State = { longest: Section | null; inside: Section | null; waited?: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number; wake?: () => void };
+// `idle`: the last beat said the loop is idle (the watcher looks once a second then, and is told when that ends).
+type State = { longest: Section | null; inside: Section | null; waited?: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number; wake?: () => void; idle?: boolean };
 const state = (): State => (G.__keelStall ??= { longest: null, inside: null, flights: new Map(), work: new Map(), touched: 0, seq: 0, due: 0, depth: 0 });
 // Tells the watcher the loop is alive and will say so again within `allowMs`.
+// A watcher that was looking once a second (the loop was idle) is woken to look now.
 function beat(st: State, allowMs: number) {
-  if (st.beat) Atomics.store(st.beat, 0, packBeat(++st.seq, allowMs));
+  if (!st.beat) return;
+  Atomics.store(st.beat, 0, packBeat(++st.seq, allowMs));
+  if (st.idle) { st.idle = false; nudge(st.beat); }
+}
+// Tells the watcher the loop sleeps until something happens.
+function beatIdle(st: State) {
+  if (!st.beat) return;
+  Atomics.store(st.beat, 0, packIdle(++st.seq));
+  st.idle = true;
+}
+// Ends the watcher's wait: it looks at the beat now.
+export function nudge(cells: Int32Array) {
+  if (cells.length <= KICK) return;
+  Atomics.add(cells, KICK, 1);
+  Atomics.notify(cells, KICK);
 }
 // The watcher's side of the beat (stall-watch.ts). Nothing is written until
 // the monitor's timer runs: a zero tells the watcher there is no loop to
@@ -250,8 +275,10 @@ export type StallDeps = {
   turns(when: number): RunningTurn[];
   // Whether a turn runs now: the timer keeps its short period while one does.
   working?(): boolean;
-  // Every tick, late or not (the daemon's sign of life rides on it).
-  tick?(): void;
+  // Every tick, late or not, with whether the daemon works now (the daemon's periodic work rides on it: src/core/pulse.ts).
+  tick?(working: boolean): void;
+  // How long the timer may sleep while the daemon is idle (until the next thing is due). A second when not given.
+  idleMs?(): number;
   thresholdMs?: number;
   // For a test: the processor time used so far, in milliseconds.
   cpu?: () => number;
@@ -262,6 +289,9 @@ export class StallMonitor {
   private due = 0;
   private cpuLast = 0;
   private timer?: ReturnType<typeof setTimeout>;
+  // When the timer last found a stall, and when the watcher last told of one: the other's word for the same stall is dropped.
+  private tickedAt = -Infinity;
+  private unsaidAt = -Infinity;
 
   constructor(private deps: StallDeps) {
     if (deps.cpu) cpuMs = deps.cpu;
@@ -282,13 +312,20 @@ export class StallMonitor {
     // No timer, no beat: the watcher is told not to expect one.
     const st = state();
     st.wake = undefined;
-    if (st.beat) Atomics.store(st.beat, 0, 0);
+    st.idle = false;
+    if (st.beat) { Atomics.store(st.beat, 0, 0); nudge(st.beat); }
   }
 
-  // The time to the next tick: short while the daemon works, long while it is idle.
-  period(): number {
+  // Whether the daemon works: a request is open or was a moment ago, or a turn runs.
+  working(): boolean {
     const st = state();
-    return st.flights.size || performance.now() - st.touched < WORKING_MS || this.deps.working?.() ? TICK_MS : IDLE_TICK_MS;
+    return !!st.flights.size || performance.now() - st.touched < WORKING_MS || !!this.deps.working?.();
+  }
+
+  // The time to the next tick: short while the daemon works; while it is idle, until the next thing is due.
+  period(): number {
+    if (this.working()) return TICK_MS;
+    return Math.max(TICK_MS, Math.min(IDLE_MAX_MS, this.deps.idleMs?.() ?? IDLE_TICK_MS));
   }
 
   private arm(timer = true) {
@@ -296,7 +333,8 @@ export class StallMonitor {
     this.due = this.last + ms;
     const st = state();
     st.due = this.due;
-    beat(st, ms);
+    if (ms > TICK_MS) beatIdle(st);
+    else beat(st, ms);
     st.wake = undefined;
     if (!timer) return;
     this.timer = setTimeout(() => { this.tick(); this.arm(); }, ms);
@@ -343,12 +381,15 @@ export class StallMonitor {
     const work = [...st.work.keys()];
     for (const [label, over] of st.work) if (over) st.work.delete(label);
     if (!this.timer) this.arm(false);
-    try { this.deps.tick?.(); } catch {}
+    try { this.deps.tick?.(this.working()); } catch {}
     const row = this.deps.thresholdMs ?? STALL_MS;
     // A section that was timed says exactly how long it held the loop, also when the tick was a long one.
     const during = longest && longest.ms >= late * 0.5 ? longest : undefined;
     const held = during ? Math.max(late, during.ms) : late;
     if (held < row / 4) return undefined;
+    // The watcher told of this stall a moment ago (it began while the timer slept).
+    if (now - this.unsaidAt < SAME_MS) return undefined;
+    this.tickedAt = now;
     const stall: Stall = {
       ms: held,
       window_ms: now - began,
@@ -368,6 +409,32 @@ export class StallMonitor {
       else this.deps.note?.(stall);
     } catch {}
     return held >= row ? stall : undefined;
+  }
+
+  // A stall the watcher saw while the timer slept through an idle stretch:
+  // the loop was held for `ms` in code nothing times, and no tick was due
+  // meanwhile to be late for it. Reported as the timer's own are, once.
+  unsaid(ms: number): Stall | undefined {
+    const now = performance.now();
+    const row = this.deps.thresholdMs ?? STALL_MS;
+    if (ms < row / 4 || now - this.tickedAt < SAME_MS || now - this.unsaidAt < SAME_MS) return undefined;
+    this.unsaidAt = now;
+    const st = state();
+    const work = [...st.work.keys()];
+    const stall: Stall = {
+      ms,
+      // The watcher looks once a second while the loop is idle: the stall began within a second before it was seen.
+      window_ms: ms + IDLE_TICK_MS,
+      busy_ms: Math.min(Math.max(0, cpuMs() - this.cpuLast), ms),
+      in_flight: [],
+      ...(work.length ? { work } : {}),
+      turns: this.deps.turns(now - ms / 2),
+    };
+    try {
+      if (ms >= row) this.deps.report(stall);
+      else this.deps.note?.(stall);
+    } catch {}
+    return ms >= row ? stall : undefined;
   }
 }
 

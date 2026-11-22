@@ -1,24 +1,48 @@
-// The stall watcher's thread (stall-watch.ts). It shares one number with the
-// daemon's loop: the loop writes it at every tick of its stall timer and
-// around every section it times, with how soon it will write again. Ten
-// times a second this thread reads that number. While it changes in time,
-// nothing else is done. (A slower look while the daemon is idle was tried:
-// a thread of Bun's wakes several times a second by itself, so it saved
-// next to nothing and saw less of a stall.) When it does not, the loop is held, and this thread
-// samples the daemon's main thread from /proc until the number changes
-// again: its state, what it runs or waits in, and how long it waited for a
-// processor. It reads files of its own process only, from its own thread:
-// it cannot hold the loop, and needs no privilege.
+// The stall watcher's thread (stall-watch.ts). It shares a few numbers with
+// the daemon's loop. The first is the beat: the loop writes it at every tick
+// of its stall timer and around every section it times, with how soon it
+// will write again.
+//
+// While the daemon works this thread reads the beat ten times a second.
+// While it changes in time, nothing else is done. When it does not, the
+// loop is held, and this thread samples the daemon's main thread from /proc
+// until the beat changes again: its state, what it runs or waits in, and how
+// long it waited for a processor.
+//
+// While the daemon is idle the loop promises no time (it sleeps until
+// something happens), and this thread looks once a second instead: whether
+// the main thread sleeps in the loop's own wait, and how much processor time
+// it used since the last look. A main thread that is anywhere else, or that
+// ran for most of the second, is looked at ten times a second from there;
+// one that stays out of the loop's wait is held, is sampled like any stall,
+// and the loop is told how long it was once it runs again (no timer of its
+// own was due to be late for it). The loop ends an idle wait at once when
+// work begins: it raises a count this thread waits on.
+//
+// Between looks the thread is blocked in Atomics.wait, never in a timer: a
+// timer turns the thread's event loop, and each turn that allocates brings
+// the runtime's collector and its helper threads after it (measured: a
+// thread with a 100 ms timer cost about ninety wakeups a second in a daemon
+// with nothing to do, a blocked one costs its own ten, or one while idle).
+// It returns to its event loop only when a message was posted to it, which
+// the loop says with a count of the messages it sent.
+//
+// It reads files of its own process only, from its own thread: it cannot
+// hold the loop, and needs no privilege.
 import { readFileSync, readlinkSync } from "node:fs";
 import {
   type Arch, type Around, type CallMemo, commandOf, decide, type Dirs, type Lookup, parseEpoll, parseLoad, parsePidfd, parsePressure,
   parsePressureTotal, parseSchedstat, parseThrottled, type Sample, sampleOf,
 } from "./stall-cause.ts";
-import { ALLOW_MASK } from "./stall-beat.ts";
+import { ALLOW_MASK, BEAT, IDLE_ALLOW, KICK, SENT } from "./stall-beat.ts";
 
 declare var self: Worker;
 
 const TICK_MS = 100;
+// A look this often while the loop says it is idle.
+const IDLE_LOOK_MS = 1000;
+// An idle main thread that used this much processor time between two looks is looked at closely.
+const BUSY_MS = 250;
 // A loop this late past its own promise is held: sampling starts.
 const SLACK_MS = 200;
 // A tick of this thread this late: the whole process did not run.
@@ -54,6 +78,18 @@ let based = 0;
 let ticks = 0;
 let sampling: Episode | undefined;
 let taken = 0;
+// How long the wait before this look was to be at most: a look later than that by GAP_MS means the process did not run.
+let waited = TICK_MS;
+// The loop is idle and its thread was found out of the loop's wait, or busy: since when (it is looked at closely from there).
+let suspect: number | undefined;
+// The run of samples in progress began while the loop was idle: the loop is told of it when it ends.
+let unsaid = false;
+// The main thread's processor time at the last idle look, and when that was.
+let idleRun: number | undefined;
+let idleAt = 0;
+// Messages taken so far, against the count the loop keeps of the ones it sent.
+let received = 0;
+let kicked = 0;
 let quota: string | undefined;
 // What the call of the sample before was found to wait on (stall-cause.ts): never kept from one stall to the next.
 const memo: CallMemo = {};
@@ -188,24 +224,73 @@ function gap(from: number, now: number): Episode {
   return e;
 }
 
-function tick() {
-  if (!beat) return;
+// The main thread sleeps in the loop's own wait: nothing holds it.
+const parked = (s: Sample) => s.state === "S" && !!s.call && /^epoll_/.test(s.call.name);
+
+// The run of samples ends: the loop runs again. One that began while the loop was idle is told to it.
+function ended(now: number) {
+  if (!sampling) return;
+  close(sampling, now);
+  if (unsaid) self.postMessage({ held: { ms: Math.round(now - sampling.t0) } });
+  sampling = undefined;
+  unsaid = false;
+}
+
+// A look while the loop says it is idle. Returns whether the next look is to come soon.
+function idleLook(now: number, late: boolean): boolean {
+  const s = sample(now, sampling?.ep ?? 0);
+  const ran = idleRun === undefined ? 0 : (s.run_ns - idleRun) / 1e6;
+  const since = idleAt;
+  idleRun = s.run_ns;
+  idleAt = now;
+  if (parked(s)) {
+    // Back in its wait: a stall that was being sampled is over, and a busy moment was no stall.
+    if (sampling && !late) keep(s);
+    ended(now);
+    suspect = undefined;
+    return false;
+  }
+  // Out of its wait. Since when: a thread that computed began as long ago as it ran (within the last look), another is first seen now.
+  suspect ??= s.state === "R" && ran >= BUSY_MS ? Math.max(since, now - ran) : now;
+  if (now - suspect >= SLACK_MS) {
+    if (!sampling) {
+      sampling = open(suspect);
+      unsaid = true;
+      // Nothing was sampled at its start: one sample is made there, of a thread that ran from then or that entered its call then.
+      if (suspect < now) keep({ t: suspect, ep: sampling.ep, state: s.state === "R" ? "R" : s.state, user_ticks: s.user_ticks, sys_ticks: s.sys_ticks, run_ns: s.run_ns - (s.state === "R" ? Math.min(ran, now - suspect) * 1e6 : 0), wait_ns: s.wait_ns, ...(s.call ? { call: s.call } : {}) });
+    }
+    if (!late && (taken < DENSE || ticks % 10 === 0)) { keep({ ...s, ep: sampling.ep }); taken++; }
+  }
+  return true;
+}
+
+// One look. Returns how long the thread may wait for the next one.
+function tick(): number {
+  if (!beat) return TICK_MS;
   const now = performance.now();
-  const v = Atomics.load(beat, 0);
+  const v = Atomics.load(beat, BEAT);
   // The loop's stall timer does not run (the daemon is starting, or reloading): nothing is expected of it.
-  if (v === 0 && !sampling) { lastTick = now; seen = v; changedAt = now; return; }
-  const late = lastTick > 0 && now - lastTick > GAP_MS;
+  if (v === 0 && !sampling) { lastTick = now; seen = v; changedAt = now; suspect = idleRun = undefined; return TICK_MS; }
+  const late = lastTick > 0 && now - lastTick > waited + GAP_MS;
   const gapped = late ? gap(lastTick, now) : undefined;
   lastTick = now;
+  const idle = (v & ALLOW_MASK) === IDLE_ALLOW;
+  let soon = !idle;
   if (v !== seen) {
     seen = v;
     changedAt = now;
     if (sampling) {
       // The loop runs again: one last look closes the counts.
       if (!late) keep(sample(now, sampling.ep));
-      close(sampling, now);
-      sampling = undefined;
+      ended(now);
     }
+    suspect = idleRun = undefined;
+    // The first look of an idle stretch is the one the later ones are measured from.
+    if (idle) { idleRun = sample(now, 0).run_ns; idleAt = now; }
+  } else if (idle) {
+    // The whole process did not run for a while (it was stopped) and no timer of the idle loop's was due to be late for it: the loop is told.
+    if (gapped && !sampling && gapped.t1 - gapped.t0 > waited) self.postMessage({ held: { ms: Math.round(gapped.t1 - gapped.t0 - waited) } });
+    soon = idleLook(now, late);
   } else if (now - changedAt > (v & ALLOW_MASK) + SLACK_MS) {
     // After a gap its sample is this tick's, and the time before and after it is one stretch.
     sampling ??= gapped ?? open(now);
@@ -213,11 +298,12 @@ function tick() {
   }
   ticks++;
   if (!sampling && now - based >= BASE_MS) { based = now; rebase(); }
+  return soon || sampling ? TICK_MS : IDLE_LOOK_MS;
 }
 
 // What the samples of the last `window_ms` say (the loop asks once it runs again).
 function answer(m: Asked) {
-  tick();
+  waited = tick();
   const now = performance.now();
   const from = now - m.window_ms - SLACK_MS;
   let about: Around = {};
@@ -230,17 +316,30 @@ const guard = (f: () => void) => {
   if (failed) return;
   try { f(); } catch (e) {
     failed = true;
-    clearInterval(timer);
     self.postMessage({ error: e instanceof Error ? e.message : String(e) });
   }
 };
-let timer: ReturnType<typeof setInterval> | undefined;
+
+// Looks, and waits for the next look, until a message was posted to this
+// thread: then it returns to its event loop, which hands the message to
+// onmessage, and that comes back here. The wait ends early when the loop
+// raises the count (work began, or it stopped).
+function watch() {
+  while (!failed && beat) {
+    if (beat.length > SENT && Atomics.load(beat, SENT) !== received) return;
+    guard(() => { waited = tick(); });
+    if (failed) return;
+    Atomics.wait(beat, KICK, kicked, waited);
+    kicked = Atomics.load(beat, KICK);
+  }
+}
 
 self.onmessage = (ev: MessageEvent) => {
+  received++;
   const m = ev.data as { start: Started } | { label: [number, string] } | { asker: [number, string] } | Asked;
-  if ("label" in m) { labels[m.label[0]] = m.label[1]; return; }
-  if ("asker" in m) { askers[m.asker[0]] = m.asker[1]; return; }
-  if ("start" in m) {
+  if ("label" in m) labels[m.label[0]] = m.label[1];
+  else if ("asker" in m) askers[m.asker[0]] = m.asker[1];
+  else if ("start" in m) {
     guard(() => {
       beat = new Int32Array(m.start.beat);
       if (m.start.stmt) stmt = new Int32Array(m.start.stmt);
@@ -253,12 +352,10 @@ self.onmessage = (ev: MessageEvent) => {
       sample(performance.now(), 0);
       rebase();
       based = performance.now();
-      timer = setInterval(() => guard(tick), TICK_MS);
       let tid: number | undefined;
       try { tid = Number(readlinkSync("/proc/thread-self").split("/").pop()); } catch {}
       self.postMessage({ ready: true, tid });
     });
-    return;
-  }
-  guard(() => answer(m));
+  } else guard(() => answer(m));
+  watch();
 };
