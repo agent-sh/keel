@@ -138,11 +138,16 @@ export const backgroundWord = (n: number) => `${n} in background`;
 // a secret to give, a turn to resume, a message not sent. A session with three requests is three.
 // The one count behind the tab's title, the home headline, the list's line, the phone's dock and
 // the digest's headline. Give it top-level sessions: an agent's request is in its parent's state.
-export function waitsOnOwner(states: Iterable<Pick<SessionState, "watch" | "asks"> | undefined>): number {
+// A session whose machine does not answer is not counted in it (`countsNow`).
+export function waitsOnOwner(states: Iterable<Pick<SessionState, "watch" | "asks" | "offline"> | undefined>): number {
   let n = 0;
-  for (const st of states) if (st?.watch === "need") n += st.asks ?? 1;
+  for (const st of states) if (st?.watch === "need" && countsNow(st)) n += st.asks ?? 1;
   return n;
 }
+// Whether a session is counted by its state. One whose machine does not answer is counted as
+// Offline and as nothing else: what it last told is not what it is now, and nothing can be
+// answered there. Every count of states leaves it out (the tab's title, the headline, the list's line).
+export const countsNow = (st: { offline?: boolean } | undefined): boolean => !!st && !st.offline;
 
 // ---- Agents. An agent is a session: its word is its session's.
 // The agent's record says how it stands with its parent (running, waiting on

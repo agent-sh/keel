@@ -40,7 +40,7 @@ import { pickRows, rowKind, rowLine, sayMore, unseenFailures, watchSummary, whol
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { COUNTERS, OFFLINE, STATE_WORD, asOf } from "../../../src/core/state-words.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf, countsNow } from "../../../src/core/state-words.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { usePress } from "./ApprovalCard.tsx";
@@ -78,7 +78,7 @@ export function useHome() {
     const ranked = [...own].sort((a, b) => WATCH_RANK[watches[a.id]!] - WATCH_RANK[watches[b.id]!] || b.updated - a.updated);
     const told = ranked.map((s) => ({ id: s.id, st: states[s.id]! })), unseen = unseenFailures(own, watches);
     // A session whose machine does not answer is not counted: its state is the last it told, not what it is.
-    const sum = { ...watchSummary(told, unseen), head: watchSummary(told.filter((r) => !r.st.offline), unseen).head };
+    const sum = { ...watchSummary(told, unseen), head: watchSummary(told.filter((r) => countsNow(r.st)), unseen).head };
     return { ...sum, all: own, byId: Object.fromEntries(own.map((s) => [s.id, s])) as Record<string, Session>, states };
   }, [own, states]);
 }
@@ -237,7 +237,7 @@ function Row({ s, st, lead, stands }: { s: Session; st: SessionState; lead: bool
               <Held id={`${s.id}:${a!.id}:deny`} stands={stands} quiet busy={busy} testid="home-deny" title="Opens its card, where a denial takes your reason" onAct={deny} onRefused={notYet}>Deny…</Held>
             </>
           )}
-          {w === "need" && !here && !held && <Held id={`${s.id}:${a?.id ?? st.why}:review`} stands={stands} lead={lead} testid="home-review" onAct={open} onRefused={notYet}>{st.why === "approval" || st.why === "plan" ? "Review" : st.why === "question" || st.why === "owner" ? "Answer" : "Open"}</Held>}
+          {w === "need" && !here && !held && <Held id={`${s.id}:${a?.id ?? st.why}:review`} stands={stands} lead={lead && !st.offline} quiet={st.offline} testid="home-review" onAct={open} onRefused={notYet}>{st.offline ? "Open" : st.why === "approval" || st.why === "plan" ? "Review" : st.why === "question" || st.why === "owner" ? "Answer" : "Open"}</Held>}
           {held && <Held id={`${s.id}:resume`} stands={stands} lead={lead} testid="home-resume" onAct={() => void actions.resume(s.id).catch(reportError)} onRefused={notYet}>Resume</Held>}
           {(w === "fail" || w === "declined" || w === "stop") && <Held id={`${s.id}:open`} stands={stands} lead={lead} testid="home-see" onAct={open} onRefused={notYet}>Open</Held>}
         </span>

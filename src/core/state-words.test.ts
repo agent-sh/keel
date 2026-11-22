@@ -74,6 +74,8 @@ test("what waits on the owner is one count of things, each once", () => {
   // A session with three requests is three; a session that works or failed is none.
   expect(waitsOnOwner([st("need", { asks: 3 }), st("need"), st("work"), st("fail"), undefined])).toBe(4);
   expect(waitsOnOwner([])).toBe(0);
+  // A session whose machine does not answer is counted as offline, not by what it last told.
+  expect(waitsOnOwner([st("need", { asks: 2 }), { ...st("need", { asks: 3 }), offline: true }, { ...st("need"), offline: true }])).toBe(2);
   expect(countWord("need", 1)).toBe("1 needs you");
   expect(countWord("need", 4)).toBe("4 need you");
   expect(countName("fail", 2)).toBe("failed");

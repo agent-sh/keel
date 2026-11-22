@@ -30,7 +30,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
@@ -797,7 +797,8 @@ function CountsKeeper() {
   const under = useNeedUnderLooks().map((id) => rootSessionId(sessions, id) ?? id).join(" ");
   const counts = useMemo(() => {
     const off = new Set(down.split(" ").filter(Boolean));
-    const t = tally(top, states as Record<string, SessionState>, unread);
+    // (A session whose machine does not answer is counted as offline, below, and as nothing else.)
+    const t = tally(top.filter((s) => countsNow(states[s.id])), states as Record<string, SessionState>, unread);
     const more = under.split(" ").filter((id) => id && !t.need.includes(id) && top.some((s) => s.id === id));
     return { ...t, need: [...t.need, ...more], offline: top.filter((s) => s.machine && off.has(s.machine)).map((s) => s.id) };
   }, [top, states, unread, down, under]);
