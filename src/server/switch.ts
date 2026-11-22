@@ -7,8 +7,30 @@
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, SessionSettings } from "../core/types.ts";
-import { speedOffer, type Providers } from "../providers/registry.ts";
+import { ModelLookupError, speedOffer, type Providers } from "../providers/registry.ts";
 import type { ModelInfo } from "../providers/types.ts";
+
+// Preview and PATCH must accept exactly the same model, even if it was
+// missing from the cached listing when the owner picked it.
+export async function resolveSwitchModel(providers: Providers, id: string): Promise<ModelInfo> {
+  try { return (await providers.resolve(id, { scoped: true })).info; }
+  catch (e) {
+    if (!(e instanceof ModelLookupError)) throw e;
+    throw Object.assign(e, { status: e.listingFailed ? 409 : 400 });
+  }
+}
+
+// An optional summary should not spend a request on a route already known to
+// be unavailable. Neither this check nor a switch away needs to relist it.
+export function switchCompactionBlock(providers: Providers, model: string): string | undefined {
+  const pid = model.slice(0, model.indexOf(":"));
+  const label = providers.get(pid)?.label ?? pid;
+  const error = providers.listing(pid).error;
+  if (error) return `${label}'s model listing failed: ${error}`;
+  const problem = providers.problem(pid);
+  if (problem) return `${label}: ${problem.message}`;
+  if (!providers.cachedModel(model)) return `the current model ${model} is unavailable`;
+}
 
 // Effort levels from least to most: a level the new model does not list goes
 // to the nearest one it does (xhigh on a model that stops at high runs high).
@@ -57,7 +79,7 @@ export type SwitchNote = {
 };
 
 export async function switchNote(providers: Providers, from: string, to: ModelInfo, o: { by?: SwitchBy; effort?: { from?: string; to?: string }; running?: boolean } = {}): Promise<SwitchNote> {
-  const was = (await providers.models()).find((m) => m.id === from);
+  const was = providers.cachedModel(from);
   // Two routes may list one name: then each end says its provider (its id
   // when the two providers' labels are the same too).
   const label = (id: string) => providers.statuses().find((p) => p.id === id.slice(0, id.indexOf(":")))?.label ?? id.slice(0, id.indexOf(":"));

@@ -3,6 +3,7 @@
 import { switchWarning } from "../../engine/cachewarn.ts";
 import { COMPACT_SHARE, contextTokens } from "../../engine/compact.ts";
 import type { RouteModule } from "../app.ts";
+import { carrySettings, resolveSwitchModel, switchCompactionBlock } from "../switch.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -12,11 +13,12 @@ export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
       const s = store.session(req.params.id);
       if (!s) return json({ error: "no such session" }, 404);
       const q = new URL(req.url).searchParams;
-      const models = await providers.models();
       const want = q.get("model") || s.model;
-      const to = models.find((m) => m.id === want);
-      if (!to) return json({ error: `model ${want} is not listed` }, 400);
-      const effort = q.has("effort") ? q.get("effort") || undefined : s.settings.effort;
+      const moving = want !== s.model;
+      if (q.has("model") && !moving && !q.has("effort")) return json({ unchanged: true, cached_tokens: 0, warning: null, running: engine.isRunning(s.id) });
+      const to = await resolveSwitchModel(providers, want);
+      const running = engine.isRunning(s.id);
+      const effort = q.has("effort") ? q.get("effort") || undefined : moving ? carrySettings(s.settings, to).effort : s.settings.effort;
       if (effort && q.has("effort") && !to.efforts.includes(effort)) return json({ error: `${to.name} does not take effort ${effort}` }, 400);
       const lineage = engine.lineage(s.id);
       const ranOn = [...lineage].reverse().find((e) => e.kind === "assistant")?.data.model ?? s.model;
@@ -28,10 +30,10 @@ export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
       const fit = { used, window: to.context, compact_at: compactAt, over: used >= compactAt };
       return json({ ...switchWarning({
         lineage, now: Date.now(), to, toEffort: effort,
-        from: models.find((m) => m.id === ranOn),
+        from: providers.cachedModel(ranOn),
         toWire: providers.get(to.provider)?.wire ?? "anthropic_messages",
         fromWire: providers.get(ranOn.slice(0, ranOn.indexOf(":")))?.wire ?? "anthropic_messages",
-      }), fit, running: engine.isRunning(s.id) });
+      }), fit, running, can_compact_first: moving && !running && !switchCompactionBlock(providers, s.model) });
     },
   },
 });

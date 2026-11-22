@@ -17,7 +17,7 @@ import { readsOf } from "./reads.ts";
 import { lastCall } from "./routes/calls-read.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
-import { carrySettings, commitSwitch } from "./switch.ts";
+import { carrySettings, commitSwitch, resolveSwitchModel } from "./switch.ts";
 import { bundleRoutes, codingOf, compressJson } from "./compress.ts";
 import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
 import { fitted } from "../engine/image-fit.ts";
@@ -315,7 +315,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (body.title !== undefined && !String(body.title).trim()) return bad("the title cannot be empty");
           // The whole change is checked before anything is written: a refused
           // request leaves the model, the settings and the history as they were.
-          const moving = body.model && body.model !== s.model ? (await providers.resolve(body.model)).info : undefined;
+          const moving = body.model && body.model !== s.model ? await resolveSwitchModel(providers, body.model) : undefined;
           // A model switch keeps only what the new model takes (an effort or a
           // speed it does not list is dropped, as the profile POST does).
           let settings = moving ? carrySettings(s.settings, moving) : s.settings;

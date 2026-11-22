@@ -7,6 +7,7 @@ import { RetryTooLong } from "../../engine/retry.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { ProviderError } from "../../providers/http.ts";
 import type { RouteModule } from "../app.ts";
+import { resolveSwitchModel, switchCompactionBlock } from "../switch.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -164,8 +165,11 @@ export const turnRoutes: RouteModule = (deps) => {
         if (engine.isRunning(s.id)) return bad("a turn is running", 409);
         const b = (await req.json().catch(() => ({}))) as any;
         // `for_model`: the model the session moves to next; the owner's words kept verbatim fit its window too.
-        const next = b.for_model ? (await providers.models()).find((m) => m.id === b.for_model) : undefined;
-        if (b.for_model && !next) return bad(`model ${b.for_model} is not listed`);
+        const next = b.for_model ? await resolveSwitchModel(providers, b.for_model) : undefined;
+        if (next) {
+          const blocked = switchCompactionBlock(providers, s.model);
+          if (blocked) return bad(`Cannot compact before switching: ${blocked}`, 409);
+        }
         try {
           const ev = await engine.compactNow(s.id, { focus: b.focus ? String(b.focus).slice(0, 2000) : undefined, next });
           return json({ ok: true, event: ev });

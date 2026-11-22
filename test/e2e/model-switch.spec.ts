@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { expect, test, type Page } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -101,4 +102,93 @@ test("a switch to a smaller window offers to compact first", async ({ page, requ
   expect((await (await request.get(`/api/sessions/${session.id}/switch-warning?model=scripted:stand-in`)).json()).fit.over).toBe(false);
   await shoot(page, "modelswitch-05-compacted-then-switched");
   await request.delete(`/api/sessions/${session.id}`);
+});
+
+test("a stale switch pick distinguishes a failed listing from a missing model", async ({ page, request }) => {
+  const source = "scripted:stand-in-strict";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === source), "needs a scratch daemon with the scripted provider");
+
+  let state: "failed" | "empty" | "listed" = "listed";
+  let listings = 0;
+  let calls = 0;
+  const server = createServer((req, res) => {
+    if (req.url !== "/v1/models") {
+      if (req.method === "POST") calls++;
+      res.writeHead(404).end();
+      return;
+    }
+    listings++;
+    const data = state === "failed" ? { error: { message: "fixture listing offline" } } : { data: state === "listed" ? [{ id: "target" }] : [] };
+    res.writeHead(state === "failed" ? 502 : 200, { "content-type": "application/json" }).end(JSON.stringify(data));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as { port: number };
+  const endpoint = "/api/providers/endpoints/switch-fixture";
+  const target = "switch-fixture:target";
+  let path: string | undefined;
+  try {
+    const added = await request.put(endpoint, { data: { config: { label: "Switch fixture", base_url: `http://127.0.0.1:${address.port}/v1`, auth: "none" } } });
+    expect(added.ok()).toBe(true);
+    expect((await added.json()).listing.state).toBe("ok");
+    const { session } = await (await request.post("/api/sessions", { data: { model: source } })).json();
+    path = `/api/sessions/${session.id}`;
+    const preview = (model: string) => request.get(`${path}/switch-warning?model=${encodeURIComponent(model)}`);
+
+    expect((await request.post(`${path}/messages`, { data: { text: "Hello there." } })).ok()).toBe(true);
+    await page.goto(`/s/${session.id}`);
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+    await page.getByTestId("model-picker").click();
+    await page.getByPlaceholder("Search models").fill(target);
+    const option = page.getByTestId("model-popup").locator(`[data-model="${target}"]`).first();
+    await expect(option).toBeVisible();
+    // The browser has seen this model, but the daemon no longer has it in its cache.
+    state = "empty";
+    const withdrawn = await request.post("/api/providers/refresh", { data: { provider: "switch-fixture" } });
+    expect((await withdrawn.json()).providers.find((p: any) => p.id === "switch-fixture").listing.models).toBe(0);
+    state = "failed";
+    const failure = page.waitForResponse((r) => r.url().includes("/switch-warning?"));
+    await option.click();
+    const message = /No model switch was made: Switch fixture.*listing.*fixture listing offline/i;
+    await expect(page.locator(".k-tip[data-open]")).toHaveText(message, { timeout: 6000 });
+    await expect(page.getByTestId("announce-alert")).toHaveText(message);
+    await shoot(page, "modelswitch-06-listing-failed");
+    expect((await failure).status()).toBe(409);
+    expect((await (await request.get(path)).json()).session.model).toBe(source);
+
+    state = "empty";
+    const absent = await preview(target);
+    expect(absent.status()).toBe(400);
+    expect(await absent.json()).toMatchObject({ error: expect.stringContaining(`model ${target} is not in`) });
+
+    state = "listed";
+    const before = listings;
+    await pick(page, { id: target, model: target });
+    const confirm = page.getByTestId("confirm");
+    await expect(confirm).toContainText("without the prompt cache");
+    await expect(confirm.getByTestId("confirm-alt")).toHaveText("Compact first");
+    expect(listings).toBe(before + 1);
+    expect((await (await request.get(path)).json()).session.model).toBe(source);
+    await confirm.getByRole("button", { name: "Switch" }).click();
+    await expect(page.getByTestId("model-note")).toContainText("to target");
+    expect((await (await request.get(path)).json()).session.model).toBe(target);
+    expect(listings).toBe(before + 1);
+
+    // A failed listing can keep a last-known model. It is not a reason to
+    // compact on that route or to block leaving it.
+    state = "failed";
+    expect((await request.post("/api/providers/refresh", { data: { provider: "switch-fixture" } })).ok()).toBe(true);
+    expect(await (await preview(target)).json()).toMatchObject({ unchanged: true, warning: null });
+    expect(await (await preview(source)).json()).toMatchObject({ can_compact_first: false });
+    const compact = await request.post(`${path}/compact`, { data: { for_model: source } });
+    expect(await compact.json()).toMatchObject({ error: expect.stringMatching(/cannot compact.*Switch fixture/i) });
+    expect(compact.status()).toBe(409);
+    expect((await request.patch(path, { data: { model: source } })).ok()).toBe(true);
+    expect(calls).toBe(0);
+  } finally {
+    if (path) await request.delete(path);
+    await request.delete(endpoint);
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

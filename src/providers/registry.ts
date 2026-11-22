@@ -30,6 +30,10 @@ const SECTION: Record<string, string> = {
   bedrock: "amazon-bedrock", anthropic: "anthropic", openai: "openai", chatgpt: "openai", gemini: "google", grok: "xai",
 };
 
+export class ModelLookupError extends Error {
+  constructor(message: string, readonly listingFailed = false) { super(message); }
+}
+
 export type Listing = { state: "ok" | "failed" | "saved" | "never"; fetched?: number; error?: string; models: ListedModel[]; identity?: string };
 // The owner's picks: the default, models hidden per provider, whole providers
 // hidden from the picker, and favorites (full ids, in the owner's order).
@@ -401,20 +405,38 @@ export class Providers {
 
   // ---- requests ----
 
-  async resolve(id: string): Promise<{ provider: Provider; info: ModelInfo }> {
+  cachedModel(id: string): ModelInfo | undefined {
+    const provider = this.get(id.slice(0, id.indexOf(":")));
+    if (!provider?.available()) return;
+    const listed = this.listing(provider.id).models.find((m) => m.model === id.slice(provider.id.length + 1));
+    return listed && this.join(provider, listed);
+  }
+
+  async resolve(id: string, { scoped = false } = {}): Promise<{ provider: Provider; info: ModelInfo }> {
     const pid = id.slice(0, id.indexOf(":"));
     if (!this.fixed && pid.includes("/")) await this.plugins.settled();
     const provider = this.get(pid);
     // A key that could not be read a while ago (a locked keyring, one saved since) is read again before refusing.
     if (provider && !provider.available()) await provider.recheck?.(MISSING_RECHECK_MS);
-    if (!provider || !provider.available()) throw new Error(`provider ${pid} is not available`);
-    let info = (await this.models()).find((m) => m.id === id);
+    const label = scoped ? provider?.label ?? pid : pid;
+    if (!provider?.available()) throw new ModelLookupError(`provider ${label} is not available`);
+    // A switch only needs the named route. Do not ask unrelated providers
+    // for their listings when the picker is ahead of this cache.
+    if (scoped) await this.catalog.ready();
+    let info = scoped ? this.cachedModel(id) : (await this.models()).find((m) => m.id === id);
     if (!info) {
       // A model the last list does not hold may be new: ask that provider once.
       await this.refresh(pid);
-      info = this.current().find((m) => m.id === id);
+      info = scoped ? this.cachedModel(id) : this.current().find((m) => m.id === id);
     }
-    if (!info) throw new Error(`model ${id} is not in ${pid}'s listing`);
+    if (!info) {
+      if (scoped) {
+        const error = this.listing(pid).error;
+        if (error) throw new ModelLookupError(`${label}'s model listing failed: ${error}`, true);
+        if (!this.get(pid)?.available()) throw new ModelLookupError(`provider ${label} is not available`);
+      }
+      throw new ModelLookupError(`model ${id} is not in ${label}'s listing`);
+    }
     return { provider: this.wrap(provider, info), info };
   }
 
