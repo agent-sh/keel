@@ -6,6 +6,8 @@
 import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
+import { searchLimits, SHELL_TOOLS, STATE_WORDS } from "../search-query.ts";
+import { board } from "./state.ts";
 
 // How much of one tool call's input or output is indexed (the rest is not
 // searched; a hit on a cut one says so).
@@ -137,13 +139,23 @@ export const searchRoutes: RouteModule = ({ store }) => {
       // ?q=words&limit=n (per group: titles and conversation hits are cut apart)
       // [&roots=1: no subagent sessions] [&archived=0|1: one partition]
       // [&cwd=folder] [&sessions=1: one hit per session, the best]
+      // What it is limited to, in the query itself or as parameters (search-query.ts):
+      //   in:commands (in=commands), since:yesterday (since=), until: (until=), state:failed (state=).
+      // Every hit has `ts`, when it happened; the answer's `limits` says what the search was limited to, in words.
+      // [&newest=1: the newest hits first, not the best]
       GET: async (req: Request) => {
         const u = new URL(req.url);
-        const q = (u.searchParams.get("q") ?? "").trim();
-        if (q.length > 500) return Response.json({ error: "query over 500 bytes" }, { status: 400 });
+        const asked = (u.searchParams.get("q") ?? "").trim();
+        if (asked.length > 500) return Response.json({ error: "query over 500 bytes" }, { status: 400 });
         const limit = Math.min(Number(u.searchParams.get("limit") ?? 20) || 20, 100);
+        // The limits a parameter names are the same as the ones written in the query.
+        const params = ["in", "since", "until", "state"].map((k) => (u.searchParams.get(k) ? `${k}:${u.searchParams.get(k)!.trim().replace(/\s+/g, "-")}` : "")).filter(Boolean);
+        const lim = searchLimits([asked, ...params].join(" "));
+        const bad = params.find((p) => lim.words.split(" ").includes(p));
+        if (bad) return Response.json({ error: `${bad.replace(":", " is not a limit this search knows: ")} (in: commands, prompts, replies, output, summaries; since and until: 1h, 2d, yesterday, today, a date; state: ${Object.keys(STATE_WORDS).join(", ")})` }, { status: 400 });
+        const q = lim.words;
         const match = ftsQuery(q);
-        if (!match) return Response.json({ query: q, hits: [] });
+        if (!match) return Response.json({ query: q, hits: [], ...(lim.said.length ? { limits: lim.said } : {}) });
         const roots = u.searchParams.get("roots") === "1";
         // Subagent sessions name their parent (the agents module adds the column).
         const pid = store.columnExists("sessions", "parent_id") ? "s.parent_id" : "NULL";
@@ -155,16 +167,34 @@ export const searchRoutes: RouteModule = ({ store }) => {
         if (roots) scope.push(`${pid} IS NULL`);
         if (arch === "0" || arch === "1") { scope.push("s.archived = ?"); args.push(Number(arch)); }
         if (cwd) { scope.push("s.workspace = ?"); args.push(cwd); }
+        // The sessions in the state asked for, as the daemon tells it now.
+        const inState = lim.state ? Object.entries(board?.all() ?? {}).filter(([, st]) => st.watch === lim.state).map(([id]) => id) : undefined;
+        if (inState) {
+          if (!inState.length) return Response.json({ query: q, hits: [], limits: lim.said });
+          scope.push(`s.id IN (${inState.map(() => "?").join(",")})`);
+          args.push(...inState);
+        }
         const where = scope.length ? `AND ${scope.join(" AND ")}` : "";
+        // What limits the rows of the index: their kind (a command is a call of a shell tool) and their time.
+        const rows: string[] = [];
+        const rowArgs: (string | number)[] = [];
+        if (lim.kinds) { rows.push(`f.kind IN (${lim.kinds.map(() => "?").join(",")})`); rowArgs.push(...lim.kinds); }
+        if (lim.commands) { rows.push(`(${SHELL_TOOLS.map(() => "f.text LIKE ?").join(" OR ")})`); rowArgs.push(...SHELL_TOOLS.map((t) => `${t} %`)); }
+        if (lim.since !== undefined) { rows.push("CAST(f.ts AS INTEGER) >= ?"); rowArgs.push(lim.since); }
+        if (lim.until !== undefined) { rows.push("CAST(f.ts AS INTEGER) < ?"); rowArgs.push(lim.until); }
+        const limited = rows.length > 0;
         // Every word matches the title or folder; matched over all eligible sessions, then ranked and cut.
         const words = fold(q).split(/\s+/).filter(Boolean);
-        const titles = store.db
-          .query<any, (string | number)[]>(`SELECT s.id, s.title, s.workspace, s.updated, s.archived, ${pid} AS parent_id FROM sessions s WHERE 1 ${where} ORDER BY s.archived, s.updated DESC`)
+        // A title is no command and has no time of its own: a search limited to a kind of row or a time lists none.
+        const titles = limited ? [] : store.db
+          .prepare<any, (string | number)[]>(`SELECT s.id, s.title, s.workspace, s.updated, s.archived, ${pid} AS parent_id FROM sessions s WHERE 1 ${where} ORDER BY s.archived, s.updated DESC`)
           .all(...args)
           .filter((t) => { const hay = fold(`${t.title ?? ""} ${t.workspace}`); return words.every((w) => hay.includes(w)); })
           .slice(0, limit);
         // The index is read off the loop: one word can match most of a long history.
-        const content = await readsOf(store).run("search.content", { match, where, args, limit, perSession, pid });
+        const content = await readsOf(store).run("search.content", {
+          match, where: `${where}${limited ? ` AND ${rows.join(" AND ")}` : ""}`, args: [...args, ...rowArgs], limit, perSession, pid, newest: u.searchParams.get("newest") === "1",
+        });
         const hits: Hit[] = [
           ...titles.map((t) => ({ session_id: t.id, session_title: t.title, kind: "title", ts: t.updated, snippet: t.title, cwd: t.workspace, archived: !!t.archived, parent_id: t.parent_id ?? null })),
           ...content.map((c) => {
@@ -176,7 +206,7 @@ export const searchRoutes: RouteModule = ({ store }) => {
             };
           }),
         ];
-        return Response.json({ query: q, hits });
+        return Response.json({ query: q, hits, ...(lim.said.length ? { limits: lim.said } : {}) });
       },
     },
   };

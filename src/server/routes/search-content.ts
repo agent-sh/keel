@@ -13,6 +13,8 @@ export type ContentQuery = {
   perSession: boolean;
   // The sessions column that names a subagent's parent, or NULL when there is none.
   pid: string;
+  // The newest hits first (a question about when), not the best match first.
+  newest?: boolean;
 };
 export type ContentHit = {
   event_id: string; session_id: string; kind: string; ts: number; ref: string | null; cut: number; snippet: string;
@@ -27,9 +29,11 @@ export function searchContent(db: Database, q: ContentQuery): ContentHit[] {
          s.title, s.workspace, s.archived, ${q.pid} AS parent_id
        FROM search_idx f JOIN sessions s ON s.id = f.session_id
        WHERE search_idx MATCH ? ${q.where}`;
+    const order = q.newest ? "CAST(ts AS INTEGER) DESC" : "rank";
+    // Made for this search and freed after it: its text carries the search's limits.
     content = q.perSession
-      ? db.query<ContentHit, (string | number)[]>(`SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY rank) AS n FROM (${inner})) WHERE n = 1 ORDER BY archived, rank LIMIT ?`).all(q.match, ...q.args, q.limit)
-      : db.query<ContentHit, (string | number)[]>(`${inner} ORDER BY s.archived, rank LIMIT ?`).all(q.match, ...q.args, q.limit);
+      ? db.prepare<ContentHit, (string | number)[]>(`SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ${order}) AS n FROM (${inner})) WHERE n = 1 ORDER BY archived, ${order} LIMIT ?`).all(q.match, ...q.args, q.limit)
+      : db.prepare<ContentHit, (string | number)[]>(`${inner} ORDER BY s.archived, ${q.newest ? "CAST(f.ts AS INTEGER) DESC" : "rank"} LIMIT ?`).all(q.match, ...q.args, q.limit);
   } catch {
     return []; // a query FTS cannot parse matches nothing
   }

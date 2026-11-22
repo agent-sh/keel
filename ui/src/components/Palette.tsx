@@ -17,7 +17,7 @@ function openSession(id: string) {
   const go = () => { if (modalOpen() && ++frames < 60) requestAnimationFrame(go); else openWaiting(id); };
   requestAnimationFrame(go);
 }
-import { ago, cn, folderNames } from "../lib/utils.ts";
+import { ago, clock, cn, folderNames } from "../lib/utils.ts";
 import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { machineName } from "../lib/fleet.ts";
 import { Kbd } from "./Kbd.tsx";
@@ -65,7 +65,8 @@ export function Palette() {
 
   // The daemon's answer for one query: rows of an older query are never shown
   // or opened under a newer one.
-  const [search, setSearch] = useState<{ q: string; hits: Hit[]; failed?: string }>({ q: "", hits: [] });
+  // `limits`: what the daemon limited the search to, in words (in:commands, since:yesterday, state:failed in the query).
+  const [search, setSearch] = useState<{ q: string; hits: Hit[]; failed?: string; limits?: string[] }>({ q: "", hits: [] });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => { if (open) { setQ(""); setSelKey(null); setSearch({ q: "", hits: [] }); } }, [open]);
   const wantsSearch = q.trim().length >= 2;
@@ -78,7 +79,7 @@ export function Palette() {
         .then(async (r) => {
           const body = await r.json().catch(() => ({}));
           if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
-          setSearch({ q, hits: body.hits ?? [] });
+          setSearch({ q, hits: body.hits ?? [], limits: body.limits });
         })
         .catch((e) => {
           if (e.name === "AbortError") return;
@@ -91,6 +92,7 @@ export function Palette() {
   const searching = wantsSearch && search.q !== q;
   const hits = search.q === q ? search.hits : [];
   const searchFailed = wantsSearch && search.q === q ? search.failed : undefined;
+  const limits = wantsSearch && search.q === q ? search.limits : undefined;
 
   const entries = useMemo(() => {
     const out: Entry[] = [];
@@ -147,7 +149,8 @@ export function Palette() {
       keyed.add(key);
       out.push({
         key, group: "In conversations",
-        detail: `${h.archived ? "Archived · " : ""}${tool ? (h.kind === "tool_use" ? "Command · " : "Tool output · ") : h.kind === "summary" ? "Summary · " : ""}${where}${h.partial ? " · first part searched" : ""}`,
+        // When it happened first: a hit is a moment of a session.
+        detail: `${clock(h.ts, { date: true })} · ${h.archived ? "Archived · " : ""}${tool ? (h.kind === "tool_use" ? "Command · " : "Tool output · ") : h.kind === "summary" ? "Summary · " : ""}${where}${h.partial ? " · first part searched" : ""}`,
         label: <><Snippet text={h.snippet} />{h.archived && <Archived />}</>, icon: tool ? <SquareTerminal className="size-4" /> : <TextSearch className="size-4" />, score: 50 - i,
         // Read it where it is: another branch is previewed, the session's own branch stays; a tool hit opens its card.
         run: () => { setUI({ focusEvent: h.event_id!, focusCall: tool ? h.ref ?? null : null, preview: { session: h.session_id, event: h.event_id! } }); navigate({ name: "session", id: h.session_id }); },
@@ -223,7 +226,7 @@ export function Palette() {
             />
           </div>
           <div ref={list} id="palette-list" className="flex-1 overflow-y-auto overscroll-contain p-1.5" role="listbox" aria-label="Results" aria-busy={searching || undefined}>
-            {entries.length === 0 && !searching && !searchFailed && <p className="k-empty px-3 py-4">Nothing matches "{q}".</p>}
+            {entries.length === 0 && !searching && !searchFailed && <p className="k-empty px-3 py-4">Nothing matches "{q}"{limits?.length ? ` (${limits.join(", ")})` : ""}.</p>}
             {entries.map((e, i) => (
               <div key={e.key}>
                 {(i === 0 || entries[i - 1]!.group !== e.group) && (
@@ -264,6 +267,12 @@ export function Palette() {
             <span className="flex items-center gap-1.5"><Kbd keys="↑" /><Kbd keys="↓" /> move</span>
             <span className="flex items-center gap-1.5"><Kbd keys="enter" /> open</span>
             <span className="flex items-center gap-1.5"><Kbd keys="escape" /> close</span>
+            {/* What a search can be limited to, said where a search is typed; once it is, what it was limited to. */}
+            {wantsSearch && (
+              <span className="ml-auto min-w-0 truncate" data-testid="palette-limits">
+                {limits?.length ? <>Limited to <span className="text-muted">{limits.join(", ")}</span></> : <>Limit a search: <span className="font-mono">in:commands since:yesterday state:failed</span></>}
+              </span>
+            )}
           </div>
         </Dialog.Popup>
       </Dialog.Portal>

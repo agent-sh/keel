@@ -1,6 +1,7 @@
 // keel sessions | ls | show | logs | stop | send | approve | attach | open |
 // resume | export | models: sessions from a terminal, as a client of the
 // running daemon.
+import { localStamp, zoneNote } from "../core/clock.ts";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
@@ -14,6 +15,51 @@ import { exitOf, heldNote, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watc
 const home = homedir();
 const tilde = (p: string) => (p.startsWith(home) ? "~" + p.slice(home.length) : p);
 const modelName = (id: string) => id.replace(/^[\w-]+:/, "").replace(/^(us|eu|apac|global)\./, "").replace(/^(anthropic|openai|google|meta|mistral)\./, "");
+
+// ---- keel search
+
+const SEARCH_USAGE = `keel search QUERY [options]
+  What was said and done in any session, each hit with when it happened and its session.
+  The query takes its limits in its own words, or as options:
+    in:commands (--commands)      only shell commands a session ran
+    in:prompts | in:replies | in:output | in:summaries (--in KIND)
+    since:1h | since:2d | since:yesterday | since:today | since:2026-11-20 (--since, --until)
+    state:failed | state:done | state:working | state:needs-you (--state)   the session's state now
+  keel search "git push" --commands --since yesterday      which session ran git push yesterday
+
+  -a, --all          archived sessions too
+      --subagents    subagents' sessions too
+      --best         the best matches first (the newest first by default)
+  -n, --limit N      at most N hits (default 20)
+      --json         the hits as JSON (times in epoch milliseconds)`;
+
+const search = command("search", SEARCH_USAGE, {
+  all: { type: "boolean", short: "a" }, subagents: { type: "boolean" }, limit: { type: "string", short: "n" }, best: { type: "boolean" },
+  commands: { type: "boolean" }, in: { type: "string" }, since: { type: "string" }, until: { type: "string" }, state: { type: "string" },
+}, async (v, pos, c) => {
+  const limit = v.limit ? Number(v.limit) : 20;
+  if (!(limit > 0)) return usageError("search", "--limit is a number above 0", SEARCH_USAGE);
+  const q = pos.join(" ").trim();
+  if (!q) return usageError("search", "name what to search for", SEARCH_USAGE);
+  const p = new URLSearchParams({ q, limit: String(Math.min(limit, 100)) });
+  if (!v.best) p.set("newest", "1");
+  if (!v.subagents) p.set("roots", "1");
+  if (!v.all) p.set("archived", "0");
+  if (v.commands || v.in) p.set("in", v.commands ? "commands" : v.in);
+  for (const k of ["since", "until", "state"] as const) if (v[k]) p.set(k, v[k]);
+  const r = await c.get<{ query: string; hits: any[]; limits?: string[] }>(`/api/search?${p}`);
+  const hits = r.hits.filter((h) => h.kind !== "title");
+  if (v.json) return (printJson({ ...r, hits }), EXIT.ok);
+  const said = r.limits?.length ? `, limited to ${r.limits.join(", ")}` : "";
+  if (!hits.length) return (console.error(`nothing matches ${JSON.stringify(r.query)}${said}`), EXIT.ok);
+  console.log(`${hits.length} ${hits.length === 1 ? "hit" : "hits"} for ${JSON.stringify(r.query)}${said}, ${v.best ? "the best" : "the newest"} first. ${zoneNote()}.`);
+  const mark = (k: string) => (k === "user" ? ">" : k === "tool_use" ? "$" : k === "tool_result" ? "=" : k === "summary" ? "~" : " ");
+  for (const h of hits) {
+    console.log(`${localStamp(h.ts)}  ${mark(h.kind)} ${line(h.snippet.replace(/[\u0001\u0002]/g, "")).slice(0, 110)}`);
+    console.log(`                       ${line(h.session_title) || "(untitled)"}${h.archived ? "  [archived]" : ""}  [session=${h.session_id.slice(-12)}]`);
+  }
+  return EXIT.ok;
+});
 
 // ---- keel sessions / keel ls
 
@@ -596,6 +642,7 @@ const stuck = command("stuck", STUCK_USAGE, { after: { type: "string" } }, async
 export const sessionCommands = {
   sessions,
   ls: sessions,
+  search,
   stuck,
   show: logsOf("show", SHOW_USAGE),
   logs: logsOf("logs", LOGS_USAGE),
