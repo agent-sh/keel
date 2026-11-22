@@ -183,6 +183,49 @@ test("sessions on another machine sit under that machine's separator; a local on
     await page.getByTestId("sum-offline").click();
     await expect(row(page, placed.id)).toBeFocused();
     await shoot(page, "session-rows-05-remote-offline");
+
+    // All five counts at once (one needs the owner, one failed, one works, one is unread, one is on the
+    // machine that does not answer): the line fits its bar at every text size and at the narrowest the
+    // list goes. Words give way before figures, and no figure is cut.
+    const mk = async (title: string, text: string, mode = "full-auto") => {
+      const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title, workspace: WS } })).json();
+      made.push(session.id);
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+      return session.id as string;
+    };
+    const state = async (id: string) => ((await (await request.get("/api/state")).json()).states ?? {})[id]?.watch as string | undefined;
+    const asks = await mk("Asks before it deletes", script([{ name: "Bash", input: { command: "rm -rf dist" } }]), "ask");
+    const bad = await mk("Fails on the bill", "script:billing");
+    const busy = await mk("Runs for a while", script([{ name: "Bash", input: { command: "tail -f /dev/null" } }]));
+    await mk("Finished unseen", "script:say Done.");
+    await expect.poll(() => state(asks), { timeout: 30_000 }).toBe("need");
+    await expect.poll(() => state(bad), { timeout: 30_000 }).toBe("fail");
+    await expect.poll(() => state(busy), { timeout: 30_000 }).toBe("work");
+    try {
+      for (const [scale, width] of [[1, null], [0.9, null], [1.5, null], [1, 232], [1.5, 348]] as const) {
+        const at = `text size ${scale}${width ? ", the narrowest list" : ""}`;
+        await page.evaluate(([s, w]) => { localStorage.setItem("keel.textScale", JSON.stringify(s)); if (w) localStorage.setItem("keel.listW", JSON.stringify(w)); else localStorage.removeItem("keel.listW"); }, [scale, width] as const);
+        await page.reload();
+        for (const kind of ["need", "fail", "work", "unread", "offline"]) await expect(page.getByTestId(`sum-${kind}`), `the ${kind} count at ${at}`).toBeVisible();
+        // Settled: the faces are in and the line has been measured with them.
+        await page.evaluate(() => document.fonts.ready);
+        const line = await page.getByTestId("list-summary").evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          const chips = [...el.querySelectorAll<HTMLElement>(".k-sum-chip")];
+          const cut = chips.filter((c) => { const b = c.getBoundingClientRect(), n = c.querySelector(".k-sum-n")!.getBoundingClientRect(); return n.width < 1 || b.right > box.right + 0.5 || b.left < box.left - 0.5; });
+          return { over: el.scrollWidth - el.clientWidth, cut: cut.map((c) => c.dataset.kind), words: chips.filter((c) => !c.hasAttribute("data-bare")).map((c) => c.dataset.kind) };
+        });
+        expect(line.cut, `counts cut at ${at}`).toEqual([]);
+        expect(line.over, `the line's content beyond its bar at ${at}`).toBeLessThanOrEqual(0);
+        // What calls the owner keeps its word longest.
+        if (line.words.length) expect(line.words, at).toContain("need");
+        if (scale === 1 && !width) await shoot(page, "session-rows-06-five-counts");
+      }
+    } finally {
+      await page.evaluate(() => { localStorage.removeItem("keel.textScale"); localStorage.removeItem("keel.listW"); });
+      await request.post(`/api/sessions/${busy}/interrupt`).catch(() => {});
+    }
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);
     await request.delete(`/api/fleet/machines/${mid}`);

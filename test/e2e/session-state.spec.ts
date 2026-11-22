@@ -324,6 +324,8 @@ test("a session that needs the owner or failed is never behind the fold, and a f
       await send(request, id, "Say hello.");
     }
     for (const id of quiet) await expect.poll(() => ended(id), { timeout: 30_000 }).toBe(true);
+    // (They were read: a finished session with something unread is not folded away either, see rail-stable.spec.ts.)
+    for (const id of quiet) await request.post("/api/alerts/read", { data: { session_id: id } });
 
     await page.goto(`/s/${quiet.at(-1)}`);
     await expect(row(page, quiet.at(-1)!)).toBeVisible();
@@ -345,7 +347,7 @@ test("a session that needs the owner or failed is never behind the fold, and a f
     await expect(page.getByTestId("sum-need")).toHaveText(/1\s*needs you/i);
     await expect(page.getByTestId("sum-fail")).toHaveText(/3\s*failed/i);
     await shoot(page, "session-state-05-never-folded");
-    await page.setViewportSize({ width: 1920, height: 560 });
+    await page.setViewportSize({ width: 1920, height: 480 });
     await page.getByTestId("session-list").evaluate((nav) => { nav.scrollTop = 0; });
     await expect(row(page, asks)).not.toBeInViewport();
     await expect(page.getByTestId("sum-need")).toBeInViewport({ ratio: 1 });
@@ -578,6 +580,8 @@ test("the card beside a mark says a question waits, as it says an approval waits
   }
 });
 
+// With two lines a row (the choice in the Arrange menu) the row says its state and its reason,
+// and the card adds only what it lacks. A row of one line says neither: its card is the whole one.
 test("the card beside a list row adds what the row lacks and repeats nothing of it", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });
@@ -592,9 +596,25 @@ test("the card beside a list row adds what the row lacks and repeats nothing of 
 
     await page.goto(`/s/${watcher}`);
     const r = row(page, approval);
-    await expect(r.getByTestId("row-why")).toContainText("Approve Bash: rm -rf dist");
-    await r.hover();
     const card = page.getByTestId("rail-card");
+    // One line a row: the whole card, with the state's word, the title and the reason in full.
+    await expect(page.getByTestId("session-list")).toHaveAttribute("data-lines", "one");
+    await r.hover();
+    await expect(card).toBeVisible();
+    await expect(card).not.toHaveAttribute("data-kind", "row");
+    await expect(card).toContainText(/needs you/i);
+    await expect(card).toContainText("Clean the build output before the release");
+    await expect(card.getByTestId("rail-card-why")).toHaveText(`Approve Bash: ${command}`);
+    await page.mouse.move(1200, 500);
+    await expect(card).toHaveCount(0);
+    // Two lines a row.
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-lines-two").click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("session-list")).toHaveAttribute("data-lines", "two");
+    await expect(r.getByTestId("row-why")).toContainText("Approve Bash: rm -rf dist");
+    await expect(r.getByTestId("row-why")).toBeInViewport({ ratio: 1 });
+    await r.hover();
     await expect(card).toBeVisible();
     await expect(card).toHaveAttribute("data-kind", "row");
     // What the row cuts: the whole command. What it has no room for: the model, the path, the exact time.
@@ -606,6 +626,9 @@ test("the card beside a list row adds what the row lacks and repeats nothing of 
     await expect(card).not.toContainText("Clean the build output before the release");
     await expect(card.locator(".k-mark")).toHaveCount(0);
     await shoot(page, "session-state-11-row-card");
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-reset").click();
+    await page.keyboard.press("Escape");
   } finally {
     await drop(request, made);
   }

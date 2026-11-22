@@ -11,7 +11,9 @@ import { shoot } from "./shots.ts";
 // session that needs the owner with a long reason, a parent at work with two
 // agents, a failed one with its class, one waiting on a timer, a pinned and
 // tagged one, a folder with more sessions than it shows, a first message that
-// did not go, unread failures. The scripted stand-in makes the states.
+// did not go, unread failures. The scripted stand-in makes the states. A row
+// is one line by default; the same holds with two lines a row (the choice in
+// the Arrange menu), where the reason is always on the row, cut, not dropped.
 const STAND_IN = "scripted:stand-in";
 const script = (calls: unknown[]) => `script:calls ${JSON.stringify(calls)}`;
 
@@ -128,11 +130,12 @@ test("the session list fits at every width its edge can be dragged to", async ({
       return a;
     };
 
-    for (const scale of [1, 1.5, 0.9]) {
+    for (const [scale, lines] of [[1, "one"], [1.5, "one"], [0.9, "one"], [1, "two"], [1.5, "two"]] as const) {
       // The session on screen has no request waiting (a request's card takes the keyboard from an empty message box).
       await page.goto(`/s/${wait}`);
-      await page.evaluate((s) => { localStorage.setItem("keel.textScale", JSON.stringify(s)); localStorage.removeItem("keel.listW"); }, scale);
+      await page.evaluate(([s, l]) => { localStorage.setItem("keel.textScale", JSON.stringify(s)); localStorage.removeItem("keel.listW"); localStorage.setItem("keel.listArrange", JSON.stringify({ group: "folder", sort: "created", hideDone: false, lines: l, v: 2 })); }, [scale, lines] as const);
       await page.reload();
+      await expect(page.getByTestId("session-list")).toHaveAttribute("data-lines", lines);
       await expect(side).toHaveAttribute("data-open", "true");
       await expect(row(need).getByTestId("row-state")).toHaveText("Needs you");
       await expect(row(work).getByTestId("row-state")).toHaveText("Working · 2 agents");
@@ -140,9 +143,9 @@ test("the session list fits at every width its edge can be dragged to", async ({
       await expect(row(wait).getByTestId("row-time")).toContainText("in ");
       await expect(page.getByTestId("new-unsent-mark")).toHaveText("not sent");
       await expect(page.getByTestId("errors-button")).toContainText(/\d/);
-      const first = await check(`text size ${scale}, the default width`);
+      const first = await check(`text size ${scale}, ${lines} line a row, the default width`);
       expect(first.width / first.rem).toBeCloseTo(18.75, 1);
-      if (scale === 1) await shoot(page, "rail-squeeze-01-default");
+      if (scale === 1) await shoot(page, lines === "one" ? "rail-squeeze-01-default" : "rail-squeeze-04-two-lines");
 
       // The page has settled once its message box has the keyboard: it takes it by itself as the
       // page loads, and never from a control focused after that (lib/self-focus.ts).
@@ -160,14 +163,17 @@ test("the session list fits at every width its edge can be dragged to", async ({
           const on = await page.evaluate(() => { const a = document.activeElement; return a && a !== document.body ? `${a.tagName.toLowerCase()}[${a.getAttribute("data-testid") ?? a.getAttribute("aria-label") ?? ""}]` : "nothing"; });
           throw new Error(`Step ${i + 1} to the left did nothing at text size ${scale}: the list is still ${Math.round(was)}px wide and the keyboard is on ${on}, not on the separator.`);
         }
-        last = (await check(`text size ${scale}, step ${i + 1} to the left`)).width;
+        last = (await check(`text size ${scale}, ${lines} line a row, step ${i + 1} to the left`)).width;
       }
       expect(last / first.rem, "the narrowest the edge goes").toBeCloseTo(14.5, 1);
-      // Every state is still on its row: the mark, the title, the state word; the reason is cut, not dropped.
-      await expect(row(need).getByTestId("row-state")).toBeVisible();
-      await expect(row(need).getByTestId("row-why")).toBeVisible();
-      await expect(row(fail).getByTestId("row-class")).toBeVisible();
+      // Every state is still on its row: the mark, the title, the time. With two lines a row the
+      // state word and the reason are too: the reason is cut, not dropped.
+      await expect(row(need).locator(".k-mark")).toBeVisible();
       await expect(row(wait).getByTestId("row-time")).toBeVisible();
+      if (lines === "two") {
+        for (const part of [row(need).getByTestId("row-state"), row(need).getByTestId("row-why"), row(fail).getByTestId("row-class")]) await expect(part).toBeVisible();
+        expect(await row(need).getByTestId("row-why").evaluate((el) => el.getBoundingClientRect().width)).toBeGreaterThan(3 * first.rem);
+      }
       await expect(page.getByTestId("rail-toggle")).toBeInViewport({ ratio: 1 });
       await expect(page.getByTestId("theme-toggle")).toBeInViewport({ ratio: 1 });
       // The foot is one row: Settings as its glyph, the counts whole, the theme at the right edge.
@@ -175,9 +181,9 @@ test("the session list fits at every width its edge can be dragged to", async ({
       expect(Math.max(...tops) - Math.min(...tops), "the foot's buttons share a row").toBeLessThanOrEqual(1);
       // The row under the pointer shows its actions in the time's place: still inside the bar.
       await row(need).hover();
-      await check(`text size ${scale}, the narrowest, a row under the pointer`);
+      await check(`text size ${scale}, ${lines} line a row, the narrowest, a row under the pointer`);
       await page.mouse.move(960, 500);
-      if (scale !== 0.9) await shoot(page, `rail-squeeze-0${scale === 1 ? 2 : 3}-narrowest${scale === 1 ? "" : "-large-text"}`);
+      if (scale !== 0.9 && lines === "one") await shoot(page, `rail-squeeze-0${scale === 1 ? 2 : 3}-narrowest${scale === 1 ? "" : "-large-text"}`);
 
       // Dragged with the pointer to the middle of its range: the same holds.
       const b = (await grip.boundingBox())!;
@@ -185,7 +191,7 @@ test("the session list fits at every width its edge can be dragged to", async ({
       await page.mouse.down();
       await page.mouse.move(b.x + b.width / 2 + 2 * first.rem, 520, { steps: 4 });
       await page.mouse.up();
-      const mid = await check(`text size ${scale}, dragged two rem wider`);
+      const mid = await check(`text size ${scale}, ${lines} line a row, dragged two rem wider`);
       expect(mid.width / mid.rem).toBeCloseTo(16.5, 1);
     }
 
@@ -197,7 +203,7 @@ test("the session list fits at every width its edge can be dragged to", async ({
     await expect(side).toHaveAttribute("data-open", "true");
   } finally {
     writeFileSync(gate, "");
-    await page.evaluate(() => { localStorage.removeItem("keel.textScale"); localStorage.removeItem("keel.listW"); }).catch(() => {});
+    await page.evaluate(() => { localStorage.removeItem("keel.textScale"); localStorage.removeItem("keel.listW"); localStorage.removeItem("keel.listArrange"); }).catch(() => {});
     for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
     // The failures this spec posted for the count are its own: put the list back.
     const mine = ((await (await request.get("/api/errors")).json()).errors as { id: string; message: string }[]).filter((e) => e.message.startsWith(`squeeze ${tag}`));

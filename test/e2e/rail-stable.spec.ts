@@ -4,11 +4,13 @@ import { shoot } from "./shots.ts";
 
 // Feature: the session list stays where the owner left it. By default a row's
 // place comes from when its session was made, so no turn that starts or ends
-// anywhere moves it; what a session needs is its mark, its word and a count
-// on the line above the list, where a press goes to the next one's row.
-// Every row is as high at rest as at work. Under the pointer or the keyboard
-// nothing moves in any order: a session that arrives waits at the list's end
-// and one that leaves stays as a dimmed row until the hand has left. With
+// anywhere moves it; what a session needs is its mark and a count on the
+// line above the list, where a press goes to the next one's row and marks it.
+// A row is one line (two is a choice) and as high at rest as at work. Under
+// the pointer or the keyboard nothing moves in any order: a session that
+// arrives waits at the list's end and one that leaves stays as a dimmed row
+// until the hand has left. The owner's own new session takes its place at
+// once, and a pointer that only lies in the list holds nothing. With
 // four panes the list is still a list of titles, one line a session, and
 // folds to codes only where a title could not be read. A message queued in a
 // session shows on its row, and Enter on the row of a session a pane already
@@ -110,8 +112,9 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await page.goto(`/s/${ids.reader}`);
     await expect(row(ids.need!)).toHaveAttribute("data-watch", "need");
     await expect(page.getByTestId("composer")).toBeFocused();
-    // The storm is on: a row of it says working at some point.
-    await page.waitForFunction((ticks) => ticks.some((id) => document.querySelector(`[data-testid="session-list"] [data-session="${id}"]`)?.getAttribute("data-watch") === "work"), day.ticks, { polling: "raf", timeout: 20_000 });
+    // The storm is on: a turn of its own has ended in a session it sends to (asked of the daemon, not
+    // read off a row: a turn this short may never be drawn as working on a busy machine).
+    await expect.poll(async () => ((await (await request.get(`/api/sessions/${day.ticks[0]}`)).json()).events as { kind: string; data: { text?: string } }[]).some((e) => e.kind === "user" && /script:say tick \d+/.test(e.data.text ?? "")), { timeout: 60_000 }).toBe(true);
     const mine = Object.values(ids);
     const first = (await order()).filter((id) => mine.includes(id));
     expect(first).toHaveLength(12);
@@ -169,13 +172,18 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await page.waitForTimeout(4000);
     expect((await seen(page)).moves, "by recent activity rows follow the work").toBeGreaterThan(0);
     const at = (await row(ids.idle!).boundingBox())!;
-    await page.mouse.move(at.x + 120, at.y + at.height / 2);
+    // A hand on the list moves now and then (a pointer that only lies there is not one: see 5c).
+    const stir = async (n = 0) => page.mouse.move(at.x + 120 + (n % 2), at.y + at.height / 2);
+    await stir();
     await expect(list).toHaveAttribute("data-held", "true");
     await page.waitForTimeout(300);
     await seen(page);
-    await page.waitForTimeout(6000);
+    for (let i = 1; i <= 4; i++) { await page.waitForTimeout(1500); await stir(i); }
     const held = await seen(page);
-    expect({ moves: held.moves, resized: held.resized, under: held.under }, "by recent activity, under the pointer").toEqual({ moves: 0, resized: 0, under: [ids.idle] });
+    // (Whichever row the pointer came to rest on: the rows were still moving when it was aimed.)
+    const rested = held.under[0]!;
+    expect(rested).toBeTruthy();
+    expect({ moves: held.moves, resized: held.resized, under: held.under }, "by recent activity, under the pointer").toEqual({ moves: 0, resized: 0, under: [rested] });
 
     // 5. Still held: a session made elsewhere waits at the list's end and one archived elsewhere
     // stays as a dimmed row, so nothing moved. Both take their place when the pointer has left.
@@ -183,10 +191,11 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await expect(page.getByTestId("late-group").locator(`[data-session="${made}"]`)).toBeVisible();
     await request.patch(`/api/sessions/${ids.fail}`, { data: { archived: true } });
     await expect(row(ids.fail!)).toHaveAttribute("data-gone", "true");
-    await expect(row(ids.fail!).getByTestId("row-gone")).toHaveText("Archived");
+    await expect(row(ids.fail!).getByTestId("row-gone")).toHaveText(/^archived$/i);
+    await stir(1);
     await page.waitForTimeout(300);
     const came = await seen(page);
-    expect({ moves: came.moves, under: came.under }, "a session arriving and one leaving, under the pointer").toEqual({ moves: 0, under: [ids.idle] });
+    expect({ moves: came.moves, under: came.under }, "a session arriving and one leaving, under the pointer").toEqual({ moves: 0, under: [rested] });
     await page.mouse.move(1200, 500);
     await expect(list).not.toHaveAttribute("data-held", "true");
     await expect(page.getByTestId("late-group")).toHaveCount(0);
@@ -196,7 +205,44 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await request.delete(`/api/sessions/${made}`);
     await page.getByTestId("list-arrange").click();
     await page.getByTestId("arrange-reset").click();
+    await page.keyboard.press("Escape");
     await expect(row(ids.fail!)).toBeVisible();
+
+    // 5b. The owner's own new session, made with the pointer left in the list: a row pressed (the
+    // keyboard goes to the message box, the pointer stays on the row), Ctrl Shift O, a message,
+    // Enter. Its row takes its place at once, first in its folder, in view, while the list is held.
+    await row(ids.reader!).click();
+    await expect(page.getByTestId("composer")).toBeFocused();
+    await page.keyboard.press("Control+Shift+O");
+    await expect(page).toHaveURL(/\/$/);
+    await page.getByTestId("composer").fill("script:say Made here.");
+    const here = (await row(ids.reader!).boundingBox())!;
+    await page.mouse.move(here.x + 121, here.y + here.height / 2);
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/s\//);
+    const own = page.url().split("/s/")[1]!;
+    await expect(row(own)).toBeInViewport({ ratio: 1 });
+    await expect(list).toHaveAttribute("data-held", "true");
+    await expect(page.getByTestId("late-group")).toHaveCount(0);
+    const group = page.locator(".k-group").filter({ has: page.locator(`[data-session="${ids.reader}"]`) });
+    expect(await group.locator('[data-testid="session-row"]').first().getAttribute("data-session")).toBe(own);
+
+    // 5c. A pointer that only lies in the list holds nothing: left where it is while the owner
+    // types in the pane, the list lets go after a few seconds, and a session made elsewhere takes
+    // its place without waiting for the pointer to leave. A move of the pointer holds it again.
+    await page.getByTestId("composer").pressSequentially("typing in the pane", { delay: 30 });
+    await expect(list).not.toHaveAttribute("data-held", "true", { timeout: 8000 });
+    const other = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Made elsewhere, nobody near the list", workspace: `${day.root}/api` } })).json()).session.id as string;
+    await expect(row(other)).toBeVisible();
+    await expect(page.getByTestId("late-group")).toHaveCount(0);
+    await page.mouse.move(here.x + 122, here.y + here.height / 2);
+    await expect(list).toHaveAttribute("data-held", "true");
+    await page.getByTestId("composer").fill("");
+    await page.mouse.move(1200, 500);
+    for (const id of [own, other]) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`); }
+    await expect(row(other)).toHaveCount(0);
+    await row(ids.reader!).click();
+    await page.mouse.move(1200, 500);
   } finally {
     storm = false;
     await run;
@@ -216,7 +262,19 @@ test("no row moves or changes height while a dozen sessions take turns, under th
   await expect(row(ids.need!)).not.toBeInViewport();
   await page.getByTestId("sum-need").click();
   await expect(row(ids.need!)).toBeFocused();
-  await expect(row(ids.need!)).toBeInViewport({ ratio: 0.95 });
+  await expect(row(ids.need!)).toBeInViewport({ ratio: 1 });
+  // It is marked for a moment, also after this press of the pointer (which shows no focus ring), and
+  // stands in the middle of the list, not at its edge, where the list can be scrolled that far.
+  await expect(row(ids.need!)).toHaveAttribute("data-jump", "");
+  expect(await row(ids.need!).evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
+  const place = await row(ids.need!).evaluate((el) => {
+    const nav = el.closest<HTMLElement>('[data-testid="session-list"]')!, r = el.getBoundingClientRect(), n = nav.getBoundingClientRect();
+    return { off: Math.abs((r.top + r.bottom) / 2 - (n.top + n.bottom) / 2), room: n.height, atEnd: nav.scrollTop <= 1 || nav.scrollTop >= nav.scrollHeight - nav.clientHeight - 1 };
+  });
+  expect(place.atEnd || place.off < place.room / 4, `the row is ${Math.round(place.off)}px from the middle of a list ${Math.round(place.room)}px high`).toBe(true);
+  await expect(row(ids.need!)).not.toHaveAttribute("data-jump", "", { timeout: 5000 });
+  // Nothing was opened: the pane shows what it showed.
+  await expect(page).toHaveURL(new RegExp(`/s/${ids.reader}$`));
   await hide(ids.fail!);
   await page.getByTestId("composer").click();
   // By keyboard: the count is a button; pressed again with nothing else needing them, the same row.
@@ -224,14 +282,25 @@ test("no row moves or changes height while a dozen sessions take turns, under th
   await page.getByTestId("sum-need").focus();
   await page.keyboard.press("Enter");
   await expect(row(ids.need!)).toBeFocused();
-  await expect(row(ids.need!)).toBeInViewport({ ratio: 0.95 });
+  await expect(row(ids.need!)).toBeInViewport({ ratio: 1 });
   await page.getByTestId("sum-fail").click();
   await expect(row(ids.fail!)).toBeFocused();
-  await expect(row(ids.fail!)).toBeInViewport({ ratio: 0.95 });
+  await expect(row(ids.fail!)).toBeInViewport({ ratio: 1 });
+  // From the archive: the count's press shows the sessions again and goes to the row. The pane keeps its session.
+  await page.getByTestId("tab-archived").click();
+  await expect(row(ids.need!)).toHaveCount(0);
+  await page.getByTestId("sum-need").click();
+  await expect(row(ids.need!)).toBeFocused();
+  await expect(page.getByTestId("tab-active")).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(new RegExp(`/s/${ids.reader}$`));
+  await expect(page.locator("section.k-station")).toHaveAttribute("data-station", ids.reader!);
+  await page.getByTestId("composer").focus();
   await page.setViewportSize({ width: 1920, height: 1040 });
 
   // 7. The message queued behind the working turn shows on its row.
-  await expect(row(ids.work!).getByTestId("row-queued")).toHaveText("1 queued");
+  await expect(row(ids.work!).getByTestId("row-queued")).toHaveText("1");
+  await expect(row(ids.work!).getByTestId("row-queued")).toHaveAttribute("aria-label", "1 queued");
+  await expect(row(ids.work!).getByTestId("row-queued")).toBeInViewport({ ratio: 1 });
   // 8. Enter on the row of the session this pane already shows: the keyboard is in its message box.
   await page.keyboard.press("Alt+l");
   await expect(row(ids.reader!)).toBeFocused();
@@ -340,5 +409,76 @@ test("with four panes the list is still titles, one line a session, and folds to
     await shoot(page, "rail-stable-05-phone");
   } finally {
     writeFileSync(day.gate, "");
+  }
+});
+
+test("a count goes to a row that a fold hides and never changes a pane; what is unread is never folded away", async ({ page, request }) => {
+  test.skip(!((await (await request.get("/api/models")).json()).models as { id: string }[]).some((m) => m.id === MODEL), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const root = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/folds-${Date.now().toString(36)}`;
+  mkdirSync(root, { recursive: true });
+  const mk = async (title: string, mode = "full-auto") => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title, workspace: root } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode } });
+    return session.id as string;
+  };
+  const send = (id: string, text: string) => request.post(`/api/sessions/${id}/messages`, { data: { text } });
+  const ended = async (id: string) => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return !d.running && ["turn_end", "error"].includes(d.events.at(-1)?.kind); };
+  const list = page.getByTestId("session-list");
+  const row = (id: string) => list.locator(`[data-testid="session-row"][data-session="${id}"]`);
+  const made: string[] = [];
+  let folder: string | undefined;
+  try {
+    // A folder of ten at rest and read; the oldest of them finishes a turn while no page is open.
+    const quiet: string[] = [];
+    for (let i = 1; i <= 10; i++) { const id = await mk(`Piece of work ${i}`); quiet.push(id); made.push(id); await send(id, "script:say Done."); }
+    for (const id of quiet) await expect.poll(() => ended(id), { timeout: 30_000 }).toBe(true);
+    for (const id of quiet) await request.post("/api/alerts/read", { data: { session_id: id } });
+    const reader = quiet.at(-1)!, oldest = quiet[0]!;
+    await send(oldest, "script:say Finished while nobody looked.");
+    await expect.poll(async () => ((await (await request.get("/api/alerts?limit=50&with_unread")).json()).alerts as { session_id: string; read: boolean }[]).some((a) => a.session_id === oldest && !a.read), { timeout: 30_000 }).toBe(true);
+    await page.goto(`/s/${reader}`);
+    // Its row is drawn, behind no fold: the six newest, and the one with something unread.
+    await expect(row(oldest)).toBeVisible();
+    await expect(row(oldest)).toHaveAttribute("data-unread", "true");
+    await expect(row(quiet[1]!)).toHaveCount(0);
+    await expect(list.locator(".k-more")).toHaveText("3 more");
+    await expect(page.getByTestId("sum-unread")).toHaveText(/^1/);
+
+    // One of the owner's folders, folded, holds a session that needs them: its head says so.
+    const asks = await mk("Clean the build output", "ask");
+    made.push(asks);
+    await send(asks, `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "rm -rf dist build" } }])}`);
+    await expect.poll(async () => ((await (await request.get("/api/state")).json()).states ?? {})[asks]?.watch, { timeout: 30_000 }).toBe("need");
+    folder = (await (await request.post("/api/session-folders", { data: { name: "Chores" } })).json()).folder.id as string;
+    await request.patch(`/api/sessions/${asks}`, { data: { folder_id: folder } });
+    await request.patch(`/api/session-folders/${folder}`, { data: { collapsed: true } });
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-group-mine").click();
+    await page.keyboard.press("Escape");
+    const head = list.locator(`[data-testid="folder-head"][data-folder="${folder}"]`);
+    await expect(head).toBeVisible();
+    await expect(row(asks)).toHaveCount(0);
+    await expect(head.locator('.k-mark[data-watch="need"]')).toBeVisible();
+    await shoot(page, "rail-stable-06-folded-head-mark");
+    // The count's press opens the fold for that row and puts the keyboard on it. Twice: the pane never changes.
+    for (let i = 0; i < 2; i++) {
+      await page.getByTestId("sum-need").click();
+      await expect(row(asks)).toBeFocused();
+      await expect(page).toHaveURL(new RegExp(`/s/${reader}$`));
+      await expect(page.locator("section.k-station")).toHaveAttribute("data-station", reader);
+    }
+    await expect(row(asks)).toHaveAttribute("data-jump", "");
+    await shoot(page, "rail-stable-07-jumped-row");
+    // What they chose for the folder is kept: it folds again when they have left the list.
+    await page.getByTestId("composer").focus();
+    await page.mouse.move(1200, 500);
+    await expect(row(asks)).toHaveCount(0, { timeout: 8000 });
+    expect(((await (await request.get("/api/session-folders")).json()).folders as { id: string; collapsed: boolean }[]).find((f) => f.id === folder)?.collapsed).toBe(true);
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-reset").click();
+    await page.keyboard.press("Escape");
+  } finally {
+    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+    if (folder) await request.delete(`/api/session-folders/${folder}`).catch(() => {});
   }
 });

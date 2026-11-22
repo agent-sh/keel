@@ -224,7 +224,7 @@ test("the keyboard goes to the message box when what held it goes away", async (
     // (still where the archived row was) have left the list.
     await rowOf(page, d).focus();
     await request.delete(`/api/sessions/${d}`);
-    await expect(rowOf(page, d).getByTestId("row-gone")).toHaveText("Deleted");
+    await expect(rowOf(page, d).getByTestId("row-gone")).toHaveText(/^deleted$/i);
     await expect(rowOf(page, d)).toBeFocused();
     await box.focus();
     await page.mouse.move(1000, 420);

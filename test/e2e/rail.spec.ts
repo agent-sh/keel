@@ -54,14 +54,14 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await expect(page.getByTestId("rail-toggle")).toHaveAttribute("aria-expanded", "true");
   await shoot(page, "rail-01-one-station-list");
 
-  // The card beside a row adds what the row lacks (the failure in full, the model, the path, the
-  // last activity) and repeats nothing of it: not the title, not the state word.
+  // A row is one line: its mark, its title, its time. The card beside it says the rest: the state
+  // in a word, the title whole, the failure in full, the folder, the model, the last activity.
   await entry(failed).hover();
   await expect(card).toHaveAttribute("data-watch", "fail");
-  await expect(card).toHaveAttribute("data-kind", "row");
+  await expect(card).not.toHaveAttribute("data-kind", "row");
   await expect(card).toContainText("credit balance");
-  await expect(card).not.toContainText(`Charge the card on file ${tag}`);
-  await expect(card).not.toContainText("Failed");
+  await expect(card).toContainText(`Charge the card on file ${tag}`);
+  await expect(card).toContainText("Failed");
   await expect(card.locator("dl")).toContainText(folder);
   await expect(card.locator("dl")).toContainText("Model");
   await expect(card.locator("dl")).toContainText("Active");
@@ -76,7 +76,7 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await expect(stations).toHaveCount(2);
   await expect(side).toHaveAttribute("data-open", "true");
   await entry(done).focus();
-  await expect(card).toHaveAttribute("data-kind", "row");
+  await expect(card).toContainText(`batch size ${tag}`);
   await expect(card.locator("dl")).toContainText("Active");
   await page.keyboard.press("ArrowDown");
   await expect(entry(done)).not.toBeFocused();
