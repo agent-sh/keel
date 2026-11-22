@@ -345,8 +345,14 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
 // `beside`: other panes stand next to it: what needs the owner comes before the start box.
 function NewStation({ slot, grow, beside }: { slot?: number; grow?: number; beside?: boolean }) {
   const drop = useDrop(slot);
+  // A phone's new-session page stands after the sessions' pages: it comes into view as the
+  // page the route names, at once, before the pages are read for the one in view. (Its box
+  // taking the keyboard did that alone, so with a drawer or a dialog holding the keyboard
+  // the first session's page was read as the helm and its alerts as seen.)
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => { if (slot === undefined) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" }); }, []);
   return (
-    <section className="k-station k-station-new" data-slot={slot} data-helm style={grow === undefined ? undefined : { flexGrow: grow }} aria-label="New session" {...drop}>
+    <section ref={ref} className="k-station k-station-new" data-slot={slot} data-helm style={grow === undefined ? undefined : { flexGrow: grow }} aria-label="New session" {...drop}>
       <div className="k-band" aria-hidden="true" />
       <AimTag slot={slot} />
       <PaneNote slot={slot} />

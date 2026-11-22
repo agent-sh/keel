@@ -258,6 +258,10 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   await shoot(page, "alerts-09-rows");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(panel).toBeInViewport({ ratio: 1 });
+  // The page under the drawer is still the one it was opened over: no session's page took
+  // its place as the window narrowed (the page would read that session's alerts as seen).
+  await expect(page.getByTestId("new-composer")).toBeInViewport();
+  await expect(page.getByTestId("inbox-unread-filter")).toHaveText("Unread6");
   // On a phone the list starts high: the bands over it are two short rows.
   expect((await page.getByTestId("inbox-part").first().boundingBox())!.y).toBeLessThanOrEqual(124);
   // A phone's drawer is too narrow for a title and its alert on one line: the lone alert stands under its title there.
