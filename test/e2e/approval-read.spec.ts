@@ -615,3 +615,64 @@ test("an edit's content is spelled out: hidden and reordering characters in what
     await drop(request, [s.id]);
   }
 });
+
+// A card taller than the region above the message box keeps its foot in view: what is left to
+// read is said there, and Deny can be pressed at once, without scrolling to the card's end. The
+// rows the foot lies over are not counted as seen. And the control that opened the text stays in
+// its place as the one that folds it, at the same width: no answer comes under a resting pointer.
+test("a tall card keeps its answers and the count in view, and no answer takes the opener's place", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const LOW = `${Array.from({ length: 40 }, (_, i) => `echo step ${i + 1}`).join("\n")}\ntouch done.txt`;
+  const s = await asking(request, "Read: forty-one lines, opened", [bash(LOW)]);
+  try {
+    await waits(request, s.id);
+    await page.goto(`/s/${s.id}`);
+    const list = page.getByTestId("approvals").first(), card = page.getByTestId("approval").first();
+    const opener = card.getByTestId("approval-expand");
+    await expect(card.getByTestId("approval-open-first")).toHaveText("Enter opens the whole command.");
+    const slot = (await opener.boundingBox())!;
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("approval-summary")).toContainText("touch done.txt");
+    // The card is taller than its room: the count, Deny and the other answers are in the region.
+    const tray = (await page.getByTestId("composer-tray").first().boundingBox())!;
+    expect((await card.boundingBox())!.height).toBeGreaterThan(tray.height);
+    await expect(card).toHaveAttribute("data-foot", "");
+    for (const id of ["approval-left", "deny", "allow-once", "approval-expand"]) {
+      const b = (await card.getByTestId(id).boundingBox())!;
+      expect(b.y, id).toBeGreaterThanOrEqual(tray.y);
+      expect(b.y + b.height, id).toBeLessThanOrEqual(tray.y + tray.height + 0.5);
+    }
+    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines not seen yet$/);
+    await shoot(page, "approval-read-15-foot");
+    // The rows under the foot are not in view: they are still to be seen after the text has stood.
+    await page.waitForTimeout(1300);
+    const under = await card.evaluate((el) => {
+      const pre = el.querySelector('[data-testid="approval-summary"]')!, foot = el.querySelector('[data-testid="approval-actions"]')!;
+      return Math.floor((pre.getBoundingClientRect().bottom - foot.getBoundingClientRect().top) / parseFloat(getComputedStyle(pre).lineHeight));
+    });
+    expect(under).toBeGreaterThan(0);
+    expect(Number(await card.getAttribute("data-unseen"))).toBeGreaterThanOrEqual(under);
+    // The opener's place holds the fold, as wide as it was: a second and a third press at the same
+    // point fold and open the text, and answer nothing.
+    await expect(opener).toHaveText("Fold");
+    const now = (await opener.boundingBox())!;
+    expect(Math.abs(now.x - slot.x)).toBeLessThan(1);
+    expect(Math.abs(now.width - slot.width)).toBeLessThan(1);
+    await page.mouse.click(now.x + now.width / 2, now.y + now.height / 2);
+    await expect(opener).toHaveText("Show the whole command");
+    await page.waitForTimeout(1300);
+    const again = (await opener.boundingBox())!;
+    await page.mouse.click(again.x + again.width / 2, again.y + again.height / 2);
+    await expect(opener).toHaveText("Fold");
+    expect(await states(request, s.id)).toBe("pending");
+    // Deny is pressed at once, by the pointer, and its reason form is in view too.
+    await card.getByTestId("deny").click();
+    const reason = (await card.getByTestId("deny-reason").boundingBox())!;
+    expect(reason.y + reason.height).toBeLessThanOrEqual(tray.y + tray.height + 0.5);
+    await page.keyboard.press("Enter");
+    await expect.poll(() => states(request, s.id)).toMatch(/^denied/);
+    void list;
+  } finally {
+    await drop(request, [s.id]);
+  }
+});

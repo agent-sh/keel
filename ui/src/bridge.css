@@ -826,6 +826,19 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-ask-list[data-bar-stays] > .k-ask-bar { position: sticky; top: 0; z-index: 1; }
 .k-tray:has(.k-ask-list[data-bar-stays])[data-more="up"] { mask-image: none; }
 .k-tray:has(.k-ask-list[data-bar-stays])[data-more="up down"] { mask-image: linear-gradient(to top, transparent, #000 1.25rem); }
+/* A card taller than the region keeps its answers in view while it is read (ApprovalCard.tsx
+   says when): at the region's foot, where nothing fades then, with a hairline that parts them
+   from the text that goes on under them. */
+.k-approval[data-foot] > .k-ask-foot { position: sticky; bottom: 0; top: var(--k-ask-bar, 0); }
+.k-tray:has(.k-approval[data-foot])[data-more="down"] { mask-image: none; }
+.k-tray:has(.k-approval[data-foot])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
+.k-tray:has(.k-ask-list[data-bar-stays]):has(.k-approval[data-foot])[data-more="up down"] { mask-image: none; }
+.k-approval[data-foot] > .k-ask-foot { box-shadow: 0 -1px 0 var(--line); }
+/* The control that opens a request's text and folds it again keeps the width of its longest
+   label, so no answer comes under a pointer that rests on it when its words change. */
+.k-ask-open { display: inline-grid; align-items: center; justify-items: center; }
+.k-ask-open > span { grid-area: 1 / 1; }
+.k-ask-open::after { content: attr(data-wide); grid-area: 1 / 1; visibility: hidden; }
 /* A press that did nothing yet: a ring in the working color closes on the control and stays for a moment.
    The control itself does not move: a move would start its wait again. */
 :is(.k-allow, .k-allow-all, .k-grant)[data-nudge] { outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge 320ms var(--ease-out); }

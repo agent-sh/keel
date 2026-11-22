@@ -110,6 +110,16 @@ function seenAt(el: HTMLElement, c: Clip, open = false) {
   return { r, at: { x: r.left, y: r.top, whole } };
 }
 
+// The frame a card's text can be read in: the list's, less what the card's own answers lie over
+// while they stay in view for a card taller than its room (they stand at the region's foot, over
+// the text that goes on under them).
+function clipUnder(pre: HTMLElement, foot: HTMLElement | null, c: Clip): Clip {
+  if (!foot) return c;
+  const r = pre.getBoundingClientRect(), a = foot.getBoundingClientRect();
+  if (a.height <= 0 || a.left >= r.right - 1 || a.right <= r.left + 1 || a.bottom <= r.top + 1 || a.top >= r.bottom - 1) return c;
+  return a.top > r.top + 1 ? { ...c, bottom: Math.min(c.bottom, a.top) } : { ...c, top: Math.max(c.top, a.bottom) };
+}
+
 // What shows of a request's text in the frame where words can be read: the text's lines in all
 // (as it wraps now), a line's height, and the rows in view in the text's own coordinates. Nothing
 // shows of a text that is cut at a side, or that something lies over.
@@ -172,11 +182,22 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
           const at = seenAt(c, f.shown, true);
           return hold(prev, at.at, f.inList(at.r), s.input, listChanged, now);
         };
+        // A card's foot (its answers) stays in the region's view while the card is being read and is
+        // taller than its room: from when its text goes on under the region's foot, until the card's
+        // own end comes into view. Not for a card that fits the region (a row coming into view keeps
+        // its answers where they are in it), not where the text is all in view and only the answers
+        // are below (the keyboard brings those in, and nothing lies over a line), and not in a region
+        // too short to give the foot a third of itself. What the foot lies over is not text in view.
+        const foot = el.querySelector<HTMLElement>(":scope > .k-ask-foot"), box = el.getBoundingClientRect(), under = foot?.getBoundingClientRect(), words = sum?.getBoundingClientRect();
+        const room = f.shown.bottom - f.shown.top;
+        const tall = !!under && under.height > 0 && box.height > room && under.height * 3 <= room && box.bottom > f.shown.bottom + 1 && box.top < f.shown.bottom;
+        el.toggleAttribute("data-foot", tall && (el.hasAttribute("data-foot") || (!!words && words.bottom > f.shown.bottom + 1 && words.top < f.shown.bottom)));
+        const text = sum ? clipUnder(sum, foot, f.text) : f.text;
         // The view moved by the owner's own scroll when their hand came first and nothing in the list changed.
-        if (sum) s.lines.set(id, sawLines(s.lines.get(id), rowsInView(sum, f.text), s.input && !listChanged, now));
+        if (sum) s.lines.set(id, sawLines(s.lines.get(id), rowsInView(sum, text), s.input && !listChanged, now));
         seen.set(id, {
           born: was?.born ?? now,
-          sum: sum ? stand(was?.sum, seenAt(sum, f.text, true).at, now) : undefined,
+          sum: sum ? stand(was?.sum, seenAt(sum, text, true).at, now) : undefined,
           once: control(part("allow-once"), was?.once),
           always: control(part("allow-always"), was?.always),
           cut: !!sum && sum.scrollHeight > sum.clientHeight + 1,
@@ -480,6 +501,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               grant={view.grant.has(a.id)}
               // Read again as it is pressed: it acts where it has stood, for a text whose every line has been in view.
               armed={(which) => { const v = tick(); return v[which].has(a.id) && v.unseen.get(a.id)?.n === 0; }}
+              read={tick}
               cut={view.cut.has(a.id)}
               unseen={view.unseen.get(a.id)}
               whole={!!opened[a.id]}
@@ -653,16 +675,16 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // row's title is for screen readers only. `hot`: the pointed "allow all"
 // covers it. `locked`: that action is answering it. `live`: its Allow once
 // has stood whole and still for the settle time, so it acts; `grant`: the same
-// for its Always allow; `armed` asks either at the instant of a press. `ripe`:
+// for its Always allow; `armed` asks either at the instant of a press, `read` reads the list now. `ripe`:
 // it has been on the page that long. `cut`: its text is longer than its box.
 // `unseen`: the lines of its text that have not been in view (none known yet: not read).
 // `whole`: the owner opened its whole text, by the list's Enter or by the card's own control
 // (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card now.
 // `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
 // itself, or on the list.
-function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, cut, unseen, whole, onWhole, enterOpens, keysOn }: {
+function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, whole, onWhole, enterOpens, keysOn }: {
   a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
-  hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; cut: boolean; unseen?: Unseen;
+  hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; read: () => unknown; cut: boolean; unseen?: Unseen;
   whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list";
 }) {
   const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
@@ -802,30 +824,16 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   useEffect(() => {
     if (whole && marked) root.current?.querySelector('[data-testid="hidden-char"]')?.scrollIntoView({ block: "nearest" });
   }, [whole]);
-  // The control that opens the text and the one that folds it are two (the first leads the
-  // answers, the second stands under the text), and each goes away as it is used: the keyboard
-  // it held goes to the other, so Enter opens and Enter folds again. Folded, the text is measured
-  // again a render later: the keyboard waits on the list of requests until the opener is back.
-  const hand = useRef<"" | "fold" | "lead">("");
-  const lead = useRef<HTMLButtonElement>(null);
-  const fold = useRef<HTMLButtonElement>(null);
-  const setOpen = (on: boolean, from: HTMLElement) => {
-    const had = from === document.activeElement;
-    onWhole(on);
-    if (!had) return;
-    hand.current = on ? "fold" : "lead";
-    if (!on) toList();
-  };
-  useLayoutEffect(() => {
-    if (hand.current !== "fold" || !whole) return;
-    hand.current = "";
-    fold.current?.focus({ preventScroll: true });
-  }, [whole]);
-  useEffect(() => {
-    if (hand.current !== "lead" || !shut) return;
-    hand.current = "";
-    if (document.activeElement === list.current) lead.current?.focus({ preventScroll: true });
-  }, [shut]);
+  // The control that opens the text leads the answers, and stays in its place once it was
+  // there: opened, it folds the text; read in its box, it still opens it. It keeps the width
+  // of its longest label (bridge.css), so no answer ever comes under a pointer that rests on
+  // it, and the keyboard that pressed it stays on it.
+  const slot = useRef(false);
+  if (shut || whole) slot.current = true;
+  // Opened or folded, the card is read where it stands before anything else looks at it: its foot
+  // is in the region's view by then, so the region does not go looking for the control that was
+  // pressed at the far end of the text.
+  useLayoutEffect(() => { read(); }, [whole]);
   // The keyboard never rests on an answer of a card that is not all read, nor on the card
   // itself when its text must be opened (it was found cut after the keyboard came): it is read
   // on the list, where Enter opens it.
@@ -978,8 +986,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           It holds letters written right to left: each word reads as written, and the words stand in the order the {a.kind === "shell" ? "command" : "text"} is written.
         </p>
       )}
-      {/* Text that does not fit its box says so. The control that opens it leads the answers; opened, it folds here. */}
-      {(short || whole) && (
+      {/* Text that does not fit its box says so. (The control that opens and folds it leads the answers.) */}
+      {(short || (whole && part)) && (
         <div className={cn("mt-1 flex flex-wrap items-center gap-x-2 text-micro", !dense && "mx-4")}>
           {short && (
             <span className="text-warn" data-testid="approval-cut">
@@ -990,19 +998,6 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             <span className="text-muted">
               {typeof a.input?._clipped === "string" ? "The start of the input: the rest was not kept. It is answered on its own" : "The whole input. It is answered on its own"}
             </span>
-          )}
-          {whole && (
-            <button
-              type="button"
-              data-testid="approval-expand"
-              ref={fold}
-              aria-expanded
-              aria-controls={`${ids}-summary`}
-              onClick={(e) => setOpen(false, e.currentTarget)}
-              className="k-link rounded-sm text-accent-ink underline underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              Fold
-            </button>
           )}
         </div>
       )}
@@ -1028,7 +1023,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       data-must-open={mustOpen || undefined}
       data-unseen={unseen?.n}
       className={cn(
-        "k-approval group/card animate-in overflow-hidden rounded-2xl border bg-raised shadow-2 outline-none",
+        // (Clipped to its corners without being a scroll box: its foot can stay in the region's view.)
+        "k-approval group/card animate-in overflow-clip rounded-2xl border bg-raised shadow-2 outline-none",
         a.risk === "high" ? "border-danger/50" : "border-accent/40",
         // A row: the request, then its answers beside it, or under it where the room ends.
         dense && "flex flex-wrap items-start",
@@ -1067,7 +1063,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         </>
       )}
       {closed ? (
-        <div className={cn("flex items-center gap-2", dense ? "basis-full px-3 pb-2" : "px-4 py-3")} data-testid="approval-closed">
+        <div className={cn(FOOT, "flex items-center gap-2", dense ? "basis-full px-3 pb-2" : "px-4 py-3")} data-testid="approval-closed">
           <span className="min-w-0 flex-1 text-caption text-muted">This request is no longer open: {err}</span>
           <button type="button" data-stop="card" onClick={() => safety.loadSession(a.session_id).catch(reportError)} className="h-8 shrink-0 rounded-lg border border-line px-3 text-ui hover:bg-hover">
             Refresh
@@ -1075,7 +1071,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         </div>
       ) : denying ? (
         <form
-          className={cn("flex flex-wrap items-center gap-2", dense ? "basis-full px-3 pb-2" : "px-4 py-3")}
+          className={cn(FOOT, "flex flex-wrap items-center gap-2", dense ? "basis-full px-3 pb-2" : "px-4 py-3")}
           onSubmit={(e) => { e.preventDefault(); answer({ choice: "deny", reason }); }}
         >
           <input
@@ -1098,20 +1094,24 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         </form>
       ) : (
         // The three answers keep their order and wrap when the card is narrow: none is cut, Deny least of all.
-        <div className={cn("flex flex-wrap items-center gap-1.5", dense ? "px-3 py-2" : "px-4 py-3")} data-testid="approval-actions">
+        <div className={cn(FOOT, "flex flex-wrap items-center gap-1.5", dense ? "px-3 py-2" : "px-4 py-3")} data-testid="approval-actions">
           {/* A card that must be opened leads with the control that opens it: the step it asks for first. */}
-          {shut && (
+          {slot.current && (
             <button
               type="button"
               data-testid="approval-expand"
-              data-stop="card"
-              aria-expanded={false}
+              data-stop={shut ? "card" : undefined}
+              data-wide={openLabel}
+              aria-expanded={whole}
               aria-controls={`${ids}-summary`}
-              ref={lead}
-              onClick={(e) => setOpen(true, e.currentTarget)}
-              className="h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised"
+              onClick={() => onWhole(!whole)}
+              className={cn(
+                "k-ask-open h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised",
+                // (A border in both looks: the control is as wide folded as open.)
+                shut ? "border border-transparent bg-accent text-accent-fg hover:opacity-90" : "border border-line text-muted hover:bg-hover hover:text-fg",
+              )}
             >
-              {openLabel}
+              <span>{whole ? "Fold" : openLabel}</span>
             </button>
           )}
           {/* Marked disabled, not disabled, while it waits: it keeps the keyboard when the list moves, and a press does nothing. */}
@@ -1172,6 +1172,13 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     </div>
   );
 }
+
+// A card's foot: its answers (or the reason form, or the note that it is closed). While a card
+// taller than the region above the message box is being read, the foot stays in the region's
+// view (bridge.css, on the card's data-foot: at the region's foot, or under the list's bar for a
+// row whose answers stand beside its text), so what is left to read is said and Deny can be
+// pressed without scrolling to the card's end.
+const FOOT = "k-ask-foot z-[1] bg-raised";
 
 const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as const;
 

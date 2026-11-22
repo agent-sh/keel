@@ -953,7 +953,12 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
     const a = document.activeElement;
     if (!a || !ref.current?.contains(a)) return false;
     const card = a.closest(CARDS);
-    if (card) show(card);
+    // (A card taller than the region cannot show whole. Where the control that holds the keyboard
+    // is in view already, as a card's answers are that stay at the region's foot, nothing moves:
+    // the text stays where the owner is reading it.)
+    const box = ref.current.getBoundingClientRect(), at = a.getBoundingClientRect();
+    const stays = !!card && card.getBoundingClientRect().height > box.height && at.top >= box.top && at.bottom <= box.bottom;
+    if (card && !stays) show(card);
     show(a);
     return true;
   };
