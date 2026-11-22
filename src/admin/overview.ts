@@ -341,10 +341,14 @@ export const costText = (d: { cost: number; unpriced?: true }) => (d.cost || d.u
 
 // "2 turns cut by a restart": said apart from the turns that ended, since a cut turn goes on.
 export const cutText = (n: number | undefined) => (n ? `${n} cut by a restart` : "");
-// "3 turns, 1 failed (rate limit); 2 cut by a restart; agents: 2 reported; $0.12". `level`: how much is left out to fit (see TEXT_TOKENS).
-export function didText(d: Did, level = 0): string {
-  const bad = failedText(d.failed, level >= 3);
-  return [d.turns ? `${plural(d.turns, "turn")}${bad ? `, ${bad}` : ""}` : "", cutText(d.cut), level >= 1 ? "" : agentsText(d.agents), level >= 4 ? "" : costText(d)].filter(Boolean).join("; ");
+// "3 turns, 1 failed (rate limit), 2 cut; agents: 2 reported; $0.12"; a row with cut turns only: "2 turns cut"
+// (the report's first line says what cut them). `level`: how much is left out to fit (see TEXT_TOKENS).
+// `said`: the class the row already names as why it failed: a count of that class alone is not named again.
+export function didText(d: Did, level = 0, said?: string): string {
+  const classes = Object.keys(d.failed).filter((k) => d.failed[k]! > 0);
+  const bad = failedText(d.failed, level >= 3 || (classes.length === 1 && classes[0] === said));
+  const cut = d.cut ? (d.turns ? `, ${d.cut} cut` : `${plural(d.cut, "turn")} cut`) : "";
+  return [`${d.turns ? `${plural(d.turns, "turn")}${bad ? `, ${bad}` : ""}` : ""}${cut}`, level >= 1 ? "" : agentsText(d.agents), level >= 4 ? "" : costText(d)].filter(Boolean).join("; ");
 }
 export const titleAt = (level: number) => (level >= 2 ? 24 : TITLE);
 
@@ -379,7 +383,7 @@ function overviewAt(o: Overview, opts: { ids?: boolean }, level: number): string
   const at = o.as_of;
   const title = (r: OverviewRow) => name(r.title, undefined, titleAt(level));
   const ids = (r: OverviewRow) => (opts.ids === false ? "" : `  [${r.agent ? `agent=${r.agent.id}` : `session=${shortId(r.id)}`}]`);
-  const did = (r: OverviewRow) => { const t = r.did ? didText(r.did, level) : ""; return t ? `; ${t}` : ""; };
+  const did = (r: OverviewRow) => { const t = r.did ? didText(r.did, level, r.failed?.why) : ""; return t ? `; ${t}` : ""; };
   const line = (r: OverviewRow) => `  ${title(r)}: ${what(r, at, level)}${did(r)}${ids(r)}`;
   const out: string[] = [`Sessions, read ${stamp(at)} UTC: ${o.sessions.length + o.hidden} open. Since ${clock(o.since, at)} (${dur(at - o.since)}): ${totalsText(o.totals)}.`];
   if (o.agents) {
@@ -400,7 +404,7 @@ function overviewAt(o: Overview, opts: { ids?: boolean }, level: number): string
   }
   if (o.hidden) {
     // What the ones left out are, from all of them: at rest and the least busy, or by state when one is not; and what they did.
-    const did = o.hidden_did ? ` (${[o.hidden_did.turns ? plural(o.hidden_did.turns, "turn") : "", o.hidden_did.cost ? usd(o.hidden_did.cost) : ""].filter(Boolean).join(", ")} since then)` : "";
+    const did = o.hidden_did ? ` (${[o.hidden_did.turns ? plural(o.hidden_did.turns, "turn") : "", o.hidden_did.cost ? usd(o.hidden_did.cost) : ""].filter(Boolean).join(", ")})` : "";
     out.push(`${plural(o.hidden, "more session")} not listed${o.hidden_by ? `: ${topTwo(o.hidden_by, (k) => WATCH_LABEL[k as Watch].toLowerCase())}` : ", the quietest"}${did}.`);
   }
   // Over every session, the hidden ones too (see `top`).

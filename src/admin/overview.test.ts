@@ -150,12 +150,12 @@ test("the report counts every agent with the failed ones first, and reads who sp
     expect(o.totals).toMatchObject({ turns: 1205, cut: 2 });
     const text = overviewText(o).split("\n");
     expect(text[1]).toBe("Your agents (12; 2 not listed: 2 reported):");
-    expect(text.find((l) => l.includes('"Only cut"'))).toContain("; 2 cut by a restart");
-    expect(text.at(-2)).toBe("3 more sessions not listed, the quietest (3 turns, $0.0006 since then).");
+    expect(text.find((l) => l.includes('"Only cut"'))).toContain("; 2 turns cut");
+    expect(text.at(-2)).toBe("3 more sessions not listed, the quietest (3 turns, $0.0006).");
     expect(text.at(-1)).toBe('Most spent since then: "Many turns" $2.90, "Dozen lanes" $0.02, "Needs approval" $0.0003.');
     // With two rows for the sessions the busiest done one is left out: the line says what the left-out ones did, and it still leads the spend.
     const two = overviewText(overview(from, { since: now - 3_600_000, of: lead, max: 12 })).split("\n");
-    expect(two.at(-2)).toBe("5 more sessions not listed: 4 done, 1 needs you (1203 turns, $2.90 since then).");
+    expect(two.at(-2)).toBe("5 more sessions not listed: 4 done, 1 needs you (1203 turns, $2.90).");
     expect(two.at(-1)).toStartWith('Most spent since then: "Many turns" $2.90');
     expect(totalsText({ turns: 3, cut: 2, failed: 1, agents: {}, cost: 0 })).toBe("3 of the sessions' own turns ended, 1 failed, 2 cut by a restart; $0.00 spent in all");
   } finally {
@@ -171,6 +171,8 @@ test("a row that says how long itself is given one duration, and a cut turn is s
   ] })).split("\n");
   expect(text[2]).toBe('  "Silent": step 1, the model is answering, no output for 26 s  [session=000000000001]');
   expect(text[3]).toBe('  "Streams": step 1, the model is answering, for 3 s  [session=000000000002]');
-  expect(didText({ turns: 1, cut: 2, failed: {}, agents: {}, cost: 0 })).toBe("1 turn; 2 cut by a restart");
-  expect(didText({ turns: 0, cut: 2, failed: {}, agents: {}, cost: 0 })).toBe("2 cut by a restart");
+  expect(didText({ turns: 1, cut: 2, failed: { "rate limit": 1 }, agents: {}, cost: 0 })).toBe("1 turn, 1 failed (rate limit), 2 cut");
+  // The class a row already gave as why it failed is not said again.
+  expect(didText({ turns: 1, failed: { "rate limit": 1 }, agents: {}, cost: 0 }, 0, "rate limit")).toBe("1 turn, 1 failed");
+  expect(didText({ turns: 0, cut: 2, failed: {}, agents: {}, cost: 0 })).toBe("2 turns cut");
 });
