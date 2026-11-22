@@ -728,6 +728,13 @@ function innerDir(top: string, path: string): string | null {
   }
 }
 
+// The commit an inner repository has out, as addAll asks for it; undefined for one with no commit yet, or that cannot be read.
+export async function innerHead(top: string, path: string): Promise<string | undefined> {
+  const dir = innerDir(top, path);
+  const r = dir ? await git(dir, ["rev-parse", "--verify", "-q", "HEAD"], { read: true, timeout: 10_000 }) : undefined;
+  return r?.code === 0 && /^[0-9a-f]+$/.test(r.out.trim()) ? r.out.trim() : undefined;
+}
+
 // A caller's own way to run git at the top of its work tree (its index, its git directory): stdout, or it throws.
 export type RunGit = (args: string[], input?: string) => Promise<string>;
 

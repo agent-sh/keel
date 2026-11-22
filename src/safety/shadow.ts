@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { addAll, git, gitSync } from "../core/git.ts";
+import { addAll, git, gitSync, innerHead } from "../core/git.ts";
 import { capPatch } from "./patch.ts";
 import { timed } from "../admin/stall.ts";
 
@@ -117,6 +117,10 @@ export class Shadow {
     this.writeExcludes([]);
     const list = (await this.git(["ls-files", "-z", "--others", "--modified", "--deleted", "--exclude-standard"], { index, timeout: 30_000 })).split("\0").filter(Boolean);
     if (!list.length && this.last) { this.skipped = []; return "same"; }
+    // What the last snapshot left out stays listed for good: a file over the cap, an inner repository
+    // with no commit yet. When the listing is those and nothing else, and each is still what it was,
+    // the snapshot is the last one's tree, and what it skipped is what that one skipped.
+    if (this.last && await this.leftOut(list)) { this.writeExcludes(this.skipped); return "same"; }
     this.last = undefined;
     const big: string[] = [];
     const cap = fileCap();
@@ -141,6 +145,22 @@ export class Shadow {
     return true;
   }
 
+  // The inner repositories the last whole snapshot found with no commit to record.
+  private unborn: string[] = [];
+  // Whether every listed path is one the last snapshot left out and would leave out again.
+  private async leftOut(list: string[]): Promise<boolean> {
+    const big = new Set(this.skipped), unborn = new Set(this.unborn), cap = fileCap();
+    const repos: string[] = [];
+    for (const p of list) {
+      if (p.endsWith("/") && unborn.has(p.slice(0, -1))) { repos.push(p.slice(0, -1)); continue; }
+      if (!big.has(p)) return false;
+      try { const st = lstatSync(join(this.workspace, p)); if (!st.isFile() || st.size <= cap) return false; } catch { return false; }
+    }
+    // (Asked as the whole snapshot asks: one that has a commit by now is recorded by it.)
+    for (const r of repos) if (await innerHead(this.workspace, r)) return false;
+    return true;
+  }
+
   // Snapshot to a tree. Whole workspace in tree mode (the workspace's
   // .gitignore files apply); in written mode only `paths` (relative).
   snapshot(paths?: string[]): Promise<string> {
@@ -153,7 +173,7 @@ export class Shadow {
           const sized = await this.sizeUp(index);
           if (!sized) return this.writtenTree(paths ?? []);
           if (sized === "same") return this.last!;
-          await this.addAll(index, 30_000);
+          this.unborn = (await this.addAll(index, 30_000)).filter((i) => !i.tracked && !i.head).map((i) => i.path);
         } catch (e) {
           // Too large or too slow to snapshot whole: fall back to the files the tools write.
           this.mode = "written";

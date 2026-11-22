@@ -329,3 +329,61 @@ test("a snapshot of an unchanged workspace runs one git process and gives the la
     before = now.tree;
   }
 });
+
+// What a snapshot leaves out stays listed as new for good: a file over the
+// per-file cap, an inner repository with no commit yet. A workspace that
+// holds one ran the whole work at every snapshot (seven processes).
+test("an unchanged workspace with a file over the cap and an inner repository with no commit is still one listing", async () => {
+  const { Shadow } = await import("./shadow.ts");
+  const dir = join(root, `case-${++n}`);
+  const ws = join(dir, "ws");
+  mkdirSync(join(ws, "inner"), { recursive: true });
+  writeFileSync(join(ws, "a.txt"), "one\n");
+  writeFileSync(join(ws, "big.bin"), "x".repeat(400));
+  writeFileSync(join(ws, "inner/file.txt"), "inside\n");
+  const inner = (...args: string[]) => { const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", ...args], { cwd: join(ws, "inner"), stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(r.stderr.toString()); };
+  inner("init", "-q");
+  const sh = new Shadow(join(dir, "state", "checkpoints"), ws);
+  let runs: string[] = [];
+  const git = sh.git.bind(sh);
+  sh.git = (args, opts) => { runs.push(args[0]!); return git(args, opts); };
+  let k = 0;
+  const whole = async () => { const o = new Shadow(join(dir, `other-${++k}`, "checkpoints"), ws); return { tree: await o.snapshot(), skipped: o.skipped }; };
+  const snap = async () => { runs = []; const tree = await sh.snapshot(); return { tree, skipped: sh.skipped, runs: runs.length }; };
+  const excludes = () => readFileSync(join(sh.dir, "info", "exclude"), "utf8");
+
+  const first = await snap();
+  expect(first.runs).toBeGreaterThan(3);
+  expect(first.skipped).toEqual(["big.bin"]);
+  expect({ tree: first.tree, skipped: first.skipped }).toEqual(await whole());
+  const left = excludes();
+  expect(left).toContain("/big.bin");
+  // Nothing changed: the last tree and what it skipped, for the one listing; the exclude file is as the whole work leaves it.
+  for (let i = 0; i < 2; i++) {
+    expect(await snap()).toEqual({ tree: first.tree, skipped: ["big.bin"], runs: 1 });
+    expect(excludes()).toBe(left);
+  }
+  // A file inside the inner repository changes nothing of the snapshot while it has no commit.
+  writeFileSync(join(ws, "inner/file.txt"), "inside, changed\n");
+  expect(await snap()).toEqual({ tree: first.tree, skipped: ["big.bin"], runs: 1 });
+  // Each change is seen, and gives what a store that never saw the workspace gives.
+  const changes: (() => void)[] = [
+    () => writeFileSync(join(ws, "big.bin"), "y".repeat(500)), // still over the cap: left out, the tree is the same
+    () => writeFileSync(join(ws, "a.txt"), "one, changed\n"),
+    () => writeFileSync(join(ws, "big.bin"), "small now\n"), // under the cap: it is in
+    () => writeFileSync(join(ws, "big2.bin"), "z".repeat(300)), // another one over the cap
+    () => { inner("add", "-A"); inner("commit", "-q", "-m", "first"); }, // the inner repository has a commit: recorded by it
+    () => rmSync(join(ws, "big2.bin")),
+  ];
+  let before = first.tree;
+  for (const [i, change] of changes.entries()) {
+    change();
+    const now = await snap();
+    // (A file over the cap is left out: one that comes, changes or goes leaves the tree as it was.)
+    expect({ i, same: now.tree === before }).toEqual({ i, same: [0, 3, 5].includes(i) });
+    expect({ i, tree: now.tree, skipped: now.skipped }).toEqual({ i, ...(await whole()) });
+    const again = await snap();
+    expect({ i, tree: again.tree, skipped: again.skipped, runs: again.runs }).toEqual({ i, tree: now.tree, skipped: now.skipped, runs: 1 });
+    before = now.tree;
+  }
+});
