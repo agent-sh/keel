@@ -5,6 +5,7 @@ import { lineage } from "../core/tree.ts";
 import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { didLine } from "./report-did.ts";
+import { awaited } from "../tools/jobs.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, stillRunning, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -694,7 +695,7 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
 // just written. A reply cut at the output limit and the reply that continues
 // it are one answer.
 const NO_FINAL = "(No final answer. Before its last tool call it wrote:)\n";
-function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string } {
+function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string; events: StoredEvent[] } {
   const evs = D().store.events(a.session_id, a.first_seq);
   const rounds: { text: string; note?: boolean }[] = [];
   let final = "";
@@ -736,7 +737,7 @@ function collect(a: AgentRecord, end?: string): { text: string; own: boolean; er
   if (end && END_TEXT[end]) tail += `${last ? "\n\n" : ""}It did not finish: ${END_TEXT[end]}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
   if (err) tail += `${last || tail ? "\n\n" : ""}Error: ${err}`;
   const text = fitReport(last ? said(last) : "", earlier.map(said), tail, RESULT_CAP - REPORT_ROOM);
-  return { text: text || "(the agent ended without a report)", own: rounds.length > 0, error: err };
+  return { text: text || "(the agent ended without a report)", own: rounds.length > 0, error: err, events: evs };
 }
 
 // What a report's frame and the notes after it may add (the agent's id and
@@ -983,12 +984,18 @@ function withdrawParked(a: AgentRecord) {
 const parkTold = (a: AgentRecord) => void D().store.db.query("UPDATE agents SET park_told = ? WHERE id = ?").run(a.first_seq, a.id);
 const toldOfPark = (a: AgentRecord) => D().store.db.query<{ park_told: number | null }, [string]>("SELECT park_told FROM agents WHERE id = ?").get(a.id)?.park_told === a.first_seq;
 
+// What an agent whose turn ended still waits on: its own waits, and a command a daemon restart cut
+// its call of and left running (its turn ended on "it still runs"; the command's end starts its
+// next turn, src/tools/jobs.ts). An agent with either has not finished.
+export const waitsOn = (sessionId: string): string =>
+  [waits.describeActive(sessionId), ...awaited(sessionId).map((j) => `command ${j.id}, which runs on after a daemon restart`)].filter(Boolean).join(", ");
+
 // The park as it stands when it is sent: the latest thing the agent waits on,
 // or nothing once it went on or ended.
 function parkNow(a: AgentRecord): { text: string; meta: Record<string, unknown> } | undefined {
   const child = D().store.session(a.session_id);
   if (!child || child.archived || get(a.id)?.status !== "waiting" || D().engine.isRunning(a.session_id)) return undefined;
-  const on = waits.describeActive(a.session_id);
+  const on = waitsOn(a.session_id);
   if (!on) return undefined;
   // A timer says when it is due: the first of them, as a span from now and as a time of day (the note is read later too).
   const due = D().store.db.query<{ spec: string }, [string]>("SELECT spec FROM waits WHERE status = 'active' AND session_id = ? AND kind = 'timer'").all(a.session_id)
@@ -1036,7 +1043,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // A message of its parent waits and no stop holds it: its turn starts by
   // itself (the next daemon starts it when this one is on its way down).
   if (!stopping.has(a.id) && !engine.isHeld(sessionId) && waitingFor(sessionId)) return;
-  const waitingOn = stopping.has(a.id) ? "" : waits.describeActive(sessionId);
+  const waitingOn = stopping.has(a.id) ? "" : waitsOn(sessionId);
   if (waitingOn) {
     update(a.id, { status: "waiting", result: collectResult(a) });
     wake(a.id);
@@ -1096,7 +1103,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   }
   // What it did goes with its words: steps, calls, which tools failed, files edited (report-did.ts).
   // A report read as a JSON value by its schema stays the value alone.
-  const did = row.output_schema && status === "completed" ? "" : didLine(D().store.events(a.session_id, a.first_seq));
+  const did = row.output_schema && status === "completed" ? "" : didLine(got.events);
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
   result += work;

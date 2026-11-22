@@ -6,36 +6,61 @@ import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
-import { ackNotices, adoptJobs, cutCommand, drainNotices, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
+import { ackNotices, adoptJobs, cutCommand, drainNotices, jobEnded, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
 import { hookContext } from "../../integrations/hooks.ts";
 import { promptExpansion } from "./hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
+import { newestTurn } from "../../admin/marks.ts";
+import { deliver } from "../../automation/core.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 export const toolRoutes: RouteModule = (deps) => {
   // A page shows a session's background commands above its box: it is told when the list changed.
   jobsChanged.tell = (sessionId) => deps.bus.emit({ t: "feature", name: "jobs", session_id: sessionId, data: {} });
+  // A command a cut call was waiting on has ended: that is what its session's turn waited for, so
+  // it starts one (an agent's too: it is not done while such a command runs, src/automation/agents.ts).
+  // After the step that found the end: at a start the commands are taken back before the turns
+  // the last daemon left are closed, and an input must not start a turn ahead of that. A session
+  // whose cut turn is about to be continued gets it after that turn; one the owner stopped, with
+  // its next input.
+  jobEnded.tell = (job, text, sent) => {
+    setTimeout(() => {
+      try {
+        const held = deps.engine.isHeld(job.sessionId);
+        // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
+        const end = deps.store.db.query<{ kind: string; reason: string | null }, [string]>("SELECT kind, data ->> '$.reason' AS reason FROM events WHERE id = (SELECT head FROM sessions WHERE id = ?)").get(job.sessionId);
+        const cut = end?.kind === "turn_end" && end.reason === "restart";
+        const ok = deliver(job.sessionId, text, { kind: "harness", job: job.id }, { ...(held ? { ride: true } : cut ? { hold: true } : {}), onSent: () => sent() });
+        // Its session is gone or archived: nobody to tell, and nothing left to owe.
+        if (!ok) sent();
+      } catch (e) { deps.errors.capture("tool", e, { at: "a command's end", session: job.sessionId }); }
+    }, 0);
+    return true;
+  };
   // Background commands a previous daemon started run on; take them back.
   try { adoptJobs(join(deps.store.stateDir, "spill")); } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
   registerHooks({
     // A call a restart cut while it ran a command: its result says what became
     // of the command (the engine stores the text as the call's result, an
     // error like every cut call's, under the name the hook has for such a text).
-    callOutcome: (sessionId, callId) => { const text = cutCommand(sessionId, callId); return text ? { denied: text } : undefined; },
+    // The command is the cut turn's own: one started since that turn began (a server that repeats call ids across turns).
+    callOutcome: (sessionId, callId) => { const text = cutCommand(sessionId, callId, { since: newestTurn(deps.store, sessionId)?.ts }); return text ? { denied: text } : undefined; },
     beforeRequest(s, req) {
       // A job's end already stored (a restart came between storing it and
       // marking it reported) is not said twice.
       const said = (job: string) => !!deps.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'note' AND data LIKE ? LIMIT 1").get(s.id, `%"jobs":[%"${job}"%`);
       const drained = drainNotices(s.id);
-      const n = drained.filter((x) => !x.job || !said(x.job));
+      // A note written when it is sent says what holds now; one that no longer holds is dropped.
+      const n = drained.filter((x) => !x.job || !said(x.job)).flatMap((x) => { if (!x.fresh) return [x]; const now = x.fresh(); return now ? [{ ...x, text: now }] : []; });
       if (!n.length) { ackNotices(drained); return req; }
       const text = `<system-reminder>\n${n.map((x) => x.text).join("\n")}\n</system-reminder>`;
       const jobs = n.flatMap((x) => (x.job ? [x.job] : []));
       deps.bus.emit({ t: "event", event: deps.store.append(s.id, "note", { text, model: true, ...(jobs.length ? { jobs } : {}) }) });
       ackNotices(drained);
+      for (const x of n) try { x.stored?.(); } catch (e) { deps.errors.capture("server", e, { at: "a note was stored", session: s.id }); }
       const messages = req.messages.slice();
       const last = messages[messages.length - 1];
       if (last?.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, { type: "text", text }] };

@@ -814,7 +814,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     const batch = ((await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).filter((r: any) => r.tool_use_id.startsWith("batch-"));
     // (The command outlived the daemon: its call is not told it was interrupted.)
     expect(batch.map((r: any) => [r.is_error, r.content]).sort()).toEqual([
-      [true, expect.stringMatching(/^The daemon restarted while this command ran\. The command was not interrupted: it still runs in the background \(ID: \w+\)\. Its output is being written to \S+\.log\. Do not start it again: a notice comes when it ends\.$/)],
+      [true, expect.stringMatching(/^The daemon restarted while this command ran\. The command was not interrupted: it still runs in the background \(ID: \w+\)\. Its output is being written to \S+\.log\. Do not start it again: you are told when it ends\.$/)],
       [true, "The owner denied this call: leave denied.txt alone"],
     ]);
 

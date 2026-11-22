@@ -91,7 +91,7 @@ const Agent: Tool = {
     const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
     const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.`);
-    if (a.status === "waiting") return ok(`Agent ${a.id} parked on ${waits.describeActive(a.session_id) || "a scheduled wait"} and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
+    if (a.status === "waiting") return ok(`Agent ${a.id} parked on ${agents.waitsOn(a.session_id) || "a scheduled wait"} and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
     const report = agents.withUnread(agents.reportBlock(a), a.id);
     return a.status === "completed" ? ok(report) : fail(report);
   }),
