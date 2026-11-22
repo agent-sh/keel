@@ -2,6 +2,7 @@
 // open, and the owner's local preferences. Components read it with useUI.
 import { useSyncExternalStore } from "react";
 import type { PromptBlock } from "../../../src/core/types.ts";
+import { opened } from "./self-focus.ts";
 
 export type Route =
   | { name: "new" }
@@ -115,9 +116,10 @@ export function useUI<T>(sel: (s: UIState) => T): T {
 export function navigate(r: Route, replace = false) {
   const url = r.name === "session" ? `/s/${r.id}` : r.name === "settings" ? `/settings/${r.section}` : r.name === "project" ? `/p/${r.id}` : "/";
   if (url !== location.pathname || location.hash) (replace ? history.replaceState : history.pushState).call(history, null, "", url);
+  opened();
   setUI({ route: r, peek: false, ...(isPhone() ? { sidebar: false } : {}) });
 }
-addEventListener("popstate", () => setUI({ route: parse() }));
+addEventListener("popstate", () => { opened(); setUI({ route: parse() }); });
 if (state.route.name === "session" && location.pathname === "/") navigate(state.route, true);
 
 export function savePref(k: "enterSends" | "newWorkspace" | "sidebar" | "panel" | "listW", v: unknown) {

@@ -1,10 +1,14 @@
 import { Component, type ReactNode } from "react";
 import { reportError } from "../lib/store.ts";
+import { selfFocus } from "../lib/self-focus.ts";
 
 // A view that throws shows what failed and records it in Errors.
 export class Boundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   override state = { error: null as Error | null };
   static getDerivedStateFromError(error: Error) { return { error }; }
+  // The failure shows by itself: its button takes the keyboard only when the owner has it nowhere
+  // (a key on its way to a field they are in must not press it). See lib/self-focus.ts.
+  private take = (el: HTMLButtonElement | null) => { selfFocus(el); };
   override componentDidCatch(error: Error, info: { componentStack?: string | null }) {
     reportError(error, { kind: "react", componentStack: info.componentStack });
   }
@@ -20,7 +24,7 @@ export class Boundary extends Component<{ children: ReactNode }, { error: Error 
         <p className="mt-1 text-ui text-muted">{chunk ? "The connection dropped or Keel was updated. Reloading fetches it again; your drafts stay." : this.state.error.message}</p>
         <p className="mt-1 text-caption text-faint">It is recorded in Errors.</p>
         <button
-          autoFocus
+          ref={this.take}
           className="mt-4 h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover"
           onClick={() => (chunk ? location.reload() : this.setState({ error: null }))}
         >

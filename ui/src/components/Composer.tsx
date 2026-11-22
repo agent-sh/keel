@@ -10,6 +10,7 @@ import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepI
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
 import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
+import { openedAt, selfFocus } from "../lib/self-focus.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
@@ -112,6 +113,15 @@ function SessionComposer({
   const [dragging, setDragging] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // The box takes the keyboard as its page or its session opens: once, and not from a control
+  // the owner went to since (lib/self-focus.ts). It is drawn when its session and its chunks
+  // are in, which may be long after; an autofocus attribute takes the keyboard whenever that is.
+  const took = useRef(false);
+  useLayoutEffect(() => {
+    if (!autoFocus || took.current) return;
+    took.current = true;
+    selfFocus(ref.current, openedAt());
+  }, []);
   const queueButton = useRef<HTMLButtonElement>(null);
   const enterSends = useUI((s) => s.enterSends);
   // Reading another branch from search: a reply would go to the session's own branch, so ask first.
@@ -724,7 +734,6 @@ function SessionComposer({
       <textarea
         ref={ref}
         data-testid="composer"
-        autoFocus={autoFocus}
         rows={1}
         value={text}
         aria-label="Message"
