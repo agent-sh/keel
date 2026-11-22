@@ -9,15 +9,23 @@ import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.activity.compose.setContent
 import androidx.fragment.app.FragmentActivity
+import dev.avifenesh.keel.ui.ConfirmSheet
+import dev.avifenesh.keel.ui.KeelTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 object Approvals {
     /** done(null): applied; done(""): the owner cancelled the prompt; done(text): what went wrong. */
-    /** seen: the whole text of the request was on screen before this answer. via: "notification" from a notification's action. */
-    fun run(act: FragmentActivity, aid: String, choice: String, summary: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, done: (String?) -> Unit) {
+    /**
+     * seen: the whole text of the request was on screen before this answer. via: "notification" from a
+     * notification's action. rule: what a standing answer stores, named in the prompt.
+     * The prompt carries no text of the request: a prompt's subtitle is cut, and a cut request is not
+     * what is allowed. The request stands whole on the screen under it.
+     */
+    fun run(act: FragmentActivity, aid: String, choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, rule: String = "", done: (String?) -> Unit) {
         val body = Wire.answerBody(choice, answers, seen, via)
         fun submit(headers: Map<String, String>) {
             Hub.scope.launch {
@@ -55,31 +63,42 @@ object Approvals {
         val title = when {
             answers != null -> "Send the answer"
             choice == "session" -> "Allow for this session"
+            choice == "always" -> "Always allow"
             else -> "Allow once"
         }
-        prompt.authenticate(
-            BiometricPrompt.PromptInfo.Builder().setTitle(title).setSubtitle(summary.take(140))
-                .setAllowedAuthenticators(BIOMETRIC_STRONG or DEVICE_CREDENTIAL).build(),
-            BiometricPrompt.CryptoObject(sig),
-        )
+        val info = BiometricPrompt.PromptInfo.Builder().setTitle(title).setAllowedAuthenticators(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)
+        if (rule.isNotBlank() && (choice == "session" || choice == "always")) info.setDescription("The rule: $rule")
+        prompt.authenticate(info.build(), BiometricPrompt.CryptoObject(sig))
     }
 }
 
 /**
- * Allow from a notification: the prompt over the lock screen, then gone. The notification offers it
- * only for a request its one line shows whole; the daemon refuses it for any other, with the reason.
+ * Allow from a notification. A collapsed notification shows the start of its line, so the request
+ * is drawn whole here first, over the lock screen, with its session's name: the fingerprint is asked
+ * for under text that is all on screen, never under a cut line. The daemon offers this only for a
+ * request whose whole line fits a collapsed notification, and refuses it for any other, with the reason.
  */
 class ApproveActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true); setTurnScreenOn(true)
         val aid = intent.getStringExtra("aid") ?: return finish()
-        Approvals.run(this, aid, intent.getStringExtra("choice") ?: "once", intent.getStringExtra("summary").orEmpty(), null, via = "notification") { err ->
-            when {
-                err == null -> Toast.makeText(this, "Allowed", Toast.LENGTH_SHORT).show()
-                err.isNotEmpty() -> Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+        val choice = intent.getStringExtra("choice") ?: "once"
+        val title = intent.getStringExtra("title").orEmpty()
+        val body = intent.getStringExtra("summary").orEmpty()
+        setContent {
+            KeelTheme(Prefs.theme) {
+                ConfirmSheet(title, body, onAllow = {
+                    Approvals.run(this, aid, choice, null, via = "notification") { err ->
+                        when {
+                            err == null -> Toast.makeText(this, "Allowed", Toast.LENGTH_SHORT).show()
+                            err.isNotEmpty() -> Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+                        }
+                        // (A cancelled prompt leaves the sheet up: the owner may read again, or close it.)
+                        if (err == null || err.isNotEmpty()) finish()
+                    }
+                }, onClose = { finish() })
             }
-            finish()
         }
     }
 }

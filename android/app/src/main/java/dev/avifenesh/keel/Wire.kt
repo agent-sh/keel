@@ -212,6 +212,7 @@ data class Card(
     val answers: Map<String, List<String>> = emptyMap(),
     val text: String = "", val notes: List<String> = emptyList(), val cut: Boolean = false, val total: Int? = null, val lines: Int = 0,
     val hold: List<String> = emptyList(), val rtl: Boolean = false, val machine: String = "", val from: String = "",
+    val line: String = "", val glance: Boolean = false, val grants: List<String> = emptyList(),
 ) {
     val pending get() = state == "pending"
     val question get() = kind == "question"
@@ -221,6 +222,25 @@ data class Card(
     val shown get() = (text.ifBlank { command }).let { if (rtl) Wire.inPlace(it) else it }
     /** Whether an allow may be sent. read: every line of the text has been on screen. */
     fun mayAllow(read: Boolean) = !held || read
+    /**
+     * Whether a notification may carry Allow once: the daemon says its one line (line) shows all of the
+     * request within a collapsed notification. A daemon from before that word sends no line: there a
+     * request that is not held is allowed as it was.
+     */
+    val glanceable get() = if (line.isNotBlank()) glance else !held
+    /** What a notification says of the request. */
+    val noteLine get() = line.ifBlank { command.ifBlank { description } }
+    /**
+     * A choice's button. A standing answer stores a rule, and the button names it: "Allow echo * for this
+     * session", never a bare "Allow for session". A daemon that names no rule gets the plain words.
+     */
+    fun label(choice: String, fallback: String) = when (choice) {
+        "once" -> "Allow once"
+        "session" -> if (grants.isEmpty()) "Allow for session" else "Allow ${grants.joinToString(", ")} for this session"
+        "always" -> if (grants.isEmpty()) "Always allow" else "Always allow ${grants.joinToString(", ")}"
+        "deny" -> "Deny"
+        else -> fallback
+    }
     /** What stands in the way of Allow, said under the text. */
     val readFirst get() = when {
         !held -> ""
@@ -249,6 +269,7 @@ data class Card(
                 text = o.str("text"), notes = strings(o.optJSONArray("notes")), cut = o.optBoolean("cut"),
                 total = if (o.isNull("total")) null else o.optInt("total"), lines = o.optInt("lines"),
                 hold = strings(o.optJSONArray("hold")), rtl = o.optBoolean("rtl"), machine = o.str("machine"), from = o.str("from"),
+                line = o.str("line"), glance = o.optBoolean("glance"), grants = strings(o.optJSONArray("grants")),
             )
         }
     }
@@ -347,6 +368,11 @@ data class PushMsg(val kind: String, val chat: String?, val title: String, val b
             held = !d["hold"].isNullOrBlank(),
         )
     }
+    /**
+     * Whether the notification carries Allow once: the daemon offered it (opts; a push from before
+     * opts offered it always) and does not hold the request. Else it leads with Open.
+     */
+    val allows get() = !held && (choices.isEmpty() || "once" in choices)
 }
 
 /** A running session on the Usage screen: every input token, cached or not, and the spend when it is priced. */

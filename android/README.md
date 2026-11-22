@@ -40,17 +40,26 @@ The daemon allows a request only for text that was shown. A permission card
 carries the whole text to judge (`text`, each hidden character written as its
 code point), notes on what in it can mislead, where it runs and why it is
 asked, and `hold`: why Allow needs the text read first (long, cut, marked,
-high risk). An empty `hold` means one line shows all of it.
+high risk, or run somewhere a line does not say). An empty `hold` means one
+line shows all of it.
 
 - The card draws the whole text in a box that scrolls. For a held request the
   Allow buttons wait until the text was scrolled to its end (or fits the box);
   Deny is always live. The allow then says `seen: "whole"`.
-- A notification shows one line. It offers Allow once only for a request that
-  line shows whole, and Open and Deny for a held one.
-- An allow of a held request without `seen` is answered 409 with a sentence
-  ("Open the request to read it first: it is 41 lines long."), and the card
-  stays open. The app shows the sentence under the card, or as a toast when
-  the answer came from a notification.
+- A standing answer stores a rule, and its button names it: "Allow echo * for
+  this session" (`grants`). It settles no held request that waits beside it.
+- A notification shows a line, and collapsed only its start. It offers Allow
+  once only where the daemon says the collapsed line shows the whole request
+  (`glance`: the tool and the text in 40 characters, the limit Android's guide
+  gives for content text, with no run of spaces), and Open and Deny for the
+  rest. It never gives a standing answer.
+- Allow once on a notification opens a sheet over the lock screen with the
+  session's name and the whole line, and asks for the fingerprint from there.
+  The prompt itself carries no text of the request: a prompt's subtitle is cut.
+- An allow the daemon holds is answered 409 with a sentence ("Open the request
+  to read it first: it is 41 lines long."), and the card stays open. The app
+  shows the sentence under the card, or as a toast when the answer came from a
+  notification.
 
 ## Push
 

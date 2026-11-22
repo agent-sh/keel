@@ -106,9 +106,33 @@ class WireTest {
         assertEquals("""{"choice":"deny","via":"notification"}""", Wire.answerBody("deny", null, via = "notification").toString())
 
         // A push for a held request carries no Allow: the notification offers Open and Deny.
-        assertEquals(listOf(true, listOf("deny")), PushMsg.of(mapOf("t" to "approval", "aid" to "a1", "opts" to "[\"deny\"]", "hold" to "long,marked")).let { listOf(it.held, it.choices) })
-        assertEquals(false, PushMsg.of(mapOf("t" to "approval", "aid" to "a2", "opts" to "[\"once\",\"deny\"]", "hold" to "")).held)
-        assertEquals(false, PushMsg.of(mapOf("t" to "approval", "aid" to "a2")).held)
+        assertEquals(listOf(true, false, listOf("deny")), PushMsg.of(mapOf("t" to "approval", "aid" to "a1", "opts" to "[\"deny\"]", "hold" to "long,marked")).let { listOf(it.held, it.allows, it.choices) })
+        assertEquals(true, PushMsg.of(mapOf("t" to "approval", "aid" to "a2", "opts" to "[\"once\",\"deny\"]", "hold" to "")).allows)
+        // Not held, but longer than a collapsed notification shows: the daemon offers no Allow, and the app adds none.
+        assertEquals(false, PushMsg.of(mapOf("t" to "approval", "aid" to "a5", "opts" to "[\"deny\"]", "hold" to "")).allows)
+        // A daemon from before opts: as it was.
+        assertEquals(true, PushMsg.of(mapOf("t" to "approval", "aid" to "a2")).allows)
+    }
+
+    // A notification carries Allow once only for a request whose whole line it shows, and a standing
+    // answer's button names the rule it stores.
+    @Test fun aNotificationAllowsOnlyWhatItsLineShowsAndAStandingAnswerNamesItsRule() {
+        val card = { json: String -> Card.of(JSONObject(json)) }
+        val short = card("""{"id":"a1","kind":"permission","command":"npm test","text":"npm test","hold":[],"line":"Bash: npm test","glance":true,"grants":["npm test"],"state":"pending"}""")
+        assertEquals(listOf(true, "Bash: npm test"), listOf(short.glanceable, short.noteLine))
+        // Not held, but its line is longer than a collapsed notification shows.
+        val wide = card("""{"id":"a2","kind":"permission","command":"echo ok ; echo tail","hold":[],"line":"Bash: echo ok                         ; echo tail","glance":false,"state":"pending"}""")
+        assertEquals(false, wide.glanceable)
+        assertEquals(false, card("""{"id":"a3","kind":"permission","command":"x","hold":["where"],"line":"Bash on build-box: x","glance":false,"state":"pending"}""").glanceable)
+        // A daemon from before the line: a request it does not hold is allowed as it was.
+        val old = card("""{"id":"a4","kind":"permission","command":"npm test","state":"pending"}""")
+        assertEquals(listOf(true, "npm test"), listOf(old.glanceable, old.noteLine))
+
+        assertEquals("Allow npm test for this session", short.label("session", "This session"))
+        assertEquals("Always allow npm test", short.label("always", ""))
+        assertEquals(listOf("Allow once", "Deny"), listOf(short.label("once", ""), short.label("deny", "")))
+        assertEquals("Allow echo *, git status for this session", short.copy(grants = listOf("echo *", "git status")).label("session", ""))
+        assertEquals("Allow for session", old.label("session", "This session"))
     }
 
     @Test fun lettersWrittenRightToLeftStayWhereTheyAreWritten() {

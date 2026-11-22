@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -64,12 +65,13 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
     val other = remember(c.id) { mutableStateMapOf<String, String>() }
     // A permission is allowed only for what was read: every line of its text has been on screen
     // (it fits its box, or the owner scrolled to its end). The daemon holds an allow without that word.
+    // (Remembered for this text of this card: another text under the same id was not read.)
     val scroll = rememberScrollState()
-    var read by remember(c.id) { mutableStateOf(false) }
-    LaunchedEffect(c.id) { snapshotFlow { scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue }.collect { if (it) read = true } }
+    var read by remember(c.id, c.shown) { mutableStateOf(false) }
+    LaunchedEffect(c.id, c.shown) { snapshotFlow { scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue }.collect { if (it) read = true } }
     fun act(choice: String, answers: Map<String, Any>?) {
         busy = true; error = ""
-        Approvals.run(act, c.id, choice, c.command.ifBlank { c.description }, answers, seen = read && !c.question) { err ->
+        Approvals.run(act, c.id, choice, answers, seen = read && !c.question, rule = c.grants.joinToString(", ")) { err ->
             busy = false
             if (!err.isNullOrEmpty()) error = err
         }
@@ -118,7 +120,8 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
                 } else FlowRow(horizontalArrangement = Arrangement.spacedBy(S.sm), verticalArrangement = Arrangement.spacedBy(S.sm)) {
                     // The daemon offers the session choice where it is safe; a phone with no screen lock approves once only.
                     for (a in c.actions.filter { !(Prefs.noLock && (it.choice == "session" || it.choice == "always")) }) {
-                        val label = when (a.choice) { "once" -> "Allow once"; "session" -> "Allow for session"; "deny" -> "Deny"; else -> a.label }
+                        // (A standing answer's button names the rule it stores.)
+                        val label = c.label(a.choice, a.label)
                         // Deny is taken at once; an allow waits for the text to have been read.
                         Btn(label, { act(a.choice, null) }, when (a.style) { "primary" -> Tone.INK; "danger" -> Tone.DANGER; else -> Tone.LINE },
                             enabled = !busy && (a.choice == "deny" || c.mayAllow(read)), compact = true, tag = "${a.choice}-${c.id}")
@@ -181,3 +184,31 @@ fun cardFromMessage(id: String, chat: String, kind: String, command: String, des
     Card(id, chat, kind.ifBlank { "permission" }, command, description, emptyList(), state.ifBlank { "expired" }, null, ts, emptyList())
 
 @Composable fun Gap(h: Int) = Spacer(Modifier.height(h.dp).width(1.dp))
+
+/**
+ * What a notification's Allow once opens, over the lock screen: the session and the whole line of the
+ * request, then Allow once (which asks for the fingerprint) and Close. Nothing is cut here.
+ */
+@Composable
+fun ConfirmSheet(title: String, body: String, onAllow: () -> Unit, onClose: () -> Unit) {
+    val k = k()
+    Box(Modifier.fillMaxSize().background(k.bg.copy(alpha = 0.92f)).padding(20.dp), contentAlignment = Alignment.Center) {
+        Panel(accent = k.need, modifier = Modifier.reading()) {
+            Column(Modifier.padding(start = 16.dp, end = 14.dp, top = 14.dp, bottom = 14.dp)) {
+                StateTag(State.NEEDS, "permission")
+                if (title.isNotBlank()) { Spacer(Modifier.height(8.dp)); Txt(title, T.uiStrong, k.fg) }
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))
+                        .heightIn(max = 360.dp).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .semantics { contentDescription = "confirm-request" },
+                ) { Txt(body, T.code.copy(textDirection = TextDirection.Ltr), k.fg) }
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(S.sm)) {
+                    Btn("Allow once", onAllow, Tone.INK, tag = "confirm-allow")
+                    Btn("Close", onClose, Tone.QUIET, tag = "confirm-close")
+                }
+            }
+        }
+    }
+}
