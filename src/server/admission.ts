@@ -22,6 +22,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { socketUid } from "./sockdiag.ts";
 
 type Check = (req: Request, path: string) => Response | undefined;
 const checks: Check[] = [];
@@ -156,7 +157,24 @@ function tableForms(address: string): string[] {
   return mapped ? [word(b.slice(12)), v6(b)] : [v6(b)];
 }
 
-export function uidLookup(read: () => Promise<Tables> = readTables, now: () => number = Date.now, linux = process.platform === "linux") {
+// The two ends as the kernel is asked for them: both as IPv4 where both are (plain or mapped), else both as IPv6.
+export function endsOf(peer: End, server: { address?: string; port: number }): [{ bytes: number[]; port: number }, { bytes: number[]; port: number }] | null {
+  const four = (b: number[] | null) => (!b ? null : b.length === 4 ? b : b.slice(0, 10).every((n) => n === 0) && b[10] === 255 && b[11] === 255 ? b.slice(12) : null);
+  const a = addressBytes(peer.address), z = server.address ? addressBytes(server.address) : null;
+  if (!a || !z) return null;
+  const a4 = four(a), z4 = four(z);
+  if (a4 && z4) return [{ bytes: a4, port: peer.port }, { bytes: z4, port: server.port }];
+  return a.length === 16 && z.length === 16 && !a4 && !z4 ? [{ bytes: a, port: peer.port }, { bytes: z, port: server.port }] : null;
+}
+// The owner of the client's socket, asked of the kernel by its two ends (sockdiag.ts): a uid, or
+// null when it names no such socket or cannot be asked (then the table is read, as it always was).
+const kernelUid = (peer: End, server: { address?: string; port: number }): number | null => {
+  const ends = endsOf(peer, server);
+  return ends ? socketUid(ends[0], ends[1]) : null;
+};
+
+// `exact`: asked first for a daemon that listens on one address; only a uid it gives is an answer.
+export function uidLookup(read: () => Promise<Tables> = readTables, now: () => number = Date.now, linux = process.platform === "linux", exact?: (peer: End, server: { address?: string; port: number }) => number | null) {
   const cache = new Map<string, { owner: Exclude<Owner, undefined>; at: number }>();
   // The read under way, and the one that starts when it ends.
   let reading: Promise<Table[]> | undefined;
@@ -201,6 +219,12 @@ export function uidLookup(read: () => Promise<Tables> = readTables, now: () => n
     const k = `${peer.address} ${peer.port} ${server.address ?? "*"} ${server.port}`;
     const hit = cache.get(k);
     if (hit && now() - hit.at < 1000) return hit.owner;
+    const uid = exact && server.address ? exact(peer, server) : null;
+    if (uid !== null) {
+      if (cache.size > 4096) cache.clear();
+      cache.set(k, { owner: uid, at: now() });
+      return uid;
+    }
     return fresh().then((tables) => {
       const owner = find(tables, peer, server);
       if (owner === undefined) return owner;
@@ -210,7 +234,7 @@ export function uidLookup(read: () => Promise<Tables> = readTables, now: () => n
     });
   };
 }
-const peerUid = uidLookup();
+const peerUid = uidLookup(readTables, Date.now, process.platform === "linux", kernelUid);
 // The address the daemon listens on, when it is one address (not every address, not a name).
 const WILDCARD = /^(0\.0\.0\.0|::|\[::\]|)$/;
 const boundAddress = (hostname: string | undefined) => (hostname && !WILDCARD.test(hostname) && tableAddresses(hostname).length ? hostname : undefined);
