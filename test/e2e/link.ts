@@ -6,6 +6,8 @@
 //   dead   nothing passes and nothing closes, and every connection that lived through it, or
 //          was made in it, stays dead for good (a network that changed under them); new ones pass after
 // `lag`: each chunk is delivered that much later, in order, each way (and `jitter` more, at random).
+// A side that closes has its close delivered after what it sent, as a FIN follows the data: an
+// answer the daemon closes behind (`connection: close`) still arrives, late.
 import net from "node:net";
 
 export type LinkMode = "pass" | "hold" | "dead";
@@ -16,6 +18,7 @@ export function tcpLink(targetPort: number, host = "127.0.0.1") {
   type Conn = { page: net.Socket; daemon: net.Socket; up: Way; down: Way; dead: boolean };
   const conns = new Set<Conn>();
   let made = 0;
+  let shut = false;
   const deliver = (to: net.Socket, w: Way, b: Buffer) => {
     if (!lag) return void (to.destroyed || to.write(b));
     const at = Math.max(w.last, Date.now() + lag.ms + Math.random() * lag.jitter);
@@ -36,7 +39,20 @@ export function tcpLink(targetPort: number, host = "127.0.0.1") {
     page.on("data", on("up"));
     daemon.on("data", on("down"));
     const end = () => { conns.delete(c); page.destroy(); daemon.destroy(); };
-    for (const s of [page, daemon]) s.on("error", end).on("close", end);
+    // What the closing side sent is still on its way (the lag, or held): the close follows it.
+    const closed = (w: Way, other: net.Socket) => () => {
+      const wait = lag ? Math.max(0, w.last - Date.now()) + 5 : 0;
+      if (shut || c.dead || (!wait && !w.held.length)) return end();
+      const follow = () => {
+        if (shut || c.dead || !conns.has(c)) return end();
+        if (w.held.length) return void setTimeout(follow, 50);
+        if (!other.destroyed) other.end();
+        setTimeout(end, 50);
+      };
+      setTimeout(follow, wait);
+    };
+    page.on("error", end).on("close", closed(c.up, daemon));
+    daemon.on("error", end).on("close", closed(c.down, page));
   });
   return {
     listen: () => new Promise<string>((r) => server.listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${(server.address() as net.AddressInfo).port}`))),
@@ -52,6 +68,6 @@ export function tcpLink(targetPort: number, host = "127.0.0.1") {
     },
     lag: (l: { ms: number; jitter?: number } | null) => { lag = l ? { ms: l.ms, jitter: l.jitter ?? 0 } : null; },
     made: () => made,
-    close: () => new Promise<void>((r) => { for (const c of conns) { c.page.destroy(); c.daemon.destroy(); } server.close(() => r()); }),
+    close: () => new Promise<void>((r) => { shut = true; for (const c of conns) { c.page.destroy(); c.daemon.destroy(); } server.close(() => r()); }),
   };
 }

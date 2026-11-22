@@ -21,16 +21,26 @@ import { HAIKU, SCRIPTED, shoot } from "./shots.ts";
 //    each, stays connected, never says "Connected" over rows it has not read
 //    again, and a message sent meanwhile waits in view and goes out once.
 //    A daemon that answers nothing for four seconds is not a lost one.
-// 3. A session of another daemon that finishes or asks gets the unread mark,
+//    A state says "as of" only while it is from before the loss: one the
+//    daemon told since is current before the rest of the catch-up is in.
+// 3. A daemon that is down (its port refuses) for twenty seconds to two
+//    minutes and starts again on the same port: connected within seconds of
+//    its first answer every time, with no socket made while it refused.
+// 4. A session of another daemon that finishes or asks gets the unread mark,
 //    the alert and the inbox row of a session here, once, on every page and
 //    across a restart of that daemon. That daemon stopped: said in the list's
 //    count without scrolling, its sessions "as of HH:MM", one alert; started
-//    again: still out of reach until it has stayed heard, then gone.
+//    again: still out of reach until it has stayed heard, then gone. The
+//    home view counts no session of a machine that does not answer. A link
+//    between the daemons that died is heard again within seconds. A message
+//    for a session there, or a new session, sent while Keel is not heard
+//    stays in its box and goes out once when the owner sends it again.
 // Nothing that is being read moves when any of it is said.
 
 const script = (calls: unknown[]) => `script:calls ${JSON.stringify(calls)}`;
 // A command that goes on until its gate file is there (at most 100 s).
-const until = (gate: string) => ({ name: "Bash", input: { command: `i=0; until [ -f ${gate} ] || [ $i -ge 100 ]; do i=$((i+1)); sleep 1; done; echo released` } });
+// `step`: a word the command begins with, so the row's line says which step it is.
+const until = (gate: string, step = "") => ({ name: "Bash", input: { command: `${step ? `: ${step}; ` : ""}i=0; until [ -f ${gate} ] || [ $i -ge 100 ]; do i=$((i+1)); sleep 1; done; echo released` } });
 const question = { name: "AskUserQuestion", input: { questions: [{ header: "Jitter", question: "Full jitter or equal jitter?", options: [{ label: "Full" }, { label: "Equal" }], multiSelect: false }] } };
 const row = (page: Page, id: string) => page.locator(`[data-testid="session-list"] [data-testid="session-row"][data-session="${id}"]`);
 const logo = (page: Page) => page.locator(".k-logo");
@@ -38,7 +48,8 @@ const top = async (page: Page, testid: string) => Math.round((await page.getByTe
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // What the page says of its link, as a log of changes with their times.
-type Said = { t: number; band: boolean; sync: string | null; logo: string | null; asof: number; clock: string };
+// `stale`: what the rows that say "as of" say (their reason); `fresh`: what the others say.
+type Said = { t: number; band: boolean; sync: string | null; logo: string | null; asof: number; clock: string; stale: string; fresh: string };
 const WATCH = `(() => {
   const w = window;
   if (w.__said) return;
@@ -47,7 +58,13 @@ const WATCH = `(() => {
   const look = () => {
     const sync = document.querySelector('[data-testid="sync-state"]');
     const s = { band: !!document.querySelector('[data-testid="daemon-away"]'), sync: sync ? sync.textContent : null, logo: (document.querySelector(".k-logo") || { getAttribute: () => null }).getAttribute("title"),
-      asof: document.querySelectorAll('[data-testid="row-asof"]').length, clock: [...document.querySelectorAll('[data-testid="row-time"][data-live]')].map((e) => e.textContent).join(",") };
+      asof: document.querySelectorAll('[data-testid="row-asof"]').length, clock: [...document.querySelectorAll('[data-testid="row-time"][data-live]')].map((e) => e.textContent).join(","),
+      stale: "", fresh: "" };
+    for (const r of document.querySelectorAll('[data-testid="session-row"]')) {
+      const why = (r.querySelector('[data-testid="row-why"]') || { textContent: "" }).textContent;
+      const words = r.getAttribute("data-watch") + " " + why + " | ";
+      if (r.querySelector('[data-testid="row-asof"]')) s.stale += words; else s.fresh += words;
+    }
     const key = JSON.stringify(s);
     if (key === last) return;
     last = key;
@@ -57,6 +74,21 @@ const WATCH = `(() => {
   look();
 })()`;
 const said = (page: Page): Promise<Said[]> => page.evaluate(() => (window as unknown as { __said?: Said[] }).__said ?? []);
+
+// The network between the page and the daemon, with a hand on it: in the
+// hole nothing passes either way and nothing closes; a socket opened in the
+// hole opens and stays silent. What the page sends is counted.
+async function holeOn(page: Page) {
+  const net = { hole: false, sent: [] as { at: number; bytes: number; text: string }[], got: [] as { at: number; bytes: number }[] };
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    if (net.hole) return;
+    const server = ws.connectToServer();
+    ws.onMessage((m) => { if (net.hole) return; net.sent.push({ at: Date.now(), bytes: String(m).length, text: String(m) }); server.send(m); });
+    server.onMessage((m) => { if (net.hole) return; net.got.push({ at: Date.now(), bytes: String(m).length }); ws.send(m); });
+  });
+  await page.route(/\/api\//, (route) => (net.hole ? route.abort("internetdisconnected") : route.fallback()));
+  return net;
+}
 
 test("connection truth: a network that goes silent is said within seconds, and the page is right a second after it is back", async ({ page, request }, info) => {
   test.skip(!SCRIPTED, "the scenario is scripted: a turn that ends and a question asked on cue");
@@ -75,17 +107,7 @@ test("connection truth: a network that goes silent is said within seconds, and t
   const finisher = await make(`Finishes in the silence ${tag}`, `Work. ${script([until(gate)])}`);
   const asker = await make(`Asks in the silence ${tag}`);
 
-  // The network between the page and the daemon, with a hand on it: in the
-  // hole nothing passes either way and nothing closes; a socket opened in the
-  // hole opens and stays silent. What the page sends is counted.
-  const net = { hole: false, sent: [] as { at: number; bytes: number; text: string }[], got: [] as { at: number; bytes: number }[] };
-  await page.routeWebSocket(/\/ws$/, (ws) => {
-    if (net.hole) return;
-    const server = ws.connectToServer();
-    ws.onMessage((m) => { if (net.hole) return; net.sent.push({ at: Date.now(), bytes: String(m).length, text: String(m) }); server.send(m); });
-    server.onMessage((m) => { if (net.hole) return; net.got.push({ at: Date.now(), bytes: String(m).length }); ws.send(m); });
-  });
-  await page.route(/\/api\//, (route) => (net.hole ? route.abort("internetdisconnected") : route.fallback()));
+  const net = await holeOn(page);
   // The page's visibility, by hand: a hidden page must ask nothing.
   await page.addInitScript(() => {
     const w = window as unknown as { __hidden?: boolean };
@@ -235,7 +257,7 @@ test("connection truth: a dead socket is left behind over a fast link and a slow
   try {
     const gate = (n: number) => join(dir, `gate-${n}`);
     const viewed = await make("Viewed over the link");
-    const worker = await make("Works across the losses", `Work. ${script([until(gate(1)), until(gate(2)), until(gate(3))])}`);
+    const worker = await make("Works across the losses", `Work. ${script([until(gate(1), "step-1"), until(gate(2), "step-2"), until(gate(3), "step-3")])}`);
     await page.goto(`${url}/s/${viewed}`);
     await expect(row(page, worker)).toHaveAttribute("data-watch", "work", { timeout: 30_000 });
     await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon");
@@ -298,9 +320,14 @@ test("connection truth: a dead socket is left behind over a fast link and a slow
     expect(catching.length).toBeGreaterThan(0);
     expect(caught.t - catching[0]!.t).toBeGreaterThan(1500);
     expect(catching.map((e) => e.logo).filter((w) => w !== "Catching up with the daemon")).toEqual([]);
-    expect(catching.filter((e) => e.asof === 0)).toEqual([]);
-    // A clock that ran would have shown a new second each second; here it changes at most when its state does.
-    expect(new Set(catching.map((e) => e.clock)).size).toBeLessThanOrEqual(2);
+    // The rows say "as of" from the first frame on, and a row says it exactly while what it shows is
+    // from before the loss: the step the worker began in the dead time (it waits for the third gate
+    // now) never stands beside "as of", and the step from before never stands without it.
+    expect(catching[0]!.asof).toBeGreaterThan(0);
+    expect(catching.filter((e) => e.stale.includes("step-3") || e.fresh.includes("step-2")).map((e) => [e.stale, e.fresh])).toEqual([]);
+    expect(catching.some((e) => e.stale.includes("step-2"))).toBe(true);
+    // A clock that ran would have shown a new second each second; beside "as of" it changes at most when its state does.
+    expect(new Set(catching.filter((e) => e.stale.includes("work")).map((e) => e.clock)).size).toBeLessThanOrEqual(2);
     expect(caught.asof).toBe(0);
     // Idle on that link it stays connected: an ask takes 2.4 s to be answered, and that is no loss.
     await page.waitForTimeout(20_000);
@@ -386,6 +413,100 @@ test("connection truth: a daemon that answers nothing for four seconds is not a 
   }
 });
 
+// What the page makes to find the daemon, as a log in the page's own time: each socket (made,
+// opened, first frame, closed, given up) and each request that asks whether the daemon answers.
+type Made = { t: number; what: string; id?: number; after?: number };
+const MADE = `(() => {
+  const w = window;
+  if (w.__made) return;
+  const log = w.__made = [];
+  const Real = w.WebSocket;
+  let n = 0;
+  w.WebSocket = function (url, protocols) {
+    const id = ++n, born = Date.now();
+    const ws = protocols === undefined ? new Real(url) : new Real(url, protocols);
+    log.push({ t: born, what: "socket", id });
+    let said = false;
+    ws.addEventListener("message", () => { if (!said) { said = true; log.push({ t: Date.now(), what: "greeted", id, after: Date.now() - born }); } });
+    ws.addEventListener("close", () => log.push({ t: Date.now(), what: "closed", id, after: Date.now() - born }));
+    const close = ws.close.bind(ws);
+    ws.close = (...a) => { if (ws.readyState < 2) log.push({ t: Date.now(), what: "given up", id, after: Date.now() - born }); return close(...a); };
+    return ws;
+  };
+  w.WebSocket.prototype = Real.prototype;
+  for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) w.WebSocket[k] = Real[k];
+  const real = w.fetch;
+  w.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (!String(url).includes("health?link")) return real(input, init);
+    const sent = Date.now();
+    log.push({ t: sent, what: "ask" });
+    return real(input, init).then((r) => { log.push({ t: Date.now(), what: r.ok ? "answered" : "answered " + r.status, after: Date.now() - sent }); return r; }, (e) => { log.push({ t: Date.now(), what: "refused", after: Date.now() - sent }); throw e; });
+  };
+})()`;
+const made = (page: Page): Promise<Made[]> => page.evaluate(() => (window as unknown as { __made?: Made[] }).__made ?? []);
+
+// The reviewer's schedule, with no proxy: the daemon is killed and started again on the same
+// port. While its port refuses, a browser counts every socket that fails, and after enough of
+// them holds each new one back for seconds (Chrome: sixteen times more failed than opened in its
+// window). A page that then gives a try up for the next answer never connects again: it stayed
+// "Reconnecting" beside a daemon that answered, for as long as it was watched.
+test("connection truth: a daemon that was down for twenty seconds to two minutes is found within seconds of its first answer", async ({ browser }, info) => {
+  test.setTimeout(600_000);
+  const state = join(info.outputPath("down"), "state");
+  mkdirSync(state, { recursive: true });
+  let d = await ownDaemon(state);
+  const port = d.port;
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await ctx.newPage();
+  await page.addInitScript(MADE);
+  await page.addInitScript(WATCH);
+  try {
+    await page.goto(d.url);
+    await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon");
+    await page.waitForTimeout(3000);
+    const table: string[] = [];
+    for (const down of [20, 60, 75, 120]) {
+      d.proc.kill("SIGKILL");
+      await exited(d.proc);
+      const t0 = Date.now();
+      await expect(page.getByTestId("daemon-away")).toBeVisible({ timeout: 3000 });
+      await sleep(Math.max(0, t0 + down * 1000 - Date.now()));
+      const t1 = Date.now();
+      d = await ownDaemon(state, port);
+      const up = Date.now();
+      // Within ten seconds of the daemon's first answer; the bound here is from its listen line, which is earlier.
+      await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon", { timeout: 10_000 }).catch(async (e) => {
+        throw new Error(`${e.message}\ndown ${down} s; the page made: ${(await made(page)).filter((x) => x.t >= t1 - 3000).slice(0, 80).map((x) => `${x.t - up} ${x.what}${x.id ? ` #${x.id}` : ""}${x.after !== undefined ? ` +${x.after}` : ""}`).join(" | ")}`);
+      });
+      const connected = Date.now() - up;
+      const log = await made(page);
+      const during = log.filter((x) => x.t >= t0 && x.t < t1), after = log.filter((x) => x.t >= t1);
+      const count = (list: Made[], what: string) => list.filter((x) => x.what === what).length;
+      const first = after.find((x) => x.what === "answered");
+      // While the port refused: requests asked, one each gap (half a second, then a sixtieth of the
+      // absence), and no socket was made after the one that found it closed.
+      const gaps = 60 + 60 * Math.log(Math.max(1, down / 30));
+      expect([down, count(during, "socket") <= 1]).toEqual([down, true]);
+      expect([down, count(during, "ask") <= gaps + 6]).toEqual([down, true]);
+      expect([down, count(during, "ask") >= gaps / 2]).toEqual([down, true]);
+      // After it was back: one socket, made on the first answer and greeted, not one an answer.
+      expect([down, count(after, "socket"), count(after, "greeted"), count(after, "given up")]).toEqual([down, 1, 1, 0]);
+      expect(first).toBeTruthy();
+      table.push(`${down} s down: ${count(during, "socket")} sockets and ${count(during, "ask")} requests while it refused; first answer ${first!.t - up} ms after it listened, connected ${connected} ms after (1 socket)`);
+      // And it stays, with nothing more asked by request.
+      await page.waitForTimeout(4000);
+      await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon");
+      expect((await made(page)).filter((x) => x.t > up + connected && x.what !== "closed")).toEqual([]);
+    }
+    for (const line of table) console.log(`CONNECTION-TRUTH refused port, ${line}`);
+  } finally {
+    await ctx.close();
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+  }
+});
+
 test("connection truth: a session on another machine is followed like one here, and a machine out of reach is said", async ({ page, context, request }, info) => {
   test.skip(!SCRIPTED, "the scenario is scripted: a turn that ends and a question asked on cue");
   test.setTimeout(360_000);
@@ -396,12 +517,17 @@ test("connection truth: a session on another machine is followed like one here, 
   const gate = join(dir, `gate-${tag}`);
   await request.post("/api/alerts/read", { data: {} });
 
-  // Another machine: a daemon of the spec's own, which it can stop and start again.
+  // Another machine: a daemon of the spec's own, which it can stop and start again, behind a
+  // link of the spec's own (the two daemons' network), which it can kill.
   let far = await ownDaemon(join(dir, "state"), 0, { KEEL_SERVER_NAME: "farbox" });
+  const farLink = tcpLink(far.port);
+  const farUrl = await farLink.listen();
   const name = `farbox-${tag}`;
   let machine = "";
+  // This page's own network, with a hand on it.
+  const net = await holeOn(page);
   try {
-    machine = (await (await request.post("/api/fleet/machines", { data: { name, daemon_url: far.url, workspace_root: root } })).json()).id;
+    machine = (await (await request.post("/api/fleet/machines", { data: { name, daemon_url: farUrl, workspace_root: root } })).json()).id;
     await expect.poll(async () => (await (await request.get(`/api/fleet/machines/${machine}`)).json()).daemon?.state, { timeout: 20_000 }).toBe("linked");
     const there = async (path: string, data?: unknown, method = "POST") => (await request.fetch(`${far.url}${path}`, { method, data })).json();
     const { session } = await there("/api/sessions", { model: "scripted:stand-in", title: `Far work ${tag}`, workspace: root });
@@ -451,6 +577,13 @@ test("connection truth: a session on another machine is followed like one here, 
     // too, by the machine's name, and nothing in the list moves for it.
     await page.setViewportSize({ width: 1440, height: 900 });
     const listAt = await top(page, "session-list"), was = await rowAt();
+    // The home view counts it among what needs the owner, and lists it.
+    const needs = async () => ((await page.getByTestId("home-count-need").count()) ? Number((await page.getByTestId("home-count-need").innerText()).match(/\d+/)![0]) : 0);
+    const home = page.locator(`[data-testid="home-session"][data-session="${id}"]`);
+    await expect(home).toHaveAttribute("data-watch", "need");
+    await expect(home.getByTestId("home-asof")).toHaveCount(0);
+    const needed = await needs();
+    expect(needed).toBeGreaterThanOrEqual(1);
     const s0 = Date.now();
     far.proc.kill("SIGKILL");
     await exited(far.proc);
@@ -467,6 +600,11 @@ test("connection truth: a session on another machine is followed like one here, 
     await expect(row(page, id).getByTestId("row-time")).toHaveText("offline");
     await expect(row(page, id).getByTestId("row-time")).toHaveAttribute("title", /does not answer since \d\d:\d\d/);
     expect(await row(page, id).evaluate((el) => (el as HTMLElement).innerText.match(/offline/g)?.length)).toBe(1);
+    // The home view does not count a session whose machine does not answer: its row stays, paled,
+    // its mark still, saying as of when instead of how long ago.
+    await expect.poll(needs).toBe(needed - 1);
+    await expect(home.getByTestId("home-asof")).toHaveText(/^offline, as of \d\d:\d\d$/);
+    expect(await home.locator(".k-home-row-mark").evaluate((el) => [getComputedStyle(el).opacity, getComputedStyle(el.querySelector(".k-mark")!).animationPlayState])).toEqual(["0.45", "paused"]);
     await shoot(page, "connection-truth-04-far-offline-1440");
     // One alert says it, once it has stayed out a little while: a notice of its own kind, in plain words.
     const offline = async () => (await inbox()).filter((a) => a.data?.machine_offline === machine);
@@ -511,8 +649,74 @@ test("connection truth: a session on another machine is followed like one here, 
     await expect(row(page, id)).not.toHaveAttribute("data-unread", "true", { timeout: 10_000 });
     await expect.poll(async () => ((await (await request.get(`${far.url}/api/alerts?limit=50`)).json()).alerts as { kind: string; read: boolean }[]).filter((a) => a.kind === "finished").map((a) => a.read), { timeout: 10_000 }).toEqual([true]);
     await second.close();
+
+    // ---- this page stops hearing its own daemon while it shows that session. A message for a
+    // session of another machine, and a new session, are not sent into a link that is down (the
+    // page cannot send them again by itself): each stays in its box with a word, and goes out
+    // once when the owner sends it again.
+    // (A session there that waits for nothing: the first one has a question open.)
+    const { session: chat } = await there("/api/sessions", { model: "scripted:stand-in", title: `Far chat ${tag}`, workspace: root });
+    await there(`/api/sessions/${chat.id}/permissions`, { mode: "full-auto", sandbox: "off" }, "PUT");
+    const chatId = `${machine}--${chat.id}`;
+    await row(page, chatId).click();
+    await expect(page).toHaveURL(new RegExp(`/s/${chatId}`));
+    const events = async () => ((await there(`/api/sessions/${chat.id}`, undefined, "GET")).events as { kind: string; data: { text?: string } }[]);
+    const toFar = `For the other machine while Keel was not heard ${tag}`, fresh = `A new session while Keel was not heard ${tag}`;
+    const sessions = async () => ((await (await request.get("/api/sessions")).json()).sessions as { id: string }[]).length;
+    const had = await sessions();
+    net.hole = true;
+    await expect(page.getByTestId("daemon-away")).toBeVisible({ timeout: 9000 });
+    await page.getByTestId("composer").fill(toFar);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("composer-notice")).toContainText("Not sent: Keel is not reachable");
+    await expect(page.getByTestId("composer")).toHaveValue(toFar);
+    await expect(page.getByTestId("saved-draft")).toHaveCount(0);
+    await page.getByTestId("new-session").click();
+    await expect(page.getByTestId("composer")).toHaveValue("");
+    await page.getByTestId("composer").fill(fresh);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("composer-notice")).toContainText("Not sent: Keel is not reachable");
+    await expect(page.getByTestId("composer")).toHaveValue(fresh);
+    await shoot(page, "connection-truth-08-new-box-not-sent");
+    await page.waitForTimeout(1500);
+    expect([await sessions(), (await events()).filter((e) => e.data.text === toFar).length]).toEqual([had, 0]);
+    // Keel is back: the same press sends each, once.
+    net.hole = false;
+    await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon", { timeout: 5000 });
+    await page.getByTestId("composer").focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/s\/[0-9a-f-]+$/, { timeout: 15_000 });
+    const newId = new URL(page.url()).pathname.split("/").pop()!;
+    await expect.poll(async () => ((await (await request.get(`/api/sessions/${newId}`)).json()).events as { kind: string; data: { text?: string } }[]).filter((e) => e.kind === "user" && e.data.text === fresh).length, { timeout: 15_000 }).toBe(1);
+    expect(await sessions()).toBe(had + 1);
+    await row(page, chatId).click();
+    await expect(page).toHaveURL(new RegExp(`/s/${chatId}`));
+    await expect(page.getByTestId("composer")).toHaveValue(toFar);
+    await page.getByTestId("composer").focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await events()).filter((e) => e.kind === "user" && e.data.text === toFar).length, { timeout: 20_000 }).toBe(1);
+    await page.waitForTimeout(1500);
+    expect([(await events()).filter((e) => e.kind === "user" && e.data.text === toFar).length, await sessions()]).toEqual([1, had + 1]);
+    await request.delete(`/api/sessions/${newId}`);
+
+    // ---- the link between the two daemons dies for twenty seconds (its connections dead for
+    // good), and a session finishes there meanwhile. Its alert is here within seconds of the link:
+    // a try made into the dead link gives up after five, and the next is made at once.
+    const { session: late } = await there("/api/sessions", { model: "scripted:stand-in", title: `Far in a dead link ${tag}`, workspace: root });
+    await there(`/api/sessions/${late.id}/permissions`, { mode: "full-auto", sandbox: "off" }, "PUT");
+    farLink.set("dead");
+    await there(`/api/sessions/${late.id}/messages`, { text: "script:say Done while the link was dead." });
+    await sleep(20_000);
+    expect((await inbox()).filter((a) => a.session_id === `${machine}--${late.id}`)).toEqual([]);
+    farLink.set("pass");
+    const l1 = Date.now();
+    await expect.poll(async () => (await inbox()).filter((a) => a.session_id === `${machine}--${late.id}`).map((a) => a.kind), { timeout: 20_000, intervals: [200] }).toEqual(["finished"]);
+    const relayed = Date.now() - l1;
+    console.log(`CONNECTION-TRUTH dead link between the daemons, 20 s: the finish made in it was here ${relayed} ms after the link`);
+    expect(relayed).toBeLessThan(8000);
   } finally {
     if (machine) await request.delete(`/api/fleet/machines/${machine}`).catch(() => {});
+    await farLink.close();
     far.proc.kill("SIGTERM");
     await exited(far.proc);
   }
