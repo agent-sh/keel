@@ -53,7 +53,8 @@ export type TimelineRow = {
 };
 // `state`: the word of "now". It follows the session's one state (src/core/watch.ts) when the
 // caller has it: needs you is `owner`, a stopped turn `stopped`, a cut one about to go on `resume`.
-export type TimelineNow = { state: "working" | "owner" | "waiting" | "failed" | "declined" | "stopped" | "resume" | "idle"; lines: TimelineRow[] };
+// `done`: its last turn ended; `idle`: no turn yet (the page's Done and Not started).
+export type TimelineNow = { state: "working" | "owner" | "waiting" | "failed" | "declined" | "stopped" | "resume" | "done" | "idle"; lines: TimelineRow[] };
 // `as_of`: when it was read (the daemon's clock). `scanned`: how many rows a
 // filtered page read to find its rows, when it stopped at its bound.
 // `partial`: a turn of the page is not placed on a branch yet (`turn.branch` "unknown"): the same read again goes on and places it.
@@ -402,7 +403,9 @@ const DOING = (s: TurnStatus, now: number, output?: number): string => {
   }
 };
 const TIMER_SLACK_MS = 60_000;
-const NOW_STATE: Record<string, TimelineNow["state"]> = { need: "owner", work: "working", wait: "waiting", fail: "failed", declined: "declined", stop: "stopped", resume: "resume" };
+const NOW_STATE: Record<string, TimelineNow["state"]> = { need: "owner", work: "working", wait: "waiting", fail: "failed", declined: "declined", stop: "stopped", resume: "resume", done: "done" };
+// How the last turn ended, as a state, where the daemon's own word is not at hand.
+const LAST_STATE: Record<string, TimelineNow["state"]> = { ok: "done", error: "failed", refusal: "declined", stopped_by_owner: "stopped", stopped_by_parent: "stopped", cut: "stopped", budget: "stopped" };
 const ENDED: Record<string, string> = {
   ok: "finished", error: "failed", refusal: "was declined by the model", stopped_by_owner: "was stopped by the owner",
   stopped_by_parent: "was stopped by its parent", cut: "was cut by a daemon restart", budget: "ended at its budget",
@@ -432,13 +435,14 @@ export function nowLines(n: NowInput): TimelineNow {
   } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
     // A parked agent says what it waits for; a timer's wake time makes the line say when it is due.
-    const parked = a.status === "waiting" ? `is waiting on ${a.wait ? waitWords(a.wait.kind) : "a wake of its own"}` : "is running";
+    const parked = a.status === "waiting" ? `is waiting on ${a.wait ? waitWords(a.wait.kind) : "a wake of its own"}` : "is working";
     add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${parked}`, { ts: a.created, open: true, ...(a.status === "waiting" && a.wait?.until ? { until: a.wait.until } : {}) }, { agent_id: a.id, child_session: a.session_id });
   }
-  if (n.agents.length > AGENTS_SHOWN) add("agents", "agent", "live", `${n.agents.length - AGENTS_SHOWN} more agents are running`, { open: true });
+  if (n.agents.length > AGENTS_SHOWN) add("agents", "agent", "live", `${n.agents.length - AGENTS_SHOWN} more agents are working`, { open: true });
   // A timer is due at its wake time (its deadline is a minute later: it fires, it does not time out).
   for (const w of n.waits) add(`wait:${w.id}`, "wait", "plain", `Waits on ${waitWords(w.kind)}`, { ts: w.created, until: w.kind === "timer" ? w.deadline - TIMER_SLACK_MS : w.deadline, open: true }, { wait_id: w.id });
-  for (const j of n.jobs ?? []) add(`job:${j.id}`, "wait", "plain", "Waits on a background command", { ts: j.started, open: true });
+  // A command left running after the turn is work that goes on, not a wait (the session's state says Working).
+  for (const j of n.jobs ?? []) add(`job:${j.id}`, "wait", "plain", "A command runs in the background", { ts: j.started, open: true });
   const q = n.queue;
   if (q.queued || q.steers) {
     const parts = [q.queued ? plural(q.queued, "queued prompt") : "", q.steers ? plural(q.steers, "steer") : ""].filter(Boolean).join(" and ");
@@ -449,7 +453,7 @@ export function nowLines(n: NowInput): TimelineNow {
   // The word is the session's one state: the lines below it say what is going on and what waits,
   // and never a different word. A loop's next run and a held queue are lines, not a state.
   // Without the state (a store read with no daemon) the word is read off the lines.
-  const own: TimelineNow["state"] = n.approvals.length || n.questions.length || n.plans?.length || n.secrets?.length || n.held ? "owner" : n.turn || n.starting || n.agents.length ? "working" : n.waits.length || n.jobs?.length ? "waiting" : "idle";
+  const own: TimelineNow["state"] = n.approvals.length || n.questions.length || n.plans?.length || n.secrets?.length || n.held ? "owner" : n.turn || n.starting || n.agents.length || n.jobs?.length ? "working" : n.waits.length ? "waiting" : n.last ? LAST_STATE[n.last.outcome] ?? "done" : "idle";
   const state: TimelineNow["state"] = n.watch === undefined ? own : NOW_STATE[n.watch] ?? "idle";
   if (!lines.length) add("idle", "idle", "plain", n.last ? `Nothing is running or waited on. The last turn ${ENDED[n.last.outcome] ?? "ended"}.` : "Nothing has run in this session yet.", n.last ? { ts: n.last.ts } : {});
   return { state, lines };
@@ -459,7 +463,7 @@ export function nowLines(n: NowInput): TimelineNow {
 // that open a row's detail or that a coordinator acts on at the end of its
 // line (`ids: false` leaves them out). Times are the machine's own zone, the
 // one alerts and the page use, and the first line says which.
-const STATE: Record<TimelineNow["state"], string> = { working: "working", owner: "waiting on the owner", waiting: "waiting", failed: "failed", declined: "declined by the model", stopped: "stopped", resume: "waiting to resume", idle: "idle" };
+const STATE: Record<TimelineNow["state"], string> = { working: "working", owner: "waiting on the owner", waiting: "waiting", failed: "failed", declined: "declined by the model", stopped: "stopped", resume: "waiting to resume", done: "done", idle: "not started" };
 const stamp = (ts: number) => localStamp(ts).slice(5);
 // What is new to a reader that last read at `mark`: a row that began since, or a turn that ended since
 // (it was running then, told under "now", and had no row).

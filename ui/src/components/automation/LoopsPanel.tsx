@@ -6,14 +6,15 @@ import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunR
 import { reportError, useStore, failed } from "../../lib/store.ts";
 import { ago, clock, cn, fmtTokens } from "../../lib/utils.ts";
 import { Empty, IconButton } from "./bits.tsx";
+import { QUEUED, STATE_WORD } from "../../../../src/core/state-words.ts";
 
 function RunIcon({ r }: { r: RunRecord }) {
   if (r.skip_reason) return <CircleSlash className="size-3.5 shrink-0 text-faint" />;
   if (!r.ended_ms) return <span className="grid size-3.5 place-items-center"><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /></span>;
-  if (r.outcome === "ok") return <CircleCheck className="size-3.5 shrink-0 text-ok" aria-label="Finished" />;
-  if (r.outcome === "stopped") return <CircleSlash className="size-3.5 shrink-0 text-muted" aria-label="Stopped" />;
+  if (r.outcome === "ok") return <CircleCheck className="size-3.5 shrink-0 text-ok" aria-label={STATE_WORD.done} />;
+  if (r.outcome === "stopped") return <CircleSlash className="size-3.5 shrink-0 text-muted" aria-label={STATE_WORD.stop} />;
   if (r.outcome === "incomplete") return <CircleDashed className="size-3.5 shrink-0 text-warn" aria-label="Did not finish" />;
-  return <CircleAlert className="size-3.5 shrink-0 text-danger" aria-label="Failed" />;
+  return <CircleAlert className="size-3.5 shrink-0 text-danger" aria-label={STATE_WORD.fail} />;
 }
 
 const OUTCOME: Record<string, string> = { ok: "finished", failed: "failed", incomplete: "did not finish", stopped: "stopped" };
@@ -120,7 +121,7 @@ function History({ loop }: { loop: LoopRecord }) {
               <div className="flex items-baseline gap-2">
                 <span>{clock(r.started_ms ?? r.due_ms, { date: true, seconds: true })}</span>
                 <span className="text-caption text-faint">
-                  {r.skip_reason ? "not run" : r.ended_ms && r.started_ms ? `${r.outcome ? `${OUTCOME[r.outcome]} · ` : ""}${((r.ended_ms - r.started_ms) / 1000).toFixed(1)}s` : r.started_ms ? "running" : "waiting for the session"}
+                  {r.skip_reason ? "not run" : r.ended_ms && r.started_ms ? `${r.outcome ? `${OUTCOME[r.outcome]} · ` : ""}${((r.ended_ms - r.started_ms) / 1000).toFixed(1)}s` : r.started_ms ? "running" : `${QUEUED.toLowerCase()} behind the session's turn`}
                 </span>
                 {r.usage && r.usage.calls > 0 && (
                   <span className="ml-auto text-micro text-faint tabular-nums">

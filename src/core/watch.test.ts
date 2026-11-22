@@ -93,7 +93,7 @@ test("a failure is not hidden by a wait still armed; a provider's wait that ends
 test("a turn the model declined, cut at the output limit or stopped at its step budget is not done", () => {
   expect(stateOf(s({ settings: { last_end: "refusal" } }), undefined)).toEqual({ watch: "declined", agents: 0, why: "refusal", text: "The model declined the turn" });
   expect(stateOf(s({ settings: { last_end: "max_tokens" } }), undefined)).toEqual({ watch: "fail", agents: 0, why: "max_tokens", cls: "max_tokens", text: "Cut at the output limit" });
-  expect(stateOf(s({ settings: { last_end: "max_steps" } }), undefined)).toEqual({ watch: "stop", agents: 0, why: "max_steps", text: "Stopped at the step budget" });
+  expect(stateOf(s({ settings: { last_end: "max_steps" } }), undefined)).toEqual({ watch: "stop", agents: 0, why: "max_steps", text: "The step budget ran out" });
   // The same from the events of a loaded session.
   const ended = (reason: string) => [{ kind: "user", data: {} }, { kind: "turn_start", data: {} }, { kind: "turn_end", data: { reason } }] as any;
   expect(stateOf(s(), ended("refusal")).watch).toBe("declined");

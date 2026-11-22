@@ -6,9 +6,10 @@ import { Monitor, Server, ServerOff } from "lucide-react";
 import type { CSSProperties } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineColour, machineName, machineReach, useFleet, type Reach } from "../lib/fleet.ts";
+import { OFFLINE } from "../../../src/core/state-words.ts";
 import { cn } from "../lib/utils.ts";
 
-const REACH_WORD: Record<Reach["state"], string> = { ok: "", connecting: "connecting", offline: "offline" };
+const REACH_WORD: Record<Reach["state"], string> = { ok: "", connecting: "Connecting", offline: OFFLINE };
 
 export function useWhere(s: Pick<Session, "machine"> | undefined) {
   const id = s?.machine ?? undefined;
@@ -56,7 +57,7 @@ export function WherePip({ s }: { s: Pick<Session, "machine"> }) {
 }
 
 // "on devbox" for a label read aloud or a title; nothing for a local session.
-export const whereWords = (s: Pick<Session, "machine">) => (s.machine ? ` on ${machineName(s.machine) ?? s.machine}${machineReach(s.machine).state === "offline" ? " (offline)" : ""}` : "");
+export const whereWords = (s: Pick<Session, "machine">) => (s.machine ? ` on ${machineName(s.machine) ?? s.machine}${machineReach(s.machine).state === "offline" ? ` (${OFFLINE.toLowerCase()})` : ""}` : "");
 
 // A list's sessions by where they run: this machine's first, then each other
 // machine's by name. One run when every session is here.

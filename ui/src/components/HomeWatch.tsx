@@ -36,10 +36,11 @@ import type { Session } from "../../../src/core/types.ts";
 import { READ_MS, SETTLE_MS, settled, stand, type Stand } from "../lib/approvals.ts";
 import { focusAsk } from "../lib/asks.ts";
 import { focusApproval } from "../lib/automation.ts";
-import { pickRows, rowKind, rowLine, say, sayMore, unseenFailures, watchSummary, wholeCommand } from "../lib/home.ts";
+import { pickRows, rowKind, rowLine, sayMore, unseenFailures, watchSummary, wholeCommand } from "../lib/home.ts";
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
+import { COUNTERS, STATE_WORD } from "../../../src/core/state-words.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { usePress } from "./ApprovalCard.tsx";
@@ -88,15 +89,15 @@ export function WatchHeadline() {
   if (!head.length) {
     return (
       <h1 className="k-home-state" data-testid="home-watch" data-quiet>
-        {!loaded || !all.length ? "What should we work on?" : "Nothing needs you"}
+        {!loaded || !all.length ? "What should we work on?" : COUNTERS.calm}
       </h1>
     );
   }
   return (
     <h1 className="k-home-state" data-testid="home-watch">
       {head.map((p) => (
-        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} title={`Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child)}>
-          <Mark w={p.w} />{say(p.w, p.n)}
+        <button key={p.kind} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.kind}`} title={`${p.w === "need" ? `${COUNTERS.waiting(p.n)}. ` : ""}Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child)}>
+          <Mark w={p.w} />{p.text}
         </button>
       ))}
     </h1>
@@ -271,8 +272,8 @@ export function WatchLists({ className }: { className?: string }) {
   if (!attention.length && !working.length) return null;
   return (
     <div className={className} data-testid="home-lists">
-      <List title="Needs you" rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" />
-      <List title={working.every((r) => r.w === "work") ? "Working" : "Working and waiting"} rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />
+      <List title={STATE_WORD.need} rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" />
+      <List title={working.every((r) => r.w === "work") ? STATE_WORD.work : `${STATE_WORD.work} and ${STATE_WORD.wait.toLowerCase()}`} rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />
     </div>
   );
 }

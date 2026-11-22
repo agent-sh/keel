@@ -1,15 +1,18 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Bell, CheckCheck, Settings2, X } from "lucide-react";
 import { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
-import { alertTarget, auto, focusApproval, openSession, placeName, useAuto, type Alert, type Target } from "../../lib/automation.ts";
-import { useSafety } from "../../lib/safety.ts";
+import { alertTarget, auto, coverPanes, focusApproval, openSession, placeName, useAuto, type Alert, type Target } from "../../lib/automation.ts";
+import { useToldStates } from "../../lib/watch.ts";
 import { navigate, setUI } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, cn, when } from "../../lib/utils.ts";
 import { ActivityList } from "./ActivityList.tsx";
 import { plainLine } from "../../../../src/core/plain.ts";
 import { AwayDigest } from "./AwayDigest.tsx";
-import { ALERT_LABEL, ALERT_STATE, AlertIcon, CHANNEL_NAME, Empty } from "./bits.tsx";
+import { ALERT_STATE, AlertIcon, CHANNEL_NAME, Empty } from "./bits.tsx";
+import { seeAllAgents } from "../../lib/agent-seen.ts";
+import { ALERT_GROUPS, ALERT_GROUP_WORD, ASK_KINDS, COUNTERS, STATE_WORD, alertGroup, alertWord, askAction, type AlertGroup } from "../../../../src/core/state-words.ts";
+import { Mark } from "../Mark.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 import { Seg, tabId } from "../Seg.tsx";
 
@@ -21,8 +24,6 @@ const WRITTEN = new Set<Alert["kind"]>(["finished", "agent", "question"]);
 const lineOf = (a: Alert) => (WRITTEN.has(a.kind) ? plainLine(a.body) : a.body.split("\n").find((l) => l.trim())?.trim()) || a.body;
 
 const WIDE = matchMedia("(min-width: 640px)");
-// The kinds that wait on the owner: their row opens the card that answers them, and says so.
-const ASKS = new Set<Alert["kind"]>(["approval", "question"]);
 
 const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
 
@@ -60,7 +61,6 @@ function Inbox({ onClose }: { onClose: () => void }) {
   const alerts = useAuto((s) => s.alerts);
   const unread = useAuto((s) => s.unread.total);
   const sessions = useStore((s) => s.sessions);
-  const cards = useSafety((s) => s.approvals);
   const [onlyUnread, setOnlyUnread] = useState(false);
   const [notes, setNotes] = useState<Record<string, Note>>({});
   const note = (id: string, n: Note | null) => setNotes((cur) => {
@@ -70,25 +70,40 @@ function Inbox({ onClose }: { onClose: () => void }) {
   const shown = onlyUnread ? alerts.filter((a) => !a.read) : alerts;
   // A phone's drawer is too narrow for a title and its alert on one line.
   const wide = useSyncExternalStore((f) => (WIDE.addEventListener("change", f), () => WIDE.removeEventListener("change", f)), () => WIDE.matches);
-  // One session's alerts (or one agent's inside it) stand together under its
-  // title, newest first, the session with the newest alert on top. An alert of
-  // no session is a group of its own.
-  const rows = useMemo(() => {
-    const groups = new Map<string, { a: Alert; child?: string; place: string }[]>();
-    for (const a of shown) {
-      const child = a.data?.child_session ?? (a.data?.open_session && a.data.open_session !== a.session_id ? a.data.open_session : undefined);
-      const key = a.session_id ? `${a.session_id}:${child ?? ""}` : a.id;
-      const place = placeName(sessions, a.session_id, child, { title: a.title, child_title: a.data?.child_title });
-      (groups.get(key) ?? groups.set(key, []).get(key)!).push({ a, child, place });
-    }
-    // `alone`: the session's only alert, which takes one line with its title. `asks`: an unread one
-    // waits on the owner, the only titles that carry weight.
-    // Requests that wait are a queue: a session's open approvals stand first in its group, in the
-    // order their cards are in (the calls' own order), not newest first.
-    const cardAt = (r: { a: Alert }) => (r.a.kind === "approval" && !r.a.read && r.a.session_id ? (cards[r.a.session_id] ?? []).findIndex((c) => c.id === r.a.data?.approval_id) : -1);
-    const queued = (g: { a: Alert; child?: string; place: string }[]) => [...g.filter((r) => cardAt(r) >= 0).sort((x, y) => cardAt(x) - cardAt(y)), ...g.filter((r) => cardAt(r) < 0)];
-    return [...groups.values()].map(queued).flatMap((g) => g.map((r, i) => ({ ...r, first: i === 0, last: i === g.length - 1, alone: wide && g.length === 1, fresh: g.some((x) => !x.a.read), asks: g.some((x) => !x.a.read && ASKS.has(x.a.kind)) })));
-  }, [shown, sessions, wide, cards]);
+  // Three parts, in this order: what waits on the owner, what else is new since they looked, and
+  // what they have seen. Nothing that waits is ever below a finish.
+  // - What waits is a queue: every ask whose card still waits (the daemon's word, read or not), in
+  //   the order they were asked, each with its session's title. It leaves when it is answered.
+  // - Inside the other parts, one session's alerts (or one agent's inside it) stand together under
+  //   its title, newest first, the session with the newest alert on top. An alert of no session is
+  //   a group of its own.
+  const told = useToldStates();
+  const parts = useMemo(() => {
+    // A turn the model declined is filed as a finish: its row says Declined, as its session does (its newest word only).
+    const newest = new Map<string, string>();
+    for (const a of alerts) if (a.session_id && !a.data?.child_session && !ASK_KINDS.includes(a.kind) && !newest.has(a.session_id)) newest.set(a.session_id, a.id);
+    const declined = (a: Alert) => a.kind === "finished" && !!a.session_id && newest.get(a.session_id) === a.id && told[a.session_id]?.watch === "declined";
+    return ALERT_GROUPS.map((part) => {
+      const of = shown.filter((a) => alertGroup(a) === part);
+      const named = of.map((a) => {
+        const child = a.data?.child_session ?? (a.data?.open_session && a.data.open_session !== a.session_id ? a.data.open_session : undefined);
+        return { a, child, place: placeName(sessions, a.session_id, child, { title: a.title, child_title: a.data?.child_title }), word: alertWord(a, declined(a)), declined: declined(a) };
+      });
+      if (part === "need") {
+        const rows = [...named].sort((x, y) => x.a.ts - y.a.ts || (x.a.id < y.a.id ? -1 : 1)).map((r) => ({ ...r, first: true, last: true, alone: wide, fresh: true, asks: true }));
+        return { part, n: of.length, rows };
+      }
+      const groups = new Map<string, typeof named>();
+      for (const r of named) {
+        const key = r.a.session_id ? `${r.a.session_id}:${r.child ?? ""}` : r.a.id;
+        (groups.get(key) ?? groups.set(key, []).get(key)!).push(r);
+      }
+      // `alone`: the session's only alert, which takes one line with its title.
+      // `asks`: an unread ask stands in the group (one that expired with its card gone, say): the only titles that carry weight.
+      const rows = [...groups.values()].flatMap((g) => g.map((r, i) => ({ ...r, first: i === 0, last: i === g.length - 1, alone: wide && g.length === 1, fresh: g.some((x) => !x.a.read), asks: g.some((x) => !x.a.read && ASK_KINDS.includes(x.a.kind)) })));
+      return { part, n: of.length, rows };
+    }).filter((p) => p.n);
+  }, [alerts, shown, sessions, wide, told]);
 
   const open = async (a: Alert) => {
     note(a.id, null);
@@ -131,18 +146,22 @@ function Inbox({ onClose }: { onClose: () => void }) {
           onChange={(v) => setOnlyUnread(v === "unread")}
           options={[
             { value: "all", label: "All" },
-            { value: "unread", testid: "inbox-unread-filter", label: <>Unread{unread ? <span className="tabular-nums text-faint">{unread}</span> : null}</> },
+            { value: "unread", testid: "inbox-unread-filter", label: <>Unread{unread ? <span className="tabular-nums text-faint" title={COUNTERS.unread(unread)}>{unread}</span> : null}</> },
           ]}
         />
-        <button type="button" data-testid="mark-all-read" onClick={() => auto.read().catch(reportError)} className={cn(actCls, "ml-auto whitespace-nowrap")}>
+        {/* Every unread mark goes: the alerts here, the rows' dots, and the agents that ended since the owner looked. */}
+        <button type="button" data-testid="mark-all-read" title="Clear every unread mark" onClick={() => { seeAllAgents(); auto.read().catch(reportError); }} className={cn(actCls, "ml-auto whitespace-nowrap")}>
           <CheckCheck className="size-3.5" /> <span className="max-sm:sr-only">Mark all read</span>
         </button>
       </div>
       <ul className="min-h-0 flex-1 overflow-y-auto p-2 max-sm:pt-1.5" data-testid="inbox-list">
-        {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : "Nothing needs you."}</Empty></li>}
-        {rows.map(({ a, first, last, alone, place, fresh, asks }) => {
+        {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : `Nothing ${STATE_WORD.need.toLowerCase()}.`}</Empty></li>}
+        {parts.flatMap(({ part, n, rows }) => [<PartHead key={part} part={part} n={n} />, ...rows.map(({ a, first, last, alone, place, fresh, asks, word, declined }) => {
           // On a phone a row that waits gives its line the width: its mark and its "Review" say what it is, and its age is in the tooltip.
-          const tight = !wide && !a.read && ASKS.has(a.kind);
+          // What a row of an ask offers: the card that answers it, while it waits, or the session of one that is new
+          // (never for one the owner marked unread again: that one was answered).
+          const offers = !!a.open || (!a.read && !a.kept && ASK_KINDS.includes(a.kind));
+          const tight = !wide && offers;
           const n = notes[a.id];
           // On a shared line the width goes to what waits on the owner: the title gives way first there.
           const title = <span dir="auto" className={cn("truncate text-left text-ui", asks ? "font-semibold text-fg" : fresh ? "text-fg" : "text-muted", !alone ? "mb-0.5 block" : asks ? "min-w-0 max-w-[30%] shrink" : "min-w-0 max-w-[46%] shrink")} data-testid="inbox-place">{place}</span>;
@@ -152,7 +171,9 @@ function Inbox({ onClose }: { onClose: () => void }) {
               data-testid="inbox-item"
               data-alert={a.id}
               data-unread={!a.read || undefined}
-              data-watch={ALERT_STATE[a.kind]}
+              data-part={part}
+              data-watch={declined ? "declined" : ALERT_STATE[a.kind] ?? "idle"}
+              data-open={a.open || undefined}
               // A session's group ends with a hairline, so the one-line row after it is not read as its member.
               className={cn("group", first && !alone && "mt-1.5 first:mt-0", last && !alone && wide && "mb-1.5 border-b border-line pb-1.5 last:mb-0 last:border-0 last:pb-0")}
             >
@@ -167,17 +188,17 @@ function Inbox({ onClose }: { onClose: () => void }) {
                   {first && !alone ? title : !first ? <span className="sr-only">{place}, </span> : null}
                   <span className="flex min-h-ctl-sm items-center gap-2 text-caption">
                     {/* The mark is the state, in its color while unread: a glyph, no box around it. */}
-                    <AlertIcon kind={a.kind} read={a.read} />
+                    <AlertIcon kind={a.kind} read={a.read && !a.open} declined={declined} />
                     {/* The kind stands second in both row forms, so the eye finds it in one place. */}
                     <span className="shrink-0 text-muted" data-testid="inbox-state" title={routeOf(a)}>
-                      <span data-testid="inbox-word" className={tight ? "sr-only" : undefined}>{ALERT_LABEL[a.kind]}</span>
+                      <span data-testid="inbox-word" className={tight ? "sr-only" : undefined}>{word}</span>
                       <span className="sr-only">, {a.read ? "read" : "unread"}{a.data?.snoozed ? ", snoozed" : a.data?.held ? ", held by the snooze" : ""}: </span>
                     </span>
                     {alone && title}
-                    <span dir="auto" className={cn("min-w-[4rem] truncate text-left", "flex-1", a.read ? "text-faint" : "text-fg")} data-testid="inbox-line" title={a.body}>{lineOf(a)}</span>
+                    <span dir="auto" className={cn("min-w-[4rem] truncate text-left", "flex-1", a.read && !a.open ? "text-faint" : "text-fg")} data-testid="inbox-line" title={a.body}>{lineOf(a)}</span>
                     {(a.data?.snoozed || a.data?.held) && <span className="shrink-0 text-micro text-faint" aria-hidden>{a.data?.snoozed ? "snoozed" : "held by the snooze"}</span>}
                     {/* What waits on the owner is answered on its card: the row says it opens one. */}
-                    {!a.read && ASKS.has(a.kind) && <span className="shrink-0 text-micro font-medium text-accent-ink" data-testid="inbox-opens">{a.kind === "approval" ? "Review" : "Answer"}</span>}
+                    {offers && <span className="shrink-0 text-micro font-medium text-accent-ink" data-testid="inbox-opens">{askAction(a)}</span>}
                     <span className={cn("shrink-0 text-micro text-faint tabular-nums", tight && "sr-only")} title={when(a.ts)}>{ago(a.ts)}</span>
                   </span>
                 </button>
@@ -208,9 +229,20 @@ function Inbox({ onClose }: { onClose: () => void }) {
               )}
             </li>
           );
-        })}
+        })])}
       </ul>
     </div>
+  );
+}
+
+// A part's head: its name and how many it holds. What needs the owner carries their mark.
+function PartHead({ part, n }: { part: AlertGroup; n: number }) {
+  return (
+    <li className="flex items-center gap-2 px-2.5 pb-1 pt-3 first:pt-1.5" data-testid="inbox-part" data-part={part} role="presentation">
+      {part === "need" && <Mark w="need" className="size-2" />}
+      <h3 className={cn("k-label", part === "need" && "text-st-need")}>{ALERT_GROUP_WORD[part]}</h3>
+      <span className="k-face-figure text-micro text-faint">{n}</span>
+    </li>
   );
 }
 
@@ -238,6 +270,9 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
   const channels = useAuto((s) => s.channels);
   useEffect(() => {
     if (open) auto.loadAlerts().catch(reportError);
+    // What lies behind the open Inbox is not shown: nothing is read there because its session is on screen.
+    coverPanes(open);
+    return () => coverPanes(false);
   }, [open]);
   const close = () => onOpenChange(false);
   // The shared surface, as a drawer on the rail's side: its head holds the title and the two

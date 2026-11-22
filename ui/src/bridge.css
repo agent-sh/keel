@@ -139,7 +139,7 @@
 .k-marks ol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .k-marks-head {
   display: flex; justify-content: space-between; align-items: baseline; gap: 0.25rem; height: 1.25rem; padding: 0.25rem 0.5rem 0 0.5625rem;
-  font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
+  font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--faint);
 }
 .k-marks[data-watch="need"] { background: color-mix(in oklch, var(--st-need) 9%, transparent); }
 .k-marks[data-watch="need"] .k-marks-head { color: var(--st-need-ink); }
@@ -187,7 +187,7 @@
 .k-rail-card[data-kind="row"] .k-rail-card-meta:first-child { padding-top: 0; border-top: 0; }
 .k-rail-card-row { display: flex; align-items: center; gap: 0.4375rem; }
 .k-rail-card-row .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-rail-card-word { font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-done-ink); }
+.k-rail-card-word { font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--st-done-ink); }
 .k-rail-card[data-watch="need"] .k-rail-card-word { color: var(--st-need-ink); }
 .k-rail-card[data-watch="work"] .k-rail-card-word { color: var(--st-work-ink); }
 .k-rail-card[data-watch="wait"] .k-rail-card-word { color: var(--st-wait-ink); }
@@ -251,12 +251,12 @@
 .k-index[data-lines="two"] .k-row-sub { grid-column: 2 / -1; grid-row: 2; flex: none; height: 1rem; line-height: 1rem; }
 /* Where a finger presses, a row of one line is high enough to hit. */
 @media (pointer: coarse) { .k-index[data-lines="one"] .k-row { height: 2.375rem; } }
-.k-row-state { margin-top: 1px; font-weight: 700; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.k-row-state { margin-top: 1px; font-weight: 700; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-state { color: var(--st-need-ink); }
 .k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
 .k-row[data-watch="wait"] .k-row-state { color: var(--st-wait-ink); }
 /* A failure's class beside the word, in its colour: rate limit, billing, sign-in. */
-.k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-fail-ink); }
+.k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--st-fail-ink); }
 /* The state line reads as one sentence on one line: the word, then why, cut at the row's edge.
    The card beside the row has the reason in full. */
 .k-row-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
@@ -293,7 +293,7 @@
 }
 .k-where svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--where); }
 .k-where-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.k-where-reach { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.k-where-reach { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0; color: var(--faint); }
 .k-where[data-reach="offline"] { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--st-fail) 45%, transparent); color: var(--muted); }
 .k-where[data-reach="offline"] svg, .k-where[data-reach="offline"] .k-where-reach { color: var(--st-fail-ink); }
 .k-where[data-reach="connecting"] svg { animation: var(--animate-pulse-dot); }
@@ -347,6 +347,58 @@
 .k-list-note { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); margin: 0 0.625rem 0.125rem; padding-left: 0.375rem; font-size: var(--text-caption); color: var(--muted); }
 /* A folded folder's head says that a session inside needs the owner or failed. */
 .k-head-calls { width: 0.5rem; height: 0.5rem; }
+/* The agents under a row. Their line of counts is one line that never wraps: how many, then each
+   state's mark and count, what calls the owner first and in words; the others give their words
+   where the list is wide. A row is the agent's mark, its title and its state word, in the faces and
+   inks of a session's row; where the row is too narrow for both, the title stays and the mark says the state. */
+.k-session-children { margin-left: 0.75rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
+.k-kids-sum { display: flex; align-items: center; gap: 0.4375rem; width: 100%; min-width: 0; height: 1.5rem; padding: 0 0.375rem; border-radius: 0.375rem; overflow: hidden; white-space: nowrap; text-align: left; font-size: var(--text-caption); color: var(--faint); }
+.k-kids-sum:hover { color: var(--muted); }
+.k-kids-sum:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.k-kids-fold { width: 0.75rem; height: 0.75rem; flex-shrink: 0; transition: transform 120ms var(--ease-out); }
+.k-kids-total { flex-shrink: 0; }
+.k-kids-parts { display: flex; align-items: center; gap: 0.4375rem; min-width: 0; overflow: hidden; }
+.k-kids-part { display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
+/* With every state in it the line still holds each count: the word "agents" gives way first. */
+.k-kids-sum[data-many] .k-kids-label { display: none; }
+.k-kids-part .k-mark { width: 0.5rem; height: 0.5rem; animation: none; }
+.k-kids-part .k-mark[data-watch="work"] { border-width: 1.5px; }
+.k-kids-n { font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+/* Each count is its state's mark and a number, as a row is its mark and its title; what calls the owner is in that state's ink.
+   Where the list is wide enough for the whole sentence the words stand too (they are always the line's name and tooltip). */
+.k-kids-word { display: none; font-weight: 700; font-size: var(--text-micro); line-height: 1; }
+.k-kids-part[data-watch="need"] :is(.k-kids-n, .k-kids-word) { color: var(--st-need-ink); }
+.k-kids-part:is([data-watch="fail"], [data-watch="declined"]) :is(.k-kids-n, .k-kids-word) { color: var(--st-fail-ink); }
+@container rail (min-width: 30rem) { .k-kids-part .k-kids-word { display: inline; } .k-kids-sum[data-many] .k-kids-label { display: inline; } }
+.k-kids-new { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--accent-ink); }
+.k-kids-viewing { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+.k-child-row { position: relative; container: kid / inline-size; }
+.k-child-session { display: flex; align-items: center; gap: 0.5rem; min-width: 0; height: 1.5rem; padding: 0 0.375rem; border-radius: 0.375rem; font-size: var(--text-caption); cursor: default; outline: none; }
+.k-child-session:hover, .k-child-session[data-current] { background: var(--raised); }
+.k-child-session[data-current] { box-shadow: var(--shadow-1); }
+.k-child-session:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.k-child-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.k-child-title[data-quiet] { color: var(--muted); }
+.k-child-title[data-new] { font-weight: 600; }
+.k-child-state { flex-shrink: 0; white-space: nowrap; font-weight: 500; font-size: var(--text-micro); line-height: 1rem; color: var(--faint); }
+.k-child-state:is([data-watch="need"], [data-watch="work"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 700; }
+.k-child-state[data-watch="need"] { color: var(--st-need-ink); }
+.k-child-state[data-watch="work"] { color: var(--st-work-ink); }
+.k-child-state:is([data-watch="wait"], [data-watch="resume"]) { color: var(--st-wait-ink); }
+.k-child-state:is([data-watch="fail"], [data-watch="declined"]) { color: var(--st-fail-ink); }
+@container kid (max-width: 12.5rem) { .k-child-state { display: none; } }
+.k-child-dot { display: flex; align-items: center; flex-shrink: 0; }
+.k-child-dot > span:first-child { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--accent); }
+/* Stop lies over the row's end and shows under the pointer or the keyboard, where the word was: no row keeps room for it, so the words line up. */
+.k-child-stop { position: absolute; right: 0.125rem; top: 0; bottom: 0; display: grid; place-items: center; opacity: 0; pointer-events: none; }
+.k-child-row:is(:hover, :focus-within) .k-child-stop { opacity: 1; pointer-events: auto; }
+.k-child-row[data-live]:is(:hover, :focus-within) :is(.k-child-state, .k-child-dot) { visibility: hidden; }
+/* Under a finger nothing hovers: every row keeps Stop's room, and a live one shows it. */
+@media (hover: none) {
+  .k-child-session { padding-right: 1.875rem; }
+  .k-child-stop { opacity: 1; pointer-events: auto; }
+  .k-child-row[data-live]:is(:hover, :focus-within) :is(.k-child-state, .k-child-dot) { visibility: visible; }
+}
 /* A machine that does not answer: its rows say the last it told, stepped back, the clock's place saying offline.
    A session that left the list while the hand held it still looks the same until the hand has gone. */
 .k-row:is([data-offline], [data-gone]) :is(.k-row-title, .k-row-state, .k-row-why, .k-row-class, .k-row-time) { color: var(--faint); font-weight: 500; }
@@ -382,7 +434,7 @@
 .k-sum-chip svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--st-fail-ink); }
 .k-sum-dot { flex-shrink: 0; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--accent-ink); }
 .k-sum-n { font-weight: 700; color: var(--fg); }
-.k-sum-word { font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.k-sum-word { font-weight: 700; letter-spacing: 0; }
 .k-sum-chip[data-kind="need"] :is(.k-sum-n, .k-sum-word) { color: var(--st-need-ink); }
 .k-sum-chip[data-kind="fail"] :is(.k-sum-n, .k-sum-word) { color: var(--st-fail-ink); }
 .k-sum-chip[data-kind="work"] :is(.k-sum-n, .k-sum-word) { color: var(--st-work-ink); }
@@ -411,7 +463,12 @@
 .k-rail[data-narrow] .k-list-tabs > button { padding: 0 0.125rem; font-size: var(--text-micro); }
 /* The agents' line keeps its count and the mark of one that asks; the rest of its words are on the card and in the wider list. */
 .k-rail[data-narrow] .k-session-children { margin-left: 0.375rem; padding-left: 0.25rem; }
-.k-rail[data-narrow] .k-session-children > button > span:not(.k-mark) ~ span { display: none; }
+.k-rail[data-narrow] .k-kids-sum { gap: 0.3125rem; padding-inline: 0.125rem; }
+.k-rail[data-narrow] .k-kids-parts { gap: 0.3125rem; }
+.k-rail[data-narrow] :is(.k-kids-label, .k-kids-viewing, .k-kids-fold) { display: none; }
+.k-rail[data-narrow] .k-kids-part .k-kids-word { display: none; }
+/* The narrow list keeps the total and what calls the owner; the other counts are in the line's tooltip, as a row's state is on its card. */
+.k-rail[data-narrow] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) { display: none; }
 
 /* The note in the Arrange menu about a default that changed: read once. */
 .k-arrange-note { margin: 0.125rem 0.625rem 0.25rem; padding-bottom: 0.4375rem; border-bottom: 1px solid var(--line); font-size: var(--text-micro); line-height: 1.4; color: var(--muted); }
@@ -539,7 +596,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty { background: var(--bg); }
 .k-pane-empty[data-next] { background: color-mix(in oklch, var(--raised) 55%, var(--bg)); }
 .k-pane-empty-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; width: 100%; max-width: 38rem; margin: 0 auto; padding: 11vh 2rem 2rem; }
-.k-pane-empty-word { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.k-pane-empty-word { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--muted); }
 .k-pane-empty-word span { font-weight: 500; color: var(--faint); }
 .k-pane-empty-close { display: grid; place-items: center; width: 1.5rem; height: var(--spacing-ctl-sm); margin: -0.25rem -0.25rem -0.25rem auto; align-self: center; border-radius: 0.25rem; color: var(--faint); }
 .k-pane-empty-close:hover { background: var(--hover); color: var(--fg); }
@@ -586,7 +643,7 @@ html[data-resizing] iframe { pointer-events: none; }
 
 .k-station-head { position: relative; padding: 0.75rem 1.125rem 0.6875rem 1.375rem; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .k-station-row { display: flex; align-items: center; gap: 0.75rem; min-height: 1.625rem; }
-.k-station-word { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 700; font-size: var(--text-caption); letter-spacing: 0.06em; text-transform: uppercase; color: var(--st-done-ink); }
+.k-station-word { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 700; font-size: var(--text-caption); letter-spacing: 0; color: var(--st-done-ink); }
 .k-station-word .k-mark { width: 0.5625rem; height: 0.5625rem; }
 .k-station[data-watch="need"] .k-station-word { color: var(--st-need-ink); }
 .k-station[data-watch="work"] .k-station-word { color: var(--st-work-ink); }
@@ -643,7 +700,7 @@ html[data-resizing] iframe { pointer-events: none; }
   content: attr(data-whole); position: absolute; z-index: 1; top: calc(100% + 0.25rem); left: 1rem; right: 1rem; padding: 0.5rem 0.75rem; border: 1px solid var(--line-strong); border-radius: 0.3125rem;
   background: var(--raised); box-shadow: var(--shadow-2); font-size: var(--text-caption); line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; color: var(--fg); pointer-events: none;
 }
-.k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; }
+.k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; word-spacing: normal; }
 /* The folder has only the room nothing else wants: it grows from nothing into what the state and its reason leave, and says nothing in a sliver. */
 .k-station-identity .k-station-meta { flex: 1 1 0; width: 0; max-width: 13rem; margin: 0; container-type: inline-size; }
 @container (max-width: 2.5rem) { .k-station-where { display: none; } }
@@ -792,7 +849,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-more:hover { text-decoration: underline; text-underline-offset: 0.2em; }
 /* Recent: a session's state in a word when it is not simply done (it joins the state face by its class). */
 .k-home-recent .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-home-recent-word { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1.1875rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.k-home-recent-word { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1.1875rem; letter-spacing: 0; color: var(--faint); }
 .k-home-recent[data-watch="need"] .k-home-recent-word { color: var(--st-need); }
 .k-home-recent[data-watch="work"] .k-home-recent-word { color: var(--st-work-ink); }
 .k-home-recent:is([data-watch="fail"], [data-watch="declined"]) .k-home-recent-word { color: var(--st-fail); }
@@ -911,6 +968,13 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-tick-kids .k-child-session { width: 1.375rem; height: 0.75rem; padding: 0; font-size: 0; justify-content: center; gap: 0; }
 .k-tick-kids .k-child-session > * { display: none; }
 .k-tick-kids .k-child-session::before { content: ""; width: 0.3125rem; height: 0.3125rem; border-radius: 50%; background: var(--line-strong); }
+/* A folded rail has no room for an agent's word: its dot takes the state's color, and its name and word are its label. */
+.k-tick-kids .k-child-session[data-watch="need"]::before { background: var(--st-need); }
+.k-tick-kids .k-child-session:is([data-watch="fail"], [data-watch="declined"])::before { background: var(--st-fail); }
+.k-tick-kids .k-child-session[data-watch="work"]::before { background: var(--st-work); }
+.k-tick-kids .k-child-session[data-watch="wait"]::before { background: var(--st-wait); }
+.k-tick-kids .k-child-row { display: flex; justify-content: center; }
+.k-tick-kids .k-child-stop { display: none; }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
 @media (max-width: 767px) {
   .k-station-meta { display: none; }

@@ -1,5 +1,6 @@
 // Settings: the owner's own tools Keel works with. tacit's memory hooks, and
 // momentum's report with the control socket it uses.
+import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { useEffect, useState } from "react";
 import { composing } from "../lib/keys.ts";
 import { reportError } from "../lib/store.ts";
@@ -119,7 +120,7 @@ export function IntegrationsSettings() {
               {Object.entries(r.counts).map(([k, v]) => <span key={k}>{v} {k.replace("_", " ")}</span>)}
             </span>
           </div>
-          <Items label="Needs you" items={r.needs_you} tone="bg-warn" />
+          <Items label={STATE_WORD.need} items={r.needs_you} tone="bg-warn" />
           <Items label="Problems" items={r.problems} tone="bg-danger" />
           <Items label="Running" items={r.running} tone="bg-accent" />
         </Card>

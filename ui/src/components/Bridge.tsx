@@ -25,11 +25,12 @@ import { useSeenFailure } from "./Attention.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
-import { ago, scrollMotion, when } from "../lib/utils.ts";
+import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
-import { branchOf, lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, watchLabel } from "../lib/watch.ts";
-import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
+import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
+import { OFFLINE, STATE_WORD, asOf, countWord, stateLabel } from "../../../src/core/state-words.ts";
+import { MachineSep, machineRuns, useWhere, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { soloWindow } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
@@ -97,11 +98,13 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const st = useSessionState(s);
   const w = st.watch;
   // One clock for one state: the band shows what the row shows (the step's time, the ask's, the wait's).
-  const now = useNow(timed(st));
+  // A machine that does not answer says nothing new: the head reads Offline with when it last told, and its clock stands.
+  const offline = useWhere(s)?.reach === "offline";
+  const now = useNow(timed(st) && !offline);
   const focus = useStations((x) => x.focus);
   const panes = useStations((x) => x.count);
-  const agents = st.agents;
-  const why = st.text ? whyText(st, now) : "";
+  const told = st.text ? whyText(st, now) : "";
+  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : told;
   // The tools the helm keeps in view take room beside the title (bridge.css counts them); another pane shows its tools over the header's end when it is pointed at.
   const tools = helm ? (!focus && panes > 1 ? 6 : !focus ? 5 : 3) : 0;
   return (
@@ -112,10 +115,10 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
         <div className="k-station-rest">
         <span className="k-station-state">
-          <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
-          {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
-          {timed(st) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
-          {why && <span className="k-station-why" data-testid="station-why" data-why={st.why} title={why}>{why}</span>}
+          <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
+          {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
+          {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
+          {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? `It last told: ${stateLabel(st)}${told ? `, ${told}` : ""}` : why}>{why}</span>}
         </span>
         <span className="k-station-meta" title={s.workspace}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
@@ -212,7 +215,7 @@ function LookBar({ under, looking, slot, onBack, keep }: { under: Session; looki
   const w = st.watch;
   const how = useAim(slot);
   const title = under.title || "New session";
-  const state = w === "need" ? "needs you" : w === "fail" || w === "declined" ? "failed" : "";
+  const state = w === "need" || w === "fail" || w === "declined" ? STATE_WORD[w].toLowerCase() : "";
   return (
     <div className="k-look-bar" data-testid="look-bar" data-holds={under.id} data-under={state ? w : undefined} data-aim={how ?? undefined}>
       <p className="k-look-says" data-testid="look-says">
@@ -278,7 +281,7 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
   const w = useWatch(face);
   // A pane of a desk is on screen; of a phone's pages (which have no slot) only the helm is.
   useSeenFailure(face, w, !!top && (slot !== undefined || helm));
-  const agents = useAgentCount(face.id);
+  const label = useStateLabel();
   const ref = useRef<HTMLElement>(null);
   const drop = useDrop(slot);
   // The helm scrolls into view when it changes (keyboard moves, the rail).
@@ -300,7 +303,7 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
       data-helm={helm || undefined}
       data-missing={!fresh && look && !look.s ? "" : undefined}
       data-testid={fresh ? undefined : "station"}
-      aria-label={fresh ? "New session" : top ? `${top.title || "New session"}, ${watchLabel(w, agents)}${whereWords(top)}` : "Session not on this daemon"}
+      aria-label={fresh ? "New session" : top ? `${top.title || "New session"}, ${label(top.id, w)}${whereWords(top)}` : "Session not on this daemon"}
       onPointerDownCapture={() => { if (!helm && shownId) { paneMove(shownId); navigate({ name: "session", id: shownId }); } }}
       // Keyboard: tabbing into a pane takes the helm. Focus moved by code (an
       // approval card taking the keys in another pane) does not.
@@ -357,7 +360,7 @@ function NewStation({ slot, grow, beside }: { slot?: number; grow?: number; besi
 // from here), offers the other sessions not on screen, and takes a dragged one.
 function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boolean }) {
   const { list, watches } = useLive();
-  const agents = useAgentCounts();
+  const label = useStateLabel();
   const shown = useStations((x) => x.shown);
   const count = useStations((x) => x.count);
   const attended = useAttended();
@@ -380,7 +383,7 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
           <div className="k-pane-empty-list">
             {machineRuns(offer).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
               <button key={s.id} type="button" data-testid="pane-offer" data-session={s.id} data-watch={watches[s.id]} onClick={() => put(s.id)}>
-                <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
+                <span className="grid w-4 place-items-center" title={label(s.id, watches[s.id] ?? "idle")}><Mark w={watches[s.id] ?? "idle"} /></span>
                 <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
                 <span className="k-pane-empty-in">{folderOf(s)}</span>
                 <span className="k-pane-empty-time tabular-nums" title={when(s.updated)}>{ago(s.updated)}</span>
@@ -397,9 +400,10 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
 // Phone: the marks of the stations along the bottom; tap one to go there.
 function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   const { watches } = useLive();
-  const agents = useAgentCounts();
+  const label = useStateLabel();
   const fresh = useUI((s) => s.route.name === "new");
-  const need = list.filter((s) => watches[s.id] === "need").length;
+  // The things that wait on the owner, in every session: the number the tab's title and the home headline show.
+  const need = useNeedCount();
   // Each mark carries the session's short code, the one the folded rail gives it.
   const sessions = useStore((x) => x.sessions);
   const codes = useMemo(() => callsigns(Object.values(sessions).filter((s) => !s.archived && !s.settings.helper)), [sessions]);
@@ -409,7 +413,7 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
       <ol className="k-dock-list">
         {list.map((s) => (
           <li key={s.id}>
-            <button type="button" className="k-dock-mark" data-watch={watches[s.id]} aria-current={helm === s.id ? "page" : undefined} aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id]!, agents[s.id])}${whereWords(s)}`} onClick={() => navigate({ name: "session", id: s.id })}>
+            <button type="button" className="k-dock-mark" data-watch={watches[s.id]} aria-current={helm === s.id ? "page" : undefined} aria-label={`${s.title || "New session"}, ${label(s.id, watches[s.id]!)}${whereWords(s)}`} onClick={() => navigate({ name: "session", id: s.id })}>
               <Mark w={watches[s.id]!} />
               <span className="k-dock-code" data-testid="dock-code" aria-hidden="true">{codes[s.id]}</span>
             </button>
@@ -417,7 +421,7 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
         ))}
       </ol>
       {/* The home screen's headline already says it. */}
-      {need > 0 && !fresh && <span className="k-dock-need" data-testid="dock-need" aria-live="polite">{need} {need === 1 ? "needs" : "need"} you</span>}
+      {need > 0 && !fresh && <span className="k-dock-need" data-testid="dock-need" aria-live="polite">{countWord("need", need)}</span>}
       <button type="button" className="k-dock-btn" aria-label="New session" aria-current={fresh ? "page" : undefined} onClick={() => navigate({ name: "new" })}><Plus /></button>
     </nav>
   );

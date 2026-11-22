@@ -1,5 +1,6 @@
 // Small fleet pieces used across the workbench: the machine a session's tools
 // run on (header chip, tool row badge), and the machine a new session starts on.
+import { OFFLINE } from "../../../src/core/state-words.ts";
 import { Popover } from "@base-ui/react/popover";
 import { ArrowRight, Check, ChevronDown, ChevronLeft, CloudOff, Cpu, Folder, FolderGit2, History, RefreshCw, Server, Wand2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -94,7 +95,7 @@ export function MachineChip({ session }: { session: Session }) {
     catch (e) { setErr(failed(e, { at: "Fleet" })); }
   };
   // A machine that does not answer is listed, marked, and not a move.
-  const dests = [...(runs ? [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine", sub: "back here", off: false }] : []), ...targets.map((m) => ({ id: m.id, name: m.name, sub: m.state === "offline" ? "offline" : m.workspace_root!, off: m.state === "offline" }))];
+  const dests = [...(runs ? [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine", sub: "back here", off: false }] : []), ...targets.map((m) => ({ id: m.id, name: m.name, sub: m.state === "offline" ? OFFLINE : m.workspace_root!, off: m.state === "offline" }))];
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger data-testid="machine-chip" title={`Its tools run on ${name}, in ${session.workspace}${where?.reach === "offline" ? `; ${name} does not answer now` : ""}`} className={cn(cls, "hover:text-fg data-popup-open:border-line-strong")} {...tag}>{chip}</Popover.Trigger>
@@ -131,7 +132,7 @@ export function MachineChip({ session }: { session: Session }) {
                     <Server className="size-4 shrink-0" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-ui font-medium">{m.name}</span>
-                      <span className="block truncate font-mono text-micro">{m.state === "offline" ? "offline" : m.workspace_root}</span>
+                      <span className="block truncate font-mono text-micro">{m.state === "offline" ? OFFLINE : m.workspace_root}</span>
                     </span>
                   </div>
                 ))}
@@ -236,7 +237,7 @@ export function MachinePicker() {
                 {o.id === "auto" ? <Wand2 className="size-4 shrink-0 text-faint" /> : o.id ? <Server className="size-4 shrink-0 text-faint" /> : <Cpu className="size-4 shrink-0 text-faint" />}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-ui font-medium">{o.name}</span>
-                  <span className="block truncate font-mono text-micro text-faint">{o.state === "offline" ? "offline" : o.sub}</span>
+                  <span className="block truncate font-mono text-micro text-faint">{o.state === "offline" ? OFFLINE : o.sub}</span>
                 </span>
                 {(chosen === o.id || (!cur && !o.id)) && <Check className="size-4 text-accent" />}
               </button>
@@ -263,7 +264,7 @@ export function useNewMachine(): NewMachine {
   const m = machines.find((x) => x.id === chosen);
   if (!m) return machines.length ? { id: chosen, blocked: { name: "The machine you picked", why: "is no longer in the fleet" } } : { id: chosen };
   if (!m.workspace_root) return { id: chosen, blocked: { machine: m.id, name: m.name, why: "has no granted directory" } };
-  if (m.state === "offline") return { id: chosen, blocked: { machine: m.id, name: m.name, why: "is offline" } };
+  if (m.state === "offline") return { id: chosen, blocked: { machine: m.id, name: m.name, why: `is ${OFFLINE.toLowerCase()}` } };
   return { id: chosen };
 }
 

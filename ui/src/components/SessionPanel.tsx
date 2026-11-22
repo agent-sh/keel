@@ -1,6 +1,7 @@
 // The session's own marks and operations, as a side-panel tab: pin, done,
 // tags, the step budget, messages from other sessions. Plain controls on the
 // shared tokens; the look belongs to the design of the workbench.
+import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { archive, cloneSession, marks, moveSession, pin, setDone, setMaxSteps, setSkillMode, setTags, writeRecap, type Marks } from "../lib/sessops.ts";
@@ -195,7 +196,7 @@ function Place({ s }: { s: Session }) {
         <button type="button" className={button} data-testid="clone-session" disabled={busy || s.phase === "working"}
           onClick={() => run(async () => { const r = await cloneSession(s.id, { cwd: to || undefined, worktree: wt ? {} : undefined }); openPlaced(r.session.id, s.id); })}>Clone</button>
         <button type="button" className={button} data-testid="move-session" disabled={busy || s.phase === "working" || (!to && !git) || (to === s.workspace && !git)}
-          onClick={() => run(async () => { const r = await moveSession(s.id, { cwd: to && to !== s.workspace ? to : undefined, copy_files: copy || undefined, init_git: git || undefined }); setTo(""); return r.files_copied ? `Moved, ${r.files_copied} files copied.` : "Done."; })}>{to && to !== s.workspace ? "Move here" : "Apply"}</button>
+          onClick={() => run(async () => { const r = await moveSession(s.id, { cwd: to && to !== s.workspace ? to : undefined, copy_files: copy || undefined, init_git: git || undefined }); setTo(""); return r.files_copied ? `Moved, ${r.files_copied} files copied.` : "Applied."; })}>{to && to !== s.workspace ? "Move here" : "Apply"}</button>
       </div>
       {said && <p className="pb-1.5 text-caption text-muted" role="status" data-testid="place-said">{said}</p>}
     </Section>
@@ -255,8 +256,8 @@ export function SessionPanel({ session: s }: { session: Session }) {
         <Line label="Pinned" hint="Keeps its pane on the bridge and the top of the list, on every device.">
           <Toggle on={!!s.settings.pinned_ms} label="Pinned" testid="pin-toggle" onChange={(v) => pin(s.id, v).catch(reportError)} />
         </Line>
-        <Line label="Done" hint="The work is finished. Your next message reopens it.">
-          <Toggle on={!!s.settings.done_ms} label="Done" testid="done-toggle" onChange={(v) => setDone(s.id, v).catch(reportError)} />
+        <Line label={STATE_WORD.done} hint="The work is finished. Your next message reopens it.">
+          <Toggle on={!!s.settings.done_ms} label={STATE_WORD.done} testid="done-toggle" onChange={(v) => setDone(s.id, v).catch(reportError)} />
         </Line>
         <Line label="Step budget" hint="Model steps one turn may take. Empty: no budget.">
           <Steps s={s} />

@@ -5,10 +5,11 @@
 // Each waiting thing is counted once: an agent's question is its parent's
 // to answer and is in the parent's state, so only top-level sessions are read.
 import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { attends } from "../lib/automation.ts";
 import { failStamp, failUnseen, isFailure } from "../lib/home.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import type { Session } from "../../../src/core/types.ts";
-import { useSessionStates, type Watch } from "../lib/watch.ts";
+import { useNeedCount, useSessionStates, type Watch } from "../lib/watch.ts";
 
 const onVisible = (f: () => void) => (document.addEventListener("visibilitychange", f), () => document.removeEventListener("visibilitychange", f));
 
@@ -56,12 +57,10 @@ export function Attention() {
   const sessions = useStore((s) => s.sessions);
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
   const states = useSessionStates(list);
-  let n = 0, working = 0;
-  for (const s of list) {
-    const st = states[s.id];
-    if (st?.watch === "need") n += st.asks ?? 1; else if (st?.watch === "work") working++;
-  }
-  const state = n > 0 ? "need" : working > 0 ? "work" : null;
+  // The one count of what waits on the owner: the home headline, the list's line and the phone's dock show the same number.
+  const n = useNeedCount();
+  const working = list.some((s) => states[s.id]?.watch === "work");
+  const state = n > 0 ? "need" : working ? "work" : null;
   useEffect(() => {
     need = n;
     apply();
@@ -73,11 +72,20 @@ export function Attention() {
   return null;
 }
 
-// A failed session (or one whose turn the model declined) in a pane that is on screen, in a tab
-// that is visible: the owner has seen that failure, and the daemon is told so (every device then stops counting it). The pane says whether
-// it is in view: any pane of a desk, the one page a phone shows. A hidden tab shows nothing.
-export function useSeenFailure(s: Session, w: Watch, inView: boolean) {
+// A failed session (or one whose turn the model declined) the owner is at: its pane is in view (most
+// of it inside the window, nothing over it) in a visible, focused page they did something in within
+// the last minute. They have seen that failure, and the daemon is told so (every device then stops
+// counting it). A pane that is placed but scrolled off the window, a hidden tab, and a page left open
+// with nobody at it show nothing: the failure stays news. `placed`: the session has a pane or a page.
+export function useSeenFailure(s: Session, w: Watch, placed: boolean) {
   const visible = useSyncExternalStore(onVisible, () => document.visibilityState === "visible");
-  const at = inView && visible && isFailure(w) && failUnseen(s) ? failStamp(s) : null;
-  useEffect(() => { if (at !== null) actions.patch(s.id, { fail_seen: at } as never).catch(reportError); }, [s.id, at]);
+  const at = placed && visible && isFailure(w) && failUnseen(s) ? failStamp(s) : null;
+  useEffect(() => {
+    if (at === null) return;
+    const look = () => { if (!attends(s.id)) return false; actions.patch(s.id, { fail_seen: at } as never).catch(reportError); return true; };
+    if (look()) return;
+    // Looked at again while the failure is news: when the pane comes into view, or the owner comes back.
+    const t = setInterval(() => { if (look()) clearInterval(t); }, 1000);
+    return () => clearInterval(t);
+  }, [s.id, at]);
 }

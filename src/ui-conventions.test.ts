@@ -8,6 +8,7 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { OFFLINE, QUEUED, STATE_WORD } from "./core/state-words.ts";
 
 type Src = { file: string; text: string };
 const UI = join(import.meta.dir, "../ui/src");
@@ -319,6 +320,81 @@ function shared(list: Src[]): string[] {
   return out;
 }
 
+// A state has one word, written once: in the vocabulary (src/core/state-words.ts).
+// No other module of the page writes a state word, or one of the words the
+// vocabulary retired, as text of its own: a label that is the word, a line
+// that leads with it ("Failed: ..."), a count that ends in it ("2 running").
+// A string counts anywhere on the page when it is written as a label
+// (capitalized): a lower-case one is an identifier (a status, a kind). In the
+// modules that show a session's or an agent's state, text between tags and
+// the fixed parts of a template count whatever their case ("2 running",
+// "offline", "asks"), and so does a phrase that says a session waits in words
+// of its own ("Waiting for ...", "Waiting on ...", "is waiting for ...").
+// A word that names something else's state (an MCP server, a column of
+// figures) is listed here with what it is.
+const STATE_TERMS = [...new Set([...Object.values(STATE_WORD), QUEUED, OFFLINE, "Waiting to resume", "Need you", "Running", "Asks you", "Ask you", "Finished", "Steer", "Idle"])];
+// Said only in lower case, so only where a state is shown: the retired "asks" of an agent that needs the owner.
+const LOWER_TERMS = ["asks"];
+// A session that waits says so through the vocabulary ("Waiting for a timer"), on any page.
+const WAITS = /^(is |are )?waiting (on|for)\b/i;
+const VOCABULARY = "src/core/state-words.ts";
+// Where a session's or an agent's state is shown.
+const STATE_SURFACES = /^(lib\/(home|watch|rows|waiting|automation)\.ts|components\/(Sidebar|Bridge|HomeWatch|StartBox|ProjectPage|Palette|TurnControls|TimelinePanel|Attention|Mark|Where|Fleet|SessionHeader|SessionDock)\.tsx|components\/automation\/(SidebarExtras|BackgroundPopover|TranscriptExtras|InboxPanel|bits|AwayDigest|ActivityList|ChildApprovals)\.tsx)$/;
+const OTHER_STATES: Record<string, string[]> = {
+  // A verb of a tool's line ("Running bun test"), not a state.
+  "lib/tools.ts": ["Running"],
+  // The transcript's own lines are another lane's to move here (the file is skipped whole, below).
+  // A daemon that waits for its turns before it stops, and a saved message that waits for the daemon.
+  "components/DaemonPanel.tsx": ["Failed", "Stopped", "Waiting for running turns since"],
+  "components/Composer.tsx": ["Waiting for Keel"],
+  // A task's own check mark, and a job of the dock that its owner stopped.
+  "components/automation/TasksPanel.tsx": ["Done"],
+  // Other things' states and figures: a settings group, an MCP server, a port's item, a daemon's end, a memory call, a table's column, an experiment.
+  "components/Settings.tsx": ["Working"],
+  "components/SessionPanel.tsx": ["Running", "Failed"],
+  "components/surfaces/Mcp.tsx": ["Failed"],
+  "components/PortPanel.tsx": ["Failed"],
+  "components/MemoryFacts.tsx": ["Failed"],
+  "components/UsagePanel.tsx": ["Failed"],
+  "components/ResourcesPanel.tsx": ["Running"],
+  "components/ExperimentsPanel.tsx": ["Stopped"],
+  "components/IntegrationsPanel.tsx": ["Running"],
+  // Tool calls of a turn's receipt ("2 failed: call 1").
+  "components/TimelinePanel.tsx": ["failed"],
+  // A step of a session's move to another machine.
+  "components/Fleet.tsx": ["failed"],
+  // A channel an alert did not reach ("Desktop failed").
+  "components/automation/InboxPanel.tsx": ["failed"],
+  // A link that ends an edit.
+  "components/automation/AgentSettings.tsx": ["Done"],
+};
+// The transcript's own lines ("Waiting for your approval", "Running ...", a turn's end) are being
+// reworked by its own lane: its strings and their vocabulary forms are handed to it, and it is not read here.
+const TRANSCRIPT = "components/Transcript.tsx";
+function stateLiterals(list: Src[]): string[] {
+  const out: string[] = [];
+  const exact = new Set(STATE_TERMS);
+  const lower = new Set([...STATE_TERMS, ...LOWER_TERMS].map((t) => t.toLowerCase()));
+  const core = (t: string) => t.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "");
+  const leads = (t: string, cased: boolean) => STATE_TERMS.some((w) => new RegExp(`^${w}\\s*[:\u00b7]`, cased ? "" : "i").test(t));
+  for (const s of list) {
+    if (s.file === TRANSCRIPT) continue;
+    const src = code(s.text);
+    const ok = new Set(OTHER_STATES[s.file] ?? []);
+    const hit = (text: string, at: number, cased: boolean) => {
+      const c = core(text);
+      // (Code between two tags, a branch of a conditional, is not text.)
+      if (!c || ok.has(c) || ok.has(text.trim()) || [...ok].some((o) => o.includes(" ") && text.trim().startsWith(o)) || /^\s*[:?]|&&|\|\||=>|===|!==|\?\s*$/.test(text)) return;
+      if ((cased ? exact.has(c) : lower.has(c.toLowerCase())) || leads(c, cased) || WAITS.test(text.trim())) out.push(`${s.file}:${lineOf(src, at)}: "${text.trim().slice(0, 60)}" is a state word: read it from ${VOCABULARY}`);
+    };
+    for (const m of src.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'/g)) hit(m[1] ?? m[2] ?? "", m.index!, true);
+    const any = STATE_SURFACES.test(s.file);
+    for (const m of src.matchAll(/`((?:[^`\\]|\\.)*)`/g)) for (const part of m[1]!.split(/\$\{[^}]*\}/)) hit(part, m.index!, !any);
+    if (s.file.endsWith(".tsx")) for (const m of src.matchAll(/[>}]([^<>{}=;()`"']*[A-Za-z]{2}[^<>{}=;()`"']*)(?=[<{])/g)) { if (!/^[\s,]*\w+:\s*$/.test(m[1]!)) hit(m[1]!, m.index!, !any); } // (a key of an object literal is not text)
+  }
+  return out;
+}
+
 // ---------- Over the tree ----------
 
 test("the type scale has eight sizes, written once", () => {
@@ -339,6 +415,7 @@ test("every time is on the 24-hour clock", () => {
 });
 test("the look is set by components and tokens, not by test ids or utility names", () => expect(selectors(sheets, page)).toEqual([]));
 test("a label, a picked row and a switch are their shared class", () => expect(shared(page)).toEqual([]));
+test("a state word is written once, in the vocabulary", () => expect(stateLiterals(page)).toEqual([]));
 
 // ---------- The checks themselves ----------
 
@@ -379,9 +456,21 @@ test("each check refuses what it is for", () => {
   expect(shared(tsx('<h3 className="mt-2 text-micro font-medium uppercase tracking-wide text-faint">Tools</h3>'))).toHaveLength(1);
   expect(shared(tsx('<button role="switch" aria-checked={on} className="relative h-5 w-9 rounded-full" />'))).toHaveLength(1);
   expect(shared(tsx('<button aria-current={on ? "true" : undefined} className={cn("flex", on && "bg-hover")} />'))).toHaveLength(1);
+  // A state word written out: a label, a line that leads with one, a retired word, a count in a state surface.
+  expect(stateLiterals(tsx('const LABEL = { running: "Running", waiting: "Waiting" };'))).toHaveLength(2);
+  expect(stateLiterals(tsx('<span>Asks you</span>\n<b title="Needs you" />\nconst t = `Failed: ${why}`;'))).toHaveLength(3);
+  expect(stateLiterals(tsx('<span>· {n} running</span>\nconst t = `${n} waiting`;', "components/automation/SidebarExtras.tsx"))).toHaveLength(2);
+  // Idle is no state's word; a session that waits says so through the vocabulary; "asks" and "offline" are retired spellings where a state is shown.
+  expect(stateLiterals(tsx('const STATE = { idle: { word: "Idle" } };\nconst what = approving ? "Waiting for your approval" : "";\n<b>{agent} is waiting for your answer</b>'))).toHaveLength(3);
+  expect(stateLiterals(tsx('<span>{agent} asks</span>\n<span data-offline>offline</span>', "components/Sidebar.tsx"))).toHaveLength(2);
 });
 
 test("each check lets ordinary edits through", () => {
+  // A status is an identifier, a sentence may use the word, the vocabulary itself writes it, and another thing's state is listed.
+  expect(stateLiterals(tsx('const live = a.status === "running" || a.status === "waiting";\nconst hint = "Running sessions are listed once the agent view is set.";\n<span>{STATE_WORD.work}</span>\nconst STATE = {\n  waiting: { word: STATE_WORD.wait },\n};'))).toEqual([]);
+  expect(stateLiterals(tsx('const said = "Waiting until it is idle";\nconst live = m.state === "offline";'))).toEqual([]);
+  expect(stateLiterals(tsx('const SERVER = { error: "Failed" };', "components/surfaces/Mcp.tsx"))).toEqual([]);
+  expect(stateLiterals(tsx('<span>{n} failed</span>', "components/CodeCall.tsx"))).toEqual([]);
   expect(sheetSizes(css(".k-thing { font-size: var(--text-caption); height: var(--spacing-ctl-md); }\n.prose-keel sup { font-size: 0.75em; }\n/* font-size: 3rem */"))).toEqual([]);
   expect(pageSizes(tsx('// Tailwind text-sm is not used here.\n/* nor text-[1.1rem] */\nconst tick = { fontSize: "var(--text-micro)" };\n<p className="text-ui text-[color:var(--x)] text-[var(--c)]" />'))).toEqual([]);
   expect(segmented(tsx('<Seg kind="tabs" label="View" value={v} onChange={set} options={o} />\n// role="tablist" is the Seg component\'s'), [])).toEqual([]);

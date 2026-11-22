@@ -1,3 +1,4 @@
+import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { ArrowDownToLine, ArrowLeft, ArrowUp, CircleAlert, Cpu, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReadPrompt, Row } from "../../../src/drive/drive.ts";
@@ -28,9 +29,9 @@ const DOT: Record<string, string> = {
   unknown: "bg-faint",
 };
 const GROUPS: { id: string; label: string; states: string[] }[] = [
-  { id: "waiting", label: "Waiting on you", states: ["waiting"] },
-  { id: "working", label: "Working", states: ["working", "scheduled"] },
-  { id: "idle", label: "Idle", states: ["idle", "done", "unknown"] },
+  { id: "waiting", label: STATE_WORD.need, states: ["waiting"] },
+  { id: "working", label: STATE_WORD.work, states: ["working", "scheduled"] },
+  { id: "idle", label: "At rest", states: ["idle", "done", "unknown"] },
   { id: "ended", label: "Ended", states: ["ended", "disconnected"] },
 ];
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;

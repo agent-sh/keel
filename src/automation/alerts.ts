@@ -2,15 +2,17 @@ import * as activity from "./activity.ts";
 import { D, alertHook, capture, clip, cursor, emit } from "./core.ts";
 import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
-import { pendingQuestions } from "../tools/interact.ts";
+import { allPendingQuestions, pendingQuestions } from "../tools/interact.ts";
 import { QUESTION_CUT } from "../core/stops.ts";
-import { planWaits } from "../server/routes/plan.ts";
+import { planWaits, plansWaiting } from "../server/routes/plan.ts";
 import { sessionState } from "./state.ts";
 import { readText } from "../core/proc.ts";
 import { plainLine } from "../core/plain.ts";
 import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
+import { secretsWaiting } from "../server/routes/secrets.ts";
+import { ASK_KINDS, WRONG_KINDS } from "../core/state-words.ts";
 import { handShell, shellShows, tellShells } from "../server/shell.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
@@ -39,6 +41,8 @@ export type Alert = {
   // Marked unread by the owner: only an explicit read clears it, never the
   // page reading a session because it is on screen.
   kept: boolean;
+  // An ask whose card still waits for the owner, read or not (told with a list, not stored).
+  open?: boolean;
 };
 
 export type AlertChannel = {
@@ -99,6 +103,7 @@ export const currentRev = () => D().store.db.query<{ n: number }, []>("SELECT n 
 function stillOpen(a: Pick<Alert, "kind" | "session_id" | "data">): boolean {
   if (a.kind === "approval") return !!a.data?.approval_id && perm.gate?.approval(a.data.approval_id)?.state === "pending";
   if (a.kind === "question" && a.data?.plan_id) return planWaits(a.data.plan_id);
+  if (a.kind === "question" && a.data?.secret_id) return secretsWaiting().some((c) => c.id === a.data.secret_id);
   if (a.kind === "question") return !!a.data?.call_id && pendingQuestions(a.data.open_session ?? a.session_id ?? "").includes(a.data.call_id);
   return false;
 }
@@ -184,6 +189,8 @@ const getAlert = (id: string) => {
 
 // Newest first, paged by (ts, id). `withUnread` adds every unread alert however
 // old, so a count in the header always has its rows on screen.
+// Every alert says whether it is an ask whose card still waits (`open`); with `withUnread` such
+// an ask is listed however old and read it is: looking at a request does not answer it.
 export function list(opts: { before?: string; limit?: number; unread?: boolean; withUnread?: boolean } = {}): Alert[] {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const c = cursor(opts.before);
@@ -193,10 +200,34 @@ export function list(opts: { before?: string; limit?: number; unread?: boolean; 
     .all(c?.ts ?? Number.MAX_SAFE_INTEGER, c?.ts ?? Number.MAX_SAFE_INTEGER, c?.id ?? "", limit);
   if (opts.withUnread && !opts.unread) {
     const have = new Set(rows.map((r) => r.id));
-    for (const r of db.query<Row, []>("SELECT * FROM alerts WHERE read = 0 ORDER BY ts DESC, id DESC LIMIT 1000").all()) if (!have.has(r.id)) rows.push(r);
+    for (const r of db.query<Row, []>("SELECT * FROM alerts WHERE read = 0 ORDER BY ts DESC, id DESC LIMIT 1000").all()) if (!have.has(r.id)) { have.add(r.id); rows.push(r); }
+    for (const r of readAsksWaiting(rows.map(toAlert))) if (!have.has(r.id)) rows.push(r);
     rows.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
   }
-  return rows.map(toAlert);
+  return rows.map(toAlert).map((a) => (ASK_KINDS.includes(a.kind) && stillOpen(a) ? { ...a, open: true } : a));
+}
+
+// The read alerts of what waits on the owner now that `have` does not hold: each waiting card's
+// own alert, looked up by its session (the index's key), never by a walk over the table.
+function readAsksWaiting(have: Alert[]): Row[] {
+  const { store } = D();
+  const named = (key: string) => new Set(have.map((a) => a.data?.[key]).filter(Boolean).map(String));
+  const waits: { session: string; key: string; value: string }[] = [
+    ...(perm.gate?.approvals({ pending: true }) ?? []).map((a) => ({ session: a.session_id, key: "approval_id", value: a.id })),
+    ...allPendingQuestions().map((q) => ({ session: q.session_id, key: "call_id", value: q.call_id })),
+    ...plansWaiting().map((p) => ({ session: p.session_id, key: "plan_id", value: p.id })),
+    ...secretsWaiting().map((c) => ({ session: c.session_id, key: "secret_id", value: c.id })),
+  ];
+  const out: Row[] = [];
+  const listed: Record<string, Set<string>> = {};
+  for (const w of waits) {
+    if ((listed[w.key] ??= named(w.key)).has(w.value)) continue;
+    const inbox = store.session(w.session)?.parent_id ?? w.session;
+    const rows = store.db.query<Row, [string]>("SELECT * FROM alerts WHERE read = 1 AND session_id = ? AND kind IN ('approval', 'question') ORDER BY ts DESC LIMIT 200").all(inbox);
+    const hit = rows.find((r) => { try { return String(JSON.parse(r.data ?? "{}")[w.key] ?? "") === w.value; } catch { return false; } });
+    if (hit) out.push(hit);
+  }
+  return out;
 }
 
 // Unread counts: in all, per inbox session (a parent counts its agents'), per
@@ -222,18 +253,30 @@ export function unreadCounts(): { total: number; sessions: Record<string, number
   return { total, sessions, children, fresh, rev: currentRev() };
 }
 
-// Each page reports where its owner is: which session it shows and whether it
-// has focus, fresh for 45 s. The owner is watching a session while any page
-// that shows it has focus; one page in the background says nothing about another.
-const presence = new Map<string, { at: number; session_id: string | null; focused: boolean }>();
-export function setPresence(session_id: string | null, focused: boolean, page = "_") {
+// Each page reports where its owner is: which session it works in, which
+// sessions its panes show in view (a pane scrolled off the window, or one a
+// panel lies over, is not shown), whether it has focus, and how long ago the
+// owner last did something in it, fresh for 45 s.
+// - The owner is watching a session while any page that shows it has focus:
+//   a finish there is seen, not unread.
+// - They are attending it while they also did something in that page within
+//   the last minute. Only then is a notification of what calls them (an ask,
+//   a failure) held back: it is in front of them. It is sent once that stops
+//   being true and the thing still waits (tickWithheld), so a focused page
+//   left open mutes nothing.
+// One page in the background says nothing about another.
+const ATTEND_MS = 60_000;
+const presence = new Map<string, { at: number; session_id: string | null; focused: boolean; shown: string[]; input?: number }>();
+export function setPresence(session_id: string | null, focused: boolean, page = "_", shown: string[] = [], idle_ms?: number) {
   const now = Date.now();
   for (const [k, p] of presence) if (now - p.at >= 45_000) presence.delete(k);
-  presence.set(page, { at: now, session_id, focused });
+  presence.set(page, { at: now, session_id, focused, shown, ...(idle_ms === undefined ? {} : { input: now - idle_ms }) });
 }
 const freshFocused = () => [...presence.values()].filter((p) => Date.now() - p.at < 45_000 && p.focused);
 export const atDesk = () => freshFocused().length > 0;
-const watching = (sessionId: string | null) => !!sessionId && freshFocused().some((p) => p.session_id === sessionId);
+const shows = (p: { session_id: string | null; shown: string[] }, ids: (string | null | undefined)[]) => ids.some((id) => !!id && (p.session_id === id || p.shown.includes(id)));
+const watching = (...ids: (string | null | undefined)[]) => freshFocused().some((p) => shows(p, ids));
+const attending = (...ids: (string | null | undefined)[]) => freshFocused().some((p) => shows(p, ids) && p.input !== undefined && Date.now() - p.input < ATTEND_MS);
 
 const SECRETS = /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b/g;
 const scrub = (t: string) => t.replace(SECRETS, "[secret]");
@@ -313,7 +356,7 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     const st = settings();
     if (kind === "finished") {
       if (st.completion === "never") return undefined;
-      if (st.completion === "background" && watching(sid)) return undefined;
+      if (st.completion === "background" && watching(sid, sessionId)) return undefined;
     }
     const key = DECISION[kind];
     const decision = key ? (data as Record<string, unknown> | undefined)?.[key] : undefined;
@@ -335,14 +378,20 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     // A snoozed session's routine alert is put away read; a global snooze keeps
     // everything off the channels.
     const f = snooze.filter(kind, sid);
-    // Watching the session: the page shows it, nothing leaves the machine for it.
-    const watched = watching(sid);
-    const sendTo = watched || !f.deliver || f.quiet ? [] : routed;
+    // What calls the owner (an ask, something that went wrong) is never read because its session is
+    // on screen: it stays unread until it is answered or its session is opened. Its notification is
+    // held back only while they attend the session, and goes out when they no longer do and it still waits.
+    // Anything else in a session they watch is seen there: read, and nothing leaves the machine for it.
+    const calls = ASK_KINDS.includes(kind) || WRONG_KINDS.includes(kind);
+    const watched = !calls && watching(sid, sessionId);
+    const withheld = calls && f.deliver && !f.quiet && routed.length > 0 && attending(sid, sessionId);
+    const sendTo = watched || withheld || !f.deliver || f.quiet ? [] : routed;
     // Why nothing left the inbox when nothing did: no route chosen, or the
     // chosen ones are not set up (judged now, when it was raised).
-    const inboxOnly = sendTo.length || watched || !f.deliver || f.quiet ? {}
+    const inboxOnly = sendTo.length || watched || withheld || !f.deliver || f.quiet ? {}
       : { inbox_only: !chosen.length ? { no_route: true } : quietKind && chosen.some((c) => INTERRUPTS.has(c) && channels.get(c)?.available()) ? { routine: true } : { not_set_up: chosen } };
-    const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}) };
+    const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}), ...(withheld ? { withheld: routed } : {}) };
+    if (withheld) withheldMaybe = true;
     const extra = { ...child, ...flags, ...inboxOnly };
     const stored = Object.keys(extra).length ? { ...(data as object), ...extra } : data;
     const delivery: Delivery | undefined = sendTo.length ? Object.fromEntries(sendTo.map((c) => [c, { state: "pending" as const }])) : undefined;
@@ -352,6 +401,8 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     };
     store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, channels, delivery, rev, kept) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)")
       .run(a.id, a.ts, kind, sid, a.title, a.body, a.read ? 1 : 0, stored ? JSON.stringify(stored) : null, JSON.stringify(sendTo), delivery ? JSON.stringify(delivery) : null, a.rev);
+    // An ask is open from the moment it is raised: its card waits.
+    if (ASK_KINDS.includes(kind) && stillOpen(a)) a.open = true;
     emit("alert", a);
     activity.record("alert", kind, sessionId, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags, ...(key && decision ? { [key]: String(decision) } : {}) });
     deliverTo(a, sendTo);
@@ -362,6 +413,34 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
   }
 }
 alertHook.raise = (kind, sessionId, title, body, data) => void raise(kind as AlertKind, sessionId, title, body, data);
+
+// The notifications held back while the owner attended a session: each goes to its channels once
+// they no longer attend it, if it is still unread and (an ask) its card still waits. Nothing is
+// read from the table while none is held (after a start that is not known, so the first look reads).
+let withheldMaybe = true;
+let withheldAt = 0;
+export function tickWithheld(now = Date.now()) {
+  if (!withheldMaybe || now - withheldAt < 3000) return;
+  withheldAt = now;
+  try {
+    const db = D().store.db;
+    const held = db.query<Row, []>("SELECT * FROM alerts WHERE read = 0 AND json_extract(data, '$.withheld') IS NOT NULL").all().map(toAlert);
+    if (!held.length) { withheldMaybe = false; return; }
+    for (const a of held) {
+      if (attending(a.session_id, a.data?.child_session, a.data?.open_session)) continue;
+      const { withheld, ...rest } = a.data as { withheld: string[] } & Record<string, unknown>;
+      const waits = !ASK_KINDS.includes(a.kind) || stillOpen(a);
+      const sendTo = waits ? withheld.filter((c) => channels.get(c)?.available()) : [];
+      const delivery: Delivery | undefined = sendTo.length ? Object.fromEntries(sendTo.map((c) => [c, { state: "pending" as const }])) : undefined;
+      db.query("UPDATE alerts SET data = ?, channels = ?, delivery = ? WHERE id = ?").run(JSON.stringify(rest), JSON.stringify(sendTo), delivery ? JSON.stringify(delivery) : null, a.id);
+      const next: Alert = { ...a, data: rest, channels: sendTo, delivery };
+      emit("alert", next);
+      deliverTo(next, sendTo);
+    }
+  } catch (e) {
+    capture(e, { at: "withheld alerts" });
+  }
+}
 
 // The snoozes whose time came: each session wakes with one alert, and the end
 // of a global snooze says how many alerts it held.
@@ -389,8 +468,11 @@ export function hasOpenCard(sessionId: string): boolean {
 // the page had when the owner acted: an alert that became unread after it (a
 // new one, or one marked unread since) is left alone, so a replayed or late
 // request never reads what the owner has not seen. `auto` is a page reading the
-// session on screen: it leaves alone what the owner kept unread.
-export function markRead(opts: { ids?: string[]; session_id?: string; all?: boolean; seen?: number; auto?: boolean }): number {
+// session on screen: it leaves alone what the owner kept unread, and what calls
+// them (an ask, a failure), which is read when it is answered or its session is
+// opened. `touch` is the owner acting in that session's pane: that is opening it,
+// so it reads those too, and still leaves what they kept unread.
+export function markRead(opts: { ids?: string[]; session_id?: string; all?: boolean; seen?: number; auto?: boolean; touch?: boolean }): number {
   const db = D().store.db;
   const where = ["read = 0"];
   const args: (string | number)[] = [];
@@ -401,7 +483,8 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
   } else if (opts.session_id) { where.push("session_id = ?"); args.push(opts.session_id); }
   else if (!opts.all) return 0;
   if (Number.isFinite(opts.seen)) { where.push("rev <= ?"); args.push(Number(opts.seen)); }
-  if (opts.auto) where.push("kept = 0");
+  if (opts.auto || opts.touch) where.push("kept = 0");
+  if (opts.auto) where.push(`kind NOT IN (${CALLS.map((k) => `'${k}'`).join(", ")})`);
   const hit = db.query<{ id: string; session_id: string | null }, any>(`SELECT id, session_id FROM alerts WHERE ${where.join(" AND ")}`).all(...args);
   if (!hit.length) return 0;
   nextRev();
@@ -420,6 +503,8 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
   return hit.length;
 }
 
+const CALLS = [...ASK_KINDS, ...WRONG_KINDS];
+
 // Whether an alert whose data names this value was raised, read or not: a
 // question put back on its card after a restart is the one the owner was told of.
 // (Of that session: another session's call may carry the same id.)
@@ -434,6 +519,8 @@ export function readWhere(key: string, value: string, askedIn?: string) {
   const ids = D().store.db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND json_extract(data, ?) = ?${askedIn ? ` AND ${ASKED_IN} = ?` : ""}`)
     .all(...[`$.${key}`, value, ...(askedIn ? [askedIn] : [])]).map((r) => r.id);
   if (ids.length) markRead({ ids });
+  // An ask the owner had looked at and now answered is read already: the pages are told all the same, since it waits no more.
+  else if (sessions.length) emit("alerts_read", { settled: value, rev: currentRev() });
 }
 
 // The owner wants to come back to it: unread again, at a new revision, and kept
@@ -444,6 +531,42 @@ export function markUnread(id: string): boolean {
   db.query("UPDATE alerts SET read = 0, kept = 1, rev = ? WHERE id = ?").run(nextRev(), id);
   emit("alerts_read", { unread: id, rev: currentRev() });
   return true;
+}
+
+// The owner marks a session unread to come back to it: its newest alert is unread
+// again and kept (a page showing the session does not read it back). A session
+// nothing was raised for (they were watching when it ended) gets a row of its
+// own, with what it ended with.
+export function markSessionUnread(sessionId: string): boolean {
+  const { store } = D();
+  const s = store.session(sessionId);
+  if (!s || s.parent_id) return false;
+  // The session's own newest word, never an ask: a request that was answered does not come back as one that waits.
+  const last = store.db.query<{ id: string }, [string]>(`SELECT id FROM alerts WHERE session_id = ? AND kind NOT IN (${ASK_KINDS.map((k) => `'${k}'`).join(", ")}) AND json_extract(data, '$.child_session') IS NULL ORDER BY ts DESC, id DESC LIMIT 1`).get(sessionId);
+  if (last) return markUnread(last.id);
+  const failed = !!s.settings.failed_ms;
+  const a: Alert = {
+    id: Bun.randomUUIDv7(), ts: Date.now(), kind: failed ? "failed" : "finished", session_id: sessionId, read: false,
+    title: clip(scrub(failed ? `Failed: ${s.title || "Session"}` : s.title || "Session"), 200), body: lastLine(sessionId).line || "Marked unread.", data: { marked: true }, channels: [], rev: nextRev(), kept: true,
+  };
+  store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, channels, delivery, rev, kept) VALUES (?, ?, ?, ?, ?, ?, 0, ?, '[]', NULL, ?, 1)")
+    .run(a.id, a.ts, a.kind, sessionId, a.title, a.body, JSON.stringify(a.data), a.rev);
+  emit("alert", a);
+  return true;
+}
+
+// What a session last said, in one line: the reply its last turn ended with, or
+// the failure it ended in. For a list that shows a session it has not opened.
+export function lastLine(sessionId: string): { line: string; ts?: number } {
+  const rows = D().store.db.query<{ kind: string; data: string; ts: number }, [string]>("SELECT kind, data, ts FROM events WHERE session_id = ? AND kind IN ('assistant', 'error') ORDER BY seq DESC LIMIT 12").all(sessionId);
+  for (const r of rows) {
+    try {
+      const d = JSON.parse(r.data);
+      const text = r.kind === "error" ? String(d.message ?? "").split("\n")[0]!.trim() : ((d.blocks ?? []) as { type: string; text?: string }[]).filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+      if (text) return { line: clip(scrub(r.kind === "error" ? text : plainLine(text)), 300), ts: r.ts };
+    } catch {}
+  }
+  return { line: "" };
 }
 
 // --- channels ------------------------------------------------------------------

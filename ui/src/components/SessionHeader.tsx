@@ -1,7 +1,7 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, MailOpen, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
@@ -12,6 +12,7 @@ import { openPlaced } from "../lib/looks.ts";
 import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive } from "../lib/sessops.ts";
+import { auto } from "../lib/automation.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
 import { PanelHand, PanelsButton } from "./SidePanel.tsx";
@@ -284,6 +285,8 @@ export function SessionHeader({ session }: { session: Session }) {
               <Menu.Item className={itemClass} onClick={() => void copyOrSay(location.href, menuButton.current)}><Link2 /> Copy link</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => void copyOrSay(session.workspace, menuButton.current)}><Copy /> Copy folder path</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); }}><FolderPlus /> New session here</Menu.Item>
+              {/* To come back to it: its row keeps its unread mark until the session is opened again. */}
+              {!session.parent_id && !session.machine && <Menu.Item className={itemClass} data-testid="menu-unread" onClick={() => auto.unreadSession(session.id).catch(reportError)}><MailOpen /> Mark unread</Menu.Item>}
               <Menu.Separator className="mx-1 my-1 h-px bg-line" />
               <Menu.Item
                 className={itemClass}

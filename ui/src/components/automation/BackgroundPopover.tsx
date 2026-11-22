@@ -4,7 +4,9 @@ import { useMemo } from "react";
 import { auto, inMs, isLive, openSession, useAuto, type LoopRecord, type WaitRecord } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { ago, clock, cn } from "../../lib/utils.ts";
-import { AgentStatus, Empty, IconButton, SectionTitle, STATUS_LABEL, StopIcon } from "./bits.tsx";
+import { STATE_WORD } from "../../../../src/core/state-words.ts";
+import { useToldStates } from "../../lib/watch.ts";
+import { AgentMark, agentSaid, Empty, IconButton, SectionTitle, StopAgent } from "./bits.tsx";
 
 export function waitLabel(w: WaitRecord): string {
   const s: any = w.spec;
@@ -17,7 +19,7 @@ export function waitLabel(w: WaitRecord): string {
     case "monitor": return `Monitor ${s.command}`;
     case "websocket": return `Socket ${s.url}${s.match ? ` /${s.match}/` : ""}`;
     case "pr_checks": return `Checks of ${s.repo}#${s.pr_number}`;
-    case "session": return `${s.message_id ? "Handled by" : "Idle"} ${s.title || s.session}`;
+    case "session": return `Until ${s.title || s.session} ${s.message_id ? "handles it" : "is at rest"}`;
   }
 }
 
@@ -29,7 +31,7 @@ function LoopRow({ l }: { l: LoopRecord }) {
       <div className="min-w-0 flex-1">
         <div className="truncate">{l.name}</div>
         <div className="truncate text-micro text-faint">
-          {l.schedule_text} · {l.enabled ? (l.next_ms ? `next ${inMs(l.next_ms)}` : l.last_status === "running" ? "running" : "waiting") : (l.disabled_reason ?? "paused")} · {l.runs} run{l.runs === 1 ? "" : "s"}
+          {l.schedule_text} · {l.enabled ? (l.next_ms ? `next ${inMs(l.next_ms)}` : (l.last_status === "running" ? STATE_WORD.work : STATE_WORD.wait).toLowerCase()) : (l.disabled_reason ?? "paused")} · {l.runs} run{l.runs === 1 ? "" : "s"}
         </div>
       </div>
       <IconButton title="Run now" onClick={() => act(auto.runLoop(l.id))}><Play className="size-3.5" /></IconButton>
@@ -49,21 +51,28 @@ function useBackground(sessionId: string) {
   const agents = useMemo(() => Object.values(allAgents).filter((a) => a.parent_id === sessionId).sort((a, b) => b.created - a.created), [allAgents, sessionId]);
   const waits = useMemo(() => Object.values(allWaits).filter((w) => w.session_id === sessionId && w.status === "active"), [allWaits, sessionId]);
   const loops = useMemo(() => Object.values(allLoops).filter((l) => l.session_id === sessionId), [allLoops, sessionId]);
-  return { agents, waits, loops, live: agents.filter(isLive).length + waits.length + loops.filter((l) => l.enabled).length };
+  const out = agents.filter(isLive).length, on = loops.filter((l) => l.enabled).length;
+  // What the count on the button counts, said on it: the agents still out, the waits armed and the loops turned on.
+  const n = (k: number, one: string) => (k ? `${k} ${one}${k === 1 ? "" : "s"}` : "");
+  const counts = [n(out, "agent"), n(waits.length, "wait"), n(on, "loop")].filter(Boolean).join(", ");
+  return { agents, waits, loops, live: out + waits.length + on, counts };
 }
 // How much runs in the background now: the header says it when the button itself is folded away.
 export const useBackgroundLive = (sessionId: string) => useBackground(sessionId).live;
 
 // The session's background work: agents, waits and monitors, loops.
 export function BackgroundButton({ sessionId }: { sessionId: string }) {
-  const { agents, waits, loops, live } = useBackground(sessionId);
+  const { agents, waits, loops, live, counts } = useBackground(sessionId);
   const sessions = useStore((s) => s.sessions);
+  const told = useToldStates();
   if (!agents.length && !waits.length && !loops.length) return null;
 
   return (
     <Popover.Root>
       <Popover.Trigger
         data-testid="background-button"
+        title={live ? `In the background: ${counts}` : "Background work of this session"}
+        aria-label={live ? `${live} in background: ${counts}` : "Background work of this session"}
         className={cn(
           "flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-caption outline-none transition-colors",
           live ? "border-accent/40 bg-accent-soft text-accent" : "border-line text-faint hover:text-fg",
@@ -83,26 +92,34 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
           >
             <SectionTitle>Agents</SectionTitle>
             {agents.length === 0 && <Empty>No agents.</Empty>}
-            {agents.map((a) => (
-              <div
-                key={a.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => openSession(a.session_id)}
-                onKeyDown={(e) => e.key === "Enter" && openSession(a.session_id)}
-                className="flex cursor-default items-center gap-2 rounded-lg px-3 py-1.5 text-ui hover:bg-hover"
-                data-testid="bg-agent"
-              >
-                <AgentStatus status={a.status} />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate" data-testid="bg-agent-title">{sessions[a.session_id]?.title || a.title}</div>
-                  <div className="truncate text-micro text-faint">{STATUS_LABEL[a.status]} · {a.type} · {ago(a.created)}</div>
+            {agents.map((a) => {
+              // The agent's state in the word its tree row and its card use (src/core/state-words.ts).
+              const st = agentSaid(a, told[a.session_id]);
+              const title = sessions[a.session_id]?.title || a.title;
+              return (
+                // The row opens the agent; Stop is a control of its own beside it. Every row keeps Stop's place, so the words line up.
+                <div key={a.id} className="flex items-center gap-1 rounded-lg pr-2 hover:bg-hover" data-testid="bg-agent" data-watch={st.watch}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openSession(a.session_id)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSession(a.session_id); } }}
+                    aria-label={`Open ${title}, ${st.title}`}
+                    className="flex min-w-0 flex-1 cursor-default items-center gap-2 rounded-lg px-3 py-1.5 text-ui outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    data-testid="bg-agent-open"
+                  >
+                    <AgentMark w={st.watch} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate" data-testid="bg-agent-title">{title}</div>
+                      <div className="truncate text-micro text-faint" title={st.title}><span data-testid="bg-agent-state">{st.phrase}</span> · {a.type} · {ago(a.created)}</div>
+                    </div>
+                    <ExternalLink className="size-3.5 shrink-0 text-faint" />
+                  </div>
+                  <span className="grid size-6 shrink-0 place-items-center">{isLive(a) && <StopAgent a={a} title={title} testid="bg-agent-stop" />}</span>
                 </div>
-                {isLive(a) && <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(a).catch(reportError)} testid="bg-agent-stop"><StopIcon /></IconButton>}
-                <ExternalLink className="size-3.5 shrink-0 text-faint" />
-              </div>
-            ))}
-            {waits.length > 0 && <SectionTitle>Waiting on</SectionTitle>}
+              );
+            })}
+            {waits.length > 0 && <SectionTitle>{STATE_WORD.wait} for</SectionTitle>}
             {waits.map((w) => (
               <div key={w.id} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-ui hover:bg-hover" data-testid="bg-wait">
                 <Timer className="size-3.5 shrink-0 text-warn" />

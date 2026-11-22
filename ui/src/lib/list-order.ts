@@ -18,6 +18,7 @@
 // A row is one line by default: the mark, the title, the time, and the reason
 // where the title leaves it room. Two lines, with the reason always there, is
 // a choice. Either way every row of the list is as high as every other.
+import { inBackground } from "../../../src/core/state-words.ts";
 import { LIST_TIER, WATCH_RANK, type Watch } from "../../../src/core/watch.ts";
 
 export type Arrange = { group: "project" | "mine" | "folder" | "flat"; sort: "created" | "recent" | "name" | "state"; hideDone: boolean; lines: "one" | "two" };
@@ -114,14 +115,15 @@ export function held<T extends { id: string }>(was: T[], now: T[], own: (id: str
 // session that needs the owner or failed is always one press away, wherever
 // its row is: the longest wait first.
 export type Tally = { need: string[]; fail: string[]; work: string[]; unread: string[] };
-export function tally(sessions: { id: string; created: number }[], states: Record<string, { watch: Watch; since?: number } | undefined>, unread: Record<string, number | undefined>): Tally {
+export function tally(sessions: { id: string; created: number }[], states: Record<string, { watch: Watch; since?: number; why?: string } | undefined>, unread: Record<string, number | undefined>): Tally {
   const since = (id: string) => states[id]?.since ?? Infinity;
   const first = (a: { id: string; created: number }, b: { id: string; created: number }) => since(a.id) - since(b.id) || a.created - b.created || a.id.localeCompare(b.id);
   const of = (ws: Watch[]) => sessions.filter((s) => ws.includes(states[s.id]?.watch ?? "idle")).sort(first).map((s) => s.id);
   return {
     need: of(["need"]),
     fail: of(["fail", "declined"]),
-    work: of(["work"]),
+    // Working is a turn or an agent at work: a session that only keeps a command going in the background is not counted with them.
+    work: of(["work"]).filter((id) => !inBackground(states[id])),
     // Unread that says something new: what needs them or failed is counted there already.
     unread: sessions.filter((s) => (unread[s.id] ?? 0) > 0 && !["need", "fail", "declined"].includes(states[s.id]?.watch ?? "idle")).sort(first).map((s) => s.id),
   };

@@ -1002,7 +1002,7 @@ function parkNow(a: AgentRecord): { text: string; meta: Record<string, unknown> 
     .map((w) => { try { return Number(JSON.parse(w.spec).at_ms) || 0; } catch { return 0; } }).filter(Boolean).sort((x, y) => x - y)[0];
   const when = due ? `, due ${due > Date.now() ? `in ${dur(due - Date.now())}` : "now"} (at ${localTime(due).slice(0, 5)})` : "";
   return {
-    text: `[harness] Agent ${attr(a.title) ? `"${attr(a.title)}" ` : ""}(${a.id}) is parked on ${on}${when}. It has not finished; its report comes when it does.`,
+    text: `[harness] Agent ${attr(a.title) ? `"${attr(a.title)}" ` : ""}(${a.id}) is waiting for ${on}${when}. It has not finished; its report comes when it does.`,
     meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on, title: a.title, ...(due ? { until: due } : {}) },
   };
 }

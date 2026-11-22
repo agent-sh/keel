@@ -10,15 +10,15 @@ import { callState, failureLine, type CallState } from "../../lib/work.ts";
 import { Apart, Under } from "../ToolCall.tsx";
 import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
-import { useToldState } from "../../lib/watch.ts";
+import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { Markdown } from "../Markdown.tsx";
-import { AgentStatus, agentWhy, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
+import { AgentMark, agentSaid, IconButton, STATE_INK, StopAgent, useAgentSaid, type AgentSaid } from "./bits.tsx";
 
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
 export { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
 import { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
 
-type Report = { id: string; title: string; status: AgentRecord["status"]; text: string; why?: string; key: string; task?: string };
+type Report = { id: string; title: string; status: AgentRecord["status"]; said: AgentSaid; text: string; key: string; task?: string };
 
 // The daemon escapes only a frame's own tag inside it (core.ts inert): only
 // that is undone here, so a report's own "&lt;" stays as it was written.
@@ -38,7 +38,8 @@ function reports(text: string, meta?: Record<string, any>): Report[] {
     const at = parts.findIndex((p, i) => !used.has(i) && p.agent_id === m[1]);
     if (at >= 0) used.add(at);
     const key = (at >= 0 && parts[at]!.report_id) || `${m[1]}#${out.length}`;
-    out.push({ id: m[1]!, key, title: m[2]!, status, text: unframe(m[5]!, "subagent_result"), why: agentWhy({ status, stopped_by: attrOf(m[4]!, "stopped_by"), end_reason: attrOf(m[4]!, "ended") }) });
+    // How it ended, in the word its tree row and its card use (src/core/state-words.ts).
+    out.push({ id: m[1]!, key, title: m[2]!, status, text: unframe(m[5]!, "subagent_result"), said: agentSaid({ status, stopped_by: attrOf(m[4]!, "stopped_by"), end_reason: attrOf(m[4]!, "ended") }, undefined) });
   }
   // One agent with more than one report here: each says which task it answers.
   for (const r of out) {
@@ -71,7 +72,7 @@ function failuresOf(text: string, meta: Record<string, any>) {
 // An input's parts that have cards of their own, and its text without them:
 // what a loop run, a goal's input or another message said in the same input.
 const hasCard = (p: Record<string, any>) => p.kind === "subagent" || p.kind === "wait" || p.kind === "failures" || (p.kind === "harness" && p.status === "waiting");
-const CARDED = /(?:Reports from agents you started follow\.[^\n]*\n)?<subagent_result [^>]*>[\s\S]*?<\/subagent_result>(?:\n(?!\n)[^\n]*)*|<wait_fired [^>]*>[\s\S]*?<\/wait_fired>|<monitor_event [^>]*>[\s\S]*?<\/monitor_event>|^\[harness\] Agent \S+ parked on [^\n]*$/gm;
+const CARDED = /(?:Reports from agents you started follow\.[^\n]*\n)?<subagent_result [^>]*>[\s\S]*?<\/subagent_result>(?:\n(?!\n)[^\n]*)*|<wait_fired [^>]*>[\s\S]*?<\/wait_fired>|<monitor_event [^>]*>[\s\S]*?<\/monitor_event>|^\[harness\] Agent \S+ (?:parked on|\("[^\n]*"\) waits for) [^\n]*$/gm;
 const withoutCards = (text: string) => text.replace(CARDED, "").replace(/\n{3,}/g, "\n\n").trim();
 
 // Each wake with its own header: a monitor's note (or short id) beside its batch number.
@@ -119,7 +120,7 @@ export function toolSummary(name: string, input: any): string | undefined {
     case "CronList": case "schedule_list":
       return "scheduled tasks, waits and agents";
     case "advisor":
-      return input.question ? `asks: ${input.question}` : "a check of where things stand";
+      return input.question ? `question: ${input.question}` : "a check of where things stand";
     default:
       return undefined;
   }
@@ -145,6 +146,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   const kind = e.data.kind as string;
   const text = String(e.data.text ?? "");
   const sessions = useStore((s) => s.sessions);
+  const agents = useAuto((s) => s.agents);
   const rs = useMemo(() => reports(text, e.data), [text, e.data]);
   const ws = useMemo(() => wakes(text), [text]);
   const fails = useMemo(() => failuresOf(text, e.data), [text, e.data]);
@@ -156,9 +158,14 @@ export function InputNotice({ e }: { e: StoredEvent }) {
         <Collapsible.Root key={r.key} className="group/rep rounded-lg border border-line bg-raised shadow-1" data-testid="agent-report" data-status={r.status}>
           <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-ui outline-none">
             <CornerDownRight className="size-3.5 shrink-0 text-faint" />
-            <AgentStatus status={r.status} />
-            <span className="font-medium">{r.title}</span>
-            <span className="min-w-0 truncate text-caption text-faint" data-testid="agent-report-status">reported{r.task ? ` · ${r.task}` : ""} · {STATUS_LABEL[r.status] ?? r.status}{r.why ? ` · ${r.why}` : ""}</span>
+            <AgentMark w={r.said.watch} />
+            {/* The agent by its title; its id is on hover. */}
+            <span className="min-w-[3rem] shrink truncate font-medium" title={`${r.title} (agent ${r.id})`}>{r.title}</span>
+            {/* The word first and whole: what gives way in a narrow pane is the rest of the line. */}
+            <span className="flex min-w-0 flex-1 items-baseline gap-1 text-caption text-faint" data-testid="agent-report-status">
+              <span className="shrink-0" data-testid="agent-report-state">{r.said.phrase}</span>
+              <span className="min-w-0 truncate"> · reported{r.task ? ` · ${r.task}` : ""}{r.said.why ? ` · ${r.said.why}` : ""}</span>
+            </span>
             <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/rep:rotate-90" />
           </Collapsible.Trigger>
           <Collapsible.Panel className="overflow-hidden border-t border-line px-4 py-3 text-ui"><Markdown text={r.text} /></Collapsible.Panel>
@@ -179,11 +186,16 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     </Shell>
   );
   const parks = ((e.data.parts ?? [e.data]) as Record<string, any>[]).filter((p) => p.kind === "harness" && p.status === "waiting" && typeof p.waiting_on === "string");
-  const parkCards = parks.map((p) => (
-    <Shell key={p.agent_id} icon={Timer} label="Agent waiting" sub={p.agent_id} testid="agent-park-notice">
-      <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">Agent {p.agent_id} parked on {p.waiting_on}. It has not finished.</p>
-    </Shell>
-  ));
+  // An agent that waits is named by its title, as its row and its card name it; its id stands at the end.
+  const parkCards = parks.map((p) => {
+    const a = agents[p.agent_id as string];
+    const title = (a && sessions[a.session_id]?.title) || a?.title || (typeof p.title === "string" && p.title) || `Agent ${p.agent_id}`;
+    return (
+      <Shell key={p.agent_id} icon={Timer} label={`Agent ${STATE_WORD.wait.toLowerCase()}`} sub={title} testid="agent-park-notice">
+        <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">{title} waits for {p.waiting_on}. It has not ended. <span className="text-faint" data-testid="agent-park-id">Agent {p.agent_id}</span></p>
+      </Shell>
+    );
+  });
   // What failed around the session, one entry per cause: open, since it is what needs a look.
   const failCard = fails && (
     <Shell icon={AlertTriangle} tone="danger" label="Failures, grouped by cause" sub={fails.sub} testid="failure-notice" defaultOpen>
@@ -256,7 +268,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
 
 
 // The card of an Agent / spawn_agent call: the child's live state, open, stop.
-const ENDED_WORD: Partial<Record<CallState, string>> = { error: "failed", denied: "denied by you", refused: "refused", stopped: "stopped", cut: "cut by a restart" };
+const ENDED_WORD: Partial<Record<CallState, string>> = { error: STATE_WORD.fail.toLowerCase(), denied: "denied by you", refused: "refused", stopped: STATE_WORD.stop.toLowerCase(), cut: "cut by a restart" };
 
 export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean }) {
   const input: any = use.input ?? {};
@@ -272,11 +284,13 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
   }, [agents, out, use.id]);
   const type = input.subagent_type ?? input.agent_type ?? "general-purpose";
   const report = agent && !isLive(agent) ? agent.result : undefined;
-  const state = useToldState(agent?.session_id);
-  const asking = agent && isLive(agent) && state?.watch === "need" ? state : undefined;
+  // Its state in the word its tree row and the background list use (src/core/state-words.ts).
+  const st = useAgentSaid(agent);
+  const asking = st?.watch === "need";
+  const aside = agent?.background && isLive(agent) && !asking;
   // An agent that failed says so beside its name, with the reason under its line.
   const failedAgent = !!agent && !isLive(agent) && agent.status !== "completed" && agent.status !== "stopped";
-  const why = agent ? agentWhy(agent) : undefined;
+  const why = st?.why;
   const name = agent?.title ?? title;
   // With no agent the page knows of: how the call itself ended.
   const ended = !agent && result?.is_error ? callState(result) : undefined;
@@ -292,13 +306,12 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
             <span className="k-line-verb">Agent</span>{" "}
             {/* How it stands, beside the verb as on every line: it asks the owner, it runs, it failed, it was stopped.
                 A finished agent needs no word on the page (it is said to a screen reader). */}
-            {agent && (asking
-              ? <span className="k-line-state" data-tone="need" data-testid="agent-call-status" data-asking title={asking.text}>Asks you</span>
-              : (
-                <span className={agent.status === "completed" ? "sr-only" : "k-line-state"} data-tone={failedAgent ? "fail" : "idle"} data-testid="agent-call-status" title={why}>
-                  {STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}{why ? <span className="sr-only"> · {why}</span> : null}
-                </span>
-              ))}
+            {/* (The word is the one its row under the session and the list of background work say.) */}
+            {agent && st && (
+              <span className={st.watch === "done" ? "sr-only" : "k-line-state"} data-tone={asking ? "need" : failedAgent ? "fail" : "idle"} data-testid="agent-call-status" data-watch={st.watch} data-asking={asking || undefined} title={st.title}>
+                <span data-testid="agent-call-state">{st.phrase}</span>{aside ? ", in background" : ""}{why ? <span className="sr-only"> · {why}</span> : null}
+              </span>
+            )}
             {/* A call that started no agent the page knows of says how it ended, by its result's own words. */}
             {!agent && ended && <span className="k-line-state" data-tone={ended === "error" ? "fail" : ended === "denied" ? "own" : ended === "stopped" ? "idle" : "warn"} data-testid="agent-call-ended">{ENDED_WORD[ended]}</span>}
             {" "}<span className="k-line-what" data-words="">{name}</span>
@@ -326,7 +339,8 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         </Collapsible.Trigger>
         {agent && (
           <span className="k-line-acts">
-            {isLive(agent) && <IconButton title={`Stop agent ${name}`} danger onClick={() => auto.stopAgent(agent).catch(reportError)} testid="agent-call-stop"><StopIcon /></IconButton>}
+            {/* (A stop is not undone: it asks first, as on the agent's row.) */}
+            {isLive(agent) && <StopAgent a={agent} title={agent.title} testid="agent-call-stop" />}
             {!isLive(agent) && agent.branch && !agent.machine && (
               <IconButton title={`Review the work of agent ${name}`} onClick={() => auto.reviewAgent(agent).then(() => savePref("panel", "review")).catch(reportError)} testid="agent-call-review"><ScanSearch className="size-3.5" /></IconButton>
             )}

@@ -1,9 +1,10 @@
 import { BellRing, Bot, ListChecks } from "lucide-react";
 import { lazy } from "react";
+import { seeAllAgents } from "../../lib/agent-seen.ts";
 import { auto, setAdvisorSession } from "../../lib/automation.ts";
 import { panels, settingsSections, slash } from "../../lib/extend.ts";
 import { isMac, registerCommand } from "../../lib/keys.ts";
-import { actions, getState, ensureModels } from "../../lib/store.ts";
+import { actions, getState, ensureModels, reportError } from "../../lib/store.ts";
 import { getUI, navigate, savePref } from "../../lib/ui.ts";
 
 // The inbox opens from the keys and the palette too (the list's footer holds it: SidebarExtras.tsx).
@@ -11,6 +12,14 @@ registerCommand({
   id: "inbox", label: "Open the inbox", group: "General", keys: "alt+b", inInput: () => !isMac, over: () => !!document.querySelector('[data-testid="inbox-list"]'),
   words: "alerts notifications unread bell finished failed", run: () => void dispatchEvent(new Event("keel:inbox")),
 });
+
+// Unread is the owner's to set and to clear: a session marked unread keeps its mark until it is
+// opened again, and one command clears every unread mark (alerts, rows, agents that ended).
+const onScreen = () => { const r = getUI().route; const s = r.name === "session" ? getState().sessions[r.id] : undefined; return s && !s.parent_id && !s.machine ? s : undefined; };
+registerCommand(
+  { id: "mark-unread", label: "Mark this session unread", group: "Session", words: "come back later keep flag dot", when: () => !!onScreen(), run: () => void auto.unreadSession(onScreen()!.id).catch(reportError) },
+  { id: "clear-unread", label: "Clear all unread", group: "General", words: "mark all read seen indicators dots bell inbox", run: () => { seeAllAgents(); auto.read().catch(reportError); } },
+);
 
 // The automation lane's entries in the workbench: /loop and Settings > Alerts.
 slash.add({

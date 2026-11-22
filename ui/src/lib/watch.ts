@@ -4,10 +4,11 @@
 // it; this file keeps what it sent and adds the one thing only this browser
 // knows, a message it could not send. Also the line of what a session is
 // doing now, and its turns over time for the wake chart.
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ownerPrompt } from "../../../src/core/owner.ts";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
-import { agentLive, AT_REST, liveAgentCounts, stateOf, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
+import { agentLive, AT_REST, liveAgentCounts, stateOf, type SessionState, type Watch } from "../../../src/core/watch.ts";
+import { stateAlone, stateLabel, waitsOnOwner } from "../../../src/core/state-words.ts";
 import { useAuto } from "./automation.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
@@ -17,7 +18,7 @@ import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
 
 export { toolLine };
 
-export { AT_REST, LIST_TIER, WATCH_LABEL, WATCH_RANK, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
+export { AT_REST, LIST_TIER, WATCH_LABEL, WATCH_RANK, type SessionState, type Watch } from "../../../src/core/watch.ts";
 
 // Agents still at work, per parent session (the automation store keeps every live one).
 export function useAgentCounts(): Record<string, number> {
@@ -144,7 +145,24 @@ export const useWatch = (s: Session | undefined): Watch => useSessionState(s).wa
 // The word as shown, with the agents that keep it working.
 export function useWatchLabel(s: Session | undefined): string {
   const st = useSessionState(s);
-  return watchLabel(st.watch, st.agents);
+  return stateLabel(st);
+}
+
+// The word of a session's state for a place that shows it with no reason beside it (a mark's
+// tooltip, a recent row, a dock): the label of the state the daemon told ("Working · 2 agents",
+// "Command in background"), else the word of the mark alone.
+export function useStateLabel(): (id: string, w: Watch) => string {
+  const states = useTold((x) => x);
+  return useCallback((id, w) => stateAlone(states[id]?.watch === w ? states[id]! : { watch: w }), [states]);
+}
+
+// How many things wait on the owner, in every session of theirs: the one count (src/core/state-words.ts)
+// behind the tab's title, the home headline, the list's line and the phone's dock.
+export function useNeedCount(): number {
+  const sessions = useStore((x) => x.sessions);
+  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
+  const states = useSessionStates(list);
+  return useMemo(() => waitsOnOwner(list.map((s) => states[s.id])), [list, states]);
 }
 
 // All sessions' states in one pass (for boards and lists).
@@ -210,6 +228,21 @@ function newest(events: StoredEvent[] | undefined, cwd?: string): string {
     if (e.kind === "user" && e.data.kind === "task") return clean(taskWords(e));
   }
   return "";
+}
+
+// What a session last said, for a place that shows a session the page has not opened (the card
+// beside a row): asked of the daemon once per state of the session, when the place is shown.
+const lastLines = new Map<string, { at: number; line: string }>();
+export function useLastLine(s: Session | undefined, on: boolean): string {
+  const [, tick] = useState(0);
+  const id = s?.id, at = s?.updated ?? 0;
+  useEffect(() => {
+    if (!on || !id || splitId(id) || lastLines.get(id)?.at === at) return;
+    let live = true;
+    api<{ line: string }>(`/api/sessions/${id}/last-line`).then((r) => { lastLines.set(id, { at, line: stripAnsi(r.line ?? "").trim() }); if (live) tick((n) => n + 1); }).catch(() => {});
+    return () => { live = false; };
+  }, [on, id, at]);
+  return (on && id && lastLines.get(id)?.line) || "";
 }
 
 const taskWords = (e: StoredEvent) => {

@@ -1,40 +1,64 @@
-import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Clock, Gauge, Hand, MessageCircleQuestion, Repeat, ShieldX, Square, TrendingDown } from "lucide-react";
+import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, Gauge, Hand, MessageCircleQuestion, Repeat, ShieldX, Square, TrendingDown } from "lucide-react";
 import type { ReactNode } from "react";
-import type { AgentRecord, Alert } from "../../lib/automation.ts";
+import { useMemo } from "react";
+import { auto, type AgentRecord, type Alert } from "../../lib/automation.ts";
+import { reportError } from "../../lib/store.ts";
+import { ALERT_WORD, agentState, agentWhy, stateWords, type AgentLike, type Said } from "../../../../src/core/state-words.ts";
 import { cn } from "../../lib/utils.ts";
-import type { Watch } from "../../lib/watch.ts";
+import { useToldState, type SessionState, type Watch } from "../../lib/watch.ts";
+import { confirmAction } from "../Confirm.tsx";
+import { Mark, span } from "../Mark.tsx";
 
-export function AgentStatus({ status, className }: { status: AgentRecord["status"]; className?: string }) {
-  const c = cn("size-3.5 shrink-0", className);
-  if (status === "running") return <span className={cn("grid size-3.5 shrink-0 place-items-center", className)}><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" /></span>;
-  if (status === "waiting") return <Clock className={cn(c, "text-warn")} />;
-  if (status === "completed") return <CircleCheck className={cn(c, "text-ok")} />;
-  if (status === "failed") return <CircleAlert className={cn(c, "text-danger")} />;
-  if (status === "incomplete") return <CircleDashed className={cn(c, "text-warn")} />;
-  return <CircleSlash className={cn(c, "text-faint")} />;
+export { agentWhy };
+
+// An agent's state, as every surface says it: its record and its session's served state, in one
+// word (src/core/state-words.ts). The tree, the card, the list of background work and its own pane agree.
+export type AgentSaid = Said & { state: SessionState; why?: string; title: string };
+export function agentSaid(a: AgentLike, told: SessionState | undefined): AgentSaid {
+  const state = agentState(a, told);
+  const said = stateWords(state);
+  const why = agentWhy(a);
+  // What a hover and a screen reader get: the word with what it is with, then the reason in the daemon's words
+  // (never the word again: "Stopped at the step budget", not that and "The step budget ran out").
+  const more = why ?? state.text;
+  const title = [said.phrase, said.what && state.watch === "stop" ? undefined : more].filter(Boolean).join(". ");
+  return { ...said, state, why, title };
+}
+export function useAgentSaid(a: AgentRecord | undefined): AgentSaid | undefined {
+  const told = useToldState(a?.session_id);
+  return useMemo(() => (a ? agentSaid(a, told) : undefined), [a, told]);
 }
 
-export const STATUS_LABEL: Record<AgentRecord["status"], string> = {
-  running: "Running", waiting: "Waiting", completed: "Done", incomplete: "Did not finish", failed: "Failed", stopped: "Stopped",
+// The mark of an agent's state: the session mark (a shape and a color a state), as its row in the list has it.
+export function AgentMark({ w, className }: { w: Watch; className?: string }) {
+  return <span className={cn("grid size-3.5 shrink-0 place-items-center", className)}><Mark w={w} className="size-2" /></span>;
+}
+// The ink of a state word beside its mark.
+export const STATE_INK: Record<Watch, string> = {
+  need: "text-st-need", work: "text-accent", wait: "text-warn", resume: "text-warn", fail: "text-danger", declined: "text-danger", stop: "text-faint", done: "text-faint", idle: "text-faint",
 };
 
-// Who stopped an agent, and why one did not finish, as the owner reads it.
-export const STOPPED_BY: Record<string, string> = {
-  owner: "You stopped this agent", parent: "Its parent agent stopped it", parent_turn: "Stopped with its parent's turn",
-  time_limit: "Its time limit passed", parent_archived: "Its parent session was archived",
-};
-export const ENDED: Record<string, string> = {
-  refusal: "The model declined; the report is partial", max_tokens: "Output limit reached; the report is partial", max_steps: "Step budget spent; the report is partial",
-};
-export const agentWhy = (a: { status: string; stopped_by?: string | null; end_reason?: string | null }) =>
-  a.status === "stopped" ? (a.stopped_by ? STOPPED_BY[a.stopped_by] : undefined) : a.status === "incomplete" ? (a.end_reason ? ENDED[a.end_reason] : undefined) : undefined;
+// Stop always asks first, with the keyboard on Cancel: a stop cannot be undone. The question says
+// what stops and what is kept: how long it has worked, and whether it has a worktree of its own
+// (what it changed there may not be saved).
+export async function stopAgentAsking(a: AgentRecord, title: string) {
+  const ran = Date.now() - a.created;
+  const ok = await confirmAction({
+    title: `Stop "${title}"?`,
+    body: `It has worked for ${span(ran)}. Its turn ends now and what it has so far is reported to the session that started it.${a.worktree ? " Its worktree keeps the files it changed; work it did not save there is not recovered." : ""}`,
+    action: "Stop agent", danger: true,
+  });
+  if (ok) await auto.stopAgent(a);
+}
+// The Stop control of an agent, named with the agent it stops.
+export function StopAgent({ a, title, testid }: { a: AgentRecord; title: string; testid: string }) {
+  return <IconButton title={`Stop agent: ${title}`} danger onClick={() => stopAgentAsking(a, title).catch(reportError)} testid={testid}><StopIcon /></IconButton>;
+}
 
 const ALERT_ICON: Record<Alert["kind"], typeof Bell> = {
   approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock, regression: TrendingDown, refused: ShieldX,
 };
-export const ALERT_LABEL: Record<Alert["kind"], string> = {
-  approval: "Approval", question: "Question", finished: "Finished", failed: "Failed", limit: "Usage limit", loop_failed: "Loop failed", agent: "From the agent", snooze_over: "Snooze over", regression: "Regression", refused: "Refused call",
-};
+export const ALERT_LABEL = ALERT_WORD as Record<Alert["kind"], string>;
 
 export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", command: "Command hook", push: "Phone" };
 
@@ -44,9 +68,10 @@ export const ALERT_STATE: Record<Alert["kind"], Watch> = {
   approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail", refused: "work",
 };
 
-export function AlertIcon({ kind, read }: { kind: Alert["kind"]; read?: boolean }) {
-  const Icon = ALERT_ICON[kind] ?? Bell;
-  return <span className="k-alert-icon" data-watch={ALERT_STATE[kind] ?? "idle"} data-read={read || undefined} data-testid="alert-icon"><Icon /></span>;
+export function AlertIcon({ kind, read, declined }: { kind: Alert["kind"]; read?: boolean; declined?: boolean }) {
+  // (A turn the model declined is filed as a finish until it has a kind of its own: its mark is the failure's.)
+  const Icon = (declined ? ALERT_ICON.failed : (ALERT_ICON as Record<string, typeof Bell>)[kind]) ?? Bell;
+  return <span className="k-alert-icon" data-watch={declined ? "declined" : (ALERT_STATE as Record<string, Watch>)[kind] ?? "idle"} data-read={read || undefined} data-testid="alert-icon"><Icon /></span>;
 }
 
 export function IconButton({ title, onClick, children, danger, testid }: { title: string; onClick: () => void; children: ReactNode; danger?: boolean; testid?: string }) {

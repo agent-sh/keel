@@ -8,6 +8,7 @@ import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { isLive, useAuto } from "../lib/automation.ts";
+import { heldWords } from "../../../src/core/state-words.ts";
 import { actions, api, reportError, reportUnlessGone, useStore, type BuildState, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { seedComposer } from "../lib/ui.ts";
@@ -19,7 +20,10 @@ const chipBtn = "grid size-6 place-items-center rounded-md text-faint hover:text
 
 // `place`: the row's index among the queued (not steered) prompts; `off`: it
 // was queued on a branch the chat no longer shows.
-function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: string; place: number; off: boolean }) {
+// `held`: the session is stopped and its queue waits for the owner to resume.
+function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId: string; place: number; off: boolean; held: boolean }) {
+  // The one word of a message that waits, and when it is taken (src/core/state-words.ts).
+  const waits = heldWords({ steer: q.steer, held });
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(q.text);
   const canSave = !!text.trim() || !!q.images?.length; // a screenshot alone is a prompt
@@ -53,11 +57,11 @@ function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: strin
   const words = "order-first min-w-0 basis-full @md/queue:order-none @md/queue:flex-1 @md/queue:basis-0";
   return (
     <li className="group/q flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 py-1 hover:bg-hover @md/queue:flex-nowrap" data-testid="queue-item">
-      <span className={cn(
-        "shrink-0 rounded px-1.5 py-px text-micro font-semibold uppercase tracking-wide",
+      <span data-testid="queue-word" className={cn(
+        "shrink-0 rounded px-1.5 py-px text-micro font-semibold",
         q.steer ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted",
       )}>
-        {q.steer ? "Steer" : "Queued"}
+        {waits.word}
       </span>
       {editing ? (
         <input
@@ -71,6 +75,7 @@ function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: strin
       ) : (
         <span className={cn(words, "truncate text-ui")} title={q.text}>{q.text}</span>
       )}
+      {!editing && <span className="shrink-0 text-caption text-faint" data-testid="queue-when" data-steer={q.steer || undefined}>{waits.when}</span>}
       {!editing && off && <span className="inline-flex shrink-0 items-center gap-1 text-caption text-warn" data-testid="queue-off-branch" title="Written while the chat showed another branch"><GitBranch className="size-3.5 shrink-0" />On another branch</span>}
       {!editing && !!q.images?.length && <span className="inline-flex shrink-0 items-center gap-1 text-caption text-faint" data-testid="queue-images"><ImageIcon className="size-3.5 shrink-0" />{q.images.length === 1 ? "1 image" : `${q.images.length} images`}</span>}
       <span className="ml-auto flex flex-wrap items-center justify-end opacity-60 group-hover/q:opacity-100 group-focus-within/q:opacity-100 touch:opacity-100 @md/queue:shrink-0 @md/queue:flex-nowrap">
@@ -151,7 +156,7 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
           <span className="size-1.5 shrink-0 rounded-full bg-warn" />
           <span>
             {nextOff ? "Paused: the next prompt was queued on another branch. Send it here or go back to its branch." : "Paused after the stop. Nothing runs until you send or resume."}
-            {reports > 0 && <span data-testid="queue-reports" data-count={reports}> {reports} agent report{reports === 1 ? " is" : "s are"} waiting.</span>}
+            {reports > 0 && <span data-testid="queue-reports" data-count={reports}> {reports} agent report{reports === 1 ? " is" : "s are"} held.</span>}
           </span>
           {!nextOff && (
             <button type="button" className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft" onClick={() => actions.queueResume(sessionId).catch((e) => { if (!showArchivedRefusal(e)) failed(e, { at: "queue resume" }); })}>
@@ -162,7 +167,7 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
       )}
       {q.queue.length > 0 && (
         <ul className="flex flex-col">
-          {q.queue.map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} />)}
+          {q.queue.map((item, i) => <QueueRow key={item.id} q={item} sessionId={sessionId} place={i - q.queue.filter((x) => x.steer).length} off={off(item)} held={q.held} />)}
         </ul>
       )}
     </div>

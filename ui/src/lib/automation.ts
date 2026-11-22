@@ -9,7 +9,9 @@ import type { Activity } from "../../../src/automation/activity.ts";
 import type { Snooze } from "../../../src/automation/snooze.ts";
 import type { Goal, Task } from "../../../src/automation/goals.ts";
 import { actions, api, newer, onFeature, readAtOpen, reportError } from "./store.ts";
-import { getUI, navigate } from "./ui.ts";
+import { getUI, navigate, onUI } from "./ui.ts";
+import { keepSince, seeAgents } from "./agent-seen.ts";
+import { ASK_KINDS, WRONG_KINDS } from "../../../src/core/state-words.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { clock } from "./utils.ts";
 
@@ -110,16 +112,23 @@ export const auto = {
   command: (sessionId: string, text: string) => api<{ handled: boolean; loop?: LoopRecord }>(`/api/sessions/${sessionId}/command`, { method: "POST", body: JSON.stringify({ text }) }),
   // Reads what the page has seen: the request names the inbox revision shown,
   // so the daemon leaves alone anything that arrived or was marked unread since.
-  // `auto` is the page reading the session on screen (what the owner kept
-  // unread stays unread).
-  async read(opts: { session_id?: string; ids?: string[]; auto?: boolean } = {}) {
+  // `auto` is the page reading the session in view (what the owner kept unread
+  // stays unread, and so does what calls them); `touch` is the owner acting in
+  // that session's pane (what they kept unread stays).
+  async read(opts: { session_id?: string; ids?: string[]; auto?: boolean; touch?: boolean } = {}) {
     const seen = state.rev;
     const r = await api<{ unread: Unread }>("/api/alerts/read", { method: "POST", body: JSON.stringify({ ...opts, seen }) });
     const hit = (a: Alert) =>
-      !a.read && a.rev <= seen && !(opts.auto && a.kept) &&
+      !a.read && a.rev <= seen && !((opts.auto || opts.touch) && a.kept) && !(opts.auto && CALLS.includes(a.kind)) &&
       ((!opts.session_id && !opts.ids) || a.session_id === opts.session_id || !!opts.ids?.includes(a.id));
     set({ alerts: state.alerts.map((a) => (hit(a) ? { ...a, read: true, kept: false } : a)) });
     applyInbox(r.unread);
+  },
+  // A session marked unread to come back to: its newest alert, kept until it is opened again or read on purpose.
+  async unreadSession(sessionId: string) {
+    const r = await api<{ unread: Unread }>(`/api/sessions/${sessionId}/unread`, { method: "POST" });
+    applyInbox(r.unread);
+    refreshAlerts();
   },
   async unreadOne(id: string) {
     const r = await api<{ unread: Unread }>(`/api/alerts/${id}/unread`, { method: "POST" });
@@ -182,8 +191,9 @@ export const auto = {
     api<{ model: string | null; own: string | null; default: string | null }>(`/api/sessions/${sid}/advisor`, { method: "PUT", body: JSON.stringify({ model }) }),
   test: () => api<{ alert?: Alert; channels: Channel[] }>("/api/alerts/test", { method: "POST", body: JSON.stringify({ kind: "agent" }) }),
   // `idle_ms`: how long ago the owner last did something in this page (absent: not yet).
-  presence: (session_id: string | null, focused: boolean, idle_ms?: number) =>
-    fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id, focused, page: PAGE, ...(idle_ms === undefined ? {} : { idle_ms }) }), keepalive: true }).catch(() => {}),
+  // `shown`: the sessions in the page's panes besides the one worked in.
+  presence: (session_id: string | null, focused: boolean, idle_ms?: number, shown: string[] = []) =>
+    fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id, focused, page: PAGE, ...(shown.length ? { shown } : {}), ...(idle_ms === undefined ? {} : { idle_ms }) }), keepalive: true }).catch(() => {}),
 };
 
 let alertsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -197,7 +207,12 @@ onFeature({
     if (f.name !== "automation") return;
     const { kind, data: d } = f.data as { kind: string; data: any };
     // Records are ordered by the bus rev: a frame older than what a snapshot already showed is dropped.
-    if (kind === "agent") { if (newer(`agent:${d.id}`, f.rev)) set({ agents: { ...state.agents, [d.id]: d } }); }
+    if (kind === "agent") {
+      if (!newer(`agent:${d.id}`, f.rev)) return;
+      // An agent that ends in view of the owner is seen as it ends: its row is never marked for a moment.
+      if (focusedNow()) { const on = panesInView(); if (on.includes(d.session_id) || on.includes(d.parent_id)) seeAgents([d]); }
+      set({ agents: { ...state.agents, [d.id]: d } });
+    }
     else if (kind === "wait") { if (newer(`wait:${d.id}`, f.rev)) set({ waits: { ...state.waits, [d.id]: d } }); }
     else if (kind === "loop") {
       if (!newer(`loop:${d.id}`, f.rev)) return;
@@ -222,31 +237,96 @@ onFeature({
   reconnect: () => reread(),
 });
 
-// Presence: which session is on screen and whether the page has focus (an
-// alert for a session the owner is watching stays in the page), sent when it
-// changes and every 20 s; a watched session's alerts are read, except those the
-// owner marked unread to come back to.
-// With it goes how long ago the owner last did something here (a key, the
-// pointer, the wheel, a touch): the daemon reads the owner's absences off
-// that, not off focus, which a page keeps while nobody is there.
+// Presence: where the owner is in this page, sent when it changes and every 20 s.
+// - Which sessions are in view: the one worked in and those in the other panes,
+//   each only while most of its pane is inside the window (a pane scrolled off
+//   it is not seen) and nothing lies over the panes (the Inbox open over them).
+// - Whether the page has focus, and how long ago the owner last did something
+//   here (a key, the pointer, the wheel, a touch): the daemon reads their
+//   absences off that, not off focus, which a page keeps while nobody is there.
+// Unread means not seen:
+// - What ends in a session in view of a page that has focus is read, in any pane.
+// - What calls the owner (an ask, a failure) is not read by being in view: it is
+//   read when it is answered, when they go to its session, or when they act in
+//   its pane. Its notification is the daemon's to hold back or send (alerts.ts).
+// - What they marked unread stays so until they go to the session again. A page
+//   that loads on a session has not gone to it: a reload keeps the mark.
+// An agent that ended is seen the same way, when its own session or the one
+// that started it is in view (lib/agent-seen.ts).
+const CALLS = [...ASK_KINDS, ...WRONG_KINDS];
 let sent = { key: "", at: 0 };
 let lastInput = 0;
+let opened: string | null | undefined; // the session the page was on at the last look (undefined: it has just loaded)
+let goingTo: string | null = null; // a session the owner went to whose pane is not in view yet
+// Something lies over the panes (the Inbox): what is behind it is not shown.
+let covered = false;
+export function coverPanes(on: boolean) { if (covered !== on) { covered = on; presence(); } }
+
+// The sessions whose pane is in view: over half its width inside the window and the panes' own frame.
+export function panesInView(): string[] {
+  if (covered) return [];
+  const out: string[] = [];
+  for (const el of document.querySelectorAll<HTMLElement>("section.k-station[data-station]")) {
+    const r = el.getBoundingClientRect();
+    const frame = el.parentElement?.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    const left = Math.max(r.left, 0, frame?.left ?? 0), right = Math.min(r.right, innerWidth, frame?.right ?? innerWidth);
+    if (right - left > r.width / 2 && r.bottom > 0 && r.top < innerHeight) out.push(el.dataset.station!);
+  }
+  return out;
+}
+const focusedNow = () => document.hasFocus() && document.visibilityState === "visible";
+// The owner is at this session now: its pane is in view of a focused page they did something in within the last minute.
+export const ATTEND_MS = 60_000;
+export const attends = (id: string) => focusedNow() && lastInput > 0 && Date.now() - lastInput < ATTEND_MS && panesInView().includes(id);
+
+type Reading = "auto" | "touch" | "open";
+const reading = new Set<string>();
+function read(id: string, how: Reading) {
+  if (reading.has(id)) return;
+  const mine = (a: Alert) => !a.read && a.session_id === id;
+  const any = how === "open" ? (state.unread.sessions[id] ?? 0) > 0 : state.alerts.some((a) => mine(a) && !a.kept && (how === "touch" || !CALLS.includes(a.kind)));
+  if (!any) return;
+  reading.add(id);
+  auto.read({ session_id: id, ...(how === "auto" ? { auto: true } : how === "touch" ? { touch: true } : {}) }).catch(reportError).finally(() => reading.delete(id));
+}
+
 function presence(now = false) {
+  keepSince();
   const r = getUI().route;
-  const sid = r.name === "session" ? r.id : null;
-  const focused = document.hasFocus() && document.visibilityState === "visible";
-  const key = `${sid}:${focused}`;
+  const helm = r.name === "session" ? r.id : null;
+  const focused = focusedNow();
+  const inView = panesInView();
+  const sid = helm && inView.includes(helm) ? helm : null;
+  const shown = inView.filter((id) => id !== sid);
+  const key = `${sid}:${focused}:${shown.join()}`;
   if (now === true || key !== sent.key || Date.now() - sent.at > 20_000) {
     sent = { key, at: Date.now() };
-    auto.presence(sid, focused, lastInput ? Date.now() - lastInput : undefined);
+    auto.presence(sid, focused, lastInput ? Date.now() - lastInput : undefined, shown);
   }
-  if (sid && focused && (state.unread.fresh?.[sid] ?? 0) > 0 && !reading.has(sid)) {
-    reading.add(sid);
-    auto.read({ session_id: sid, auto: true }).catch(reportError).finally(() => reading.delete(sid));
-  }
+  // Going to a session reads it whole, what was kept unread included: once its pane is in view.
+  // (Judged as the route changes, below: a mark the owner sets a moment after arriving is not
+  // what they arrived to. The first look after a load is not an arrival.)
+  if (helm !== opened) { goingTo = opened === undefined ? null : helm; opened = helm; }
+  if (!focused) return;
+  if (sid && goingTo === sid) { goingTo = null; read(sid, "open"); }
+  else if (sid) read(sid, "auto");
+  for (const id of shown) read(id, "auto");
+  // An agent that ended is seen once its session, or the one that started it, is in view.
+  if (inView.length) seeAgents(Object.values(state.agents).filter((a) => inView.includes(a.session_id) || inView.includes(a.parent_id)));
 }
-const reading = new Set<string>();
 setInterval(() => presence(), 1000);
+// The route changed: where the owner is now is said, and read, at once.
+let routeWas = "";
+onUI(() => {
+  const r = getUI().route;
+  const at = r.name === "session" ? r.id : r.name;
+  if (at === routeWas) return;
+  routeWas = at;
+  presence();
+  // And again once the panes have followed the route: the session left is no longer in view.
+  setTimeout(() => presence(), 80);
+});
 addEventListener("focus", () => presence());
 addEventListener("blur", () => presence());
 document.addEventListener("visibilitychange", () => presence());
@@ -261,6 +341,12 @@ function input() {
   if (back || now - sent.at > 5_000) presence(true);
 }
 for (const type of ["keydown", "pointerdown", "pointermove", "wheel", "touchstart"]) addEventListener(type, input, { capture: true, passive: true });
+// A press or a key in a session's pane is the owner acting there: what called them in it is read.
+function touched(e: Event) {
+  const id = (e.target instanceof Element ? e.target.closest<HTMLElement>("section.k-station[data-station]") : null)?.dataset.station;
+  if (id && focusedNow()) read(id, "touch");
+}
+for (const type of ["keydown", "pointerdown"]) addEventListener(type, touched, { capture: true, passive: true });
 const reread = readAtOpen(() => auto.load());
 
 

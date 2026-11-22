@@ -226,6 +226,15 @@ function init(deps: Deps) {
       } else if (!deps.engine.isDraining?.()) alerts.readWhere("plan_id", card.id);
       return;
     }
+    // A secret the model asks the owner to give waits on them like a question: an alert until it is given or let go.
+    if (f.t === "feature" && f.name === "secret") {
+      const { request: r, state } = f.data as { request?: { id: string; session_id: string; name: string; purpose?: string }; state?: "open" | "closed" };
+      if (!r) return;
+      if (state === "open") {
+        if (!alerts.raisedFor("secret_id", r.id, r.session_id)) alerts.raise("question", r.session_id, `Secret to give: ${deps.store.session(r.session_id)?.title || "a session"}`, clip(r.purpose ? `${r.name}: ${r.purpose}` : r.name, 300), { secret_id: r.id, open_session: r.session_id });
+      } else if (!deps.engine.isDraining?.()) alerts.readWhere("secret_id", r.id);
+      return;
+    }
     if (f.t !== "feature" || f.name !== "approval") return;
     const a = f.data as { id: string; session_id: string; tool: string; summary: string; risk: string; state: string };
     if (a.state === "pending") {
@@ -265,6 +274,8 @@ function init(deps: Deps) {
 
   clearInterval(g.__keelAutomationTick);
   g.__keelAutomationTick = setInterval(() => {
+    // A notification held back while the owner attended its session goes out when they no longer do.
+    alerts.tickWithheld();
     // Most seconds nothing is active: one indexed query says so and the
     // tick ends there (each step below would find nothing to do).
     if (!busy(deps)) return;
@@ -494,7 +505,7 @@ export const automationRoutes: RouteModule = (deps) => {
         const seen = b.seen === undefined || b.seen === null ? undefined : Number(b.seen);
         if (seen !== undefined && !Number.isFinite(seen)) return bad("seen is the inbox revision the page had");
         if (b.ids !== undefined && !Array.isArray(b.ids)) return bad("ids is a list of alert ids");
-        const changed = alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id, seen, auto: !!b.auto });
+        const changed = alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id, seen, auto: !!b.auto, touch: !!b.touch });
         return json({ ok: true, changed, unread: alerts.unreadCounts() });
       },
     },
@@ -503,6 +514,14 @@ export const automationRoutes: RouteModule = (deps) => {
         if (!alerts.markUnread(req.params.id)) return bad("no such alert", 404);
         return json({ ok: true, unread: alerts.unreadCounts() });
       },
+    },
+    // The owner marks a session unread to come back to it; and what a session last said, for a
+    // list that shows one it has not opened.
+    "/api/sessions/:id/unread": {
+      POST: (req: any) => (alerts.markSessionUnread(req.params.id) ? json({ ok: true, unread: alerts.unreadCounts() }) : bad("no such session, or an agent's session (its marks are its parent's)", 404)),
+    },
+    "/api/sessions/:id/last-line": {
+      GET: (req: any) => (session(req.params.id) ? json(alerts.lastLine(req.params.id)) : bad("no such session", 404)),
     },
     // Where an alert leads, judged when the owner opens it: the agent session it
     // came from (or its own), the parent when that agent was deleted, and
@@ -624,7 +643,8 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/presence": {
       POST: async (req: Request) => {
         const b = await body(req);
-        alerts.setPresence(b.session_id ?? null, !!b.focused, typeof b.page === "string" ? b.page.slice(0, 64) : undefined);
+        const shown = Array.isArray(b.shown) ? b.shown.filter((x: unknown): x is string => typeof x === "string").slice(0, 12) : [];
+        alerts.setPresence(b.session_id ?? null, !!b.focused, typeof b.page === "string" ? b.page.slice(0, 64) : undefined, shown, typeof b.idle_ms === "number" && b.idle_ms >= 0 ? b.idle_ms : undefined);
         // The owner did something in that page this long ago: the end of an absence, if there was one.
         // A page that only has focus says nothing about where the owner is.
         if (typeof b.idle_ms === "number" && b.idle_ms >= 0) ownerSeen(b.idle_ms);

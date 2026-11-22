@@ -49,7 +49,7 @@ export const AT_REST: readonly Watch[] = ["done", "idle", "stop"];
 // limit and one stopped at its step budget did not do the work: not done.
 const ENDED: Record<string, Watch> = { error: "fail", max_tokens: "fail", refusal: "declined", max_steps: "stop", interrupted: "stop", restart: "resume" };
 const END_TEXT: Record<string, string> = {
-  refusal: "The model declined the turn", max_tokens: "Cut at the output limit", max_steps: "Stopped at the step budget",
+  refusal: "The model declined the turn", max_tokens: "Cut at the output limit", max_steps: "The step budget ran out",
 };
 
 // One thing that waits on the owner. `text` is what it asks, in its own

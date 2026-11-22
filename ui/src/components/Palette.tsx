@@ -18,7 +18,7 @@ function openSession(id: string) {
   requestAnimationFrame(go);
 }
 import { ago, cn, folderNames } from "../lib/utils.ts";
-import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
+import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { machineName } from "../lib/fleet.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
@@ -54,7 +54,7 @@ export function Palette() {
   const models = useModels();
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived), [sessions]);
   const watches = useWatches(live);
-  const agents = useAgentCounts();
+  const label = useStateLabel();
   useSyncExternalStore(onCommands, commandsVersion);
   const [q, setQ] = useState("");
   // The highlighted row by its key: rows that arrive later (a search answer)
@@ -106,7 +106,7 @@ export function Palette() {
         seen.add(s.id);
         out.push({
           key: `s:${s.id}`, group: s.machine ? `Sessions on ${machineName(s.machine) ?? s.machine}` : "Sessions", label: s.title || "New session", detail: `${names.get(s.workspace)}  ${ago(s.updated)}`,
-          icon: <span className="grid size-4 place-items-center" title={watchLabel(w[s.id] ?? "idle", agents[s.id])}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5,
+          icon: <span className="grid size-4 place-items-center" title={label(s.id, w[s.id] ?? "idle")}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5,
           run: () => openSession(s.id),
         });
       }

@@ -17,6 +17,7 @@ import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
 import { sessionState } from "../../automation/state.ts";
 import { WATCH_LABEL } from "../../core/watch.ts";
+import { stateWords } from "../../core/state-words.ts";
 import { lineage } from "../../core/tree.ts";
 import * as push from "./push.ts";
 import {
@@ -63,7 +64,7 @@ export function pairLink(base: string, code: string, app: PairApp = "keel") {
 // owner, a turn runs or its agents still work (agents: how many), or how the
 // last turn ended.
 export type ChatStatus = "needs_you" | "working" | "failed" | "stopped" | "done" | "idle";
-export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number };
+export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number; state_word?: string };
 
 export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   const c: Record<string, unknown> = {
@@ -71,6 +72,9 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
     pinned: s.settings.pinned_ms ? 1 : 0, archived: s.archived ? 1 : 0, seq: lastSeq, parent_id: s.parent_id ?? null,
   };
   if (x.status) c.status = x.status;
+  // The state in the workbench's own words ("Waiting for a timer", "Declined", "Working: command in
+  // background"), beside the six statuses above, which stay as they are: an app that knows the field shows it.
+  if (x.state_word) c.state_word = x.state_word;
   if (x.failure) c.failure = x.failure;
   if (x.agents) c.agents = x.agents;
   if (x.preview !== undefined) Object.assign(c, { preview: x.preview?.text ?? "", last_role: x.preview?.role ?? "", preview_id: x.preview?.id ?? null });
@@ -301,7 +305,11 @@ export function mobileApi(ctx: MobileCtx) {
   const unread = () => { try { return alerts.unreadCounts().sessions; } catch { return {} as Record<string, number>; } };
   // How the last turn on the shown branch ended, walking back from the head.
   // A failed turn says why, in a line.
-  function status(s: Session): { status: ChatStatus; failure?: string; agents?: number } {
+  function status(s: Session): { status: ChatStatus; state_word: string; failure?: string; agents?: number } {
+    const told = statusOf(s);
+    return { ...told.is, state_word: stateWords(told.st).phrase };
+  }
+  function statusOf(s: Session): { st: ReturnType<typeof sessionState>; is: { status: ChatStatus; failure?: string; agents?: number } } {
     // The end of the shown branch, back to the owner's last prompt: how its last turn ended.
     const tail: StoredEvent[] = [];
     for (let id = s.head, i = 0; id && i < 200; i++) {
@@ -315,16 +323,16 @@ export function mobileApi(ctx: MobileCtx) {
     const agents = st.agents ? { agents: st.agents } : {};
     // The phone's words for the one state: what waits on the owner (a card, a question, a plan),
     // then what moves by itself (a running turn, agents, a wait that will wake it).
-    if (st.watch === "need") return { status: "needs_you", ...agents };
+    if (st.watch === "need") return { st, is: { status: "needs_you", ...agents } };
     // A turn a restart cut is about to go on: it moves by itself too.
-    if (st.watch === "work" || st.watch === "wait" || st.watch === "resume" || engine.isRunning(s.id)) return { status: "working", ...agents };
+    if (st.watch === "work" || st.watch === "wait" || st.watch === "resume" || engine.isRunning(s.id)) return { st: engine.isRunning(s.id) && !["work", "wait", "resume"].includes(st.watch) ? { ...st, watch: "work" } : st, is: { status: "working", ...agents } };
     // How the last turn ended is the same fact the page shows: failed or declined with the reason, stopped, done.
     if (st.watch === "fail" || st.watch === "declined") {
       const said = String(tail.findLast((e) => e.kind === "error")?.data.message ?? "").split("\n")[0];
-      return { status: "failed", failure: (st.text || said || WATCH_LABEL[st.watch]).slice(0, 200) };
+      return { st, is: { status: "failed", failure: (st.text || said || WATCH_LABEL[st.watch]).slice(0, 200) } };
     }
-    if (st.watch === "stop") return { status: "stopped" };
-    return { status: st.watch === "done" ? "done" : "idle" };
+    if (st.watch === "stop") return { st, is: { status: "stopped" } };
+    return { st, is: { status: st.watch === "done" ? "done" : "idle" } };
   }
   const chatFull = (s: Session, u = unread()) => chatOf(s, lastSeq(s.id), { unread: u[s.id] ?? 0, preview: preview(s), ...status(s) });
 

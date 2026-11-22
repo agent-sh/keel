@@ -5,6 +5,7 @@
 // and idle time as a gap. A row opens its detail: a turn's receipt as a short
 // chain of cause, with the way into its trace, its error and its place in the
 // conversation.
+import { STATE_WORD, stateLabel } from "../../../src/core/state-words.ts";
 import {
   Anchor, ArrowLeftRight, Bot, ClipboardCopy, CornerDownRight, FileClock, Flag, FoldVertical, Gauge, Hand, ListEnd, MessageCircleQuestionMark, MessagesSquare, Power, Repeat,
   Route, Timer, TriangleAlert, X, type LucideIcon,
@@ -37,14 +38,15 @@ const EMPTY: Record<Only, string> = {
   agents: "This session has started no agents.",
 };
 const STATE: Record<TimelineNow["state"], { word: string; dot: string }> = {
-  working: { word: "Working", dot: "bg-st-work animate-pulse-dot" },
-  owner: { word: "Needs you", dot: "bg-st-need" },
-  waiting: { word: "Waiting", dot: "border-2 border-muted" },
-  failed: { word: "Failed", dot: "bg-st-fail" },
-  declined: { word: "Declined", dot: "bg-st-fail" },
-  stopped: { word: "Stopped", dot: "border-2 border-line-strong" },
-  resume: { word: "Waiting to resume", dot: "border-2 border-muted" },
-  idle: { word: "Idle", dot: "border-2 border-line-strong" },
+  working: { word: STATE_WORD.work, dot: "bg-st-work animate-pulse-dot" },
+  owner: { word: STATE_WORD.need, dot: "bg-st-need" },
+  waiting: { word: STATE_WORD.wait, dot: "border-2 border-muted" },
+  failed: { word: STATE_WORD.fail, dot: "bg-st-fail" },
+  declined: { word: STATE_WORD.declined, dot: "bg-st-fail" },
+  stopped: { word: STATE_WORD.stop, dot: "border-2 border-line-strong" },
+  resume: { word: stateLabel({ watch: "resume" }), dot: "border-2 border-muted" },
+  done: { word: STATE_WORD.done, dot: "bg-st-done" },
+  idle: { word: STATE_WORD.idle, dot: "border-2 border-line-strong" },
 };
 const ink = (tone: TimelineRow["tone"], plain: string) => (tone === "failed" ? "text-st-fail" : tone === "owner" ? "text-st-need" : tone === "live" ? "text-st-work" : plain);
 // A row in the same minute as the one above shows its time with its seconds, whole ("09:36:37"), never ":37" alone.
@@ -527,8 +529,8 @@ function Detail({ row, sessionId }: { row: TimelineRow; sessionId: string }) {
 }
 
 const ENDED: Record<string, string> = {
-  end_turn: "Finished", error: "Failed", interrupted: "Stopped", restart: "Cut by a daemon restart", max_steps: "Out of its step budget", max_tokens: "Hit the output limit",
-  refusal: "The model declined", stop_sequence: "Finished", tool_use: "Ended at a tool call", pause_turn: "Paused", model_context_window_exceeded: "The context was too long", other: "Ended",
+  end_turn: STATE_WORD.done, error: STATE_WORD.fail, interrupted: STATE_WORD.stop, restart: "Cut by a daemon restart", max_steps: "Out of its step budget", max_tokens: "Hit the output limit",
+  refusal: "The model declined", stop_sequence: STATE_WORD.done, tool_use: "Ended at a tool call", pause_turn: "Paused", model_context_window_exceeded: "The context was too long", other: "Ended",
 };
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const RECEIPT_MS = 2000;

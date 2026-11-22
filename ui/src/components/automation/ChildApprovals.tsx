@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useMemo } from "react";
 import { isLive, openSession, useAuto } from "../../lib/automation.ts";
 import { safety, useSafety } from "../../lib/safety.ts";
 import { useStore } from "../../lib/store.ts";
+import { stateWords } from "../../../../src/core/state-words.ts";
 const Approvals = lazy(() => import("../ApprovalCard.tsx").then((m) => ({ default: m.Approvals })));
 
 // The cards the session's agents wait on: approvals are answered here and
@@ -32,7 +33,7 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
               onClick={() => openSession(id)}
               className="mb-1 flex items-center gap-1.5 text-caption text-muted hover:text-fg"
             >
-              <Bot className="size-3.5 text-accent" /> {agent} {questions?.includes(id) ? "is waiting for your answer" : "asks"}
+              <Bot className="size-3.5 text-accent" /> {agent} {stateWords({ watch: "need", why: questions?.includes(id) ? "question" : "approval" }).phrase.toLowerCase()}
             </button>
             {!!open[id]?.length && <Suspense fallback={null}><Approvals sessionId={id} asker={agent} /></Suspense>}
           </div>

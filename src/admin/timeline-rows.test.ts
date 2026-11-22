@@ -149,7 +149,7 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   expect(busy.lines.map((l) => [l.kind, l.tone, l.text])).toEqual([
     ["approval", "owner", "Waits on the owner: approval for Bash (high risk)"],
     ["turn", "live", "Running a turn started by a wait wake: step 3, waiting for approval"],
-    ["agent", "live", 'Agent "Check the parser" is running'],
+    ["agent", "live", 'Agent "Check the parser" is working'],
     ["wait", "plain", "Waits on a timer"],
     ["queue", "plain", "2 queued prompts and 1 steer wait for the turn"],
   ]);
@@ -168,7 +168,7 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   const plan = nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["present_plan"] } }, plans: [{ id: "p1", created: 50_000 }] });
   expect(plan.state).toBe("owner");
   expect(plan.lines[0]).toMatchObject({ kind: "question", tone: "owner", text: "Waits on the owner: a plan to approve", open: true, ts: 50_000 });
-  expect(nowLines({ ...quiet, jobs: [{ id: "j1", started: 70_000 }] })).toMatchObject({ state: "waiting", lines: [{ kind: "wait", text: "Waits on a background command", ts: 70_000 }] });
+  expect(nowLines({ ...quiet, jobs: [{ id: "j1", started: 70_000 }] })).toMatchObject({ state: "working", lines: [{ kind: "wait", text: "A command runs in the background", ts: 70_000 }] });
   // The word follows the session's one state where that says more.
   expect(nowLines({ ...quiet, watch: "wait" }).state).toBe("waiting");
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "idle" } }, watch: "need" }).state).toBe("owner");
@@ -179,7 +179,7 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   expect(timelineText({ session_id: "s", as_of: 100_000, now: resumes, rows: [], next: null } as any)).toContain("Resumes by itself when the wait the provider asked for is over, for 10 s, due in 12 min");
   // The word is the session's state: a stopped session is stopped whatever waits under it, and a loop or a held queue is a line, not a word.
   expect(nowLines({ ...quiet, watch: "stop", waits: [{ id: "w", kind: "timer", created: 1, deadline: 100_000 + 11 * 60_000 + 60_000 }], queue: { queued: 1, steers: 0, held: true, owed: false } }).state).toBe("stopped");
-  expect(nowLines({ ...quiet, watch: "done", loops: [{ id: "l", name: "Daily", next_ms: 200_000 }] })).toMatchObject({ state: "idle", lines: [{ kind: "loop" }] });
+  expect(nowLines({ ...quiet, watch: "done", loops: [{ id: "l", name: "Daily", next_ms: 200_000 }] })).toMatchObject({ state: "done", lines: [{ kind: "loop" }] });
   expect(nowLines({ ...quiet, watch: "fail", waits: [{ id: "w", kind: "timer", created: 1, deadline: 200_000 }] }).state).toBe("failed");
   expect(nowLines({ ...quiet, watch: "declined" }).state).toBe("declined");
   expect(nowLines({ ...quiet, watch: "resume" }).state).toBe("resume");
@@ -204,7 +204,7 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   // Taken up by the engine and not opened yet: it is starting, not idle.
   expect(nowLines({ ...quiet, starting: true, last: { ts: 90_000, outcome: "ok" } })).toMatchObject({ state: "working", lines: [{ kind: "turn", tone: "live", text: "Starting a turn" }] });
   const idle = nowLines({ ...quiet, last: { ts: 90_000, outcome: "error" } });
-  expect(idle).toMatchObject({ state: "idle", lines: [{ kind: "idle", text: "Nothing is running or waited on. The last turn failed." }] });
+  expect(idle).toMatchObject({ state: "failed", lines: [{ kind: "idle", text: "Nothing is running or waited on. The last turn failed." }] });
   expect(nowLines({ ...quiet, waits: [{ id: "w", kind: "file", created: 1, deadline: 2 }] }).state).toBe("waiting");
   expect(nowLines({ ...quiet, queue: { queued: 1, steers: 0, held: true, owed: false } }).lines[0]).toMatchObject({ tone: "owner", text: "1 queued prompt waits: the queue is held until the owner resumes it" });
 });

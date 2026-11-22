@@ -155,6 +155,88 @@ test("a background page does not stop the owner watching a session in another", 
   expect(alerts.raise("finished", a, "A", "done")).toBeUndefined(); // watched: stays in that page
 });
 
+// What calls the owner is not read because its session is on screen, and its notification is held
+// back only while they are at it: a page left open, focused, mutes nothing.
+test("an ask or a failure in a watched session stays unread; its notification waits only while the owner attends it", async () => {
+  const { session } = scratch();
+  const a = session("A");
+  const got: string[] = [];
+  alerts.registerChannel({ id: "rec2", label: "rec2", available: () => true, deliver: (x) => void got.push(x.kind) });
+  alerts.saveSettings({ routes: { failed: ["rec2"], question: ["rec2"], finished: ["rec2"] } as any, completion: "always" });
+  // The page shows the session, has focus, and the owner did something in it two seconds ago.
+  alerts.setPresence(a, true, "desk", [], 2000);
+  const sig = new AbortController().signal;
+  void ask({ sessionId: a, callId: "q1", signal: sig } as any);
+  const asked = alerts.raise("question", a, "Question: A", "Which?", { call_id: "q1", open_session: a })!;
+  const failed = alerts.raise("failed", a, "Failed: A", "HTTP 500")!;
+  const done = alerts.raise("finished", a, "A", "done")!;
+  await settle();
+  // The finish is seen there: read, and nothing leaves the machine for it.
+  expect([done.read, done.channels]).toEqual([true, []]);
+  // The ask and the failure are unread, open, and held back while the owner is at the session.
+  expect([asked.read, asked.open, asked.channels, asked.data.withheld]).toEqual([false, true, [], ["rec2"]]);
+  expect([failed.read, failed.channels, failed.data.withheld]).toEqual([false, [], ["rec2"]]);
+  expect(got).toEqual([]);
+  alerts.tickWithheld(Date.now() + 10_000);
+  await settle();
+  expect(got).toEqual([]);
+  // The page reading the session on screen leaves both; the owner acting in its pane reads them.
+  expect(alerts.markRead({ session_id: a, auto: true })).toBe(0);
+  // They stop attending (a minute with no input: the page still has focus): both go out, once.
+  alerts.setPresence(a, true, "desk", [], 61_000);
+  alerts.tickWithheld(Date.now() + 20_000);
+  await settle();
+  expect(got.sort()).toEqual(["failed", "question"]);
+  alerts.tickWithheld(Date.now() + 30_000);
+  await settle();
+  expect(got).toHaveLength(2);
+  expect(alerts.list({ unread: true }).every((x) => x.data?.withheld === undefined)).toBe(true);
+  expect(alerts.markRead({ session_id: a, touch: true })).toBe(2);
+  answer(a, "q1", {});
+});
+
+test("an ask the owner looked at is still open until it is answered; an answered one held back is never sent", async () => {
+  const { session } = scratch();
+  const a = session("A");
+  const got: string[] = [];
+  alerts.registerChannel({ id: "rec3", label: "rec3", available: () => true, deliver: (x) => void got.push(x.id) });
+  alerts.saveSettings({ routes: { question: ["rec3"] } as any });
+  alerts.setPresence(a, true, "desk", [], 1000);
+  const sig = new AbortController().signal;
+  void ask({ sessionId: a, callId: "q2", signal: sig } as any);
+  const asked = alerts.raise("question", a, "Question: A", "Which?", { call_id: "q2", open_session: a })!;
+  // Read (they opened the session), not answered: the lists still say it waits, however they are asked.
+  alerts.markRead({ ids: [asked.id] });
+  expect(alerts.list({}).find((x) => x.id === asked.id)).toMatchObject({ read: true, open: true });
+  expect(alerts.list({ limit: 1, withUnread: true }).some((x) => x.id === asked.id && x.open)).toBe(true);
+  // Answered: it waits no more, and what was held back for it never goes out.
+  answer(a, "q2", {});
+  alerts.readWhere("call_id", "q2", a);
+  expect(alerts.list({}).find((x) => x.id === asked.id)?.open).toBeUndefined();
+  alerts.setPresence(null, false, "desk");
+  alerts.tickWithheld(Date.now() + 10_000);
+  await settle();
+  expect(got).toEqual([]);
+});
+
+test("a session marked unread gets its own newest word back, never an answered ask", () => {
+  const { session } = scratch();
+  const a = session("A");
+  alerts.raise("finished", a, "A", "The parser moved.");
+  alerts.raise("approval", a, "Approval: A", "Bash: ls", { approval_id: "ap-1", open_session: a });
+  alerts.markRead({ all: true });
+  expect(alerts.markSessionUnread(a)).toBe(true);
+  expect(alerts.list({ unread: true }).map((x) => [x.kind, x.kept])).toEqual([["finished", true]]);
+  // The page showing the session, and the owner acting in it, leave what they kept; going to it reads it.
+  expect(alerts.markRead({ session_id: a, auto: true })).toBe(0);
+  expect(alerts.markRead({ session_id: a, touch: true })).toBe(0);
+  expect(alerts.markRead({ session_id: a })).toBe(1);
+  // A session nothing was raised for gets a row of its own.
+  const b = session("B");
+  expect(alerts.markSessionUnread(b)).toBe(true);
+  expect(alerts.unreadCounts().sessions[b]).toBe(1);
+});
+
 test("cut text keeps whole characters; activity pages never skip a shared millisecond", () => {
   expect(clip("a".repeat(499) + "😀", 500)).toBe("a".repeat(499) + "…");
   expect(clip("a".repeat(498) + "😀", 500)).toBe("a".repeat(498) + "😀");

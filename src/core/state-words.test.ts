@@ -3,14 +3,14 @@
 import { expect, test } from "bun:test";
 import { stateOf, type SessionState, type Watch } from "./watch.ts";
 import { stateWord } from "../automation/state.ts";
-import { ALERT_GROUPS, COUNTERS, STATE_WORD, agentState, agentWhy, alertGroup, heldWords, stateLabel, stateWords, tally } from "./state-words.ts";
+import { ALERT_GROUPS, COUNTERS, STATE_WORD, agentState, agentWhy, alertGroup, alertWord, askAction, backgroundWord, countName, countWord, heldWords, inBackground, queuedWord, stateAlone, stateLabel, stateWords, agentTally as tally, waitsOnOwner, wentWrongWord } from "./state-words.ts";
 
 const st = (watch: Watch, more: Partial<SessionState> = {}): SessionState => ({ watch, agents: 0, ...more });
 
 test("each state has one word, in sentence case, and no two states of work share another", () => {
   for (const w of Object.values(STATE_WORD)) expect(w).toMatch(/^[A-Z][a-z]+( [a-z]+)*$/);
   // The words the vocabulary retired are no state's word.
-  for (const old of ["Running", "Asks you", "Finished", "Steer"]) expect(Object.values(STATE_WORD)).not.toContain(old);
+  for (const old of ["Running", "Asks you", "Finished", "Steer", "Idle"]) expect(Object.values(STATE_WORD)).not.toContain(old);
   expect(stateWords(st("work")).word).toBe("Working");
   expect(stateWords(st("done")).phrase).toBe("Done");
   expect(stateWords(st("idle")).phrase).toBe("Not started");
@@ -52,11 +52,34 @@ test("a tool hears the same words as the page", () => {
   expect(stateWord(st("done"))).toBe("done");
 });
 
-test("the head counts the agents that work, which is the summary's working", () => {
-  expect(stateLabel(st("work", { agents: 3, parked: 1 }))).toBe("Working · 2 agents");
+test("the head counts the agents that work, of how many, so the number beside it is the same", () => {
+  expect(stateLabel(st("work", { agents: 3, parked: 1 }))).toBe("Working · 2 of 3 agents");
   expect(stateLabel(st("work", { agents: 1 }))).toBe("Working · 1 agent");
+  expect(stateLabel(st("work", { agents: 3 }))).toBe("Working · 3 agents");
   expect(stateLabel(st("work", { agents: 2, parked: 2 }))).toBe("Working");
   expect(stateLabel(st("need", { agents: 3 }))).toBe("Needs you");
+});
+
+test("where the word stands alone, a session that only keeps a command going says so and is counted apart", () => {
+  const bg = st("work", { why: "command" });
+  expect(stateLabel(bg)).toBe("Working");
+  expect(stateAlone(bg)).toBe("Command in background");
+  expect(stateAlone(st("work", { agents: 2 }))).toBe("Working · 2 agents");
+  expect(stateAlone(st("wait", { why: "timer" }))).toBe("Waiting");
+  expect([inBackground(bg), inBackground(st("work", { why: "tool" })), inBackground(undefined)]).toEqual([true, false, false]);
+  expect(backgroundWord(1)).toBe("1 in background");
+});
+
+test("what waits on the owner is one count of things, each once", () => {
+  // A session with three requests is three; a session that works or failed is none.
+  expect(waitsOnOwner([st("need", { asks: 3 }), st("need"), st("work"), st("fail"), undefined])).toBe(4);
+  expect(waitsOnOwner([])).toBe(0);
+  expect(countWord("need", 1)).toBe("1 needs you");
+  expect(countWord("need", 4)).toBe("4 need you");
+  expect(countName("fail", 2)).toBe("failed");
+  // Sessions that went wrong: failed, declined by the model, or both, said as what they are.
+  expect([wentWrongWord(2, 0), wentWrongWord(0, 1), wentWrongWord(1, 1)]).toEqual(["failed", "declined", "failed or declined"]);
+  expect(queuedWord(2)).toBe("2 queued");
 });
 
 test("an agent's word is its session's, so every surface agrees", () => {
@@ -106,12 +129,28 @@ test("each counter says the one thing it counts", () => {
   expect(COUNTERS.errors(0)).toBe("No new errors in Keel");
 });
 
-test("the inbox puts what waits on the owner above everything that ended", () => {
-  const kinds = ["approval", "finished", "finished", "approval", "question", "failed", "finished"];
-  const alerts = kinds.map((kind, i) => ({ kind, read: i === 2 }));
+test("the inbox puts what still waits on the owner above everything else, read or not", () => {
+  // In the order they came: an approval that waits and was looked at, two finishes, an approval that waits, a question that was answered, a failure, a finish that was seen.
+  const alerts = [
+    { kind: "approval", read: true, open: true }, { kind: "finished", read: false }, { kind: "finished", read: false },
+    { kind: "approval", read: false, open: true }, { kind: "question", read: true }, { kind: "failed", read: false }, { kind: "finished", read: true },
+  ];
   const order = [...alerts].sort((a, b) => ALERT_GROUPS.indexOf(alertGroup(a)) - ALERT_GROUPS.indexOf(alertGroup(b)));
-  const parts = order.map(alertGroup);
-  expect(parts).toEqual(["need", "need", "need", "new", "new", "new", "seen"]);
-  // An approval already answered (read) is not waiting any more.
+  expect(order.map(alertGroup)).toEqual(["need", "need", "new", "new", "new", "seen", "seen"]);
+  // Looking at a request does not answer it; an answered one waits no more, unread or not.
+  expect(alertGroup({ kind: "approval", read: true, open: true })).toBe("need");
   expect(alertGroup({ kind: "approval", read: true })).toBe("seen");
+  expect(alertGroup({ kind: "approval", read: false })).toBe("new");
+});
+
+test("an alert says what it is: a plan, a secret, a turn the model declined", () => {
+  expect(alertWord({ kind: "question", read: false })).toBe("Question");
+  expect(alertWord({ kind: "question", read: false, data: { plan_id: "p" } })).toBe("Plan");
+  expect(alertWord({ kind: "question", read: false, data: { secret_id: "c" } })).toBe("Secret");
+  expect(alertWord({ kind: "finished", read: false })).toBe("Done");
+  expect(alertWord({ kind: "finished", read: false }, true)).toBe("Declined");
+  expect(alertWord({ kind: "declined", read: false })).toBe("Declined");
+  expect(alertWord({ kind: "failed", read: false })).toBe("Failed");
+  expect([askAction({ kind: "approval", read: false }), askAction({ kind: "question", read: false }), askAction({ kind: "question", read: false, data: { plan_id: "p" } }), askAction({ kind: "question", read: false, data: { secret_id: "c" } })])
+    .toEqual(["Review", "Answer", "Review", "Open"]);
 });

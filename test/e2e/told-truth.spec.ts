@@ -222,7 +222,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     expect(reportOf("Tool lane 1")).toMatch(/\(What it did: 5 steps, 4 tool calls, 3 failed \(Bash 3\)\.\)\n$/);
     expect(reportOf("Good lane 1")).toMatch(/\(What it did: 3 steps, 2 tool calls; edited 1 file: [^)]*good-1\.txt\.\)\n$/);
     // The parked notice names the agent, what it waits on and when it is due.
-    expect(got).toMatch(new RegExp(`\\[harness\\] Agent "Parked lane" \\(${lane("Parked lane").id}\\) is parked on timer wait \\w+, due in (29|30) min \\(at \\d\\d:\\d\\d\\)\\. It has not finished; its report comes when it does\\.`));
+    expect(got).toMatch(new RegExp(`\\[harness\\] Agent "Parked lane" \\(${lane("Parked lane").id}\\) is waiting for timer wait \\w+, due in (29|30) min \\(at \\d\\d:\\d\\d\\)\\. It has not finished; its report comes when it does\\.`));
     // The page: the receipt names each failed call.
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
@@ -316,7 +316,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await expect.poll(tally, { timeout: 90_000 }).toEqual({ failed: 4, completed: 5, waiting: 3 });
     for (const title of ["Slow lane 1", "Slow lane 2"]) {
       expect(str((await results(lane(title).session_id)).at(-1))).toContain("The command was not interrupted: it still runs in the background");
-      await expect.poll(async () => inputs(coord), { timeout: 60_000 }).toMatch(new RegExp(`\\[harness\\] Agent "${title}" \\(${lane(title).id}\\) is parked on command \\w+, which runs on after a daemon restart\\. It has not finished; its report comes when it does\\.`));
+      await expect.poll(async () => inputs(coord), { timeout: 60_000 }).toMatch(new RegExp(`\\[harness\\] Agent "${title}" \\(${lane(title).id}\\) is waiting for command \\w+, which runs on after a daemon restart\\. It has not finished; its report comes when it does\\.`));
       expect(await inputs(coord)).not.toContain(`title="${title}" status="completed"`);
     }
     // The coordinator is told which of its agents were cut and what became of each: each once, with a request

@@ -10,7 +10,7 @@ import { composing } from "../lib/keys.ts";
 import { failed, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
+import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { MachineSep, machineRuns } from "./Where.tsx";
 import { confirmAction } from "./Confirm.tsx";
 import { Mark } from "./Mark.tsx";
@@ -60,7 +60,7 @@ function Body({ p }: { p: Project }) {
   const all = useStore((s) => s.sessions);
   const list = Object.values(all).filter((s) => members[s.id] === p.id && !s.parent_id).sort((a, b) => Number(a.archived) - Number(b.archived) || b.updated - a.updated);
   const watches = useWatches(list);
-  const agents = useAgentCounts();
+  const label = useStateLabel();
 
   return (
     // The page is the container its parts measure: beside the session list or at a
@@ -173,7 +173,7 @@ function Body({ p }: { p: Project }) {
               <div className="flex flex-col @4xl/page:max-h-[36rem] @4xl/page:overflow-y-auto">
                 {machineRuns(list).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
                   <button key={s.id} type="button" data-testid="project-session" data-session={s.id} onClick={() => navigate({ name: "session", id: s.id })} className={cn("flex h-9 shrink-0 items-center gap-2.5 border-b border-line text-left text-ui last:border-0 hover:text-fg", s.archived ? "text-faint" : "text-muted")}>
-                    <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
+                    <span className="grid w-4 place-items-center" title={label(s.id, watches[s.id] ?? "idle")}><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
                     <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{s.archived ? "archived" : ago(s.updated)}</span>
                   </button>

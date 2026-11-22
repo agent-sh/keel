@@ -9,7 +9,8 @@
 //   State      Word          With what
 //   need       Needs you     an approval, a question, a plan, a secret, an answer,
 //                            a turn to resume, a message not sent
-//   work       Working       the step, "N agents", "command in background"
+//   work       Working       the step, "N agents" (the ones that work, "3 of 5" when the rest wait),
+//                            "command in background"
 //   wait       Waiting       for a timer, a file, a log line, an HTTP check, a process,
 //                            a monitor, a pull request's checks, another session,
 //                            an agent, the provider, Keel to be back
@@ -23,10 +24,15 @@
 //   declined   Declined
 //   stop       Stopped       at the step budget, by you, by its parent
 //   idle       Not started
-//   (machine)  Offline
+//   (machine)  Offline       as of HH:MM (the last its machine told)
+//
+// Counts say the state in the same words ("2 need you", "1 failed"). What
+// waits on the owner is counted as things, each once, by one function
+// (waitsOnOwner): the tab's title, the home headline, the list's line and the
+// phone's dock show that one number.
 //
 // Sentence case everywhere. Retired: Running, Asks you, Finished, quota,
-// Steer as a state, "Waiting" for a command left in the background (it works).
+// Steer as a state, Idle, "Waiting" for a command left in the background (it works).
 import type { SessionState, Watch } from "./watch.ts";
 
 export const STATE_WORD: Record<Watch, string> = {
@@ -35,6 +41,12 @@ export const STATE_WORD: Record<Watch, string> = {
 // A message that waits for its session, and a machine that does not answer.
 export const QUEUED = "Queued";
 export const OFFLINE = "Offline";
+// A machine that does not answer says nothing new: its sessions read Offline, with when they last told.
+export const asOf = (hhmm: string) => `as of ${hhmm}`;
+// How many messages of the owner's wait in a session's queue, and the mark of what came since they looked.
+export const queuedWord = (n: number) => `${n} ${QUEUED.toLowerCase()}`;
+export const NEW = "New";
+export const NEW_SINCE = "New since you looked";
 
 // What a session needs from the owner, by the daemon's reason.
 export const NEEDS: Record<string, string> = {
@@ -87,11 +99,36 @@ export function stateWords(st: Stated): Said {
 }
 
 // The word as a head shows it, with the agents that keep it working: "Working · 2 agents".
-// The count is the agents that work, which is the "working" of the session's agent summary.
+// The count is the agents that work, which is the "working" of the session's agent summary;
+// when others of its agents wait it says of how many: "Working · 3 of 5 agents", so the
+// number beside it (the agents still out) is the same five.
 export function stateLabel(st: Stated): string {
   const s = stateWords(st);
-  if (st.watch === "work") return agentsWorking(st) > 0 ? `${s.word} · ${plural(agentsWorking(st))}` : s.word;
+  if (st.watch === "work") {
+    const n = agentsWorking(st), all = st.agents ?? 0;
+    return n > 0 ? `${s.word} · ${all > n ? `${n} of ${plural(all)}` : plural(n)}` : s.word;
+  }
   return st.watch === "resume" ? s.phrase : s.word;
+}
+// The same for a place that shows the word with no reason beside it (a mark's tooltip, a
+// recent row, a phone's dock): a session that only keeps a command going says so, since
+// "Working" alone would read as a turn that runs.
+export function stateAlone(st: Stated): string {
+  return st.watch === "work" && st.why === "command" ? cap(COMMAND_IN_BACKGROUND) : stateLabel(st);
+}
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+// A session whose only work is a command it left running: counted apart from the ones a turn or an agent works in.
+export const inBackground = (st: Stated | undefined) => st?.watch === "work" && st.why === "command";
+export const backgroundWord = (n: number) => `${n} in background`;
+
+// How many things wait on the owner in these sessions, each once: an approval, a question, a plan,
+// a secret to give, a turn to resume, a message not sent. A session with three requests is three.
+// The one count behind the tab's title, the home headline, the list's line, the phone's dock and
+// the digest's headline. Give it top-level sessions: an agent's request is in its parent's state.
+export function waitsOnOwner(states: Iterable<Pick<SessionState, "watch" | "asks"> | undefined>): number {
+  let n = 0;
+  for (const st of states) if (st?.watch === "need") n += st.asks ?? 1;
+  return n;
 }
 
 // ---- Agents. An agent is a session: its word is its session's.
@@ -135,18 +172,25 @@ export type Counted = "need" | "fail" | "declined" | "work" | "wait" | "stop" | 
 // The order a summary is read in: what needs the owner and what went wrong first, so a line cut short never hides them.
 export const COUNT_ORDER: readonly Counted[] = ["need", "fail", "declined", "work", "wait", "stop", "done", "idle"];
 export const counted = (w: Watch): Counted => (w === "resume" ? "wait" : w);
-export const countWord = (w: Counted, n: number) =>
-  w === "need" ? `${n} ${n === 1 ? "needs" : "need"} you` : `${n} ${STATE_WORD[w].toLowerCase()}`;
+// The words of a count without its number ("needs you", "need you", "failed"), and with it.
+export const countName = (w: Counted, n: number) => (w === "need" ? `${n === 1 ? "needs" : "need"} you` : STATE_WORD[w].toLowerCase());
+export const countWord = (w: Counted, n: number) => `${n} ${countName(w, n)}`;
 
 // A parent's agents by state. Every agent is in exactly one part, so the parts add up to the total;
 // a state with none is left out. "8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done".
-export type Tally = { total: number; parts: { w: Counted; n: number; text: string }[]; text: string };
-export function tally(states: readonly Watch[]): Tally {
+export type AgentTally = { total: number; parts: { w: Counted; n: number; text: string }[]; text: string };
+export function agentTally(states: readonly Watch[]): AgentTally {
   const n = new Map<Counted, number>();
   for (const w of states) n.set(counted(w), (n.get(counted(w)) ?? 0) + 1);
   const parts = COUNT_ORDER.filter((w) => n.get(w)).map((w) => ({ w, n: n.get(w)!, text: countWord(w, n.get(w)!) }));
   const total = states.length;
   return { total, parts, text: total ? `${plural(total)}: ${parts.map((p) => p.text).join(", ")}` : "" };
+}
+
+// Sessions that went wrong, in one count: failed, declined by the model, or both.
+export function wentWrongWord(failed: number, declined: number): string {
+  if (!declined) return STATE_WORD.fail.toLowerCase();
+  return failed ? `${STATE_WORD.fail.toLowerCase()} or ${STATE_WORD.declined.toLowerCase()}` : STATE_WORD.declined.toLowerCase();
 }
 
 // ---- A message that waits for its session: the word, and when it is taken.
@@ -157,6 +201,8 @@ export function heldWords(m: { steer?: boolean; held?: boolean }): { word: strin
 
 // ---- The counters. Each counts one thing and says which.
 export const COUNTERS = {
+  // With nothing that waits and nothing that went wrong.
+  calm: "Nothing needs you",
   // The tab's title, the app's badge and the home headline: things that wait on the owner.
   waiting: (n: number) => (n ? `${n} ${n === 1 ? "thing waits" : "things wait"} on you: approvals, questions, plans and secrets` : "Nothing waits on you"),
   // The bell: alerts that are new since the owner last looked.
@@ -167,13 +213,28 @@ export const COUNTERS = {
 
 // ---- The Inbox. The bell counts what is unread; its panel puts what waits on the owner first,
 // then what else is new, then what they have seen. Nothing that waits is ever below a finish.
+// An ask is under "Needs you" while its card still waits (`open`, the daemon's word), read or
+// not: looking at a request does not answer it. It leaves when it is answered.
 export type AlertGroup = "need" | "new" | "seen";
-const ASKING = new Set(["approval", "question"]);
-export const alertGroup = (a: { kind: string; read: boolean }): AlertGroup => (a.read ? "seen" : ASKING.has(a.kind) ? "need" : "new");
+export type AlertLike = { kind: string; read: boolean; open?: boolean; data?: { plan_id?: string; secret_id?: string; end?: string } | null };
+export const alertGroup = (a: AlertLike): AlertGroup => (a.open ? "need" : a.read ? "seen" : "new");
 export const ALERT_GROUPS: readonly AlertGroup[] = ["need", "new", "seen"];
-export const ALERT_GROUP_WORD: Record<AlertGroup, string> = { need: STATE_WORD.need, new: "New since you looked", seen: "Earlier" };
+export const ALERT_GROUP_WORD: Record<AlertGroup, string> = { need: STATE_WORD.need, new: NEW_SINCE, seen: "Earlier" };
+// The kinds that wait on the owner (a plan and a secret are raised as questions that name them),
+// and the ones that say something went wrong: neither is read because its session is on screen.
+export const ASK_KINDS: readonly string[] = ["approval", "question"];
+export const WRONG_KINDS: readonly string[] = ["failed", "limit", "loop_failed", "regression", "declined"];
 // An alert's kind in the vocabulary: a finish is Done, a failure Failed.
 export const ALERT_WORD: Record<string, string> = {
-  approval: "Approval", question: "Question", finished: STATE_WORD.done, failed: STATE_WORD.fail, limit: "Usage limit", loop_failed: "Loop failed",
+  approval: "Approval", question: "Question", finished: STATE_WORD.done, failed: STATE_WORD.fail, declined: STATE_WORD.declined, limit: "Usage limit", loop_failed: "Loop failed",
   agent: "From the agent", snooze_over: "Snooze over", regression: "Regression", refused: "Refused call",
 };
+// The word of one alert: a question that carries a plan is a Plan, one that asks for a secret a Secret,
+// and a turn the model declined is Declined, not Done (`declined`: its session reads so now and this is its newest word).
+export function alertWord(a: AlertLike, declined = false): string {
+  if (a.kind === "question") return a.data?.plan_id ? "Plan" : a.data?.secret_id ? "Secret" : ALERT_WORD.question!;
+  if (a.kind === "finished" && (declined || a.data?.end === "refusal")) return STATE_WORD.declined;
+  return ALERT_WORD[a.kind] ?? a.kind;
+}
+// What the row of an ask offers: the card it opens.
+export const askAction = (a: AlertLike) => (a.kind === "approval" || a.data?.plan_id ? "Review" : a.data?.secret_id ? "Open" : "Answer");

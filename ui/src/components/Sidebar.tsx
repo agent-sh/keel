@@ -28,8 +28,9 @@ import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from 
 import { opened, openFocus } from "../lib/self-focus.ts";
 import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
-import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { AT_REST, branchOf, lastLine, useSessionState, useSessionStates, watchLabel, type SessionState, type Watch } from "../lib/watch.ts";
+import { ago, clock, cn, folderNames, when } from "../lib/utils.ts";
+import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
+import { COUNTERS, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
@@ -193,6 +194,8 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
   // state line, whatever the state is (it is the reason itself when the session is otherwise at rest).
   const waitingSend = useWaitingSend(s.id);
   const queued = useQueued(s.id, QUEUES.includes(w) && !restore);
+  // When its machine last told of it (the state says so once the daemon serves it; until then, its last change).
+  const toldAt = (st as { as_of?: number }).as_of ?? s.updated;
   const shown = useStations((x) => x.shown.includes(s.id));
   const panes = useStations((x) => x.count);
   const [placing, setPlacing] = useState(false);
@@ -272,11 +275,14 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
       <span className="k-row-main">
         <span className="k-row-title">{s.title || "New session"}</span>
         <span className="k-row-sub">
-          {SPELLED.includes(w)
-            ? <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
+          {/* A machine that does not answer says nothing new: the row's word is Offline (at the line's end), with when it last told here and what under the pointer. */}
+          {offline
+            ? <span className="k-row-why" data-testid="row-why" data-why="offline">{asOf(clock(toldAt))}</span>
+            : SPELLED.includes(w)
+            ? <span className="k-row-state" data-testid="row-state">{stateLabel(st)}</span>
             : lines === "two" && <RestLine s={s} />}
-          {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-          {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{whyText(st, now)}</span>}
+          {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
+          {!offline && SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{whyText(st, now)}</span>}
           {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
           {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
         </span>
@@ -288,12 +294,12 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
         {/* What it needs is under a look: its pane shows another session for now. */}
         {under && <span className="k-row-under" data-testid="row-under" role="img" aria-label="Needs you, under a look" title="Needs you while its pane shows another session for now"><Layers2 aria-hidden="true" /></span>}
         {/* A message of theirs that waits in the session's queue. */}
-        {queued > 0 && !left && <span className="k-row-queued" data-testid="row-queued" role="img" aria-label={`${queued} queued`} title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}><MessageSquareMore aria-hidden="true" />{queued}</span>}
+        {queued > 0 && !left && <span className="k-row-queued" data-testid="row-queued" role="img" aria-label={queuedWord(queued)} title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}><MessageSquareMore aria-hidden="true" />{queued}</span>}
         {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
         {left
           ? <span className="k-row-time" data-testid="row-gone" data-offline title="It left the list while your hand was on it, and goes when your hand has left">{left}</span>
           : offline
-          ? <span className="k-row-time group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-offline title="Its machine does not answer: this is the last it told">offline</span>
+          ? <span className="k-row-time group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-offline title={`Its machine does not answer: this is the last it told, ${when(toldAt)}`}>{OFFLINE}</span>
           : timed(st)
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
           : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
@@ -483,12 +489,12 @@ let openOn: "active" | "archived" = "active";
 // session you have not looked at keeps a full mark; one you have seen goes
 // quiet. Hovering or focusing a mark shows its card.
 const BANDS: { w: Watch[]; label: string; short: string }[] = [
-  { w: ["need"], label: "Needs you", short: "Need" },
-  { w: ["fail", "declined"], label: "Failed", short: "Fail" },
-  { w: ["wait"], label: "Waiting", short: "Wait" },
-  { w: ["work"], label: "Working", short: "Work" },
-  { w: ["resume", "stop"], label: "Stopped", short: "Stop" },
-  { w: ["done", "idle"], label: "Done", short: "Done" },
+  { w: ["need"], label: STATE_WORD.need, short: "Need" },
+  { w: ["fail", "declined"], label: STATE_WORD.fail, short: "Fail" },
+  { w: ["wait"], label: STATE_WORD.wait, short: "Wait" },
+  { w: ["work"], label: STATE_WORD.work, short: "Work" },
+  { w: ["resume", "stop"], label: STATE_WORD.stop, short: "Stop" },
+  { w: ["done", "idle"], label: STATE_WORD.done, short: STATE_WORD.done },
 ];
 // The folded rail keeps every band on screen. When the marks do not fit at
 // their usual size the rail sets them tighter (smaller marks, slimmer heads);
@@ -574,7 +580,7 @@ function Marks({ current }: { current: string | null }) {
                       data-unread={unread[s.id] ? true : undefined}
                       data-gone={gone.has(s.id) || undefined}
                       aria-current={current === s.id ? "page" : undefined}
-                      aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id] ?? "idle", states[s.id]?.agents ?? 0)}${states[s.id]?.text ? `: ${states[s.id]!.text}` : ""}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}`}
+                      aria-label={`${s.title || "New session"}, ${stateAlone(states[s.id] ?? { watch: watches[s.id] ?? "idle" })}${states[s.id]?.text ? `: ${states[s.id]!.text}` : ""}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}`}
                       {...card}
                       draggable
                       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
@@ -614,7 +620,9 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
   const now = useNow(timed(st));
   const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
-  const line = lastLine(branchOf(events, s.head), s.workspace);
+  // What it last did or ended with: from the events the page holds, else asked of the daemon (a session never opened here).
+  const told = useLastLine(s, !events);
+  const line = events ? lastLine(branchOf(events, s.head), s.workspace) : told;
   const why = whyText(st, now);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
   // Beside a list row the card adds what the row has no room for and repeats nothing of it:
@@ -637,7 +645,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
     <div className="k-rail-card" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
       <div className="k-rail-card-row">
         <Mark w={w} />
-        <span className="k-rail-card-word">{watchLabel(w, st.agents)}</span>
+        <span className="k-rail-card-word">{stateLabel(st)}</span>
         {w === "fail" && failWord(st.cls) && <span className="k-row-class">{failWord(st.cls)}</span>}
         {timed(st)
           ? <span className="k-rail-card-time tabular-nums" data-live>{stateClock(st, now)}</span>
@@ -647,7 +655,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
       {/* Why it is in its state: what waits on the owner, the step, what it waits for, how it failed. */}
       {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={st.why}>{why}</p>}
       {line && line !== why && <p className="k-rail-card-line">{line}</p>}
-      {unread > 0 && w !== "need" && <p className="k-rail-card-new">New since you looked</p>}
+      {unread > 0 && w !== "need" && <p className="k-rail-card-new">{NEW_SINCE}</p>}
       <dl className="k-rail-card-meta">
         <dt>Folder</dt><dd title={s.workspace}><b>{folderOf(s)}</b>{s.machine ? ` on ${machineName(s.machine)}` : ""} in {home(s.workspace.replace(/\/[^/]*\/?$/, "")) || "/"}</dd>
         <dt>Model</dt><dd>{modelOf(s.model)}</dd>
@@ -662,12 +670,15 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
 // and always as high, so nothing under it moves when a count comes or goes. A
 // press on a count goes to the row of the next session it names, wherever
 // that row is (Alt A, the key that was there before, opens the next that needs them).
-const COUNTS: { kind: Kind; word: (n: number) => string; watch?: Watch; says: string }[] = [
-  { kind: "need", word: (n) => (n === 1 ? "needs you" : "need you"), watch: "need", says: "Needs you" },
-  { kind: "fail", word: () => "failed", watch: "fail", says: "Failed" },
-  { kind: "work", word: () => "working", watch: "work", says: "Working" },
-  { kind: "unread", word: () => "new", says: "New since you looked" },
-  { kind: "offline", word: () => "offline", says: "On a machine that does not answer" },
+// The words are the vocabulary's (src/core/state-words.ts). What needs the owner is counted as
+// things, each once, as the tab's title and the home headline count them (a session with three
+// requests is three); the others count sessions, and "failed" says so when a turn was declined instead.
+const COUNTS: { kind: Kind; watch?: Watch; says: string }[] = [
+  { kind: "need", watch: "need", says: STATE_WORD.need },
+  { kind: "fail", watch: "fail", says: STATE_WORD.fail },
+  { kind: "work", watch: "work", says: STATE_WORD.work },
+  { kind: "unread", says: NEW_SINCE },
+  { kind: "offline", says: "On a machine that does not answer" },
 ];
 // The line fits its bar at every width and text size, and a figure is never cut: measured on the
 // line itself. Every count keeps its mark and its figure, and the words take the room that is
@@ -708,7 +719,17 @@ function Summary() {
   const shown = COUNTS.filter((c) => counts[c.kind].length > 0);
   const calls = counts.need.length + counts.fail.length > 0;
   const line = useRef<HTMLDivElement>(null);
-  const figures = COUNTS.map((c) => counts[c.kind].length).join(" ");
+  // How many a count says, and in what words.
+  const need = useNeedCount();
+  const failed = useMemo(() => counts.fail.map((id) => sessions[id]).filter((x): x is Session => !!x), [counts.fail, sessions]);
+  const failedStates = useSessionStates(failed);
+  const declined = counts.fail.filter((id) => failedStates[id]?.watch === "declined").length;
+  const said = (kind: Kind, ids: string[]): { n: number; word: string } => {
+    if (kind === "need") { const n = Math.max(ids.length, need); return { n, word: countName("need", n) }; }
+    if (kind === "fail") return { n: ids.length, word: wentWrongWord(ids.length - declined, declined) };
+    return { n: ids.length, word: kind === "work" ? countName("work", ids.length) : kind === "unread" ? NEW.toLowerCase() : OFFLINE.toLowerCase() };
+  };
+  const figures = COUNTS.map((c) => { const x = said(c.kind, counts[c.kind]); return `${x.n} ${x.word}`; }).join("|");
   useLayoutEffect(() => {
     const el = line.current;
     if (!el) return;
@@ -734,16 +755,17 @@ function Summary() {
   };
   return (
     <div ref={line} className="k-sum" data-testid="list-summary" role="toolbar" aria-label="What the sessions need" onKeyDown={step}>
-      {!calls && <span className="k-sum-calm" data-testid="sum-calm">Nothing needs you</span>}
+      {!calls && <span className="k-sum-calm" data-testid="sum-calm">{COUNTERS.calm}</span>}
       {shown.map((c) => {
         const ids = counts[c.kind];
         const names = ids.slice(0, 6).map((id) => sessions[id]?.title || "New session").join("; ");
+        const { n, word } = said(c.kind, ids);
         return (
           <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} tabIndex={c.kind === at ? 0 : -1} onFocus={() => setStop(c.kind)} onClick={() => jumpNext(c.kind)}
-            aria-label={`${ids.length} ${c.word(ids.length)}. Go to the next`} title={`${c.says}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
+            aria-label={`${n} ${word}. Go to the next`} title={`${c.says}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
             {c.watch ? <Mark w={c.watch} /> : c.kind === "offline" ? <ServerOff aria-hidden="true" /> : <span className="k-sum-dot" aria-hidden="true" />}
-            <b className="k-sum-n">{ids.length}</b>
-            <span className="k-sum-word">{c.word(ids.length)}</span>
+            <b className="k-sum-n">{n}</b>
+            <span className="k-sum-word">{word}</span>
           </button>
         );
       })}
@@ -1068,7 +1090,7 @@ export function Sidebar({ open }: { open: boolean }) {
         <button type="button" className="k-act k-act-word" data-testid="settings-button" aria-label="Settings" title="Settings" aria-current={route.name === "settings" ? "page" : undefined} onClick={() => navigate({ name: "settings", section: "general" })}>
           <Settings /><span className="k-act-label">Settings</span>
         </button>
-        <button type="button" className={cn("k-act", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={errors ? `${errors} unread failures` : "Errors"} title={errors ? `${errors} unread failures` : "No unread failures"} onClick={() => setUI({ errors: true })}>
+        <button type="button" className={cn("k-act", errors > 0 && "k-alert")} data-testid="errors-button" aria-label={`Errors. ${COUNTERS.errors(errors)}`} title={`Errors. ${COUNTERS.errors(errors)}`} onClick={() => setUI({ errors: true })}>
           <Bug />{errors > 0 && <span className="k-act-n">{errors}</span>}
         </button>
         <AutomationFooter />

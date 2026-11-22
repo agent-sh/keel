@@ -102,6 +102,8 @@ if (localStorage.getItem("keel.panel") !== null) {
   localStorage.removeItem("keel.stationPanel");
 }
 const subs = new Set<() => void>();
+// (Also for a module that is not a component: it is told of every change of the page's state.)
+export const onUI = (f: () => void) => subscribe(f);
 const subscribe = (f: () => void) => {
   subs.add(f);
   return () => void subs.delete(f);

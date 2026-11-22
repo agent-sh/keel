@@ -3,7 +3,7 @@ import { actions, api, reportError, useStore, workspaces } from "../lib/store.ts
 import { savePref, setUI, useUI } from "../lib/ui.ts";
 import { openPlaced } from "../lib/looks.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
+import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { MachineSep, machineRuns } from "./Where.tsx";
 import { Mark, folderOf } from "./Mark.tsx";
 import { Composer } from "./Composer.tsx";
@@ -65,7 +65,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
   const watches = useWatches(live);
   // The six newest, and any failed session older than those: a red mark in the list has its row here, whatever its age.
   const recent = useMemo(() => [...live.slice(0, 6), ...live.slice(6).filter((s) => isFailure(watches[s.id])).slice(0, 3)], [live, watches]);
-  const agents = useAgentCounts();
+  const label = useStateLabel();
   // Auto is shown as where it would place the session now: a folder of this
   // machine when it stays here, the other machine's directory when it goes.
   const place = useFleet((s) => s.autoPlace);
@@ -153,7 +153,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
                     <span className="grid w-4 place-items-center"><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span dir="auto" className="min-w-0 flex-1 truncate text-left">{s.title || "New session"}</span>
                     {/* The state in a word when it is not simply done; then where, and when. */}
-                    {(watches[s.id] ?? "idle") !== "done" && <span className="k-face-state k-home-recent-word">{watchLabel(watches[s.id] ?? "idle", agents[s.id])}</span>}
+                    {(watches[s.id] ?? "idle") !== "done" && <span className="k-face-state k-home-recent-word">{label(s.id, watches[s.id] ?? "idle")}</span>}
                     <span className={cn("k-pane-empty-in", (watches[s.id] ?? "idle") !== "done" && "max-sm:hidden")} data-testid="recent-folder">{folderOf(s)}</span>
                     <span className="k-pane-empty-time tabular-nums" title={when(s.updated)}>{ago(s.updated)}</span>
                   </button>

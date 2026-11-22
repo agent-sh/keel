@@ -2,22 +2,18 @@
 // rows under it, from the state the daemon serves of each session
 // (src/core/watch.ts) and whether the owner has looked at a failure since it
 // happened.
-import { askThing, failWord, whyText, type SessionState, type Watch } from "../../../src/core/watch.ts";
+import { askThing, whyText, type SessionState, type Watch } from "../../../src/core/watch.ts";
+import { backgroundWord, countWord, inBackground, stateLabel, stateWords, waitsOnOwner } from "../../../src/core/state-words.ts";
 import { plainAscii } from "./hidden-chars.ts";
 
 export type Row = { id: string; w: Watch };
 // The headline's parts. `wait` is every session that goes on by itself: one
 // that waits on something it set up, and one a restart cut that Keel resumes.
-export type Part = { w: "need" | "fail" | "declined" | "work" | "wait" | "stop"; ids: string[]; n: number };
+// `kind`: the part's own name (a part of sessions that only keep a command going in the background has the mark of work). `text`: how it reads.
+export type Part = { w: "need" | "fail" | "declined" | "work" | "wait" | "stop"; kind: Part["w"] | "background"; ids: string[]; n: number; text: string };
 
-// How a count reads in the headline.
-export const say = (w: Part["w"], n: number) =>
-  w === "need" ? `${n} ${n === 1 ? "needs" : "need"} you`
-  : w === "fail" ? `${n} failed`
-  : w === "declined" ? `${n} declined`
-  : w === "wait" ? `${n} waiting`
-  : w === "stop" ? `${n} stopped`
-  : `${n} working`;
+// How a count reads in the headline: the vocabulary's count words (src/core/state-words.ts).
+export const say = (w: Part["w"], n: number) => countWord(w, n);
 
 // `list` is in order of attention.
 // - What needs the owner is counted by the things that wait, as the tab's
@@ -30,12 +26,21 @@ export const say = (w: Part["w"], n: number) =>
 type Told = { id: string; st: SessionState };
 export function watchSummary(list: Told[], unseen: ReadonlySet<string>): { head: Part[]; attention: Row[]; working: Row[] } {
   const of = (...w: Watch[]) => list.filter((r) => w.includes(r.st.watch));
+  const by = new Map(list.map((r) => [r.id, r.st]));
   const news = (w: Watch) => of(w).filter((r) => unseen.has(r.id));
   const stopped = of("stop").filter((r) => !!r.st.why);
   const groups: [Part["w"], Told[]][] = [["need", of("need")], ["fail", news("fail")], ["declined", news("declined")], ["work", of("work")], ["wait", of("wait", "resume")], ["stop", stopped]];
   const rows = (g: Told[]): Row[] => g.map((r) => ({ id: r.id, w: r.st.watch }));
   return {
-    head: groups.filter(([, g]) => g.length).map(([w, g]) => ({ w, ids: g.map((r) => r.id), n: w === "need" ? g.reduce((n, r) => n + (r.st.asks ?? 1), 0) : g.length })),
+    head: groups.filter(([, g]) => g.length).map(([w, g]) => ({ w, kind: w, ids: g.map((r) => r.id), n: w === "need" ? waitsOnOwner(g.map((r) => r.st)) : g.length, text: "" }))
+      // A session that only keeps a command going in the background is counted apart from the ones a turn or an agent works in.
+      .flatMap((p): Part[] => {
+        if (p.w !== "work") return [p];
+        const bg = p.ids.filter((id) => inBackground(by.get(id)));
+        const rest = p.ids.filter((id) => !bg.includes(id));
+        return [...(rest.length ? [{ ...p, ids: rest, n: rest.length }] : []), ...(bg.length ? [{ ...p, kind: "background" as const, ids: bg, n: bg.length }] : [])];
+      })
+      .map((p) => ({ ...p, text: p.kind === "background" ? backgroundWord(p.n) : say(p.w, p.n) })),
     attention: rows([...of("need"), ...news("fail"), ...news("declined"), ...stopped]),
     working: rows([...of("work"), ...of("wait", "resume")]),
   };
@@ -92,8 +97,8 @@ export function rowKind(st: Pick<SessionState, "watch" | "why" | "cls" | "child"
     const what = st.why === "approval" ? (card ? CARD[card] ?? "Tool call" : "Approval") : ASKED[st.why ?? ""] ?? "Waits for you";
     return st.child ? `Agent's ${what.toLowerCase()}` : what;
   }
-  if (st.watch === "fail") return failWord(st.cls) ? `Failed: ${failWord(st.cls)}` : "Failed";
-  return st.watch === "declined" ? "Declined" : st.watch === "stop" ? "Stopped" : st.watch === "work" ? "Working" : st.watch === "wait" ? "Waiting" : st.watch === "resume" ? "Waiting to resume" : "";
+  if (st.watch === "fail") return stateWords(st).phrase;
+  return st.watch === "done" || st.watch === "idle" ? "" : stateLabel({ watch: st.watch });
 }
 
 // A row's line: what the daemon says the state stands on, without the words the row's kind already says.

@@ -1,9 +1,11 @@
 import { Bell, BellOff, ChevronRight, Moon, Repeat } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { auto, isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
+import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
+import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
+import { COUNTERS, NEW, agentTally, countName } from "../../../../src/core/state-words.ts";
 import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentStatus, ALERT_STATE, IconButton, StopIcon } from "./bits.tsx";
+import { AgentMark, agentSaid, ALERT_STATE, StopAgent } from "./bits.tsx";
 import { Mark } from "../Mark.tsx";
 import { useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
@@ -12,12 +14,17 @@ import { Where } from "../Where.tsx";
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
 const LoopsPanel = lazy(() => import("./LoopsPanel.tsx").then((m) => ({ default: m.LoopsPanel })));
 
-// Under a session row: the agents it started, live, with stop. Children never
-// appear in the top-level list and never count as unread on their own. The
-// list is folded to its count until the owner opens it; their choice is kept
-// per session. Folded, a working agent shows as a turning mark on the count.
+// Under a session row: the agents it started, each with its state in the one
+// word every other surface uses for it (src/core/state-words.ts), and stop. Children
+// never appear in the top-level list and never count as unread on their own.
+// The summary is one line that never wraps: how many agents, then every state
+// with agents in it as its mark and its count, what needs the owner or failed
+// first and in words. Every agent is in exactly one count, so they add up to
+// the total; the whole sentence is the line's name and tooltip. The list is
+// folded to that line until the owner opens it; their choice is kept per session.
 const OPEN_KEY = "keel.agentsOpen";
 const openKept = (): Record<string, boolean> => { try { return JSON.parse(localStorage.getItem(OPEN_KEY) ?? "{}"); } catch { return {}; } };
+
 export function SessionChildren({ parentId, current }: { parentId: string; current: string | null }) {
   const onPick = openSession;
   const all = useAuto((s) => s.agents);
@@ -25,13 +32,10 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
   const kids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
-  // The summary says how many ask the owner, how many run and how many wait.
-  // An agent whose session needs them (a question, an approval, a plan) asks: it is not counted as running.
   const told = useToldStates();
-  const asks = (k: (typeof kids)[number]) => isLive(k) && told[k.session_id]?.watch === "need";
-  const asking = kids.filter(asks).length;
-  const running = kids.filter((k) => k.status === "running" && !asks(k)).length;
-  const waiting = kids.filter((k) => k.status === "waiting" && !asks(k)).length;
+  const seen = useAgentsSeen();
+  const said = useMemo(() => kids.map((k) => agentSaid(k, told[k.session_id])), [kids, told]);
+  const sum = useMemo(() => agentTally(said.map((x) => x.watch)), [said]);
   const viewing = kids.find((k) => k.session_id === current);
   const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
   const setOpen = (o: boolean) => {
@@ -41,61 +45,74 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
     localStorage.setItem(OPEN_KEY, JSON.stringify(m));
   };
   if (!kids.length) return null;
+  // Folded, an agent that ended since the owner looked is said on the line.
+  const fresh = kids.filter((k) => endedUnseen(k, seen)).length;
   return (
-    <div className="k-session-children ml-3 border-l border-line pl-2" data-testid="session-children">
+    <div className="k-session-children" data-testid="session-children">
       <button
         type="button"
         aria-expanded={expanded}
+        aria-label={sum.text}
+        title={sum.text}
         data-testid="children-toggle"
         onClick={() => setOpen(!expanded)}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-caption text-faint hover:text-muted"
+        className="k-kids-sum"
+        data-many={sum.parts.length > 5 || undefined}
       >
-        <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
-        {!expanded && (asking > 0 ? <Mark w="need" className="size-2" /> : running > 0 && <Mark w="work" className="size-2 border-[1.5px]" />)}
-        <span className="shrink-0">{kids.length} agent{kids.length > 1 ? "s" : ""}</span>
-        {asking > 0 && <span className="shrink-0 font-medium text-st-need" data-testid="children-asking">· {asking} {asking === 1 ? "asks" : "ask"} you</span>}
-        {/* Who asks stays whole; the running and waiting counts shorten before the line leaves the bar. */}
-        {running > 0 && <span className="min-w-0 truncate text-accent">· {running} running</span>}
-        {waiting > 0 && <span className="min-w-0 truncate text-warn">· {waiting} waiting</span>}
-        {!expanded && viewing && <span className="min-w-0 truncate text-fg" data-testid="children-viewing">· viewing {sessions[viewing.session_id]?.title || viewing.title}</span>}
+        <ChevronRight className={cn("k-kids-fold", expanded && "rotate-90")} />
+        <span className="k-kids-total" data-testid="children-total"><b className="k-kids-n">{kids.length}</b><span className="k-kids-label"> agent{kids.length > 1 ? "s" : ""}</span></span>
+        <span className="k-kids-parts" data-testid="children-summary">
+          {sum.parts.map((p) => (
+            <span key={p.w} className="k-kids-part" data-watch={p.w} data-testid={p.w === "need" ? "children-asking" : `children-${p.w}`} data-count={p.n} title={p.text}>
+              <Mark w={p.w} /><b className="k-kids-n">{p.n}</b><span className="k-kids-word"> {countName(p.w, p.n)}</span>
+            </span>
+          ))}
+        </span>
+        {!expanded && fresh > 0 && <span className="k-kids-new" data-testid="children-fresh" title="Ended since you looked">{fresh} {NEW.toLowerCase()}</span>}
+        {!expanded && viewing && <span className="k-kids-viewing" data-testid="children-viewing">viewing {sessions[viewing.session_id]?.title || viewing.title}</span>}
       </button>
-      {expanded && kids.map((a) => (
-        <div
-          key={a.id}
-          role="button"
-          tabIndex={0}
-          data-testid="child-session"
-          data-asking={asks(a) || undefined}
-          onClick={() => onPick(a.session_id)}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
-            e.preventDefault();
-            onPick(a.session_id);
-          }}
-          className={cn(
-            "k-child-session group/child flex items-center gap-2 rounded-md px-1.5 py-1 text-caption cursor-default outline-none",
-            "hover:bg-raised",
-            current === a.session_id && "bg-raised shadow-1",
-          )}
-        >
-          {asks(a) ? <span className="grid size-3.5 shrink-0 place-items-center"><Mark w="need" className="size-2" /></span> : <AgentStatus status={a.status} />}
-          <span className={cn("min-w-0 flex-1 truncate", !isLive(a) && !unread[a.session_id] && "text-muted", unread[a.session_id] && "font-medium text-fg")} title={asks(a) ? told[a.session_id]?.text : undefined}>{sessions[a.session_id]?.title || a.title}</span>
-          {asks(a) && <span className="shrink-0 font-medium text-st-need" data-testid="child-asking">asks you</span>}
-          {/* Its parent's section says where it runs; only an agent placed elsewhere names its machine. */}
-          {(sessions[a.session_id]?.machine ?? a.machine ?? undefined) !== (sessions[parentId]?.machine ?? undefined) && <Where s={{ machine: sessions[a.session_id]?.machine ?? a.machine }} />}
-          {unread[a.session_id] ? (
-            <span data-testid="child-unread" title={`${unread[a.session_id]} unread`} className="flex shrink-0 items-center">
-              <span className="size-1.5 rounded-full bg-accent" aria-hidden />
-              <span className="sr-only">{unread[a.session_id]} unread</span>
-            </span>
-          ) : null}
-          {isLive(a) && (
-            <span className="hidden group-hover/child:block">
-              <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(a)} testid="child-stop"><StopIcon /></IconButton>
-            </span>
-          )}
-        </div>
-      ))}
+      {expanded && kids.map((a, i) => {
+        const st = said[i]!;
+        const title = sessions[a.session_id]?.title || a.title;
+        const news = endedUnseen(a, seen);
+        return (
+          // The row opens the agent; Stop is a control of its own over the row's end, never inside the open target.
+          <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-testid="child-row">
+            <div
+              role="button"
+              tabIndex={0}
+              data-testid="child-session"
+              data-watch={st.watch}
+              data-asking={st.watch === "need" || undefined}
+              data-fresh={news || undefined}
+              data-current={current === a.session_id || undefined}
+              aria-label={`${title}, ${st.title}${news ? ", ended since you looked" : ""}`}
+              // The row may be too narrow for the title or the word: the tooltip carries both.
+              title={`${title}: ${st.title}`}
+              onClick={() => onPick(a.session_id)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                onPick(a.session_id);
+              }}
+              className="k-child-session"
+            >
+              <AgentMark w={st.watch} />
+              <span className="k-child-title" data-quiet={(!isLive(a) && !unread[a.session_id] && !news) || undefined} data-new={!!(unread[a.session_id] || news) || undefined} data-testid="child-title">{title}</span>
+              <span className="k-child-state" data-watch={st.watch} data-testid="child-state">{st.word}</span>
+              {/* Its parent's section says where it runs; only an agent placed elsewhere names its machine. */}
+              {(sessions[a.session_id]?.machine ?? a.machine ?? undefined) !== (sessions[parentId]?.machine ?? undefined) && <Where s={{ machine: sessions[a.session_id]?.machine ?? a.machine }} />}
+              {unread[a.session_id] || news ? (
+                <span data-testid={unread[a.session_id] ? "child-unread" : "child-fresh"} title={unread[a.session_id] ? `${unread[a.session_id]} unread` : "Ended since you looked"} className="k-child-dot">
+                  <span aria-hidden />
+                  <span className="sr-only">{unread[a.session_id] ? `${unread[a.session_id]} unread` : "ended since you looked"}</span>
+                </span>
+              ) : null}
+            </div>
+            {isLive(a) && <span className="k-child-stop"><StopAgent a={a} title={title} testid="child-stop" /></span>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -159,7 +176,9 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         type="button"
         data-testid="inbox-button"
         onClick={onInbox}
-        title={held ? "Inbox: alerts are snoozed" : "Inbox"}
+        // The bell counts one thing and says so: what is new since the owner last looked.
+        title={`Inbox. ${COUNTERS.unread(unread)}${held ? ". Alerts are snoozed" : ""}`}
+        aria-label={`Inbox. ${COUNTERS.unread(unread)}${held ? ". Alerts are snoozed" : ""}`}
         className={cn("relative flex h-ctl-md items-center gap-1.5 rounded-md px-2 text-caption hover:bg-raised", unread ? "text-fg" : "text-faint")}
       >
         {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}

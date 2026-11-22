@@ -618,7 +618,7 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   const resume = (w: waits.WaitRecord) => { waits.cancel(w.id); agents.onTurnStart(a.session_id); };
   const w1 = park();
   expect(p.to()).toHaveLength(1);
-  expect(p.to()[0]).toMatch(new RegExp(`^\\[harness\\] Agent "[^"]+" \\(${a.id}\\) is parked on timer wait ${w1.id}, due in 1 min \\(at \\d\\d:\\d\\d\\)\\. It has not finished; its report comes when it does\\.$`));
+  expect(p.to()[0]).toMatch(new RegExp(`^\\[harness\\] Agent "[^"]+" \\(${a.id}\\) is waiting for timer wait ${w1.id}, due in 1 min \\(at \\d\\d:\\d\\d\\)\\. It has not finished; its report comes when it does\\.$`));
   resume(w1);
   resume(park());
   const w3 = park();
@@ -631,8 +631,8 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   flush(p.id);
   expect(p.to()).toHaveLength(2);
   expect(p.to()[1]).toContain("report of B");
-  expect(p.to()[1]!.split("parked on").length - 1).toBe(1);
-  expect(p.to()[1]).toContain(`(${a.id}) is parked on timer wait ${w3.id}`);
+  expect(p.to()[1]!.split("is waiting for").length - 1).toBe(1);
+  expect(p.to()[1]).toContain(`(${a.id}) is waiting for timer wait ${w3.id}`);
   // It parks again, then finishes: only the report goes, and it starts a turn.
   resume(w3);
   resume(park());
@@ -642,12 +642,12 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   flush(p.id);
   expect(p.to()).toHaveLength(3);
   expect(p.to()[2]).toContain("final of A");
-  expect(p.to()[2]).not.toContain("parked on");
+  expect(p.to()[2]).not.toContain(" is waiting for ");
   // A new task is a new run: its first park wakes the parent again.
   await agents.send(a.id, "task two");
   const w5 = park();
   expect(p.to()).toHaveLength(4);
-  expect(p.to()[3]).toContain(`parked on timer wait ${w5.id}`);
+  expect(p.to()[3]).toContain(`) is waiting for timer wait ${w5.id}`);
   // A parent held after the owner's Stop is not woken by a first park: it rides too.
   const c = await p.start();
   held.add(p.id);
@@ -659,14 +659,14 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   agents.onTurnEnd(p.id, "end_turn");
   flush(p.id);
   expect(p.to()).toHaveLength(5);
-  expect(p.to()[4]).toContain(`(${c.id}) is parked on timer wait ${w6.id}`);
+  expect(p.to()[4]).toContain(`(${c.id}) is waiting for timer wait ${w6.id}`);
   resume(w5);
   end(a, "end_turn", "second of A");
   await settled();
   flush(p.id);
   expect(p.to()).toHaveLength(6);
   expect(p.to()[5]).toContain("second of A");
-  expect(p.to()[5]).not.toContain("parked on");
+  expect(p.to()[5]).not.toContain(" is waiting for ");
   waits.cancel(w6.id);
 });
 
