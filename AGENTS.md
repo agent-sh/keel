@@ -144,7 +144,11 @@ under `~/.cache/keel-work/bun/research/`.
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving
   the real UI against the real daemon, with `shoot(page, name)` screenshots in
-  both themes. Unit tests (`bun test`, next to the code) only for pure logic an
+  both themes. A spec passes every time on the scripted daemon or is skipped
+  by a probe that says what is missing (`test.skip(cond, "needs X: why")`): it
+  waits for the product's own signal, never for a time, puts back what it
+  changed, and asks the stand-in for a model's part with `ask(words, script)`
+  (`test/e2e/shots.ts`). Unit tests (`bun test`, next to the code) only for pure logic an
   e2e cannot reach.
 - A test assumes nothing about the machine it runs on. The test files of a run
   share one process and run in the folder's order on the disk, which differs
@@ -202,6 +206,12 @@ bunx tsc --noEmit -p .          # typecheck
 KEEL_URL=http://127.0.0.1:<port> bunx playwright test   # e2e against that dev daemon (required)
 scripts/smoke.sh [SPEC...]       # browser specs with no credentials and no network: a daemon of its own on the
                                # scripted provider in a throwaway folder and network namespace (default: chat.spec.ts)
+bun scripts/flake.ts [--runs N] [--seed N] [SPEC...]
+                               # the specs N times (3), the files in another order each time, through smoke.sh (or against
+                               # KEEL_URL, or --via "CMD"): a table of the tests that did not pass every time, and for a
+                               # flaky one the specs it fails after. For a review: a change's failures, or the suite's own.
+                               # A run of specs ends with "Summary: N passed, N failed, N skipped (counts by reason)";
+                               # spec files named out of the order by name run in the order named (playwright.config.ts)
 bun test ./test/cli              # the command line e2e (builds the binary, scripted model)
 bun test ./scripts               # the dev launcher's decisions (scripts/dev-watch.ts)
 scripts/remote-verify.sh --host build-box [--e2e SPEC...] [COMMIT]
