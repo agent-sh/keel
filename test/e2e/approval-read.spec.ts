@@ -445,3 +445,34 @@ test("a command for another machine names the machine on its card", async ({ pag
     await drop(request, [s.id]);
   }
 });
+
+// A call the judge refused offers one retry. That button is under a box of
+// text: it is held like any answer (it does nothing in its first second on
+// the page), and the text over it is shown with nothing hidden.
+test("Allow one retry is held like an answer", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Read: a refused call" } })).json()).session as { id: string };
+  await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "auto", sandbox: "off" } });
+  // (The scripted judge refuses a command that names judge-deny.txt.)
+  await request.post(`/api/sessions/${s.id}/messages`, { data: { text: `script:calls ${JSON.stringify([bash("printf marker\u00a0x > judge-deny.txt")])}` } });
+  const blocked = async () => ((await (await request.get(`/api/sessions/${s.id}/blocked`)).json()).blocked as { retry?: boolean }[]);
+  try {
+    await expect.poll(async () => (await blocked()).length, { timeout: 30_000 }).toBe(1);
+    await page.goto(`/s/${s.id}`);
+    const card = page.getByTestId("blocked").first();
+    const retry = card.getByTestId("blocked-retry");
+    await expect(retry).toBeVisible();
+    // Pressed as it appears: nothing is allowed, and the press is answered.
+    await expect(retry).toHaveAttribute("aria-disabled", "true");
+    await retry.click({ force: true });
+    await expect(card.getByTestId("approval-refused")).toHaveText(/^Not yet/);
+    expect((await blocked())[0]!.retry).toBeFalsy();
+    await expect(card.getByTestId("hidden-char")).toHaveText("<U+00A0>");
+    // Standing for the settle time, it acts.
+    await expect(retry).not.toHaveAttribute("aria-disabled", "true", { timeout: 5000 });
+    await retry.click();
+    await expect.poll(async () => (await blocked())[0]!.retry).toBe(true);
+  } finally {
+    await drop(request, [s.id]);
+  }
+});

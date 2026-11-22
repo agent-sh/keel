@@ -1,6 +1,35 @@
 import { RotateCcw, ShieldX, X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
+import { useNudge, usePress, useStood } from "./ApprovalCard.tsx";
+import { Spelled } from "./Spelled.tsx";
+
+// The one retry the owner can let through. It lets a call run, so it is held like an answer on a
+// request: it does nothing as it appears or within a moment of moving, and a press it refuses is
+// answered (the ring, and the reason said once).
+function Retry({ onAllow }: { onAllow: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const stood = useStood(ref);
+  const pressed = usePress(stood.now, (ok) => ok);
+  const nudge = useNudge();
+  return (
+    <>
+      <button
+        ref={ref}
+        data-testid="blocked-retry"
+        aria-disabled={!stood.ready || undefined}
+        data-nudge={nudge.mark}
+        onPointerDown={pressed.onPointerDown}
+        onMouseDown={pressed.onMouseDown}
+        onClick={(e) => { if (pressed.said(e)) onAllow(); else nudge.refuse("Not yet: it has only just come under your hand"); }}
+        className="k-grant inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line px-3 text-ui hover:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+      >
+        <RotateCcw className="size-3.5" /> Allow one retry
+      </button>
+      {nudge.line}
+    </>
+  );
+}
 
 // Calls the judge refused in this session (full auto or reviewer mode), above
 // the composer: what and why, and one retry the owner can let through. Nothing
@@ -21,16 +50,11 @@ export function BlockedCards({ sessionId }: { sessionId: string }) {
             <span className="font-mono text-caption text-faint">{b.tool}{b.risk !== "unknown" ? ` · risk ${b.risk}` : ""}{(b.count ?? 1) > 1 ? ` · ${b.count} times` : ""}</span>
             <button onClick={() => setHidden((s) => new Set(s).add(b.id))} className="ml-auto grid size-7 place-items-center rounded-lg text-faint hover:bg-hover hover:text-fg" title="Dismiss"><X className="size-4" /></button>
           </div>
-          <pre className="mx-4 mt-2 max-h-32 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-caption whitespace-pre-wrap break-all">{b.summary}</pre>
+          {/* What was refused, as it is written: a character that hides or reorders text is spelled out. */}
+          <pre dir="ltr" className="mx-4 mt-2 max-h-32 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-caption whitespace-pre-wrap break-all"><Spelled text={b.summary} /></pre>
           <div className="flex items-center gap-2 px-4 py-3">
             <p className="min-w-0 flex-1 text-caption text-muted" data-testid="blocked-reason">{b.reason}</p>
-            <button
-              data-testid="blocked-retry"
-              onClick={() => allowRetry(sessionId, b.id)}
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line px-3 text-ui hover:bg-hover"
-            >
-              <RotateCcw className="size-3.5" /> Allow one retry
-            </button>
+            <Retry onAllow={() => allowRetry(sessionId, b.id)} />
           </div>
         </div>
       ))}

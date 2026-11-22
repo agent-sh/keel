@@ -491,7 +491,7 @@ export function usePress<T>(judge: () => T, ok: (said: T) => boolean) {
 // A press that was refused is never kept for later, and never dropped with no
 // sign: the control is marked for the settle time (`mark`, and it moves once),
 // and the reason is said once for a screen reader (`line`).
-function useNudge() {
+export function useNudge() {
   const [why, setWhy] = useState("");
   const timer = useRef(0);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -514,6 +514,27 @@ function useMedia(query: string): boolean {
     (f) => { const m = matchMedia(query); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },
     () => matchMedia(query).matches,
   );
+}
+
+// A control outside the lists of requests that is held like an answer: it acts once it has stood
+// whole in the window, unmoved, for the settle time, so not as it appears and not as something
+// moves it under the hand. `ready` is for how it is drawn; `now` judges at the instant of a press.
+export function useStood(ref: RefObject<HTMLElement | null>) {
+  const at = useRef<Stand | undefined>(undefined);
+  const [ready, setReady] = useState(false);
+  const now = useCallback(() => {
+    const el = ref.current, t = performance.now();
+    if (!el || document.visibilityState !== "visible") { at.current = undefined; return false; }
+    const r = el.getBoundingClientRect();
+    at.current = stand(at.current, { x: r.left, y: r.top, whole: r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth }, t);
+    return settled(at.current, t);
+  }, [ref]);
+  useEffect(() => {
+    setReady(now());
+    const timer = window.setInterval(() => setReady(now()), READ_MS);
+    return () => window.clearInterval(timer);
+  }, [now]);
+  return { ready, now };
 }
 
 // A control that held the focus and goes away hands it to its list's label,
