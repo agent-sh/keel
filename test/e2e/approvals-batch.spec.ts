@@ -803,3 +803,69 @@ test("a row the owner scrolled to acts as the scroll ends, a list that changed m
     expect((await cards()).filter((c) => c.state === "allowed").map((c) => c.id)).toEqual([reached[0]]);
   } finally { await request.delete(`/api/sessions/${id}`); }
 });
+
+test("a card that was whole reads cut when its pane narrows, and whole again when it widens", async ({ page, request }) => {
+  // Eight long lines: whole in one wide pane, wrapped past the card's box in a pane a quarter as wide.
+  const line = (i: number) => `echo ${"word ".repeat(12)}${i}`;
+  const command = `${Array.from({ length: 7 }, (_, i) => line(i + 1)).join("\n")}\n${line(8)} > out.txt`;
+  const { id, cards } = await start(request, "A pane that narrows", [{ name: "Bash", input: { command } }]);
+  try {
+    await expect.poll(async () => (await cards()).length).toBe(1);
+    await page.goto(`/s/${id}`);
+    const card = page.getByTestId("approval");
+    const once = card.getByTestId("allow-once");
+    await expect(card).toBeVisible();
+    await expect(card).not.toHaveAttribute("data-must-open", "true");
+    await expect(once).toBeFocused();
+    await expect(card).toHaveAttribute("data-live", "true");
+    // The panes change with no resize of the window, by a press made in the page (the keyboard stays
+    // where it is): the card says it is cut, takes no answer, and the keyboard leaves its Allow once.
+    const panes = (n: number) => page.evaluate((n) => document.querySelector<HTMLElement>(`[data-testid="panes-${n}"]`)!.click(), n);
+    await panes(4);
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    await expect(card.getByTestId("approval-cut")).toBeVisible();
+    await expect(page.getByTestId("approvals")).toBeFocused();
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(300);
+    expect((await cards())[0]!.state).toBe("pending");
+    // One pane again: whole, and it can be answered.
+    await panes(1);
+    await expect(card).not.toHaveAttribute("data-must-open", "true");
+    await expect(card.getByTestId("approval-cut")).toHaveCount(0);
+    await expect(card).toHaveAttribute("data-live", "true");
+    await once.click();
+    await expect.poll(async () => (await cards())[0]!.state).toBe("allowed");
+  } finally { await request.delete(`/api/sessions/${id}`); }
+});
+
+test("a request drawn as the owner leaves its pane records no error", async ({ page, request }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const made: string[] = [];
+  try {
+    const quiet = await start(request, "Somewhere else", [], { later: true });
+    made.push(quiet.id);
+    for (const way of ["home", "another session", "home"]) {
+      const { id, send, cards } = await start(request, `Left for ${way}`, [bash(`left${made.length}`)], { later: true });
+      made.push(id);
+      await page.goto(`/s/${id}`);
+      await expect(paneOf(page, id).getByTestId("composer")).toBeFocused();
+      await expect(page.getByTestId("sidebar").locator(`[data-session="${quiet.id}"]`).first()).toBeVisible();
+      // The owner leaves in the same task in which the card is drawn: the region it was to be placed in is gone two frames later.
+      await page.evaluate(([way, quiet]) => {
+        const mo = new MutationObserver(() => {
+          if (!document.querySelector('[data-testid="composer-asks"] [data-testid="approval"]')) return;
+          mo.disconnect();
+          if (way === "home") { history.pushState({}, "", "/"); dispatchEvent(new PopStateEvent("popstate")); }
+          else document.querySelector<HTMLElement>(`[data-testid="sidebar"] [data-session="${quiet}"]`)!.click();
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
+      }, [way, quiet.id] as const);
+      await send();
+      await expect.poll(async () => (await cards()).length).toBe(1);
+      await expect(page).not.toHaveURL(new RegExp(`/s/${id}$`));
+      await page.waitForTimeout(500);
+      expect(errors, `left for ${way}`).toEqual([]);
+    }
+  } finally { for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); } }
+});
