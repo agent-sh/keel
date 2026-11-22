@@ -55,6 +55,14 @@ const RELAY_STEADY_MS = 30_000; // a stream that lived this long was being read:
 export const steadyMs = () => Number(process.env.KEEL_FLEET_STEADY_MS) || RELAY_STEADY_MS;
 const FACTS_FRESH_MS = 60_000; // load1 averages a minute: a queue limit older than that is read again
 
+// What a page needs of a session to draw its row: checked of every session another daemon sends.
+const SESSION_ID = /^[\w-]{1,128}$/;
+export function soundSession(s: any): s is Session {
+  return !!s && typeof s === "object" && typeof s.id === "string" && SESSION_ID.test(s.id) && typeof s.title === "string" && typeof s.model === "string"
+    && typeof s.workspace === "string" && Number.isFinite(s.updated) && Number.isFinite(s.created) && typeof s.phase === "string"
+    && !!s.settings && typeof s.settings === "object" && !!s.usage && typeof s.usage === "object";
+}
+
 export class Fleet {
   readonly id: string;
   readonly name: string;
@@ -623,7 +631,7 @@ export class Fleet {
     if (f.t === "feature" && f.name === "fleet_outbox") { this.onOutbox?.(id); return; }
     if (f.t === "snapshot") {
       this.onOutbox?.(id);
-      relay.sessions = new Map((f.sessions as Session[]).map((s) => [s.id, s]));
+      relay.sessions = new Map((Array.isArray(f.sessions) ? f.sessions : []).filter(soundSession).map((s: Session) => [s.id, s]));
       relay.stale = false;
       relay.silence = relaySilence(f.ping_ms);
       const link = this.links.get(id);
@@ -644,8 +652,13 @@ export class Fleet {
       relay.statesRev = typeof f.rev === "number" ? f.rev : undefined;
     }
     if (f.t === "session") {
-      if (f.session.archived) relay.sessions.delete(f.session.id);
-      else relay.sessions.set(f.session.id, f.session);
+      // A session that is not whole (an id alone, as a daemon that is not this build may send) is no
+      // row a page can draw: only its going is taken from such a frame.
+      const id = f.session?.id;
+      if (typeof id !== "string" || !SESSION_ID.test(id)) return;
+      if (f.deleted || f.session.archived) relay.sessions.delete(id);
+      else if (soundSession(f.session)) relay.sessions.set(id, f.session);
+      else return;
     }
     if (f.t === "feature" && f.name === "state" && f.session_id) {
       if (f.data) relay.states.set(f.session_id, f.data as SessionState); else relay.states.delete(f.session_id);

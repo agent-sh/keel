@@ -18,7 +18,7 @@ const connection = await import("../automation/connection.ts");
 const { setDeps } = await import("../automation/core.ts");
 const snooze = await import("../automation/snooze.ts");
 const { bindFollow } = await import("./follow.ts");
-const { Fleet, relayRetry, relaySilence, RELAY_PING_MS } = await import("./fleet.ts");
+const { Fleet, relayRetry, relaySilence, RELAY_PING_MS, soundSession } = await import("./fleet.ts");
 const { plainReason, whyUnreached } = await import("./link.ts");
 
 // The waits are read when they are used, so they are set here, after every module is loaded
@@ -157,11 +157,13 @@ test("a stream is given up after two missed pings, and a machine is asked again 
   expect([0, 30_000, 300_000, 3_600_000].map(relayRetry)).toEqual([1_000, 3_000, 30_000, 60_000]);
 });
 
-test("a link's failure is said in a person's words", () => {
+test("a link's failure is said in a person's words, and a session that is not whole is no session", () => {
   expect(whyUnreached(Object.assign(new TypeError("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" }))).toBe("nothing answers there");
   expect(whyUnreached(new Error("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()"))).toBe("the connection was cut");
   expect(whyUnreached(Object.assign(new Error("The operation timed out."), { name: "TimeoutError" }), 5_000)).toBe("no answer within 5 s");
   expect(whyUnreached(new Error("certificate has expired. For more information, pass `verbose: true` in the second argument to fetch()"))).toBe("certificate has expired.");
   expect(plainReason("cannot reach http://127.0.0.1:41299: nothing answers there")).toBe("nothing answers there");
   expect(plainReason("the stream went silent")).toBe("the stream went silent");
+  const whole = { id: "s1", title: "", model: "m", workspace: "/w", created: 1, updated: 2, phase: "idle", archived: false, usage: {}, head: null, settings: {} };
+  expect([soundSession(whole), soundSession({ id: "s1" }), soundSession({ ...whole, id: "../x" }), soundSession(null), soundSession({ ...whole, settings: null })]).toEqual([true, false, false, false, false]);
 });
