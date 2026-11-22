@@ -10,7 +10,7 @@ import { seedComposer } from "./ui.ts";
 import { servedUi } from "./hotui.ts";
 import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
-import { BEAT_MS, CONNECT_MS, HIDDEN_RESYNC_MS, look, PING, retryGap, SLOW_BEAT_MS, type Beat } from "./heartbeat.ts";
+import { ASKS, BEAT_MS, GRACE_MS, HIDDEN_RESYNC_MS, look, PING, PROBE_MS, retryGap, rttOf, SLEPT_MS, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips } from "./heartbeat.ts";
 
 export type ProvidersReport = {
   keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
@@ -59,8 +59,11 @@ type State = {
   errors: ErrorRecord[];
   connected: boolean;
   // The socket is open and the open sessions are restored on it (the replay
-  // came and their snapshots landed): until then the page is catching up.
+  // came and their snapshots landed): until then the page is catching up, and
+  // what it shows is as of when it lost the daemon (downSince).
   synced: boolean;
+  // The daemon has not answered two asks in a row: slow to answer, not yet lost.
+  slow: boolean;
   // The first listing of each arrived (first-run screens wait for it). `models`:
   // the few a page shows before a list is opened (see loadModelsBrief), or
   // all of them; `allModels`: the whole listing is in `models`.
@@ -73,7 +76,7 @@ type State = {
 };
 
 let state: State = { loaded: { sessions: false, models: false, allModels: false }, modelCount: 0,
-  sessions: {}, questionCalls: {}, questionChildren: {}, questionAsks: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
+  sessions: {}, questionCalls: {}, questionChildren: {}, questionAsks: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, slow: false, providers: null, queues: {}, status: {},
 };
 const subs = new Set<() => void>();
 // What the socket brings is put into the state at once, in its order, and
@@ -142,8 +145,33 @@ export function useModels(): ListedModel[] {
 // sends the same request once more. Cancelling sends nothing again.
 export const presenceHook: { sign?: (action: string) => Promise<string | null> } = {};
 
+// The reads on their way. When the page loses the daemon, and again when it is back, they are
+// given up: what they would bring is read again by the catch-up, and a read sent into a link
+// that says nothing would otherwise hold one of the browser's few connections to the daemon
+// for as long as the link says nothing, in the way of the reads that catch up. A change (a
+// message, an answer) is never given up here: it may have arrived.
+let reads = new AbortController();
+function cutReads() {
+  reads.abort();
+  reads = new AbortController();
+}
+
+// What the page says of itself by itself (where its owner is, that a box holds a draft): words
+// the daemon lets run out when they are not repeated. They are not said into a link that says
+// nothing, and those on their way are given up with it, as the reads are: there they would
+// only hold the connections the catch-up needs.
+export function says(path: string, body?: unknown): void {
+  if (opened && !state.connected) return;
+  fetch(path, { method: "POST", headers: body === undefined ? undefined : { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), keepalive: true, signal: reads.signal }).catch(() => {});
+}
+
 export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const send = (extra?: Record<string, string>) => fetch(apiPath(path), { ...init, headers: { "content-type": "application/json", ...init?.headers, ...extra } });
+  const asks = !init?.method || init.method === "GET";
+  const cut = reads.signal;
+  const signal = asks ? (init?.signal ? AbortSignal.any([init.signal, cut]) : cut) : init?.signal;
+  const send = (extra?: Record<string, string>) => fetch(apiPath(path), { ...init, signal, headers: { "content-type": "application/json", ...init?.headers, ...extra } })
+    // Given up with the link: a dropped request, as the network would have made it.
+    .catch((e) => { throw asks && cut.aborted && !init?.signal?.aborted ? new TypeError(`Failed to fetch ${path}: Keel stopped answering`) : e; });
   // A body cut short (the daemon restarting mid-answer) is a dropped request,
   // as fetch reports one; an answer that is not JSON is a fault of its own.
   // Neither becomes an empty object a caller then reads fields of.
@@ -744,21 +772,28 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
 // running turn has streamed so far, then sends live (see src/server/live.ts).
 //
 // The page never takes the feed for live on trust (heartbeat.ts). While it is
-// on screen and the socket is quiet it asks every two seconds; two asks with
-// no word back and the daemon is not heard: the page says so, with the time
-// of the last frame, and its clocks stop there. Then it tries at once and
-// goes on trying (a new socket, and the old one, which a stalled tunnel gives
-// back whole), closer together the shorter the absence. The first frame from
-// either is the way back: the page reads again all it holds, as at any open.
+// on screen and the socket is quiet it asks every two seconds (less often on
+// a link whose answers take longer). Two asks with no word back and the
+// daemon is slow to answer; three, and it is not heard: the page says so,
+// with the time of the last frame, and its clocks stop there. Then it tries
+// a new socket beside the old one (which a stalled tunnel gives back whole),
+// with small requests that ask whether the daemon answers at all, and the
+// first frame from either socket is the way back: the page reads again all
+// it holds, as at any open, and until those reads are in it goes on saying
+// that what it shows is from before.
 // A hidden page asks nothing; it asks the moment it is seen again.
 let socket: WebSocket | undefined;
-// When the live feed was last known good before a drop (null while it is up,
-// and before the page's first socket). A clock of running work reads
-// `liveNow`: it stops there, since the page no longer knows that the work
-// goes on.
+// When the live feed was last known good before a drop (null while what the
+// page shows is current, and before the page's first socket): from the drop
+// until the page has caught up again, not only until a socket speaks. A clock
+// of running work reads `liveNow`: it stops there, since the page does not
+// know that the work goes on.
 let downAt: number | null = null;
 export const liveNow = () => downAt ?? Date.now();
 export const downSince = () => downAt;
+// Since when what the page shows is not current (null: it is): from the loss until it has caught up.
+export const staleSince = (s: Pick<State, "synced">) => (s.synced ? null : downAt);
+export const useStaleSince = () => useStore(staleSince);
 // The session in the address is asked for at boot, with the page's first
 // loads, not once its view mounts (after the lazy chunks and the first render).
 let preload: { id: string; p: Promise<void> } | null = null;
@@ -792,7 +827,18 @@ let beat: Beat = { heard: 0, pings: 0, due: 0 };
 let beatTimer: ReturnType<typeof setTimeout> | undefined;
 let downTimer: ReturnType<typeof setTimeout> | undefined;
 let downFrom = 0;
-const tries = new Map<WebSocket, number>();
+// The round trips of the last asks, and when each ask still unanswered on the
+// page's socket left. The daemon answers asks in order, so the oldest is the
+// one an answer is for. Asks that waited out an absence are forgotten when it
+// ends: their answers measure the absence, not the link.
+let trips: Trips = [];
+let asked: number[] = [];
+// The way back in this absence (heartbeat.ts): the one socket being tried, and the requests that ask beside it.
+// `round`: the tries that were given their whole time since something last answered.
+type Try = { born: number | null; open: boolean; life: number; stop?: () => void };
+let trying: { socket: Try & { ws?: WebSocket; round: number }; probes: Try[] } = { socket: { born: null, open: false, life: 0, round: 0 }, probes: [] };
+const noTries = () => ({ socket: { born: null, open: false, life: 0, round: 0 }, probes: [] as Try[] });
+let probed = 0;
 let hiddenAt: number | null = null;
 // The absence being lived through: why it began, and the daemon's start as its last socket told it.
 let absence: { why: "silent" | "closed" } | null = null;
@@ -801,6 +847,12 @@ let syncs = 0;
 const every = () => ((navigator as { connection?: { saveData?: boolean } }).connection?.saveData ? SLOW_BEAT_MS : BEAT_MS);
 const hidden = () => typeof document !== "undefined" && !!document.hidden;
 const isOpen = (ws: WebSocket | undefined): ws is WebSocket => !!ws && ws.readyState === WebSocket.OPEN;
+// The link's round trip, for tests and the daemon's panel.
+export const linkRtt = () => rttOf(trips);
+
+function ask(ws: WebSocket) {
+  try { ws.send(PING); asked.push(Date.now()); } catch { /* closing */ }
+}
 
 // The next look at the socket, when it is due.
 function watch() {
@@ -811,17 +863,20 @@ function watch() {
 function onLook() {
   const ws = socket;
   if (!ws || !state.connected || hidden()) return;
-  const l = look(beat, Date.now(), every());
+  const l = look(beat, Date.now(), every(), GRACE_MS, rttOf(trips));
   beat = { heard: beat.heard, pings: l.pings, due: l.due };
   if (l.lost) return lose("silent");
-  if (l.ping && isOpen(ws)) ws.send(PING);
+  if (l.slow !== state.slow) set({ slow: l.slow });
+  if (l.ping && isOpen(ws)) ask(ws);
   watch();
 }
 // Asks now: the page is seen again, or the browser says the network changed.
-function probe() {
+// `once`: what the page shows may be old (it was out of sight a while): this one ask decides.
+function probe(once = false) {
   if (!state.connected || !isOpen(socket)) return;
-  socket.send(PING);
-  beat = { heard: beat.heard, pings: 1, due: Date.now() + every() };
+  ask(socket);
+  const rtt = rttOf(trips);
+  beat = once ? { heard: beat.heard, pings: ASKS, due: Date.now() + Math.max(GRACE_MS, 2 * rtt) } : { heard: beat.heard, pings: 1, due: Date.now() + Math.max(every(), 2 * rtt) };
   watch();
 }
 
@@ -831,49 +886,97 @@ function lose(why: "silent" | "closed") {
   clearInterval(questionPoll);
   drops++;
   // Silent: what the page shows is as of the last frame, not of the moment it gave up.
+  // Lost again while it was catching up: still as of the first loss.
   if (opened) downAt ??= why === "silent" && beat.heard ? beat.heard : Date.now();
-  downFrom = downAt ?? Date.now();
+  cutReads();
+  downFrom = Date.now();
   absence ??= { why };
-  set({ connected: false, synced: false });
+  dropTries();
+  set({ connected: false, synced: false, slow: false });
   downTick();
 }
 
-// One round of tries while the daemon is not heard.
+// Everything on its way is given up (the old socket is not: it may speak again).
+function dropTries() {
+  if (trying.socket.ws) abandon(trying.socket.ws);
+  for (const p of trying.probes) p.stop?.();
+  trying = noTries();
+}
+// One look at the way back while the daemon is not heard (heartbeat.ts).
 function downTick() {
   clearTimeout(downTimer);
   if (state.connected) return;
-  const now = Date.now();
+  const now = Date.now(), gap = retryGap(now - downFrom, hidden());
   // The socket that went silent may speak again (a tunnel that stalled gives it back whole).
-  if (isOpen(socket)) try { socket.send(PING); } catch { /* closing */ }
-  for (const [t, born] of tries) if (now - born >= CONNECT_MS) abandon(t);
-  if (tries.size < 2) attempt();
-  downTimer = setTimeout(downTick, retryGap(now - downFrom, hidden()));
+  if (isOpen(socket) && now - probed >= Math.max(gap, 1000)) { probed = now; ask(socket); }
+  const next = step(trying, now, gap);
+  if (next.socket) {
+    // The try that was given its time and said nothing: the next is given more.
+    const round = trying.socket.born !== null && trying.socket.open ? trying.socket.round + 1 : trying.socket.round;
+    attempt(round, socketBound(round));
+  }
+  for (const k of next.probes) probe1(k, Math.max(PROBE_MS[k]!, gap));
+  downTimer = setTimeout(downTick, step(trying, Date.now(), gap).wait);
 }
-function attempt() {
+// A new socket is tried, in place of the one that was.
+function attempt(round: number, life: number) {
+  if (trying.socket.ws) abandon(trying.socket.ws);
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  tries.set(ws, Date.now());
+  const born = Date.now();
+  trying.socket = { ws, born, open: true, life, round };
   // Open is not heard: the daemon greets a socket the moment it opens, and that
   // first frame is what makes this the page's connection. One that opens and
-  // says nothing (something on the way took the handshake) is given up like
-  // one that never opened.
-  ws.onmessage = (m) => { adopt(ws); onMessage(ws, m); };
-  ws.onclose = () => void tries.delete(ws); // refused, or cut before it spoke: the next round tries again
+  // says nothing (something on the way took the handshake) waits out its time
+  // like one that never opened.
+  ws.onmessage = (m) => { adopt(ws, Date.now() - born); onMessage(ws, m); };
+  // Refused, or cut before it spoke: tried again after the gap, not after its whole time.
+  ws.onclose = () => { if (trying.socket.ws === ws) trying.socket = { ...trying.socket, ws: undefined, open: false }; };
+}
+// A small request that asks whether the daemon answers at all, given `life`.
+function probe1(k: number, life: number) {
+  trying.probes[k]?.stop?.();
+  const cut = new AbortController();
+  const sent = Date.now();
+  const mine: Try = { born: sent, open: true, life, stop: () => cut.abort() };
+  trying.probes[k] = mine;
+  // Without credentials (the route needs none): the browser keeps such requests apart from the
+  // page's own, and the daemon closes each one's connection, so every one is a new connection.
+  // One that went into a connection kept from before the loss would wait there for nothing.
+  fetch("/api/health?link", { cache: "no-store", credentials: "omit", signal: cut.signal }).then((r) => {
+    if (trying.probes[k] !== mine || state.connected) return;
+    mine.open = false;
+    if (r.ok) answered(sent, Date.now() - sent);
+  }, () => { mine.open = false; });
+}
+// The daemon answered a request: the network is back, this slow. A try made before that
+// request left may be dead for good: a new one is made, with its bound from what was measured.
+function answered(sent: number, took: number) {
+  if (state.connected) return;
+  const s = trying.socket;
+  if (s.open && s.born !== null && s.born >= sent) return;
+  for (const p of trying.probes) p.stop?.();
+  trying.probes = [];
+  attempt(0, socketBound(0, took));
+  clearTimeout(downTimer);
+  downTimer = setTimeout(downTick, 50);
 }
 function abandon(ws: WebSocket) {
-  tries.delete(ws);
   ws.onopen = ws.onclose = ws.onmessage = null;
   try { ws.close(); } catch { /* never opened */ }
 }
-// A new socket spoke: it is the page's connection from here.
-function adopt(ws: WebSocket) {
-  for (const t of [...tries.keys()]) if (t !== ws) abandon(t);
-  tries.delete(ws);
+// A new socket spoke: it is the page's connection from here. `took`: from its start to its first frame.
+function adopt(ws: WebSocket, took: number) {
+  trying.socket.ws = undefined;
+  dropTries();
   const old = socket;
   if (old && old !== ws) {
     if (!caught) cutShort = true;
     abandon(old);
   }
   socket = ws;
+  // Nothing is asked on it yet. Its handshake is the first measure of the link: at least one round trip.
+  asked = [];
+  trips = tripped([], took);
   ws.onmessage = (m) => onMessage(ws, m);
   ws.onclose = () => onClose(ws);
   sync(ws);
@@ -881,6 +984,7 @@ function adopt(ws: WebSocket) {
 function onClose(ws: WebSocket) {
   if (socket !== ws) return;
   socket = undefined;
+  asked = [];
   onHello?.(undefined); // a socket that closed before it said hello leaves nothing waiting on it
   if (!caught) cutShort = true;
   // Already not heard (it had gone silent): the tries go on.
@@ -890,36 +994,61 @@ export function connect() {
   downFrom = Date.now();
   downTick();
 }
-// Tries the daemon now instead of at the next round: for a host that knows it is back.
+// Tries the daemon now instead of when the try on its way has had its time: for a host that
+// knows it is back, a page seen again, and a network the browser says changed.
 export function reconnectNow() {
-  if (!state.connected) downTick();
+  if (state.connected) return;
+  dropTries();
+  probed = 0;
+  downTick();
 }
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     if (hidden()) { hiddenAt = Date.now(); clearTimeout(beatTimer); return; }
     const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
     hiddenAt = null;
-    if (!state.connected) { if (downTimer) downTick(); return; }
-    probe();
+    if (!state.connected) { if (downTimer) reconnectNow(); return; }
+    probe(away >= SLEPT_MS);
     // Away long enough for the browser to have put the page to sleep: what it holds is read again, quietly.
     if (away >= HIDDEN_RESYNC_MS && isOpen(socket)) sync(socket, true);
   });
   // The browser saw the network change: asked now, in either state.
-  addEventListener("online", () => { if (state.connected) probe(); else if (downTimer) downTick(); });
+  addEventListener("online", () => { if (state.connected) probe(); else if (downTimer) reconnectNow(); });
+}
+
+// A request that is waited for only while the daemon is heard: when the page loses it, the wait
+// ends as a request the network dropped does (a TypeError), whatever becomes of the request.
+// For what is safe to ask again (a send under its own id).
+export function whileHeard<T>(p: Promise<T>): Promise<T> {
+  if (!state.connected) return p;
+  return new Promise<T>((done, fail) => {
+    const off = subscribe(() => { if (!state.connected) { off(); fail(new TypeError("Failed to fetch: Keel stopped answering")); } });
+    p.then((v) => { off(); done(v); }, (e) => { off(); fail(e); });
+  });
 }
 
 // Everything the page holds is read again against this socket: the daemon
 // replays what came after the page's cursors, and the lists and the features
 // load as at the page's start. `quiet`: the socket was never lost (the page
 // was hidden a while), so nothing says "Catching up".
-function sync(ws: WebSocket, quiet = false) {
+// `again`: how often this catch-up was started over.
+let syncTimer: ReturnType<typeof setTimeout> | undefined;
+function sync(ws: WebSocket, quiet = false, again = 0) {
   const mine = ++syncs;
+  // Back from an absence: what was asked into it is asked again below, on connections made now.
+  if (opened && (!state.connected || again)) cutReads();
+  // A catch-up that does not end (a read went into a connection that died without a word) is
+  // started over, its reads given up for new ones: after twenty seconds, or twelve of the
+  // link's round trips when that is longer, and twice as long each time after.
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    if (mine === syncs && socket === ws && state.connected && !state.synced) sync(ws, quiet, again + 1);
+  }, Math.max(20_000, 12 * rttOf(trips)) * 2 ** Math.min(again, 4));
   clearTimeout(downTimer);
   downTimer = undefined;
+  // The lost time stands until the reads below are in: what the page shows is from then.
   const since = downAt;
   const was = absence;
-  downAt = null;
-  absence = null;
   caught = false;
   beat = { heard: Date.now(), pings: 0, due: Date.now() + every() };
   const loaded = Object.entries(state.events);
@@ -1000,6 +1129,8 @@ function sync(ws: WebSocket, quiet = false) {
   // answer from a socket that dropped meanwhile declares nothing.
   Promise.all(loads).then(() => {
     if (socket !== ws || mine !== syncs || !state.connected) return;
+    downAt = null;
+    absence = null;
     set({ synced: true });
     // The absence is told to the daemon, which keeps it where the owner can read it
     // afterwards. Not a daemon that restarted meanwhile: its restart is kept already.
@@ -1021,14 +1152,21 @@ function onMessage(ws: WebSocket, m: MessageEvent) {
   if (socket !== ws) return;
   beat.heard = Date.now();
   beat.pings = 0;
+  if (state.slow) set({ slow: false });
   // The socket that went silent speaks again: it is the connection again, and
-  // what the page holds is read against it before this frame is.
+  // what the page holds is read against it before this frame is. The asks
+  // that waited out the absence measure nothing of the link.
   if (!state.connected) {
-    for (const t of [...tries.keys()]) abandon(t);
+    dropTries();
+    asked = [];
     sync(ws);
   }
   const f = JSON.parse(m.data) as Frame | SocketFrame;
-  if (f.t === "pong") return;
+  if (f.t === "pong") {
+    const at = asked.shift();
+    if (at) trips = tripped(trips, Date.now() - at);
+    return;
+  }
   // The replay's whole draft, also at the rev of a snapshot that came before this socket
   // opened (nothing was emitted between them): the open dropped the snapshot's copy.
   if (f.t === "draft") delivered(() => { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); });

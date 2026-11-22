@@ -3,7 +3,7 @@
 // and text or images put in from outside are taken into the box once.
 import type { Draft, DraftFile } from "../../../src/server/routes/drafts.ts";
 import type { Attachment } from "./images.ts";
-import { api, reportError } from "./store.ts";
+import { api, reportError, says } from "./store.ts";
 
 export type { Draft, DraftFile };
 
@@ -54,7 +54,7 @@ export function typing(sid: string) {
   const now = Date.now();
   if (now - (lastPing.get(sid) ?? 0) < 10_000) return;
   lastPing.set(sid, now);
-  fetch(`/api/sessions/${sid}/presence`, { method: "POST" }).catch(() => {});
+  says(`/api/sessions/${sid}/presence`);
 }
 
 // Whether this page's box holds an unsent message (text or images), said when
@@ -65,8 +65,7 @@ export function typing(sid: string) {
 const DRAFT_BEAT_MS = 30_000;
 const page = crypto.randomUUID();
 const said = new Map<string, boolean>();
-const post = (sid: string, draft: boolean) =>
-  fetch(`/api/sessions/${sid}/presence`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ draft, page }), keepalive: true }).catch(() => {});
+const post = (sid: string, draft: boolean) => says(`/api/sessions/${sid}/presence`, { draft, page });
 export function draftHere(sid: string, present: boolean): () => void {
   if ((said.get(sid) ?? false) !== present) post(sid, present);
   said.set(sid, present);

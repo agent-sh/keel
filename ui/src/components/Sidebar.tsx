@@ -34,6 +34,8 @@ import { COUNTERS, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, coun
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
+import { useLink } from "./Stale.tsx";
+import { useReach } from "../lib/reach.ts";
 import { useAuto } from "../lib/automation.ts";
 import { failWord, folderOf, Mark, modelOf, stateClock, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
@@ -186,7 +188,8 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
   const st = useSessionState(s);
   const w = st.watch;
   // A machine that does not answer: what its rows say is the last it told, so they are dimmed and their clocks stand.
-  const offline = useWhere(s)?.reach === "offline";
+  // The state says so itself (lib/watch.ts: `offline`, and `as_of` when it was last told), until the machine has stayed heard.
+  const offline = !!st.offline;
   const now = useNow(timed(st) && !offline);
   // A row of one line may have no room for its reason: the card beside it comes sooner.
   const card = useContext(CardCtx)(s, lines === "one" ? 250 : 450, lines === "two");
@@ -281,6 +284,8 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
             : SPELLED.includes(w)
             ? <span className="k-row-state" data-testid="row-state">{stateLabel(st)}</span>
             : lines === "two" && <RestLine s={s} />}
+          {/* A state that is not current because the page does not hear the daemon says since when. (A machine out of reach: above.) */}
+          {!left && !offline && !!st.as_of && <span className="shrink-0 whitespace-nowrap text-micro text-muted" data-testid="row-asof">{asOf(clock(st.as_of))}</span>}
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
           {!offline && SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{whyText(st, now)}</span>}
           {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
@@ -716,6 +721,10 @@ function fitSummary(el: HTMLElement) {
 function Summary() {
   const counts = useCounts();
   const sessions = useStore((s) => s.sessions);
+  // The machines out of reach, for the offline count: its name when it is one machine, and since when in its tip.
+  const out = useReach((x) => x.unheard);
+  const down = [...new Set(counts.offline.map((id) => sessions[id]?.machine).filter((m): m is string => !!m && !!out[m]))].map((m) => out[m]!);
+  const since = down.map((m) => `${m.name}${m.since ? ` since ${clock(m.since)}` : ""}`).join(", ");
   const shown = COUNTS.filter((c) => counts[c.kind].length > 0);
   const calls = counts.need.length + counts.fail.length > 0;
   const line = useRef<HTMLDivElement>(null);
@@ -762,10 +771,10 @@ function Summary() {
         const { n, word } = said(c.kind, ids);
         return (
           <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} tabIndex={c.kind === at ? 0 : -1} onFocus={() => setStop(c.kind)} onClick={() => jumpNext(c.kind)}
-            aria-label={`${n} ${word}. Go to the next`} title={`${c.says}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
+            aria-label={`${n} ${c.kind === "offline" && since ? `on ${since}, ${word}` : word}. Go to the next`} title={`${c.says}${c.kind === "offline" && since ? ` (${since})` : ""}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
             {c.watch ? <Mark w={c.watch} /> : c.kind === "offline" ? <ServerOff aria-hidden="true" /> : <span className="k-sum-dot" aria-hidden="true" />}
             <b className="k-sum-n">{n}</b>
-            <span className="k-sum-word">{word}</span>
+            <span className="k-sum-word">{c.kind === "offline" && down.length === 1 && <span className="inline-block max-w-[6.5rem] truncate align-bottom" data-testid="sum-offline-name">{down[0]!.name}</span>}{c.kind === "offline" && down.length === 1 ? " " : ""}{word}</span>
           </button>
         );
       })}
@@ -779,8 +788,9 @@ function CountsKeeper() {
   const top = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper), [sessions]);
   const states = useSessionStates(top);
   const unread = useAuto((x) => x.unread.sessions);
-  // The machines that do not answer, as one word: it changes when one of them does.
-  const down = useFleet((x) => [...new Set(top.map((s) => s.machine).filter((m): m is string => !!m))].filter((m) => machineReach(m, x).state === "offline").sort().join(" "));
+  // The machines that do not answer, as one word: it changes when one of them does. A machine is
+  // among them until it has stayed heard a while (lib/reach.ts), so the count does not come and go with a link that does.
+  const down = useReach((x) => Object.keys(x.unheard).sort().join(" "));
   // A session that needs them while its pane shows another for now (a look lies over it) is on no
   // screen: it is counted with what needs them, by the row that stands for it (its own, or its
   // root's when it is an agent's), whatever that row's own state says.
@@ -988,7 +998,8 @@ function Index({ current }: { current: string | null }) {
 
 export function Sidebar({ open }: { open: boolean }) {
   const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts && !e.read_ts).length);
-  const connected = useStore((s) => s.connected);
+  // The link in a word: connected, slow to answer, reconnecting, or catching up (the rows are not current before that is done).
+  const link = useLink();
   const route = useUI((s) => s.route);
   const newUnsent = useUnsent("new");
   const theme = useUI((s) => s.theme);
@@ -1032,7 +1043,7 @@ export function Sidebar({ open }: { open: boolean }) {
   return (
     <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-narrow={(open && rail.narrow) || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: rail.over ? listWidth() : rail.width } : undefined}>
       <div className="k-rail-brand">
-        <span className="k-logo" data-live={connected || undefined} title={connected ? "Connected to the daemon" : "Reconnecting to the daemon"}><Logo /></span>
+        <span className="k-logo" data-live={link.live || undefined} title={link.word}><Logo /></span>
         <span className="k-brand-name">Keel</span>
         {open && !phone() && <PaneCount />}
         {open && toggle}

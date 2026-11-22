@@ -8,12 +8,13 @@ import type { WaitRecord } from "../../../src/automation/waits.ts";
 import type { Activity } from "../../../src/automation/activity.ts";
 import type { Snooze } from "../../../src/automation/snooze.ts";
 import type { Goal, Task } from "../../../src/automation/goals.ts";
-import { actions, api, newer, onFeature, readAtOpen, reportError } from "./store.ts";
+import { actions, api, newer, onFeature, readAtOpen, reportError, says } from "./store.ts";
 import { getUI, navigate, onUI } from "./ui.ts";
 import { keepSince, seeAgents } from "./agent-seen.ts";
 import { ASK_KINDS, WRONG_KINDS } from "../../../src/core/state-words.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { clock } from "./utils.ts";
+import { machineLabel } from "./reach.ts";
 
 export type { Goal, Task };
 export type { Activity, AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, Snooze, WaitRecord };
@@ -197,7 +198,7 @@ export const auto = {
   // `idle_ms`: how long ago the owner last did something in this page (absent: not yet).
   // `shown`: the sessions in the page's panes besides the one worked in.
   presence: (session_id: string | null, focused: boolean, idle_ms?: number, shown: string[] = []) =>
-    fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id, focused, page: PAGE, ...(shown.length ? { shown } : {}), ...(idle_ms === undefined ? {} : { idle_ms }) }), keepalive: true }).catch(() => {}),
+    says("/api/presence", { session_id, focused, page: PAGE, ...(shown.length ? { shown } : {}), ...(idle_ms === undefined ? {} : { idle_ms }) }),
 };
 
 let alertsTimer: ReturnType<typeof setTimeout> | undefined;
@@ -446,11 +447,14 @@ export function focusApproval(id: string, to: Arrival["to"] = "allow") {
 
 // The name of a row's destination: the session, and the agent inside it when
 // the row came from one ("Build › Docs"), so rows from two agents never read alike.
+// A session of another machine is named with its machine: two machines may hold sessions of one title.
 export function placeName(sessions: Record<string, { title?: string } | undefined>, sessionId: string | null, child?: string, fallback?: { title?: string; child_title?: string }) {
+  const machine = machineLabel(sessionId ? splitId(sessionId)?.machine : undefined);
+  const on = (name: string) => (machine && name ? `${name} on ${machine}` : name);
   const parent = sessionId ? sessions[sessionId]?.title || (child ? "" : fallback?.title) || "" : "";
-  if (!child) return parent || fallback?.title || "Keel";
+  if (!child) return on(parent || fallback?.title || "") || "Keel";
   const kid = sessions[child]?.title || fallback?.child_title || `agent ${child.slice(-6)}`;
-  return parent ? `${parent} › ${kid}` : kid;
+  return on(parent ? `${parent} › ${kid}` : kid);
 }
 
 // The session a bare /advisor came from: Settings > Agents then sets its advisor first.

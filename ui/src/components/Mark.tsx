@@ -2,7 +2,7 @@
 // live sessions in order of attention.
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { liveNow, useStore } from "../lib/store.ts";
+import { liveNow, useStaleSince, useStore } from "../lib/store.ts";
 import { WATCH_LABEL, WATCH_RANK, useWatches, type SessionState, type Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { asOf, span } from "../../../src/core/watch.ts";
@@ -17,15 +17,16 @@ export function Mark({ w, className }: { w: Watch; className?: string }) {
 // Re-renders every `ms` while `on`; idle screens do not tick. The time stops
 // while the daemon is unreachable: the page does not know the work goes on.
 export function useNow(on: boolean, ms = 1000) {
-  const connected = useStore((s) => s.connected);
+  // Stopped from the loss until the page has caught up again, not only until a socket speaks.
+  const stale = useStaleSince() !== null;
   const [now, setNow] = useState(liveNow);
   useEffect(() => {
     if (!on) return;
     setNow(liveNow());
-    if (!connected) return;
+    if (stale) return;
     const t = setInterval(() => setNow(liveNow()), ms);
     return () => clearInterval(t);
-  }, [on, ms, connected]);
+  }, [on, ms, stale]);
   return now;
 }
 

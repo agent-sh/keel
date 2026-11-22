@@ -557,7 +557,10 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         }),
       },
 
-      "/api/health": { GET: () => json({ ok: true, pid: process.pid }) },
+      // `?link`: a page asking whether it reaches the daemon at all while its socket says nothing.
+      // That answer's connection is closed after it, so the next such question never goes into a
+      // connection the browser kept from before a network changed, which would say nothing either.
+      "/api/health": { GET: (req: Request) => (new URL(req.url).searchParams.has("link") ? Response.json({ ok: true, pid: process.pid }, { headers: { connection: "close", "cache-control": "no-store" } }) : json({ ok: true, pid: process.pid })) },
 
       // What this daemon serves, with the methods a script may rely on (stable-api.ts).
       "/api/routes": { GET: wrap(() => json(routeTable(routes))) },

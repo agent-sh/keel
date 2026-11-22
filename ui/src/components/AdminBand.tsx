@@ -44,15 +44,21 @@ export function AdminBand() {
     const t = setTimeout(() => setAway(since), Math.max(0, since + AWAY_AFTER_MS - Date.now()));
     return () => clearTimeout(t);
   }, [connected]);
+  // A tab that hangs from the top edge, over the page: it takes no room of its
+  // own, so nothing that is being read moves when it comes or goes (a row of
+  // the page's own pushed the list and the reading line down each time). What
+  // it adds to its first words is its tip, and is read out with it.
   // In the desktop app the title bar says the daemon is away, with the button that starts it: one
   // place, not two. Only while it does say so: a loss the app does not see (the page's own
   // connection cut while the daemon answers) is said here as in a tab.
   if (away !== null && !updated && !(shell?.can.titlebar && shellAway)) {
+    const note = "What it was doing is not known until it is back. Messages you send wait and go out then.";
     return (
-      <div role="status" data-testid="daemon-away" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-warn/40 bg-brass-soft px-4 text-ui animate-in">
-        <Unplug className="size-3.5 shrink-0 text-warn" />
-        <span className="shrink-0 truncate font-medium max-md:shrink">Keel is not reachable since {clock(away)}. Reconnecting.</span>
-        <span className="min-w-0 truncate text-caption text-muted max-md:hidden" data-testid="daemon-away-note">What it was doing is not known until it is back. Messages you send wait and go out then.</span>
+      <div role="status" data-testid="daemon-away" title={note}
+        className="fixed top-0 left-1/2 z-50 flex h-7 max-w-[calc(100vw-1rem)] -translate-x-1/2 items-center gap-2 rounded-b-md border border-t-0 border-warn/40 bg-brass-soft px-3 text-caption shadow-md animate-in max-md:h-[1.125rem] max-md:gap-1.5 max-md:px-2 max-md:text-micro max-md:leading-none">
+        <Unplug className="size-3.5 shrink-0 text-warn max-md:size-3" />
+        <span className="inline-block whitespace-nowrap font-medium max-md:first-letter:uppercase"><span className="max-md:sr-only">Keel is </span>not reachable since {clock(away)}<span className="max-md:sr-only">. Reconnecting.</span></span>
+        <span className="sr-only" data-testid="daemon-away-note">{note}</span>
       </div>
     );
   }

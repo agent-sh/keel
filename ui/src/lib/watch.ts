@@ -13,7 +13,7 @@ import { useAuto } from "./automation.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
 import { sendDrafts, unsentOf, useShelfVersion } from "./send-drafts.ts";
-import { actions, api, downSince, getState, newer, onFeature, readAtOpen, reportError, useStore } from "./store.ts";
+import { actions, api, getState, newer, onFeature, readAtOpen, reportError, useStaleSince, useStore } from "./store.ts";
 import { useReach } from "./reach.ts";
 import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
 
@@ -133,11 +133,18 @@ const fromHeld = (s: Session, h: Held): SessionState => stateOf(s, undefined, { 
 // The page does not hear the daemon (every state, as of the last frame), or
 // the machine the session is on is out of reach (`offline`, as of when it was
 // last heard). A reader shows the word with "as of HH:MM"; the clocks stop there.
-const notCurrent = (st: SessionState, page: number | null, machine: number | undefined): SessionState =>
-  machine !== undefined ? { ...st, as_of: Math.min(machine, page ?? machine), offline: true } : page !== null ? { ...st, as_of: page } : st;
-// When the page stopped hearing the daemon (null while it hears it).
-const usePageSince = () => (useStore((x) => x.connected) ? null : downSince());
-const machineOf = (s: Session | undefined) => (s ? splitId(s.id)?.machine : undefined);
+// A session of this daemon whose tools run on a machine that is out of reach is
+// `offline` too, but its state is this daemon's own and current: no "as of".
+// `machine`: since when its machine is not heard (undefined: it is, or the session is here).
+const notCurrent = (st: SessionState, page: number | null, machine: number | undefined, theirs: boolean): SessionState => {
+  const since = theirs && machine ? Math.min(machine, page ?? machine) : page;
+  return machine !== undefined ? { ...st, offline: true, ...(since ? { as_of: since } : {}) } : page !== null ? { ...st, as_of: page } : st;
+};
+// Since when the page's states are not current (null: they are): from when it stopped hearing the daemon until it has caught up.
+const usePageSince = useStaleSince;
+// The machine a session depends on: the one it lives on (another daemon's session), or the one its tools run on.
+const machineOf = (s: Session | undefined) => (s ? splitId(s.id)?.machine ?? s.machine ?? undefined : undefined);
+const theirs = (s: Session) => !!splitId(s.id);
 
 export function useSessionState(s: Session | undefined): SessionState {
   const state = useTold((x) => (s ? x[s.id] : undefined));
@@ -150,7 +157,7 @@ export function useSessionState(s: Session | undefined): SessionState {
   const kept = s ? keptOf(s.id) : null;
   const agents = useAgentCount(s?.id);
   return useMemo(
-    () => (s ? notCurrent(withUnsent(state ?? fromHeld(s, { approvals: n, asking, agents }), kept), page, machine) : { watch: "idle", agents: 0 }),
+    () => (s ? notCurrent(withUnsent(state ?? fromHeld(s, { approvals: n, asking, agents }), kept), page, machine, theirs(s)) : { watch: "idle", agents: 0 }),
     [s, state, n, asking, agents, kept, page, machine],
   );
 }
@@ -194,7 +201,7 @@ export function useSessionStates(list: Session[]): Record<string, SessionState> 
     for (const s of list) {
       const st = states[s.id] ?? fromHeld(s, { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length), agents: agents[s.id] });
       const far = machineOf(s);
-      out[s.id] = notCurrent(withUnsent(st, keptOf(s.id)), page, far ? unheard[far]?.since : undefined);
+      out[s.id] = notCurrent(withUnsent(st, keptOf(s.id)), page, far ? unheard[far]?.since : undefined, theirs(s));
     }
     return out;
   }, [list, states, calls, children, approvals, agents, shelf, page, unheard]);

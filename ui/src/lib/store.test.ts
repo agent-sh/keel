@@ -43,7 +43,7 @@ const waiting: { url: string; done: (body: unknown, status?: number) => void }[]
 G.fetch = (url: string) => new Promise<Response>((resolve) => waiting.push({ url: String(url), done: (body, status = 200) => resolve(new Response(JSON.stringify(body), { status })) }));
 afterAll(() => Object.assign(G, kept));
 
-const { actions, apply, connect, getState, PAGE, setBootLoad, subscribe, trimmed } = await import("./store.ts");
+const { actions, apply, connect, getState, linkRtt, liveNow, PAGE, setBootLoad, staleSince, subscribe, trimmed } = await import("./store.ts");
 
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
 const asked = (url: string) => waiting.some((w) => w.url === url);
@@ -434,12 +434,22 @@ test("a socket that went silent and speaks again is read against, with no event 
   Date.now = () => t;
   const run = (name: string) => timers.findLast((f) => f.name === name)!();
   try {
+    const before = t;
     t += 2100; run("onLook");
     expect(sock.sent.at(-1)).toEqual({ op: "ping" });
-    expect(getState().connected).toBe(true);
+    expect([getState().connected, getState().slow]).toEqual([true, false]);
+    // Two asks unanswered: slow to answer, not lost. Three and a grace: not heard.
     t += 2000; run("onLook");
+    expect([getState().connected, getState().slow, staleSince(getState())]).toEqual([true, true, null]);
+    t += 2000; run("onLook");
+    expect(getState().connected).toBe(true);
     t += 1000; run("onLook");
-    expect(getState().connected).toBe(false);
+    expect([getState().connected, getState().slow]).toEqual([false, false]);
+    // What the page shows is as of the last frame (a moment before the silence began), and its clocks stand there.
+    const lostAt = staleSince(getState())!;
+    expect(before - lostAt).toBeGreaterThanOrEqual(0);
+    expect(before - lostAt).toBeLessThan(500);
+    expect(liveNow()).toBe(lostAt);
     // It tries a new socket at once, and keeps the silent one.
     const tried = Socket.all.at(-1)!;
     expect(tried).not.toBe(sock);
@@ -448,6 +458,10 @@ test("a socket that went silent and speaks again is read against, with no event 
     await frame({ t: "event", event: event("z", 6), rev: 7100 } as Frame);
     expect(getState().connected).toBe(true);
     expect(getState().synced).toBe(false);
+    // Heard again, not yet caught up: the page still says since when its rows are, and the clocks still stand.
+    t += 6500;
+    expect(staleSince(getState())).toBe(lostAt);
+    expect(liveNow()).toBe(lostAt);
     expect(sock.sent.slice(at).find((m) => m.op === "resume")).toEqual({ op: "resume", cursors: { z: 3 } });
     expect(Socket.all.at(-1)).toBe(tried); // and no other try was made
     expect(getState().events.z!.map((e) => e.seq)).toEqual([1, 2, 3]);
@@ -457,11 +471,53 @@ test("a socket that went silent and speaks again is read against, with no event 
     expect(await answer("/api/sessions/z?events=0", snapshot(row("z", "z-e6"), undefined, 7200))).toBe(true);
     expect(getState().events.z!.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(getState().synced).toBe(true);
+    // Caught up: current again, and the clocks run.
+    expect(staleSince(getState())).toBeNull();
+    expect(liveNow()).toBe(t);
     // After the replay a live event is taken as it comes.
     await frame({ t: "event", event: event("z", 7), rev: 7300 } as Frame);
     expect(getState().events.z!.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     // The absence is told to the daemon once the page is right again.
     expect(asked("/api/connection")).toBe(true);
+  } finally {
+    Date.now = real;
+  }
+});
+
+// The reviewer's slow link: two seconds each way. The page measures the round trip of its
+// asks and gives the next one twice that, so the socket is never taken for lost while it
+// answers; and the answers of asks that waited out an absence measure nothing.
+test("a link whose answers take four seconds is measured and not taken for lost", async () => {
+  const real = Date.now;
+  let t = real();
+  Date.now = () => t;
+  const run = (name: string) => timers.findLast((f) => f.name === name)!();
+  try {
+    // A socket of this test's own.
+    sock.onclose!();
+    sock = Socket.all.at(-1)!;
+    t += 4200; // its greeting took a round trip and a little
+    greet();
+    await settle();
+    expect(linkRtt()).toBe(4200);
+    const asks = () => sock.sent.filter((m) => m.op === "ping").length;
+    // Idle: each ask is answered four seconds later, and the next look comes when twice that has passed.
+    for (let i = 0; i < 6; i++) {
+      t += i === 0 ? 2000 : 4400; run("onLook");
+      expect(asks()).toBe(i + 1);
+      t += 4000; await frame({ t: "pong" });
+      expect([i, getState().connected, getState().slow]).toEqual([i, true, false]);
+    }
+    expect(linkRtt()).toBe(4000);
+    // Lost for good after that: three asks, each given eight seconds.
+    for (const step of [4400, 8000, 8000]) { t += step; run("onLook"); expect(getState().connected).toBe(true); }
+    t += 8000; run("onLook");
+    expect(getState().connected).toBe(false);
+    // The silent socket speaks again with the answers of the asks it held: none of them is a measure.
+    t += 60_000;
+    for (let i = 0; i < 3; i++) await frame({ t: "pong" });
+    expect(getState().connected).toBe(true);
+    expect(linkRtt()).toBe(4000);
   } finally {
     Date.now = real;
   }

@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 import type { Frame, Session } from "../../../src/core/types.ts";
 import { asRemote, relayed, splitId } from "./fleet-ids.ts";
 import { actions, api, apply, dropSession, getState, onFeature, reportError, reportUnlessGone } from "./store.ts";
-import { setBack, setUnheard } from "./reach.ts";
+import { setMachines } from "./reach.ts";
 
 export type Facts = { hostname: string; os: string; arch: string; cpus: number; load1: number; mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[]; sandbox: boolean; keel_version: string; root?: string; measured_ms?: number; helper_dir?: string; home?: string };
 export type Machine = {
@@ -56,12 +56,17 @@ export function machineReach(id: string, s: Pick<State, "machines" | "view"> = s
   return { state: "ok" };
 }
 
-// The machines that were heard and are not now, with since when: what the list's
-// summary says and what marks their sessions' states (lib/reach.ts). A machine
-// that was never reached (not connected since it was added) is not among them.
+// The machines that do not answer, with since when: what the list's count says
+// and what marks their sessions' states (lib/reach.ts). The daemon keeps
+// `offline_since_ms` on a machine until it has stayed heard a while, so the
+// mark holds through a machine that comes and goes; whether a machine can be
+// asked something now is machineReach, which follows every word.
 function tellReach() {
-  setUnheard(state.machines.filter((m) => m.enabled && m.id !== "local" && m.offline_since_ms && machineReach(m.id).state === "offline")
-    .map((m) => ({ id: m.id, name: m.name, since: m.offline_since_ms!, reason: m.daemon?.reason ?? m.reason })));
+  setMachines(
+    state.machines.filter((m) => m.enabled && m.id !== "local" && (m.offline_since_ms || machineReach(m.id).state === "offline"))
+      .map((m) => ({ id: m.id, name: m.name, since: m.offline_since_ms ?? m.checked_ms ?? 0, reason: m.daemon?.reason ?? m.reason })),
+    Object.fromEntries(state.machines.filter((m) => m.id !== "local").map((m) => [m.id, m.name])),
+  );
 }
 
 export function setNewMachine(id: string) {
@@ -176,8 +181,6 @@ onFeature({
       const fr = relayed(f.data.machine, f.data.frame);
       if (fr) apply(fr);
     } else if (f.name === "fleet_machines") reloadMachines();
-    // A machine that was out of reach is heard again: said for a moment where its absence was.
-    else if (f.name === "fleet_back") setBack({ id: f.data.machine, name: f.data.name, since: f.data.since, at: f.data.at });
     else if (f.name === "fleet_sessions") {
       reloadView();
       // The link to that machine came back: transcripts of its sessions open

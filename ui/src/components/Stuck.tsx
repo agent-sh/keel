@@ -12,7 +12,6 @@ import { useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { useSessionStates } from "../lib/watch.ts";
 import { span, useNow } from "./Mark.tsx";
-import { ReachLine } from "./Stale.tsx";
 
 type Item = StuckMark & { s: Session; parent?: Session; elapsed: number };
 
@@ -33,12 +32,7 @@ export function useStuck(): Item[] {
 // What it has not done: a model gives no output, a command writes nothing; a step with no sign to read is long.
 const SAID = (i: Item) => (i.what === "stream" ? "no output" : i.what === "model" ? "no answer yet" : i.what === "tool" ? `${i.text}, no output` : `Long step: ${i.text}`);
 
-// What is wrong at a glance, above the list: the machines out of reach (Stale.tsx), then the turns without progress.
 export function StuckStrip({ open }: { open: boolean }) {
-  return <><ReachLine open={open} /><Stuck open={open} /></>;
-}
-
-function Stuck({ open }: { open: boolean }) {
   const items = useStuck();
   if (!items.length) return null;
   const label = `${items.length} without progress`;

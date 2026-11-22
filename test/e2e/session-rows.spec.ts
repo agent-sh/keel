@@ -183,7 +183,8 @@ test("sessions on another machine sit under that machine's separator; a local on
     await expect(page.getByTestId("station-clock")).toHaveCount(0);
     expect(await row(page, placed.id).locator(".k-row-title").evaluate((el) => getComputedStyle(el).color)).toBe(await sep.locator(".k-machine-sep-count").evaluate((el) => getComputedStyle(el).color));
     // And the line above the list counts them, on screen wherever the machine's separator is: a press goes to the first.
-    await expect(page.getByTestId("sum-offline")).toHaveText(/1\s*offline/i);
+    // (By the machine's name, since it is one machine.)
+    await expect(page.getByTestId("sum-offline")).toHaveText(/^1\s*rowbox\s+offline$/i);
     await expect(page.getByTestId("sum-offline")).toBeInViewport({ ratio: 1 });
     await page.getByTestId("sum-offline").click();
     await expect(row(page, placed.id)).toBeFocused();
