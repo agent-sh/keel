@@ -1091,7 +1091,7 @@ export class Store {
     }
     for (const [id, k] of [...this.kept]) {
       if (this.keptBytes <= target) return;
-      if (k !== keep && !working.has(id)) this.forget(id);
+      if (k !== keep && !working.has(id) && !this.holds.has(id)) this.forget(id);
     }
     for (const r of runsOf((id) => working.has(id))) {
       if (this.keptBytes <= target) return;
@@ -1099,7 +1099,7 @@ export class Store {
     }
     for (const [id, k] of [...this.kept]) {
       if (this.keptBytes <= this.budget) return;
-      if (k !== keep) this.forget(id);
+      if (k !== keep && !this.holds.has(id)) this.forget(id);
     }
   }
 
@@ -1121,7 +1121,7 @@ export class Store {
     }
     for (const [id, k] of stale) {
       // (A session a turn runs in keeps its events however long its turn sits in one call: the turn reads them next, and cannot wait.)
-      if (now - k.at >= BARE_KEPT_MS && !working.has(id)) this.forget(id);
+      if (now - k.at >= BARE_KEPT_MS && !working.has(id) && !this.holds.has(id)) this.forget(id);
       else if (!working.has(id) || now - k.at >= 15 * IDLE_KEPT_MS) this.dropBodies(k);
     }
     // No body is held any more: see rest. Else the collector is only asked to collect when it sees fit.
@@ -1235,6 +1235,22 @@ export class Store {
   }
   // Whether the session's events are in memory (a reader that can wait brings them in first: warm).
   isKept(session_id: string): boolean { return this.kept.has(session_id); }
+
+  // A session's kept events stay for as long as someone holds them (a request that named the
+  // session and brought it in): neither the budget nor the idle sweep gives them back meanwhile,
+  // so nothing the request does later reads the session again on the loop. Its bodies may still
+  // go; they are read a run at a time. Returns the release; a second call of it does nothing.
+  private holds = new Map<string, number>();
+  hold(session_id: string): () => void {
+    this.holds.set(session_id, (this.holds.get(session_id) ?? 0) + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const n = (this.holds.get(session_id) ?? 1) - 1;
+      if (n > 0) this.holds.set(session_id, n); else this.holds.delete(session_id);
+    };
+  }
 
   // The session's newest seq, on any branch (0: it has no event). What a
   // reader that holds a part of the session resumes from.

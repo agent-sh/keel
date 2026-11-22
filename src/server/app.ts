@@ -139,6 +139,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       // What the daemon was answering, should it stop responding meanwhile (src/admin/stall.ts).
       const label = () => `answering ${req.method} ${new URL(req.url).pathname}`;
       const answered = inFlight(req, label);
+      // (The session a request names stays in memory until it is answered: Store.hold.)
+      let release: (() => void) | undefined;
       try {
         const refused = await admit(req, srv);
         if (refused) return refused;
@@ -156,6 +158,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // (Nor before a session is deleted.)
           if (req.method !== "DELETE" && url.pathname.startsWith("/api/sessions/") && url.searchParams.get("events") !== "0" && !url.searchParams.has("after") && !whole && store.session(sid)) await store.warm(sid, false);
         }
+        if (typeof sid === "string" && store.isKept(sid)) release = store.hold(sid);
         // Who asks, for a read that holds the loop all the same: the route as it is registered, its values left out (src/core/asker.ts).
         const res = await asAsker(routeOf(req), () => timed(label, () => h(req, srv)));
         return await timed(label, () => compressJson(req, res));
@@ -168,6 +171,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
         return json({ error: rec.message, error_id: rec.id }, 500);
       } finally {
+        release?.();
         answered();
         clearTimeout(timer);
         if (slow) srv.timeout(req, IDLE_S);

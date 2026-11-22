@@ -208,7 +208,25 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   store.updateSession(w, { phase: "idle" });
   (store as any).sweep();
   expect(held()).toEqual([c]);
-  // Unread by anyone for the long time: it goes whole, and what was handed out of it reads from the table.
+  // Unread by anyone for the long time, but held by a request that is still being answered: it stays,
+  // against the sweep and against the budget, and nothing reads its rows again.
+  age(BARE_KEPT_MS);
+  const release = store.hold(c), second = store.hold(c);
+  (store as any).sweep();
+  expect(held()).toEqual([c]);
+  expect(bodies(a)).toEqual(want);
+  expect(bodies(v)).toEqual(want);
+  expect(held()).toContain(c);
+  const cold = store.coldReads().n;
+  expect(store.lineage(c).length).toBe(320);
+  expect(store.coldReads().n).toBe(cold);
+  // Released by one of two: still held. By both (a release called twice counts once): it goes whole,
+  // and what was handed out of it reads from the table.
+  release(); release();
+  age(BARE_KEPT_MS);
+  (store as any).sweep();
+  expect(held()).toContain(c);
+  second();
   age(BARE_KEPT_MS);
   (store as any).sweep();
   expect(held()).toEqual([]);
