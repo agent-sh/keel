@@ -10,12 +10,12 @@
 //      is attached while it is open. ?engine= and ?version= name it; ?acks=1
 //      says it shows notifications and posts each one's number back. Only
 //      such a shell is handed alerts (src/server/shell.ts).
-//        hello    { pid, started_ms, needs, snooze_until }
+//        hello    { pid, started_ms, needs, snooze_until, stream }   stream: a word of this stream alone
 //        needs    { n }                  what waits on the owner, counted as the page's title counts it
 //        notify   { key, alert, title, body, urgency, kind, ack }   show this (one per key, the next replaces it)
 //        withdraw { key }                take the key's notification down
 //        snooze   { until_ms | null }    alerts are held until then
-// POST /api/shell/ack      { ack }          the notification numbered `ack` is on screen
+// POST /api/shell/ack      { ack, stream }  the notification numbered `ack`, handed to that stream, is on screen
 // POST /api/shell/click    { alert }        -> { path }   where the alert's click leads, read now
 import { alertPath } from "../../automation/alerts.ts";
 import * as snooze from "../../automation/snooze.ts";
@@ -83,8 +83,9 @@ export const shellRoutes: RouteModule = (deps) => {
             };
             fill();
             told = count();
-            put("hello", { pid: process.pid, started_ms: Math.round(Date.now() - process.uptime() * 1000), needs: told, snooze_until: snooze.global()?.until_ms ?? null });
-            detach = attachShell({ engine: (q.get("engine") ?? "").slice(0, 40), version: (q.get("version") ?? "").slice(0, 40), acks: q.get("acks") === "1" }, put, () => { clearInterval(ping); try { c.close(); } catch {} });
+            const word = crypto.randomUUID();
+            put("hello", { pid: process.pid, started_ms: Math.round(Date.now() - process.uptime() * 1000), needs: told, snooze_until: snooze.global()?.until_ms ?? null, stream: word });
+            detach = attachShell({ engine: (q.get("engine") ?? "").slice(0, 40), version: (q.get("version") ?? "").slice(0, 40), acks: q.get("acks") === "1" }, put, () => { clearInterval(ping); try { c.close(); } catch {} }, word);
             // Under the server's idle timeout, and how a shell that died is noticed.
             ping = setInterval(() => { try { c.enqueue(enc.encode(": ping\n\n")); } catch { stop(); } }, 5000);
             req.signal.addEventListener("abort", () => { stop(); try { c.close(); } catch {} }, { once: true });
@@ -97,7 +98,7 @@ export const shellRoutes: RouteModule = (deps) => {
     "/api/shell/ack": {
       POST: async (req: Request) => {
         const b = await req.json().catch(() => ({}));
-        return deskOnly(req) ?? (Number.isSafeInteger(b.ack) ? json({ ok: ackShell(b.ack) }) : json({ error: "ack is the number a notify event carried" }, 400));
+        return deskOnly(req) ?? (Number.isSafeInteger(b.ack) && typeof b.stream === "string" ? json({ ok: ackShell(b.ack, b.stream) }) : json({ error: "ack is the number a notify event carried, stream the word of the stream it came on" }, 400));
       },
     },
     "/api/shell/click": {
