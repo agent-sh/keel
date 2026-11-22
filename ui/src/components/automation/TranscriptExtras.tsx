@@ -278,7 +278,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         <span className="grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent"><Bot className="size-3.5" /></span>
         <span className="font-medium shrink-0">Agent</span>
         <span className="shrink-0 rounded bg-sunken px-1.5 py-px text-micro text-muted">{type}</span>
-        <span className="min-w-0 truncate text-muted">{agent?.title ?? title}</span>
+        <span className="min-w-0 truncate text-muted" data-testid="agent-call-title">{agent?.title ?? title}</span>
         {agent?.branch && (
           <span data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`} className="flex shrink-0 items-center gap-1 rounded bg-sunken px-1.5 py-px font-mono text-micro text-muted">
             <GitBranch className="size-3" />{agent.branch}
@@ -290,15 +290,23 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
           </span>
         )}
         {agent?.structured && <span data-testid="agent-call-structured" className="shrink-0 rounded bg-sunken px-1.5 py-px font-mono text-micro text-muted">json</span>}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {/* What its parent sent and it has not read yet, kept in its queue. On a
+            narrow line its words go before the agent's title is cut: it shrinks
+            to the icon and the count, and its tooltip says the rest. The shrink
+            factor is that large so the title's share of the squeeze rounds to
+            nothing (any part of a pixel would put an ellipsis on it). */}
+        {!!agent?.messages_waiting && (
+          <span
+            className="ml-auto flex min-w-[2.25rem] shrink-[1000000] items-center gap-1 overflow-hidden whitespace-nowrap rounded bg-sunken px-1.5 py-px text-micro text-muted"
+            data-testid="agent-call-waiting"
+            title={`${agent.messages_waiting === 1 ? "1 message" : `${agent.messages_waiting} messages`} sent to this agent and kept in its queue: it reads ${agent.messages_waiting === 1 ? "it" : "them"} at its next step, or when it goes on`}
+          >
+            <Mail className="size-3 shrink-0" /><span className="shrink-0">{agent.messages_waiting}</span><span className="min-w-0 truncate">{agent.messages_waiting === 1 ? "message waiting" : "messages waiting"}</span>
+          </span>
+        )}
+        <span className={cn("flex shrink-0 items-center gap-1.5", !agent?.messages_waiting && "ml-auto")}>
           {agent ? (
             <>
-              {/* What its parent sent and it has not read yet: kept in its queue until its next step. */}
-              {!!agent.messages_waiting && (
-                <span className="flex shrink-0 items-center gap-1 rounded bg-sunken px-1.5 py-px text-micro text-muted" data-testid="agent-call-waiting" title="Sent to this agent and kept in its queue: it reads them after its current step">
-                  <Mail className="size-3" />{agent.messages_waiting === 1 ? "1 message waiting" : `${agent.messages_waiting} messages waiting`}
-                </span>
-              )}
               {/* An agent that waits on the owner says so, in their colour: it is not just running. */}
               {asking ? <span className="grid size-3.5 shrink-0 place-items-center"><Mark w="need" className="size-2" /></span> : <AgentStatus status={agent.status} />}
               {asking
