@@ -818,6 +818,15 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     }
   };
 
+  // A command for another machine of the fleet says which, and where there: the same text is a
+  // different act on another machine. (The names are the model's words: shown with nothing hidden.)
+  const far = a.kind === "shell" && a.input && typeof a.input === "object" && !("_clipped" in a.input) && typeof a.input.machine === "string" && a.input.machine
+    ? { machine: a.input.machine as string, cwd: typeof a.input.cwd === "string" && a.input.cwd ? (a.input.cwd as string) : "" } : null;
+  const machine = far && (
+    <span className="rounded-full border border-line-strong px-2 py-0.5 text-micro font-medium text-warn" dir="ltr" data-testid="approval-machine">
+      on <Spelled text={far.machine} />{far.cwd && <>, in <Spelled text={far.cwd} /></>}
+    </span>
+  );
   const fromCode = a.call_id.includes("~") && <span className="rounded-full bg-sunken px-1.5 py-px text-micro text-muted" data-testid="approval-from-code">from a program</span>;
   const title = (
     <span id={`${ids}-title`} className={cn(dense ? "text-caption font-medium" : "text-ui font-medium", dense && plain && "sr-only")}>
@@ -951,7 +960,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         <div className="flex min-w-0 flex-1 basis-64 items-start gap-2.5 py-2 pl-3 pr-1">
           <span className="mt-0.5">{icon}</span>
           <div className="min-w-0 flex-1">
-            {(!plain || fromCode) && <div className="mb-1 flex flex-wrap items-center gap-2">{!plain && title}{fromCode}</div>}
+            {(!plain || fromCode || machine) && <div className="mb-1 flex flex-wrap items-center gap-2">{!plain && title}{machine}{fromCode}</div>}
             {plain && title}
             {notice}
             {summary}
@@ -962,6 +971,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           <div className="flex items-center gap-2.5 px-4 pt-3">
             {icon}
             {title}
+            {machine}
             {fromCode}
             {a.risk === "high" && (
               <span className="ml-auto rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger" data-testid="approval-risk">

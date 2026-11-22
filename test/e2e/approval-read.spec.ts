@@ -428,3 +428,20 @@ test("an edit's card shows what it writes, and takes no answer until that was re
     await drop(request, [big.id, small.id]);
   }
 });
+
+// A command for another machine of the fleet says which: the same text is a
+// different act there.
+test("a command for another machine names the machine on its card", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const s = await asking(request, "Read: a command for another machine", [{ name: "keel__run_on", input: { machine: "build-box", command: "rm -rf ./release", cwd: "/srv/app" } }]);
+  try {
+    await waits(request, s.id);
+    await page.goto(`/s/${s.id}`);
+    const card = page.getByTestId("approval").first();
+    await expect(card.getByTestId("approval-summary")).toContainText("rm -rf ./release");
+    await expect(card.getByTestId("approval-machine")).toHaveText("on build-box, in /srv/app");
+    await shoot(page, "approval-read-13-machine");
+  } finally {
+    await drop(request, [s.id]);
+  }
+});
