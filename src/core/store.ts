@@ -246,6 +246,11 @@ export class Store {
   // What dropped sessions were charged since the last whole collection.
   private owed = 0;
 
+  // A read made ahead on the read thread (src/server/reads.ts, readAhead), set
+  // by the daemon: what it reads is then in the operating system's memory
+  // for the loop. It resolves when that is so, or when it is not worth waiting for.
+  offLoop?: (sql: string, params: (string | number | null)[]) => Promise<unknown>;
+
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
     // From here this process holds locks on the store's files: nothing but SQLite opens them (store-files.ts).
@@ -687,6 +692,19 @@ export class Store {
   // session (it reads the bodies of that part, and no other).
   async warm(session_id: string, bodies = true): Promise<void> {
     let k = this.kept.get(session_id);
+    if (!k) {
+      // A session that is not in memory is read from the database file, and
+      // after a start or a long idle time its pages are on the disk alone.
+      // The read thread reads them first (every row, with its body: the
+      // columns after the body lie behind it in the row), so what the loop
+      // then reads comes from the operating system's memory and waits for no
+      // disk. Whether that read is worth a wait is the read thread's to say
+      // (Reads.readAhead: not when it is busy, not where it cannot run).
+      if (this.offLoop) {
+        await this.offLoop("SELECT COUNT(*) AS n, SUM(LENGTH(data)) AS bytes, MAX(ts) AS ts FROM events WHERE session_id = ?", [session_id]).catch(() => {});
+        k = this.kept.get(session_id);
+      }
+    }
     if (!k) {
       const rows: Bare[] = [];
       const page = this.db.query<Bare, [string, number]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT 4096");

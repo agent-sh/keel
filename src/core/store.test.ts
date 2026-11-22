@@ -437,3 +437,32 @@ test("the daemon's connection keeps 16 MB of pages", () => {
   expect(store.db.query<{ cache_size: number }, []>("PRAGMA cache_size").get()!.cache_size).toBe(-16384);
   store.db.close();
 });
+
+// A session that is not in memory is read from the file. The read thread reads its pages first (what
+// the daemon gives the store as `offLoop`), so the loop's own read finds them in memory and waits for no disk.
+test("a session not in memory has its pages read off the loop before the loop reads it", async () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const s = seed.createSession({ model: "m", workspace: "/" });
+  for (let i = 0; i < 40; i++) seed.append(s.id, "user", { text: "z".repeat(200), i });
+  const store = new Store(dir);
+  const asked: { sql: string; params: unknown[]; kept: number }[] = [];
+  store.offLoop = async (sql, params) => { asked.push({ sql, params, kept: store.keptEvents().sessions }); };
+  await store.warm(s.id);
+  // Asked once, for this session, every row with its body, and before anything of it was in memory.
+  expect(asked).toHaveLength(1);
+  expect(asked[0]!.params).toEqual([s.id]);
+  expect(asked[0]!.sql).toContain("LENGTH(data)");
+  expect(asked[0]!.kept).toBe(0);
+  expect(store.keptEvents().sessions).toBe(1);
+  expect(store.events(s.id)).toHaveLength(40);
+  // In memory now: nothing is asked again.
+  await store.warm(s.id);
+  await store.warm(s.id, false);
+  expect(asked).toHaveLength(1);
+  // A read thread that fails does not stop the session from being read.
+  const other = new Store(dir);
+  other.offLoop = async () => { throw new Error("no read thread"); };
+  await other.warm(s.id);
+  expect(other.events(s.id)).toHaveLength(40);
+});

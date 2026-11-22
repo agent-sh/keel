@@ -189,9 +189,20 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
   // and held against the ledger. One that differs is made again and said so.
   // A view's request never builds it (it would hold the first view for as
   // long as the whole ledger takes to read).
-  const atStart = setTimeout(() => {
+  // The two counts read every row of the ledger and of the rollup: they are
+  // made on the read thread, and the loop only compares them. A rollup that
+  // is not there yet, or differs, is then made on the loop as before (once).
+  const atStart = setTimeout(async () => {
     try {
       const had = has(store.db, "trigger", `${TRIGGER}_add`);
+      if (had && has(store.db, "table", "usage_rollup")) {
+        const reads = readsOf(store);
+        const [ledger, rollup] = await Promise.all([
+          reads.sql<{ n: number }>(`SELECT COUNT(*) AS n FROM telemetry_calls WHERE ${counted()}`),
+          reads.sql<{ n: number }>("SELECT COALESCE(SUM(calls), 0) AS n FROM usage_rollup"),
+        ]);
+        if (ledger[0]?.n === rollup[0]?.n) return;
+      }
       const c = checkRollup(store.db);
       if (c.rebuilt && had) errors?.capture("server", new Error(`The usage rollup did not match the ledger and was made again from it (${c.ledger_calls} requests).`), { at: "usage rollup" });
     } catch (e) {

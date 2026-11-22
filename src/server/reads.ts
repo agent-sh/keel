@@ -35,6 +35,11 @@ type Result<K extends TaskName> = ReturnType<Tasks[K]>;
 // stuck and is ended. The longest read known, the sum over every event of a
 // store of several gigabytes read from a cold disk, takes a minute or two.
 const DEADLINE_MS = 5 * 60_000;
+// How long a caller waits for a read made ahead of its own (readAhead)
+// before it reads for itself. The longest such read is a session of tens of
+// thousands of events from a cold disk, which takes the loop as long when
+// the loop makes it.
+const AHEAD_MS = 5_000;
 
 export class Reads {
   private worker?: Worker;
@@ -100,6 +105,28 @@ export class Reads {
   // The rows of one statement.
   sql<T>(sql: string, params: (string | number | null)[] = []): Promise<T[]> {
     return this.run("sql", { sql, params }) as Promise<T[]>;
+  }
+
+  // A read whose answer nobody needs: it is made so the pages it touches
+  // are in the operating system's memory when the loop reads them next (a
+  // session about to be brought into memory). It is worth a wait only when
+  // the thread can take it now: one that is busy with a report of seconds
+  // would keep a first prompt waiting for nothing, and where no thread runs
+  // the loop would read the same pages twice. So it is made when the thread
+  // runs and has nothing in flight but reads like this one, and skipped
+  // otherwise. Resolves when the read is done, at once when it is skipped,
+  // and after `ms` at the latest (the caller then reads for itself, while
+  // the thread's read still brings pages in). Never rejects.
+  private ahead = 0;
+  readAhead(sql: string, params: (string | number | null)[], ms = AHEAD_MS): Promise<void> {
+    if (!this.thread || this.held || this.waiting.size > this.ahead || !this.start()) return Promise.resolve();
+    this.ahead++;
+    const read = this.sql(sql, params).then(() => {}, () => {}).finally(() => { this.ahead--; });
+    return new Promise<void>((ok) => {
+      const t = setTimeout(ok, ms);
+      t.unref?.();
+      void read.then(() => { clearTimeout(t); ok(); });
+    });
   }
 
   private start(): Worker | undefined {

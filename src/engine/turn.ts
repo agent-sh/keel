@@ -1476,7 +1476,8 @@ export class Engine {
       if (run) return this.external(id, session, run, signal);
     }
     this.setting.add(id);
-    const ready = await this.step(session, session.model)
+    // (A session not in memory yet has its pages read off the loop first: store.warm.)
+    const ready = await this.store.warm(id, false).then(() => this.step(session, session.model))
       .finally(() => this.setting.delete(id))
       // A setup that fails after the stop has nothing left to say: the turn is closed.
       // One that fails while the daemon parks its turns is closed below.
@@ -2552,6 +2553,8 @@ export class Engine {
     // the store finds them from each session's last event.
     const sessions = this.store.cutSessions();
     await Promise.all(sessions.map(async (s) => {
+      // Not in memory after a start: its pages are read off the loop first (store.warm).
+      await this.store.warm(s.id, false);
       const line = this.lineage(s.id);
       const end = line.at(-1);
       if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;

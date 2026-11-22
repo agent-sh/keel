@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { allHooks } from "../../engine/hooks.ts";
 import { BUCKET, checkRollup, ensureRollup, usageRoutes } from "./usage.ts";
+import { readsOf } from "../reads.ts";
 
 // These tests write a database of their own to disk; under a disk stall of a
 // shared machine a write waits seconds, and the 5 s default was passed in
@@ -289,6 +290,18 @@ test("a rollup that drifted from the ledger is found by its count and made again
   await tick();
   expect(checkRollup(store.db, false)).toEqual(whole);
   expect(captured).toEqual([]);
+  // A start that finds the rollup right counts the ledger and the rollup through the read thread, never on
+  // the store's own connection: both read every row (here, under a test, the thread's reads run in place).
+  const reads = readsOf(store);
+  const before = reads.counts.loop + reads.counts.thread;
+  const counted: string[] = [];
+  const real = store.db.query.bind(store.db);
+  (store.db as any).query = (sql: string) => { if (/COUNT\(\*\) AS n FROM telemetry_calls|SUM\(calls\)/.test(sql)) counted.push(sql); return real(sql); };
+  usageRoutes({ store, errors } as any);
+  await tick();
+  (store.db as any).query = real;
+  expect(reads.counts.loop + reads.counts.thread - before).toBe(2);
+  expect(counted).toEqual([]);
   // A start that finds the rollup wrong makes it again and says so, once.
   store.db.run("UPDATE usage_rollup SET calls = calls + 1 WHERE bucket = (SELECT MIN(bucket) FROM usage_rollup)");
   usageRoutes({ store, errors } as any);

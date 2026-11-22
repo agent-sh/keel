@@ -111,3 +111,61 @@ test("a hold waits for the read in flight and keeps the next one back until it i
     reads.close();
   }
 });
+
+// A read made ahead of the loop's own (a session's pages, before the loop brings the session into
+// memory) is worth a wait only when the thread can take it now. Behind a long report it would keep a
+// first prompt waiting for the whole report; where no thread runs, the loop would read the pages twice.
+test("a read made ahead runs when the thread is free, and is skipped behind other work or with no thread", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-reads-"));
+  dirs.push(dir);
+  const store = new Store(dir);
+  const s = store.createSession({ model: "m", workspace: "/" });
+  for (let i = 0; i < 20; i++) store.append(s.id, "user", { text: `prompt ${i}` });
+  const ahead = "SELECT COUNT(*) AS n FROM events WHERE session_id = ?";
+  const reads = new Reads(store, true);
+  try {
+    // Free: made on the thread, and waited for.
+    await reads.readAhead(ahead, [s.id]);
+    expect(reads.counts).toEqual({ thread: 1, loop: 0 });
+    // Several at once (every session is cold after a start) take their turns: none is skipped for the others.
+    await Promise.all([reads.readAhead(ahead, [s.id]), reads.readAhead(ahead, [s.id]), reads.readAhead(ahead, [s.id])]);
+    expect(reads.counts).toEqual({ thread: 4, loop: 0 });
+    // Behind a report of seconds: skipped, and the caller goes on at once.
+    const slow = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 12000000) SELECT count(*) AS n FROM c";
+    const report = reads.sql(slow);
+    const t0 = performance.now();
+    await reads.readAhead(ahead, [s.id]);
+    const waited = performance.now() - t0;
+    expect(reads.counts).toEqual({ thread: 5, loop: 0 });
+    let done = false;
+    void report.then(() => (done = true));
+    await new Promise((ok) => setTimeout(ok, 0));
+    expect(done).toBe(false);
+    expect(waited).toBeLessThan(100);
+    // A read ahead that takes longer than its caller will wait: the caller goes on, the read finishes behind it.
+    await report;
+    const t1 = performance.now();
+    const whole = reads.sql(slow).then(() => performance.now() - t1);
+    await whole;
+    const t2 = performance.now();
+    await reads.readAhead(slow, [], 30);
+    expect(performance.now() - t2).toBeLessThan((await whole) / 2);
+    expect(reads.counts.thread).toBe(7);
+    // While reads are held back for a backup: skipped.
+    await reads.sql("SELECT 1");
+    const release = await reads.hold(30_000);
+    await reads.readAhead(ahead, [s.id]);
+    release();
+    expect(reads.counts).toEqual({ thread: 8, loop: 0 });
+  } finally {
+    reads.close();
+  }
+  // No thread (it cannot run here): nothing is read ahead at all, on the loop either.
+  const none = new Reads(store, false);
+  await none.readAhead(ahead, [s.id]);
+  expect(none.counts).toEqual({ thread: 0, loop: 0 });
+  const broken = new Reads(store, true, new URL("./no-such-program.ts", import.meta.url).href);
+  await broken.sql("SELECT 1");
+  await broken.readAhead(ahead, [s.id]);
+  expect(broken.counts).toEqual({ thread: 1, loop: 1 });
+});
