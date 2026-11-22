@@ -5,7 +5,7 @@
 import { expect, test } from "bun:test";
 import {
   callOf, type CallMemo, commandOf, decide, type Lookup, parseEpoll, parseLoad, parsePidfd, parsePressure, parsePressureTotal, parseSchedstat,
-  parseStat, parseSyscall, parseThrottled, placeOf, type Sample, sampleOf, syscallName, type ThreadFile, UNSEEN,
+  parseStat, parseSyscall, parseThrottled, placeOf, type Sample, sampleOf, syscallName, type ThreadFile, UNSEEN, parseIo,
 } from "./stall-cause.ts";
 import { packBeat } from "./stall-beat.ts";
 
@@ -21,8 +21,10 @@ const samples = (rows: [number, Files][], look: Lookup = none, ep = 1): Sample[]
 };
 
 test("the files are read as the kernel writes them", () => {
-  expect(parseStat(stat("D", 1, 99))).toEqual({ state: "D", user_ticks: 1, sys_ticks: 99 });
-  expect(parseStat(stat("S", 4, 2, "a (odd) name"))).toEqual({ state: "S", user_ticks: 4, sys_ticks: 2 });
+  expect(parseStat(stat("D", 1, 99))).toEqual({ state: "D", user_ticks: 1, sys_ticks: 99, faults: 1467 });
+  expect(parseStat(stat("S", 4, 2, "a (odd) name"))).toEqual({ state: "S", user_ticks: 4, sys_ticks: 2, faults: 1467 });
+  expect(parseIo("rchar: 20900\nwchar: 7\nsyscr: 51\nsyscw: 2\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n")).toEqual({ read: 20900, written: 7, reads: 51, writes: 2 });
+  expect(parseIo("")).toBeUndefined();
   expect(parseStat("nothing")).toBeUndefined();
   expect(parseSyscall("running\n")).toBe("running");
   expect(parseSyscall("-1 0x7ffe015219b0 0x1af6d86\n")).toEqual({ nr: -1, args: [] });
@@ -93,7 +95,7 @@ test("what a call waits on is looked up again for another call, however alike it
   let link = `${dirs.state}/keel.db-wal`;
   let run = 5_000_000;
   const look: Lookup = { ...none, link: () => link };
-  const read = (f: ThreadFile) => ({ stat: stat("D", 5, 5), schedstat: `${run} 1 1\n`, syscall: text, wchan: "0" })[f];
+  const read = (f: ThreadFile) => ({ stat: stat("D", 5, 5), schedstat: `${run} 1 1\n`, syscall: text, wchan: "0", io: undefined })[f];
   const memo: CallMemo = {};
   expect(sampleOf(0, 1, read, "x64", dirs, look, memo)!.call!.on!.text).toBe("the store's log (keel.db-wal)");
   // The thread did not run and the descriptor names the same file: the same call, not looked up again.
@@ -108,7 +110,7 @@ test("what a call waits on is looked up again for another call, however alike it
   const wait = "441 0x9 0x3f8cc1838e0 0x400 0x0 0x7ffe0151f3d0 0x8 0x7ffe0151f3d0 0x1af6e08\n";
   let child = { pid: 2900684, command: "curl" };
   const spawn: Lookup = { link: (fd) => ({ 9: "anon_inode:[eventpoll]", 12: "anon_inode:[pidfd]" })[fd], epoll: () => [12], pidfd: () => child.pid, child: () => child.command };
-  const waiting = (f: ThreadFile) => ({ stat: stat("S", 5, 5), schedstat: `${run} 1 1\n`, syscall: wait, wchan: "ep_poll" })[f];
+  const waiting = (f: ThreadFile) => ({ stat: stat("S", 5, 5), schedstat: `${run} 1 1\n`, syscall: wait, wchan: "ep_poll", io: undefined })[f];
   const m2: CallMemo = {};
   expect(sampleOf(0, 1, waiting, "x64", dirs, spawn, m2)!.call!.child).toEqual({ pid: 2900684, command: "curl" });
   child = { pid: 2900701, command: "mysql" };
@@ -261,6 +263,20 @@ test("a thread on a processor the whole time computed, and the watcher says it c
   ]);
   expect(decide(kernel, {}, 1000)).toMatchObject({ kind: "compute", text: "0.9 s on a processor in the kernel, for system calls of its own" });
   expect(decide(kernel, {}, 1000).note).toBeUndefined();
+  // What the kernel's time was for is said when the thread's own counters tell: what it read and
+  // wrote, the memory it took, or a great many small calls.
+  const io = (read: number, written: number, reads: number, writes: number) => `rchar: ${read}\nwchar: ${written}\nsyscr: ${reads}\nsyscw: ${writes}\nread_bytes: 0\nwrite_bytes: 0\n`;
+  const faulting = (n: number) => stat("R", 1, 97).replace(" 1467 0 0 0 ", ` ${1467 + n} 0 0 0 `);
+  const busy = (files: Files) => decide(samples([
+    [0, { stat: stat("R", 1, 9), schedstat: "111040514 736246 16\n", syscall: "running\n", io: io(5_000, 100, 40, 3) }],
+    [1000, { stat: stat("R", 1, 97), schedstat: "990456032 15829160 291\n", syscall: "running\n", ...files }],
+  ]), {}, 1000).text;
+  expect(busy({ io: io(5_000 + 1_900_000_000, 100, 40 + 30, 3) })).toBe("0.9 s on a processor in the kernel, reading 1.9 GB in 30 calls");
+  expect(busy({ io: io(5_000, 100 + 171_000_000, 40, 3 + 1) })).toBe("0.9 s on a processor in the kernel, writing 171 MB in 1 call");
+  expect(busy({ io: io(5_000, 100, 40, 3), stat: faulting(120_000) })).toBe("0.9 s on a processor in the kernel, taking memory (120,000 page faults, about 492 MB)");
+  expect(busy({ io: io(5_000 + 40_000_000, 100 + 2_000_000, 40 + 9, 3 + 4), stat: faulting(30_000) })).toBe("0.9 s on a processor in the kernel, reading 40 MB in 9 calls, writing 2 MB in 4 calls, taking memory (30,000 page faults, about 123 MB)");
+  expect(busy({ io: io(5_000 + 300_000, 100 + 9_000, 40 + 6_000, 3 + 500) })).toBe("0.9 s on a processor in the kernel, for 6,500 small reads and writes of its own");
+  expect(busy({ io: io(5_000 + 300, 100, 40 + 2, 3) })).toBe("0.9 s on a processor in the kernel, for system calls of its own");
 });
 
 test("a stopped thread, a stopped process and a suspended machine are told apart", () => {

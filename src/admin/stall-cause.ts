@@ -81,7 +81,7 @@ const WORDS: Record<string, string> = {
 
 // ---- the files ----
 
-export type ThreadStat = { state: string; user_ticks: number; sys_ticks: number };
+export type ThreadStat = { state: string; user_ticks: number; sys_ticks: number; faults?: number };
 // /proc/<pid>/task/<tid>/stat. The name (field 2) may hold spaces and
 // brackets: the fields are counted from the last closing bracket.
 export function parseStat(text: string): ThreadStat | undefined {
@@ -90,7 +90,18 @@ export function parseStat(text: string): ThreadStat | undefined {
   const f = text.slice(at + 2).trim().split(/\s+/);
   const user = Number(f[11]), sys = Number(f[12]);
   if (!f[0] || !Number.isFinite(user) || !Number.isFinite(sys)) return undefined;
-  return { state: f[0], user_ticks: user, sys_ticks: sys };
+  // (Page faults, small and large: memory the thread took or had brought back.)
+  const faults = Number(f[7]) + Number(f[9]);
+  return { state: f[0], user_ticks: user, sys_ticks: sys, ...(Number.isFinite(faults) ? { faults } : {}) };
+}
+
+// /proc/<pid>/task/<tid>/io: what the thread read and wrote through system calls so far (files,
+// sockets and pipes alike), in bytes and in calls.
+export type ThreadIo = { read: number; written: number; reads: number; writes: number };
+export function parseIo(text: string): ThreadIo | undefined {
+  const n = (k: string) => Number(new RegExp(`^${k}:\\s*(\\d+)`, "m").exec(text)?.[1]);
+  const io = { read: n("rchar"), written: n("wchar"), reads: n("syscr"), writes: n("syscw") };
+  return Object.values(io).every(Number.isFinite) ? io : undefined;
 }
 
 // /proc/<pid>/task/<tid>/syscall: "running" for a thread on a processor or
@@ -259,6 +270,8 @@ export type Sample = {
   call?: Call;            // what it was asleep in
   stmt?: string;          // the statement the store's connection was in (src/core/statement-label.ts), by its label
   wchan?: string;         // the kernel function it sleeps in
+  faults?: number;        // page faults so far
+  io?: ThreadIo;          // read and written through system calls so far
   // The watcher did not run either between the sample before and this one:
   // the process was stopped, the machine asleep, or every thread of the
   // process held in memory reclaim (its unit over its memory limit).
@@ -275,12 +288,16 @@ export type CallMemo = { text?: string; run_ns?: number; link?: string; call?: C
 // One sample from the thread's four files (`read` gives each by name, or
 // nothing when it cannot be read). The call is looked up only for a thread
 // that is asleep. A sample of a running thread forgets the memo.
-export type ThreadFile = "stat" | "schedstat" | "syscall" | "wchan";
+export type ThreadFile = "stat" | "schedstat" | "syscall" | "wchan" | "io";
 export function sampleOf(t: number, ep: number, read: (file: ThreadFile) => string | undefined, arch: Arch, dirs: Dirs, look: Lookup, memo: CallMemo = {}): Sample | undefined {
   const stat = parseStat(read("stat") ?? "");
   const sched = parseSchedstat(read("schedstat") ?? "");
   if (!stat || !sched) return undefined;
   const s: Sample = { t, ep, state: stat.state, user_ticks: stat.user_ticks, sys_ticks: stat.sys_ticks, run_ns: sched.run_ns, wait_ns: sched.wait_ns };
+  // What the thread's time in the kernel was for: its page faults and what it read and wrote.
+  if (stat.faults !== undefined) s.faults = stat.faults;
+  const io = parseIo(read("io") ?? "");
+  if (io) s.io = io;
   const forget = () => { memo.text = memo.run_ns = memo.link = memo.call = undefined; };
   if (stat.state === "R") { forget(); return s; }
   const text = (read("syscall") ?? "").trim();
@@ -346,8 +363,27 @@ export const unknown = (text: string): Cause => ({ kind: "unknown", key: "unknow
 // spent asleep, and goes to the calls the samples showed the thread asleep
 // in, in their proportions. Together they are what was seen, cut to the
 // stall when more was seen than the stall can hold.
+// What the thread's time in the kernel was spent on, as far as its counters say: a megabyte or
+// more read or written (a file, a socket, a pipe), memory taken (a page fault each four
+// kilobytes), or calls too many to be anything else. With none of these, only that it was calls.
+const KERNEL_BYTES = 1_000_000, KERNEL_FAULTS = 5_000, KERNEL_CALLS = 2_000;
+const size = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1e6))} MB`);
+const count = (n: number, one: string) => `${n.toLocaleString("en-US")} ${one}${n === 1 ? "" : "s"}`;
+export function kernelWork(d: { faults: number; read: number; written: number; reads: number; writes: number }): string {
+  const parts = [
+    d.read >= KERNEL_BYTES ? `reading ${size(d.read)} in ${count(d.reads, "call")}` : "",
+    d.written >= KERNEL_BYTES ? `writing ${size(d.written)} in ${count(d.writes, "call")}` : "",
+    d.faults >= KERNEL_FAULTS ? `taking memory (${count(d.faults, "page fault")}, about ${size(d.faults * 4096)})` : "",
+  ].filter(Boolean);
+  if (parts.length) return parts.join(", ");
+  const calls = d.reads + d.writes;
+  return calls >= KERNEL_CALLS ? `for ${calls.toLocaleString("en-US")} small reads and writes of its own` : "for system calls of its own";
+}
+
 export function decide(samples: Sample[], around: Around, stallMs: number, windowMs = stallMs): Cause {
   let run = 0, wait = 0, user = 0, sys = 0, seen = 0;
+  // While it ran: page faults, and bytes and calls read and written.
+  const did = { faults: 0, read: 0, written: 0, reads: 0, writes: 0 };
   const gaps = { stopped: 0, suspended: 0, memory: 0 };
   // Asleep or stopped, by what the thread was seen in at the start of each stretch.
   const asleep = new Map<string, { kind: CauseKind; what: string; ms: number; sample: Sample }>();
@@ -368,6 +404,8 @@ export function decide(samples: Sample[], around: Around, stallMs: number, windo
     // Running or runnable: both are in the two counters already.
     if (a.state === "R") {
       ran += dt;
+      if (a.faults !== undefined && b.faults !== undefined) did.faults += Math.max(0, b.faults - a.faults);
+      if (a.io && b.io) { did.read += Math.max(0, b.io.read - a.io.read); did.written += Math.max(0, b.io.written - a.io.written); did.reads += Math.max(0, b.io.reads - a.io.reads); did.writes += Math.max(0, b.io.writes - a.io.writes); }
       if (a.stmt) inStatement.set(a.stmt, (inStatement.get(a.stmt) ?? 0) + dt);
       continue;
     }
@@ -395,7 +433,7 @@ export function decide(samples: Sample[], around: Around, stallMs: number, windo
   // Most of its time on a processor inside one statement of the store: the statement is the code.
   const [busiest, inIt] = [...inStatement].sort((x, y) => y[1] - x[1])[0] ?? [undefined, 0];
   const computed = busiest && inIt >= ran / 2 ? busiest : undefined;
-  if (run > 0) shares.push({ kind: "compute", key: "compute", what: `${kernel ? "on a processor in the kernel, for system calls of its own" : "in its own code"}${computed ? `, in the statement: ${computed}` : ""}`, ms: run });
+  if (run > 0) shares.push({ kind: "compute", key: "compute", what: `${kernel ? `on a processor in the kernel, ${kernelWork(did)}` : "in its own code"}${computed ? `, in the statement: ${computed}` : ""}`, ms: run });
   if (wait > 0) {
     const bits = [
       around.load !== undefined ? `machine load ${Math.round(around.load)}` : "",
