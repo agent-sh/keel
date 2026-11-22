@@ -24,6 +24,19 @@ export class LinkError extends Error {}
 // device, see safety/presence.ts), signed with the link key over the nonce.
 const standingSig = (key: string, nonce: string, standing: string) => createHmac("sha256", key).update(`${nonce}|standing|${standing}`).digest("hex");
 
+// Why a request did not get through, in words a person reads: the runtime's own
+// text names its options ("pass verbose: true ...") and asks questions.
+export function whyUnreached(e: unknown, timeoutMs?: number): string {
+  const err = e as { name?: string; code?: string | number; message?: string };
+  const text = String(err?.message ?? e);
+  if (err?.name === "TimeoutError") return timeoutMs ? `no answer within ${timeoutMs / 1000} s` : "no answer in time";
+  if (/ConnectionRefused|ECONNREFUSED|Unable to connect/i.test(`${err?.code} ${text}`)) return "nothing answers there";
+  if (/ConnectionClosed|ECONNRESET|closed unexpectedly|socket hang up/i.test(`${err?.code} ${text}`)) return "the connection was cut";
+  return text.replace(/\s*For more information.*$/is, "").replace(/\s*Is the computer able to access the url\?/i, "").trim() || "no answer";
+}
+// A link's failure without the address, for a line that already names the machine.
+export const plainReason = (reason: string | null | undefined) => (reason ?? "").replace(/^cannot reach \S+: /, "");
+
 // One request over a paired link. Never follows a redirect; checks the proof.
 export async function linkFetch(p: Peer, path: string, init: RequestInit & { timeout?: number; standing?: object } = {}): Promise<Response> {
   const nonce = Bun.randomUUIDv7();
@@ -41,8 +54,7 @@ export async function linkFetch(p: Peer, path: string, init: RequestInit & { tim
   try {
     r = await fetch(p.url.replace(/\/$/, "") + path, { ...init, headers, signal, redirect: "manual" });
   } catch (e) {
-    const msg = (e as Error).name === "TimeoutError" ? `no answer within ${(init.timeout ?? READ_MS) / 1000} s` : (e as Error).message;
-    throw new LinkError(`cannot reach ${p.url}: ${msg}`);
+    throw new LinkError(`cannot reach ${p.url}: ${whyUnreached(e, init.timeout ?? READ_MS)}`);
   }
   const got = r.headers.get("x-keel-proof") ?? "";
   if (!same(got, proof(p.key, nonce, p.daemonId))) {

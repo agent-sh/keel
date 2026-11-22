@@ -1,6 +1,7 @@
 // Connection changes the owner can read afterwards, in the activity list:
 // when a page did not hear this daemon and for how long, and when a machine
 // of the fleet was out of reach. One row per absence, written when it ends.
+// A machine's absence says why in plain words (the link's own, without its address).
 // Bounded: a source that flaps is listed a dozen times an hour, and the next
 // row it gets says how many were left out; the list itself keeps 30 days.
 import * as activity from "./activity.ts";
@@ -43,9 +44,17 @@ function record(source: string, sub: string, what: string, why: string, from: nu
 }
 
 // A page was cut off from this daemon: its socket went silent (the network, a tunnel) or closed.
+// One row per absence, not per page: two tabs behind one link lose it together, and the second
+// to say so names the absence the first did (they overlap by more than half).
+const pages: { from: number; to: number }[] = [];
 export function pageAbsence(from: number, to: number, why: string): boolean {
   const silent = why === "silent";
-  return record("page", "connection", "A page did not hear Keel", silent ? "its connection went silent" : "its connection closed", from, to, { who: "page", why: silent ? "silent" : "closed" });
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+  const same = pages.some((p) => Math.min(p.to, to) - Math.max(p.from, from) > Math.min(p.to - p.from, to - from) / 2);
+  if (same) return false;
+  const listed = record("page", "connection", "A page did not hear Keel", silent ? "its connection went silent" : "its connection closed", from, to, { who: "page", why: silent ? "silent" : "closed" });
+  if (listed) { pages.push({ from, to }); if (pages.length > 20) pages.shift(); }
+  return listed;
 }
 
 // A machine of the fleet was out of reach.
@@ -54,4 +63,4 @@ export function machineAbsence(machine: { id: string; name: string }, from: numb
 }
 
 // For tests: what was counted is forgotten.
-export const reset = () => listed.clear();
+export const reset = () => { listed.clear(); pages.length = 0; };

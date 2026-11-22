@@ -16,11 +16,10 @@ export type DigestEvent = { id: string; ts: number; kind: string; session_id: st
 // limit and a failed loop are what they would want summed up while away. A
 // finished turn matters only when it was long work (the alert rule's own
 // threshold, passed in). A snooze ending is routine.
-// A machine of the fleet that went out of reach is no failed work: told with the next turn.
-export function levelOfAlert(kind: string, data: { ran_ms?: number; machine_offline?: string } | undefined, longTurnMs: number): Level | null {
-  if (kind === "failed" && data?.machine_offline) return "feed";
+// A word about a machine of the fleet (it went out of reach) is told with the next turn.
+export function levelOfAlert(kind: string, data: { ran_ms?: number } | undefined, longTurnMs: number): Level | null {
   if (kind === "failed" || kind === "declined" || kind === "limit" || kind === "loop_failed") return "wake";
-  if (kind === "approval" || kind === "question" || kind === "agent") return "feed";
+  if (kind === "approval" || kind === "question" || kind === "agent" || kind === "machine") return "feed";
   if (kind === "finished") return Number(data?.ran_ms) >= longTurnMs ? "feed" : null;
   return null;
 }

@@ -19,7 +19,8 @@ import { handShell, shellShows, tellShells } from "../server/shell.ts";
 // sent as a frame, and delivered to the channels the settings name for its
 // kind. A channel is anything with deliver(); phone push registers one later.
 
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined"] as const;
+// `machine`: about a machine of the fleet, not a session (it went out of reach; more of its alerts came than are listed).
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
 // Sent means the channel took it, not that the owner saw it.
@@ -43,6 +44,8 @@ export type Alert = {
   kept: boolean;
   // An ask whose card still waits for the owner, read or not (told with a list, not stored).
   open?: boolean;
+  // The machine it is about, or the one its session runs on when that is not this one, by its name now.
+  machine?: { id: string; name: string };
 };
 
 export type AlertChannel = {
@@ -92,7 +95,8 @@ INSERT OR IGNORE INTO alert_rev (id, n) VALUES (1, 0);`);
   store.migrate(`
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_far ON alerts(far_id) WHERE far_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS alerts_far_session ON alerts(far_session) WHERE far_session IS NOT NULL;
-CREATE TABLE IF NOT EXISTS alert_far (machine TEXT PRIMARY KEY, ts INTEGER NOT NULL);`);
+CREATE TABLE IF NOT EXISTS alert_far (machine TEXT PRIMARY KEY, ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS alert_far_reads (machine TEXT NOT NULL, alert TEXT NOT NULL, PRIMARY KEY (machine, alert));`);
   sweep();
   const g = globalThis as { __keelAlertSweep?: ReturnType<typeof setInterval> };
   clearInterval(g.__keelAlertSweep);
@@ -167,18 +171,28 @@ export function saveSettings(p: Partial<AlertSettings> & { route?: { kind: strin
 
 type Row = Omit<Alert, "read" | "data" | "channels" | "delivery" | "kept"> & { read: number; kept: number; data: string | null; channels: string | null; delivery: string | null; far_session?: string | null; far_id?: string | null };
 // An alert of another daemon's session reads like any other: its session is the id the pages know it by.
-const toAlert = ({ far_session, far_id: _far, ...r }: Row): Alert => ({
+// A machine is named as it is called now (a rename is followed), in the alert's own title too when it is about the machine.
+const toAlert = ({ far_session, far_id: _far, ...r }: Row): Alert => named({
   ...r, session_id: r.session_id ?? far_session ?? null, read: !!r.read, kept: !!r.kept, data: r.data ? JSON.parse(r.data) : undefined,
   channels: r.channels ? JSON.parse(r.channels) : [], delivery: r.delivery ? JSON.parse(r.delivery) : undefined,
 });
+function named(a: Alert): Alert {
+  const id = a.data?.far?.machine ?? a.data?.machine_offline ?? a.data?.machine_more;
+  if (typeof id !== "string") return a;
+  const name = farHook.name?.(id);
+  if (!name) return a;
+  return { ...a, machine: { id, name }, ...(a.data?.machine_offline ? { title: `${name} is offline` } : {}) };
+}
 // What this daemon asks of the fleet for an alert of another daemon's session (set by the fleet's routes):
-// whether that session is still listed, where the alert leads as its own daemon judges it, and
-// telling that daemon the owner read it here.
+// whether that session is still listed, where the alert leads as its own daemon judges it,
+// telling that daemon the owner read it here (or wants to come back to it), and what a machine is called.
 export type Target = { parent: string | null; child: string | null; child_deleted: boolean; open: string | null; approval?: string };
 export const farHook: {
   has?: (session: string) => boolean;
   target?: (machine: string, alert: string) => Promise<Target | null>;
-  read?: (machine: string, alerts: string[]) => void;
+  read?: (machine: string, alerts: string[]) => Promise<unknown>;
+  unread?: (machine: string, alert: string) => Promise<unknown>;
+  name?: (machine: string) => string | undefined;
 } = {};
 const FAR_ID = /^([A-Za-z0-9]+)--([\w-]+)$/;
 // Where a row about `sessionId` (and maybe one of its agents) leads now.
@@ -375,8 +389,9 @@ const ASKED_IN = "COALESCE(json_extract(data, '$.open_session'), session_id, far
 const INTERRUPTS = new Set(["desktop", "push"]);
 export const LONG_TURN_MS = 5 * 60_000;
 const waits = (a: Pick<Alert, "kind" | "session_id" | "data" | "read">) => (a.data?.far ? !a.read : stillOpen(a));
+// A word about a machine is a notice, not a failure of work: it stays in the inbox too.
 const routine = (kind: AlertKind, data: unknown, st: AlertSettings) =>
-  kind === "snooze_over" || kind === "refused" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
+  kind === "snooze_over" || kind === "refused" || kind === "machine" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
 
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown): Alert | undefined {
   try {
@@ -399,10 +414,14 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
 // `from`: the session it is about (an agent's own); `source`: that agent's
 // session when it is not the inbox session's own, else "". `far`: the alert
 // was raised by another daemon for one of its sessions (see mirror).
+// `silent`: kept in the inbox and told on no channel (one of many that came at once).
 type Filing = {
   kind: AlertKind; sid: string | null; from: string | null; source: string; title: string; body: string; data?: unknown; child?: object;
-  far?: { id: string; ts: number; read: boolean };
+  far?: { machine: string; id: string; read: boolean };
+  silent?: boolean;
 };
+// Alerts filed in one go keep their order: each is a millisecond after the last at least.
+let lastTs = 0;
 function file(x: Filing): Alert | undefined {
   const { store } = D();
   const { kind, sid, data } = x;
@@ -417,10 +436,14 @@ function file(x: Filing): Alert | undefined {
   const decision = key ? (data as Record<string, unknown> | undefined)?.[key] : undefined;
   // A decision raised again (a daemon restart puts its card back, a redelivery) is the same wait: its row
   // keeps the time it was first asked, so its age is one everywhere and does not start again at a restart.
+  // Of the same origin only: an id another daemon names is that daemon's, and never stands for,
+  // hides or removes an alert of this one's.
+  const origin = x.far ? " AND json_extract(data, '$.far.machine') = ?" : " AND far_id IS NULL";
+  const theirs = x.far ? [x.far.machine] : [];
   let asked: number | undefined;
   if (key && decision) {
-    asked = store.db.query<{ t: number | null }, string[]>(`SELECT MIN(ts) AS t FROM alerts WHERE kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}`)
-      .get(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : [])])?.t ?? undefined;
+    asked = store.db.query<{ t: number | null }, string[]>(`SELECT MIN(ts) AS t FROM alerts WHERE kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
+      .get(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs])?.t ?? undefined;
   }
   if (key && decision) {
     // An approval or a question is its own decision: the same one raised again
@@ -428,9 +451,9 @@ function file(x: Filing): Alert | undefined {
     // (A call id is its session's: another session's question under the same id is another decision.)
     // An approval the owner has looked at and not answered is still listed while it waits: told of
     // again (its card changed while it waits), it is the same row, not a second one beside it.
-    if (kind === "approval" && store.db.query("SELECT 1 FROM alerts WHERE read = 1 AND kind = 'approval' AND json_extract(data, '$.approval_id') = ? LIMIT 1").get(String(decision))) return undefined;
-    store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}`)
-      .run(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : [])]);
+    if (kind === "approval" && store.db.query(`SELECT 1 FROM alerts WHERE read = 1 AND kind = 'approval' AND json_extract(data, '$.approval_id') = ?${origin} LIMIT 1`).get(...[String(decision), ...theirs])) return undefined;
+    store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
+      .run(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
   } else if (sid) {
     // A newer notice of the same kind from the same source replaces the unread
     // one: one live row per session and kind (the activity list keeps each).
@@ -452,22 +475,27 @@ function file(x: Filing): Alert | undefined {
   const withheld = calls && !x.far?.read && f.deliver && !f.quiet && routed.length > 0 && attending(sid, x.from);
   // Read where it was raised (the owner was at that daemon's own page, or it was put away there): kept, and told nowhere.
   const farRead = !!x.far?.read;
-  const sendTo = watched || withheld || farRead || !f.deliver || f.quiet ? [] : routed;
+  const sendTo = watched || withheld || farRead || x.silent || !f.deliver || f.quiet ? [] : routed;
   // Why nothing left the inbox when nothing did: no route chosen, or the
   // chosen ones are not set up (judged now, when it was raised).
   const inboxOnly = sendTo.length || watched || withheld || farRead || !f.deliver || f.quiet ? {}
+    : x.silent ? { inbox_only: { many: true } }
     : { inbox_only: !chosen.length ? { no_route: true } : quietKind && chosen.some((c) => INTERRUPTS.has(c) && channels.get(c)?.available()) ? { routine: true } : { not_set_up: chosen } };
   const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}), ...(withheld ? { withheld: routed } : {}) };
   if (withheld) withheldMaybe = true;
   const extra = { ...x.child, ...flags, ...inboxOnly };
   const stored = Object.keys(extra).length ? { ...(data as object), ...extra } : data;
   const delivery: Delivery | undefined = sendTo.length ? Object.fromEntries(sendTo.map((c) => [c, { state: "pending" as const }])) : undefined;
-  const a: Alert = {
-    id: Bun.randomUUIDv7(), ts: asked ?? (x.far ? Math.min(x.far.ts, Date.now()) : Date.now()), kind, session_id: sid, read: watched || farRead || !f.deliver,
+  // When it came here, whoever raised it: the inbox is in the order things reached the owner
+  // (another daemon's clock may be minutes off; its own time is kept with the alert). A decision
+  // raised again keeps the time it was first asked.
+  lastTs = Math.max(Date.now(), lastTs + 1);
+  const a: Alert = named({
+    id: Bun.randomUUIDv7(), ts: asked ?? lastTs, kind, session_id: sid, read: watched || farRead || !f.deliver,
     title: clip(scrub(x.title), 200), body: clip(scrub(x.body), 500), data: stored, channels: sendTo, delivery, rev: nextRev(), kept: false,
-  };
+  });
   store.db.query(`INSERT INTO alerts (id, ts, kind, ${col}, title, body, read, data, channels, delivery, rev, kept, far_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`)
-    .run(a.id, a.ts, kind, sid, a.title, a.body, a.read ? 1 : 0, stored ? JSON.stringify(stored) : null, JSON.stringify(sendTo), delivery ? JSON.stringify(delivery) : null, a.rev, x.far?.id ?? null);
+    .run(a.id, a.ts, kind, sid, a.title, a.body, a.read ? 1 : 0, stored ? JSON.stringify(stored) : null, JSON.stringify(sendTo), delivery ? JSON.stringify(delivery) : null, a.rev, x.far ? farKey(x.far.machine, x.far.id) : null);
   // An ask is open from the moment it is raised: its card waits.
   if (ASK_KINDS.includes(kind) && waits(a)) a.open = true;
   emit("alert", a);
@@ -486,48 +514,142 @@ function file(x: Filing): Alert | undefined {
 // the row's mark, the inbox and the channels work as for a session here.
 // Once: the other daemon's alert id is kept with the row, across reconnects
 // and restarts of either daemon, and what came while the link was down is
-// read when it is back (mirrorSince).
+// read when it is back (mirrorSince), with what was read on either side
+// meanwhile.
+//
+// What another daemon sends is its word, not this daemon's: only the fields
+// an alert is known to carry are kept, each within a bound; its ids stand
+// under its machine and never touch an alert of this daemon's own; and no
+// more than a minute's worth is listed or told in a minute.
 const MIRRORED: ReadonlySet<string> = new Set<AlertKind>(["approval", "question", "finished", "failed", "limit", "agent", "loop_failed"]);
+// The fields kept of its data, by what each holds. An id longer than any id is not an id: it is left out.
+const FAR_DATA: Record<string, "id" | "text" | "number" | "flag"> = {
+  event_id: "id", approval_id: "id", call_id: "id", plan_id: "id", loop_id: "id", open_session: "id", child_session: "id",
+  child_title: "text", ran_ms: "number", expired: "flag",
+};
+const ID_MAX = 128;
+const FAR_SESSION = /^[\w-]{1,128}$/;
+function farData(d: unknown): Record<string, any> {
+  const out: Record<string, any> = {};
+  if (!d || typeof d !== "object") return out;
+  for (const [k, kind] of Object.entries(FAR_DATA)) {
+    const v = (d as Record<string, unknown>)[k];
+    if (kind === "id" ? typeof v === "string" && v.length > 0 && v.length <= ID_MAX : kind === "text" ? typeof v === "string" : kind === "number" ? typeof v === "number" && Number.isFinite(v) : v === true) {
+      out[k] = kind === "text" ? clip(v as string, 200) : v;
+    }
+  }
+  return out;
+}
+// The row of another daemon's alert: its id under its machine (two machines may both hold an id).
+const farKey = (machine: string, id: string) => `${machine}/${id}`;
 const farCursor = (machine: string) => D().store.db.query<{ ts: number }, [string]>("SELECT ts FROM alert_far WHERE machine = ?").get(machine)?.ts;
 const farSeen = (machine: string, ts: number) =>
   D().store.db.query("INSERT INTO alert_far (machine, ts) VALUES (?, ?) ON CONFLICT(machine) DO UPDATE SET ts = MAX(ts, excluded.ts)").run(machine, ts);
+const sound = (far: Alert) =>
+  !!far && typeof far.id === "string" && far.id.length > 0 && far.id.length <= ID_MAX && typeof far.session_id === "string" && FAR_SESSION.test(far.session_id)
+  && MIRRORED.has(far.kind) && Number.isFinite(far.ts)
+  // One it keeps for a third daemon is that daemon's to tell: never a relay of a relay.
+  && !far.data?.far;
+
+// At most this many of a machine's alerts are listed here in a minute, and
+// this many told on the channels (the rest of the listed stay in the inbox).
+// What was not listed is said in one alert when the minute is over.
+export const FAR_KEPT_A_MINUTE = 60;
+export const FAR_TOLD_A_MINUTE = 12;
+type Minute = { from: number; kept: number; told: number; more: number; timer?: Timer };
+const minutes = new Map<string, Minute>();
+function minuteOf(machine: string, now = Date.now()): Minute {
+  let m = minutes.get(machine);
+  if (!m || now - m.from >= 60_000) {
+    if (m) { clearTimeout(m.timer); sayMore(machine, m.more); }
+    minutes.set(machine, (m = { from: now, kept: 0, told: 0, more: 0 }));
+  }
+  return m;
+}
+function sayMore(machine: string, n: number, why = "in one minute") {
+  if (n <= 0) return;
+  const name = farHook.name?.(machine) ?? machine;
+  raise("machine", null, `${n} more from ${name}`, `${n} more alert${n === 1 ? "" : "s"} from ${name} ${why} ${n === 1 ? "is" : "are"} not listed here. Its own inbox has ${n === 1 ? "it" : "them"}.`, { machine_more: machine, count: n });
+}
+// For tests: the minute's counts are forgotten.
+export const resetMinutes = () => { for (const m of minutes.values()) clearTimeout(m.timer); minutes.clear(); };
 
 // `level`: this daemon has read that machine's list since its link opened, so
 // an alert told now is the newest it knows of there. Before that the mark of
 // what was read stays where it is: an alert told live must not hide the ones
 // raised while the link was down, which the list is about to bring.
-export function mirror(machine: string, far: Alert, level = true): Alert | undefined {
+// `listed`: one of a list read at once (mirrorSince, which bounds the list itself): told on the channels, or kept in the inbox only.
+export function mirror(machine: string, far: Alert, level = true, listed?: "told" | "inbox"): Alert | undefined {
   try {
-    if (!far || typeof far.id !== "string" || typeof far.session_id !== "string" || !MIRRORED.has(far.kind) || !Number.isFinite(far.ts)) return undefined;
-    // One it keeps for a third daemon is that daemon's to tell: never a relay of a relay.
-    if (far.data?.far || FAR_ID.test(far.session_id)) return undefined;
+    if (!sound(far)) return undefined;
     if (level) farSeen(machine, far.ts);
-    if (D().store.db.query("SELECT 1 FROM alerts WHERE far_id = ?").get(far.id)) return undefined;
+    if (D().store.db.query("SELECT 1 FROM alerts WHERE far_id = ?").get(farKey(machine, far.id))) return undefined;
+    let silent = listed === "inbox";
+    // One told as it is raised counts against the minute.
+    if (!listed) {
+      const m = minuteOf(machine);
+      if (m.kept >= FAR_KEPT_A_MINUTE) {
+        m.more++;
+        m.timer ??= setTimeout(() => { const cur = minutes.get(machine); if (cur === m) { minutes.delete(machine); sayMore(machine, m.more); } }, Math.max(0, m.from + 60_000 - Date.now()));
+        return undefined;
+      }
+      m.kept++;
+      if (m.told >= FAR_TOLD_A_MINUTE) silent = true;
+      else if (!far.read) m.told++;
+    }
     const there = (id: string) => `${machine}--${id}`;
-    // What that daemon did with it there (its snooze, its routes) is its own.
-    const { snoozed: _s, held: _h, inbox_only: _i, child_session, child_title, open_session, ...rest } = (far.data ?? {}) as Record<string, any>;
-    const child = typeof child_session === "string" ? { child_session: there(child_session), child_title } : {};
-    const data = { ...rest, ...(typeof open_session === "string" ? { open_session: there(open_session) } : {}), far: { machine, alert: far.id } };
-    const source = typeof child_session === "string" ? there(child_session) : "";
-    return file({ kind: far.kind, sid: there(far.session_id), from: source || there(far.session_id), source, title: String(far.title ?? ""), body: String(far.body ?? ""), data, child, far: { id: far.id, ts: far.ts, read: !!far.read } });
+    // What that daemon did with it there (its snooze, its routes) is its own, and so is anything else it put in.
+    const { child_session, child_title, open_session, ...rest } = farData(far.data);
+    const child = child_session ? { child_session: there(child_session), child_title } : {};
+    const data = { ...rest, ...(open_session ? { open_session: there(open_session) } : {}), far: { machine, alert: far.id, ts: far.ts } };
+    const source = child_session ? there(child_session) : "";
+    return file({ kind: far.kind, sid: there(far.session_id!), from: source || there(far.session_id!), source, title: String(far.title ?? ""), body: String(far.body ?? ""), data, child, far: { machine, id: far.id, read: !!far.read }, silent });
   } catch (e) {
     capture(e, { at: "mirror alert", machine });
     return undefined;
   }
 }
 
-// That daemon's recent alerts, read when its link opens: the ones raised
-// since the last one this daemon saw of it are kept, oldest first. The first
-// time a machine is read its history stays its own: only what comes after counts.
+// What needs the owner first, then what failed, then the rest, each newest first.
+const WEIGHT: Partial<Record<AlertKind, number>> = { approval: 0, question: 0, failed: 1, limit: 1, loop_failed: 1 };
+const weight = (a: Alert) => (a.read ? 3 : WEIGHT[a.kind] ?? 2);
+export const FAR_KEPT_AT_ONCE = 100;
+
+// That daemon's alerts, read when its link opens (the recent ones and every
+// unread one). The ones raised since the last this daemon saw of it are kept:
+// when there are more than a hundred, what needs the owner and what failed
+// first, and one alert says how many were left out; a dozen are told on the
+// channels and the rest stay in the inbox. What was read (or marked unread)
+// on that side while the link was down is read here too. The first time a
+// machine is read its history stays its own: only what comes after counts.
 export function mirrorSince(machine: string, list: Alert[]): number {
+  const all = list.filter(sound);
+  const newest = Math.max(0, ...all.map((a) => a.ts));
   const from = farCursor(machine);
   if (from === undefined) {
-    farSeen(machine, Math.max(0, ...list.map((a) => Number(a.ts) || 0)));
+    farSeen(machine, newest);
     return 0;
   }
+  const db = D().store.db;
+  const held = new Map(db.query<{ id: string; far_id: string; read: number; kept: number }, [string]>("SELECT id, far_id, read, kept FROM alerts WHERE far_id IS NOT NULL AND json_extract(data, '$.far.machine') = ?").all(machine).map((r) => [r.far_id, r]));
+  const waiting = new Set(pendingReads(machine));
+  const fresh = all.filter((a) => a.ts > from && !held.has(farKey(machine, a.id))).sort((x, y) => weight(x) - weight(y) || y.ts - x.ts);
+  const take = fresh.slice(0, FAR_KEPT_AT_ONCE);
+  const loud = new Set(take.filter((a) => !a.read).slice(0, FAR_TOLD_A_MINUTE).map((a) => a.id));
   let n = 0;
-  for (const a of [...list].sort((x, y) => x.ts - y.ts)) if (a.ts > from && mirror(machine, a, false)) n++;
-  farSeen(machine, Math.max(from, ...list.map((a) => Number(a.ts) || 0)));
+  // In the order they were raised, so the inbox lists them so.
+  for (const a of [...take].sort((x, y) => x.ts - y.ts)) if (mirror(machine, a, false, loud.has(a.id) ? "told" : "inbox")) n++;
+  farSeen(machine, Math.max(from, newest));
+  sayMore(machine, fresh.length - take.length, "raised while it was out of reach");
+  // Read state, both ways. A read made here that is still to be told there stands.
+  const read: string[] = [];
+  for (const a of all) {
+    const h = held.get(farKey(machine, a.id));
+    if (!h || waiting.has(a.id)) continue;
+    if (a.read && !h.read && !h.kept) read.push(h.id);
+    else if (!a.read && a.kept && h.read) farWasUnread(machine, a.id);
+  }
+  if (read.length) markRead({ ids: read }, false);
   return n;
 }
 
@@ -535,17 +657,49 @@ export function mirrorSince(machine: string, list: Alert[]): number {
 export function farWasRead(machine: string, o: { ids?: unknown; session_id?: unknown; all?: unknown }) {
   try {
     const db = D().store.db;
-    const ids = Array.isArray(o.ids) && o.ids.length
-      ? db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND far_id IN (${o.ids.map(() => "?").join(", ")})`).all(...o.ids.map(String).slice(0, 500))
+    const keys = Array.isArray(o.ids) ? o.ids.map((id) => farKey(machine, String(id))).slice(0, 500) : [];
+    const ids = keys.length
+      ? db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND far_id IN (${keys.map(() => "?").join(", ")})`).all(...keys)
       : typeof o.session_id === "string"
       ? db.query<{ id: string }, [string]>("SELECT id FROM alerts WHERE read = 0 AND far_session = ? AND kept = 0").all(`${machine}--${o.session_id}`)
       : o.all
-      ? db.query<{ id: string }, [string]>("SELECT id FROM alerts WHERE read = 0 AND kept = 0 AND json_extract(data, '$.far.machine') = ?").all(machine)
+      ? db.query<{ id: string }, [string]>("SELECT id FROM alerts WHERE read = 0 AND kept = 0 AND far_id IS NOT NULL AND json_extract(data, '$.far.machine') = ?").all(machine)
       : [];
     if (ids.length) markRead({ ids: ids.map((r) => r.id) }, false);
   } catch (e) {
     capture(e, { at: "far alerts read", machine });
   }
+}
+
+// The owner marked it unread there, to come back to it: unread here too, and kept so.
+export function farWasUnread(machine: string, alert: unknown) {
+  try {
+    const db = D().store.db;
+    const r = db.query<{ id: string }, [string]>("SELECT id FROM alerts WHERE far_id = ? AND NOT (read = 0 AND kept = 1)").get(farKey(machine, String(alert)));
+    if (!r) return;
+    db.query("UPDATE alerts SET read = 0, kept = 1, rev = ? WHERE id = ?").run(nextRev(), r.id);
+    emit("alerts_read", { unread: r.id, rev: currentRev() });
+  } catch (e) {
+    capture(e, { at: "far alert unread", machine });
+  }
+}
+
+// Reads made here that the daemon they came from has not been told of (its link was down): told when it opens.
+export const pendingReads = (machine: string) =>
+  D().store.db.query<{ alert: string }, [string]>("SELECT alert FROM alert_far_reads WHERE machine = ? LIMIT 1000").all(machine).map((r) => r.alert);
+function tellRead(machine: string, ids: string[]) {
+  if (!ids.length) return;
+  const db = D().store.db;
+  const add = db.query("INSERT OR IGNORE INTO alert_far_reads (machine, alert) VALUES (?, ?)");
+  db.transaction(() => { for (const id of ids) add.run(machine, id); })();
+  const told = () => {
+    const del = D().store.db.query("DELETE FROM alert_far_reads WHERE machine = ? AND alert = ?");
+    D().store.db.transaction(() => { for (const id of ids) del.run(machine, id); })();
+  };
+  Promise.resolve().then(() => farHook.read?.(machine, ids)).then((ok) => { if (farHook.read && ok !== false) told(); }).catch(() => { /* its link is down: told when it opens */ });
+}
+export function tellPendingReads(machine: string) {
+  try { tellRead(machine, pendingReads(machine)); } catch (e) { capture(e, { at: "far alerts read", machine }); }
 }
 
 // A session deleted on that daemon, or a machine taken out of the fleet: its alerts go with it, as a session's here do.
@@ -555,7 +709,12 @@ export function farGone(machine: string, sessionId?: string) {
     const n = sessionId
       ? db.query("DELETE FROM alerts WHERE far_session = ?").run(`${machine}--${sessionId}`).changes
       : db.query("DELETE FROM alerts WHERE far_id IS NOT NULL AND json_extract(data, '$.far.machine') = ?").run(machine).changes;
-    if (!sessionId) db.query("DELETE FROM alert_far WHERE machine = ?").run(machine);
+    if (!sessionId) {
+      db.query("DELETE FROM alert_far WHERE machine = ?").run(machine);
+      db.query("DELETE FROM alert_far_reads WHERE machine = ?").run(machine);
+      const m = minutes.get(machine);
+      if (m) { clearTimeout(m.timer); minutes.delete(machine); }
+    }
     if (n) { nextRev(); emit("alerts_read", { changed: n, rev: currentRev() }); }
   } catch (e) {
     capture(e, { at: "far alerts gone", machine });
@@ -636,7 +795,7 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
   if (opts.auto || opts.touch) where.push("kept = 0");
   if (opts.auto) where.push(`kind NOT IN (${CALLS.map((k) => `'${k}'`).join(", ")})`);
   const hit = db.query<{ id: string; session_id: string | null; far_id: string | null; machine: string | null }, any>(
-    `SELECT id, COALESCE(session_id, far_session) AS session_id, far_id, json_extract(data, '$.far.machine') AS machine FROM alerts WHERE ${where.join(" AND ")}`,
+    `SELECT id, COALESCE(session_id, far_session) AS session_id, json_extract(data, '$.far.alert') AS far_id, json_extract(data, '$.far.machine') AS machine FROM alerts WHERE ${where.join(" AND ")}`,
   ).all(...args);
   if (!hit.length) return 0;
   nextRev();
@@ -645,7 +804,7 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
   if (tell) {
     const by = new Map<string, string[]>();
     for (const h of hit) if (h.far_id && h.machine) (by.get(h.machine) ?? by.set(h.machine, []).get(h.machine)!).push(h.far_id);
-    for (const [machine, ids] of by) try { farHook.read?.(machine, ids); } catch (e) { capture(e, { at: "far alerts read", machine }); }
+    for (const [machine, ids] of by) try { tellRead(machine, ids); } catch (e) { capture(e, { at: "far alerts read", machine }); }
   }
   // Each channel takes back what it shows for a session once nothing in it is unread.
   const left = unreadCounts().sessions;
@@ -674,10 +833,11 @@ export const raisedOffline = (machine: string, since: number) =>
 
 // Reads the unread alerts whose data names this value (an answered approval).
 // `askedIn`: only the alerts of the session that asked (a question's call id is its session's).
+// Of this daemon's own alerts: an id another daemon's alert names is that daemon's.
 export function readWhere(key: string, value: string, askedIn?: string) {
-  const sessions = D().store.db.query<{ session_id: string | null }, [string, string]>("SELECT DISTINCT session_id FROM alerts WHERE json_extract(data, ?) = ?").all(`$.${key}`, value);
+  const sessions = D().store.db.query<{ session_id: string | null }, [string, string]>("SELECT DISTINCT session_id FROM alerts WHERE json_extract(data, ?) = ? AND far_id IS NULL").all(`$.${key}`, value);
   for (const r of sessions) if (r.session_id && key === "approval_id") snooze.resume(r.session_id);
-  const ids = D().store.db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND json_extract(data, ?) = ?${askedIn ? ` AND ${ASKED_IN} = ?` : ""}`)
+  const ids = D().store.db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND far_id IS NULL AND json_extract(data, ?) = ?${askedIn ? ` AND ${ASKED_IN} = ?` : ""}`)
     .all(...[`$.${key}`, value, ...(askedIn ? [askedIn] : [])]).map((r) => r.id);
   if (ids.length) markRead({ ids });
   // An ask the owner had looked at and now answered is read already: the pages are told all the same, since it waits no more.
@@ -698,9 +858,15 @@ export function settleAsks(sessionId: string) {
 // until the owner reads it on purpose.
 export function markUnread(id: string): boolean {
   const db = D().store.db;
-  if (!db.query("SELECT 1 FROM alerts WHERE id = ?").get(id)) return false;
+  const r = db.query<{ alert: string | null; machine: string | null }, [string]>("SELECT json_extract(data, '$.far.alert') AS alert, json_extract(data, '$.far.machine') AS machine FROM alerts WHERE id = ?").get(id);
+  if (!r) return false;
   db.query("UPDATE alerts SET read = 0, kept = 1, rev = ? WHERE id = ?").run(nextRev(), id);
   emit("alerts_read", { unread: id, rev: currentRev() });
+  // Another daemon's: unread there too, and a read of it that was still to be told there is not told.
+  if (r.alert && r.machine) {
+    db.query("DELETE FROM alert_far_reads WHERE machine = ? AND alert = ?").run(r.machine, r.alert);
+    Promise.resolve().then(() => farHook.unread?.(r.machine!, r.alert!)).catch(() => { /* its link is down: it stays as it is there */ });
+  }
   return true;
 }
 

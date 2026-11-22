@@ -9,7 +9,7 @@ import type { Frame, Session } from "../core/types.ts";
 import type { SessionState } from "../core/watch.ts";
 import { type Facts, type MachineRow, meta, migrate } from "./db.ts";
 import { freeCores, localFacts, VERSION } from "./facts.ts";
-import { CONNECT_MS, freePort, LinkError, linkFetch, linkJson, listenerUids, loopbackUrl, newKey, type Peer } from "./link.ts";
+import { CONNECT_MS, freePort, LinkError, linkFetch, linkJson, listenerUids, loopbackUrl, newKey, whyUnreached, type Peer } from "./link.ts";
 import { place, type Place, type Rule, type Want } from "./placement.ts";
 import { groupOf, hostGroups, plainAlias, SSH_BASE, SSH_ONE_SHOT, sshProgram } from "./sshconfig.ts";
 import { loginCommand, parseProbe, PROBE_SCRIPT, SshLink } from "./sshlink.ts";
@@ -50,6 +50,9 @@ const RELAY_GRACE_MS = 1_000;
 const RELAY_LATE_MS = 250; // a watchdog that ran this late was held up: chunks may wait behind it
 export const relaySilence = (pingMs: unknown) => (typeof pingMs === "number" && pingMs >= 500 && pingMs <= 60_000 ? 2 * pingMs + RELAY_GRACE_MS : RELAY_SILENCE_MS);
 const RELAY_STEADY_MS = 30_000; // a stream that lived this long was being read: losing it starts the backoff over
+// A machine heard again counts as back once it has stayed heard this long (the same bound): until
+// then it is still shown out of reach, so one that comes and goes is one absence, said once.
+export const steadyMs = () => Number(process.env.KEEL_FLEET_STEADY_MS) || RELAY_STEADY_MS;
 const FACTS_FRESH_MS = 60_000; // load1 averages a minute: a queue limit older than that is read again
 
 export class Fleet {
@@ -109,6 +112,8 @@ export class Fleet {
   }
 
   start() {
+    // Heard again when the last daemon stopped, before it had stayed heard: the wait starts over.
+    for (const m of this.rows()) if (m.offline_since && m.state !== "offline" && !this.settling.has(m.id)) this.settle(m.id, m.reason);
     for (const m of this.rows()) if (m.auto_connect) this.check(m.id).catch((e) => this.errors.capture("server", e, { at: "fleet auto_connect", machine: m.id }));
   }
 
@@ -117,6 +122,8 @@ export class Fleet {
     const relays = [...this.relays.values()];
     this.relays.clear(); // first: an aborted relay that is no longer listed does not reopen
     for (const r of relays) { r.abort.abort(); clearTimeout(r.timer); }
+    for (const t of this.settling.values()) clearTimeout(t);
+    this.settling.clear();
     for (const t of this.tunnels.values()) t.then((t) => t.proc.kill()).catch(() => {});
     this.tunnels.clear();
     for (const l of this.ssh.values()) l.close();
@@ -136,22 +143,29 @@ export class Fleet {
     return this.rows().find((m) => m.id === name || m.name.toLowerCase() === n || m.link_daemon_id === name);
   }
   private set(id: string, patch: Partial<MachineRow>) {
-    // Out of reach, and heard again: since when is kept with the machine (across a
-    // restart of this daemon), and told once each way (onReach).
+    // Out of reach, and back: since when is kept with the machine (across a
+    // restart of this daemon). It is back once it has stayed heard a while
+    // (steadyMs), not at the first word: until then the absence goes on, so a
+    // machine that comes and goes is out of reach once, and said once each way.
     let told: (() => void) | undefined;
     if (patch.state !== undefined) {
       const was = this.row(id);
-      if (was && patch.state === "offline" && !was.offline_since) {
-        const since = patch.offline_since ?? Date.now();
-        patch = { ...patch, offline_since: since };
-        told = () => this.onReach?.(this.row(id) ?? was, { state: "offline", since });
-      } else if (was?.offline_since && patch.state === "offline") {
-        patch = { ...patch, offline_since: was.offline_since };
+      if (was && patch.state === "offline") {
+        clearTimeout(this.settling.get(id));
+        this.settling.delete(id);
+        if (!was.offline_since) {
+          const since = patch.offline_since ?? Date.now();
+          patch = { ...patch, offline_since: since };
+          told = () => this.onReach?.(this.row(id) ?? was, { state: "offline", since });
+        } else {
+          // Out again before it had stayed heard: the same absence, told again as such when it had seemed over.
+          const since = was.offline_since;
+          patch = { ...patch, offline_since: since };
+          if (was.state !== "offline") told = () => this.onReach?.(this.row(id) ?? was, { state: "offline", since });
+        }
       } else if (was?.offline_since && ["ready", "busy", "starting"].includes(patch.state)) {
-        const since = was.offline_since;
-        patch = { ...patch, offline_since: null };
-        // With why it was out, which the row no longer says.
-        told = () => this.onReach?.({ ...(this.row(id) ?? was), reason: was.reason }, { state: "back", since });
+        delete patch.offline_since;
+        if (!this.settling.has(id)) this.settle(id, was.reason);
       }
     }
     const keys = Object.keys(patch);
@@ -160,7 +174,28 @@ export class Fleet {
     try { told?.(); } catch (e) { this.errors.capture("server", e, { at: "fleet reach", machine: id }); }
   }
 
-  // A machine went out of reach (`since`: when it was last heard), or is heard again (`since`: from when it was not).
+  // A machine heard again: back once it has stayed heard. `why`: what kept it out, which its row no longer says.
+  private settling = new Map<string, Timer>();
+  private settle(id: string, why: string | null) {
+    this.settling.set(id, setTimeout(() => {
+      this.settling.delete(id);
+      if (this.stopped) return;
+      try {
+        const m = this.row(id);
+        if (!m?.offline_since || m.state === "offline") return;
+        const since = m.offline_since;
+        this.store.db.query("UPDATE fleet_machines SET offline_since = NULL WHERE id = ?").run(id);
+        this.emitMachines();
+        this.onReach?.({ ...m, offline_since: null, reason: why }, { state: "back", since });
+      } catch (e) {
+        this.errors.capture("server", e, { at: "fleet reach", machine: id });
+      }
+    }, steadyMs()));
+  }
+
+  // How long a machine is heard before it counts as back: its absence ended that long before the word.
+  steadyFor() { return steadyMs(); }
+  // A machine went out of reach (`since`: when it was last heard), or is back (`since`: from when it was out).
   onReach?: (m: MachineRow, change: { state: "offline" | "back"; since: number }) => void;
 
   add(m: { name: string; source: "daemon" | "ssh"; daemon_url?: string; ssh_host?: string; daemon_port?: number; workspace_root?: string }): MachineRow {
@@ -190,6 +225,8 @@ export class Fleet {
   private unlink(id: string) {
     const r = this.relays.get(id);
     if (r) { r.abort.abort(); clearTimeout(r.timer); this.relays.delete(id); }
+    clearTimeout(this.settling.get(id));
+    this.settling.delete(id);
     const t = this.tunnels.get(id);
     if (t) { t.then((t) => t.proc.kill()).catch(() => {}); this.tunnels.delete(id); }
     this.links.delete(id);
@@ -367,7 +404,7 @@ export class Fleet {
     const r = await fetch(`${url}/api/fleet/pair`, {
       method: "POST", headers: { "content-type": "application/json" }, redirect: "manual",
       body: JSON.stringify({ daemon_id: this.id, name: this.name }), signal: AbortSignal.timeout(CONNECT_MS),
-    }).catch((e) => { throw new LinkError(`cannot reach ${url}: ${(e as Error).message}`); });
+    }).catch((e) => { throw new LinkError(`cannot reach ${url}: ${whyUnreached(e, CONNECT_MS)}`); });
     const b = (await r.json().catch(() => ({}))) as any;
     if (!r.ok || !b.key || !b.daemon_id) throw new LinkError(`pairing refused: ${b.error ?? `HTTP ${r.status}`}`);
     if (b.daemon_id === this.id) throw new LinkError("that is this daemon: a daemon is never linked to itself");
@@ -500,6 +537,7 @@ export class Fleet {
     // When the stream last said anything: a stream that goes silent was last heard then, not when it is given up.
     let heard = 0;
     let silent = false;
+    let unanswered = false;
     const lost = (reason: string) => {
       if (relay.abort.signal.aborted && this.relays.get(id) !== relay) return;
       relay.live = false;
@@ -523,7 +561,11 @@ export class Fleet {
     };
     (async () => {
       const p = await this.peer(id);
-      const res = await linkFetch(p, "/api/fleet/stream", { signal: relay.abort.signal, timeout: 2 ** 31 - 1 });
+      // The stream itself has no end, but its start has a bound like any connection: a try made
+      // into a dead link (a network that changed under it) would otherwise wait for good, and the
+      // machine stayed out of reach long after its link was back.
+      const starting = setTimeout(() => { unanswered = true; relay.abort.abort(); }, CONNECT_MS);
+      const res = await linkFetch(p, "/api/fleet/stream", { signal: relay.abort.signal, timeout: 2 ** 31 - 1 }).finally(() => clearTimeout(starting));
       if (!res.ok || !res.body) throw new LinkError(`the stream answered HTTP ${res.status}`);
       relay.live = true;
       opened = Date.now();
@@ -561,7 +603,7 @@ export class Fleet {
       throw new LinkError("the stream ended");
     })().catch((e) => {
       if (this.relays.get(id) !== relay) return;
-      lost(relay.abort.signal.aborted && !(e instanceof LinkError) ? "the stream went silent" : (e as Error).message);
+      lost(unanswered ? `no answer within ${CONNECT_MS / 1000} s` : relay.abort.signal.aborted && !(e instanceof LinkError) ? "the stream went silent" : (e as Error).message);
     });
   }
 

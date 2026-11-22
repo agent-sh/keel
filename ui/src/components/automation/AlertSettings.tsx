@@ -5,7 +5,7 @@ import { Card, Segmented, SettingRow } from "../Settings.tsx";
 import { Tick } from "../surfaces/kit.tsx";
 import { ALERT_LABEL, CHANNEL_NAME } from "./bits.tsx";
 
-const KINDS: (keyof Settings["routes"])[] = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined"];
+const KINDS: (keyof Settings["routes"])[] = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine"];
 
 // Settings > Alerts: where each kind of alert goes besides the inbox.
 export default function AlertSettings() {

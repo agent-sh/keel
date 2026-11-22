@@ -10,7 +10,7 @@ import { Fleet, RELAY_PING_MS } from "../../fleet/fleet.ts";
 import { bindFollow } from "../../fleet/follow.ts";
 import { WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { handsRoutes } from "../../fleet/hands-routes.ts";
-import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven, standingFrom } from "../../fleet/link.ts";
+import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, plainReason, proof, proven, standingFrom } from "../../fleet/link.ts";
 import { forwardedStanding, innerHeaders, isLocal, type Standing } from "../../safety/presence.ts";
 import { remoteRun } from "../../fleet/remote.ts";
 import { Handoffs, MoveError } from "../../fleet/handoff.ts";
@@ -463,7 +463,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         return new Response(r.body, { status: r.status, headers: h });
       } catch (e) {
         if (!(e instanceof LinkError)) throw e;
-        return bad((e as Error).message, 502);
+        return bad(`${f.row(id)?.name ?? "that machine"} does not answer: ${plainReason((e as Error).message)}`, 502);
       }
     },
 
