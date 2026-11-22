@@ -7,7 +7,8 @@ import { archive, cloneSession, marks, moveSession, pin, setDone, setMaxSteps, s
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { composing } from "../lib/keys.ts";
 import { api, onFeature, reportError } from "../lib/store.ts";
-import { navigate, seedComposer } from "../lib/ui.ts";
+import { seedComposer } from "../lib/ui.ts";
+import { openPlaced } from "../lib/looks.ts";
 import { ago, cn, fmtCost } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { SessionOrganize } from "./SessionOrganize.tsx";
@@ -192,7 +193,7 @@ function Place({ s }: { s: Session }) {
       <div className="flex flex-wrap justify-end gap-2 py-1.5">
         <label className="mr-auto flex items-center gap-1.5 text-caption text-muted"><input type="checkbox" checked={wt} onChange={(e) => setWt(e.target.checked)} data-testid="clone-worktree" /> Clone into a new worktree</label>
         <button type="button" className={button} data-testid="clone-session" disabled={busy || s.phase === "working"}
-          onClick={() => run(async () => { const r = await cloneSession(s.id, { cwd: to || undefined, worktree: wt ? {} : undefined }); navigate({ name: "session", id: r.session.id }); })}>Clone</button>
+          onClick={() => run(async () => { const r = await cloneSession(s.id, { cwd: to || undefined, worktree: wt ? {} : undefined }); openPlaced(r.session.id, s.id); })}>Clone</button>
         <button type="button" className={button} data-testid="move-session" disabled={busy || s.phase === "working" || (!to && !git) || (to === s.workspace && !git)}
           onClick={() => run(async () => { const r = await moveSession(s.id, { cwd: to && to !== s.workspace ? to : undefined, copy_files: copy || undefined, init_git: git || undefined }); setTo(""); return r.files_copied ? `Moved, ${r.files_copied} files copied.` : "Done."; })}>{to && to !== s.workspace ? "Move here" : "Apply"}</button>
       </div>

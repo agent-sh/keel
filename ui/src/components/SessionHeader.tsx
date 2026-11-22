@@ -8,6 +8,7 @@ import { headerActions } from "../lib/extend.ts";
 import { composing } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
+import { openPlaced } from "../lib/looks.ts";
 import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive } from "../lib/sessops.ts";
@@ -288,7 +289,7 @@ export function SessionHeader({ session }: { session: Session }) {
                 className={itemClass}
                 data-testid="menu-fork"
                 disabled={!session.head}
-                onClick={() => session.head && actions.fork(session.id, session.head).then((f) => navigate({ name: "session", id: f.id }), reportError)}
+                onClick={() => session.head && actions.fork(session.id, session.head).then((f) => openPlaced(f.id, session.id), reportError)}
               >
                 <GitBranch /> Fork
               </Menu.Item>

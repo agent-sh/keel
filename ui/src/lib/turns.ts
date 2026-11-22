@@ -6,13 +6,15 @@ import { rowActions, slash } from "./extend.ts";
 import { chooseFallback, setFallback } from "../components/Fallback.tsx";
 import { fuzzy, registerCommand } from "./keys.ts";
 import { actions, getState, reportError, ensureModels } from "./store.ts";
-import { getUI, navigate } from "./ui.ts";
+import { getUI } from "./ui.ts";
+import { openPlaced } from "./looks.ts";
 
 const current = () => {
   const r = getUI().route;
   return r.name === "session" ? getState().sessions[r.id] : undefined;
 };
-const fork = (id: string, eventId: string, opts: { before?: boolean; title?: string } = {}) => actions.fork(id, eventId, opts).then((s) => navigate({ name: "session", id: s.id }));
+// (The fork takes the pane of the session it was made from: the owner means to work in it. lib/looks.ts)
+const fork = (id: string, eventId: string, opts: { before?: boolean; title?: string } = {}) => actions.fork(id, eventId, opts).then((s) => openPlaced(s.id, id));
 const efforts = (model: string) => getState().models.find((m) => m.id === model)?.efforts ?? [];
 
 slash.add(
