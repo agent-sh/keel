@@ -190,6 +190,18 @@ test("the older SSE transport: an event of data lines with no end is cut at the 
   }
 });
 
+// A server that says "Accepted" in the body of an accepted POST (not JSON) is an ordinary one.
+test("the older SSE transport: what an accepted POST says in its body is no message", async () => {
+  const s = startSseMcp({ accepted: "Accepted" });
+  const c = await McpClient.connect({ kind: "http", url: s.url, headers: {}, sse: true }, 5000);
+  try {
+    expect((await c.callTool("echo", { text: "still answered" })).content).toEqual([{ type: "text", text: "echo: still answered" }]);
+  } finally {
+    c.close();
+    s.stop();
+  }
+});
+
 // A server's headers and the request's body go to the address given and
 // nowhere else: a redirect is not followed, on either transport, and the
 // refusal says where it pointed. The other origin sees no request.

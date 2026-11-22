@@ -10,9 +10,10 @@
 export type SseStats = { streams_opened: number; streams_closed: number; refused_posts: number; initializes: number; calls: string[]; pongs: unknown[] };
 
 // `endpoint`: what the first event names ("elsewhere": an address of another
-// origin). `moved`: the address named for messages answers every POST with a
-// redirect to this one.
-export function startSseMcp(opt: { endpoint?: "path" | "elsewhere"; moved?: string } = {}) {
+// origin). `accepted`: the body of an accepted POST (some servers say
+// "Accepted" in text). `moved`: the address named for messages answers every
+// POST with a redirect to this one.
+export function startSseMcp(opt: { endpoint?: "path" | "elsewhere"; accepted?: string; moved?: string } = {}) {
   const stats: SseStats = { streams_opened: 0, streams_closed: 0, refused_posts: 0, initializes: 0, calls: [], pongs: [] };
   const enc = new TextEncoder();
   const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
@@ -68,7 +69,7 @@ export function startSseMcp(opt: { endpoint?: "path" | "elsewhere"; moved?: stri
         const m = (await req.json()) as any;
         if (m.method && m.id !== undefined) queueMicrotask(() => send(session, { jsonrpc: "2.0", id: m.id, ...answer(m) }));
         else if (!m.method && m.id !== undefined) stats.pongs.push({ id: m.id, result: m.result });
-        return new Response(null, { status: 202 });
+        return opt.accepted === undefined ? new Response(null, { status: 202 }) : new Response(opt.accepted, { status: 200, headers: { "content-type": "text/plain" } });
       }
       return new Response("not found", { status: 404 });
     },

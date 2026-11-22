@@ -442,6 +442,9 @@ export class McpClient {
       }
       throw new Error(`HTTP ${res.status}${text ? `: ${text.slice(0, 300)}` : ""}`);
     }
+    // The older transport answers on its stream: what an accepted POST says in
+    // its body ("Accepted", an empty object) is no message.
+    if (t.sse) return void res.body?.cancel().catch(() => {});
     if (ctype.includes("text/event-stream")) return this.readSse(res);
     const text = await res.text();
     if (text.trim()) this.dispatch(JSON.parse(text));
