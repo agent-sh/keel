@@ -16,14 +16,15 @@
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
 import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, PinOff, Plus, X } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
 import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
 import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
-import { getState, useStore } from "../lib/store.ts";
+import { getState, storeGate, useStore } from "../lib/store.ts";
+import { Covered } from "../lib/cover.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
@@ -211,14 +212,35 @@ function AimTag({ slot }: { slot?: number }) {
 // a row of the list aims at the pane, the bar says what a click there will do
 // in place of its sentences; the row of the session already shown changes
 // nothing, and the sentences stay (the pane's band marks it).
+// Whether the bar offers Escape (bridge.css): not while the keyboard is on a card of the look,
+// where it is the card's own key, nor in a field that keeps it. Read off the focus when it moves.
+function useEscOffered(bar: RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const look = () => {
+      const el = bar.current;
+      if (!el) return;
+      const at = document.activeElement;
+      const off = !!at && at !== document.body
+        && ((!!at.closest("[data-ask-card]") && !!el.closest(".k-view")?.contains(at)) || (at.matches("input, textarea, [contenteditable]") && !at.matches(".k-composer-box textarea")));
+      el.toggleAttribute("data-esc-off", off);
+    };
+    look();
+    document.addEventListener("focusin", look);
+    document.addEventListener("focusout", look);
+    return () => { document.removeEventListener("focusin", look); document.removeEventListener("focusout", look); };
+  }, []);
+}
+
 function LookBar({ under, looking, slot, onBack, keep }: { under: Session; looking?: Session; slot?: number; onBack: () => void; keep?: () => void }) {
+  const bar = useRef<HTMLDivElement>(null);
+  useEscOffered(bar);
   const st = useSessionState(under);
   const w = st.watch;
   const how = useAim(slot);
   const title = under.title || "New session";
   const state = w === "need" || w === "fail" || w === "declined" ? STATE_WORD[w].toLowerCase() : "";
   return (
-    <div className="k-look-bar" data-testid="look-bar" data-holds={under.id} data-under={state ? w : undefined} data-aim={how ?? undefined}>
+    <div ref={bar} className="k-look-bar" data-testid="look-bar" data-holds={under.id} data-under={state ? w : undefined} data-aim={how ?? undefined}>
       <p className="k-look-says" data-testid="look-says">
         {how && how !== "here" ? <span className="k-aim-in k-face-state" data-testid="pane-aim">{AIMS[how]}</span> : (
           <>
@@ -325,17 +347,21 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
         <div key={look.id} className="k-view k-view-over" data-view="look" inert={fresh} data-station={fresh ? look.id : undefined}>
           <div key="band" className="k-band" aria-hidden="true" />
           <LookBar key="bar" under={s} looking={look.s} slot={slot} onBack={() => leaveLook(look.id)} keep={() => keepLook(look.id)} />
-          <Boundary key="view">
-            {/* In a pane that is not worked in a look is as compact as any other pane. */}
-            {look.s
-              ? <Shown s={look.s} helm={helm && !fresh} quiet={!!fresh} back={() => leaveLook(look.id)} />
-              : <SessionView id={look.id} missingHeader={<MissingHead id={look.id} />} />}
-          </Boundary>
+          {/* Under the start page it is not drawn again until it shows (lib/cover.ts). */}
+          <Covered key="held" on={!!fresh} make={storeGate}>
+            <Boundary key="view">
+              {/* In a pane that is not worked in a look is as compact as any other pane. */}
+              {look.s
+                ? <Shown s={look.s} helm={helm && !fresh} quiet={!!fresh} back={() => leaveLook(look.id)} />
+                : <SessionView id={look.id} missingHeader={<MissingHead id={look.id} />} />}
+            </Boundary>
+          </Covered>
         </div>
       )}
       {drawn.current && (
         <div key={s.id} className="k-view" data-view="own" inert={covered} data-station={covered ? s.id : undefined}>
-          <Boundary key="view"><Shown s={s} helm={helm} quiet={covered} /></Boundary>
+          {/* Under a look or the start page the pane's own session is not drawn again: it is drawn as it is when it shows. */}
+          <Covered key="held" on={covered} make={storeGate}><Boundary key="view"><Shown s={s} helm={helm} quiet={covered} /></Boundary></Covered>
           {slot !== undefined && <Swap key="swap" session={s.id} slot={slot} covered={covered} />}
         </div>
       )}

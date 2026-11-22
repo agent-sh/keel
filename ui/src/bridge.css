@@ -548,9 +548,11 @@
 /* The bar offers Escape only where it leads back. On a card of the look it is the card's
    own key, and a field keeps it for itself (the list's filter, a terminal's line, a title
    being renamed); the message box hands it on. (The way back grows toward the sentence
-   when the key shows again: a press on either button stays on it.) */
-.k-view:has([data-ask-card]:focus-within) .k-look-esc,
-body:has(:is(input, textarea, [contenteditable]):focus):not(:has(.k-composer-box textarea:focus)) .k-look-esc { display: none; }
+   when the key shows again: a press on either button stays on it.)
+   The bar is told where the keyboard is when it moves (Bridge.tsx, useEscOffered): asked of
+   the page by a selector (`:has` over the look and over the body), the question was asked
+   again for every row a reply drew, and a look cost three times a pane's style time. */
+.k-look-bar[data-esc-off] .k-look-esc { display: none; }
 /* A line at the pane's foot for a few seconds: what left the pane, and where it is. It lies
    in the room under the message box and leaves air between the two. */
 .k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in 160ms var(--ease-out); }

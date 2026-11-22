@@ -1,7 +1,7 @@
 // One client store: sessions, per-session events, live streaming drafts and
 // errors, fed by REST on load and by the WebSocket after. Components read it
 // with useStore(selector).
-import { useEffect, useSyncExternalStore } from "react";
+import { useContext, useEffect, useSyncExternalStore } from "react";
 import { lineage, type Page } from "../../../src/core/tree.ts";
 import type { Asked, ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
@@ -13,6 +13,7 @@ import { setRatio } from "../../../src/engine/compact.ts";
 import { answerMakesTry, askGap, askLife, ASKS, BEAT_MS, GRACE_MS, HIDDEN_RESYNC_MS, look, PING, rttOf, SLEPT_MS, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips } from "./heartbeat.ts";
 import { Scope } from "./scope.ts";
 import { every as onBeat } from "./clock.ts";
+import { CoverCtx, makeGate, type Gate } from "./cover.ts";
 
 export type ProvidersReport = {
   keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
@@ -127,9 +128,13 @@ export const subscribe = (f: () => void) => {
   subs.add(f);
   return () => void subs.delete(f);
 };
+// A reader in a view that is covered reads the store as it was when the view
+// was covered, and is told of nothing until it shows again (lib/cover.ts).
 export function useStore<T>(sel: (s: State) => T): T {
-  return useSyncExternalStore(subscribe, () => sel(state));
+  const gate = useContext(CoverCtx) as Gate<State> | null;
+  return useSyncExternalStore(gate ? gate.subscribe : subscribe, () => sel(gate?.held ?? state));
 }
+export const storeGate = (): Gate => makeGate(subscribe, () => state);
 export const getState = () => state;
 // The whole model listing is in the store: asked for once, by the first thing that lists models.
 let allModelsOut: Promise<void> | null = null;
