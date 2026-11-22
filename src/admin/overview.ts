@@ -252,7 +252,9 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   const leftDid = { turns: left.reduce((n, r) => n + (r.did?.turns ?? 0), 0), cost: left.reduce((n, r) => n + (r.did?.cost ?? 0), 0) };
   // "The quietest" holds when no hidden session did more than any listed one. Otherwise the line says
   // their states and names the busiest of them.
-  const most = left.reduce<OverviewRow | undefined>((m, r) => (busy(r) > (m ? busy(m) : 0) ? r : m), undefined);
+  // (Of several that did as much: the one that spent most, then by title, so the same sessions give the same name.)
+  const ahead = (a: OverviewRow, b: OverviewRow) => busy(b) - busy(a) || (b.did?.cost ?? 0) - (a.did?.cost ?? 0) || (a.title < b.title ? -1 : a.title > b.title ? 1 : 0) || (a.id < b.id ? -1 : 1);
+  const most = left.filter((r) => busy(r) > 0).sort(ahead)[0];
   const quiet = !most || listed.every((r) => busy(r) >= busy(most));
   const leftBy: Record<string, number> = {};
   if (!quiet || left.some((r) => r.watch !== "done" && r.watch !== "idle")) for (const r of left) leftBy[r.watch] = (leftBy[r.watch] ?? 0) + 1;

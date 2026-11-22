@@ -152,7 +152,8 @@ test("the report counts every agent with the failed ones first, and reads who sp
     const text = overviewText(o).split("\n");
     expect(text[1]).toBe("Your agents (12; 2 not listed: 2 reported):");
     expect(text.find((l) => l.includes('"Only cut"'))).toContain("; 2 turns cut");
-    expect(text.at(-2)).toBe('3 more sessions not listed: 3 done (3 turns, $0.0006), the busiest: "Docs pass".');
+    // (The three did as much as each other: the name is the first by title, whatever order they were made in.)
+    expect(text.at(-2)).toBe('3 more sessions not listed: 3 done (3 turns, $0.0006), the busiest: "Changelog".');
     expect(text.at(-1)).toBe('Most spent since then: "Many turns" $2.90, "Dozen lanes" $0.02, "Needs approval" $0.0003.');
     // With two rows for the sessions the busiest done one is left out: the line says what the left-out ones did, and it still leads the spend.
     const two = overviewText(overview(from, { since: now - 3_600_000, of: lead, max: 12 })).split("\n");
