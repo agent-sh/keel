@@ -5,7 +5,7 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
-import { editBody } from "../lib/edit-body.ts";
+import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
 import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
@@ -42,20 +42,22 @@ const EMPTY: Approval[] = [];
 type Unseen = { n: number; out: number; begun: boolean };
 type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; key: string };
 const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), key: "" };
-// What in a request's text a reader could miss, read once for each request:
+// The text a card shows of a request (its summary and, for an edit, what the edit writes:
+// `body`), and what in it a reader could miss, read once for each request:
 // - `hidden`: characters that do not show as written (they are spelled out and marked);
 // - `alike`: letters that are not plain ASCII and can pass for plain ones (they are named);
 // - `rtl`: letters written right to left (each run stands by itself, in the order written).
 // A text with any of them is `flagged`: it is answered on its own, and its Allow never takes
 // the keyboard by the page's own doing.
-type Shown = { text: string; hidden: number; alike: ReturnType<typeof lookAlikes>; rtl: boolean; flagged: boolean };
+type Shown = { body: EditBody | null; text: string; hidden: number; alike: ReturnType<typeof lookAlikes>; rtl: boolean; flagged: boolean };
 const shownCache = new WeakMap<Approval, Shown>();
 function shownOf(a: Approval): Shown {
   let s = shownCache.get(a);
   if (!s) {
-    const text = a.summary;
+    const body = a.kind === "edit" ? editBody(a.input) : null;
+    const text = body ? `${a.summary}\n${body.lines.map((l) => l.text).join("\n")}` : a.summary;
     const hidden = spellHidden(text).filter((p) => p.hidden).length, alike = lookAlikes(text), rtl = hasRtl(text);
-    shownCache.set(a, (s = { text, hidden, alike, rtl, flagged: hidden > 0 || alike.length > 0 || rtl }));
+    shownCache.set(a, (s = { body, text, hidden, alike, rtl, flagged: hidden > 0 || alike.length > 0 || rtl }));
   }
   return s;
 }
@@ -918,8 +920,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The whole of what the daemon kept of the input, when the card shows only its start.
   const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
   const short = !whole && (cut || part);
-  // What an edit would write, under its paths: read like any other text of a request (its lines are counted).
-  const body = a.kind === "edit" && !(whole && part) ? editBody(a.input) : null;
+  // What an edit would write, under its paths: read like any other text of a request. Its lines are
+  // counted, and each is shown as it is written (Spelled): a character in it that hides or
+  // reorders text is spelled out and marked, as in a command.
+  const body = whole && part ? null : shown.body;
   // (Opened to all the daemon kept of a long input: that text is what is shown, and what is named.)
   const alike = whole && part ? lookAlikes(kept) : shown.alike;
   const rtl = whole && part ? hasRtl(kept) : shown.rtl;
@@ -945,7 +949,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         {body && (
           <span data-testid="approval-body">
             {body.lines.map((l, i) => (
-              <span key={i} className={l.tone === "add" ? "text-ok" : l.tone === "del" ? "text-danger" : l.tone === "note" ? "text-faint" : undefined}>{"\n"}{l.text}</span>
+              <span key={i} className={l.tone === "add" ? "text-ok" : l.tone === "del" ? "text-danger" : l.tone === "note" ? "text-faint" : undefined}>{"\n"}<Spelled text={l.text} shown={whole} /></span>
             ))}
           </span>
         )}

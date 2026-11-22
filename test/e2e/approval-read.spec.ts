@@ -574,3 +574,44 @@ test("an early Enter opens nothing, and Enter alone never both opens and allows 
     await request.delete(`/api/mcp/servers/${server}`);
   }
 });
+
+// What an edit writes is shown as it is written, like a command: a character in it that hides
+// or reorders text is spelled out and marked, the card says so, and such an edit is opened and
+// answered by a deliberate step, never by an Enter on a text that reads as something else.
+test("an edit's content is spelled out: hidden and reordering characters in what it writes are marked", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const content = "export const check = (user) => {\n  if (user.role === 'admin') { /* \u202E } ;eurt = nimdAsi { \u2066*/\n  return f\u200Balse; // p\u0430ss\n};\n";
+  const s = await asking(request, "Read: an edit with a reordering character", [{ name: "Write", input: { file_path: "src/auth.ts", content } }]);
+  try {
+    await waits(request, s.id);
+    await page.goto(`/s/${s.id}`);
+    const card = page.getByTestId("approval").first();
+    const body = card.getByTestId("approval-body");
+    await expect(body.getByTestId("hidden-char")).toHaveText(["<U+202E>", "<U+2066>", "<U+200B>"]);
+    await expect(card.getByTestId("approval-hidden")).toBeVisible();
+    await expect(card.getByTestId("approval-nonascii")).toContainText("U+0430");
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    await expect(card.getByTestId("approval-expand")).toHaveText("Show the 3 marked characters");
+    await shoot(page, "approval-read-14-edit-marked");
+    // Enter well after the settle time: nothing is allowed, and no answer has the keyboard.
+    await page.waitForTimeout(2600);
+    expect(await focus(page)).not.toMatch(/^allow/);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1500);
+    expect(await focus(page)).not.toMatch(/^allow/);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(400);
+    expect(await states(request, s.id)).toBe("pending");
+    // Opened, the answer is one deliberate key away, and the card says which.
+    await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
+    await page.getByTestId("approvals").first().focus();
+    await expect(card.getByTestId("approval-arming")).toHaveText("Marked characters: Down, then Enter allows once");
+    await page.keyboard.press("ArrowDown");
+    await expect(card.getByTestId("allow-once")).toBeFocused();
+    await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
+    await page.keyboard.press("Enter");
+    await expect.poll(() => states(request, s.id)).toBe("allowed/once");
+  } finally {
+    await drop(request, [s.id]);
+  }
+});
