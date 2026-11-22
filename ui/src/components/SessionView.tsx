@@ -36,8 +36,8 @@ export { Boundary };
 // `header` replaces the standard header (a shell's own), `missingHeader` heads the
 // view of a session this daemon does not have; `panel` shows the side panel.
 // `back`: the view lies over something it leads back to (a look over a pane's
-// session): Escape goes back, as it does from an agent's session, and stopping
-// the turn is its own labeled button.
+// session): Escape goes back, as it does from an agent's session, and the turn
+// is stopped by its Stop button, the same one as in every pane.
 export function SessionView({ id, header, missingHeader, panel = true, focus = true, back }: { id: string; header?: ReactNode; missingHeader?: ReactNode; panel?: boolean; focus?: boolean; back?: () => void }) {
   const session = useStore((s) => s.sessions[id]);
   // A link to a session that is gone (deleted, another daemon's) says so instead of loading forever.
@@ -155,7 +155,7 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
       onSend={does.send}
       onQueue={does.queue}
       onStop={does.stop}
-      {...(does.escape ? { onEscape: does.escape, stopLabel: parentId ? "Stop this agent" : "Stop the turn" } : {})}
+      {...(does.escape ? { onEscape: does.escape, ...(parentId ? { stopLabel: "Stop this agent" } : {}) } : {})}
       focus={focus}
       // (Not in a pane the answering sequence opened to bring the keyboard to its card: lib/asks.ts.)
       autoFocus={focus && matchMedia("(min-width: 768px)").matches && sequenceAt() !== id}

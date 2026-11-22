@@ -70,6 +70,8 @@ type ComposerProps = {
   onStop?: () => void;
   // What Escape does when no menu is open (default: stop a working turn).
   onEscape?: () => void;
+  // What Stop stops when that is not the turn of the session shown (an agent's own work):
+  // the button then says it in words. A turn's Stop is the same mark in every pane.
   stopLabel?: string;
   working?: boolean;
   model: string;
@@ -96,7 +98,7 @@ export function Composer(props: ComposerProps) {
 }
 
 const SessionComposer = memo(function SessionComposer({
-  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
+  session, onSend, onQueue, onStop, onEscape, stopLabel, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -871,12 +873,12 @@ const SessionComposer = memo(function SessionComposer({
               // The button goes away with the turn: the focus goes to the box, not to nowhere
               // (not on a phone, where that would raise the keyboard).
               onClick={() => { onStop?.(); if (DESK.matches) ref.current?.focus(); }}
-              title={onEscape ? stopLabel : `${stopLabel} (Esc)`}
-              aria-label={stopLabel}
-              className={cn("grid h-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover", onEscape ? "flex gap-1.5 px-3 text-caption font-medium" : "size-8")}
+              title={onEscape ? stopLabel ?? "Stop the turn" : `${stopLabel ?? "Stop the turn"} (Esc)`}
+              aria-label={stopLabel ?? "Stop the turn"}
+              className={cn("grid h-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover", stopLabel ? "flex gap-1.5 px-3 text-caption font-medium" : "size-8")}
             >
               <Square className="size-3 fill-current" />
-              {onEscape && <span>{stopLabel}</span>}
+              {stopLabel && <span>{stopLabel}</span>}
             </button>
           )}
           <button
