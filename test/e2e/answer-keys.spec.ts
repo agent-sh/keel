@@ -599,7 +599,8 @@ test("what waits across sessions is answered in sequence, one key each", async (
   for (const id of [a, b, c]) await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
   expect(await answersOf(request, q)).toEqual({ "0": { picked: ["Amber"] } });
   for (const id of [a, b, c, q]) await expect(row(page, id)).not.toHaveAttribute("data-watch", "need");
-  await at(q);
+  // The owner is back in the session the sequence began in, the keyboard in its message box.
+  await at(quiet);
   await expect(page.getByTestId("composer")).toBeFocused();
   await drop(request, quiet, a, b, c, q);
 });

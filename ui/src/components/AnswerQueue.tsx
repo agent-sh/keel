@@ -22,17 +22,31 @@
 // a card that was answered hands it to none (lib/asks.ts: setSequence). Where
 // the sequence ends because nothing is left to answer here, the keyboard goes
 // to the session's message box, as a move by code.
+//
+// Answering changes no pane. A session that waits and has no pane is shown as
+// a look over the pane the sequence began in (lib/panes.ts), each in the place
+// of the one before it, and when nothing is left the owner is back where they
+// began: the same panes with the same sessions, the pane they were in, the
+// keyboard where it was. The same holds without the sequence: a session that
+// waits and that the owner went to from a list, a link or the palette (a look,
+// or the pane beside that holds it) is one to answer and leave. Once they have
+// answered all it asked they are back where they came from. Not when they went
+// to its pane themselves (a press in it, the keys that step through the panes)
+// or typed in its message box: then they are there to work. And not in a layout
+// of one pane, where opening a session turns the page: they turn it back.
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { announce } from "../lib/announce.ts";
 import { answeredHere, askIn, focusAsk, restInBox, sequenceAt, setSequence } from "../lib/asks.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
+import { focusBack, leaveLook, movedTo } from "../lib/looks.ts";
+import { getStations, opened, paneOf, stations } from "../lib/stations.ts";
 import { usePlans } from "../lib/plans.ts";
 import { useSafety } from "../lib/safety.ts";
 import { useSecrets } from "../lib/secrets.ts";
 import { unsentOf, useShelfVersion } from "../lib/send-drafts.ts";
-import { useStore } from "../lib/store.ts";
+import { getState, useStore } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
-import { getUI, navigate, useUI } from "../lib/ui.ts";
+import { getUI, navigate, useUI, type Route } from "../lib/ui.ts";
 import { keepBoxOut } from "../lib/self-focus.ts";
 import { nextWaiting, waitingOrder } from "../lib/waiting.ts";
 import { useSessionStates } from "../lib/watch.ts";
@@ -56,20 +70,54 @@ const set = (patch: Partial<State>) => { state = { ...state, ...patch }; subs.fo
 const useQueue = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
 const here = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
 const say = (text: string) => { tipSay(null, text, 2400); announce(text); };
+// Where the owner was when the sequence began: the page, and the pane worked in.
+let origin: { route: Route; slot: number } | null = null;
+// The session the owner went to because it waits, and where they came from (the page, and the
+// pane worked in): answering what it asks leads back there.
+let visit: { id: string; from: Route; slot: number } | null = null;
+// The owner is back on a page they were on: a session that is still there, or the start page in the pane it was in.
+function backTo(to: Route, slot: number): boolean {
+  if (to.name === "session") {
+    const s = getState().sessions[to.id];
+    if (!s || s.archived) return false;
+    navigate(to, true);
+    focusBack(to.id);
+    return true;
+  }
+  if (to.name !== "new") return false;
+  stations.setActive(slot);
+  navigate(to, true);
+  return true;
+}
+// The look over a pane is put away without moving the owner: the sequence says where they go next.
+const putAway = (id: string) => { const st = getStations(); const i = st.over.indexOf(id); if (i >= 0) stations.uncover(i); };
 
 // The sequence goes to a session: its pane takes the helm and its card the
 // keyboard, once it shows and nothing lies over it. Its message box takes
 // none on the way (a session with no card to answer, only a message that did
 // not go, is opened as any other: there the box is where the keyboard goes).
 function go(id: string) {
+  const began = !state.on;
+  if (began) origin = { route: getUI().route, slot: getStations().active };
   // Where it goes is known before the page moves: the move is the sequence's own.
   state = { ...state, on: true, at: id };
   setSequence(state.card[id] === false ? null : id);
-  if (here() !== id) navigate({ name: "session", id });
+  // A session with no pane is looked at over the pane the sequence began in, whichever pane it passed through since.
+  const st = getStations();
+  if (origin && paneOf(st, id) < 0 && !st.slots.includes(id) && st.slots[origin.slot]) stations.setActive(origin.slot);
+  // One step back in the browser leaves the sequence, however many sessions it went through.
+  if (here() !== id) navigate({ name: "session", id }, !began);
   set({});
   focusAsk(id);
 }
-const end = () => { setSequence(null); if (state.on) set({ on: false, at: null }); };
+const end = () => { setSequence(null); origin = null; if (state.on) set({ on: false, at: null }); };
+// Nothing is left to answer: the owner is back where the sequence began, the keyboard where it was there.
+function done(cur: string) {
+  const from = origin;
+  end();
+  putAway(cur);
+  if (!from || (from.route.name === "session" && from.route.id === cur) || !backTo(from.route, from.slot)) restInBox(cur);
+}
 // The page's own rule for a focus it makes by itself (lib/self-focus.ts) is told the same: the
 // message box of the session the sequence brings the keyboard to takes none, neither as its
 // pane opens nor when what held the keyboard goes away.
@@ -125,10 +173,19 @@ export function AnswerQueue() {
   useEffect(() => {
     const before = was.current;
     was.current = { cur, ids };
-    if (!on) return;
+    const gone = before.cur === cur ? before.ids.filter((id) => !ids.includes(id)) : [];
+    if (!on) {
+      // No sequence: the owner came to answer this one, and has answered all it asked. A look is
+      // left; from the pane that holds it they are back in the pane they came from.
+      if (cur && visit?.id === cur && gone.length && !ids.length && gone.every(answeredHere)) {
+        const { from, slot } = visit;
+        visit = null;
+        if (!leaveLook(cur, true)) backTo(from, slot);
+      }
+      return;
+    }
     // The owner went somewhere the sequence did not take them.
     if (cur !== state.at) return end();
-    const gone = before.cur === cur ? before.ids.filter((id) => !ids.includes(id)) : [];
     // Nothing was answered: nothing moves (a card that arrives moves nothing under the owner's hands).
     if (!cur || !gone.length) return;
     // It left for another reason than the owner's answer from this page: the sequence ends where it
@@ -137,11 +194,33 @@ export function AnswerQueue() {
     // More waits here: the keyboard goes to it. Else on to the next session.
     if (ids.length) return focusAsk(cur);
     const next = order.find((id) => id !== cur);
-    if (next) return go(next);
-    end();
-    restInBox(cur);
+    // The look that was answered is put away; the next one, if it is a look, takes its place in the same pane.
+    if (next) { putAway(cur); return go(next); }
+    done(cur);
     say("Nothing else waits for you.");
   }, [on, cur, idsKey, key]);
+  // The owner went to a session that waits, from somewhere else and not by moving to its pane
+  // themselves: one to answer and leave. Typing in its message box ends that: they work there now.
+  const route = useUI((s) => s.route);
+  const came = useRef(route);
+  useEffect(() => {
+    const from = came.current;
+    came.current = route;
+    if (!cur || state.on || !(from.name === "session" || from.name === "new")) { visit = null; return; }
+    if (visit?.id === cur || (from.name === "session" && from.id === cur)) return;
+    const st = opened(getStations(), cur);
+    // A look, or a move between panes at a desk. (One pane is a page that is turned: the owner turns it back.)
+    const leaves = st.over.includes(cur) || (st.slots.length > 1 && !movedTo(cur) && matchMedia("(min-width: 768px)").matches);
+    visit = order.includes(cur) && leaves ? { id: cur, from, slot: getStations().active } : null;
+  }, [route]);
+  useEffect(() => {
+    const typed = (e: Event) => {
+      const t = e.target as HTMLElement | null;
+      if (visit && t?.matches?.('[data-testid="composer"]') && t.closest<HTMLElement>("[data-station]")?.dataset.station === visit.id) visit = null;
+    };
+    addEventListener("input", typed, true);
+    return () => removeEventListener("input", typed, true);
+  }, []);
 
   // Anything else the owner does ends the sequence, and so does leaving the window. So does a
   // quiet minute: one with no answer and no key or press on the cards. (A sequence left on
