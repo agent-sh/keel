@@ -140,6 +140,7 @@ test("the report counts every agent with the failed ones first, and reads who sp
     expect(o.agents!.filter((r) => r.agent!.status === "failed").length).toBe(4);
     expect(o.agents_unlisted).toEqual({ completed: 2 });
     // Four rows are left for the sessions: the three that need the owner, and of the done ones the one that did most.
+    // (Two of the listed ones did nothing in the window, so the three left out are not "the quietest": they are named by state.)
     expect(o.sessions.map((r) => r.title).sort()).toEqual(["Asks a question", "Many turns", "Needs approval", "Only cut"]);
     expect(o.hidden).toBe(3);
     expect(o.hidden_did).toEqual({ turns: 3, cost: expect.closeTo(0.0006, 6) });
@@ -151,11 +152,17 @@ test("the report counts every agent with the failed ones first, and reads who sp
     const text = overviewText(o).split("\n");
     expect(text[1]).toBe("Your agents (12; 2 not listed: 2 reported):");
     expect(text.find((l) => l.includes('"Only cut"'))).toContain("; 2 turns cut");
-    expect(text.at(-2)).toBe("3 more sessions not listed, the quietest (3 turns, $0.0006).");
+    expect(text.at(-2)).toBe('3 more sessions not listed: 3 done (3 turns, $0.0006), the busiest: "Docs pass".');
     expect(text.at(-1)).toBe('Most spent since then: "Many turns" $2.90, "Dozen lanes" $0.02, "Needs approval" $0.0003.');
     // With two rows for the sessions the busiest done one is left out: the line says what the left-out ones did, and it still leads the spend.
     const two = overviewText(overview(from, { since: now - 3_600_000, of: lead, max: 12 })).split("\n");
-    expect(two.at(-2)).toBe("5 more sessions not listed: 4 done, 1 needs you (1203 turns, $2.90).");
+    // The audit's statement 6 again: the session of 1,200 turns is among the hidden, so they are not called the quietest, and it is named.
+    expect(two.at(-2)).toBe('5 more sessions not listed: 4 done, 1 needs you (1203 turns, $2.90), the busiest: "Many turns".');
+    // Two sessions that did nothing in the window, and room for every other: what is left out is the quietest, and is called so.
+    mk("Idle one", "idle", 0, 0);
+    mk("Idle two", "idle", 0, 0);
+    const most = overviewText(overview(from, { since: now - 3_600_000, max: 8 })).split("\n");
+    expect(most.at(-2)).toBe("2 more sessions not listed, the quietest.");
     expect(two.at(-1)).toStartWith('Most spent since then: "Many turns" $2.90');
     expect(totalsText({ turns: 3, cut: 2, failed: 1, agents: {}, cost: 0 })).toBe("3 of the sessions' own turns ended, 1 failed, 2 cut by a restart; $0.00 spent in all");
   } finally {

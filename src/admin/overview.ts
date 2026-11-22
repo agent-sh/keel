@@ -49,9 +49,13 @@ export type Overview = {
   agents_total?: number;
   agents_unlisted?: Record<string, number>;
   hidden: number; // sessions past the listed ones: within a state, the ones that did least in the window
-  // What the hidden ones did in the window, when any did; and their states, when one is not at rest.
+  // What the hidden ones did in the window, when any did. They are "the quietest" only when none of
+  // them did more than a listed session: where the rows went to states that come first (the ones
+  // that need the owner, failed or wait), a busy done session is among the hidden. Then
+  // `hidden_by` says their states and `hidden_busiest` names the one that did most.
   hidden_did?: { turns: number; cost: number };
   hidden_by?: Record<string, number>;
+  hidden_busiest?: { id: string; title: string; turns: number; cost: number };
   // The sessions that spent most in the window, over every session (the hidden ones and the asking one too), their agents' spend in each.
   top?: { id: string; title: string; cost: number }[];
   // `turns`, `failed`: the sessions' own turns, not their agents'. `cut`: those a restart cut. `agents`: how their agents ended.
@@ -246,8 +250,12 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   const kept = new Set([...rows].sort((a, b) => WATCH_RANK[a.watch] - WATCH_RANK[b.watch] || busy(b) - busy(a)).slice(0, max));
   const listed = rows.filter((r) => kept.has(r)), left = rows.filter((r) => !kept.has(r));
   const leftDid = { turns: left.reduce((n, r) => n + (r.did?.turns ?? 0), 0), cost: left.reduce((n, r) => n + (r.did?.cost ?? 0), 0) };
+  // "The quietest" holds when no hidden session did more than any listed one. Otherwise the line says
+  // their states and names the busiest of them.
+  const most = left.reduce<OverviewRow | undefined>((m, r) => (busy(r) > (m ? busy(m) : 0) ? r : m), undefined);
+  const quiet = !most || listed.every((r) => busy(r) >= busy(most));
   const leftBy: Record<string, number> = {};
-  if (left.some((r) => r.watch !== "done" && r.watch !== "idle")) for (const r of left) leftBy[r.watch] = (leftBy[r.watch] ?? 0) + 1;
+  if (!quiet || left.some((r) => r.watch !== "done" && r.watch !== "idle")) for (const r of left) leftBy[r.watch] = (leftBy[r.watch] ?? 0) + 1;
   // Who spent most, over every session: a row's place in the list says nothing about its spend.
   const top = from.store.sessions().filter((s) => !s.parent_id).map((s) => ({ id: s.id, title: s.title, cost: rolled(s.id)?.cost ?? 0 }))
     .filter((r) => r.cost > 0).sort((a, b) => b.cost - a.cost).slice(0, 3);
@@ -268,6 +276,7 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   return {
     as_of, since, until, sessions: listed, ...(mine ? { agents: mine, agents_total: agentsTotal, ...(agentsUnlisted ? { agents_unlisted: agentsUnlisted } : {}) } : {}),
     hidden: left.length, ...(leftDid.turns || leftDid.cost ? { hidden_did: leftDid } : {}), ...(Object.keys(leftBy).length ? { hidden_by: leftBy } : {}),
+    ...(!quiet && most ? { hidden_busiest: { id: most.id, title: most.title, turns: most.did?.turns ?? 0, cost: most.did?.cost ?? 0 } } : {}),
     ...(top.length ? { top } : {}), totals,
   };
 }
@@ -405,7 +414,8 @@ function overviewAt(o: Overview, opts: { ids?: boolean }, level: number): string
   if (o.hidden) {
     // What the ones left out are, from all of them: at rest and the least busy, or by state when one is not; and what they did.
     const did = o.hidden_did ? ` (${[o.hidden_did.turns ? plural(o.hidden_did.turns, "turn") : "", o.hidden_did.cost ? usd(o.hidden_did.cost) : ""].filter(Boolean).join(", ")})` : "";
-    out.push(`${plural(o.hidden, "more session")} not listed${o.hidden_by ? `: ${topTwo(o.hidden_by, (k) => WATCH_LABEL[k as Watch].toLowerCase())}` : ", the quietest"}${did}.`);
+    const busiest = o.hidden_busiest ? `, the busiest: ${name(o.hidden_busiest.title, undefined, titleAt(level))}` : "";
+    out.push(`${plural(o.hidden, "more session")} not listed${o.hidden_by ? `: ${topTwo(o.hidden_by, (k) => WATCH_LABEL[k as Watch].toLowerCase())}` : ", the quietest"}${did}${busiest}.`);
   }
   // Over every session, the hidden ones too (see `top`).
   const spent = o.top ?? [];

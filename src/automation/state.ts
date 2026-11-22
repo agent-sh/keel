@@ -112,14 +112,20 @@ function heldOf(d: From, s: Session): { text?: string; since?: number } | undefi
 // everything a session waits on, the live agents of each parent, and (worked
 // out once, when something waits on the owner) which asking sessions are under which.
 type Kid = { session_id: string; title: string; status: string; type: string };
-// `tally`: every agent a session started and how many of them failed, read when first asked.
-export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]>; under?: Map<string, { id: string; title: string }[]>; tally?: Map<string, { n: number; failed: number }> };
+// `tally`: the agents a session started and how many of them failed, read for a session when it is told.
+export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]>; under?: Map<string, { id: string; title: string }[]>; tally?: Map<string, { n: number; failed: number } | null> };
+export const TALLY = "SELECT COUNT(*) AS n, SUM(status = 'failed') AS failed FROM agents WHERE parent_id = ?";
+// One seek on the parent's index for the session asked about: never a pass over every agent ever
+// stored (a state is read at each flush and for each timeline's "now").
 function tallyOf(l: Lens, id: string): { n: number; failed: number } | undefined {
-  if (!l.tally) {
-    l.tally = new Map();
-    if (hasTable(l.d.store, "agents")) for (const r of l.d.store.db.query<{ parent_id: string; n: number; failed: number }, []>("SELECT parent_id, COUNT(*) AS n, SUM(status = 'failed') AS failed FROM agents GROUP BY parent_id").all()) l.tally.set(r.parent_id, r);
+  const seen = (l.tally ??= new Map());
+  if (!seen.has(id)) {
+    const r = hasTable(l.d.store, "agents")
+      ? l.d.store.db.query<{ n: number; failed: number | null }, [string]>(TALLY).get(id)
+      : null;
+    seen.set(id, r?.n ? { n: r.n, failed: r.failed ?? 0 } : null);
   }
-  return l.tally.get(id);
+  return seen.get(id) ?? undefined;
 }
 // The sessions with something that waits on the owner, by each session above them: a walk up
 // from the few that ask, never a search down from every session.
