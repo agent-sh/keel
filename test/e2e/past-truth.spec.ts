@@ -24,6 +24,13 @@ const bash = (command: string) => ({ name: "Bash", input: { command } });
 // Put together here, so this file holds nothing a scanner reads as a key.
 const KEY = ["sk", "ant", "api03", "PLANTEDKEY0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH"].join("-");
 
+// What a failing command prints that is no secret: hashes, ids, paths and assignments. It reaches the model as it was printed.
+const PLAIN = [
+  "commit 74d3746b32778b32a6cede971201681baeab64ed", "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "/srv/app/sk-learn-notebooks-2026/readme.md: No such file or directory", "sketch-book-of-drawings-and-other-things.pdf was not found",
+  "monkey=banana and key=value pairs", "session 01a2023d-1cda-7373-8409-6d94cb93121f failed at /home/user/project/src/skill.md:12",
+];
+
 const made: string[] = [];
 test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
 
@@ -94,6 +101,7 @@ async function build() {
     for (let i = 0; i < 6; i++) await run("Many turns", i === 3 ? `Turn ${i} ${script([bash("echo first"), bash("echo second"), bash("echo third")])}` : `Turn ${i} script:say Reply ${i}.`);
     await open("Push"); await run("Push", `Push it\n${script([bash("git push origin main 2>&1; exit 1")])}`);
     await open("Private marker"); await run("Private marker", `Deploy\n${script([bash(`echo tool-marker ${KEY}; exit 5`)])}`);
+    await open("Plain failure"); await run("Plain failure", `Build\n${script([bash(`printf '%s\\n' ${PLAIN.map((l) => `'${l}'`).join(" ")}; exit 3`)])}`);
     await open("Coordinator");
     await run("Coordinator", script([{ name: "spawn_agent", input: { message: "Lane\nscript:say The lane is done.", isolation: "none" } }, { name: "wait_agent", input: { timeout_ms: 30000 } }]));
     await open("Stopped");
@@ -218,6 +226,13 @@ test.describe("after a kill", () => {
     const toolSpan = ((await call(`/api/debug/traces/${trace.trace_id}`)).spans as any[]).find((s) => s.kind === "tool")!;
     expect(toolSpan.error).toContain("tool-marker <redacted>");
     for (const stored of [JSON.stringify(mine), JSON.stringify(errors), JSON.stringify(toolSpan), await text(`/api/debug/bundle?session_id=${ids["Private marker"]}`)]) expect(stored).not.toContain("PLANTEDKEY");
+    // A failing command's output that holds no secret is in its tool result byte for byte, and in what is kept of the failure.
+    const plain = ((await call(`/api/sessions/${ids["Plain failure"]}`)).events as StoredEvent[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results as { content: unknown }[]);
+    expect(plain).toHaveLength(1);
+    expect(String(plain[0]!.content)).toContain(PLAIN.join("\n"));
+    const kept = JSON.stringify([await call(`/api/errors?session=${ids["Plain failure"]}`), ((await call(`/api/debug/traces/${(await call(`/api/debug/traces?session_id=${ids["Plain failure"]}`)).traces[0].trace_id}`)).spans as any[]).find((x) => x.kind === "tool")]);
+    expect(kept).toContain(PLAIN[0]);
+    expect(kept).not.toContain("<redacted>");
     await call("/api/debug/export/flush", {});
     await expect.poll(async () => { await call("/api/debug/export/flush", {}); return orphans(); }, { timeout: 30_000 }).toEqual([]);
     expect([...spans.values()].filter((s) => s.interrupted).length).toBeGreaterThanOrEqual(2);

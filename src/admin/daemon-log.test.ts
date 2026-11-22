@@ -5,7 +5,8 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { SECRET_KINDS } from "../core/conceal.test.ts";
 import { agentLine, backupLine, drainLine, exitLine, mcpLine, providersLine, say, sayAt, settingsChanges, settingsLine, startLine, stopLine } from "./daemon-log.ts";
-import { installLogs, parseLines } from "./logs.ts";
+import { runMode } from "../core/runmode.ts";
+import { installLogs, logAt, parseLines } from "./logs.ts";
 
 test("a start, the providers and the MCP servers are one bounded line each", () => {
   expect(startLine({ revision: "abc123", pid: 7, url: "http://127.0.0.1:1", state: "/s", config: "/c" })).toBe("[daemon] started: Keel abc123, pid 7, at http://127.0.0.1:1; state /s; config /c");
@@ -124,6 +125,55 @@ test("no secret reaches the log file or standard output, in any field a line car
     expect(hidden(printed[0]!)).toBe('[agent] started: "Deploy <redacted>" (general, in the background, on box <redacted>)');
     expect(printed.filter((l) => hidden(l).includes("<redacted>")).length).toBe(lines);
   } finally {
+    for (const m of methods) (console as any)[m] = saved[m];
+    if (had) G.__keelLogs = had; else delete G.__keelLogs;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A daemon a command runs inside its own process (keel run with no daemon answering) has the
+// command's standard output: the answer, or a protocol's lines. None of the daemon's own lines is
+// written there, of any kind; what the command itself prints goes out as it was given.
+test("inside a command's process no line of the daemon's own reaches standard output", () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "log-client-"));
+  const G = globalThis as any;
+  const had = G.__keelLogs, was = runMode.client;
+  const methods = ["log", "info", "debug", "warn", "error"] as const;
+  const saved = Object.fromEntries(methods.map((m) => [m, (console as any)[m]]));
+  const out: unknown[][] = [], err: unknown[][] = [];
+  for (const m of methods) (console as any)[m] = (...a: unknown[]) => { (m === "warn" || m === "error" ? err : out).push(a); };
+  delete G.__keelLogs;
+  const S = "01a1fd57-0861-7438-b6d5-030fa4213433";
+  try {
+    installLogs(dir);
+    runMode.client = true;
+    const agent = { title: "Lane", type: "general", status: "running" as const, created: 1000, ended: null, end_reason: null, background: true, machine: null };
+    // Every kind of line the daemon says of itself, through the three ways it says one.
+    for (const line of [
+      startLine({ revision: "r", pid: 1, url: "http://127.0.0.1:1", state: "/s", config: "/c" }), providersLine({ available: [{ id: "one", models: 1 }], failed: [], unset: 0 }), mcpLine([{ name: "a", state: "ready" }]),
+      drainLine({ restart: false, running: 0, timeoutMs: 1000, reason: "a stop signal" }), backupLine({ ok: true, ms: 1, name: "b" }), exitLine({ restart: false, parked: 0, upMs: 1 }),
+      settingsLine(["a.b set"]), "[daemon] 2 spans the last daemon left running were closed as interrupted; 2 queued for the collector",
+    ]) say(line);
+    sayAt({ session: S }, stopLine("owner"));
+    sayAt({ session: S }, agentLine(agent, undefined)!);
+    sayAt({ session: S }, agentLine({ ...agent, status: "completed", ended: 5000, end_reason: "end_turn" }, "running")!);
+    logAt({ session: S }, "[turn] context compacted by itself, from 9000 tokens");
+    logAt({ session: S }, "[turn] continued after the restart");
+    logAt({ session: S }, "[turn] cut at step 1, during Bash, after 2 s: a daemon stop parked it");
+    expect(out).toEqual([]);
+    expect(err).toEqual([]);
+    // The lines said with a session are kept in the log's file; the serving daemon's story is not told at all.
+    const file = readdirSync(join(dir, "logs")).map((f) => readFileSync(join(dir, "logs", f), "utf8")).join("");
+    expect(parseLines(file).map((l) => [l.level, l.session, l.text])).toEqual([
+      ["info", S, "[turn] context compacted by itself, from 9000 tokens"], ["info", S, "[turn] continued after the restart"], ["info", S, "[turn] cut at step 1, during Bash, after 2 s: a daemon stop parked it"],
+    ]);
+    // A warning still goes to standard error; what the command prints is its own, byte for byte.
+    logAt({ session: S }, "[turn] not continued after the restart: held for the owner", "warn");
+    const line = JSON.stringify({ type: "result", result: "sk-not-a-key and key=value pairs" });
+    console.log(line);
+    expect([out, err]).toEqual([[[line]], [["[turn] not continued after the restart: held for the owner"]]]);
+  } finally {
+    runMode.client = was;
     for (const m of methods) (console as any)[m] = saved[m];
     if (had) G.__keelLogs = had; else delete G.__keelLogs;
     rmSync(dir, { recursive: true, force: true });

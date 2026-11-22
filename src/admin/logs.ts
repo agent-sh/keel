@@ -79,13 +79,14 @@ export function installLogs(stateDir: string) {
     const orig = (console as any)[m].bind(console);
     st.orig[m] = orig;
     (console as any)[m] = (...a: unknown[]) => {
-      // A daemon a command runs inside its own process: the console is the command's output, not a log.
-      if (runMode.client) return orig(...a);
       // One text for both sinks: what goes to standard output (the journal, under a service unit)
       // is what the file gets, scrubbed before either sees it.
       let text: string;
       try { text = logText(a); } catch { text = "(a log line that could not be formatted)"; }
-      orig(text);
+      // A daemon a command runs inside its own process (keel run with no daemon answering): the
+      // console is the command's own (its answer, a protocol's lines, its words to the terminal).
+      // What it prints goes out as it was given; the file keeps the scrubbed text, as before.
+      if (runMode.client) orig(...a); else orig(text);
       try {
         const at = errorScope.getStore();
         keep({ ts: Date.now(), level, text, ...(at?.session ? { session: at.session, ...(at.turn ? { turn: at.turn } : {}) } : {}) });
@@ -97,7 +98,22 @@ export function installLogs(stateDir: string) {
 // A line about a session's turn from code that does not run in it (the
 // daemon's account of a restart, a compaction seen on the bus).
 export function logAt(at: { session: string; turn?: string }, text: string, level: "info" | "warn" | "error" = "info") {
-  errorScope.run(at, () => (level === "info" ? console.log(text) : level === "warn" ? console.warn(text) : console.error(text)));
+  errorScope.run(at, () => logOwn(text, level));
+}
+
+// A line of the daemon's own account (a start, a cut turn, a compaction, an agent, a stop). A
+// serving daemon prints it: its standard output is its log. A daemon a command runs inside its
+// own process has the command's standard output, which is the answer or a protocol's lines
+// (keel run with --output-format stream-json): an info line is never printed there. It is kept in
+// the log's file and nowhere else; a warning or a failure goes to standard error, as it did.
+export function logOwn(text: string, level: "info" | "warn" | "error" = "info") {
+  if (level === "warn") return console.warn(text);
+  if (level === "error") return console.error(text);
+  if (!runMode.client) return console.log(text);
+  try {
+    const at = errorScope.getStore();
+    keep({ ts: Date.now(), level: "info", text: logText([text]), ...(at?.session ? { session: at.session, ...(at.turn ? { turn: at.turn } : {}) } : {}) });
+  } catch {}
 }
 
 function keep(l: LogLine) {

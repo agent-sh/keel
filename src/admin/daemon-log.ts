@@ -9,14 +9,14 @@
 import type { AgentRecord } from "../automation/agents.ts";
 import { scrubbedLine } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
-import { logAt } from "./logs.ts";
+import { logAt, logOwn } from "./logs.ts";
 import { dur } from "./timeline-rows.ts";
 
-// Where the lines go: the daemon's log, through the console. A daemon a command runs inside its own
-// process (keel run with no daemon answering) says none of them: its console is the command's output.
+// Where the lines go: the daemon's log (logs.ts logOwn). A daemon a command runs inside its own
+// process (keel run with no daemon answering) says none of them: they are a serving daemon's story,
+// and its streams are the command's.
 export function say(line: string, level: "info" | "warn" = "info") {
-  if (runMode.client) return;
-  if (level === "warn") console.warn(line); else console.log(line);
+  if (!runMode.client) logOwn(line, level);
 }
 // The same for a line about a session's turn (logs.ts).
 export function sayAt(at: { session: string; turn?: string }, line: string, level: "info" | "warn" = "info") {

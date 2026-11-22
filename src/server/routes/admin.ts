@@ -26,6 +26,7 @@ import { Daemon } from "../../admin/daemon.ts";
 import { restarts } from "../../admin/life.ts";
 import { say, settingsChanges, settingsLine } from "../../admin/daemon-log.ts";
 import { restartNeedsEye, restartSummary, restartTurnLine, type Restart } from "../../admin/life-rows.ts";
+import { logOwn } from "../../admin/logs.ts";
 import * as activity from "../../automation/activity.ts";
 import { tellCutAgents, tellEarlier } from "../../automation/restart-told.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
@@ -126,7 +127,7 @@ export const adminRoutes: RouteModule = (deps) => {
     starts.changed = () => { daemon.emit(); queueMicrotask(() => tell(starts.last())); };
     // The log has a line a turn already, under the turn's own name (observe.ts).
     starts.whole = (r) => {
-      if (r.before || r.turns.length) console.log(`[daemon] ${restartSummary(r)}`);
+      if (r.before || r.turns.length) logOwn(`[daemon] ${restartSummary(r)}`);
       if (restartNeedsEye(r)) activity.record("daemon", r.before?.how ?? "unknown", null, [restartSummary(r), ...r.turns.map(restartTurnLine)].join(" "), { restart: r });
       tell(r, true);
     };
