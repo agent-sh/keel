@@ -2,10 +2,13 @@
 // stdio: the standalone stream's reconnects, and what a request leaves
 // behind and tells the server when it times out or is cancelled.
 import { expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startLegacyMcp } from "../../test/e2e/fixtures/legacy-http-mcp.ts";
 import { startSseMcp } from "../../test/e2e/fixtures/legacy-sse-mcp.ts";
 import { McpClient } from "./client.ts";
+import { McpManager } from "./manager.ts";
 
 const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 3000) => {
   const end = Date.now() + ms;
@@ -229,3 +232,32 @@ test("no request to a server follows a redirect, on either transport", async () 
     posts.stop();
   }
 });
+
+// A server that refuses the Streamable HTTP request is asked the older way
+// once. One that then holds a stream open and names no address would cost
+// every later attempt the same wait: the wait is short, and the failure is
+// remembered until the owner reconnects the server.
+test("a server that refuses the POST and names no address the older way is tried that way once", async () => {
+  const s = startSseMcp({ endpoint: "never" });
+  const m = new McpManager({ capture() {} } as any, mkdtempSync(join(tmpdir(), "keel-mcp-")), "/");
+  try {
+    (m as any).addEntry("quiet", { url: s.url, timeout_secs: 1 });
+    const t0 = performance.now();
+    await expect(m.ensure("quiet")).rejects.toThrow("HTTP 405");
+    const first = performance.now() - t0;
+    expect(first).toBeGreaterThan(900); // it waited for the address
+    expect(first).toBeLessThan(4000);
+    expect((await s.stats()).streams_opened).toBe(1);
+    // Again: refused at once, and no stream is opened.
+    const t1 = performance.now();
+    await expect(m.ensure("quiet")).rejects.toThrow("HTTP 405");
+    expect(performance.now() - t1).toBeLessThan(700);
+    expect((await s.stats()).streams_opened).toBe(1);
+    // The owner's Reconnect tries the older way again.
+    await m.reconnect("quiet");
+    expect((await s.stats()).streams_opened).toBe(2);
+  } finally {
+    m.dispose();
+    s.stop();
+  }
+}, 20_000);

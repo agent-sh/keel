@@ -125,7 +125,9 @@ export class McpClient {
   // already found it (the spec lets a client cache the era per server).
   // `signal`: nobody wants the connection any more (its server was dropped
   // while it connected): the process ends now, not when the handshake gives up.
-  static async connect(t: Transport, timeoutMs = 30_000, era?: "modern" | "legacy", signal?: AbortSignal): Promise<McpClient> {
+  // `endpointWithinMs`: how long the older transport's stream is given to
+  // name its address (the whole timeout unless given).
+  static async connect(t: Transport, timeoutMs = 30_000, era?: "modern" | "legacy", signal?: AbortSignal, endpointWithinMs?: number): Promise<McpClient> {
     if (signal?.aborted) throw new Error("the server was dropped before it connected");
     const c = new McpClient(t, timeoutMs);
     if (t.kind === "stdio") c.spawn();
@@ -133,7 +135,7 @@ export class McpClient {
     signal?.addEventListener("abort", dropped, { once: true });
     try {
       // A server of the older transport predates the modern era: no probe.
-      if (t.kind === "http" && t.sse) { await c.openEvents(); era = "legacy"; }
+      if (t.kind === "http" && t.sse) { await c.openEvents(endpointWithinMs); era = "legacy"; }
       await c.handshake(era);
     } catch (e) {
       c.close();
@@ -285,20 +287,20 @@ export class McpClient {
   // ending ends the client: its requests have nowhere to be answered.
   private events?: AbortController;
   private endpoint?: string;
-  private async openEvents() {
+  private async openEvents(within = this.timeoutMs) {
     const t = this.t as Extract<Transport, { kind: "http" }>;
     const ac = new AbortController();
     this.events = ac;
     const headers: Record<string, string> = { accept: "text/event-stream", ...t.headers };
     const tok = await t.token?.();
     if (tok) headers.authorization = `Bearer ${tok}`;
-    const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+    const timer = setTimeout(() => ac.abort(), within);
     let res: Response;
     try {
       res = await fetch(t.url, { headers, signal: ac.signal, timeout: false, ...DIRECT } as RequestInit);
     } catch (e) {
       clearTimeout(timer);
-      throw ac.signal.aborted ? new Error(`the event stream did not open within ${Math.round(this.timeoutMs / 1000)}s`) : e;
+      throw ac.signal.aborted ? new Error(`the event stream did not open within ${Math.round(within / 1000)}s`) : e;
     }
     const elsewhere = moved(res, t.url);
     if (elsewhere) { clearTimeout(timer); ac.abort(); throw elsewhere; }
@@ -357,7 +359,7 @@ export class McpClient {
       () => "the server closed its event stream",
       (e) => (ac.signal.aborted ? "the connection is closed" : e instanceof StreamOverrun ? "the server sent an event too large to read" : `the event stream broke: ${(e as Error).message}`),
     ).then((why) => {
-      refused(new Error(why));
+      refused(new Error(why === "the connection is closed" && !this.endpoint && !this.closed ? `the event stream named no address for messages within ${Math.round(within / 1000)}s` : why));
       if (this.closed) return;
       this.failAll(new Error(why));
       this.shut(why);

@@ -112,6 +112,11 @@ type Entry = {
   era?: "modern" | "legacy";
   // Found to speak only the older HTTP with SSE transport (its config does not say so).
   sse?: boolean;
+  // The older transport was tried at this address and did not open: it is
+  // not tried again until the owner reconnects the server or its config
+  // changes (a server that refuses the POST and holds a GET open would cost
+  // every connection attempt the wait for an address it never names).
+  noSse?: boolean;
   www?: string | null;
   failures: number;
   bundled?: BundledServer;
@@ -205,6 +210,10 @@ async function helperHeaders(cmd: string, timeoutMs = 10_000): Promise<Record<st
 }
 
 const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined }) === JSON.stringify({ ...b, enabled: undefined });
+
+// How long a server that refused the Streamable HTTP request is given to name
+// its address the older way, when nothing says it speaks that transport.
+const SSE_TRY_MS = 4000;
 
 export class McpManager {
   private entries = new Map<string, Entry>();
@@ -604,8 +613,13 @@ export class McpManager {
           // older HTTP with SSE transport, at the same address: asked that
           // way once (the transports' own rule for a client that knows
           // neither). What the first try said stands when that fails too.
-          if (t.kind !== "http" || t.sse || abort.signal.aborted || !/^HTTP 4\d\d/.test((err as Error).message)) throw err;
-          try { client = await McpClient.connect({ ...t, sse: true }, timeout, undefined, abort.signal); } catch { throw err; }
+          if (t.kind !== "http" || t.sse || e.noSse || abort.signal.aborted || !/^HTTP 4\d\d/.test((err as Error).message)) throw err;
+          try {
+            client = await McpClient.connect({ ...t, sse: true }, timeout, undefined, abort.signal, Math.min(timeout, SSE_TRY_MS));
+          } catch {
+            if (!abort.signal.aborted) e.noSse = true;
+            throw err;
+          }
           e.sse = true;
         }
         // Removed, turned off or replaced meanwhile: this client is nobody's.
@@ -873,6 +887,7 @@ export class McpManager {
     e.client?.close();
     e.client = undefined;
     e.era = undefined;
+    e.noSse = undefined; // asked for by the owner: the older transport is tried again
     if (e.state === "disabled" || e.state === "missing") return;
     e.state = "connecting";
     await this.ensure(name, 15_000).catch(() => {});
