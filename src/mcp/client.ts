@@ -313,10 +313,12 @@ export class McpClient {
     const read = async () => {
       const dec = new TextDecoder();
       let buf = "", event = "message", data: string[] = [];
+      let held = 0; // the bytes of the event being read
       const value = (line: string, name: string) => line.slice(name.length + 1).replace(/^ /, "");
       const flush = () => {
         const body = data.join("\n"), kind = event;
         data = [];
+        held = 0;
         event = "message";
         if (!body) return;
         if (kind === "endpoint") {
@@ -334,15 +336,21 @@ export class McpClient {
       };
       for await (const chunk of chunks(res.body!)) {
         buf += dec.decode(chunk, { stream: true });
-        if (buf.length > STREAM_EVENT_MAX && !buf.includes("\n")) throw new StreamOverrun();
         let nl: number;
         while ((nl = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, nl).replace(/\r$/, "");
           buf = buf.slice(nl + 1);
           if (line === "") flush();
           else if (line.startsWith("event:")) event = value(line, "event");
-          else if (line.startsWith("data:")) data.push(value(line, "data"));
+          else if (line.startsWith("data:")) {
+            data.push(value(line, "data"));
+            held += line.length;
+          }
         }
+        // One event is held to a bound, whether it is one line with no end or
+        // data lines with no blank line after them: this stream lives as long
+        // as the client, and no timer of a request ends it.
+        if (held + buf.length > STREAM_EVENT_MAX) throw new StreamOverrun();
       }
     };
     read().then(

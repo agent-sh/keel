@@ -171,6 +171,25 @@ test("the older SSE transport: no stream, and an address of another origin, are 
   }
 });
 
+// The older transport's stream lives as long as the client, and no request's
+// timer ends it: one event is held to a bound, whether it is one line with no
+// end or data lines with no blank line after them.
+test("the older SSE transport: an event of data lines with no end is cut at the bound", async () => {
+  const s = startSseMcp();
+  const c = await McpClient.connect({ kind: "http", url: s.url, headers: {}, sse: true }, 5000);
+  try {
+    let why = "";
+    c.onClose = (w) => (why = w);
+    await s.control({ flood: 20 }); // 1.25 MiB of one event, over the 1 MiB bound
+    await until(() => c.isClosed, "the client to close");
+    expect(why).toBe("the server sent an event too large to read");
+    await until(async () => (await s.stats()).streams_open === 0, "the stream to be let go");
+  } finally {
+    c.close();
+    s.stop();
+  }
+});
+
 // A server's headers and the request's body go to the address given and
 // nowhere else: a redirect is not followed, on either transport, and the
 // refusal says where it pointed. The other origin sees no request.

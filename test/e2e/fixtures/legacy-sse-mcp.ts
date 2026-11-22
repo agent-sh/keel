@@ -41,8 +41,10 @@ export function startSseMcp(opt: { endpoint?: "path" | "elsewhere"; moved?: stri
       const u = new URL(req.url);
       if (u.pathname === "/stats") return Response.json({ ...stats, streams_open: streams.size });
       if (u.pathname === "/control" && req.method === "POST") {
-        const b = (await req.json().catch(() => ({}))) as { changed?: boolean; ping?: boolean; close?: boolean };
+        const b = (await req.json().catch(() => ({}))) as { changed?: boolean; ping?: boolean; close?: boolean; flood?: number };
         for (const session of [...streams.keys()]) {
+          // Data lines of 64 KiB with no blank line after them: one event that never ends.
+          for (let i = 0; i < (b.flood ?? 0); i++) streams.get(session)?.enqueue(enc.encode(`data: ${"x".repeat(64 * 1024)}\n`));
           if (b.changed) send(session, { jsonrpc: "2.0", method: "notifications/tools/list_changed" });
           if (b.ping) send(session, { jsonrpc: "2.0", id: "ping-1", method: "ping" });
           if (b.close) { streams.get(session)!.close(); streams.delete(session); stats.streams_closed++; }
