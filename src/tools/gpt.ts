@@ -3,6 +3,7 @@
 // apply_patch in the V4A grammar, update_plan, request_user_input).
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
+import { atCwd, realOf } from "../core/paths.ts";
 import { heldFile } from "../core/store-files.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, type Question } from "./interact.ts";
@@ -94,7 +95,7 @@ const exec_command: Tool = {
     if (gone) return fail(`exec_command failed: ${gone}`);
     // Models trained on Codex often send apply_patch through the shell.
     const sp = extractShellApplyPatch(cmd);
-    if (sp) return runPatch(sp.patch, sp.cd ? resolve(cwd, sp.cd) : cwd, ctx);
+    if (sp) return runPatch(sp.patch, sp.cd ? atCwd(cwd, sp.cd) : cwd, ctx);
     const shell = execShell(input);
     const t0 = Date.now();
     const job = startJob({
@@ -205,7 +206,7 @@ const view_image: Tool = {
   async run(input, ctx) {
     const raw = String(input?.path ?? "").trim();
     if (!raw) return fail("view_image needs a path");
-    const p = resolve(shellCwd(ctx), raw);
+    const p = realOf(atCwd(shellCwd(ctx), raw));
     let st;
     try { st = statSync(p); } catch { return fail(`unable to locate image at \`${p}\``); }
     if (!st.isFile()) return fail(`image path \`${p}\` is not a file`);

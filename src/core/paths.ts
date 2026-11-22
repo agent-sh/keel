@@ -39,20 +39,40 @@ export function overlaps(a: string, b: string): boolean {
   return contains(ra, rb) || contains(rb, ra);
 }
 
-// A path with its links resolved through the deepest part that exists: where a
-// write to it lands, even when the file itself does not exist yet. A dangling
-// link is followed too (a write through it creates the file it names).
-export function realOf(p: string, depth = 0): string {
-  let at = resolve(p);
-  const rest: string[] = [];
-  for (;;) {
-    try { return resolve(realpathSync(at), ...rest.reverse()); } catch {}
-    try {
-      if (depth < 40 && lstatSync(at).isSymbolicLink()) return resolve(realOf(resolve(dirname(at), readlinkSync(at)), depth + 1), ...rest.reverse());
-    } catch {}
-    const up = dirname(at);
-    if (up === at) return resolve(p);
-    rest.push(at.slice(up.length + (up.endsWith("/") ? 0 : 1)));
-    at = up;
+// A path as a tool or a command was given it, absolute: a relative one starts
+// at `cwd`. `.` and doubled slashes go. A `..` stays: after a link it is the
+// parent of the link's target, which only the walk (realOf) knows.
+export function atCwd(cwd: string, p: string): string {
+  const whole = isAbsolute(p) ? p : `${cwd}/${p}`;
+  return whole.split("/").includes("..") ? whole : resolve(whole);
+}
+
+// A path as the kernel walks it: each part resolved in turn, links followed
+// where they stand, and `..` applied to where the walk is (after a link, the
+// parent of its target; never by the path's text). Through the deepest part
+// that exists: where a write to it lands, even when the file itself does not
+// exist yet. A dangling link is followed too (a write through it creates the
+// file it names). This is the one function a path is judged by, and a file
+// tool opens what it returns, so what is judged is what is opened.
+export function realOf(p: string): string {
+  const parts = (text: string) => text.split("/").filter((c) => c !== "" && c !== ".");
+  const todo = parts(isAbsolute(p) ? p : `${process.cwd()}/${p}`);
+  // `at` holds no link: every part of it was looked at. Past the first part that does not exist nothing can be a link.
+  let at = "/", missing = false, links = 0;
+  while (todo.length) {
+    const c = todo.shift()!;
+    if (c === "..") { at = dirname(at); continue; }
+    const next = at === "/" ? `/${c}` : `${at}/${c}`;
+    if (missing) { at = next; continue; }
+    let link = false;
+    try { link = lstatSync(next).isSymbolicLink(); } catch { missing = true; at = next; continue; }
+    if (!link) { at = next; continue; }
+    // (More links than the kernel follows: it refuses the path, and so does whatever opens what this returns.)
+    if (++links > 40) return [next, ...todo].join("/");
+    let to: string;
+    try { to = readlinkSync(next); } catch { missing = true; at = next; continue; }
+    if (to.startsWith("/")) at = "/";
+    todo.unshift(...parts(to));
   }
+  return at;
 }

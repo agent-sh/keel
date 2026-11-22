@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { isReadOnly, matchRule, readForm, resolveVariables, risksOf, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
-import { contains } from "../core/paths.ts";
+import { atCwd, contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
 import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
 
@@ -103,11 +103,11 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       // shell, so no sandbox confines it) is the edit it is: its files.
       const wrapped = tool.appliesPatch ? extractShellApplyPatch(cmd) : null;
       if (wrapped) {
-        const base = wrapped.cd ? resolve(cwd, wrapped.cd) : cwd;
+        const base = wrapped.cd ? atCwd(cwd, wrapped.cd) : cwd;
         const paths = patchTargetPaths(wrapped.patch);
         if (!paths.length) return { kind: "refused", why: `${tool.name} was given a patch that names no file to change.` };
         const names = wordsNaming(wrapped.patch);
-        return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(base, p))), ...(names.length ? { names } : {}) };
+        return { kind: "edit", paths: paths.map((p) => atCwd(base, p)), ...(names.length ? { names } : {}) };
       }
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
       // Read from the running build's schema: a session may carry an older definition (Tool.built).
@@ -127,7 +127,8 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       if (patch) paths.push(...patchTargetPaths(patch));
       if (!paths.length) return { kind: "refused", why: `${tool.name} names no file to change.` };
       const parts = [input?.content, input?.new_string, input?.new_source, patch, ...(Array.isArray(input?.edits) ? input.edits.map((e: any) => e?.new_string) : [])].filter((x): x is string => typeof x === "string" && x.length > 0);
-      const full = paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p)));
+      // (As given: a `..` after a link is walked where the path is resolved, never cut from its text.)
+      const full = paths.map((p) => atCwd(cwd, p));
       const names = parts.length ? wordsNaming(parts.join("\n")) : [];
       return { kind: "edit", paths: full, ...(names.length ? { names } : {}) };
     }
@@ -253,7 +254,7 @@ function ownerOnlyNamed(w: string, cwd: string, f: Facts, does: string): OwnerOn
 function spelled(w: string, cwd: string, home: string): string | null {
   w = w.replace(/^(["'])(.*)\1$/s, "$2").replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, home);
   if (!w || /[$`*?\n]/.test(w)) return null;
-  return isAbsolute(w) ? w : resolve(cwd, w);
+  return atCwd(cwd, w);
 }
 
 // The files a command part writes by its plain shape: the target of a

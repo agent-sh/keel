@@ -17,7 +17,7 @@
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildDiff } from "./diff.ts";
-import { contains } from "../core/paths.ts";
+import { atCwd, contains, realOf } from "../core/paths.ts";
 import { heldFile } from "../core/store-files.ts";
 
 const BEGIN_PATCH = "*** Begin Patch";
@@ -463,26 +463,6 @@ function applyChunks(original: string, chunks: Chunk[], path: string): string {
 // Paths
 // ---------------------------------------------------------------------------
 
-// Resolves `raw` (relative to `base`) through every symlink of its existing
-// part; the rest, not created yet, is appended.
-async function realish(p: string): Promise<string> {
-  const tail: string[] = [];
-  let cur = p;
-  for (;;) {
-    try {
-      const real = await realpath(cur);
-      return tail.length ? join(real, ...tail.reverse()) : real;
-    } catch (e: any) {
-      if (e?.code !== "ENOENT" && e?.code !== "ENOTDIR") throw e;
-      const up = dirname(cur);
-      if (up === cur) return p;
-      tail.push(basename(cur));
-      cur = up;
-    }
-  }
-}
-
-
 export type PatchTarget = { raw: string; real: string; inside: boolean };
 
 // Every path of a patch, resolved; relative paths start at `base`, and `root` is
@@ -490,7 +470,7 @@ export type PatchTarget = { raw: string; real: string; inside: boolean };
 export async function patchTargets(root: string, base: string, text: string): Promise<PatchTarget[]> {
   const r = await realpath(root);
   return Promise.all(patchTargetPaths(text).map(async (raw) => {
-    const real = await realish(isAbsolute(raw) ? raw : resolve(base, raw));
+    const real = realOf(atCwd(base, raw));
     return { raw, real, inside: contains(r, real) };
   }));
 }
@@ -523,7 +503,8 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
   const order: string[] = [];
 
   const resolvePath = async (raw: string) => {
-    const real = await realish(isAbsolute(raw) ? raw : resolve(base, raw));
+    // (Where the kernel reaches it: the path a gate judged, and the one opened below.)
+    const real = realOf(atCwd(base, raw));
     if (!contains(root, real) && !allowed.has(real)) throw new Error(`patch path ${raw} resolves to ${real}, which is outside the workspace`);
     // The daemon's own store and claim, by name or as the same file under another: never read, replaced or removed from here.
     const held = heldFile(real);

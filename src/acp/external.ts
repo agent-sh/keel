@@ -14,6 +14,7 @@ import { heldFile } from "../core/store-files.ts";
 import type { AgentConfinement } from "./confine.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { atCwd, realOf } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
 import { emptyUsage, type Session, type StoredEvent, type ToolResultBlock, type Usage } from "../core/types.ts";
 import type { ExternalIO } from "../engine/hooks.ts";
@@ -32,7 +33,7 @@ export type Judge = (s: Session, call: { id: string; name: string; cls: CallClas
 export function classOf(tc: Json, cwd: string): CallClass {
   const raw = tc.rawInput ?? {};
   const paths = [...(tc.locations ?? []).map((l: Json) => l?.path), raw.file_path, raw.path, raw.filePath]
-    .filter((p): p is string => typeof p === "string" && !!p).map((p) => (isAbsolute(p) ? p : resolve(cwd, p)));
+    .filter((p): p is string => typeof p === "string" && !!p).map((p) => atCwd(cwd, p));
   switch (tc.kind) {
     case "read": case "search": case "think":
       return { kind: "read" };
@@ -333,8 +334,10 @@ export class AcpRunner {
         return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
       }
       case "fs/read_text_file": {
-        const path = String(p.path ?? "");
-        if (!isAbsolute(path)) throw Object.assign(new Error("path must be absolute"), { code: -32602 });
+        const given = String(p.path ?? "");
+        if (!isAbsolute(given)) throw Object.assign(new Error("path must be absolute"), { code: -32602 });
+        // (The file the kernel reaches: what is judged is what is opened.)
+        const path = realOf(given);
         const v = await this.judge(s, { id: crypto.randomUUID(), name: "Read", cls: { kind: "read" }, input: { file_path: path }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
         { const held = heldFile(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
@@ -347,8 +350,9 @@ export class AcpRunner {
         return { content: text };
       }
       case "fs/write_text_file": {
-        const path = String(p.path ?? "");
-        if (!isAbsolute(path)) throw Object.assign(new Error("path must be absolute"), { code: -32602 });
+        const given = String(p.path ?? "");
+        if (!isAbsolute(given)) throw Object.assign(new Error("path must be absolute"), { code: -32602 });
+        const path = realOf(given);
         const v = await this.judge(s, { id: crypto.randomUUID(), name: "Write", cls: { kind: "edit", paths: [path] }, input: { file_path: path, content: String(p.content ?? "") }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
         { const held = heldFile(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }

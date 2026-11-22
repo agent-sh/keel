@@ -4,6 +4,7 @@
 import { chmodSync, readFileSync, statSync } from "node:fs";
 import { mkdir, open, readdir } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { atCwd, realOf } from "../core/paths.ts";
 import { heldFile } from "../core/store-files.ts";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
@@ -12,7 +13,9 @@ import { removedNote } from "./spill.ts";
 import { readText } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
 
-export const abs = (p: string, ctx: ToolContext) => (isAbsolute(p) ? p : resolve(ctx.cwd, p));
+// The file a tool's path names, as the kernel reaches it (links followed, `..` applied where the walk stands): the
+// path the gate judged (realOf), and the one every file tool opens, so the two cannot differ.
+export const abs = (p: string, ctx: ToolContext) => realOf(atCwd(ctx.cwd, p));
 export const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return -1; } };
 
 export const READ_CHARS = 100_000;     // about 25k tokens: one read page

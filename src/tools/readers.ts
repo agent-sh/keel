@@ -6,6 +6,7 @@
 // style name, the other families a snake_case one.
 import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { atCwd, realOf } from "../core/paths.ts";
 import { READ_WHOLE_CHARS, readersAtOnce, wholeText, type Material } from "../engine/reader.ts";
 import { coverageNote } from "../engine/readers.ts";
 import { isClaimFile } from "../core/claim.ts";
@@ -100,7 +101,7 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
       files.push(...got);
       continue;
     }
-    const full = isAbsolute(p) ? p : resolve(ctx.cwd, p);
+    const full = realOf(atCwd(ctx.cwd, p));
     let st;
     try { st = statSync(full); } catch { skipped.push(`${p} (not found)`); continue; }
     if (st.isDirectory()) files.push(...await filesIn(full, ctx.signal));
