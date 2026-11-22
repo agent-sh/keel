@@ -102,6 +102,20 @@ under `~/.cache/keel-work/bun/research/`.
   own. Only what a notice can name is owed; a notice never starts a session
   held after the owner's Stop. The same rows are read at
   `GET /api/errors?session=<id>`.
+- An input a session's sender was told is taken is stored first and delivered
+  once. A message (the owner's steer or queued prompt, a parent's message to
+  its agent, another session's) is a row of the session's queue or its stored
+  prompt before the sender is answered (`Engine.send`, `Engine.message`), and
+  leaves the queue in the write that stores its prompt: a working session
+  takes a steer at its next step, a turn a restart cut takes it in the
+  continued turn's first request, after the restart note. A sender's key
+  stores an input once (`input_keys`). A wake, a report, a loop run and a
+  failure notice are owed in their own tables and settled in the write that
+  stores their prompt (`flush` in `src/automation/core.ts`). A stopping daemon
+  starts no turn: a queue it left with a prompt owed a start is started by the
+  next one (`queue_owed`). A message whose session can no longer read it
+  (deleted, archived, the row removed) is told to its sender as a failure in
+  its scope (`src/automation/undelivered.ts`), never dropped in silence.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving
