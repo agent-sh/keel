@@ -46,7 +46,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     const waitsFor = `until [ -f ${gate} ]; do sleep 0.2; done; echo overview-tool-marker`;
     const short = (id: string) => id.slice(-12);
 
-    // Twenty sessions: two need the owner, three work, three failed, one was stopped, nine are done, two never started.
+    // Twenty sessions: two need the owner, three work, two failed, one waits for a rate limit to pass, one was stopped, nine are done, two never started.
     const need = [await open("Parser refactor", "ask"), await open("Release notes", "ask")];
     for (const id of need) await send(id, `overview-prompt-marker ${script([{ name: "Bash", input: { command: "rm overview-tool-marker.txt" } }])}`);
     const answering = await open("Slow provider");
@@ -103,8 +103,9 @@ test("one report tells every session's state, failure, run time and spend, as th
     const bad = group("Failed (2):");
     expect(bad).toHaveLength(2);
     expect(bad.filter((l) => /: billing, \d+ m?s ago; 1 turn, 1 failed  \[session=[0-9a-f]{12}\]$/.test(l))).toHaveLength(2);
-    // A turn the provider asked to wait for continues by itself: it waits, and its row says what failed in it.
-    expect(group("Waiting (1):")[0]).toMatch(/"Rate limited fetch": waiting; 1 turn, 1 failed \(rate limit\)/);
+    // A turn the provider asked to wait for continues by itself: the session waits, and its row says for what, until when, and what failed in it.
+    expect(group("Waiting (1):")).toHaveLength(1);
+    expect(group("Waiting (1):")[0]).toMatch(/"Rate limited fetch": resumes by itself when the wait the provider asked for is over, for \d+ m?s, due in 1[45] min; 1 turn, 1 failed \(rate limit\)  \[session=[0-9a-f]{12}\]$/);
     // The turn and the error of a failure are in its session's timeline, not in this text.
     expect(text).not.toMatch(/turn=|error=/);
     expect(group("Stopped (1):")[0]).toMatch(/"Stopped by me": stopped \d+ m?s ago; 1 turn/);
@@ -301,8 +302,9 @@ test("while the owner is away, one digest tells what each session did, what wait
     }
     expect(row(open1, fine)).toMatchObject({ watch: "done", turns: 2, failed: {}, approvals: 0, parked: 0 });
     expect(row(open1, billing)).toMatchObject({ watch: "fail", turns: 1, failed: { "billing": 1 }, bad: "1 failed (billing)" });
-    expect(row(open1, declined)).toMatchObject({ turns: 1, failed: { declined: 1 } });
+    expect(row(open1, declined)).toMatchObject({ watch: "declined", turns: 1, failed: { declined: 1 } });
     expect(row(open1, asks)).toMatchObject({ watch: "need", turns: 0, approvals: 1, text: expect.stringMatching(/^1 approval waits/) });
+    // Its own turn ended and its agent waits on a timer: the session waits, it does not work.
     expect(row(open1, parent)).toMatchObject({ watch: "wait", parked: 1, text: expect.stringContaining("1 agent parked") });
     // Neither the session nothing happened in nor the one whose turn ended at the desk.
     expect(row(open1, quiet)).toBeUndefined();

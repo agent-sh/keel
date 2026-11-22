@@ -92,8 +92,10 @@ const OUTCOME: Record<string, string> = { refusal: "declined", budget: "budget" 
 
 // What a session does now, in few words, from the first line of its timeline's "now".
 const lower = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
-function nowWords(l: TimelineRow, agents: number): string {
+function nowWords(l: TimelineRow, agents: number, parked = 0): string {
   const inAgent = l.refs?.child_session ? " in an agent" : "";
+  // A session at rest whose agent waits on a wake of its own: the agent is parked, not at work.
+  if (l.kind === "agent" && parked && !agents) return `${parked} agent${parked === 1 ? "" : "s"} parked`;
   switch (l.kind) {
     case "approval": return `an approval waits${inAgent}`;
     case "question": return `a question waits${inAgent}`;
@@ -196,11 +198,13 @@ export function overview(from: From, opts: OverviewOpts): Overview {
       id: s.id, title: s.title, watch: st.watch, agents: st.agents,
       approvals: [s.id, ...below].reduce((n, id) => n + (pending.get(id) ?? 0), 0), parked: parked.get(s.id) ?? 0,
     };
-    if (st.watch === "need" || st.watch === "work" || st.watch === "resume") {
+    // A waiting session says what it waits for, as one that works says its step: a turn that
+    // continues by itself when a provider's wait is over, a timer, a command, a parked agent.
+    if (st.watch === "need" || st.watch === "work" || st.watch === "resume" || st.watch === "wait") {
       const lines = from.now(s.id).lines.filter((l) => l.kind !== "idle");
       const l = lines[0];
       if (l) {
-        r.line = nowWords(l, st.agents);
+        r.line = nowWords(l, st.agents, r.parked);
         if ((l.open || l.kind === "restart") && l.ts < as_of) r.from = l.ts;
         if (l.until) r.until = l.until;
         if (lines.length > 1) r.more = lines.length - 1;
