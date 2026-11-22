@@ -249,7 +249,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                       aria-label="The receipt of the turn it happened in"
                       title="The receipt of the turn it happened in"
                       data-testid="activity-receipt"
-                      className="k-act mt-0.5"
+                      className="k-line-act mt-0.5"
                     >
                       <ReceiptText className="size-3.5" />
                     </button>
