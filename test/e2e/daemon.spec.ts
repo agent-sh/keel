@@ -31,6 +31,15 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   const pid0 = (await daemon(request)).pid;
+  // A stall of this start (the stand-in's busy loop): two restarts later the Daemon page still lists it with its start.
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  const stalls = models.includes("scripted:stand-in");
+  if (stalls) {
+    const { session: holds } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Holds the daemon" } })).json();
+    await request.post(`/api/sessions/${holds.id}/messages`, { data: { text: "script:block 2500" } });
+    await expect.poll(async () => (await daemon(request))?.stalls?.length ?? 0, { timeout: 30_000 }).toBeGreaterThan(0);
+    await request.delete(`/api/sessions/${holds.id}`);
+  }
 
   // A turn that runs for a while.
   const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Restart waits for me", text: ask("Run `sleep 12` with your shell tool in the foreground, then reply with the word finished.", scriptBash("sleep 12")) } })).json()).session;
@@ -79,8 +88,20 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   await expect(page.getByTestId("restart-note")).toBeVisible();
   await shoot(page, "daemon-04-continued");
 
-  // The problem report is written from the page.
+  // The page keeps the starts before this one with what each began with and the stalls of its life:
+  // this start parked a turn; the one before it came from the restart that waited (it cut nothing), and the
+  // one before that is the first start, with its stall.
   await page.goto("/settings/daemon");
+  await expect(page.getByTestId("daemon-last-start")).toContainText("1 turn was cut: 1 resumed");
+  const earlier = page.getByTestId("daemon-earlier-start");
+  await expect.poll(() => earlier.count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
+  await expect(earlier.nth(0)).toHaveAttribute("data-how", "restart");
+  await expect(earlier.nth(0).getByTestId("daemon-earlier-summary")).toContainText("no turn was cut");
+  if (stalls) await expect(earlier.nth(1).getByTestId("daemon-stall").first()).toContainText("blocked by its own code");
+  await page.getByTestId("daemon-earlier-starts").scrollIntoViewIfNeeded();
+  await shoot(page, "daemon-05-earlier-starts");
+
+  // The problem report is written from the page.
   await page.getByTestId("report-write").click();
   await expect(page.getByTestId("daemon-panel")).toContainText("Written to");
 

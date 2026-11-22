@@ -15,7 +15,8 @@ import { confirmAction } from "./Confirm.tsx";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
-type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null; stalls?: { ts_ms: number; ms: number; what: string; kind: string; error_id?: string }[] };
+type Stall = { ts_ms: number; ms: number; what: string; kind: string; error_id?: string };
+type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null; stalls?: Stall[]; earlier_starts?: { start: Restart; stalls: Stall[]; down_ms?: number }[] };
 const ENDED: Record<NonNullable<Restart["before"]>["how"] | "unknown", string> = { killed: "Went down", crash: "Failed", restart: "Restarted", stop: "Stopped", unknown: "Not known" };
 const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Resumed", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
@@ -84,6 +85,48 @@ function BuildPinCard({ hours, onHours }: { hours: number; onHours: (v: number) 
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" | "danger" }) {
   return <span className={cn("size-2 shrink-0 rounded-full", { ok: "bg-ok", warn: "bg-warn", off: "bg-line-strong", danger: "bg-danger" }[tone])} />;
+}
+
+// One stall: how long, what kind of cause, what took the time, and when.
+function StallLine({ s }: { s: Stall }) {
+  return (
+    <li data-testid="daemon-stall" data-kind={s.kind} className="flex items-baseline gap-3 py-1.5">
+      <span className="w-12 shrink-0 text-ui font-medium tabular-nums">{secs(s.ms)}</span>
+      <span className={cn("w-28 shrink-0 text-caption font-medium", ownDoing(s.kind) ? "text-warn" : "text-muted")}>{CAUSE_LABEL[s.kind as CauseKind] ?? CAUSE_LABEL.unknown}</span>
+      <span className="min-w-0 flex-1 break-words text-ui text-muted">{s.what}</span>
+      <span className="shrink-0 text-caption tabular-nums text-faint" title={when(s.ts_ms)}>{ago(s.ts_ms)}</span>
+    </li>
+  );
+}
+
+// The starts before this one, the newest first: how each began, what it cut, and the stalls of its life.
+function EarlierStarts({ starts }: { starts: NonNullable<Status["earlier_starts"]> }) {
+  return (
+    <Card>
+      <SettingRow label="Earlier starts" hint="The starts before this one, the newest first, with how the daemon before each ended, what that cut, and the times each answered nothing.">
+        <span className="text-ui tabular-nums text-muted" data-testid="daemon-earlier-count">{starts.length}</span>
+      </SettingRow>
+      <ol className="flex flex-col" data-testid="daemon-earlier-starts">
+        {starts.map(({ start: r, stalls }) => (
+          <li key={r.id} data-testid="daemon-earlier-start" data-how={r.before?.how ?? "unknown"} className="flex flex-col gap-1 border-b border-line py-3 last:border-0">
+            <span className="flex items-baseline gap-3">
+              <span className="flex w-24 shrink-0 items-center gap-2 text-caption text-fg">
+                <Dot tone={r.before?.how === "killed" || r.before?.how === "crash" ? "danger" : "off"} />
+                {ENDED[r.before?.how ?? "unknown"]}
+              </span>
+              <span className="min-w-0 flex-1 text-ui text-muted" data-testid="daemon-earlier-summary">{restartSummary(r)}</span>
+              <span className="shrink-0 text-caption tabular-nums text-faint" title={when(r.up_ms)}>{ago(r.up_ms)}</span>
+            </span>
+            {stalls.length > 0 && (
+              <ul className="ml-[6.75rem] flex flex-col" data-testid="daemon-earlier-stalls">
+                {stalls.map((s) => <StallLine key={`${s.ts_ms}-${s.ms}`} s={s} />)}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
 }
 
 export function DaemonPanel() {
@@ -195,17 +238,12 @@ export function DaemonPanel() {
             <span className="text-ui tabular-nums text-muted" data-testid="daemon-stall-count">{st.stalls.length}</span>
           </SettingRow>
           <ul className="flex flex-col py-2" data-testid="daemon-stalls">
-            {st.stalls.map((s) => (
-              <li key={`${s.ts_ms}-${s.ms}`} data-testid="daemon-stall" data-kind={s.kind} className="flex items-baseline gap-3 py-1.5">
-                <span className="w-12 shrink-0 text-ui font-medium tabular-nums">{secs(s.ms)}</span>
-                <span className={cn("w-28 shrink-0 text-caption font-medium", ownDoing(s.kind) ? "text-warn" : "text-muted")}>{CAUSE_LABEL[s.kind as CauseKind] ?? CAUSE_LABEL.unknown}</span>
-                <span className="min-w-0 flex-1 break-words text-ui text-muted">{s.what}</span>
-                <span className="shrink-0 text-caption tabular-nums text-faint" title={when(s.ts_ms)}>{ago(s.ts_ms)}</span>
-              </li>
-            ))}
+            {st.stalls.map((s) => <StallLine key={`${s.ts_ms}-${s.ms}`} s={s} />)}
           </ul>
         </Card>
       )}
+
+      {!!st.earlier_starts?.length && <EarlierStarts starts={st.earlier_starts} />}
 
       {settings && aw && (
         <Card>

@@ -38,3 +38,19 @@ export function daemonFacts(db: Database, spans: { from: number; to: number }[])
     .filter((s) => touches(s.ts_ms, s.ts_ms));
   return { restarts, stalls };
 }
+
+// The starts before this one, the newest first, each with the stalls of its own life (from its start
+// to the next one's), as the Daemon page lists them. `now`: this start's record (it is not among them).
+export type EarlierStart = { start: Restart; stalls: StallFact[]; down_ms?: number };
+export function earlierStarts(db: Database, now: Restart, n = 9): EarlierStart[] {
+  if (!has(db, "daemon_starts")) return [];
+  const rows = db.query<{ data: string }, [number, number]>("SELECT data FROM daemon_starts WHERE up_ms < ? ORDER BY up_ms DESC LIMIT ?").all(now.up_ms, n).map((r) => JSON.parse(r.data) as Restart);
+  const stalls = has(db, "daemon_stalls");
+  return rows.map((start, i) => {
+    // Its life ended where the start after it says the daemon went down, else when that start came up.
+    const next = i === 0 ? now : rows[i - 1]!;
+    const end = next.before?.down_ms ?? next.up_ms;
+    const own = stalls ? db.query<StallFact, [number, number]>("SELECT ts_ms, ms, what, kind FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ? ORDER BY ts_ms DESC").all(start.up_ms, Math.max(start.up_ms, end)) : [];
+    return { start, stalls: own, ...(next.before?.down_ms ? { down_ms: next.before.down_ms } : {}) };
+  });
+}

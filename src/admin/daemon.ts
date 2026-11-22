@@ -13,7 +13,7 @@ import { buildInfo } from "../core/build.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { pidBorn, pidHolds, pidLive, pidState } from "../core/pid.ts";
 import { addAdmission } from "../server/admission.ts";
-import { keepStall } from "./daemon-facts.ts";
+import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
 import { describeStall, type Stall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
@@ -377,7 +377,17 @@ export class Daemon {
       stall_watch: this.sight ? { running: this.sight.running, ...(this.sight.tid ? { tid: this.sight.tid } : {}), ...(this.sight.why ? { off: this.sight.why } : {}) } : null,
       // This start: when the daemon before it went down, how (when that is known), and what became of the turns that cut.
       last_start: restarts()?.last() ?? null,
+      // The nine starts before it, each with the stalls of its life: the page keeps the last ten.
+      earlier_starts: this.earlier(),
     };
+  }
+
+  // Read once a process: what is before this start does not change while it runs.
+  private earlierRead?: EarlierStart[];
+  private earlier(): EarlierStart[] {
+    const now = restarts()?.last();
+    if (!now) return [];
+    try { return (this.earlierRead ??= earlierStarts(this.deps.store.db, now)); } catch { return []; }
   }
 
   private disk(): StoreDisk | null {
