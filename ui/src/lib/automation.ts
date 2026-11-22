@@ -292,7 +292,9 @@ function read(id: string, how: Reading) {
   auto.read({ session_id: id, ...(how === "auto" ? { auto: true } : how === "touch" ? { touch: true } : {}) }).catch(reportError).finally(() => reading.delete(id));
 }
 
+let leaving = false; // the page is going away (a reload, a navigation, a closed tab): it has said so and says nothing after it
 function presence(now = false) {
+  if (leaving) return;
   keepSince();
   const r = getUI().route;
   const helm = r.name === "session" ? r.id : null;
@@ -332,8 +334,17 @@ onUI(() => {
 addEventListener("focus", () => presence());
 addEventListener("blur", () => presence());
 document.addEventListener("visibilitychange", () => presence());
-// A page that goes away says when its owner was last there, so what they did since the last report is not lost.
-addEventListener("pagehide", () => presence(true));
+// A page that goes away says so in one last word: nobody is at it and it shows nothing, with when its
+// owner was last there (what they did since the last report is not lost). It still has focus as it
+// goes, so said as any other report it would stand for an owner watching its sessions until it went
+// stale: a notification held back for them would wait that long after a reload or a closed tab.
+addEventListener("pagehide", () => {
+  leaving = true;
+  sent = { key: "", at: 0 };
+  auto.presence(null, false, lastInput ? Date.now() - lastInput : undefined);
+});
+// (Brought back whole by the browser's back and forward: it is a page again.)
+addEventListener("pageshow", () => { if (leaving) { leaving = false; presence(true); } });
 // The first input after a while is the owner coming back: said at once. Any other is said within
 // five seconds, not at the next report, so the daemon knows to within that when they were last there.
 function input() {

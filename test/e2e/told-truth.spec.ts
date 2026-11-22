@@ -158,7 +158,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     // Every agent is counted, the failed ones are all listed, and the ones not listed are said. It read "Your agents (10)" of twelve.
     expect(lines[1]).toBe("Your agents (12; 2 not listed: 2 reported):");
     const listed = lines.slice(2, 12);
-    expect(listed.filter((l) => /: failed .* ago: quota or billing/.test(l))).toHaveLength(4);
+    expect(listed.filter((l) => /: failed .* ago: billing/.test(l))).toHaveLength(4);
     for (const a of lanes.filter((x) => x.status === "failed")) expect(report).toContain(`[agent=${a.id}]`);
     // Eleven rows asked for: ten are the agents', one a session that needs the owner. The session that spent most is not
     // among them, and still leads "Most spent"; the line of what is left out says what those sessions did.

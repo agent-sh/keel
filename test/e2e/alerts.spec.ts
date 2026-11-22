@@ -224,10 +224,9 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   await expect(rows).toHaveCount(4);
   expect(await wordX(rows.first())).toBe(await wordX(lone));
   expect(Number(await rows.first().getByTestId("inbox-place").evaluate((el) => getComputedStyle(el).fontWeight))).toBeGreaterThanOrEqual(600);
-  // A row that waits on the owner says that it opens the card that answers it.
-  await expect(rows.filter({ hasText: "Approval" }).getByTestId("inbox-opens")).toHaveText("Review");
-  await expect(rows.filter({ hasText: "Question" }).getByTestId("inbox-opens")).toHaveText("Answer");
-  await expect(rows.filter({ hasText: "Done" }).getByTestId("inbox-opens")).toHaveCount(0);
+  // A row offers the card that answers it only while that card waits (state-words.spec.ts has those): these
+  // alerts were raised by the test route with no card behind them, so no row offers one.
+  await expect(rows.getByTestId("inbox-opens")).toHaveCount(0);
   // The model's markdown is read as words.
   const finished = rows.filter({ hasText: "Done" }).first();
   await expect(finished.getByTestId("inbox-line")).toHaveText(/^The parser, moved: The change is in notes\/plan\.md:2/);
