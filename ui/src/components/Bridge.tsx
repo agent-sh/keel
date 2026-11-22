@@ -279,7 +279,7 @@ function LookBar({ under, looking, slot, onBack, keep }: { under: Session; looki
           </>
         )}
       </p>
-      <button type="button" className="k-look-act" data-testid="look-back" title={`Back to ${title}, the session this pane holds`} aria-label={`Back to ${title}${state ? `, ${state}` : ""}, the session this pane holds`} onClick={onBack}>
+      <button type="button" className="k-look-act" data-testid="look-back" title={`Back to ${title}, the session this pane holds (Esc, or Shift Esc from a card)`} aria-label={`Back to ${title}${state ? `, ${state}` : ""}, the session this pane holds`} onClick={onBack}>
         <ArrowLeft aria-hidden="true" />Back<Kbd keys="escape" className="k-look-esc" /><Kbd keys="shift+escape" className="k-look-shift" />
       </button>
       {keep && <button type="button" className="k-look-act k-look-keep" data-testid="look-keep" title={`This becomes the pane's session, in place of ${title} (a double click on its row does the same)`} onClick={keep}>Keep here<Kbd keys="alt+k" /></button>}

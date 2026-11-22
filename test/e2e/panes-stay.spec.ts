@@ -149,7 +149,8 @@ test("three waiting sessions are answered by mouse and both panes are as they we
       // The bar says what this is and whose pane it is, then the two acts with their keys.
       const bar = slot(page, 0).getByTestId("look-bar");
       await expect(bar.getByTestId("look-says")).toHaveText("Looking at Standup notes for Thursday. This pane holds Spike: full-text search over the notes.");
-      await expect(bar.getByTestId("look-back")).toHaveText("BackEsc");
+      await expect(bar.getByTestId("look-back")).toContainText("Back");
+      await expect(bar.getByTestId("look-back").locator(".k-look-esc")).toHaveText("Esc");
       await expect(bar.getByTestId("look-keep")).toHaveText("Keep hereAltK");
       await expect(slot(page, 1)).toHaveAttribute("data-station", coord);
       await expect(cardIn(page, id, "question")).toBeVisible();
@@ -771,6 +772,21 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await toast.getByTestId("undo").click();
   await expect.poll(holds).toEqual([[reader, reader], [coord, coord]]);
   await page.getByTestId("list-filter").fill("");
+  // On a phone the offer hangs from the top edge, clear of the message box.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/s/${other}`);
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("Archive this session");
+  await expect(page.getByTestId("palette").getByRole("option").first()).toContainText("Archive this session");
+  await page.keyboard.press("Enter");
+  await expect(toast.getByTestId("undo-words")).toHaveText("Archived Draft the 2.4 changelog");
+  const tb = (await toast.boundingBox())!;
+  expect(tb.y).toBeLessThanOrEqual(1);
+  expect(tb.x + tb.width).toBeLessThanOrEqual(390);
+  await shoot(page, "panes-stay-22-undo-phone");
+  await toast.getByTestId("undo").click();
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${other}`)).json()).archived ?? false).toBe(false);
+  await page.setViewportSize({ width: 1920, height: 1040 });
   await drop(request, reader, coord, other);
 });
 

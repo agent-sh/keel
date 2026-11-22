@@ -962,20 +962,22 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const coming = keysOn === "card" || (keysOn === "list" && first);
   const heldLine = heldWhy ? `${heldWhy}: Down, then Enter allows once` : "";
   const arming = ready || shut || left > 0 ? ""
-    : keysOn === "once" ? "Enter allows once in a moment"
+    : keysOn === "once" ? ARMING
     : !coming ? ""
     : heldWhy ? (mustOpen ? "" : heldLine)
     // (Only while the Allow is still to take the keyboard for this arrival: else Enter stays where
     // it is, as it does for an owner brought here from outside the page.)
-    : hold.take && moved.current !== hold.at && (!wasBrought() || chosen.current) ? "Enter allows once in a moment"
+    : hold.take && moved.current !== hold.at && (!wasBrought() || chosen.current) ? ARMING
     : "";
 
   // How long the arming line takes to fill: what is left of the settle time of the keyboard's
   // arrival, counted from when the line came. (It fills by then and stays full until Enter works.)
+  // (Only while Enter is about to allow: not for the words that say how to reach the answer of a card held for a second look.)
+  const armingNow = arming === ARMING;
   const armFrom = useRef<number | null>(null);
-  if (!arming) armFrom.current = null;
+  if (!armingNow) armFrom.current = null;
   else armFrom.current ??= performance.now();
-  const armFor = Math.round(Math.max(200, Math.min(SETTLE_MS, (hold.at || armFrom.current!) + SETTLE_MS - armFrom.current!)));
+  const armFor = armingNow ? Math.round(Math.max(200, Math.min(SETTLE_MS, (hold.at || armFrom.current!) + SETTLE_MS - armFrom.current!))) : 0;
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);
     // (The grant's popup is the card's own, drawn outside it: an answer given there held the keyboard too.)
@@ -1221,8 +1223,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             aria-disabled={!live || mustOpen || undefined}
             data-nudge={nudge.mark}
             // The read-first latch is arming: Enter allows once in a moment (a line fills under the label meanwhile).
-            data-arming={arming && !mustOpen ? "" : undefined}
-            style={arming && !mustOpen ? ({ "--k-arm": `${armFor}ms` } as CSSProperties) : undefined}
+            data-arming={armingNow ? "" : undefined}
+            style={armingNow ? ({ "--k-arm": `${armFor}ms` } as CSSProperties) : undefined}
             data-testid="allow-once"
             data-stop={shut ? undefined : "card"}
             onPointerDown={pressed.onPointerDown}
@@ -1261,7 +1263,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
               <span className="ml-auto grid justify-items-end text-micro text-warn">
                 {dense && cut && <span className="invisible col-start-1 row-start-1" aria-hidden="true">{`${touch ? tapSays : enterOpens ? enterSays : openFirst}.`.length >= `${count(unseen?.total ?? 0)} not seen yet`.length ? `${touch ? tapSays : enterOpens ? enterSays : openFirst}.` : `${count(unseen?.total ?? 0)} not seen yet`}</span>}
                 {shut ? <span className="col-start-1 row-start-1" role="status" data-testid="approval-open-first">{touch ? tapSays : enterOpens ? enterSays : openFirst}.</span>
-                  : left > 0 ? <span className="col-start-1 row-start-1 tabular-nums" role="status" data-testid="approval-left">{leftText}{readKey && <span className="text-faint" data-testid="approval-read-key">. End reads on</span>}</span> : null}
+                  : left > 0 ? <span className="col-start-1 row-start-1 tabular-nums" role="status" data-testid="approval-left">{leftText}{readKey && <span className="text-faint max-sm:hidden" data-testid="approval-read-key">. End reads on</span>}</span> : null}
               </span>
             )
             // What Enter does, true at every moment. "Enter allows once" stands only while its Allow has
@@ -1290,6 +1292,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
 // row whose answers stand beside its text), so what is left to read is said and Deny can be
 // pressed without scrolling to the card's end.
 const FOOT = "k-ask-foot z-[1] bg-raised";
+// What a card says while Enter is about to allow once (its Allow shows the arming line meanwhile).
+const ARMING = "Enter allows once in a moment";
 
 const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as const;
 

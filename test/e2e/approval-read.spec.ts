@@ -318,8 +318,10 @@ test("a long command opened by one click is read once its lines have been in vie
 // The line that counts what is left names the key.
 test("a long command is read by keys: Enter opens it, End reads it to its end, Enter allows; Space reads on", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
-  const a = await asking(request, "Read by keys: End", [bash(LONG)]);
-  const b = await asking(request, "Read by keys: Space", [bash(LONG)]);
+  // (Not a high-risk one: its answer is the owner's to go to, Down then Enter, whatever was read.)
+  const PLAIN = `${Array.from({ length: 40 }, (_, i) => `echo step ${i + 1}`).join("\n")}\necho done > last.txt`;
+  const a = await asking(request, "Read by keys: End", [bash(PLAIN)]);
+  const b = await asking(request, "Read by keys: Space", [bash(PLAIN)]);
   try {
     await waits(request, a.id);
     await waits(request, b.id);
@@ -703,7 +705,7 @@ test("a tall card keeps its answers and the count in view, and no answer takes t
       expect(b.y, id).toBeGreaterThanOrEqual(tray.y);
       expect(b.y + b.height, id).toBeLessThanOrEqual(tray.y + tray.height + 0.5);
     }
-    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines not seen yet$/);
+    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines not seen yet(\. End reads on)?$/);
     await shoot(page, "approval-read-15-foot");
     // The rows under the foot are not in view: they are still to be seen after the text has stood.
     await page.waitForTimeout(1300);

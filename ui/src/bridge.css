@@ -581,7 +581,7 @@
 .k-look-act:hover { background: var(--hover); }
 .k-look-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .k-look-act svg { flex-shrink: 0; width: 0.875rem; height: 0.875rem; color: var(--muted); }
-@container (max-width: 31rem) { .k-look-keep kbd { display: none; } }
+@container (max-width: 31rem) { .k-look-keep kbd, .k-look-shift { display: none; } }
 /* The bar offers Escape only where it leads back. On a card of the look it is the card's
    own key, and a field keeps it for itself (the list's filter, a terminal's line, a title
    being renamed); the message box hands it on. (The way back grows toward the sentence
