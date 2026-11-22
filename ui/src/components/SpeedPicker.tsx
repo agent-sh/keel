@@ -4,6 +4,7 @@
 // plan the provider's own note ("2x speed, increased usage").
 import { Menu } from "@base-ui/react/menu";
 import { Check, ChevronDown, Zap } from "lucide-react";
+import { memo } from "react";
 import type { ModelInfo, Price, SpeedOffer } from "../../../src/providers/types.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
@@ -26,7 +27,7 @@ function cost(o: SpeedOffer, m: ModelInfo): string | undefined {
 const pick = (m: ModelInfo, want?: string) =>
   want ? m.speeds?.find((o) => o.id === want) ?? m.speeds?.find((o) => o.label.toLowerCase() === want.toLowerCase()) : undefined;
 
-export function SpeedPicker({ sessionId }: { sessionId: string }) {
+export const SpeedPicker = memo(function SpeedPicker({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const model = useStore((s) => s.models.find((m) => m.id === s.sessions[sessionId]?.model));
   if (!session || !model?.speeds?.length) return null;
@@ -69,4 +70,4 @@ export function SpeedPicker({ sessionId }: { sessionId: string }) {
       </Menu.Portal>
     </Menu.Root>
   );
-}
+});

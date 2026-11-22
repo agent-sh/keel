@@ -22,6 +22,7 @@ import { isMac, registerCommand } from "../lib/keys.ts";
 import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
 import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
+import { usePanelBesideShown } from "./SidePanel.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
 import { getState, storeGate, useStore } from "../lib/store.ts";
 import { Covered } from "../lib/cover.ts";
@@ -310,6 +311,11 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
   // The helm scrolls into view when it changes (keyboard moves, the rail).
   useEffect(() => { if (helm) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: scrollMotion() }); }, [helm]);
   const covered = !!fresh || !!look;
+  // What the bridge's style sheet reads of the pane, said on the pane itself: a selector that
+  // asked the pane's whole tree for it (`:has` over the conversation) was matched again at
+  // every restyle of the pane, over every row it holds.
+  const aimed = !!useAim(slot);
+  const beside = usePanelBesideShown(top ?? undefined, helm && !fresh);
   // The pane's own session is drawn from the first time it shows: a page that opens on a look draws only the look.
   const drawn = useRef(!covered);
   if (!covered) drawn.current = true;
@@ -324,6 +330,8 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
       data-slot={slot}
       data-watch={fresh ? undefined : top ? w : "idle"}
       data-helm={helm || undefined}
+      data-aimed={aimed || undefined}
+      data-beside={beside || undefined}
       data-missing={!fresh && look && !look.s ? "" : undefined}
       data-testid={fresh ? undefined : "station"}
       aria-label={fresh ? "New session" : top ? `${top.title || "New session"}, ${label(top.id, w)}${whereWords(top)}` : "Session not on this daemon"}
@@ -377,9 +385,10 @@ function NewStation({ slot, grow, beside }: { slot?: number; grow?: number; besi
   // taking the keyboard did that alone, so with a drawer or a dialog holding the keyboard
   // the first session's page was read as the helm and its alerts as seen.)
   const ref = useRef<HTMLElement>(null);
+  const aimed = !!useAim(slot);
   useEffect(() => { if (slot === undefined) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" }); }, []);
   return (
-    <section ref={ref} className="k-station k-station-new" data-slot={slot} data-helm style={grow === undefined ? undefined : { flexGrow: grow }} aria-label="New session" {...drop}>
+    <section ref={ref} className="k-station k-station-new" data-slot={slot} data-helm data-aimed={aimed || undefined} style={grow === undefined ? undefined : { flexGrow: grow }} aria-label="New session" {...drop}>
       <div className="k-band" aria-hidden="true" />
       <AimTag slot={slot} />
       <PaneNote slot={slot} />
@@ -399,9 +408,10 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
   const attended = useAttended();
   const offer = useMemo(() => byAttention(list, watches).filter((s) => !shown.includes(s.id) && !attended.has(s.id)).slice(0, 7), [list, watches, shown, attended]);
   const drop = useDrop(slot);
+  const aimed = !!useAim(slot);
   const put = (id: string) => { stations.place(id, slot); navigate({ name: "session", id }); };
   return (
-    <section className="k-station k-pane-empty" data-slot={slot} data-next={next || undefined} data-testid="pane-empty" style={{ flexGrow: grow }} aria-label={`Empty pane ${slot + 1}`} onPointerDown={() => stations.setActive(slot)} {...drop}>
+    <section className="k-station k-pane-empty" data-slot={slot} data-aimed={aimed || undefined} data-next={next || undefined} data-testid="pane-empty" style={{ flexGrow: grow }} aria-label={`Empty pane ${slot + 1}`} onPointerDown={() => stations.setActive(slot)} {...drop}>
       <div className="k-band" aria-hidden="true" />
       <AimTag slot={slot} />
       <PaneNote slot={slot} />

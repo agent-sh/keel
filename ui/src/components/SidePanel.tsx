@@ -194,6 +194,14 @@ export function usePanelSheet(session: Session | undefined, on: boolean): boolea
   return on && !beside && !!session && visible(session).some((p) => p.id === open);
 }
 
+// Whether the session's panel stands beside its conversation now (the pane is then wider).
+export function usePanelBesideShown(session: Session | undefined, on: boolean): boolean {
+  useSyncExternalStore(panels.subscribe, panels.version);
+  const open = useUI((s) => s.panel);
+  const beside = usePanelBeside();
+  return on && beside && !!session && visible(session).some((p) => p.id === open);
+}
+
 // The panel of the helm. The bridge says which form it takes (rail.ts decides
 // from the room the pane has): beside the conversation, or a sheet over the
 // pane. The same element either way, so what it shows outlives a resize.

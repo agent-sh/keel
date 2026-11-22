@@ -12,7 +12,7 @@
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
 import { Archive, ArchiveRestore, ArrowDown, Bug, Columns2, Folder, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
-import { createContext, Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
 import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
@@ -180,7 +180,11 @@ function RestLine({ s }: { s: Session }) {
 
 // `given`: the session as the list ordered it (held still under the hand); the row shows it as it is now.
 // `gone`: it left the list while the list was held, and its row stays, dimmed, until the hand has left.
-function Row({ s: given, active, where, gone }: { s: Session; active: boolean; where?: boolean; gone?: boolean }) {
+// A row draws again only for what it shows: its own reads (the session as it is now, its state,
+// its queue) tell it. The list draws again with every change of any session and asks none of
+// its rows to follow: a new session object with the same id and the same archive mark is the same row.
+const Row = memo(RowOf, (a, b) => a.s.id === b.s.id && !!a.s.archived === !!b.s.archived && a.active === b.active && a.where === b.where && a.gone === b.gone);
+function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean; where?: boolean; gone?: boolean }) {
   const live = useStore((x) => x.sessions[given.id]);
   const deleted = useStore((x) => !!x.gone[given.id]);
   const s = live ?? given;

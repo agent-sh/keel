@@ -563,8 +563,9 @@
    nothing lies over the bar's keys or the header under it. When that pane is out of view
    in a row of panes that scrolls sideways, the tab stands at that edge of the row with an
    arrow. */
-.k-station:has(> .k-aim, .k-look-bar[data-aim]) .k-band { background-color: var(--fg); }
-.k-station:has(> .k-aim, .k-look-bar[data-aim]) .k-band::after { content: none; }
+/* (From the row of panes: over a band's state colour, whichever state it is.) */
+.k-stations > .k-station[data-aimed] .k-band { background-color: var(--fg); }
+.k-stations > .k-station[data-aimed] .k-band::after { content: none; }
 .k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 0.3125rem 0.3125rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
 .k-station[data-drop] .k-aim { display: none; }
 .k-aim-edge { position: fixed; z-index: 46; left: auto; transform: none; border-radius: 0 0 0 0.3125rem; }
@@ -1022,7 +1023,7 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Beside the conversation when the helm has room for both columns (rail.ts
    decides and gives the width): the helm keeps a working transcript next to it. */
 .k-side[data-mode="beside"] { flex: 0 0 var(--k-side-w); min-width: 0; border-left: 1px solid var(--line); }
-.k-station[data-helm]:has(.k-side[data-mode="beside"]) { min-width: calc(27.5rem + var(--k-side-w)); }
+.k-station[data-helm][data-beside] { min-width: calc(27.5rem + var(--k-side-w)); }
 /* No room: a sheet over the pane's conversation. The pane keeps its width and
    its header, so the panel is switched or closed from either. */
 .k-side[data-mode="sheet"] { position: absolute; inset: 0; z-index: 20; }

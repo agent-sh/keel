@@ -10,6 +10,7 @@ import { notePick, recentPicks } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
 import { loadPeerModels, usePeerModels } from "../lib/peer-models.ts";
 import { machineName } from "../lib/fleet.ts";
+import type { Session } from "../../../src/core/types.ts";
 
 // The lists themselves are built in lib/picker.ts. With no query: favorites,
 // recent picks, then one group per provider (the default model's provider,
@@ -18,6 +19,14 @@ import { machineName } from "../lib/fleet.ts";
 // last so they can be shown again. Nothing here names a model. A chunk of its
 // own (Combobox is large): ModelPicker shows the same trigger until it loads.
 // `machine`: the session is another daemon's; its listing is the one offered.
+// Read again only when the sessions change, and once for every menu on the page.
+const startedFor = new WeakMap<object, string>();
+function startedOn(sessions: Record<string, Session>): string {
+  let v = startedFor.get(sessions);
+  if (v === undefined) startedFor.set(sessions, (v = Object.values(sessions).sort((a, b) => b.created - a.created).map((s) => s.model).join("\n")));
+  return v;
+}
+
 export function ModelMenu({ value, onChange, compact, openSignal, machine, placeholder }: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string }) {
   const [open, setOpen] = useState(!!openSignal);
   const [query, setQuery] = useState("");
@@ -32,7 +41,9 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   useEffect(() => { if (open) ensureModels().catch((e) => reportError(e, { at: "models" })); }, [open]);
   const peer = usePeerModels(machine);
   const models = machine ? peer?.models ?? [] : local;
-  const sessions = useStore((s) => s.sessions);
+  // The models sessions were started on, newest first, as one string: the menu (one in every
+  // pane's box) is not drawn again for a change of a session that changes no model.
+  const started = useStore((s) => startedOn(s.sessions));
   // The default badge is the listing daemon's own default.
   const localDef = useStore((s) => s.defaultModel);
   const def = machine ? peer?.default ?? "" : localDef;
@@ -50,8 +61,8 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   // Recent: the owner's own picks, else the models sessions were started on.
   const recent = useMemo(() => {
     const picks = recentPicks();
-    return picks.length ? picks : Object.values(sessions).sort((a, b) => b.created - a.created).map((s) => s.model);
-  }, [sessions, open]);
+    return picks.length ? picks : started ? started.split("\n") : [];
+  }, [started, open]);
 
   const groups = useMemo(
     () => buildGroups({ query, all, byId, order, pinned, recent, expanded, labelOf }),

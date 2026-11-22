@@ -3,7 +3,7 @@
 // the message box's bar while it is set (or being chosen); set from a refusal
 // card, /fallback or the palette.
 import { CornerDownRight, X } from "lucide-react";
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, memo } from "react";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 
@@ -19,7 +19,7 @@ const useChoosing = () => useSyncExternalStore((f) => (subs.add(f), () => void s
 const done = () => { choosing = null; subs.forEach((f) => f()); };
 export const setFallback = (sid: string, model: string | null) => actions.patch(sid, { settings: { fallback: model } }).finally(done);
 
-export function FallbackChip({ sessionId }: { sessionId: string }) {
+export const FallbackChip = memo(function FallbackChip({ sessionId }: { sessionId: string }) {
   const ch = useChoosing();
   const fb = useStore((s) => s.sessions[sessionId]?.settings.fallback as string | undefined);
   const open = ch?.sid === sessionId;
@@ -36,4 +36,4 @@ export function FallbackChip({ sessionId }: { sessionId: string }) {
       )}
     </span>
   );
-}
+});

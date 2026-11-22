@@ -3,7 +3,7 @@
 // when the session's provider is close to a limit or refuses turns.
 import { Popover } from "@base-ui/react/popover";
 import { AlertTriangle, ExternalLink, Gauge } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, memo } from "react";
 import { actions, reportError, useStore, type LimitWindow, type ProviderProblem } from "../lib/store.ts";
 import { cn, fmtCost, when } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
@@ -68,7 +68,7 @@ export function ProblemNote({ p, label, detail }: { p: ProviderProblem; label: s
 
 // Beside the model picker: the session's provider is close to a window or
 // refuses turns. Nothing shows while all is well.
-export function LimitChip({ model }: { model: string }) {
+export const LimitChip = memo(function LimitChip({ model }: { model: string }) {
   const limits = useStore((s) => s.limits);
   const labels = useStore((s) => s.providerLabels);
   useEffect(() => { actions.loadLimits().catch((e) => reportError(e, { at: "limits" })); }, []);
@@ -102,4 +102,4 @@ export function LimitChip({ model }: { model: string }) {
       </Popover.Portal>
     </Popover.Root>
   );
-}
+});

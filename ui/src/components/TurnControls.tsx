@@ -3,7 +3,7 @@
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { ArrowUp, ArrowUpCircle, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
@@ -194,7 +194,7 @@ const ZONE: Record<string, string> = {
 
 // Tokens the next request carries against the model's listed window.
 // `above`: shown only once the context is that full (a phone's resting box keeps it out of the way until it matters).
-export function ContextMeter({ sessionId, above }: { sessionId: string; above?: number }) {
+export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { sessionId: string; above?: number }) {
   const all = useStore((s) => s.events[sessionId]);
   const session = useStore((s) => s.sessions[sessionId]);
   const models = useStore((s) => s.models);
@@ -342,7 +342,7 @@ export function ContextMeter({ sessionId, above }: { sessionId: string; above?: 
       </Popover.Portal>
     </Popover.Root>
   );
-}
+});
 
 const some = (names: string[]) => (names.length > 4 ? `${names.slice(0, 4).join(", ")} and ${names.length - 4} more` : names.join(", "));
 
@@ -396,7 +396,7 @@ function BuildPin({ build, used, busy, disabled, onAdopt }: { build: BuildState;
 }
 
 // The efforts the session's model lists; nothing is offered it does not take.
-export function EffortPicker({ sessionId }: { sessionId: string }) {
+export const EffortPicker = memo(function EffortPicker({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const models = useStore((s) => s.models);
   const efforts = models.find((m) => m.id === session?.model)?.efforts ?? [];
@@ -430,7 +430,7 @@ export function EffortPicker({ sessionId }: { sessionId: string }) {
       </Menu.Portal>
     </Menu.Root>
   );
-}
+});
 
 // Session totals: input (and what of it was cached), output, cost.
 export function UsageSummary({ sessionId }: { sessionId: string }) {

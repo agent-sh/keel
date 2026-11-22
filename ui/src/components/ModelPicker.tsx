@@ -1,5 +1,5 @@
 import { ChevronsUpDown } from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, memo } from "react";
 import { useStore, ensureModels, reportError } from "../lib/store.ts";
 import { usePeerModels } from "../lib/peer-models.ts";
 import { cn } from "../lib/utils.ts";
@@ -35,7 +35,7 @@ export function TriggerLabel({ label, any, value, placeholder }: { label?: strin
 // after the page; until then the same trigger stands in, and a click on it
 // opens the menu once it is there. `openSignal` opens it when it changes.
 // `machine`: the session is that daemon's, and its listing is the one offered.
-export function ModelPicker(props: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string }) {
+export const ModelPicker = memo(function ModelPicker(props: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string }) {
   const atMount = useRef(props.openSignal ?? 0);
   const [clicked, setClicked] = useState(0);
   const peer = usePeerModels(props.machine);
@@ -55,4 +55,4 @@ export function ModelPicker(props: { value: string; onChange: (id: string) => vo
       <ModelMenu {...props} openSignal={signal} />
     </Suspense>
   );
-}
+});

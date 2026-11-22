@@ -151,12 +151,15 @@ const SessionComposer = memo(function SessionComposer({
   const synced = useStore((s) => s.synced);
   const slashItems = useSlashItems();
   const [switching, setSwitching] = useState(false);
-  const pickModel = (id: string) => {
-    const r = onModel(id);
+  const pick = useRef(onModel);
+  pick.current = onModel;
+  // One function for the box's life: the model list is not drawn again at every key.
+  const pickModel = useMemo(() => (id: string) => {
+    const r = pick.current(id);
     if (!(r instanceof Promise)) return;
     setSwitching(true);
     r.finally(() => setSwitching(false));
-  };
+  }, []);
   const info = useStore((s) => s.models.find((m) => m.id === model));
 
   // The session's server draft: images kept until sent, and whatever was put
@@ -324,6 +327,9 @@ const SessionComposer = memo(function SessionComposer({
   // typed: it is not asked at every key (the question makes the browser style the whole page
   // on the spot, a reply that streams above included).
   const lowAt = useRef<number | null>(null);
+  // What the box's least heights were measured for: a key that leaves it so (most keys: the
+  // draft keeps its lines) measures the text alone, and the page is laid out once less.
+  const shapeAt = useRef({ key: "", least: "" });
   const fit = (resized = false) => {
     if (resized || lowAt.current !== scale) { lowAt.current = scale; setShort(low()); }
     const el = ref.current;
@@ -333,18 +339,26 @@ const SessionComposer = memo(function SessionComposer({
     // free, a draft of several lines is one row high for that moment, the conversation
     // above takes the room, the browser moves its scroll up to fit, and it stays there
     // (a reply that streams then brings it back down, at every key).
+    const width = el.clientWidth;
     box.style.height = `${box.getBoundingClientRect().height}px`;
     box.style.flex = "none";
     el.style.minHeight = "";
     el.style.height = "auto";
     const h = Math.min(el.scrollHeight, Math.round(innerHeight * 0.4));
     el.style.height = `${h}px`;
+    const shape = `${resized}|${h}|${width}|${innerHeight}|${!!el.value}|${scale}|${short}|${images.length}|${notice}|${synced}|${info?.id}|${working}|${rest}`;
+    if (!resized && shape === shapeAt.current.key) {
+      el.style.minHeight = shapeAt.current.least;
+      box.style.height = box.style.flex = "";
+      return;
+    }
     // What the pane's height cannot take from it: two lines of a draft that has them (one
     // of an empty box, whose hint may wrap), and from the box: those lines with what is
     // above and under them (the attachments, the tools), so the tools never leave the box.
     const cs = getComputedStyle(el);
     const least = Math.min(h, Math.ceil((el.value ? 2 : 1) * parseFloat(cs.lineHeight) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)));
     el.style.minHeight = `${least}px`;
+    shapeAt.current = { key: shape, least: `${least}px` };
     box.style.height = box.style.flex = "";
     // In parts of a pixel, as they are laid out: whole pixels add up to more than the box is
     // high at a text size that makes its rows fractional, and the box would grow by the rest.

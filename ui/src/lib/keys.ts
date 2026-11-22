@@ -78,14 +78,20 @@ export function installKeymap() {
     if (e.defaultPrevented || composing(e)) return;
     const t = e.target as HTMLElement | null;
     const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
-    const covered = modalOpen();
-    for (const c of allCommands()) {
-      if (!c.keys || (covered && !c.over?.())) continue;
+    // Whether a dialog covers the page is asked only of a key some command takes: a letter
+    // typed in the message box asks the page nothing.
+    let covered: boolean | undefined;
+    // (Whether a command applies now is asked only of one whose keys these are: the questions
+    // read the page, and a letter in the box would ask each of them.)
+    for (const c of commands.values()) {
+      if (!c.keys) continue;
       const inInput = typeof c.inInput === "function" ? c.inInput() : c.inInput;
       if (typing && typeof c.inInput === "function" && !inInput) continue;
       // Each of a command's keys is judged alone: of "end mod+end" only the second fires
       // in a field, and plain End stays the field's (the caret goes to the line's end).
       if (c.keys.split(" ").some((k) => (!typing || inInput || /mod|ctrl|meta|alt/.test(k)) && matches(e, k))) {
+        if (c.when && !c.when()) continue;
+        if ((covered ??= modalOpen()) && !c.over?.()) continue;
         e.preventDefault();
         c.run();
         return;
