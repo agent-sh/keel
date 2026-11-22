@@ -274,11 +274,10 @@ test("the light theme steps from steel to paper to white", async ({ page, reques
   await shoot(page, "contrast-surfaces");
 
   // A card on the raised panel separates by its surface, not by a hairline alone: the
-  // Tokens tiles are set into the panel on the page's paper.
-  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Say one thing." } });
-  await expect.poll(async () => { const r = await (await request.get(`/api/sessions/${session.id}`)).json(); return !r.running && r.events.filter((e: any) => e.kind === "turn_end").length; }, { timeout: 60_000 }).toBe(1);
-  await openPanel(page, "usage");
-  await expect.poll(() => page.getByTestId("side-panel").locator("[class*=border-line]").count()).toBeGreaterThan(2);
+  // Session panel's sections are set into the panel on the page's paper. (The Tokens panel,
+  // measured here first, has no tiles since it tells a session's cost as a list of turns.)
+  await openPanel(page, "session");
+  await expect.poll(() => page.getByTestId("side-panel").locator("section[class*=border-line]").count()).toBeGreaterThan(2);
   await page.evaluate(() => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.remove("dark"); });
   const tile = await page.getByTestId("side-panel").evaluate((panel) => {
     const cv = document.createElement("canvas");
