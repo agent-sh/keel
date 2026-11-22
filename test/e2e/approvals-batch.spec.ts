@@ -877,5 +877,5 @@ test("a request drawn as the owner leaves its pane records no error", async ({ p
       await page.waitForTimeout(500);
       expect(errors, `left for ${way}`).toEqual([]);
     }
-  } finally { for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); } }
+  } finally { for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); } }
 });

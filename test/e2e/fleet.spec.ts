@@ -137,7 +137,7 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     const task = (await (await request.get(`/api/sessions/${placedId}/tasks`)).json()).tasks[0];
     const started = await (await request.post(`/api/sessions/${placedId}/tasks/${task.id}/start`)).json();
     expect((await (await request.get(`/api/sessions/${started.session_id}`)).json()).session.machine).toBe(placedMachine);
-    await request.post(`/api/sessions/${started.session_id}/interrupt`);
+    await request.post(`/api/sessions/${started.session_id}/interrupt`, { data: { by: "owner" } });
     await request.delete(`/api/sessions/${started.session_id}`);
 
     // One command on the other machine from a session that stays here.

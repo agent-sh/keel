@@ -204,7 +204,7 @@ test("fleet move: a queue the owner held stays held after the move", async ({ pa
     await expect.poll(async () => (await queue()).queue.length, { timeout: 60_000 }).toBe(0);
   } finally {
     await page.goto("about:blank");
-    await request.post(`/api/sessions/${s.id}/interrupt`, { data: {} });
+    await request.post(`/api/sessions/${s.id}/interrupt`, { data: { by: "owner" } });
     await request.delete(`/api/sessions/${s.id}`);
   }
 });

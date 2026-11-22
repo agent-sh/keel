@@ -684,7 +684,7 @@ test("a held queue survives a restart", async ({ page }) => {
     const one = (await call(`/api/sessions/${sid}/messages`, { text: "first draft", mode: "queue" })).queued;
     await call(`/api/sessions/${sid}/messages`, { text: "second", mode: "queue" });
     await call(`/api/sessions/${sid}/queue/${one.id}`, { text: "first, corrected" }, "PATCH");
-    await call(`/api/sessions/${sid}/interrupt`);
+    await call(`/api/sessions/${sid}/interrupt`, { by: "owner" });
     expect((await call(`/api/sessions/${sid}/queue`, undefined, "GET")).held).toBe(true);
     d.proc.kill("SIGTERM");
     await exited(d.proc);

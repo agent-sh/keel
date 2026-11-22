@@ -294,7 +294,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     }
   } finally {
     for (const g of ["parser", "bench", "review", "push-hold"]) if (!existsSync(gate(g))) release(g);
-    await request.post(`/api/sessions/${coord}/interrupt`).catch(() => {});
+    await request.post(`/api/sessions/${coord}/interrupt`, { data: { by: "owner" } }).catch(() => {});
   }
 });
 
@@ -386,7 +386,7 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await page.keyboard.press("Escape");
   // Answered, it leaves the part: the plan is turned down, the secret request let go.
   const before = (await unread()).total;
-  for (const id of [plan, secret, windowAsk]) await request.post(`/api/sessions/${id}/interrupt`);
+  for (const id of [plan, secret, windowAsk]) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
   await bell.click();
   await expect(needs).toHaveCount(2, { timeout: 15_000 });
   // A question whose turn was stopped waits on nobody: it is read, the bell does not count it, and its row offers no answer.
@@ -495,10 +495,10 @@ test("a command left in the background is work, and a held message says when it 
     await expect(item.getByTestId("queue-when")).toHaveText("held until its current step ends");
     await shoot(page, "state-words-09-held-message");
     // Stopped, the same message waits for the owner: it says so.
-    await request.post(`/api/sessions/${busy}/interrupt`);
+    await request.post(`/api/sessions/${busy}/interrupt`, { data: { by: "owner" } });
     await expect(item.getByTestId("queue-when")).toHaveText("held until it is resumed", { timeout: 30_000 });
   } finally {
-    for (const id of [bg, busy]) await request.post(`/api/sessions/${id}/interrupt`).catch(() => {});
+    for (const id of [bg, busy]) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
   }
 });
 

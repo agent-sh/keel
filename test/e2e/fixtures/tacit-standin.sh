@@ -8,6 +8,9 @@
 input=$(cat)
 case "$1" in search|fact|add) ;; *) [ -n "$TACIT_STANDIN_LOG" ] && printf '%s %s\n' "$2" "$input" >> "$TACIT_STANDIN_LOG" ;; esac
 case "$2:$input" in prompt:*standin:slow*) exec sleep 5 ;; esac
+# A file named hook-delay in the store holds the seconds every hook takes (a store slow at a
+# daemon's start, on a busy machine): each is answered after that, with what it would have said.
+if [ -n "${TACIT_STANDIN_STORE:-}" ] && [ -f "$TACIT_STANDIN_STORE/hook-delay" ]; then case "$1" in search|fact|add) ;; *) sleep "$(cat "$TACIT_STANDIN_STORE/hook-delay")" ;; esac; fi
 # The stand-in's store: three fixed facts and the notes `add` wrote under
 # $TACIT_STANDIN_STORE, one line each (name, type, scope, kind, whether it is
 # a note, created, description; tabs between).

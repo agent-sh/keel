@@ -204,7 +204,7 @@ test("the session list fits at every width its edge can be dragged to", async ({
   } finally {
     writeFileSync(gate, "");
     await page.evaluate(() => { localStorage.removeItem("keel.textScale"); localStorage.removeItem("keel.listW"); localStorage.removeItem("keel.listArrange"); }).catch(() => {});
-    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
     // The failures this spec posted for the count are its own: put the list back.
     const mine = ((await (await request.get("/api/errors")).json()).errors as { id: string; message: string }[]).filter((e) => e.message.startsWith(`squeeze ${tag}`));
     for (const e of mine) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } }).catch(() => {});

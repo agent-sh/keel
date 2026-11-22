@@ -284,7 +284,7 @@ test("the keyboard goes to the message box when what held it goes away", async (
     expect(await p3.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "nothing"), "on a phone").not.toBe("composer");
     await phone.close();
   } finally {
-    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
   }
 });
 

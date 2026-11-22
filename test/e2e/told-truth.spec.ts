@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { shoot } from "./shots.ts";
 
 // Feature: what a coordinating model and the owner are told about sessions,
@@ -16,7 +16,9 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", state], {
-    env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in" },
+    // The memory store is a stand-in with a store of its own: a file there makes it slow (hook-delay).
+    env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in",
+      TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"), TACIT_STANDIN_STORE: join(state, "tacit-store") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
@@ -240,7 +242,14 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await atTool(lane("Slow lane 1").session_id);
     await atTool(lane("Slow lane 2").session_id);
     for (const id of [short, gate.session_id, other.session_id, archived, deleted, stopd]) await atTool(id);
+    // The memory store hangs when the daemon comes back (a busy machine at a landing): every hook it is asked
+    // takes longer than a turn waits for it. No turn the restart cut may end as stopped for that.
+    mkdirSync(join(state, "tacit-store"), { recursive: true });
+    writeFileSync(join(state, "tacit-store", "hook-delay"), "8");
     const r1 = await restart("SIGKILL");
+    rmSync(join(state, "tacit-store", "hook-delay"));
+    const cutAtFirst = (r1.turns as any[]).map((t) => t.session_id as string);
+    expect(cutAtFirst.length).toBeGreaterThanOrEqual(8);
     const by = (r: any, id: string) => r.turns.find((t: any) => t.session_id === id);
     expect(by(r1, hung)).toMatchObject({ tools: ["Bash"], state: "continued" });
     // The command outlived the daemon: its call is told so, with the job that goes on, and nothing ran twice.
@@ -294,6 +303,10 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await atTool(stopd);
     await call(`/api/sessions/${stopd}/interrupt`, { by: "owner" });
     await idle(stopd);
+    // The owner's Stop: its end says so, and the queue waits for the owner.
+    expect((await events(stopd)).findLast((e) => e.kind === "turn_end").data).toMatchObject({ reason: "interrupted", stopped_by: "owner" });
+    expect((await call(`/api/sessions/${stopd}/queue`)).held).toBe(true);
+    expect(await text(`/api/sessions/${stopd}/timeline?format=text`)).toContain(", stopped by the owner");
     const held = { turns: await turns(stopd), replies: await replies(stopd) };
     release("stopd");
     await expect.poll(async () => (await jobsOf(stopd)).find((j) => j.id === waitedOn.id).running, { timeout: 30_000 }).toBe(false);
@@ -391,6 +404,39 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     expect(gone.running).toBe(false);
     expect(str((await results(stopped)).at(-1))).toMatch(new RegExp(`^The daemon restarted while this command ran\\. The restart stopped the command after \\d+ s, before it finished\\. Its output up to then is in ${gone.log.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. Run it again if its work is still needed\\.$`));
     expect(processes(STOPPED)).toEqual([]);
+    // --- who stopped a turn is said as it was, and only the owner's Stop is a Stop of the session
+    // A queued prompt the owner sends now ends the running turn for it: their message, not their Stop.
+    const sentNow = await open("Sent now");
+    await send(sentNow, calls([until("gate-now")]));
+    await atTool(sentNow);
+    const waitingRow = (await call(`/api/sessions/${sentNow}/messages`, { text: "script:say second", mode: "queue" })).queued;
+    expect(await call(`/api/sessions/${sentNow}/queue/${waitingRow.id}/send`, {})).toEqual({ ok: true });
+    await idle(sentNow);
+    const endsOf = async (id: string) => (await events(id)).filter((e) => e.kind === "turn_end").map((e) => [e.data.reason, e.data.stopped_by ?? null]);
+    expect(await endsOf(sentNow)).toEqual([["interrupted", "send_now"], ["end_turn", null]]);
+    expect((await call(`/api/sessions/${sentNow}/queue`)).held).toBe(false);
+    // It read "stopped by the owner", and the queue was held as after their Stop.
+    expect(await text(`/api/sessions/${sentNow}/timeline?format=text`)).toContain(", ended when the owner sent a new message");
+    expect(await text(`/api/sessions/${sentNow}/timeline?format=text`)).not.toContain("stopped by the owner");
+    // A stop that names nobody (a request to the stop route with no word) is a stop, and nobody's: the next
+    // queued prompt goes on by itself.
+    const unnamed = await open("Stopped by nobody");
+    await send(unnamed, calls([until("gate-unnamed")]));
+    await atTool(unnamed);
+    await call(`/api/sessions/${unnamed}/messages`, { text: "script:say after the stop", mode: "queue" });
+    await call(`/api/sessions/${unnamed}/interrupt`, {});
+    await expect.poll(async () => (await endsOf(unnamed)).length, { timeout: 30_000 }).toBe(2);
+    expect(await endsOf(unnamed)).toEqual([["interrupted", "api"], ["end_turn", null]]);
+    expect((await call(`/api/sessions/${unnamed}/queue`)).held).toBe(false);
+    expect(await text(`/api/sessions/${unnamed}/timeline?format=text`)).toContain(", stopped through the API");
+    expect(await text(`/api/sessions/${unnamed}/timeline?format=text`)).not.toContain("the owner");
+    // No turn the first restart cut was ended as stopped by anything but the owner's own Stop in this test
+    // (the memory store hung at that start): each went on, or waits on its card.
+    for (const id of cutAtFirst) {
+      const stops = ((await events(id).catch(() => [])) ?? []).filter((e) => e.kind === "turn_end" && e.data.reason === "interrupted").map((e) => e.data.stopped_by ?? "nobody");
+      expect(stops.filter((by) => by !== "owner")).toEqual([]);
+    }
+
     // The command the first kill left running still runs, under the same job.
     expect((await jobsOf(hung)).find((j) => j.id === job.id)).toMatchObject({ running: true });
   } finally {

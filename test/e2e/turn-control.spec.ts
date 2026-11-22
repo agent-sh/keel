@@ -162,7 +162,7 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   await expect.poll(ends, { timeout: 30_000 }).toBe(n + 6);
   await msg("script:slow");
   const follow = (await msg("follow-up for B", "queue")).queued;
-  await request.post(`/api/sessions/${sid}/interrupt`);
+  await request.post(`/api/sessions/${sid}/interrupt`, { data: { by: "owner" } });
   await expect.poll(ends, { timeout: 30_000 }).toBe(n + 7);
   await request.post(`/api/sessions/${sid}/head`, { data: { head_event_id: firstEnd.id, leaf: false } });
   const off = page.getByTestId("queue-item").filter({ hasText: "follow-up for B" });
@@ -213,7 +213,7 @@ test("a queued draft's first line stays visible on a narrow screen", async ({ pa
   await send({ text: "script:slow" });
   const text = "Compare the two retry policies and say which one the importer should keep";
   const follow = (await send({ text, mode: "queue", images: [{ type: "image", media_type: "image/png", data: PNG.toString("base64") }] })).queued;
-  await request.post(`/api/sessions/${sid}/interrupt`);
+  await request.post(`/api/sessions/${sid}/interrupt`, { data: { by: "owner" } });
   await expect.poll(ends, { timeout: 30_000 }).toBe(3);
   await request.post(`/api/sessions/${sid}/head`, { data: { head_event_id: firstEnd.id, leaf: false } });
 
@@ -262,7 +262,7 @@ test("a queued draft's first line stays visible on a narrow screen", async ({ pa
   expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))).toBe(17);
   expect((await wide.boundingBox())!.height).toBeLessThan(2.2 * 17);
   await shoot(page, "turn-08-queued-draft-wide");
-  await request.post(`/api/sessions/${sid}/interrupt`);
+  await request.post(`/api/sessions/${sid}/interrupt`, { data: { by: "owner" } });
   await request.delete(`/api/sessions/${sid}`);
 });
 
@@ -286,7 +286,7 @@ test("a tool the owner stopped reads stopped, not failed", async ({ page, reques
     await call.click();
     await shoot(page, "turn-09-stopped-tool");
   } finally {
-    await request.post(`/api/sessions/${session.id}/interrupt`);
+    await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
     await request.delete(`/api/sessions/${session.id}`);
   }
 });

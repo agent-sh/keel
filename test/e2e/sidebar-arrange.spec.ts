@@ -37,7 +37,7 @@ test.afterEach(async ({ request }) => {
   withAgents = undefined;
   const sessions = (await (await request.get("/api/sessions")).json()).sessions as { id: string; parent_id?: string | null }[];
   const family = parent ? [...sessions.filter((s) => s.parent_id === parent).map((s) => s.id), parent] : [];
-  for (const id of mine) if (!family.includes(id)) await request.post(`/api/sessions/${id}/interrupt`).catch(() => {});
+  for (const id of mine) if (!family.includes(id)) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
   for (const id of family) await request.delete(`/api/sessions/${id}`);
   const all = [...mine, ...family];
   await expect.poll(async () => (await (await request.get("/api/daemon")).json()).running.filter((id: string) => all.includes(id)), { timeout: 15_000 }).toEqual([]);
@@ -191,10 +191,10 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await expect(page.getByTestId("wake-line")).toBeVisible();
   expect(await band.evaluate((el) => getComputedStyle(el).transitionProperty)).toContain("background-color");
   await shoot(page, "arrange-09-working-line");
-  await request.post(`/api/sessions/${c}/interrupt`);
+  await request.post(`/api/sessions/${c}/interrupt`, { data: { by: "owner" } });
   await expect(pane(0)).not.toHaveAttribute("data-watch", "work", { timeout: 15_000 });
   expect(await band.evaluate((el) => getComputedStyle(el, "::after").animationName)).toBe("none");
-  await request.post(`/api/sessions/${parent}/interrupt`).catch(() => {});
+  await request.post(`/api/sessions/${parent}/interrupt`, { data: { by: "owner" } }).catch(() => {});
 });
 
 // The archive tab asks the daemon for its list when it opens and when a

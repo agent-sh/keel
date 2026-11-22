@@ -27,7 +27,7 @@ const states = async (request: APIRequestContext, id: string) =>
 const waits = (request: APIRequestContext, id: string) => expect.poll(() => states(request, id), { timeout: 30_000 }).toBe("pending");
 const focus = (page: Page) => page.evaluate(() => { const el = document.activeElement as HTMLElement | null; return el?.dataset.testid ?? el?.tagName ?? "none"; });
 async function drop(request: APIRequestContext, ids: string[]) {
-  for (const id of ids) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+  for (const id of ids) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
   await request.post("/api/alerts/read", { data: {} });
 }
 // Enter 1.2 s after arriving and again at 2.7 s: past the card's own settle time, when a whole card would act.

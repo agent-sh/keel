@@ -58,7 +58,7 @@ test("a paused session shows its waiting reports; a loop run brings one, Resume 
     expect(carried).toEqual([["owner"], ["loop", "subagent"], ["subagent"]]);
   } finally {
     if (loop) await request.delete(`/api/loops/${loop.id}`);
-    await request.post(`/api/sessions/${session.id}/interrupt`);
+    await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
     await request.delete(`/api/sessions/${session.id}`);
   }
 });

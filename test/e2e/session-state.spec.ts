@@ -27,7 +27,7 @@ const send = (request: APIRequestContext, id: string, text: string) => request.p
 const stateOf = async (request: APIRequestContext, id: string) => ((await (await request.get("/api/state")).json()).states ?? {})[id] as { watch: string; why?: string; text?: string; since?: number } | undefined;
 async function drop(request: APIRequestContext, ids: string[]) {
   for (const id of ids) {
-    await request.post(`/api/sessions/${id}/interrupt`).catch(() => {});
+    await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
     await request.delete(`/api/sessions/${id}`).catch(() => {});
   }
 }
@@ -731,7 +731,7 @@ test("a declined turn, a stopped one with a held queue and a scheduled loop read
     // The two with a command running are stopped by the owner; one then gets a prompt that waits in its held queue.
     for (const id of [stopped, armed]) {
       await expect.poll(async () => { const st = await stateOf(request, id); return st?.why === "tool" && /until/.test(st.text ?? ""); }, { timeout: 30_000 }).toBe(true);
-      await request.post(`/api/sessions/${id}/interrupt`);
+      await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
       await expect.poll(async () => (await stateOf(request, id))?.watch, { timeout: 30_000 }).toBe("stop");
     }
     expect((await request.post(`/api/sessions/${stopped}/messages`, { data: { text: "And then update the docs.", mode: "queue" } })).ok()).toBe(true);
@@ -957,7 +957,7 @@ test("twelve sessions in mixed states read apart at a glance, wide and on a phon
     const approval = await mk("Clean the build output before the release", "ask", api, script([{ name: "Bash", input: { command: "rm -rf dist build .cache && git tag v0.9.0" } }]));
     for (const id of [done1, declined, failed, timer, job]) await expect.poll(() => ended(id), { timeout: 30_000 }).toBe(true);
     await expect.poll(async () => (await stateOf(request, stopped))?.why, { timeout: 30_000 }).toBe("tool");
-    await request.post(`/api/sessions/${stopped}/interrupt`);
+    await request.post(`/api/sessions/${stopped}/interrupt`, { data: { by: "owner" } });
 
     await page.goto(`/s/${done1}`);
     const want: [string, string][] = [

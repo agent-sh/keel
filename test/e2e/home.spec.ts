@@ -26,7 +26,7 @@ const pending = async (request: APIRequestContext, id: string) => (await (await 
 const row = (page: Page, id: string) => page.locator(`[data-testid="home-session"][data-session="${id}"]`);
 const ended = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "turn_end" || e.kind === "error");
 async function drop(request: APIRequestContext, ids: string[]) {
-  for (const id of ids) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+  for (const id of ids) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
   for (const e of (await (await request.get("/api/errors?resolved=0")).json()).errors) if (String(e.message).includes("credit balance")) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } });
   await request.post("/api/alerts/read", { data: {} });
 }

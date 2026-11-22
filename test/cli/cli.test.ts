@@ -946,7 +946,7 @@ describe("a session a script holds open", () => {
     deaf.stop();
     const last = lines(r.out).filter(isResult).at(-1);
     expect([r.code, last.subtype, last.result, Date.now() - t0 < 20_000, existsSync(join(WS, "stream-deaf.txt"))]).toEqual([3, "error_during_execution", expect.stringContaining("took no answer to a request"), true, false]);
-    await dm.api(`/api/sessions/${last.session_id}/interrupt`, {});
+    await dm.api(`/api/sessions/${last.session_id}/interrupt`, { by: "owner" });
 
     // The address answers again as a daemon of another state folder: the command says so in a result and ends.
     const one = join(SCRATCH, "state-stream-one"), other = join(SCRATCH, "state-stream-other"), p2 = freePort();

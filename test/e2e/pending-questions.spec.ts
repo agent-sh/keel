@@ -61,7 +61,7 @@ test("only live questions mark an unopened session and its parent as Needs you",
     await send(asker, question);
     await expect(pane).toHaveText("Needs you");
     await expect(card.last()).toHaveAttribute("data-state", "open");
-    expect((await request.post(`/api/sessions/${asker}/interrupt`)).ok()).toBeTruthy();
+    expect((await request.post(`/api/sessions/${asker}/interrupt`, { data: { by: "owner" } })).ok()).toBeTruthy();
     await expect(pane).toHaveText("Stopped");
     await expect(card.last()).toHaveAttribute("data-state", "closed");
     expect(await pending(asker)).toEqual([]);

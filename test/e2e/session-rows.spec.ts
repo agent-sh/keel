@@ -246,7 +246,7 @@ test("sessions on another machine sit under that machine's separator; a local on
       }
     } finally {
       await page.evaluate(() => { localStorage.removeItem("keel.textScale"); localStorage.removeItem("keel.listW"); });
-      await request.post(`/api/sessions/${busy}/interrupt`).catch(() => {});
+      await request.post(`/api/sessions/${busy}/interrupt`, { data: { by: "owner" } }).catch(() => {});
     }
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`);

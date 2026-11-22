@@ -223,7 +223,7 @@ test("an agent's page stops the whole agent; a held Escape stops nothing", async
   expect((await timer()).status).toBe("cancelled");
   } finally {
     // Gone whatever happened: its agent would show in the next spec's session list.
-    await request.post(`/api/sessions/${session.id}/interrupt`);
+    await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
     await request.delete(`/api/sessions/${session.id}`);
   }
 });

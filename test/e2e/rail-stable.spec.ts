@@ -268,7 +268,7 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await expect(list).toHaveAttribute("data-held", "true");
     await page.getByTestId("composer").fill("");
     await page.mouse.move(1200, 500);
-    for (const id of [own, other]) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`); }
+    for (const id of [own, other]) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`); }
     await expect(row(other)).toHaveCount(0);
     await row(ids.reader!).click();
     await page.mouse.move(1200, 500);
@@ -567,7 +567,7 @@ test("a count goes to a row that a fold hides and never changes a pane; what is 
     await page.getByTestId("arrange-reset").click();
     await page.keyboard.press("Escape");
   } finally {
-    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
     if (folder) await request.delete(`/api/session-folders/${folder}`).catch(() => {});
   }
 });
@@ -764,7 +764,7 @@ test("what changes elsewhere waits for the hand, is said at the list's foot, and
     await shoot(page, "rail-stable-12-settled-around-the-row");
     void r3;
   } finally {
-    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
     if (folder) await request.delete(`/api/session-folders/${folder}`).catch(() => {});
   }
 });

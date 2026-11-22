@@ -191,7 +191,7 @@ test("plan approval stays paired with its mode on a narrow screen", async ({ pag
   await expect(card).toBeVisible({ timeout: 30_000 });
   expect((await unit.boundingBox())!.height).toBeLessThan(2.6 * 17);
   await shoot(page, "plan-04-approval-wide");
-  await request.post(`/api/sessions/${session.id}/interrupt`);
+  await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
   await request.delete(`/api/sessions/${session.id}`);
 });
 

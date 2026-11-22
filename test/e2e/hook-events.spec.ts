@@ -196,7 +196,7 @@ test("every hook event fires", async ({ page, request }) => {
   const before = given("PreToolUse").length;
   await request.post(`/api/sessions/${id}/messages`, { data: { text: held } });
   await fired("PreToolUse", before + 1); // the command is under way
-  await request.post(`/api/sessions/${id}/interrupt`);
+  await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
   await ended(held);
   await fired("Interrupt");
 

@@ -23,9 +23,9 @@ export const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`
 // Stops every turn an earlier test left open: what waits on the owner is read across the daemon's sessions.
 export async function settle(request: APIRequestContext) {
   const { sessions } = (await (await request.get("/api/sessions")).json()) as { sessions: { id: string; phase: string }[] };
-  for (const s of sessions) if (s.phase === "working") await request.post(`/api/sessions/${s.id}/interrupt`);
+  for (const s of sessions) if (s.phase === "working") await request.post(`/api/sessions/${s.id}/interrupt`, { data: { by: "owner" } });
 }
-export const drop = async (request: APIRequestContext, ...ids: string[]) => { for (const id of ids) { await request.post(`/api/sessions/${id}/interrupt`); await request.delete(`/api/sessions/${id}`); } };
+export const drop = async (request: APIRequestContext, ...ids: string[]) => { for (const id of ids) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }); await request.delete(`/api/sessions/${id}`); } };
 // The session's turn is over: it can be asked again.
 export const idle = (request: APIRequestContext, id: string) =>
   expect.poll(async () => ((await (await request.get("/api/sessions")).json()).sessions as { id: string; phase: string }[]).find((s) => s.id === id)?.phase, { timeout: 30_000 }).not.toBe("working");

@@ -75,7 +75,7 @@ test("Esc twice on an approval gives the keyboard back to Allow once", async ({ 
   await page.keyboard.press("Enter");
   await page.waitForTimeout(400);
   expect((await approvals(request, long))[0]).toMatchObject({ state: "pending" });
-  await request.post(`/api/sessions/${long}/interrupt`);
+  await request.post(`/api/sessions/${long}/interrupt`, { data: { by: "owner" } });
   await request.delete(`/api/sessions/${long}`);
 });
 

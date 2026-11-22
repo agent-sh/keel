@@ -118,7 +118,7 @@ test("three waiting sessions are answered by mouse and both panes are as they we
   expect(during.panes[0]!.draft).toBe(`draft: keep me${typed}`);
   expect(during.keys).toBe("composer@0");
   expect(during.panes.map((p) => [p.holds, p.shows])).toEqual([[reader, reader], [coord, coord]]);
-  await request.post(`/api/sessions/${coord}/interrupt`);
+  await request.post(`/api/sessions/${coord}/interrupt`, { data: { by: "owner" } });
   await idle(request, coord);
   await expect(cardIn(page, coord, "question")).toHaveCount(0);
   const start = await look(page);

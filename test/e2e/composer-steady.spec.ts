@@ -137,6 +137,6 @@ test("typing moves neither the message box nor the conversation", async ({ page,
       await ctx.close();
     }
   } finally {
-    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
   }
 });

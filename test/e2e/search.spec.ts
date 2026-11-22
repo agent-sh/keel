@@ -271,7 +271,7 @@ test("previous and next prompt walk the conversation by keyboard", async ({ page
     await expect(box).toBeFocused();
     expect((await state()).session.phase).toBe("working");
     await expect(box).toHaveValue("A draft that stays where it is.");
-    await request.post(`/api/sessions/${id}/interrupt`);
+    await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
     await expect(page.getByTestId("stop")).toHaveCount(0);
 
     // On a Mac, Option Up and Down are the text field's own (the caret moves by paragraph):

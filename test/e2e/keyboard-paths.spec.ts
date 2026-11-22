@@ -136,7 +136,7 @@ test("a new session starts in the folder of the session being worked in", async 
   await page.keyboard.press("Control+Shift+O");
   await expect(picker).toContainText(name(two));
 
-  for (const id of [a, b, made]) { await request.post(`/api/sessions/${id}/interrupt`); await request.delete(`/api/sessions/${id}`); }
+  for (const id of [a, b, made]) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }); await request.delete(`/api/sessions/${id}`); }
 });
 
 test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ page, request }) => {
@@ -248,7 +248,7 @@ test("the caret moves with the pane the keys move to", async ({ page, request })
 // Stops every turn an earlier test left open: what waits on the owner is read across the daemon's sessions.
 async function settle(request: APIRequestContext) {
   const { sessions } = (await (await request.get("/api/sessions")).json()) as { sessions: { id: string; phase: string }[] };
-  for (const s of sessions) if (s.phase === "working") await request.post(`/api/sessions/${s.id}/interrupt`);
+  for (const s of sessions) if (s.phase === "working") await request.post(`/api/sessions/${s.id}/interrupt`, { data: { by: "owner" } });
 }
 const question = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
 
@@ -322,8 +322,8 @@ test("a key and the palette reach what waits on the owner, the inbox and the err
   await page.keyboard.press("Escape");
 
   // With nothing left waiting the key says so and stays.
-  await request.post(`/api/sessions/${asks}/interrupt`);
-  await request.post(`/api/sessions/${picks}/interrupt`);
+  await request.post(`/api/sessions/${asks}/interrupt`, { data: { by: "owner" } });
+  await request.post(`/api/sessions/${picks}/interrupt`, { data: { by: "owner" } });
   await expect(row(asks)).not.toHaveAttribute("data-watch", "need");
   await expect(row(picks)).not.toHaveAttribute("data-watch", "need");
   await page.goto(`/s/${quiet}`);
