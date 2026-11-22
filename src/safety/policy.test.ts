@@ -45,7 +45,7 @@ test("a call's class comes from its tool's definition", () => {
   expect(classify(tool("read_many_files", undefined, true), { paths: ["a.ts", "/etc/hosts"] }, ws)).toEqual({ kind: "read", paths: ["/w/repo/a.ts", "/etc/hosts"] });
   expect(classify(tool("TaskList", undefined, true), { query: "what is /etc used for" }, ws)).toEqual({ kind: "read" });
   // In a sandboxed session a file tool reads what the sandbox shows. Outside it: the owner's card, in every asking mode;
-  // refused in Full auto, where a card would go to the judge. Outside a sandbox a read is a read.
+  // refused in Full auto, where nobody is asked and the sandbox still holds. Outside a sandbox a read is a read.
   const shown = (p: string) => (p.startsWith("/home/u/.ssh") ? { shown: false as const, store: true, why: "it reads ~/.ssh/id, where the owner's credentials are kept." }
     : p.startsWith("/home/u/") ? { shown: false as const, store: false, why: "it reads ~/notes, which this session's sandbox does not show its commands." } : { shown: true as const });
   const key = { kind: "read" as const, paths: ["/w/repo/a.ts", "/home/u/.ssh/id"] };
@@ -54,8 +54,8 @@ test("a call's class comes from its tool's definition", () => {
     expect([mode, decide(key, facts(mode, { sandboxed: true, shown }))]).toEqual([mode, { ask: { risk: "high", why: "it reads ~/.ssh/id, where the owner's credentials are kept.", rule: "a credential store or one of Keel's own files", suggest: [], ownerOnly: true } }]);
     expect([mode, kind(decide(note, facts(mode, { sandboxed: true, shown })))]).toEqual([mode, "ask-high"]);
   }
-  expect(decide(key, facts("full-auto", { sandboxed: true, shown }))).toEqual({ deny: "Refused: it reads ~/.ssh/id, where the owner's credentials are kept. In Full auto nothing reads it; say what you wanted it for and go on with the rest." });
-  expect(decide(note, facts("full-auto", { sandboxed: true, shown }))).toEqual({ deny: "Refused: it reads ~/notes, which this session's sandbox does not show its commands. In Full auto a file tool reads only what the session's sandbox shows; say what you wanted it for and go on with the rest." });
+  expect(decide(key, facts("full-auto", { sandboxed: true, shown }))).toEqual({ deny: "Refused: it reads ~/.ssh/id, where the owner's credentials are kept. This session has a sandbox, and a sandbox confines the session's file tools as it confines its commands, in Full auto too. They read only what its commands can read. Say what you wanted it for and go on with the rest." });
+  expect(decide(note, facts("full-auto", { sandboxed: true, shown }))).toEqual({ deny: "Refused: it reads ~/notes, which this session's sandbox does not show its commands. This session has a sandbox, and a sandbox confines the session's file tools as it confines its commands, in Full auto too. They read only what its commands can read. Say what you wanted it for and go on with the rest." });
   expect(kind(decide({ kind: "read", paths: ["/w/repo/a.ts"] }, facts("ask", { sandboxed: true, shown })))).toBe("allow");
   expect(kind(decide(key, facts("ask", { sandboxed: false, shown })))).toBe("allow");
   expect(kind(decide(key, facts("full-auto", { sandboxed: false, shown })))).toBe("allow");

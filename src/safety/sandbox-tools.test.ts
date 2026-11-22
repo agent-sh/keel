@@ -5,13 +5,15 @@
 //
 // - Keel's own state is never written by a session's tool, by path, through
 //   a link, through a hard link or through `..`, in any mode, sandboxed or
-//   not. Keel's own config (skills, hooks, MCP servers, settings) is the
-//   owner's own card in the asking modes, and refused in Full auto.
-// - In a sandboxed session a file tool reads what the sandbox shows; a
-//   credential store or one of Keel's own files is the owner's card, and
-//   refused in Full auto; anything else outside the view is the owner's card.
+//   not, Full auto included. Keel's own config (skills, hooks, MCP servers,
+//   settings) is the owner's own card in the asking modes; Full auto checks
+//   nothing, so there it runs.
+// - A sandbox is containment, not a check, and it holds in Full auto too. In
+//   a sandboxed session a file tool reads what the sandbox shows: anything
+//   else is the owner's card, and refused in Full auto, where nobody is asked.
 // - In a sandboxed Full auto session a file tool writes only inside the
-//   session's writable folders, by where the file really is.
+//   session's writable folders, by where the file really is (Keel's config
+//   is outside them).
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -135,7 +137,7 @@ test("Keel's own state is never written by a session's tool: by path, a link, a 
   expect(await through(session, "Write", { file_path: join(state, "artifacts", session.id, "report.md"), content: "x" })).toBe("ran");
 }, 120_000);
 
-test("Keel's own config is the owner's own card in the asking modes and refused in Full auto: every family's tools, a link, a hard link, a command's plain write", async () => {
+test("Keel's own config is the owner's own card in the asking modes; in Full auto it runs, and a sandbox there keeps its file tools out of it: every family's tools, a link, a hard link, a command's plain write", async () => {
   // A link and a hard link to a config file, in the workspace.
   symlinkSync(join(configDir(), "sandbox.json"), join(ws, "config-link.json"));
   linkSync(join(configDir(), "sandbox.json"), join(ws, "config-hard.json"));
@@ -157,12 +159,14 @@ test("Keel's own config is the owner's own card in the asking modes and refused 
       }
       if (mode !== "auto") expect([sandbox, mode, await through(session, "Bash", { command: `echo x >> ${join(configDir(), "hooks.json")}` })]).toEqual([sandbox, mode, expect.stringMatching(/^owner: the command: /)]);
     }
-    // Full auto: refused, with where to do it instead. No card.
+    // Full auto checks nothing: with no sandbox the edit runs, and no card is made. A sandbox still holds there:
+    // Keel's config is outside what its commands can write, so its file tools do not write it either.
     gate.setPerm(session.id, { mode: "full-auto", sandbox });
     for (const [way, path] of ways) for (const [label, name, input] of writers(path)) {
-      expect([sandbox, way, label, await through(session, name, input)]).toEqual([sandbox, way, label, expect.stringMatching(/^refused: .*In Full auto no card reaches the owner.*do it in an asking mode/)]);
+      expect([sandbox, way, label, await through(session, name, input)]).toEqual([sandbox, way, label, sandbox === "off" ? "ran" : expect.stringMatching(/^refused: .*a sandbox confines the session's file tools as it confines its commands, in Full auto too/)]);
     }
-    expect([sandbox, await through(session, "Bash", { command: `echo x >> ${join(configDir(), "hooks.json")}` })]).toEqual([sandbox, expect.stringMatching(/^refused: .*In Full auto no card reaches the owner/)]);
+    // (A command runs; inside a sandbox the sandbox is what refuses its write.)
+    expect([sandbox, await through(session, "Bash", { command: `echo x >> ${join(configDir(), "hooks.json")}` })]).toEqual([sandbox, "ran"]);
     // Read only: nothing is changed anywhere.
     gate.setPerm(session.id, { mode: "read-only", sandbox });
     expect([sandbox, await through(session, "Write", { file_path: join(configDir(), "hooks.json"), content: "{}" })]).toEqual([sandbox, expect.stringMatching(/^refused: .*read-only/)]);
@@ -171,7 +175,7 @@ test("Keel's own config is the owner's own card in the asking modes and refused 
   rmSync(join(ws, "config-hard.json"));
 }, 120_000);
 
-test("a sandboxed session's file tools read what its sandbox shows: a store or Keel's own file is the owner's, refused in Full auto; the rest outside the view is the owner's", async () => {
+test("a sandboxed session's file tools read what its sandbox shows: anything else is the owner's, and refused in Full auto where the sandbox still holds", async () => {
   // Every family's way to read one file or folder.
   const readers = (path: string): [string, string, Record<string, unknown>][] => [
     ["Read", "Read", { file_path: path }],
@@ -203,10 +207,10 @@ test("a sandboxed session's file tools read what its sandbox shows: a store or K
     // (A link in the workspace is read by its own name: the folder it lies in is the workspace.)
     for (const [what, path] of stores) for (const [label, name, input] of readers(path).filter(([, , i]) => !path.startsWith(`${ws}/`) || JSON.stringify(i).includes(path))) {
       const got = await through(session, name, input);
-      expect([sandbox, mode, what, label, got]).toEqual([sandbox, mode, what, label, expect.stringMatching(mode === "full-auto" ? /^refused: .*In Full auto nothing reads it/ : /^owner: it reads /)]);
+      expect([sandbox, mode, what, label, got]).toEqual([sandbox, mode, what, label, expect.stringMatching(mode === "full-auto" ? /^refused: .*a sandbox confines the session's file tools as it confines its commands, in Full auto too\. They read only what its commands can read/ : /^owner: it reads /)]);
     }
     for (const [what, path] of hidden) for (const [label, name, input] of readers(path)) {
-      expect([sandbox, mode, what, label, await through(session, name, input)]).toEqual([sandbox, mode, what, label, expect.stringMatching(mode === "full-auto" ? /^refused: .*In Full auto a file tool reads only what the session's sandbox shows/ : /^owner: it reads .*which this session's sandbox does not show its commands/)]);
+      expect([sandbox, mode, what, label, await through(session, name, input)]).toEqual([sandbox, mode, what, label, expect.stringMatching(mode === "full-auto" ? /^refused: .*which this session's sandbox does not show its commands\. .*This session has a sandbox, and a sandbox confines the session's file tools/ : /^owner: it reads .*which this session's sandbox does not show its commands/)]);
     }
     for (const [what, path] of shown) for (const [label, name, input] of readers(path).slice(0, 4)) {
       expect([sandbox, mode, what, label, await through(session, name, input)]).toEqual([sandbox, mode, what, label, "ran"]);
@@ -284,11 +288,11 @@ test("a reading tool known only by its flag (an MCP server's, an ACP agent's rea
   for (const input of [{ uri: `file://${key}` }, { url: `file://${key}` }, { target: key }, { source: key }, { files: [key] }, { options: { path: key } }, { anything: { deep: [{ at: key }] } }, { path: "keys/../.ssh/id_ed25519" }]) {
     expect([JSON.stringify(input), await ask(mcpRead(input), {})]).toEqual([JSON.stringify(input), expect.stringMatching(/^card: it reads .*\.ssh/)]);
   }
-  // One that names no file reads where it chooses: the owner is asked, and in Full auto it runs only under an
-  // answer that stands.
+  // One that names no file reads where it chooses: the owner is asked. Full auto checks nothing and no sandbox
+  // holds such a tool: there it runs.
   expect(await ask(mcpRead({ query: "KEY" }), {})).toMatch(/^card: files__read_file is a reading tool that names no file/);
   gate.setPerm(session.id, { mode: "full-auto", sandbox: "workspace-write" });
-  expect(await ask(mcpRead({ query: "KEY" }), {})).toBe("refused");
+  expect(await ask(mcpRead({ query: "KEY" }), {})).toBe("ran");
   gate.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
   expect(await ask(mcpRead({ query: "KEY" }), {})).toBe("ran");
   // An ACP agent's read names its files in its locations and its raw input.
@@ -312,6 +316,11 @@ test("in Full auto a sandboxed session's file tools write only where its command
       expect([sandbox, way, label, await through(session, name, input)]).toEqual([sandbox, way, label, expect.stringMatching(/^refused: /)]);
     }
     for (const [label, name, input] of writers(join(ws, "plain.json")).slice(0, 2)) expect([sandbox, label, await through(session, name, input)]).toEqual([sandbox, label, "ran"]);
+    // A file of the session's folder that runs later (a CI workflow, the project's own hooks file): its commands can
+    // write it, so its file tools do, and nothing is checked.
+    for (const later of [join(ws, ".github/workflows/ci.yml"), join(ws, ".keel/hooks.json"), join(ws, ".envrc")]) {
+      expect([sandbox, later, await through(session, "Write", { file_path: later, content: "x" })]).toEqual([sandbox, later, "ran"]);
+    }
   }
   // In the asking modes a file with another name is the owner's; outside the folder is a card as before.
   for (const mode of ["ask", "auto-edits", "auto"] as Mode[]) {
@@ -319,9 +328,13 @@ test("in Full auto a sandboxed session's file tools write only where its command
     expect([mode, await through(session, "Edit", { file_path: join(ws, "hard-out.txt"), old_string: "{}", new_string: "{ }" })]).toEqual([mode, expect.stringMatching(/^owner: it changes .*another name elsewhere \(a hard link\)/)]);
     expect([mode, await through(session, "Edit", { file_path: join(root, "outside/file.txt"), old_string: "{}", new_string: "{ }" })]).toEqual([mode, expect.stringMatching(/^card-|^owner: /)]);
   }
-  // With no sandbox Full auto writes as it did (but never Keel's own files, above).
+  // With no sandbox Full auto runs everything (but never a write into Keel's own state, above): a file outside the
+  // folder, a file that runs later.
   gate.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
   expect(await through(session, "Edit", { file_path: join(root, "outside/file.txt"), old_string: "{}", new_string: "{ }" })).toBe("ran");
+  for (const later of [join(home, ".bashrc"), join(ws, ".git/hooks/pre-commit"), join(ws, ".github/workflows/ci.yml")]) {
+    expect([later, await through(session, "Write", { file_path: later, content: "x" })]).toEqual([later, "ran"]);
+  }
 }, 120_000);
 
 // The gate looks at a path, then the tool opens it: a command that runs beside the call can change what the name is

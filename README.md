@@ -273,7 +273,12 @@ a list of files, a tool's input) is refused instead of run partly unread;
 Reviewer mode sends such an action to you. **Full auto** checks nothing: every
 call runs without review, high-risk ones too, and no judge is asked; the
 activity list names each call the rules flagged as "ran unreviewed". A
-sandbox, if the session has one, still confines its commands. Tools that
+sandbox, if the session has one, still confines its commands, and its file
+tools the same way: they read what its commands can read and write where
+its commands can write. That is containment you turned on, not a check of
+the work. One refusal holds in every mode, Full auto too: no session's tool
+writes Keel's own state folder, which keeps a session from corrupting the
+store of the daemon it runs in. Tools that
 explicitly require confirmation still ask in both modes.
 **Auto edits** still asks about ordinary work outside its safe defaults.
 
@@ -510,21 +515,26 @@ run in the daemon, outside the sandbox. In a sandboxed session they are
 held to the sandbox by the same rule:
 
 - A read of what the sandbox shows runs. A read of anything else asks you,
-  in every mode, and in Full auto (where a card would go to the judge, which
-  sees a path and not what is in the file) it is refused. The credential
+  in every asking mode. Full auto asks nobody, and the sandbox still holds
+  there: such a read is refused, as a command's would fail. The credential
   stores and Keel's own files are judged before the session's folder: a
   session whose folder is your home asks for your keys all the same. Other
   sessions' outputs, artifacts and attachments are closed to a session.
 - In Full auto a write lands only where the session's commands can write:
-  its folder (what runs or configures things later aside) and its scratch,
-  by where the file really is. A file that has another name elsewhere (a
-  hard link) is not written; in the asking modes it is your card.
+  its folder (the repository's own `.git` aside) and its scratch, by where
+  the file really is. Keel's config folder is outside that, so a sandboxed
+  Full auto session does not write it. A file of the folder that runs later
+  (a CI workflow, the project's hooks file) is written like any other: the
+  session's commands can write it too. A file that has another name
+  elsewhere (a hard link) is not written; in the asking modes it is your
+  card.
 - A reading tool Keel knows only by its flag (an MCP server's, an ACP
   agent's) is judged by the files its input names, the same way: its path
   keys, and every string anywhere in the input that is a path or a `file:`
   URL by itself. One that names no file at all runs outside the sandbox and
-  reads where it chooses: you are asked once, the answer stands for the
-  tool, and in Full auto it runs only under such an answer.
+  reads where it chooses: you are asked once and the answer stands for the
+  tool. In Full auto it runs, as every tool that is not a file tool does
+  there: no sandbox holds such a tool.
 
 A path is judged where it is, and what is judged is what is opened:
 
@@ -572,14 +582,18 @@ every tool and for a command's plain write, by path, through a link,
 through a hard link or through `..`:
 
 - Its state folder (the store, its logs, the API token, device keys, other
-  sessions' files) is never written by a session's tool. The session's own
-  artifacts folder and a worktree Keel made for it are its own.
+  sessions' files) is never written by a session's tool, in Full auto
+  either. This is not a check of the work: it keeps a session from
+  corrupting the store of the daemon it runs in, and the refusal says so.
+  The session's own artifacts folder and a worktree Keel made for it are
+  its own.
 - Its config folder (skills, hooks, MCP servers, agents, plugins, the
   sandbox's lists, settings) is yours alone to change. A session you ask to
   write a skill or add a hook there gets your card in Ask, Auto edits and
-  Auto: one call at a time, with no standing rule offered and no judge. In
-  Full auto no card reaches you, so it is refused, with the sentence that
-  says to do it in an asking mode or in Settings.
+  Auto: one call at a time, with no standing rule offered and no judge.
+  Full auto checks nothing, so there the edit runs like any other, named
+  in the activity list as "ran unreviewed"; with a sandbox on, the folder
+  is outside what the session can write.
 - A file of that configuration you keep somewhere else by a variable
   (`KEEL_HOOKS`, `KEEL_MCP_CONFIG`, `KEEL_ACP_AGENTS`, `KEEL_ACP_FOLDERS`)
   has the config folder's rule, and one more: it is never loaded from a

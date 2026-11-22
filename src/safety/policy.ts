@@ -471,7 +471,8 @@ export type Facts = {
   // for any other file, the session's own artifacts and a worktree Keel made for it.
   keel?: (path: string) => string | null;
   // Why a file is in Keel's own config folder (skills, hooks, MCP servers, settings): the owner's own card in the
-  // asking modes, and refused in Full auto, where no card reaches the owner and the judge does not decide it.
+  // asking modes. Full auto checks nothing, so there it runs; a sandbox there keeps the session's file tools out
+  // of it, as it keeps its commands out.
   keelConfig?: (path: string) => string | null;
   // Whether a file has another name somewhere (a hard link): a write to it lands there too.
   linked?: (path: string) => boolean;
@@ -484,21 +485,20 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read") {
     // A sandboxed session's file tools run outside the sandbox: they read
     // what its commands read (the sandbox's view) and nothing else without
-    // the owner, in every mode. Where no owner is asked (Full auto) such a
-    // read is refused.
+    // the owner, in every mode. Full auto checks nothing, and asks nobody:
+    // there such a read is refused, as the sandbox refuses a command's. That
+    // is the sandbox the owner turned on holding, not a review of the call.
     // A reading tool that runs outside the sandbox and names no file reads where it chooses: nothing here can say
-    // what. The owner is asked once (the answer stands for the tool, as for any tool known by its name).
-    if (f.sandboxed && c.unnamed && f.mode !== "read-only" && f.mode !== "plan") {
+    // what. The owner is asked once (the answer stands for the tool, as for any tool known by its name). In Full
+    // auto it runs, as every tool that is not a file tool does there: no sandbox holds such a tool.
+    if (f.sandboxed && c.unnamed && f.mode !== "read-only" && f.mode !== "plan" && f.mode !== "full-auto") {
       if (f.rules.some((r) => r.kind === "tool" && r.pattern === f.tool && (!r.bind || r.bind === f.bind))) return { allow: true };
-      // (No owner is asked in Full auto: it runs there only under an answer that already stands.)
-      if (f.mode === "full-auto") return { deny: `Refused: ${f.tool} is a reading tool that names no file: it runs outside this session's sandbox and reads where it chooses. In Full auto nobody is asked, so it runs only once the owner has allowed the tool (in an asking mode: Ask, Auto edits or Auto, where the answer can stand). Go on with the rest.` };
       return { ask: { risk: "low", why: `${f.tool} is a reading tool that names no file: it runs outside this session's sandbox and reads where it chooses`, rule: "reads where it chooses", suggest: [{ kind: "tool", pattern: f.tool, ...(f.bind ? { bind: f.bind } : {}) }] } };
     }
     if (f.sandboxed && f.shown) for (const p of c.paths ?? []) {
       const v = f.shown(p);
       if (v.shown) continue;
-      // (In Full auto a card goes to the judge, which sees a path and not what is in the file: there the read is refused.)
-      if (f.mode === "full-auto") return { deny: `Refused: ${v.why.replace(/\.$/, "")}. In Full auto ${v.store ? "nothing reads it" : "a file tool reads only what the session's sandbox shows"}; say what you wanted it for and go on with the rest.` };
+      if (f.mode === "full-auto") return { deny: `Refused: ${v.why.replace(/\.$/, "")}. ${CONFINED} They read only what its commands can read. Say what you wanted it for and go on with the rest.` };
       return onlyOwner(v.why, v.store ? "a credential store or one of Keel's own files" : "outside what the sandbox shows");
     }
     return { allow: true };
@@ -526,22 +526,21 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "refused") return { deny: c.why };
   if (c.kind === "drive") return decideDrive(c, f);
   if (c.kind === "edit") {
-    // Keel's own state is never a session's tool's to write, in any mode.
+    // Keel's own state is never a session's tool's to write, in any mode, Full auto included: not a check of the
+    // work, but what keeps a session from corrupting the store of the daemon it runs in.
     for (const p of c.paths) { const why = f.keel?.(p); if (why) return { deny: keelRefusal(why) }; }
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };
     if (f.mode === "full-auto") {
-      // Keel's own config is the owner's alone to change, and here no card reaches them.
-      for (const p of c.paths) { const why = f.keelConfig?.(p); if (why) return { deny: configRefusal(why) }; }
-      // No owner is asked here. A sandboxed session's file tools then write
-      // where its commands can and nowhere else: its folder (what runs or
-      // configures things later aside) and its scratch, by where the file
-      // really is, and not through a file that has another name elsewhere.
+      // Full auto checks nothing. A sandbox the owner turned on still holds, and it holds the session's file tools
+      // as it holds its commands: they write where its commands can and nowhere else. That is its folder (the
+      // repository's own metadata and a config file of Keel's kept there aside, which the sandbox keeps read-only)
+      // and its scratch, by where the file really is, and not through a file that has another name elsewhere.
       if (f.sandboxed) for (const p of c.paths) {
-        const why = ownerOnlyEdit(p, f)?.why ?? (f.linked?.(p) ? hardLinked(p) : ownPath(p, f) ? null : `it changes ${p}, outside this session's folder, where its sandbox lets nothing write`);
-        if (why) return { deny: `Refused: ${why}. In Full auto a sandboxed session's file tools write only where its commands can; say what you wanted it for and go on with the rest.` };
+        const why = f.linked?.(p) ? hardLinked(p) : f.keelConfig?.(p) ?? (ownPath(p, f) ? null : `it changes ${p}, outside this session's folder, where its sandbox lets nothing write`);
+        if (why) return { deny: `Refused: ${why}. ${CONFINED} They write only where its commands can. Say what you wanted it for and go on with the rest.` };
       }
-      // With no sandbox Full auto runs an edit unreviewed, but not one of a file that runs later (a hook, a CI
-      // workflow, a shell's start file): that one is high risk and goes to its judge.
+      // Everything else runs. An edit of a file that runs later (a hook, a CI workflow, a shell's start file, Keel's
+      // own configuration) is flagged high risk, which in Full auto names it in the activity list and stops nothing.
       for (const p of c.paths) { const o = ownerOnlyEdit(p, f); if (o) return { ask: { risk: "high", why: o.why, rule: o.rule, suggest: [] } }; }
       return { allow: true };
     }
@@ -565,12 +564,10 @@ export function decide(c: CallClass, f: Facts): Decision {
     return { ask: { risk: "low", suggest: dirs.map((d) => ({ kind: "edit", pattern: d })) } };
   }
   // A tool that can change things, given one of Keel's own files (an MCP file server's write): its state never, in
-  // any mode; its config not in Full auto (the asking modes get the owner's card below).
+  // any mode (its config is the owner's card in the asking modes, below, and runs in Full auto).
   if (c.kind === "other") for (const w of c.paths ?? []) {
     const why = keelNamed(w, f.workspace, f, "names", f.keel);
     if (why) return { deny: keelRefusal(why) };
-    const config = f.mode === "full-auto" ? keelNamed(w, f.workspace, f, "names", f.keelConfig) : null;
-    if (config) return { deny: configRefusal(config) };
   }
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
@@ -584,8 +581,10 @@ export function decide(c: CallClass, f: Facts): Decision {
   return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
 }
 
-const keelRefusal = (why: string) => `Refused: ${why}. No session's tool writes there in any mode. Say what you wanted it for and go on with the rest.`;
-const configRefusal = (why: string) => `Refused: ${why}. In Full auto no card reaches the owner, and this is theirs alone to allow: do it in an asking mode (Ask, Auto edits or Auto), where the owner approves it, or the owner changes it in Settings. Go on with the rest.`;
+// (Said in every mode, Full auto too: it is not a review of the work.)
+const keelRefusal = (why: string) => `Refused: ${why}. No session's tool writes there in any mode, Full auto included: this is not a check of your work, it keeps a session from corrupting the store of the daemon it runs in. Say what you wanted it for and go on with the rest.`;
+// What a sandboxed session's file tool is told in Full auto, where nothing is checked and the sandbox still holds.
+const CONFINED = "This session has a sandbox, and a sandbox confines the session's file tools as it confines its commands, in Full auto too.";
 const hardLinked = (p: string) => `it changes ${p}, a file that has another name elsewhere (a hard link): what is written lands there too, outside what this session's sandbox lets it write`;
 // Why a path a command or a tool's input names is one of Keel's own files, where it lands.
 function keelNamed(w: string, cwd: string, f: Facts, does: string, of: Facts["keel"]): string | null {
@@ -696,14 +695,12 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       const written = writesOf(part, run);
       // (A command that writes more files than the rules read is not read: any of them could be one that runs later.)
       if (written.length > WORDS_MAX) return { ask: { risk: "high", why: `the command names ${written.length} files to write or delete, more than the rules read for one command (${WORDS_MAX})`, rule: RULE_WORDS.hidden, suggest: [] } };
-      // A file of Keel's own state is never written, in any mode; one of its config not in Full auto, where no card
-      // reaches the owner (in the asking modes it is the owner's card, below).
+      // A file of Keel's own state is never written, in any mode, Full auto included (one of its config is the
+      // owner's card in the asking modes and flagged high risk in Full auto, below).
       const keels = (w: string): Decision | null => {
         if (at === null && !/^(["']?)(\/|~|\$HOME|\$\{HOME\})/.test(w)) return null;
         const keel = keelNamed(w, at ?? "/", f, "writes", f.keel);
-        if (keel) return { deny: keelRefusal(`the command: ${keel}`) };
-        const config = f.mode === "full-auto" ? keelNamed(w, at ?? "/", f, "writes", f.keelConfig) : null;
-        return config ? { deny: configRefusal(`the command: ${config}`) } : null;
+        return keel ? { deny: keelRefusal(`the command: ${keel}`) } : null;
       };
       for (const w of written) { const k = keels(w); if (k) return k; const o = here(w); if (o) return owners(o); }
       // (The rest reads only the programs that copy into a folder, apply a patch, unpack an archive or are handed code.)

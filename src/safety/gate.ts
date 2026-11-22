@@ -419,8 +419,9 @@ export class Gate {
   // Why a file is one of Keel's own, which no session's tool writes: its state and its config, but for the session's
   // artifacts folder and a worktree Keel made for it (its workspace, inside the state's worktrees folder).
   // `where`: Keel's state (the store, its token, its keys, other sessions' files: no session's tool writes it, in any
-  // mode) or Keel's config (skills, hooks, MCP servers, settings: the owner's own card in the asking modes, refused
-  // where no card reaches the owner).
+  // mode, Full auto too: it keeps a session from corrupting the daemon's store) or Keel's config (skills, hooks, MCP
+  // servers, settings: the owner's own card in the asking modes; in Full auto, which checks nothing, it runs, and
+  // a sandbox there keeps the session's file tools out of it as it keeps its commands out).
   private keelOwn(path: string, workspace: string, scratch: string[]): { where: "state" | "config"; why: string } | null {
     const s = storeOf(path);
     const config = `it changes ${path}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox`;
