@@ -381,6 +381,10 @@ export class ScriptedProvider implements Provider {
         if (lastText.includes("[harness] The daemon restarted")) return reply("Continued after the restart.");
         if (last?.role === "user" && (last.content as any[]).some((b) => b.type === "tool_result")) return reply("Finished after the tool.");
         return reply("Running a long command.", "tool_use", [{ type: "tool_use", id: `long-${msgs.length}`, name: "Bash", input: { command: "sleep 30; echo slept" } }]);
+      case "write-tool":
+        // A command that changes a file: a card opens for it where the owner is asked (the long one above only reads, and runs unasked).
+        if (last?.role === "user" && (last.content as any[]).some((b) => b.type === "tool_result")) return reply("Finished after the tool.");
+        return reply("Writing a file.", "tool_use", [{ type: "tool_use", id: `write-${msgs.length}`, name: "Bash", input: { command: "touch scripted-write.txt" } }]);
       case "render":
         // A reply that uses what the transcript renders: a table, code that
         // finishes while the rest streams, math, a file link. Slow enough to

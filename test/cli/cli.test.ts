@@ -476,7 +476,7 @@ describe("keel run with no daemon", () => {
     expect(json(cont.out).session_id).toBe(ls[0].session_id);
 
     // A card nobody can answer is refused, and the turn goes on.
-    const ask = await keel(["-p", "--permission-mode", "ask", "script:long-tool"], { state });
+    const ask = await keel(["-p", "--permission-mode", "ask", "script:write-tool"], { state });
     expect(ask.code).toBe(0);
     expect(ask.out).toBe("Finished after the tool.\n");
     expect(ask.err).toContain("refused 1");
@@ -752,7 +752,8 @@ describe("a session a script holds open", () => {
       at = await s.until(isResult, at + 1);
       expect(s.got[at].result).toContain("Amber");
       // An interrupt ends the turn that runs (a command the script allowed), and the session stays open.
-      s.write(said("script:long-tool"));
+      // The command is long and ends in a write: a long one that only reads runs unasked, with no request to allow.
+      s.write(said('script:calls [{"name":"Bash","input":{"command":"sleep 30; touch stream-slept.txt"}}]'));
       q = await s.until(asked, at + 1);
       answer(s.got[q].request_id, { behavior: "allow" });
       await Bun.sleep(300);
@@ -760,6 +761,7 @@ describe("a session a script holds open", () => {
       await s.until((l) => l.type === "control_response" && l.response.request_id === "r1" && l.response.subtype === "success", at + 1);
       at = await s.until(isResult, at + 1);
       expect(s.got[at]).toMatchObject({ subtype: "cancelled", outcome: "cancelled", num_turns: 4 });
+      expect(existsSync(join(WS, "stream-slept.txt"))).toBe(false);
       // One stopped while its request is open: the request is withdrawn on the stream.
       s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-never.txt"}}]'));
       q = await s.until(asked, at + 1);
@@ -1045,7 +1047,7 @@ describe("client commands against a running daemon", () => {
     expect(after.find((x: any) => x.id === id).model).toBe("scripted:stand-in");
 
     // A card is left open for the owner: exit 2, then keel approve answers it.
-    const ask = await k(["run", "--wait", "--json", "--permission-mode", "ask", "script:long-tool"]);
+    const ask = await k(["run", "--wait", "--json", "--permission-mode", "ask", "script:write-tool"]);
     expect(ask.code).toBe(2);
     const res = json(ask.out);
     expect(res).toMatchObject({ subtype: "needs_input", outcome: "action_required", pending_approvals: 1 });
@@ -1145,7 +1147,7 @@ describe("client commands against a running daemon", () => {
   // its choice's number and one by a text of the owner's own (each shown once,
   // the same turn going on after each), then /detach, which stops nothing.
   test("attach: a card, a question answered by number and by text, detach", async () => {
-    const ask = await k(["run", "--wait", "--json", "--permission-mode", "ask", "script:long-tool"]);
+    const ask = await k(["run", "--wait", "--json", "--permission-mode", "ask", "script:write-tool"]);
     expect(ask.code).toBe(2);
     const sid = json(ask.out).session_id;
     const p = Bun.spawn([BIN, "attach", sid], { cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
