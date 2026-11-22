@@ -1,3 +1,4 @@
+import { zonedStamp } from "../core/clock.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { lineage } from "../core/tree.ts";
 import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw } from "./core.ts";
@@ -578,7 +579,7 @@ export function tick() {
         // One run stands for every time that passed meanwhile: it says how many.
         const more = late ? missedAfter(l, now) : 0;
         const note = late
-          ? `Catch-up for ${new Date(l.next_ms!).toLocaleString()}, ${Math.round((now - l.next_ms!) / 60_000)} min late (${why}).${more ? ` The ${more > MISSED_COUNTED ? `more than ${MISSED_COUNTED}` : more} later time${more === 1 ? "" : "s"} it missed ${more === 1 ? "is" : "are"} not run separately.` : ""}`
+          ? `Catch-up for ${zonedStamp(l.next_ms!)}, ${Math.round((now - l.next_ms!) / 60_000)} min late (${why}).${more ? ` The ${more > MISSED_COUNTED ? `more than ${MISSED_COUNTED}` : more} later time${more === 1 ? "" : "s"} it missed ${more === 1 ? "is" : "are"} not run separately.` : ""}`
           : undefined;
         // Next slot from now: a run longer than the interval skips the slots it
         // covered. The new next time and the slot's run row commit together, so a

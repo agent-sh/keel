@@ -1,4 +1,4 @@
-import { localDay, localTime, zoneNote } from "../core/clock.ts";
+import { localDay, zoned } from "../core/clock.ts";
 import { saidOf } from "./activity-words.ts";
 import { D, capture, clip, cursor, emit } from "./core.ts";
 
@@ -164,7 +164,8 @@ export function list(opts: ListOpts = {}): { items: Activity[]; has_more: boolea
 // --- the text form (keel activity): a line a row, newest first, the day once where it changes.
 const KIND_PAD = 8;
 export function activityText(items: Activity[], o: { titleOf: (id: string) => string | undefined; has_more?: boolean; now?: number; ids?: boolean; what?: string }): string {
-  const out = [`Activity${o.what ? `, ${o.what}` : ""}, newest first. ${zoneNote(o.now)}.`];
+  const z = zoned(o.now);
+  const out = [`Activity${o.what ? `, ${o.what}` : ""}, newest first. ${z.note}.`];
   if (!items.length) out.push("Nothing happened.");
   let day = "";
   for (const a of items) {
@@ -172,7 +173,7 @@ export function activityText(items: Activity[], o: { titleOf: (id: string) => st
     const title = a.session_id ? o.titleOf(a.session_id) : undefined;
     const said = saidOf(a, title);
     const text = `${a.text.replace(/\s+/g, " ")}${said && !a.text.includes(said) ? ` (${clip(said.replace(/\s+/g, " "), 160)})` : ""}`;
-    out.push(`  ${localTime(a.ts)}  ${a.kind.padEnd(KIND_PAD)} ${clip(text, 300)}${a.session_id && o.ids !== false ? `  [session=${a.session_id.slice(-12)}]` : ""}`);
+    out.push(`  ${z.time(a.ts)}  ${a.kind.padEnd(KIND_PAD)} ${clip(text, 300)}${a.session_id && o.ids !== false ? `  [session=${a.session_id.slice(-12)}]` : ""}`);
     if (a.more) out.push(a.session_id ? `            ${a.more} more in ${title ? `"${title}"` : "this session"}: keel activity --session ${a.session_id.slice(-12)}` : `            ${a.more} more of this kind: keel activity --kind ${a.kind} --all`);
   }
   if (o.has_more && items.length) out.push(`Older rows: --before ${items.at(-1)!.ts}:${items.at(-1)!.id}`);

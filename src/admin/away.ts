@@ -17,7 +17,7 @@
 // counted: the time between two absences, when the owner was there, is not.
 // The daemon's own time not running (it was down, or the machine slept) is no
 // absence: nothing happened in it, and no report could arrive.
-import { localDay, localTime, zoneLabel } from "../core/clock.ts";
+import { zoned, zoneLabel } from "../core/clock.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
 import type { DaemonFacts, StallFact } from "./daemon-facts.ts";
 import { type Restart, restartSummary } from "./life-rows.ts";
@@ -278,7 +278,7 @@ export function digestBrief(d: Digest): string {
 // for, not an absence. The daemon's own account comes first, a few sentences
 // at most; then twenty rows at most, within the report's bound (overview.ts):
 // the rest are counted.
-export const hms = (ts: number, by: number) => (localDay(ts) === localDay(by) ? localTime(ts) : `${localDay(ts)} ${localTime(ts)}`);
+export const hms = (ts: number, by: number) => zoned(by).clock(ts, by);
 export function digestText(d: Digest, opts: { ids?: boolean; since?: boolean } = {}): string {
   const many = d.spans.length > 1;
   const at = (ts: number) => hms(ts, d.as_of);

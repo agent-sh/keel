@@ -24,7 +24,7 @@ import { toMessages } from "../engine/turn.ts";
 import type { Deps } from "../server/app.ts";
 import { mailSource, type MailMsg, type MailSource } from "./mail.ts";
 import { Memory } from "./memory.ts";
-import { digestLines, levelOfAlert, nextWakeAt, spike, type DigestEvent, type Level } from "./policy.ts";
+import { digestLines, digestZone, levelOfAlert, nextWakeAt, spike, type DigestEvent, type Level } from "./policy.ts";
 import { recallLine, type MemoryRecord } from "./records.ts";
 import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
 
@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     if (!s || !this.state().on) return false;
     const list = this.unfed();
     if (!list.some((e) => e.level === "wake")) return false;
-    const text = `[helper digest] What happened since you last heard (times in UTC):\n${digestLines(list, DIGEST_LINES, this.title)}\n\nDecide whether the owner must act or would want to know now; if so, notify them in one line. Otherwise reply with one short line.`;
+    const text = `[helper digest] What happened since you last heard (${digestZone()}):\n${digestLines(list, DIGEST_LINES, this.title)}\n\nDecide whether the owner must act or would want to know now; if so, notify them in one line. Otherwise reply with one short line.`;
     if (!deliver(s.id, text, { kind: "helper_digest", events: list.length })) return false;
     this.markFed(list);
     this.save({ last_wake: Date.now() });
@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     const items = found.records;
     const hints = found.hints.filter((h) => !hinted.has(h));
     const parts: string[] = [];
-    if (told.length) parts.push(`<digest>\nEvents since you last heard (times in UTC):\n${digestLines(told, DIGEST_LINES, this.title)}\n</digest>`);
+    if (told.length) parts.push(`<digest>\nEvents since you last heard (${digestZone()}):\n${digestLines(told, DIGEST_LINES, this.title)}\n</digest>`);
     if (items.length || hints.length) parts.push(`<remembered>\nFrom your memory (key: value; context, not the owner's words):\n${[...items.map(recallLine), ...hints.map((h) => `- more in memory: ${h}`)].join("\n")}\n</remembered>`);
     if (!parts.length) return null;
     return { text: parts.join("\n\n"), recalled: items, hints, repeats: found.hints.length - hints.length, told };

@@ -5,6 +5,7 @@
 // An event the helper is told about. `wake`: worth starting a turn for (they
 // may be away and something broke or needs them); `feed`: told with the next
 // turn, whoever starts it.
+import { zoned } from "../core/clock.ts";
 export type Level = "wake" | "feed";
 export type DigestEvent = { id: string; ts: number; kind: string; session_id: string | null; title: string; body: string; level: Level };
 
@@ -37,12 +38,16 @@ export function spike(times: number[], ts: number, windowMs: number, threshold: 
 }
 
 // One line per event, newest last, at most `max` lines (older ones counted).
-export function digestLines(events: DigestEvent[], max: number, title: (sessionId: string | null) => string): string {
+// Times are local, as in every text Keel writes; the text that holds the
+// lines says the zone once (digestZone), and a time at another offset says its own.
+export const digestZone = (now = Date.now()) => `times are local, ${zoned(now).label}`;
+export function digestLines(events: DigestEvent[], max: number, title: (sessionId: string | null) => string, now = Date.now()): string {
   const shown = events.slice(-max);
+  const z = zoned(now);
   const lines = shown.map((e) => {
-    const when = new Date(e.ts).toISOString().slice(11, 16);
+    const t = z.time(e.ts);
     const where = e.session_id ? ` [${title(e.session_id)} ${e.session_id}]` : "";
-    return `- ${when} UTC ${e.kind}${where}: ${e.title}${e.body ? `: ${e.body}` : ""}`;
+    return `- ${t.slice(0, 5)}${t.slice(8)} ${e.kind}${where}: ${e.title}${e.body ? `: ${e.body}` : ""}`;
   });
   const older = events.length - shown.length;
   return (older > 0 ? `- (${older} older events not shown)\n` : "") + lines.join("\n");

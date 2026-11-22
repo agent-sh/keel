@@ -1,3 +1,5 @@
+import { zonedClock } from "../core/clock.ts";
+
 // Provider calls that fail for a passing reason (rate limit, overload, a 5xx,
 // a dropped stream) are tried again with exponential backoff. Anything else
 // (a bad request, auth, a bug) fails at once. The numbers follow the leading
@@ -16,7 +18,7 @@ export class RetryTooLong extends Error {
   readonly retryAt: number;
 
   constructor(cause: unknown, retryAt: number) {
-    const time = new Date(retryAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    const time = zonedClock(retryAt);
     super(`${errorText(cause)} (the provider asked to wait until ${time}, longer than a turn waits; resume after that)`, { cause });
     this.name = "RetryTooLong";
     this.retryAt = retryAt;

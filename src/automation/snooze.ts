@@ -1,3 +1,4 @@
+import { zonedStamp } from "../core/clock.ts";
 import * as activity from "./activity.ts";
 import { D, emit } from "./core.ts";
 
@@ -65,7 +66,7 @@ export function set(sessionId: string, input: { until_ms?: number | null; until_
 export function setGlobal(until_ms: number): Snooze {
   const until = check(until_ms, false)!;
   db().query("INSERT OR REPLACE INTO snoozes (session_id, until_ms, until_needed, suspended, set_ms, muted) VALUES (?, ?, 0, 0, ?, 0)").run(GLOBAL, until, Date.now());
-  activity.record("snooze", "global", null, `Alerts snoozed until ${new Date(until).toLocaleString()}`);
+  activity.record("snooze", "global", null, `Alerts snoozed until ${zonedStamp(until)}`);
   changed(GLOBAL);
   return get(GLOBAL)!;
 }
@@ -81,7 +82,7 @@ export function end(sessionId: string, why: string, wake?: (s: Snooze) => void):
 }
 
 export function describe(s: Snooze): string {
-  const t = s.until_ms ? `until ${new Date(s.until_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}` : "";
+  const t = s.until_ms ? `until ${zonedStamp(s.until_ms)}` : "";
   return [t, s.until_needed ? "until it needs you" : ""].filter(Boolean).join(" or ");
 }
 

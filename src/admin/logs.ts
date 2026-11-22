@@ -10,7 +10,7 @@
 // reading only the part of a day's file around that time.
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { localDay, localTime } from "../core/clock.ts";
+import { localDay, zoned, type Zoned } from "../core/clock.ts";
 import { errorScope } from "../core/errors.ts";
 import { scrub } from "../providers/http.ts";
 
@@ -43,9 +43,9 @@ export function formatLine(l: LogLine): string {
 // A line as a person or a model reads it (keel debug log): the same, with its
 // time in the machine's own zone, as every text Keel writes; the output says
 // the zone once (clock.ts). The files keep ISO times: they are read back.
-export function shownLine(l: LogLine): string {
+export function shownLine(l: LogLine, z: Zoned = zoned()): string {
   const place = l.session ? `{${l.session}${l.turn ? ` ${l.turn}` : ""}} ` : "";
-  return `${localDay(l.ts)} ${localTime(l.ts, true)} ${l.level.toUpperCase().padEnd(5)} ${place}${l.text}`;
+  return `${localDay(l.ts)} ${z.time(l.ts, true)} ${l.level.toUpperCase().padEnd(5)} ${place}${l.text}`;
 }
 const HEAD = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) (DEBUG|INFO |WARN |ERROR) (?:\{([0-9a-f-]{36})(?: ([0-9a-f-]{36}))?\} )?/;
 // The lines of a piece of a log file. One that does not start with a time

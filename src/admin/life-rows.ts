@@ -2,7 +2,7 @@
 // down, how, the turns that cut and what became of each. The same sentences
 // in `keel status`, the Activity row, the log and Settings > Daemon. Kept
 // apart from life.ts so the page can load this file.
-import { localDay, localTime } from "../core/clock.ts";
+import { localDay, localTime, zonedPair, zoneLabel } from "../core/clock.ts";
 import type { CutState, CutTurn } from "../engine/hooks.ts";
 
 // How the daemon before this one ended. `killed`: it left no end (a kill, the
@@ -61,9 +61,11 @@ export function restartSummary(r: Restart): string {
   const cut = own.length ? `${own.length} turn${own.length > 1 ? "s were" : " was"} cut: ${tally(own)}` : "no turn was cut";
   // Turns an earlier stop cut, which the daemon before this one had not decided before it went down too.
   const old = earlier.length ? ` ${earlier.length} turn${earlier.length > 1 ? "s" : ""} an earlier stop cut ${earlier.length > 1 ? "were" : "was"} still waiting: ${tally(earlier)}.` : "";
-  if (!b) return `The daemon started at ${clock(r.up_ms)}. How the one before it ended is not known: ${r.unknown ?? "nothing is known"}; ${r.turns.length ? `${r.turns.length} turn${r.turns.length > 1 ? "s were" : " was"} found cut: ${tally(r.turns)}` : "no turn was found cut"}.`;
+  // The sentence is read alone (a log line, an Activity row, a terminal): it says its zone, once, after its last time.
+  if (!b) return `The daemon started at ${clock(r.up_ms)} ${zoneLabel(r.up_ms)}. How the one before it ended is not known: ${r.unknown ?? "nothing is known"}; ${r.turns.length ? `${r.turns.length} turn${r.turns.length > 1 ? "s were" : " was"} found cut: ${tally(r.turns)}` : "no turn was found cut"}.`;
   const how = b.how === "crash" && b.code !== undefined ? `${HOW.crash} (exit code ${b.code})` : HOW[b.how];
-  return `The daemon ${how} at ${b.how === "killed" ? "about " : ""}${clock(b.down_ms, r.up_ms)} and came back at ${clock(r.up_ms)} (down ${span(Math.max(0, r.up_ms - b.down_ms))}); ${cut}.${old}`;
+  const [down, up] = zonedPair(b.down_ms, r.up_ms, (ts) => clock(ts, r.up_ms));
+  return `The daemon ${how} at ${b.how === "killed" ? "about " : ""}${down} and came back at ${up} (down ${span(Math.max(0, r.up_ms - b.down_ms))}); ${cut}.${old}`;
 }
 
 // Where a turn was cut: the step, what it was at, and how long it had run.

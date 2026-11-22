@@ -2,7 +2,7 @@
 // backups | restore | report | usage | service: the daemon's administration
 // from a terminal. Each asks the running daemon over HTTP, except restore
 // (the daemon must be stopped) and service (writes the systemd unit).
-import { localStamp, zonedStamp, zoneNote } from "../core/clock.ts";
+import { zoned, zonedStamp } from "../core/clock.ts";
 import { rankLines } from "../admin/turn-compare.ts";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -286,9 +286,10 @@ const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "stri
     const limit = pos[0] === undefined ? 20 : Number(pos[0]);
     if (!(Number.isInteger(limit) && limit > 0)) return (console.error(`keel usage: --slow takes a whole number of requests\n\n${USAGE_USAGE}`), 3);
     const r = await call(url, `/api/telemetry/slowest?since_ms=${since}&limit=${limit}`);
+    const z = zoned();
     out(r, !!v.json, () => [
-      `The ${r.requests.length} slowest model requests of ${range}. ${zoneNote()}.`,
-      ...r.requests.map((q: any) => `  ${ms(q.latency_ms).padStart(9)}  first word ${ms(q.ttft_ms).padStart(8)}  ${localStamp(q.ts)}  ${q.outcome === "ok" ? "" : `${q.error_class ?? q.outcome}  `}${q.model.slice(q.model.indexOf(":") + 1)}  ${(q.title ?? "a removed session").replace(/\s+/g, " ").slice(0, 48)}  [session=${q.session_id.slice(-12)}]`),
+      `The ${r.requests.length} slowest model requests of ${range}. ${z.note}.`,
+      ...r.requests.map((q: any) => `  ${ms(q.latency_ms).padStart(9)}  first word ${ms(q.ttft_ms).padStart(8)}  ${z.stamp(q.ts)}  ${q.outcome === "ok" ? "" : `${q.error_class ?? q.outcome}  `}${q.model.slice(q.model.indexOf(":") + 1)}  ${(q.title ?? "a removed session").replace(/\s+/g, " ").slice(0, 48)}  [session=${q.session_id.slice(-12)}]`),
     ].join("\n"));
     return 0;
   }

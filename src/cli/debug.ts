@@ -9,7 +9,7 @@
 //   SESSION is a session's id, a prefix of it, or an agent's id or a prefix of that.
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N] [--session ID]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
-import { zonedStamp, zoneNote } from "../core/clock.ts";
+import { zoned, zonedStamp } from "../core/clock.ts";
 import { errorLines } from "../admin/error-rows.ts";
 import { type LogLine, shownLine } from "../admin/logs.ts";
 import { type Gap, type SpanLite, turnGaps, waitLabel } from "../admin/trace-rows.ts";
@@ -118,16 +118,17 @@ export async function debug(argv: string[]): Promise<number> {
 async function log(url: string, v: { follow?: boolean; level?: string; grep?: string; lines?: string; json?: boolean; session?: string }) {
   // --session takes what every form takes: an id, a prefix, or an agent's id.
   const session: string | undefined = v.session ? (await getJson(url, `/api/cli/resolve?id=${encodeURIComponent(v.session)}`)).session.id : undefined;
+  const z = zoned();
   const print = (l: LogLine) => {
     if (v.grep && !l.text.toLowerCase().includes(v.grep.toLowerCase())) return;
     if (session && l.session !== session) return;
     // Machine output keeps the line's own fields (ts in epoch milliseconds); the text is in local time.
-    console.log(v.json ? JSON.stringify(l) : shownLine(l));
+    console.log(v.json ? JSON.stringify(l) : shownLine(l, z));
   };
   const level = v.level ? `&level=${encodeURIComponent(v.level)}` : "";
   const { lines, dir } = await getJson(url, `/api/logs?limit=${Number(v.lines) || 200}${level}${v.grep ? `&q=${encodeURIComponent(v.grep)}` : ""}${session ? `&session=${encodeURIComponent(session)}` : ""}`);
   // Said once, before the lines and beside them (on stderr, so a pipe gets the lines alone): where the files are and the zone of the times.
-  if (!v.json) console.error(`(the daemon's log files: ${dir}. ${zoneNote()}; the files and --json keep UTC.)`);
+  if (!v.json) console.error(`(the daemon's log files: ${dir}. ${z.note}; the files and --json keep UTC.)`);
   for (const l of lines) print(l);
   if (!v.follow) return 0;
   const r = await get(url, `/api/logs/stream?${level.slice(1)}`);

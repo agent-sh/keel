@@ -13,6 +13,7 @@
 // not a failure of a turn: it is written to the log once, shown in the
 // daemon's state, and not asked again at every turn. Only a hold the owner
 // asks for asks again, and a refusal of that one is an error they are shown.
+import { zonedStamp } from "../core/clock.ts";
 import type { Subprocess } from "bun";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
@@ -86,7 +87,7 @@ export class Awake {
   }
 
   private want(): string | undefined {
-    if (this.untilMs && this.untilMs > Date.now()) return `held until ${new Date(this.untilMs).toISOString()}`;
+    if (this.untilMs && this.untilMs > Date.now()) return `held until ${zonedStamp(this.untilMs)}`;
     if (settings().keep_awake.mode === "never") return undefined;
     if (this.working.size) return `${this.working.size} turn${this.working.size > 1 ? "s" : ""} running`;
     if (this.draining) return "finishing turns before a restart";

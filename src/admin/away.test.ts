@@ -176,7 +176,7 @@ test("the digest names a kill, what it cut and the stalls of the absence, and co
   expect(d.totals).toMatchObject({ approvals: 1, questions: 2 });
   const lines = digestText(d).split("\n");
   expect(lines[0]).toBe(`While you were away, 2026-01-05 22:00:00 to 07:00:00 ${Z} (9 h): the daemon went down and came back after 29 s, 3 turns cut; unresponsive 2 times; 6 of the sessions' own turns ended in 2 sessions, 2 failed; 1 approval and 2 questions wait; $1.25 spent in all.`);
-  expect(lines[1]).toBe("The daemon went down without stopping (killed, or the machine went down) at about 00:00:00 and came back at 00:00:29 (down 29 s); 3 turns were cut: 2 resumed, 1 held for the owner.");
+  expect(lines[1]).toBe(`The daemon went down without stopping (killed, or the machine went down) at about 00:00:00 and came back at 00:00:29 ${Z} (down 29 s); 3 turns were cut: 2 resumed, 1 held for the owner.`);
   expect(lines[2]).toBe("The daemon was unresponsive 2 times, 9.9 s in all: 6.0 s blocked by its own code, outside anything it times; 3.9 s waiting for a child: the build.");
   expect(lines[3]).toBe('  "Asks", needs you: 1 turn ended; 1 approval and 2 questions wait  [session=000000000004]');
   // The Inbox's one line says it too, the daemon first.

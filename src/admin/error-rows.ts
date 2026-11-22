@@ -3,7 +3,7 @@
 // in sessions, one line a session with its own count, its latest time and the
 // command that opens that session's own failure. No imports besides the
 // clock, so the page can load this file.
-import { localStamp, zoneNote } from "../core/clock.ts";
+import { zoned } from "../core/clock.ts";
 import type { ErrorRecord, ErrorSite } from "../core/types.ts";
 
 // The states of a kind, in one place (the state-words vocabulary replaces these when it lands).
@@ -22,15 +22,16 @@ export function errorLines(errors: ErrorRecord[], o: { all?: boolean; now?: numb
   const open = errors.filter((e) => errorState(e) === "open");
   const recovered = errors.filter((e) => errorState(e) === "recovered");
   const resolved = errors.filter((e) => errorState(e) === "resolved");
-  const head = `${open.length} open${recovered.length ? `, ${recovered.length} recovered (a retry passed)` : ""}${o.all && resolved.length ? `, ${resolved.length} resolved` : ""}. ${zoneNote(o.now)}.`;
+  const z = zoned(o.now);
+  const head = `${open.length} open${recovered.length ? `, ${recovered.length} recovered (a retry passed)` : ""}${o.all && resolved.length ? `, ${resolved.length} resolved` : ""}. ${z.note}.`;
   const out = [head];
   for (const e of [...open, ...recovered, ...(o.all ? resolved : [])]) {
     const state = errorState(e);
-    out.push(`${e.id}  ${localStamp(e.ts)}  ${e.source.padEnd(8)} ${String(e.count ?? 1).padStart(4)}x  ${state === "open" ? "" : `[${ERROR_STATE[state].toLowerCase()}] `}${e.message.split("\n")[0]!.slice(0, 140)}`);
+    out.push(`${e.id}  ${z.stamp(e.ts)}  ${e.source.padEnd(8)} ${String(e.count ?? 1).padStart(4)}x  ${state === "open" ? "" : `[${ERROR_STATE[state].toLowerCase()}] `}${e.message.split("\n")[0]!.slice(0, 140)}`);
     const sites = e.sites ?? [];
     for (const s of sites.slice(0, SITES)) {
       const healed = healedWords(s);
-      out.push(`    ${String(s.count).padStart(4)}x  ${(s.title || s.session_id).slice(0, 48)}, last ${localStamp(s.ts)}${healed ? `, ${healed}` : ""}  (keel debug ${e.id.slice(-12)} --session ${s.session_id.slice(-12)})`);
+      out.push(`    ${String(s.count).padStart(4)}x  ${(s.title || s.session_id).slice(0, 48)}, last ${z.stamp(s.ts)}${healed ? `, ${healed}` : ""}  (keel debug ${e.id.slice(-12)} --session ${s.session_id.slice(-12)})`);
     }
     if (sites.length > SITES) out.push(`          and ${sites.length - SITES} more sessions`);
     const rest = elsewhere(e);

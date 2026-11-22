@@ -173,7 +173,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     // The command says it, with a line a turn.
     const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
     expect(said.status, said.stderr).toBe(0);
-    expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down ([89]|1\d) s\); 4 turns were cut: 4 resumed\./);
+    expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(down ([89]|1\d) s\); 4 turns were cut: 4 resumed\./);
     expect(said.stdout).toContain(`"Cut during a command" cut at step 1, during Bash, after`);
     expect(said.stdout).toContain(`"Cut while the model answered" cut at step 1, waiting for the model, after`);
     expect(said.stdout).toContain(`"Cut at an approval" cut at step 1, waiting for the owner's answer, after`);
@@ -230,7 +230,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     expect(Math.abs(calm.before.down_ms - stopped)).toBeLessThan(2_000);
     expect((await call("/api/activity?kind=daemon", undefined, "GET")).items).toHaveLength(1);
     const logged = ((await call("/api/logs?limit=2000", undefined, "GET")).lines as { text: string }[]).filter((l) => l.text.startsWith("[daemon] The daemon "));
-    expect(logged.map((l) => l.text.replace(/\d\d:\d\d:\d\d/g, "T").replace(/\(down [^)]*\)/, "(down N)"))).toEqual([
+    expect(logged.map((l) => l.text.replace(/\d\d:\d\d:\d\d( UTC([+-]\d\d:\d\d)?)?/g, "T").replace(/\(down [^)]*\)/, "(down N)"))).toEqual([
       "[daemon] The daemon went down without stopping (killed, or the machine went down) at about T and came back at T (down N); 4 turns were cut: 4 resumed.",
       "[daemon] The daemon was stopped at T and came back at T (down N); no turn was cut.",
     ]);

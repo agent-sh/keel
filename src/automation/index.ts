@@ -1,4 +1,4 @@
-import { localStamp } from "../core/clock.ts";
+import { zoned } from "../core/clock.ts";
 import { parseSince } from "../admin/timeline.ts";
 import { sessionRef } from "../admin/session-ref.ts";
 import { readsOf } from "../server/reads.ts";
@@ -660,7 +660,7 @@ export const automationRoutes: RouteModule = (deps) => {
           const sql = activity.listSql(opts, now);
           const page = activity.listRows(await readsOf(deps.store).sql<any>(sql.sql, sql.args), sql.limit, session_id ? 0 : cap);
           if (q.get("format") !== "text") return json({ ...page, kinds: activity.ACTIVITY_KINDS });
-          const what = [only ? "failures only" : "", session_id ? `in "${deps.store.session(session_id)?.title || session_id}"` : "", since !== undefined ? `since ${localStamp(since)}` : ""].filter(Boolean).join(", ");
+          const what = [only ? "failures only" : "", session_id ? `in "${deps.store.session(session_id)?.title || session_id}"` : "", since !== undefined ? `since ${zoned(now).stamp(since)}` : ""].filter(Boolean).join(", ");
           const text = activity.activityText(page.items, { titleOf: (id) => deps.store.session(id)?.title, has_more: page.has_more, now, ids: q.get("ids") !== "0", what });
           return new Response(text + "\n", { headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
         });

@@ -5,7 +5,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { localDay, localTime } from "../core/clock.ts";
+import { localDay, localTime, zoneLabel } from "../core/clock.ts";
 import { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { allHooks, type CutTurn } from "../engine/hooks.ts";
@@ -83,7 +83,7 @@ test("a start records each cut turn once, what became of it, and is whole once",
     expect(JSON.parse(f.store.db.query<{ data: string }, []>("SELECT data FROM daemon_starts").get()!.data)).toEqual(r);
 
     // The turns this stop cut are counted; the one an earlier stop cut is said apart.
-    expect(restartSummary(r)).toBe(`The daemon went down without stopping (killed, or the machine went down) at about ${localTime(at(10, 2, 11))} and came back at ${localTime(at(10, 2, 26))} (down 15 s); 4 turns were cut: 1 resumed, 1 held for the owner, 1 went on by other means, 1 left as cut. 1 turn an earlier stop cut was still waiting: 1 resumed.`);
+    expect(restartSummary(r)).toBe(`The daemon went down without stopping (killed, or the machine went down) at about ${localTime(at(10, 2, 11))} and came back at ${localTime(at(10, 2, 26))} ${zoneLabel(at(10, 2, 26))} (down 15 s); 4 turns were cut: 1 resumed, 1 held for the owner, 1 went on by other means, 1 left as cut. 1 turn an earlier stop cut was still waiting: 1 resumed.`);
     expect(r.turns.map(restartTurnLine)).toEqual([
       '"Parser refactor" cut at step 3, during Bash, after 42 s: resumed',
       '"Flaky fetch" cut at step 2, waiting for the model, after 42 s: held for the owner',
@@ -94,7 +94,7 @@ test("a start records each cut turn once, what became of it, and is whole once",
     // A stop the daemon made itself has an exact time; a day apart, the date is said; a failure says its code.
     const eve = new Date(2026, 10, 20, 23, 59, 50).getTime();
     expect(restartSummary({ ...r, before: { ...r.before!, how: "restart", down_ms: eve }, turns: [] }))
-      .toBe(`The daemon stopped for a restart at ${localDay(eve)} ${localTime(eve)} and came back at ${localTime(at(10, 2, 26))} (down 10.1 h); no turn was cut.`);
+      .toBe(`The daemon stopped for a restart at ${localDay(eve)} ${localTime(eve)} and came back at ${localTime(at(10, 2, 26))} ${zoneLabel(at(10, 2, 26))} (down 10.1 h); no turn was cut.`);
     expect(restartSummary({ ...r, before: { ...r.before!, how: "crash", code: 1 }, turns: [] })).toStartWith("The daemon ended on a failure (exit code 1) at ");
 
     // What is worth a row of its own: a daemon that did not choose to go down, or a turn not continued.
@@ -123,7 +123,7 @@ test("a start that knows nothing of the daemon before it keeps its own record, n
     hook.turnCutSettled!(s, cut(1), "held", "why");
     rs.finish(() => undefined);
     expect(rs.last().turns.map((t) => [t.state, !!t.earlier])).toEqual([["held", false]]);
-    expect(restartSummary(rs.last())).toBe(`The daemon started at ${localTime(at(10, 2, 26))}. How the one before it ended is not known: the sign of life was cut while it was written; 1 turn was found cut: 1 held for the owner.`);
+    expect(restartSummary(rs.last())).toBe(`The daemon started at ${localTime(at(10, 2, 26))} ${zoneLabel(at(10, 2, 26))}. How the one before it ended is not known: the sign of life was cut while it was written; 1 turn was found cut: 1 held for the owner.`);
     expect(restartNeedsEye(rs.last())).toBe(true);
     expect(f.store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM daemon_starts").get()!.n).toBe(2);
   } finally {

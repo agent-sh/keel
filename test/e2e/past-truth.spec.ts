@@ -184,7 +184,7 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     const first = away.split("\n")[0]!;
     expect(first).toMatch(/^From \d\d:\d\d:\d\d to \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(1\d min\): the daemon went down and came back after \d+ (ms|s), 2 turns cut; /);
     expect(first).toContain("1 approval waits");
-    expect(away.split("\n")[1]).toMatch(/^The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down \d+ (ms|s)\); 2 turns were cut: /);
+    expect(away.split("\n")[1]).toMatch(/^The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(down \d+ (ms|s)\); 2 turns were cut: /);
     expect(away.length).toBeLessThan(3000); // read in under a minute
     expect(keel("status", "--away", "--since", "10m").out.split("\n")[0]).toContain("the daemon went down and came back after");
     expect([digest.daemon.length, digest.totals.approvals, typeof digest.daemon_brief]).toEqual([1, 1, "string"]);

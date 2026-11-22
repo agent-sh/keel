@@ -24,7 +24,7 @@ import { setRemotePlacer } from "../../automation/agents.ts";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
 import { MessageStates, peerMessageLines, peerMessages } from "../../fleet/message-state.ts";
 import { OutboxDrain } from "../../fleet/outbox.ts";
-import { localStamp, zoneNote } from "../../core/clock.ts";
+import { zoned } from "../../core/clock.ts";
 import { readsOf } from "../reads.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { contains } from "../../core/paths.ts";
@@ -529,7 +529,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const limit = q.get("limit") ? Number(q.get("limit")) : 50;
         if (!Number.isInteger(limit) || limit < 1) return bad("limit is a whole number from 1 up");
         const messages = peerMessages(store.db, req.params.id, limit);
-        if (q.get("format") === "text") return new Response([`Messages between sessions, newest first. ${zoneNote()}.`, ...(messages.length ? peerMessageLines(messages, localStamp) : ["None."])].join("\n") + "\n", { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+        const z = zoned();
+        if (q.get("format") === "text") return new Response([`Messages between sessions, newest first. ${z.note}.`, ...(messages.length ? peerMessageLines(messages, z.stamp) : ["None."])].join("\n") + "\n", { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
         return json({ messages });
       },
     },

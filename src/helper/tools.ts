@@ -14,7 +14,7 @@ import { registerSessionTools } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Helper } from "./helper.ts";
 import { memoryTools } from "./memtools.ts";
-import { digestLines } from "./policy.ts";
+import { digestLines, digestZone } from "./policy.ts";
 
 let H: Helper | undefined;
 const ago = (ms: number) => {
@@ -124,7 +124,7 @@ const activity: Tool = {
     const cost = [...costs(since).entries()].sort((a, b) => b[1].cost - a[1].cost);
     const total = cost.reduce((n, [, c]) => n + c.cost, 0);
     return [
-      `Events (${evs.length}):\n${evs.length ? digestLines(evs, 40, title) : "- none"}`,
+      `Events (${evs.length}; ${digestZone()}):\n${evs.length ? digestLines(evs, 40, title) : "- none"}`,
       `Open errors (${errs.length}):\n${errs.slice(0, 12).map((e) => `- ${e.count ?? 1}x ${e.source}: ${e.message.split("\n")[0]!.slice(0, 160)} (last ${ago(e.ts)}${e.session_id ? `, ${title(e.session_id)}` : ""})`).join("\n") || "- none"}`,
       `Spend: $${total.toFixed(2)} over ${cost.reduce((n, [, c]) => n + c.calls, 0)} requests\n${cost.slice(0, 8).map(([id, c]) => `- ${title(id) || id}: $${c.cost.toFixed(2)}, ${Math.round(c.tokens / 1000)}k tokens`).join("\n")}`,
     ].join("\n\n");

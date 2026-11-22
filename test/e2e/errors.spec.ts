@@ -254,7 +254,7 @@ test("manual compaction is tracked once and archived refusals stay visible", asy
     };
     await compact("compact-error", mime);
     // A 15-minute retry-after must come back immediately with the wait guidance.
-    await compact("rate-limit-long", /asked to wait until \d\d:\d\d, longer than a turn waits; resume after that/);
+    await compact("rate-limit-long", /asked to wait until \d\d:\d\d UTC([+-]\d\d:\d\d)?, longer than a turn waits; resume after that/);
     expect(await occurrences()).toHaveLength(2);
     expect(posted).toEqual([]);
 

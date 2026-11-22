@@ -1,7 +1,7 @@
 // keel sessions | ls | show | logs | stop | send | approve | attach | open |
 // resume | export | models: sessions from a terminal, as a client of the
 // running daemon.
-import { localStamp, zoneNote } from "../core/clock.ts";
+import { zoned } from "../core/clock.ts";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
@@ -50,12 +50,13 @@ const search = command("search", SEARCH_USAGE, {
   const r = await c.get<{ query: string; hits: any[]; limits?: string[] }>(`/api/search?${p}`);
   const hits = r.hits.filter((h) => h.kind !== "title");
   if (v.json) return (printJson({ ...r, hits }), EXIT.ok);
+  const z = zoned();
   const said = r.limits?.length ? `, limited to ${r.limits.join(", ")}` : "";
   if (!hits.length) return (console.error(`nothing matches ${JSON.stringify(r.query)}${said}`), EXIT.ok);
-  console.log(`${hits.length} ${hits.length === 1 ? "hit" : "hits"} for ${JSON.stringify(r.query)}${said}, ${v.best ? "the best" : "the newest"} first. ${zoneNote()}.`);
+  console.log(`${hits.length} ${hits.length === 1 ? "hit" : "hits"} for ${JSON.stringify(r.query)}${said}, ${v.best ? "the best" : "the newest"} first. ${z.note}.`);
   const mark = (k: string) => (k === "user" ? ">" : k === "tool_use" ? "$" : k === "tool_result" ? "=" : k === "summary" ? "~" : " ");
   for (const h of hits) {
-    console.log(`${localStamp(h.ts)}  ${mark(h.kind)} ${line(h.snippet.replace(/[\u0001\u0002]/g, "")).slice(0, 110)}`);
+    console.log(`${z.stamp(h.ts)}  ${mark(h.kind)} ${line(h.snippet.replace(/[\u0001\u0002]/g, "")).slice(0, 110)}`);
     console.log(`                       ${line(h.session_title) || "(untitled)"}${h.archived ? "  [archived]" : ""}  [session=${h.session_id.slice(-12)}]`);
   }
   return EXIT.ok;

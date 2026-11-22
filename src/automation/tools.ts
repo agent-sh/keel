@@ -1,3 +1,4 @@
+import { localTime, zonedStamp, zoneLabel } from "../core/clock.ts";
 import type { Tool, ToolContext, ToolOutput } from "../tools/types.ts";
 import type { TurnHooks } from "../engine/hooks.ts";
 import { fail, ok } from "../tools/types.ts";
@@ -35,7 +36,7 @@ function agentLine(a: agents.AgentRecord) {
 }
 
 function waitResult(w: waits.WaitRecord, extra = "") {
-  const when = w.kind === "timer" ? `at ${new Date((w.spec as any).at_ms).toLocaleTimeString("en-GB", { hourCycle: "h23" })}` : `deadline in ${Math.round((w.deadline - Date.now()) / 1000)} s`;
+  const when = w.kind === "timer" ? `at ${localTime((w.spec as any).at_ms)} ${zoneLabel((w.spec as any).at_ms)}` : `deadline in ${Math.round((w.deadline - Date.now()) / 1000)} s`;
   return ok(`Scheduled ${w.kind} wait ${w.id} (${when}). It costs no tokens while it waits; the session is woken when it fires, times out or is cancelled. End your turn now unless you have other work.${extra}`);
 }
 
@@ -419,7 +420,7 @@ const ScheduleWakeup: Tool = { name: "ScheduleWakeup", families: CLAUDE, readOnl
 const schedule_wakeup: Tool = { name: "schedule_wakeup", families: OTHERS, readOnly: true, description: wakeupDesc, input_schema: wakeupSchema, run: wakeupRun };
 
 function loopLine(l: loops.LoopRecord) {
-  const next = l.next_ms ? new Date(l.next_ms).toLocaleString() : "-";
+  const next = l.next_ms ? zonedStamp(l.next_ms) : "-";
   return `${l.id} · ${l.enabled ? "on" : `off (${l.disabled_reason ?? "paused"})`} · ${l.schedule_text} · next ${next} · ${l.runs} runs · last ${l.last_status ?? "-"} · ${l.name}`;
 }
 
@@ -434,7 +435,7 @@ const cronSchema = {
 };
 const cronRun = (input: any, ctx: ToolContext) => guard(() => {
   const { loop } = loops.create({ session_id: ctx.sessionId, schedule: String(input.cron ?? input.schedule), prompt: input.prompt, max_runs: input.recurring === false ? 1 : (input.max_runs ?? null), created_by: "model" });
-  return ok(`Scheduled ${loop.id}: ${loop.schedule_text}, next run ${loop.next_ms ? new Date(loop.next_ms).toLocaleString() : "-"}. Recurring tasks expire after 7 days.`);
+  return ok(`Scheduled ${loop.id}: ${loop.schedule_text}, next run ${loop.next_ms ? zonedStamp(loop.next_ms) : "-"}. Recurring tasks expire after 7 days.`);
 });
 const cronDesc = "Schedule a prompt to run in this session on a cron schedule or an interval, between turns (a busy session runs it when its turn ends). Recurring tasks expire after seven days; recurring: false fires once.";
 
