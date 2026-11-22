@@ -7,7 +7,7 @@ import { rootOf } from "../safety/trust.ts";
 import type { Bus } from "../core/bus.ts";
 import { asAsker } from "../core/asker.ts";
 import { errorScope, type ErrorTracker } from "../core/errors.ts";
-import { refusedWrite, type Store } from "../core/store.ts";
+import { diskFull, refusedWrite, type Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { ownerPrompt } from "../core/owner.ts";
@@ -1111,7 +1111,7 @@ export class Engine {
         if (!this.store.session(id)) return;
         // The store takes no writes (its disk does not answer): the turn's
         // failure is said in the session when it does, with why it stopped.
-        if (refusedWrite(e) || this.store.refusing) {
+        if (refusedWrite(e) || diskFull(e) || this.store.refusing) {
           this.errors.capture("server", e, { session: id, at: "a turn ended: the store takes no writes" });
           // Which calls of the turn had finished (their results are owed with it) and which were stopped:
           // a call that ran is never asked for again by sending the prompt a second time.
@@ -1122,7 +1122,7 @@ export class Engine {
           // (Calls of the turn's earlier steps ran too, and are stored: the prompt is not to be sent a second time for those either.)
           const line = this.lineage(id);
           const earlier = line.slice(line.findLastIndex((ev) => ev.kind === "turn_start") + 1).some((ev) => ev.kind === "tool_result");
-          const message = "This turn stopped: the daemon's disk did not answer and its store took no writes. "
+          const message = "This turn stopped: the daemon's store took no writes (its disk did not answer, or was full: see Errors). "
             + (ran.length
               ? `These ran before the store stopped taking writes, and their results are kept: ${ran.join(", ")}. ${stopped ? "What else it was running was stopped. " : ""}Try again goes on from there; do not send the prompt a second time, or they run again.`
               : earlier
@@ -1904,7 +1904,8 @@ export class Engine {
           // reached it later than the hold's notice allows for) and was refused. Nothing of the step
           // is stored yet (the branch ends where it did): the turn waits for the lock to be given up
           // and takes the step again. It does not end for a hold that ends.
-          if (!refusedWrite(e) || signal.aborted || !this.store.pacing?.() || this.store.session(id)?.head !== head0 || ++retaken > 3) throw e;
+          // (The same for a write that found the disk full: the turn waits for room.)
+          if (!(refusedWrite(e) || diskFull(e)) || signal.aborted || !this.store.pacing?.() || this.store.session(id)?.head !== head0 || ++retaken > 3) throw e;
           steps = steps0;
           await this.store.clear(signal);
         }
@@ -1912,7 +1913,7 @@ export class Engine {
     } catch (e) {
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
       // (A write the store refused is said as that, not by SQLite's name for it.)
-      if (!signal.aborted) { failed = refusedWrite(e) ? "store_refusing" : typeof (e as any)?.code === "string" ? (e as any).code : undefined; throw e; }
+      if (!signal.aborted) { failed = refusedWrite(e) || diskFull(e) ? "store_refusing" : typeof (e as any)?.code === "string" ? (e as any).code : undefined; throw e; }
     } finally {
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);

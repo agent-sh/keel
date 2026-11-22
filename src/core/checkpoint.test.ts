@@ -591,15 +591,19 @@ test("a full disk: the store takes no writes and says so, and with room again wr
     expect(r.c.refusalSays).toStartWith("the disk is full: 5 MB free: nothing new is saved until there is room. What you send waits and goes out by itself.");
     const said = () => r.failures.map((e) => String((e as Error).message));
     expect(said().at(-1)).toStartWith("The disk that holds the daemon's store is full (5 MB free): nothing new is saved until there is room.");
-    // A write fails at once, and what must not be lost is owed.
+    // A write fails at once, and what must not be lost is owed. A turn that asks first waits for room (within its bound).
     expect(() => r.store.append(id, "note", { text: "refused" })).toThrow(/readonly/);
     expect(r.store.appendOrLater(id, "turn_end", { reason: "interrupted" })).toBe(false);
+    expect(r.store.pacing!()).toBe(true);
+    const t0 = performance.now();
+    await r.store.clear(undefined, 200);
+    expect(performance.now() - t0).toBeGreaterThan(150);
     // Still no room: nothing changes. Then there is: writes are taken, the owed one is made, the thread is started again.
     (r.c as any).lookFull();
     expect(r.c.refusing).toBe(true);
     free = 900;
     (r.c as any).lookFull();
-    expect([r.c.refusing, r.store.refusing, r.store.owes, r.c.said]).toEqual([false, false, 0, null]);
+    expect([r.c.refusing, r.store.refusing, r.store.owes, r.c.said, r.store.pacing!()]).toEqual([false, false, 0, null, false]);
     expect(said().at(-1)).toMatch(/^The disk that holds the daemon's store has room again \(900 MB free\) after \d+ s: the daemon takes writes again\.$/);
     expect(await until(() => r.c.armed)).toBe(true);
     r.store.append(id, "note", { text: "taken again" });
@@ -611,6 +615,41 @@ test("a full disk: the store takes no writes and says so, and with room again wr
     free = 900;
     (r.c as any).lookFull();
     expect(r.c.refusing).toBe(false);
+  } finally { r.end(); }
+}, 60_000);
+
+// A thread that fails (a sync that did not happen, a statement that threw) is ended. It copies
+// nothing more: it closes its three connections itself before it says that it failed, and a
+// connection closed while the daemon's is open leaves the log alone. (Left open, they would be
+// closed by the runtime as the thread ends, each with a checkpoint that cuts the log: checkpoint-worker.ts, shut.)
+// What is copied from there is the daemon's connection's doing.
+test("a thread that failed leaves the log as it is when its connections close; the daemon's connection takes the checkpoints back", async () => {
+  const r = rig({ at: 1_000_000, soft: 1_000_000 });
+  try {
+    const id = r.store.createSession({ model: "p:m", workspace: "/" }).id;
+    r.c.start();
+    expect(await until(() => r.c.armed)).toBe(true);
+    // Frames wait in the log: nothing copies them yet (no pass is due while the daemon writes).
+    write(r.store, id, 400);
+    const log = join(r.dir, "keel.db-wal");
+    // The thread's next write of its own fails: it is ended.
+    r.store.db.exec("DROP TABLE log_starts");
+    const before = { size: statSync(log).size, ...index(r.dir) };
+    expect(before.frames).toBeGreaterThan(400);
+    (r.c as any).worker.postMessage({ snapshot: new Int32Array(new SharedArrayBuffer(4)), id: 99 });
+    expect(await until(() => r.failures.length > 0 && !r.c.armed)).toBe(true);
+    expect(String((r.failures[0] as Error).message)).toContain("no such table");
+    // Its connections are closed (the thread is gone): the log is as long as it was, and no frame more is marked as copied than its own passes had.
+    await Bun.sleep(300);
+    const after = { size: statSync(log).size, ...index(r.dir) };
+    expect(after.size).toBe(before.size);
+    expect(after.frames).toBe(before.frames);
+    expect(after.salt).toBe(before.salt);
+    // The daemon's connection checkpoints by itself again, and what was written is all there.
+    expect(pragma(r.store, "wal_autocheckpoint")).toBe(NEAR);
+    r.store.append(id, "note", { text: "after the thread" });
+    expect(r.store.events(id).length).toBe(81);
+    expect(r.store.db.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()!.integrity_check).toBe("ok");
   } finally { r.end(); }
 }, 60_000);
 

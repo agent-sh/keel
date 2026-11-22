@@ -2,7 +2,7 @@
 // copies it into the database, and is the one that starts the log again.
 // It works by its own clock and asks nothing of the daemon's loop: what it
 // did is read from shared numbers.
-import { constants, Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { fsyncSync } from "node:fs";
 import { CELL, EXPIRED, HELD, logIndex, type LogIndex, NOT_EMPTIED, type Opts, stamp, TRIED } from "./checkpoint-shared.ts";
 import { storeFd } from "./store-files.ts";
@@ -340,21 +340,24 @@ function snapshotHeld(gate: Int32Array): boolean {
 function close() {
   clearInterval(timer);
   timer = undefined;
-  // After a failure (a sync that did not happen, a disk with no room) the thread copies nothing
-  // more and its connections close without a checkpoint of their own and without cutting the log:
-  // what is copied from here is the daemon's connection's doing, SQLite's own checkpoint with its
-  // syncs in their order. (A connection that closes as the last one of a file checkpoints it and
-  // removes or cuts its log, wal.c sqlite3WalClose; kept from that with SQLITE_FCNTL_PERSIST_WAL
-  // and no size limit on the log, whichever of the process's connections is last.)
-  if (failed) { for (const d of [R, W, K]) { try { d?.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 1); } catch {} } }
-  else { try { syncLog(); pass(); } catch {} }
+  // (A thread that failed copies nothing more, and its connections are closed already: guard.)
+  if (!failed) { try { syncLog(); pass(); } catch {} }
   unmark();
   set(CELL.armed, 0);
-  for (const d of [R, W, K]) { try { d?.close(); } catch {} }
-  R = W = K = undefined;
+  shut();
   // The descriptors of the store's files stay open: closing one would drop
   // the daemon's own locks on the store while its connection is still open
   // (store-files.ts). The process ends right after.
+}
+// The three connections are closed by the thread itself. A connection that is closed while another
+// of the file is open (the daemon's) leaves the log alone. One that is still open when its thread is
+// ended is closed by the runtime, which makes a checkpoint of its own first and cuts the log when
+// every frame is copied (a TRUNCATE checkpoint for each connection: SQLite's own, which marks a
+// frame as copied only after the database's sync, so the cut is safe; seen under strace). A thread
+// that failed is not to copy anything more, so it closes them here before it says that it failed.
+function shut() {
+  for (const d of [R, W, K]) { try { d?.close(); } catch {} }
+  R = W = K = undefined;
 }
 
 let failed = false;
@@ -363,8 +366,9 @@ const guard = <T>(f: () => T): T | undefined => {
   try { return f(); } catch (e) {
     failed = true;
     clearInterval(timer);
-    // Nothing is left held: the daemon's connection takes the checkpoints back.
+    // Nothing is left held or open: the daemon's connection takes the checkpoints back.
     try { unlock(); unmark(); set(CELL.armed, 0); } catch {}
+    shut();
     self.postMessage({ error: e instanceof Error ? e.message : String(e) });
     return undefined;
   }

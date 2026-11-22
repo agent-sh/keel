@@ -86,7 +86,7 @@ test("a turn whose write fails ends in memory, stops what it still ran, and says
   r.refuse(false);
   expect(r.store.owes).toBe(0);
   const said = lineage(r.store.events(r.id), r.store.session(r.id)!.head).find((e) => e.kind === "error");
-  expect(String(said?.data.message)).toContain("the daemon's disk did not answer");
+  expect(String(said?.data.message)).toContain("the daemon's store took no writes (its disk did not answer, or was full: see Errors)");
   expect(r.kinds().some((k) => k.startsWith("turn_end:"))).toBe(true);
   expect(r.store.session(r.id)!.phase).toBe("idle");
 });

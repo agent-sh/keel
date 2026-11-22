@@ -418,7 +418,8 @@ export class Store {
   orLater(what: string, write: () => void, records: OwedRecord[] = []): boolean {
     if (!this.refusing) {
       // (A write that did not get the write lock is owed too when that made the store take no writes: `lockedOut`.)
-      try { write(); return true; } catch (e) { if (!refusedWrite(e) && !(busyWrite(e) && this.refusing)) throw e; }
+      // (And one that found the disk full, which made the store take no writes too: `full`.)
+      try { write(); return true; } catch (e) { if (!refusedWrite(e) && !((busyWrite(e) || diskFull(e)) && this.refusing)) throw e; }
     }
     if (this.later.length >= OWED_MAX) { this.unkept.memory++; this.sayUnkept(); return false; }
     const filed = records.length ? this.journal(records.map((r) => ({ ...r, v: OWED_V, life: this.life, what }))) : false;
@@ -788,9 +789,9 @@ export class Store {
     } else this.keep(id, []);
     return this.session(id)!;
   }
-
   // Sessions made in this process inside a transaction that was still open: not kept as empty yet.
   private fresh = new Set<string>();
+
   session(id: string): Session | undefined {
     const r = this.db.query<SessionRow, [string]>("SELECT * FROM sessions WHERE id = ?").get(id);
     return r ? this.phased(rowToSession(r)) : undefined;
@@ -1161,9 +1162,9 @@ export class Store {
     const t0 = performance.now();
     const rows = asking(who, () => this.db.query<Bare, [string]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq").all(session_id));
     const ms = performance.now() - t0;
-    // (Before the daemon answers, a read holds nobody: those are counted apart.)
     // (A session made a moment ago, found empty: no read of a session.)
     if (this.fresh.delete(session_id) && !rows.length) return this.keep(session_id, rows);
+    // (Before the daemon answers, a read holds nobody: those are counted apart.)
     const c = this.serving ? this.cold : this.coldStart;
     c.n++; c.rows += rows.length; c.ms += ms;
     const by = c.by.get(who) ?? { n: 0, rows: 0, ms: 0 };

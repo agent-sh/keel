@@ -478,6 +478,8 @@ export class Checkpointer {
     // between its syncs, and a turn waits through the whole start of the log, however many seconds.
     // Nor does a build the thread was asked for count as standing still.)
     if (this.building && this.worker) return true;
+    // (A disk with no room: a turn waits for room as it waits for a slow disk, within its own bound.)
+    if (this.fullSince) return true;
     if (since(Atomics.load(this.cells, CELL.beat_at)) >= PACE_STILL_MS) return false;
     if (this.locked) return true;
     if (!this.worker || this.silent) return false;
