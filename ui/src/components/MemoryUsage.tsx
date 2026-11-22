@@ -68,11 +68,12 @@ function UsageTable({ since }: { since: number }) {
   const cells = (label: ReactNode, x: Row): ReactNode[] => {
     const why = [x.skipped && `${x.skipped} not asked`, x.empty && `${x.empty} with nothing to add`, x.repeat && `${x.repeat} already in the context`, x.late && `${x.late} not waited for`, x.timeouts && `${x.timeouts} timed out`, x.failures && `${x.failures} failed`].filter(Boolean).join(", ");
     return [
-      label,
+      // A phone has room for the path on two lines, not on one: it wraps there, whole.
+      <span className="block max-sm:whitespace-normal">{label}</span>,
       <span title={why || undefined}>{x.recalls} <span className="text-faint">of {x.asked}</span></span>,
       <span title={plural(x.facts, "fact")}>{fmtTokens(x.tokens)}</span>,
       x.recalls_checked
-        ? <span title={`${x.used} of ${plural(x.facts_checked, "fact")} named by the reply or a tool call of their turn`}>{x.recalls_used} <span className="text-faint">of {x.recalls_checked}, {fmtPct(x.facts_checked ? x.used / x.facts_checked : null)} of facts</span></span>
+        ? <span title={`${x.used} of ${plural(x.facts_checked, "fact")} named by the reply or a tool call of their turn`}>{x.recalls_used} <span className="text-faint">of {x.recalls_checked}<span className="max-sm:hidden">, {fmtPct(x.facts_checked ? x.used / x.facts_checked : null)} of facts</span></span></span>
         : <span className="text-faint">none yet</span>,
       <span title={x.cut ? `${x.cut} more had no room in their block and followed with a later step` : undefined}>{x.repeats}{x.cut ? <span className="text-faint">, {x.cut} carried on</span> : null}</span>,
       <span title={`longest wait ${fmtMs(x.wait_max_ms)}`}>{fmtMs(x.wait_ms)}</span>,
@@ -87,6 +88,8 @@ function UsageTable({ since }: { since: number }) {
       <Table
         head={["Path", "Recalls", "Tokens added", "Named in reply (estimate)", "Not added again", "Time added"]}
         rows={[...r.paths.map((p) => cells(PATH[p.path] ?? p.path, p)), ...(r.paths.length > 1 ? [cells(<span className="font-medium">All memory</span>, r.total)] : [])]}
+        // A phone keeps what the table is opened for: how often memory was added, what it cost, whether it was used.
+        wide={[4, 5]}
       />
       <p className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="memory-notes">
         Named in reply is an estimate: a recall counts when the reply or a tool call of its turn spells the name of one of its facts, or three of its words in a row. It reads low: a fact can shape a reply without being named, and standing rules rarely are. A fact the context already holds is not added again; one its block has no room for follows with the next step.

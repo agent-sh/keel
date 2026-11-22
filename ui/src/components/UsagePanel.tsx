@@ -144,11 +144,12 @@ export function Panel({ title, hint, children, testid, aside, plain, className }
 export function Table({ head, rows, align, onRow, expanded, wide }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[]; onRow?: (i: number) => void; expanded?: (i: number) => ReactNode; wide?: number[] }) {
   const phone = (i: number) => (wide?.includes(i) ? "max-sm:hidden" : "");
   return (
-    <div className="k-scroll-x -mx-4">
+    // (A phone gives the columns the room: the gap between two is half of a desk's, the edges the same.)
+    <div className="k-scroll-x -mx-4 max-sm:px-2">
       <table className="w-full text-ui">
         <thead>
           <tr className="border-b border-line text-caption text-faint">
-            {head.map((h, i) => <th key={h} className={cn("px-4 py-1.5 font-normal", phone(i), (align?.[i] ?? (i ? "r" : "l")) === "r" ? "text-right" : "text-left")}>{h}</th>)}
+            {head.map((h, i) => <th key={h} className={cn("px-4 py-1.5 font-normal max-sm:px-2", phone(i), (align?.[i] ?? (i ? "r" : "l")) === "r" ? "text-right" : "text-left")}>{h}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -156,7 +157,7 @@ export function Table({ head, rows, align, onRow, expanded, wide }: { head: stri
             const more = expanded?.(i);
             return [
               <tr key={i} className={cn("border-b border-line/60 last:border-0", onRow && "cursor-default hover:bg-hover")} onClick={() => onRow?.(i)}>
-                {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums", phone(j), (align?.[j] ?? (j ? "r" : "l")) === "r" ? "whitespace-nowrap text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
+                {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums max-sm:px-2", phone(j), (align?.[j] ?? (j ? "r" : "l")) === "r" ? "whitespace-nowrap text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
               </tr>,
               more ? <tr key={`${i}-more`} className="border-b border-line/60"><td colSpan={r.length} className="bg-sunken/50 px-4 py-2">{more}</td></tr> : null,
             ];

@@ -75,6 +75,21 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   await expect(panel.getByTestId("memory-notes")).toContainText("not added again");
   await panel.scrollIntoViewIfNeeded();
   await shoot(page, "memory-usage-02-panel");
+  // On a phone the table fits the screen: nothing runs off its right edge, the paths read whole,
+  // and what a person opens it for stays (how often memory was added, what it cost, whether it was used).
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(panel).toBeVisible();
+  const fits = await panel.locator("table").evaluate((t) => {
+    const box = t.parentElement!;
+    const cut = [...t.querySelectorAll<HTMLElement>("tbody td:first-child")].filter((td) => td.scrollWidth > td.clientWidth + 1).length;
+    return { over: box.scrollWidth - box.clientWidth, right: Math.round(t.getBoundingClientRect().right), cut };
+  });
+  expect(fits.over).toBeLessThanOrEqual(1);
+  expect(fits.right).toBeLessThanOrEqual(390);
+  expect(fits.cut).toBe(0);
+  for (const h of ["Recalls", "Tokens added", "Named in reply (estimate)"]) await expect(panel.locator("thead th").filter({ hasText: h })).toBeVisible();
+  await shoot(page, "memory-usage-03-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
 
   // The store takes too long for one prompt. The turn goes on after the
   // hook's wait; one slow call is not an outage: nothing is said, no error is filed.
