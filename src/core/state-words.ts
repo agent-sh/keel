@@ -98,7 +98,7 @@ export const outageBegan = (provider: string, since: string, sessions: number) =
 export const outageEnded = (provider: string, lasted: string, answered: boolean) => (answered ? `${provider} answers again: it could not be reached for ${lasted}` : `${provider} could not be reached for ${lasted}: no session waits for it any more`);
 
 // The fields of the served state the words are read from.
-export type Stated = Pick<SessionState, "watch"> & Partial<Pick<SessionState, "why" | "on" | "cls" | "agents" | "parked">>;
+export type Stated = Pick<SessionState, "watch"> & Partial<Pick<SessionState, "why" | "on" | "cls" | "agents" | "parked" | "agents_total">>;
 
 // The agents of a session that work now: those still out, less the ones that wait.
 export const agentsWorking = (st: Stated) => Math.max(0, (st.agents ?? 0) - (st.parked ?? 0));
@@ -125,12 +125,12 @@ export function stateWords(st: Stated): Said {
 
 // The word as a head shows it, with the agents that keep it working: "Working · 2 agents".
 // The count is the agents that work, which is the "working" of the session's agent summary;
-// when others of its agents wait it says of how many: "Working · 3 of 5 agents", so the
-// number beside it (the agents still out) is the same five.
+// when it started others too it says of how many: "Working · 3 of 12 agents", so the total
+// is the one the agents' line under the row starts with (every agent it started), never another.
 export function stateLabel(st: Stated): string {
   const s = stateWords(st);
   if (st.watch === "work") {
-    const n = agentsWorking(st), all = st.agents ?? 0;
+    const n = agentsWorking(st), all = Math.max(st.agents_total ?? 0, st.agents ?? 0);
     return n > 0 ? `${s.word} · ${all > n ? `${n} of ${plural(all)}` : plural(n)}` : s.word;
   }
   return st.watch === "resume" ? s.phrase : s.word;

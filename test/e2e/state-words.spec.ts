@@ -151,9 +151,10 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await summary.toHaveText("8 agents: 1 failed, 3 working, 2 waiting, 2 done", { timeout: 60_000 });
     expect(await counts()).toBe(8);
     await expect.poll(async () => !(await (await request.get(`/api/sessions/${coord}`)).json()).running && (await states(request))[coord]?.watch, { timeout: 60_000 }).toBe("work");
-    // Three of its five agents still out work (two wait): the head says of how many, and the pill beside it counts the same five.
-    await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working · 3 of 5 agents");
-    await expect(station(page, coord).getByTestId("station-word")).toHaveText("Working · 3 of 5 agents");
+    // Three of its eight agents work: the head says of how many, the total the agents' line starts with,
+    // and the pill beside it counts the five still out (three work, two wait).
+    await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working · 3 of 8 agents");
+    await expect(station(page, coord).getByTestId("station-word")).toHaveText("Working · 3 of 8 agents");
     await expect(station(page, coord).getByTestId("background-button")).toHaveText("5 in background");
 
     // An agent that ends while neither it nor its parent is on screen is marked on its row until one of them is.

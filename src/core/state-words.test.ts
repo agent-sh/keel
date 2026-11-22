@@ -54,6 +54,9 @@ test("a tool hears the same words as the page", () => {
 
 test("the head counts the agents that work, of how many, so the number beside it is the same", () => {
   expect(stateLabel(st("work", { agents: 3, parked: 1 }))).toBe("Working · 2 of 3 agents");
+  // Of every agent it started: the total the agents' line under the row starts with.
+  expect(stateLabel(st("work", { agents: 11, parked: 2, agents_total: 12 }))).toBe("Working · 9 of 12 agents");
+  expect(stateLabel(st("work", { agents: 1, agents_total: 12 }))).toBe("Working · 1 of 12 agents");
   expect(stateLabel(st("work", { agents: 1 }))).toBe("Working · 1 agent");
   expect(stateLabel(st("work", { agents: 3 }))).toBe("Working · 3 agents");
   expect(stateLabel(st("work", { agents: 2, parked: 2 }))).toBe("Working");
