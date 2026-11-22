@@ -16,7 +16,7 @@ const monitor = (watch = new TurnWatch()) => {
   const seen: Stall[] = [];
   const noted: Stall[] = [];
   const m = new StallMonitor({
-    report: (s) => void seen.push(s), note: (s) => void noted.push(s), turns: (began) => watch.at(began),
+    report: (s) => void seen.push(s), note: (s) => void noted.push(s), turns: (when) => watch.at(when),
     working: () => clock.working, tick: () => void clock.ticks++, thresholdMs: 1000, cpu: () => clock.cpu,
   });
   // start() without its timer: the test ticks.
@@ -75,6 +75,36 @@ test("a late tick is one stall, with how long, how busy, and the turns that ran 
   pass(100);
   expect(m.tick()).toBeUndefined();
   expect(seen.length).toBe(2);
+});
+
+test("a turn that names its step inside the stretch that then holds the loop is told by that step", () => {
+  const { m, seen, watch, pass, clock } = monitor();
+  pass(100);
+  expect(m.tick()).toBeUndefined();
+  // Nothing yields from here: the turn starts just before the next tick is due, says it asks
+  // the model a little after it was due, and the request holds the loop.
+  pass(95);
+  watch.frame({ t: "event", event: { kind: "turn_start", id: "t1", session_id: "s1" } });
+  clock.now += 35;
+  watch.frame({ t: "status", session_id: "s1", status: { kind: "model" } });
+  pass(2_500);
+  // The loop runs again: the turn ends before the timer is reached.
+  watch.frame({ t: "event", event: { kind: "turn_end", id: "e1", session_id: "s1" } });
+  const s = m.tick()!;
+  expect(seen).toEqual([s]);
+  expect(s.ms).toBe(2_530);
+  expect(s.turns).toEqual([{ session_id: "s1", turn: "t1", doing: "model" }]);
+  // A turn that began inside that stretch, long after the tick was due, held the loop too.
+  pass(100);
+  expect(m.tick()).toBeUndefined();
+  pass(400);
+  watch.frame({ t: "event", event: { kind: "turn_start", id: "t2", session_id: "s2" } });
+  watch.frame({ t: "status", session_id: "s2", status: { kind: "model" } });
+  pass(3_000);
+  // It went on two steps before the timer was reached: neither is what it was at.
+  watch.frame({ t: "status", session_id: "s2", status: { kind: "tool", names: ["Bash"] } });
+  watch.frame({ t: "status", session_id: "s2", status: { kind: "model" } });
+  expect(m.tick()!.turns).toEqual([{ session_id: "s2", turn: "t2", doing: "model" }]);
 });
 
 test("a stall with no processor time is the process not running, not its code, and names no handler it fell in", () => {

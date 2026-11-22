@@ -236,7 +236,7 @@ export class Daemon {
       this.emit();
     };
     const monitor = new StallMonitor({
-      turns: (began) => watch.at(began),
+      turns: (when) => watch.at(when),
       working: () => watch.running(),
       tick: beatLife,
       report: (stall) => void told(stall, true).catch((e) => this.deps.errors.capture("server", e, { at: "stall report" })),

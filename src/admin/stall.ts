@@ -188,9 +188,16 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
 
 // The turns that run, and what each is at, kept from the daemon's own frames:
 // when a stall is found the loop has moved on (the turn that held it may be a
-// step further, or over), so the answer is what held when the stall began.
+// step further, or over), so the answer is what held in the middle of the time
+// the loop was held. Not at its start: that moment is only known to within a
+// tick, and the stretch of code that holds the loop often begins with the very
+// step that names what it does (a turn starts, says it asks the model, and the
+// request blocks), so a start guessed a few milliseconds early read the step before.
 type Doing = { doing: string; at: number };
-type Watched = { turn: string; since: number; now: Doing; was?: Doing; ended?: number };
+type Watched = { turn: string; since: number; steps: Doing[]; ended?: number };
+// The steps kept for a turn: the newest ones. A stall is asked about within one
+// tick of its end, and a turn makes few steps in a tick.
+const STEPS = 8;
 export class TurnWatch {
   private turns = new Map<string, Watched>();
 
@@ -198,13 +205,13 @@ export class TurnWatch {
   frame(f: { t: string; session_id?: string; status?: { kind: string; names?: string[] }; event?: { kind: string; id: string; session_id: string } }) {
     const at = performance.now();
     if (f.t === "event" && f.event) {
-      if (f.event.kind === "turn_start") this.turns.set(f.event.session_id, { turn: f.event.id, since: at, now: { doing: "idle", at } });
+      if (f.event.kind === "turn_start") this.turns.set(f.event.session_id, { turn: f.event.id, since: at, steps: [{ doing: "idle", at }] });
       else if (f.event.kind === "turn_end") { const w = this.turns.get(f.event.session_id); if (w) w.ended = at; }
     } else if (f.t === "status" && f.session_id && f.status) {
       const w = this.turns.get(f.session_id);
       if (!w || w.ended !== undefined) return;
-      w.was = w.now;
-      w.now = { doing: f.status.kind === "tool" ? `tool ${(f.status.names ?? []).slice(0, 3).join(", ")}` : f.status.kind, at };
+      w.steps.push({ doing: f.status.kind === "tool" ? `tool ${(f.status.names ?? []).slice(0, 3).join(", ")}` : f.status.kind, at });
+      if (w.steps.length > STEPS) w.steps.shift();
     }
   }
 
@@ -214,13 +221,13 @@ export class TurnWatch {
     return false;
   }
 
-  // The turns that ran at `began`, each with what it was at then. Turns over before it are forgotten.
-  at(began: number): RunningTurn[] {
+  // The turns that ran at `when`, each with what it was at then. Turns over before it are forgotten.
+  at(when: number): RunningTurn[] {
     const out: RunningTurn[] = [];
     for (const [session_id, w] of this.turns) {
-      if (w.ended !== undefined && w.ended < began) { this.turns.delete(session_id); continue; }
-      if (w.since > began) continue;
-      out.push({ session_id, turn: w.turn, doing: (w.now.at <= began || !w.was ? w.now : w.was).doing });
+      if (w.ended !== undefined && w.ended < when) { this.turns.delete(session_id); continue; }
+      if (w.since > when) continue;
+      out.push({ session_id, turn: w.turn, doing: (w.steps.findLast((d) => d.at <= when) ?? w.steps[0]!).doing });
     }
     return out;
   }
@@ -230,8 +237,8 @@ export type StallDeps = {
   // A stall of STALL_MS or more: the error row. A shorter one, from STALL_LOG_MS: the log line only.
   report(s: Stall): void;
   note?(s: Stall): void;
-  // The turns that ran when the stall began (`began`: on the monotonic clock).
-  turns(began: number): RunningTurn[];
+  // The turns that ran in the middle of the stall (`when`: on the monotonic clock).
+  turns(when: number): RunningTurn[];
   // Whether a turn runs now: the timer keeps its short period while one does.
   working?(): boolean;
   // Every tick, late or not (the daemon's sign of life rides on it).
@@ -341,8 +348,8 @@ export class StallMonitor {
       // One open for long before it (a stream, a long poll) did not.
       in_flight: [...st.flights.values()].filter((f) => f.t0 <= began + TICK_MS && began - f.t0 < WAITING_MS).map((f) => f.label()),
       ...(work.length ? { work } : {}),
-      // Within a tick of its start: what the last good tick saw is from before it.
-      turns: this.deps.turns(began + TICK_MS),
+      // In the middle of the time the loop was held: its start is known only to within a tick.
+      turns: this.deps.turns(now - held / 2),
     };
     try {
       if (held >= row) this.deps.report(stall);
