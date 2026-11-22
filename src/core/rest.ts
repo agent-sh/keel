@@ -19,14 +19,20 @@
 // src/admin/unit.ts), the kernel counts each time the group passes that
 // bound, and from there it slows every allocation down to take memory
 // back. The count is read with the daemon's tick; when it has risen, the
-// store gives back the events it keeps beyond half its budget, memory is
-// released as at rest, and the daemon says so once per stretch of pressure.
-import { memoryEvents, memoryLimits } from "./cgroup.ts";
+// store gives back the events it keeps beyond half its budget and memory is
+// released as at rest. A release is two whole collections, which hold the
+// loop (about 0.2 s on a heap of 500 MB), and under a bound that stays
+// passed the count rises at every tick: so memory is released for pressure
+// at most once in PRESSURE_EVERY_MS, and the daemon says so once per stretch
+// of pressure.
+import { memoryCurrent, memoryEvents, memoryLimits } from "./cgroup.ts";
 
 // No turn for this long, the daemon is at rest.
 export const REST_AFTER_MS = 60_000;
-// Pressure that returns within this long of the last is the same stretch: it is acted on, not said again.
+// Pressure that returns within this long of the last is the same stretch: it is not said again.
 const SAME_PRESSURE_MS = 10 * 60_000;
+// And memory is released for it at most this often.
+export const PRESSURE_EVERY_MS = 60_000;
 
 export type RestDeps = {
   // Frees what the store holds for speed alone (its connection's cache). `share`: also the kept events beyond that share of their budget; returns the bytes given back.
@@ -35,6 +41,8 @@ export type RestDeps = {
   release?: () => void;
   // The kernel's count of the times the group was over its throttle limit, when a limit is set.
   highEvents?: () => number | undefined;
+  // The bound and what the group holds, in bytes, for the word about it (a test gives its own).
+  group?: () => { high?: number; current?: number };
   say?: (line: string) => void;
   rss?: () => number;
   clock?: () => number;
@@ -61,6 +69,7 @@ export class Rest {
   private lastWork: number;
   private high: number | undefined;
   private pressedAt = -Infinity;
+  private releasedAt = -Infinity;
   private said: { at: number; before: number } | undefined;
   // What was given back last, for the resources report.
   last?: { at: number; why: "rest" | "pressure"; rss_before: number; rss_after?: number; events_bytes?: number };
@@ -110,10 +119,21 @@ export class Rest {
     if (!rose) return;
     const again = now - this.pressedAt < SAME_PRESSURE_MS;
     this.pressedAt = now;
+    // A bound that stays passed is counted at every tick: what could be given back was, a moment ago.
+    if (now - this.releasedAt < PRESSURE_EVERY_MS) return;
+    this.releasedAt = now;
     let gave = 0;
     try { gave = this.deps.store.giveBack(0.5); } catch {}
     const before = this.release("pressure", now, gave);
-    if (!again) this.deps.say?.(`The daemon passed its unit's memory bound (MemoryHigh) at ${mb(before)} resident: it gave back ${mb(gave)} of kept events and what the collector and the allocator held. A session read again is read from the store. If this repeats, the bound is too low for the work (keel service update sets this build's; a drop-in sets another).`);
+    if (again) return;
+    // The bound is the group's, and the kernel counts for it what its processes hold and the file pages charged to
+    // them: its figure is said, with the daemon's own resident memory beside it (which counts pages the kernel
+    // charges elsewhere, the program's own file among them, so it can be the larger of the two).
+    let group: { high?: number; current?: number } = {};
+    try { group = this.deps.group ? this.deps.group() : { high: memoryLimits().high, current: memoryCurrent() }; } catch {}
+    // (Read after the kernel took memory back: the unit's figure may be under the bound again by now.)
+    const held = group.current ? `the kernel now counts ${mb(group.current)} for the unit (the daemon, the servers it keeps, and file pages); the daemon's own resident memory was ${mb(before)}` : `the daemon's own resident memory was ${mb(before)}`;
+    this.deps.say?.(`The daemon's unit passed its memory bound (MemoryHigh${group.high ? ` ${mb(group.high)}` : ""}) and the kernel took memory back from it: ${held}. The daemon gave back ${mb(gave)} of kept events and what the collector and the allocator held; a session read again is read from the store. If this repeats, the bound is too low for the work (keel service update sets this build's; a drop-in sets another).`);
   }
 
   private release(why: "rest" | "pressure", now: number, events = 0): number {

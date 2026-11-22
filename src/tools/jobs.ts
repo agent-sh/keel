@@ -90,7 +90,9 @@ const SECRET_ENV = /^(ANTHROPIC_|OPENAI_|AWS_BEARER_TOKEN|AWS_SECRET|AWS_SESSION
 // How this daemon is supervised and how long its drain waits are its own: a
 // daemon a command starts (a dev or test one) that read them would exit on a
 // restart for a supervisor it does not have, and never come back.
-const OWN_ENV = /^KEEL_(SUPERVISED|DRAIN_MS|WAIT_FOR_PID)$/;
+// So is the setting its unit gives its runtime (no collector timer: src/core/relaunch.ts): a command that is a
+// program of the same runtime keeps its own.
+const OWN_ENV = /^(KEEL_(SUPERVISED|DRAIN_MS|WAIT_FOR_PID)|BUN_GC_TIMER_DISABLE)$/;
 // Variables a feature adds to a session's commands (the secrets it was given).
 const envProviders: ((sessionId: string) => Record<string, string>)[] = [];
 export const registerEnv = (f: (sessionId: string) => Record<string, string>) => void envProviders.push(f);

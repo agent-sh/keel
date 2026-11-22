@@ -322,7 +322,8 @@ const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "stri
     return 0;
   }
   const [t, bySession, byTree] = await Promise.all([
-    call(url, `/api/telemetry?since_ms=${since}`),
+    // (refresh: the ledger is read now. The page takes the report the daemon keeps while it reads again; a command prints once.)
+    call(url, `/api/telemetry?since_ms=${since}&refresh=1`),
     call(url, `/api/usage?group=session&sort=cost&since_ms=${since}&limit=${top + 200}`),
     call(url, `/api/usage?group=tree&sort=cost&since_ms=${since}&limit=${top + 200}`),
   ]);

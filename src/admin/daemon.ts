@@ -198,10 +198,10 @@ export class Daemon {
     beats.drivenBy(() => monitor.wake());
     // The sign of life: a second apart when the daemon works, the tick's longest rest apart when it is idle, and the sign says which.
     beats.join("sign of life", () => beatLife(monitor.working() ? 1000 : IDLE_MAX_MS), { every: 1000 });
-    // The collector is asked for as long as the daemon works, as the runtime's own timer for it did (that
-    // timer is off: src/core/relaunch.ts): at each tick after which the heap's size changed, ten times a
-    // second at the most. Asked once a second only, the heap grew between two asks until a collection the
-    // loop had to wait for (stalls of over a second under twelve working sessions).
+    // The collector is asked once a second for as long as the daemon works and its heap's size changed
+    // (the runtime's own timer for it is off: src/core/relaunch.ts). Asked ten times a second, as that
+    // timer asked, it cost 4 to 8 points of a processor under twelve working sessions and the loop's
+    // waits were no shorter.
     let heapWas = 0;
     beats.join("collector", () => {
       if (!monitor.working()) return;
@@ -209,7 +209,7 @@ export class Daemon {
       if (size === heapWas) return;
       heapWas = size;
       Bun.gc(false);
-    }, { every: 100 });
+    }, { every: 1000 });
     // Memory given back: once no turn has run for a minute, and when its unit's bound is passed (src/core/rest.ts).
     const rest = (this.rest = new Rest({ store: this.deps.store, say: (line) => this.deps.errors.capture("server", Object.assign(new Error(line), { stack: undefined }), { at: "memory pressure" }, { group: "memory pressure" }) }));
     beats.join("memory", (now) => rest.tick(watch.running(), now), { every: 1000, due: () => rest.due() });

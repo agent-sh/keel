@@ -38,3 +38,6 @@ export function memoryLimits(dir = ownCgroup()): { high?: number; max?: number }
 }
 
 export const memoryEvents = (dir = ownCgroup()) => (dir ? parseMemoryEvents(read(`${dir}/memory.events`)) : undefined);
+
+// What the daemon's group holds now, in bytes: every process of it, and the file pages charged to it.
+export const memoryCurrent = (dir = ownCgroup()): number | undefined => (dir ? parseLimit(read(`${dir}/memory.current`)) : undefined);

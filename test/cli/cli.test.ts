@@ -268,6 +268,33 @@ describe("keel service install", () => {
       await p.exited;
     }
   }, 60_000);
+
+  test("the collector setting the unit gives the daemon does not reach what a session runs", async () => {
+    // The unit sets it for the daemon's own runtime (the runtime reads it once, when it starts). A command of a
+    // session, an MCP server or a hook that is a program of the same runtime must keep its own collector timer.
+    expect(readFileSync(unitPath, "utf8")).toMatch(/^Environment=BUN_GC_TIMER_DISABLE=1$/m);
+    const line = readFileSync(unitPath, "utf8").split("\n").find((l) => l.startsWith("ExecStart="))!;
+    const p = Bun.spawn(execWords(line.slice("ExecStart=".length)), { cwd: SCRATCH, env: { ...ENV, KEEL_SUPERVISED: "", KEEL_DRAIN_MS: "300", BUN_GC_TIMER_DISABLE: "1" }, stdout: "pipe", stderr: "pipe" });
+    try {
+      let out = "";
+      const dec = new TextDecoder();
+      for await (const chunk of p.stdout) { out += dec.decode(chunk); if (/keel listening on \S+/.test(out)) break; }
+      const url = out.match(/keel listening on (http:\/\/\S+?)\/? /)![1]!;
+      const api = async (method: string, path: string, body?: unknown) => (await fetch(url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
+      const { session } = await api("POST", "/api/sessions", { model: "scripted:stand-in", title: "What a command gets" });
+      await api("PUT", `/api/sessions/${session.id}/permissions`, { mode: "full-auto", sandbox: "off" });
+      await api("POST", `/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: 'echo "collector=${BUN_GC_TIMER_DISABLE:-none}"' } }])}` });
+      let ended: string | undefined;
+      for (let i = 0; i < 150 && !ended; i++) { await Bun.sleep(200); ended = (await api("GET", `/api/sessions/${session.id}?events=0`)).session.settings.last_end; }
+      expect(ended).toBe("end_turn");
+      const results = ((await api("GET", `/api/sessions/${session.id}`)).events as any[]).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data));
+      expect(results.length).toBe(1);
+      expect(results[0]).toContain("collector=none");
+    } finally {
+      p.kill();
+      await p.exited;
+    }
+  }, 60_000);
 });
 
 describe("keel serve on a port taken after its check", () => {
@@ -484,6 +511,11 @@ describe("admin commands", () => {
       const r = await k(["usage", `--days=${bad}`]);
       got[`bad ${bad}`] = [r.code, asked.length, r.err.includes("--days is a number of days above 0") && r.err.includes("keel usage [--days N | --hours N]")];
     }
+    // The measurements are asked for as read now: the daemon keeps a report of a long ledger and answers a page from it
+    // while it reads again, and a command, which prints once, must not print the kept one as current.
+    asked.length = 0;
+    await k(["usage"]);
+    expect(asked.filter((a) => a.startsWith("GET /api/telemetry?")).map((a) => /[?&]refresh=1(&|$)/.test(a))).toEqual([true]);
     const refused = [3, 0, true];
     // Three reads a report: the measurements, the spend by session and by agent tree, all over the same range.
     expect(got).toEqual({ none: [0, 3, 168], two: [0, 3, 48], half: [0, 3, 12], "bad soon": refused, "bad 0": refused, "bad -3": refused, "bad Infinity": refused, "bad ": refused });

@@ -31,7 +31,7 @@ test("the control group's files are read as the kernel writes them", () => {
   expect(parseMemoryEvents(undefined)).toBeUndefined();
 });
 
-function rest(high?: () => number | undefined) {
+function rest(high?: () => number | undefined, group?: () => { high?: number; current?: number }) {
   const did: string[] = [];
   const said: string[] = [];
   let now = 1_000_000;
@@ -40,6 +40,7 @@ function rest(high?: () => number | undefined) {
     store: { shrink: () => void did.push("shrink"), giveBack: (share) => { did.push(`give back to ${share}`); return 120e6; } },
     release: () => { did.push("release"); rss = 300e6; },
     highEvents: high,
+    group: group ?? (() => ({})),
     say: (l) => void said.push(l),
     rss: () => rss,
     clock: () => now,
@@ -72,9 +73,9 @@ test("memory is given back once, a minute after the daemon stopped working, and 
   expect(did.length).toBe(6);
 });
 
-test("when the unit's bound is passed the store gives events back at once, and the daemon says so once", () => {
+test("when the unit's bound is passed the store gives events back at once, at most once a minute, and the daemon says so once", () => {
   let high = 0;
-  const { r, did, said, pass } = rest(() => high);
+  const { r, did, said, pass } = rest(() => high, () => ({ high: 2048e6, current: 2100e6 }));
   pass(1000, true);
   expect(did).toEqual([]);
   // The kernel counted a moment over MemoryHigh: half the events budget goes, and memory is released, though the daemon works.
@@ -82,16 +83,27 @@ test("when the unit's bound is passed the store gives events back at once, and t
   pass(1000, true);
   expect(did).toEqual(["give back to 0.5", "shrink", "release"]);
   expect(said.length).toBe(1);
-  expect(said[0]).toContain("passed its unit's memory bound (MemoryHigh) at 900 MB resident: it gave back 120 MB of kept events");
+  // The word names the group's figure against its bound, and the daemon's own beside it: the group may have passed the bound on file pages.
+  expect(said[0]).toStartWith("The daemon's unit passed its memory bound (MemoryHigh 2048 MB) and the kernel took memory back from it: the kernel now counts 2100 MB for the unit (the daemon, the servers it keeps, and file pages); the daemon's own resident memory was 900 MB. The daemon gave back 120 MB of kept events");
   expect(r.last).toMatchObject({ why: "pressure", events_bytes: 120e6 });
   // The count stays: nothing more.
   pass(1000, true);
   expect(did.length).toBe(3);
-  // It rises again a minute later: acted on, not said again.
-  high = 9;
-  pass(60_000, true);
+  // A bound that stays passed: the count rises at every tick for a minute. Memory is not released again in that minute (a release holds the loop).
+  for (let i = 0; i < 58; i++) { high++; pass(1000, true); }
+  expect(did.length).toBe(3);
+  // A minute after the release it rises still: once more, and not said again.
+  high++;
+  pass(2000, true);
   expect(did.length).toBe(6);
   expect(said.length).toBe(1);
+  // Where the group's figure cannot be read the word is the daemon's own.
+  let n = 0;
+  const bare = rest(() => n);
+  bare.pass(1000, true);
+  n = 1;
+  bare.pass(1000, true);
+  expect(bare.said[0]).toStartWith("The daemon's unit passed its memory bound (MemoryHigh) and the kernel took memory back from it: the daemon's own resident memory was 900 MB.");
   // No bound on the unit: the count is never read as pressure.
   const none = rest(() => undefined);
   none.pass(1000, true);

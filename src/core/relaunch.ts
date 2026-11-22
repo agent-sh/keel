@@ -21,8 +21,22 @@ export function relaunchArgv(): string[] {
 // the same arguments, nothing opened yet. A unit that sets the variable
 // (src/admin/unit.ts) skips this. Where the call does not exist, or fails,
 // the daemon runs as it was started.
+//
+// The setting is the daemon's alone. Once the runtime has it (it is read at
+// the start, and the daemon's own threads take it from the runtime, not
+// from the environment), it is taken out of the environment the daemon
+// gives to what it starts: a session's commands, MCP and language servers,
+// hooks and agents are built from `process.env`, and a program of the same
+// runtime among them keeps its own collector timer.
 export function withoutCollectorTimer() {
-  if (process.env.BUN_GC_TIMER_DISABLE !== undefined) return;
+  const g = globalThis as { __keelCollectorTimer?: "off" | "kept" };
+  if (g.__keelCollectorTimer) return;
+  if (process.env.BUN_GC_TIMER_DISABLE !== undefined) {
+    g.__keelCollectorTimer = "off";
+    delete process.env.BUN_GC_TIMER_DISABLE;
+    return;
+  }
+  g.__keelCollectorTimer = "kept";
   const execve = (process as { execve?: (file: string, args: string[], env: Record<string, string | undefined>) => never }).execve;
   if (typeof execve !== "function" || process.platform === "win32") return;
   // Under the runtime's profiler or inspector the process is signalled all the time, and a signal that lands as the
