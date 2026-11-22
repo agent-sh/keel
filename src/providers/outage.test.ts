@@ -24,7 +24,7 @@ test("only a proved pre-send fetch failure is unreachable", () => {
   const closed = fetchFailure("Bedrock", thrown("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()", "ECONNRESET"));
   const refused = fetchFailure("Local", thrown("Unable to connect. Is the computer able to access the url?", "ConnectionRefused"));
   const tls = fetchFailure("Local", thrown("self signed certificate", "DEPTH_ZERO_SELF_SIGNED_CERT"));
-  for (const e of [dns, refused, tls]) {
+  for (const e of [dns, refused]) {
     expect(e.kind).toBe("unreachable");
     expect(unreachable(e)).toBe(true);
     expect(retryable(e)).toBe(true);
@@ -45,7 +45,7 @@ test("only a proved pre-send fetch failure is unreachable", () => {
   const broke = new ProviderError("network", "Bedrock: the stream broke: The socket connection was closed unexpectedly");
   const silent = new ProviderError("network", "Bedrock: no data from the model for 300 s; the stream was cut");
   const ws = new ProviderError("network", "ChatGPT: the socket closed during the answer");
-  for (const e of [closed, broke, silent, ws]) {
+  for (const e of [closed, broke, silent, ws, tls]) {
     expect(unreachable(e)).toBe(false);
     expect(retryable(e)).toBe(true);
     expect(errorClass(e)).toBe("stream_drop");

@@ -2,7 +2,7 @@
 // outage wait. No headers is not evidence: a reset or timeout can lose an
 // answer after the upstream accepted the request. This module also loads in
 // the browser, through the failure classes, so it has no imports.
-const CONNECT_CODES = /^(EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|EHOSTDOWN|ENETUNREACH|ENETDOWN|EADDRNOTAVAIL|ConnectionRefused|FailedToOpenSocket|UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError|CERT_[A-Z_]+|UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|ERR_TLS_CERT_ALTNAME_INVALID)$/;
+const CONNECT_CODES = /^(EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|EHOSTDOWN|ENETUNREACH|ENETDOWN|EADDRNOTAVAIL|ConnectionRefused|FailedToOpenSocket|UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError)$/;
 
 // Only call this at the transport boundary, not on a provider's message or
 // on a stream error. Some fetch implementations put the code on the cause.
