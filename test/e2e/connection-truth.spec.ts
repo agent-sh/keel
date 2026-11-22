@@ -647,6 +647,8 @@ test("connection truth: a session on another machine is followed like one here, 
     await shoot(page, "connection-truth-05-far-back");
     // The absence is over: its alert is read, it is one row of the activity list, and nothing was told twice.
     await expect.poll(async () => (await offline()).map((a) => a.read), { timeout: 20_000 }).toEqual([true]);
+    // Its alert is taken back in place: it says the machine is back and after how long.
+    expect((await offline())[0]!.title).toMatch(new RegExp(`^${name} is back after \\d+ (s|min)$`));
     expect((await mine()).map((a) => a.kind).sort()).toEqual(["finished", "question"]);
     await expect.poll(async () => {
       const { items } = await (await request.get("/api/activity?kind=daemon&limit=50")).json();

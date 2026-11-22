@@ -90,6 +90,10 @@ test("a machine that comes and goes is out of reach once: one alert, one row, an
     await wait(150);
     expect(f.row(m.id)!.offline_since).toBeNull();
     expect(offline().map((a) => a.read)).toEqual([true]);
+    // Its alert is taken back: the same row now says it is back and after how long, not that it is offline.
+    expect(offline()).toHaveLength(1);
+    expect(offline()[0]!.title).toMatch(/^devbox is back after [56] s$/);
+    expect(offline()[0]!.body).toMatch(/^devbox answered again at \d\d:\d\d, after [56] s out of reach \(from \d\d:\d\d\)\.$/);
     const rows = activity.list({ kinds: ["daemon"] }).items;
     expect(rows.map((a) => a.sub)).toEqual(["machine"]);
     expect(rows[0]!.text).toMatch(/^devbox was out of reach for [56] s, from \d\d:\d\d:\d\d: the stream went silent$/);

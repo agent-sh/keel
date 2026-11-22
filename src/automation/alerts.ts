@@ -181,8 +181,12 @@ function named(a: Alert): Alert {
   if (typeof id !== "string") return a;
   const name = farHook.name?.(id);
   if (!name) return a;
-  return { ...a, machine: { id, name }, ...(a.data?.machine_offline ? { title: `${name} is offline` } : {}) };
+  return { ...a, machine: { id, name }, ...(a.data?.machine_offline ? { title: offlineTitle(name, a.data) } : {}) };
 }
+// A machine's absence in a few words: "devbox is offline", and once it is back "devbox is back after 42 min".
+const outFor = (ms: number) => { const s = Math.max(1, Math.round(ms / 1000)); return s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`; };
+const offlineTitle = (name: string, d: { since_ms?: number; back_ms?: number }) =>
+  typeof d.back_ms === "number" && typeof d.since_ms === "number" ? `${name} is back after ${outFor(d.back_ms - d.since_ms)}` : `${name} is offline`;
 // What this daemon asks of the fleet for an alert of another daemon's session (set by the fleet's routes):
 // whether that session is still listed, where the alert leads as its own daemon judges it,
 // telling that daemon the owner read it here (or wants to come back to it), and what a machine is called.
@@ -829,6 +833,21 @@ export const raisedFor = (key: string, value: string, sessionId: string) =>
   !!D().store.db.query(`SELECT 1 FROM alerts WHERE json_extract(data, ?) = ? AND ${ASKED_IN} = ? LIMIT 1`).get(`$.${key}`, value, sessionId);
 
 // Whether the owner was told that this machine went out of reach at that time (once per absence, across restarts).
+// A machine that was said offline is back: its alert says so in place of "is offline" (the same row, read,
+// so the inbox holds the absence once with its end), and the pages are told. `back`: when it was heard again.
+export function offlineOver(machine: string, since: number, back: number, name: string, when: (ms: number) => string): void {
+  const db = D().store.db;
+  const rows = db.query<Row, [string, number]>("SELECT * FROM alerts WHERE far_id IS NULL AND json_extract(data, '$.machine_offline') = ? AND json_extract(data, '$.since_ms') = ?").all(machine, since).map(toAlert);
+  for (const a of rows) {
+    if (typeof a.data?.back_ms === "number") continue;
+    const data = { ...a.data, back_ms: back };
+    const title = offlineTitle(name, data);
+    const body = `${name} answered again at ${when(back)}, after ${outFor(back - since)} out of reach (from ${when(since)}).`;
+    db.query("UPDATE alerts SET title = ?, body = ?, data = ?, read = 1, rev = ? WHERE id = ?").run(title, body, JSON.stringify(data), nextRev(), a.id);
+    emit("alert", { ...a, title, body, data, read: true });
+  }
+}
+
 export const raisedOffline = (machine: string, since: number) =>
   !!D().store.db.query("SELECT 1 FROM alerts WHERE json_extract(data, '$.machine_offline') = ? AND json_extract(data, '$.since_ms') = ? LIMIT 1").get(machine, since);
 

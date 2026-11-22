@@ -107,9 +107,12 @@ export function bindFollow(f: Fleet, bus: Bus, errors: ErrorTracker): () => void
     if (change.state === "offline") return hold(m, change.since);
     clearTimeout(holds.get(m.id));
     holds.delete(m.id);
-    // Back, and it has stayed: nothing is left for the owner to do about its alert, and the absence is kept.
+    // Back, and it has stayed: nothing is left for the owner to do about its alert, which now says it is
+    // back and after how long, and the absence is kept.
+    const back = Date.now() - f.steadyFor();
+    alerts.offlineOver(m.id, change.since, back, m.name, clock);
     alerts.readWhere("machine_offline", m.id);
-    connection.machineAbsence({ id: m.id, name: m.name }, change.since, Date.now() - f.steadyFor(), plainReason(m.reason) || undefined);
+    connection.machineAbsence({ id: m.id, name: m.name }, change.since, back, plainReason(m.reason) || undefined);
   };
   for (const m of f.rows()) {
     // Out of reach since before this daemon started: said once all the same.
