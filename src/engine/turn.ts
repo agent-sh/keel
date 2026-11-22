@@ -21,7 +21,7 @@ import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
-import { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, stopKind } from "../core/stops.ts";
+import { APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, referenced, refuseDefer, withCatalog } from "../tools/defer.ts";
@@ -104,7 +104,7 @@ export const noSuchTool = (name: string) => `No tool named ${name}.`;
 export const isNoSuchTool = (content: unknown) => typeof content === "string" && /^No tool named .+\.$/.test(content);
 
 // What the model is told about a tool call cut by the output limit.
-export const CUT_CALL = "Not run: this call was cut at the output limit, so its input may be incomplete. Send it again whole if it is still needed.";
+export { CUT_CALL } from "../core/stops.ts";
 
 // A reply cut by the output limit is continued this many times in a row, then
 // the turn ends and says so.
@@ -153,8 +153,17 @@ export function toMessages(events: readonly StoredEvent[]): Message[] {
   // result stays in the transcript: moving it back rewrites the cached prefix,
   // and replaying its output as user text loses the untrusted tool-result role.
   const projected: Message[] = [];
+  // A call with no result was ended by its turn's stop: who stopped it is on that turn's end
+  // (none named: the user's words, the bytes every earlier request sent).
+  const stopperOf = new Map<string, string>();
+  let by: string | undefined;
+  for (let i = events.length - 1; i >= cp.keepFrom; i--) {
+    const e = events[i]!;
+    if (e.kind === "turn_end") by = e.data.reason === "interrupted" && typeof e.data.stopped_by === "string" ? e.data.stopped_by : undefined;
+    else if (e.kind === "assistant" && by !== undefined) for (const b of e.data.blocks) if (b.type === "tool_use") stopperOf.set(b.id, by);
+  }
   const interrupted = (id: string): ToolResultBlock => ({
-    type: "tool_result", tool_use_id: id, content: STOPPED_BEFORE, is_error: true,
+    type: "tool_result", tool_use_id: id, content: stoppedBefore(stopperOf.get(id)), is_error: true,
   });
   const pending = new Map<string, ToolResultBlock | undefined>();
   for (const m of merged) {
@@ -1939,7 +1948,7 @@ export class Engine {
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = budget > 0 && steps >= budget;
-          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
+          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
           if (cut) await settleNow(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
@@ -2013,11 +2022,15 @@ export class Engine {
   private nested = new Map<string, Set<string>>();
 
   private async runTool(session: Session, tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
-    // Built when the stop comes: a stop for a daemon restart says so.
-    const interrupted = (): ToolResultBlock => ({
-      type: "tool_result", tool_use_id: u.id,
-      ...(this.parking.has(ctx.sessionId) ? cutResult(ctx.sessionId, u) : { content: STOPPED_WHILE, is_error: true }),
-    });
+    // Built when the stop comes: a stop for a daemon restart says so, any other stop names who made it
+    // (`running`: the tool had started, so it may have partly run).
+    const interrupted = (running = false): ToolResultBlock => {
+      const by = this.stoppedBy.get(ctx.sessionId);
+      return {
+        type: "tool_result", tool_use_id: u.id,
+        ...(this.parking.has(ctx.sessionId) ? cutResult(ctx.sessionId, u) : { content: running ? stoppedWhile(by) : stoppedBefore(by), is_error: true }),
+      };
+    };
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
     // A tool an upgrade took away while the session ran says so: the model called it before.
@@ -2064,13 +2077,13 @@ export class Engine {
     // wrote), and the card shows both.
     const told = (r: ToolResultBlock): ToolResultBlock => {
       const h = call.hook;
-      if (!h || (h.from === undefined && !h.skipped)) return r;
+      if (!h || (h.from === undefined && !h.skipped && !h.failed?.length)) return r;
       if (h.from !== undefined) {
         const note = hookChanged(call.input, t0 !== undefined);
         r.content = typeof r.content === "string" ? `${r.content}\n\n${note}` : [...r.content, { type: "text", text: note }];
       }
       const shown = this.shown.get(u.id);
-      this.shown.set(u.id, { ...(shown && typeof shown === "object" ? shown : {}), hook: { ...(h.from !== undefined ? { input: call.input } : {}), ...(h.skipped ? { allowed: h.allowed ?? "" } : {}) } });
+      this.shown.set(u.id, { ...(shown && typeof shown === "object" ? shown : {}), hook: { ...(h.from !== undefined ? { input: call.input } : {}), ...(h.skipped ? { allowed: h.allowed ?? "" } : {}), ...(h.failed?.length ? { failed: h.failed } : {}) } });
       return r;
     };
     // Refused before it ran (the owner's answer, a rule, the judge): the model is told why.
@@ -2125,7 +2138,7 @@ export class Engine {
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);
-      if (!out) return ran(interrupted(), "interrupted");
+      if (!out) return ran(interrupted(true), "interrupted");
       // No tool stores more text than the cap (its own, when it bounds its
       // result itself): the rest is in a file the result names. An image
       // enters the history within what every provider takes.
@@ -2134,7 +2147,7 @@ export class Engine {
       if (out.shown !== undefined) this.shown.set(u.id, out.shown);
       ran(result, result.is_error ? "error" : "ok");
     } catch (e) {
-      if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(), "interrupted");
+      if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(true), "interrupted");
       const err = e instanceof Error ? e : new Error(String(e));
       const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${err.message}`.slice(0, OUTPUT_CAP), is_error: true };
       // Measured before it is captured: the call's span exists by then and has

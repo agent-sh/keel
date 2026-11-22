@@ -8,7 +8,7 @@ import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
-import { CALL_STOPPED, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, smallChange } from "../lib/work.ts";
+import { CALL_STOPPED, NOT_RUN, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, smallChange } from "../lib/work.ts";
 import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
 import { callHeld, callKey, letGo, useHeld, useLetGoUnseen } from "../lib/held.ts";
@@ -17,7 +17,7 @@ import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { ThoughtMark } from "./Work.tsx";
 import { CallDiff, type CallFile } from "./DiffView.tsx";
-import { denialReason, stopKind } from "../../../src/core/stops.ts";
+import { denialReason, notRun, stopKind, stoppedByUser } from "../../../src/core/stops.ts";
 import { allowRetry, useBlocked } from "../lib/blocked.ts";
 import {
   patchFiles, planItems, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind, type PlanItem,
@@ -92,7 +92,8 @@ function planSummary(items: PlanItem[]): string {
 
 // What the owner's hooks did to a call rides with its result: the input they
 // gave it in place of the model's, and an allow that answered its ask.
-type HookMark = { input?: any; allowed?: string };
+// `failed`: a hook of the call that failed, in its Errors row's words ("Hook timed out (PreToolUse, 5 s): hook.sh pre").
+type HookMark = { input?: any; allowed?: string; failed?: string[] };
 export const hookOf = (result: ToolResultBlock | undefined) => (result as (ToolResultBlock & { shown?: { hook?: HookMark } }) | undefined)?.shown?.hook;
 
 // Under a call's line, opened or not: rows of who said or did something about
@@ -116,9 +117,10 @@ export function Under({ name, tone, code, testid, act, children }: { name?: stri
 // What a hook of the owner's did: what the model had asked for (the call shows
 // the input that ran), and the hook that let it through, in its own words.
 function HookRows({ hook, asked, name, cwd }: { hook: HookMark; asked: any; name: string; cwd?: string }) {
-  if (hook.input === undefined && !hook.allowed) return null;
+  if (hook.input === undefined && !hook.allowed && !hook.failed?.length) return null;
   return (
     <div className="k-under" data-testid="tool-hook">
+      {hook.failed?.map((f, i) => <Under key={i} name="Hook" tone="warn" testid="tool-hook-failed">{f.replace(/^Hook /, "")}</Under>)}
       {hook.input !== undefined && <Under name="Model">asked for <span className="k-under-code" data-testid="tool-asked">{summary(toolKind(name), name, asked ?? {}, cwd) || JSON.stringify(asked ?? {}).slice(0, 400)}</span></Under>}
       {/* Said on the call's own line when the hook changed nothing and gave no reason. */}
       {hook.allowed !== undefined && (hook.input !== undefined || hook.allowed) && <Under name="Hook" testid="tool-hook-allowed">allowed it{hook.allowed ? `: ${hook.allowed}` : ""}</Under>}
@@ -247,7 +249,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const what = rejected ? "" : waits ? `for ${waitsFor}, up to ${fmtWait(Number(input.timeout_ms ?? 300_000))}` : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : whole ? command.trim() : summary(kind, use.name, input, cwd);
   const more = kind === "shell" && !whole ? moreLines(use) : 0;
   const words = kind === "plan" || kind === "skill" || kind === "other" || kind === "mcp" || kind === "stop";
-  const verb = rejected ? "Plan update not applied" : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
+  const verb = rejected ? "Plan update not applied" : state === "unrun" ? NOT_RUN : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
   // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
   const changed = state === "ok" || state === "running" || state === "live" || state === "waiting";
   // A small change shows its lines under the closed line, as a failure shows its reason.
@@ -263,8 +265,9 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{noSuchTool(result) ? "no such tool" : shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
           {state === "denied" && <><span className="k-line-state" data-tone="own" data-testid="call-state">denied by you</span>{" "}</>}
           {state === "refused" && <><span className="k-line-state" data-tone="warn" data-testid="tool-refused">refused</span>{" "}</>}
-          {ended && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"} data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : "You stopped the turn while this call ran."}>{ended === "cut" ? "cut by a restart" : CALL_STOPPED}</span>{" "}</>}
+          {ended && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"} data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : stoppedByUser(result?.content) ? "You stopped the turn while this call ran." : resultText(result)}>{ended === "cut" ? "cut by a restart" : CALL_STOPPED}</span>{" "}</>}
           {state === "unfinished" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title="The turn ended before this call had a result.">no result</span>{" "}</>}
+          {state === "unrun" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title={resultText(result)}>{notRun(result?.content)}</span>{" "}</>}
           {/* Why it is marked, in a few words; the sentence is its title and stands in the opened call. */}
           {!quiet && marks.filter((m) => m.kind !== "denied").map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
           {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="warn" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}

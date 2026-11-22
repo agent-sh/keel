@@ -7,7 +7,7 @@
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
-import { RESTART_CUT, STOPPED_WHILE, stopKind, turnedAway } from "../../../src/core/stops.ts";
+import { RESTART_CUT, notRun, stopKind, stoppedRunning, turnedAway } from "../../../src/core/stops.ts";
 import { patchFiles, resultText, shellStatus, toolKind, type ToolKind, splitDiagnostics, splitMemory, splitNested } from "./tools.ts";
 import { NEEDS, STATE_WORD, countWord } from "../../../src/core/state-words.ts";
 
@@ -122,15 +122,16 @@ export const sameStep = (a: Step, b: Step) =>
 // away before it ran, by the owner on its card (denied) or by the policy, the
 // reviewer or the judge (refused); or ended under it by the owner's stop or a
 // restart. Only the first of these is a failure. Without a result it still runs.
-export type CallState = "running" | "ok" | "error" | "denied" | "refused" | "stopped" | "cut";
+// `unrun`: the turn did not run it for a reason of its own (its reply was cut at the output limit inside it).
+export type CallState = "running" | "ok" | "error" | "denied" | "refused" | "stopped" | "cut" | "unrun";
 export const callState = (result?: ToolResultBlock): CallState =>
-  !result ? "running" : result.is_error ? (stopKind(result.content) ?? turnedAway(resultText(result)) ?? "error") : "ok";
+  !result ? "running" : result.is_error ? (stopKind(result.content) ?? turnedAway(resultText(result)) ?? (notRun(result.content) ? "unrun" : "error")) : "ok";
 
 // How a call looks, with what the page knows beyond the record: a call with no
 // result runs only while its session works; it waits when its approval card is
 // open; in an idle session it has no result and never will. A call the page
 // knows was refused (the list of refusals) is refused whatever its result says.
-export type Look = "running" | "waiting" | "unfinished" | "ok" | "error" | "denied" | "refused" | "stopped" | "cut";
+export type Look = "running" | "waiting" | "unfinished" | "ok" | "error" | "denied" | "refused" | "stopped" | "cut" | "unrun";
 // `own`: the calls shown on lines of their own under the step, which the step's line does not name again.
 // `cwd`: the session's folder, for naming a changed file under a hidden folder with that folder.
 export type Live = { working: boolean; waiting?: ReadonlySet<string>; refused?: ReadonlySet<string>; own?: ReadonlySet<string>; cwd?: string };
@@ -141,7 +142,7 @@ export const noSuchTool = (result?: ToolResultBlock): boolean => !!result?.is_er
 // Whether the call was carried out, in whole or in part: it ran, runs, or was ended while it ran.
 // `change`: the call changes a file: one that failed changed nothing (a command that failed did run).
 export const ranOf = (look: Look, result?: ToolResultBlock, change = false): boolean =>
-  look === "ok" || (look === "error" && !change && !noSuchTool(result)) || look === "running" || (look === "stopped" && result?.content === STOPPED_WHILE) || (look === "cut" && result?.content === RESTART_CUT);
+  look === "ok" || (look === "error" && !change && !noSuchTool(result)) || look === "running" || (look === "stopped" && stoppedRunning(result?.content)) || (look === "cut" && result?.content === RESTART_CUT);
 
 const base = (p: string) => p.replace(/\/+$/, "").split("/").at(-1) || p;
 // A changed file as a step's line names it: its name, and for a file under a
@@ -247,6 +248,8 @@ export function failureLine(result?: ToolResultBlock): string {
   return `${(at > LINE_MAX / 2 ? head.slice(0, at) : head).replace(/[\s,;:(]+$/, "")}…`;
 }
 
+// The verb of a call, or of a step, the turn did not run for a reason of its own.
+export const NOT_RUN = "Not run";
 export type StepSummary = {
   ran: number;        // the calls carried out, in whole or in part
   soft: boolean;      // looking around: a call of it that failed is a note, not an alarm
@@ -257,6 +260,7 @@ export type StepSummary = {
   code: boolean;      // the targets are code (a path, a command), not words
   added: number; removed: number;
   calls: number;
+  unrun?: string;     // why its calls that were not run were not (the first one's reason)
   looks: Record<Look, number>;
   exit?: number;      // a lone command's exit code when it failed
   thoughts: number;   // what the model thought on the way, behind the fold
@@ -276,10 +280,16 @@ const clip = (t: string) => (t.length > TARGET_MAX ? `${t.slice(0, TARGET_MAX - 
 // and "+N" is exactly what the line does not show.
 export function summarize(step: Step, live: Live = { working: true }): StepSummary {
   const work = callsOf(step);
-  const looks: Record<Look, number> = { running: 0, waiting: 0, unfinished: 0, ok: 0, error: 0, denied: 0, refused: 0, stopped: 0, cut: 0 };
+  const looks: Record<Look, number> = { running: 0, waiting: 0, unfinished: 0, ok: 0, error: 0, denied: 0, refused: 0, stopped: 0, cut: 0, unrun: 0 };
   let ran = 0;
-  for (const c of work) { const look = lookOf(c, live); looks[look]++; if (ranOf(look, c.result, step.family === "change")) ran++; }
-  const s: StepSummary = { ran, soft: step.family === "explore", label: "", counts: "", targets: [], more: 0, code: true, added: 0, removed: 0, calls: work.length, looks, thoughts: step.items.filter((i) => i.t === "thought").length };
+  let unrun: string | undefined;
+  for (const c of work) {
+    const look = lookOf(c, live);
+    looks[look]++;
+    if (ranOf(look, c.result, step.family === "change")) ran++;
+    if (look === "unrun") unrun ??= notRun(c.result?.content);
+  }
+  const s: StepSummary = { ...(unrun ? { unrun } : {}), ran, soft: step.family === "explore", label: "", counts: "", targets: [], more: 0, code: true, added: 0, removed: 0, calls: work.length, looks, thoughts: step.items.filter((i) => i.t === "thought").length };
   const named = live.own?.size ? work.filter((c) => !live.own!.has(c.id)) : work;
   // A target is named whole up to a length: past it, it is cut in its own text, where the cut shows.
   const name = (list: string[], max = NAMED) => { const all = uniq(list); s.targets = all.slice(0, max).map(clip); s.more = all.length - s.targets.length; };
@@ -323,6 +333,8 @@ export function summarize(step: Step, live: Live = { working: true }): StepSumma
     for (const c of named) names.set(c.use.name, (names.get(c.use.name) ?? 0) + 1);
     name([...names].map(([n, k]) => (k > 1 ? `${n} (${k} times)` : n)));
   }
+  // None of its calls was run (its reply was cut at the output limit inside them): the verb says so.
+  if (work.length && looks.unrun === work.length) s.label = NOT_RUN;
   return s;
 }
 
@@ -335,7 +347,7 @@ export function summarize(step: Step, live: Live = { working: true }): StepSumma
 export type Word = { text: string; tone: "need" | "fail" | "note" | "own" | "warn" | "idle" };
 export function stateWords(s: StepSummary): Word[] {
   const out: Word[] = [];
-  const { waiting, error, denied, refused, cut, stopped, unfinished } = s.looks;
+  const { waiting, error, denied, refused, cut, stopped, unfinished, unrun } = s.looks;
   // Said of every call of the step without a number, of some with how many.
   const n = (count: number, all: string, some = all) => (count === s.calls ? all : `${count} ${some}`);
   if (waiting) out.push({ text: waiting === s.calls ? NEEDS_APPROVAL : countWord("need", waiting), tone: "need" });
@@ -345,6 +357,8 @@ export function stateWords(s: StepSummary): Word[] {
   if (cut) out.push({ text: n(cut, "cut by a restart"), tone: "warn" });
   if (stopped) out.push({ text: n(stopped, CALL_STOPPED), tone: "idle" });
   if (unfinished) out.push({ text: n(unfinished, "no result", "with no result"), tone: "idle" });
+  // A step none of whose calls ran says so in its verb (NOT_RUN): the word is why.
+  if (unrun) out.push({ text: unrun === s.calls ? s.unrun ?? "not run" : `${unrun} not run${s.unrun ? `: ${s.unrun}` : ""}`, tone: "idle" });
   return out;
 }
 

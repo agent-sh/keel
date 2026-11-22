@@ -9,7 +9,7 @@ import type { Session, ToolResultBlock } from "../../core/types.ts";
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { contains } from "../../core/paths.ts";
-import { Hooks, hookContext, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
+import { Hooks, hookContext, hookFailureText, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 import { ownerStop, replaced } from "../../core/stoppers.ts";
@@ -54,7 +54,7 @@ export const hookRoutes: RouteModule = (deps) => joinHooks(deps, daemonGate);
 export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteModule> {
   const { store, bus, engine, errors } = deps;
   // A hook that failed is one row in Errors, folded with its repeats: what failed, on which event, in which session.
-  const hooks = new Hooks(store, (f) => errors.capture("tool", new Error(`Hook failed on ${f.event} (${f.why}): ${f.hook}`), { hook: f.hook, event: f.event, session: f.session }));
+  const hooks = new Hooks(store, (f) => errors.capture("tool", new Error(hookFailureText(f)), { hook: f.hook, event: f.event, session: f.session, ...(f.limit_s !== undefined ? { why: f.why } : {}) }));
   const answered = new Set<string>(); // user events already given to UserPromptSubmit
   // The calls in flight that a hook follows: what the hooks see of it, and what PreToolUse left for later.
   // Kept by session and call id: a call id is its session's (two sessions can each have a call-1).
@@ -162,6 +162,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const c: Followed = { session: s.id, name, input, names: namesOf(name, input, call.tool.name) };
       calls.set(callKey(s.id, call.id), c);
       const r = await fire("PreToolUse", s, () => ({ tool_name: name, tool_input: input, tool_use_id: call.id }), c.names, srcs);
+      // A hook of the call that failed (ran into its time limit) is said under the call, not only in Errors.
+      if (r.failed?.length) call.hook = { ...call.hook, failed: [...(call.hook?.failed ?? []), ...r.failed] };
       if (r.block) {
         sayAt({ session: s.id }, hookLine({ event: "PreToolUse", did: `refused ${name}`, reason: r.block, title: s.title }), "warn");
         return { deny: `A hook blocked this call: ${r.block}` };

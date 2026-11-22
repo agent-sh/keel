@@ -407,7 +407,7 @@ test("a hook that fails is captured once with what it is, and runs in the home f
     const hooks = captured.filter((c) => c.ctx?.hook);
     expect(hooks.map((c) => c.ctx.hook).sort()).toEqual(["/nonexistent/keel-hook-binary", "echo broken >&2; exit 1", "http://127.0.0.1:1/dead", "sleep 5"]);
     expect(hooks.every((c) => c.source === "tool" && c.ctx.event === "PreToolUse" && c.ctx.session === s.id)).toBe(true);
-    expect(hooks.find((c) => c.ctx.hook === "sleep 5")!.message).toBe("Hook failed on PreToolUse (it did not finish in time): sleep 5");
+    expect(hooks.find((c) => c.ctx.hook === "sleep 5")!.message).toBe("Hook timed out (PreToolUse, 0.2 s): sleep 5");
     expect(hooks.find((c) => c.ctx.hook.startsWith("echo broken"))!.message).toBe("Hook failed on PreToolUse (exit 1: broken): echo broken >&2; exit 1");
     expect(hooks.find((c) => c.ctx.hook.startsWith("/nonexistent"))!.message).toContain("it could not be started");
 

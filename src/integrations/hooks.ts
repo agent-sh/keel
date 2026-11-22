@@ -347,7 +347,8 @@ export function namesOf(tool: string, input: any, via?: string): string[] {
 // `input`: the input a PreToolUse hook gave the call in place of the model's
 // (the first hook's, in file order). `continueWith`: a Stop hook sends the
 // session back to work with these words. `ran`: how many hooks ran.
-export type HookResult = { block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string; ran: number };
+// `failed`: each hook of the event that failed, in the words its Errors row has ("Hook timed out (PreToolUse, 5 s): hook.sh pre").
+export type HookResult = { block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string; ran: number; failed?: string[] };
 
 // A matcher against the values an event is matched on (a tool's names, a
 // start's source, a compaction's trigger). As Claude Code reads it: nothing,
@@ -387,7 +388,11 @@ export function ifHolds(rule: string, names: string[] | undefined, input: any, c
   return [path, full, relative(cwd, full), basename(full)].some((x) => glob.test(x));
 }
 
-export type HookFailure = { hook: string; event: HookEvent; session: string; why: string };
+// `limit_s`: set when the hook ran into its time limit (that many seconds).
+export type HookFailure = { hook: string; event: HookEvent; session: string; why: string; limit_s?: number };
+// A failed hook in one line: what it ran into, on which event, and the hook. Its Errors row, and the line under its call.
+export const hookFailureText = (f: HookFailure) =>
+  f.limit_s !== undefined ? `Hook timed out (${f.event}, ${f.limit_s} s): ${f.hook}` : `Hook failed on ${f.event} (${f.why}): ${f.hook}`;
 
 export class Hooks {
   // `failed`: told of each hook that failed (exit 1, a command that is not there, a timeout, an http port nobody listens on).
@@ -581,12 +586,14 @@ export class Hooks {
       const h = handlers[i]!;
       const refuse = (why: string) => { if (can.block) res.block ??= why; };
       // A hook that failed is said once in Errors, with what it is: a mistyped policy hook otherwise never runs and nobody is told.
-      const fails = (why: string) => {
+      const fails = (why: string, limit_s?: number) => {
         const what = h.type === "http" ? h.url : h.type === "mcp_tool" ? `${h.server}__${h.tool}` : [h.command, ...(h.args ?? [])].join(" ");
-        this.failed?.({ hook: what.slice(0, 500), event, session: s.id, why: `${why}${o.stderr.trim() ? `: ${o.stderr.trim().slice(0, 300)}` : ""}` });
+        const f: HookFailure = { hook: what.slice(0, 500), event, session: s.id, why: `${why}${o.stderr.trim() ? `: ${o.stderr.trim().slice(0, 300)}` : ""}`, ...(limit_s !== undefined ? { limit_s } : {}) };
+        this.failed?.(f);
+        (res.failed ??= []).push(hookFailureText(f));
         if (h.onFailure === "block") refuse(`a hook failed (${why})`);
       };
-      if (o.code === null) { fails("it did not finish in time"); continue; }
+      if (o.code === null) { fails("it did not finish in time", Math.min(h.timeout ?? normal, most)); continue; }
       if (o.code === 2) {
         // (Not honoured on PermissionRequest, as documented: a hook denies there with its decision.)
         if (can.goOn) res.continueWith ??= hookSaid(o.stderr.trim() || "a hook asked to go on");

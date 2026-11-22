@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
-import { APPROVAL_CUT, denialReason, ownerDenial, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, turnedAway } from "../../../src/core/stops.ts";
+import { APPROVAL_CUT, CUT_CALL, denialReason, ownerDenial, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, turnedAway } from "../../../src/core/stops.ts";
 import { addCall, addMeta, besideOf, callState, callsOf, carriedOut, changedName, changeOf, commandText, edgeOf, failureLine, isAside, isTable, moreLines, noSuchTool, ranOf, refusalOf, sentence, setResult, smallChange, stateWords, summarize, targetOf, type Step } from "./work.ts";
 
 let n = 0;
@@ -70,6 +70,15 @@ test("a step's line says what was done, to what and how it went, from the calls 
   // A command stopped by the owner did not fail.
   const stopped = setResult(run([cmd]), cmd.id, done(cmd.id, STOPPED_WHILE, true))!;
   expect(summarize(stopped[0]!).looks).toMatchObject({ error: 0, stopped: 1 });
+  // A call the reply cut at the output limit was not run: it read "Ran echo cut-ran, failed".
+  const cutOff = use("Bash", { command: "echo cut-ran" });
+  const unrun = summarize(setResult(run([cutOff]), cutOff.id, done(cutOff.id, CUT_CALL, true))![0]!);
+  expect([unrun.ran, unrun.looks.error, unrun.looks.unrun]).toEqual([0, 0, 1]);
+  expect(sentence(unrun)).toBe("Not run echo cut-ran, cut at the output limit");
+  const one = use("Bash", { command: "echo one" });
+  let two = run([one, cutOff]);
+  two = setResult(setResult(two, one.id, done(one.id, "one"))!, cutOff.id, done(cutOff.id, CUT_CALL, true))!;
+  expect(sentence(summarize(two[0]!))).toBe("Ran 2 commands echo one, echo cut-ran, 1 not run: cut at the output limit");
 });
 
 test("why a call failed is a line of its own output", () => {

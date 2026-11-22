@@ -17,7 +17,7 @@
 // with control characters, brackets and quotes taken out, and the whole line
 // is held to DID_MAX. Pure.
 import type { StoredEvent } from "../core/types.ts";
-import { stopKind } from "../core/stops.ts";
+import { notRun, stopKind } from "../core/stops.ts";
 
 export const DID_MAX = 240;
 const NAME_MAX = 40;
@@ -42,6 +42,8 @@ export function didLine(evs: readonly StoredEvent[]): string {
   let steps = 0;
   const failed: Record<string, number> = {};
   let results = 0, bad = 0, denied = 0;
+  // Calls the turn did not run for a reason of its own (cut at the output limit), by the reason.
+  const unrun: Record<string, number> = {};
   const files = new Set<string>();
   for (const e of evs) {
     if (e.kind === "assistant") {
@@ -55,6 +57,8 @@ export function didLine(evs: readonly StoredEvent[]): string {
         // A call the turn's stop or a restart reached did not fail.
         if (stopKind(r.content)) continue;
         results++;
+        const why = r.is_error ? notRun(r.content) : undefined;
+        if (why) { unrun[why] = (unrun[why] ?? 0) + 1; continue; }
         if (!r.is_error) { if (c) for (const f of filesOf(c.name, c.input)) files.add(f); }
         else if (verdict === "denied") denied++;
         else if (verdict === "failed" || verdict === undefined) { bad++; const n = safe(c?.name ?? "a tool"); failed[n] = (failed[n] ?? 0) + 1; }
@@ -66,7 +70,7 @@ export function didLine(evs: readonly StoredEvent[]): string {
   const by = Object.entries(failed).sort((a, b) => b[1] - a[1]);
   const which = by.slice(0, 3).map(([n, c]) => (c > 1 ? `${n} ${c}` : n)).join(", ") + (by.length > 3 ? `, ${by.length - 3} more` : "");
   const count = `${plural(steps, "step")}, ${plural(results, "tool call")}`;
-  const refused = denied ? `, ${denied} denied` : "";
+  const refused = `${denied ? `, ${denied} denied` : ""}${Object.entries(unrun).map(([why, n]) => `, ${n} not run: ${why}`).join("")}`;
   const list = [...files];
   const edited = list.length ? `; edited ${plural(list.length, "file")}` : "";
   const named = list.length ? `: ${list.slice(0, 3).map(short).join(", ")}${list.length > 3 ? `, ${list.length - 3} more` : ""}` : "";

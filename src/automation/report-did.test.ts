@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../core/types.ts";
-import { RESTART_CUT } from "../core/stops.ts";
+import { CUT_CALL, RESTART_CUT } from "../core/stops.ts";
 import { DID_MAX, didLine } from "./report-did.ts";
 
 let n = 0;
@@ -37,6 +37,13 @@ test("an agent's report carries what it did: steps, calls, which tools failed an
   expect(didLine(many).length).toBeLessThanOrEqual(DID_MAX);
 });
 
+test("a call the reply cut at the output limit is said as not run, not counted among the failed", () => {
+  n = 0;
+  // It read "2 tool calls" and no more, and the transcript said "Ran failed".
+  const evs = [step(["Bash", { command: "echo one" }]), result("c1"), step(["Bash", { command: "echo cut-ran" }]), result("c2", { is_error: true, content: CUT_CALL }), step()];
+  expect(didLine(evs)).toBe("(What it did: 3 steps, 2 tool calls, 1 not run: cut at the output limit.)");
+});
+
 test("refused calls are said apart from failed ones, as the turn's end counts them", () => {
   n = 0;
   const marked = (id: string, verdict: string, content = "output-marker") => ({ kind: "tool_result", data: { verdict, results: [{ type: "tool_result", tool_use_id: id, content, is_error: true }] } }) as unknown as StoredEvent;
@@ -53,7 +60,8 @@ test("refused calls are said apart from failed ones, as the turn's end counts th
     step(),
   ];
   // It read "8 tool calls, 6 failed (Bash 4, ...)" where the turn's end said 3 failed and 3 denied.
-  expect(didLine(evs)).toBe("(What it did: 9 steps, 8 tool calls, 3 failed (Bash 2, Read), 3 denied.)");
+  // The call the step budget stopped is said as not run, with why.
+  expect(didLine(evs)).toBe("(What it did: 9 steps, 8 tool calls, 3 failed (Bash 2, Read), 3 denied, 1 not run: the step budget was spent.)");
   // A plan-mode turn: nothing failed.
   n = 0;
   expect(didLine([step(["Bash", {}]), marked("c1", "denied"), step(["Write", {}]), marked("c2", "denied"), step()])).toBe("(What it did: 3 steps, 2 tool calls, 2 denied.)");

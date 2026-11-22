@@ -84,6 +84,27 @@ test("a hook changes a call's input and allows it", async ({ page, request }) =>
   expect(await results()).toContain("It did not run. The input that was judged:");
 });
 
+// Feature: a hook that runs into its time limit is the hook's, not the tool's.
+// The call runs and passes; under it the transcript says the hook timed out,
+// and the timeline's row says so in the same words (it read "Tool error").
+test("a hook's time limit is said as the hook's, under the call and in the timeline", async ({ page, request }) => {
+  test.skip(!scripted, "needs the scripted model: the calls are given exactly");
+  const { id } = await pinned(page, request, { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "sleep 5", timeout: 1 }] }] });
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${id}`);
+  await page.getByTestId("composer").fill(calls("echo hook-slow-ran"));
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  const call = page.getByTestId("tool-call").first();
+  await expect(call).toHaveAttribute("data-state", "ok");
+  await expect(call.getByTestId("tool-hook-failed")).toHaveText(/timed out \(PreToolUse, 1 s\): sleep 5/);
+  await shoot(page, "hook-events-04-timed-out");
+  const story = await (await request.get(`/api/sessions/${id}/timeline?format=text`)).text();
+  expect(story).toContain("Hook timed out (PreToolUse, 1 s): sleep 5");
+  expect(story).not.toContain("Tool error");
+});
+
 // Every event Keel fires, named in one pinned hooks file.
 const FIRED = [
   "SessionStart", "Stop", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "UserPromptExpansion", "PreToolUse", "StopFailure",
