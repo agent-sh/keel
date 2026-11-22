@@ -47,7 +47,14 @@ function sessionOf(pid: number): string | undefined {
   return m?.[1];
 }
 
-function kindOf(name: string, command: string, session?: string): string {
+// A language server (src/lsp) carries its id in its environment, as its
+// session: it is booked to the session whose edit started it.
+function lspOf(pid: number): string | undefined {
+  return /(?:^|\0)KEEL_LSP=([^\0]+)/.exec(read(`/proc/${pid}/environ`))?.[1];
+}
+
+function kindOf(name: string, command: string, session?: string, lsp?: string): string {
+  if (lsp) return "lsp";
   if (/keel-plugins|\/plugins\//.test(command)) return "provider";
   if (name === "systemd-inhibit" || /systemd-inhibit/.test(command)) return "keep-awake";
   if (session) return "tool";
@@ -185,10 +192,11 @@ export class Resources {
       const s = status(pid);
       const args = read(`/proc/${pid}/cmdline`).split("\0").filter(Boolean);
       const command = args.join(" ").slice(0, 1000) || st.name;
+      const known = this.seen.get(pid); // its environment was read at its first sample
       const session_id = this.seen.get(pid)?.session_id ?? sessionOf(pid) ?? jobOf.get(pid)?.sessionId;
       const cpu = st.utime + st.stime;
       const p: Proc = {
-        pid, ppid: st.ppid, name: st.name, label: labelOf(st.name, args), command, kind: kindOf(st.name, command, session_id), session_id, started_ms: st.start,
+        pid, ppid: st.ppid, name: st.name, label: labelOf(st.name, args), command, kind: kindOf(st.name, command, session_id, known ? (known.kind === "lsp" ? "lsp" : undefined) : lspOf(pid)), session_id, started_ms: st.start,
         rss_bytes: s.rss, peak_rss_bytes: s.hwm, cpu_user_ms: st.utime, cpu_system_ms: st.stime, cpu_percent: this.percent(pid, cpu, now), threads: s.threads, open_files: fds(pid),
       };
       procs.push(p);
