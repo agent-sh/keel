@@ -97,7 +97,13 @@ export class ErrorSites {
   // This occurrence, as the store kept it (its session, turn and span are the
   // ones the store accepted). An occurrence in no session has no site.
   // `pending`: it is about to be tried again.
-  note(rec: ErrorRecord, pending = false) {
+  note(rec: ErrorRecord, pending = false, recovered = false) {
+    if (recovered && !rec.session_id) {
+      // An already-healed daemon occurrence has no session site and was never open.
+      this.db.query(`INSERT INTO error_tally (error_id, healed_ts) VALUES (?1, ?2)
+        ON CONFLICT(error_id) DO UPDATE SET healed_ts = ?2`).run(rec.id, rec.ts);
+      return;
+    }
     this.db.query("INSERT INTO error_tally (error_id, open, pending) VALUES (?1, 1, ?2) ON CONFLICT(error_id) DO UPDATE SET open = open + 1, pending = pending + ?2").run(rec.id, pending ? 1 : 0);
     if (!rec.session_id) return;
     this.db

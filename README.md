@@ -15,6 +15,26 @@ Providers are found from the environment: `ANTHROPIC_API_KEY` for the Anthropic
 API; `AWS_BEARER_TOKEN_BEDROCK`, AWS keys or `ANTHROPIC_BEDROCK_BASE_URL` for
 Amazon Bedrock. Models come from each provider's own listing.
 
+### A local broker that changes ports
+
+If the launcher reads the broker address from an environment file, set
+`KEEL_PROVIDER_ENV_FILE` to the absolute path of that same trusted file. For
+systemd, set it with `Environment=` alongside `EnvironmentFile=`. Keel does not
+look up the unit or source the file as a script.
+
+After a loopback connection refusal, the provider's shared outage probe can
+reread that provider's base URL, at most once every five seconds per provider.
+It accepts a new port only; the scheme, host and path must stay the same. The
+file must contain simple single-line assignments; replace it atomically when
+updating the port. Keel does not reload keys or other settings. On the first successful answer from the new port, it records
+the move in the daemon log and marks it recovered in Errors.
+
+This applies to the HTTP APIs configured with `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_BEDROCK_BASE_URL`, `OPENAI_BASE_URL`, `GEMINI_BASE_URL`,
+`KEEL_CODEX_BASE_URL`, or `KEEL_XAI_PLAN_BASE_URL`. Reloadable brokers use
+HTTP without redirects. If the service uses a proxy, add the loopback host
+(without a port) to `NO_PROXY`. Remote defaults are unchanged.
+
 ## Turn receipts
 
 `GET /api/debug/turns/<turn_start event id>/receipt` joins the turn's input and

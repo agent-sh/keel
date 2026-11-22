@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "./config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
+import { BrokerAddress } from "./broker-address.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson, fetchFailure, ProviderError, scrub } from "./http.ts";
@@ -68,6 +69,7 @@ async function postForm(path: string, body: Record<string, string>, secrets: str
 
 export class XaiProvider implements Provider {
   readonly id = "grok";
+  readonly broker = new BrokerAddress("KEEL_XAI_PLAN_BASE_URL", process.env.KEEL_XAI_PLAN_BASE_URL);
   readonly label = "Grok plan";
   readonly wire = "openai_responses" as const;
   readonly family = "other" as const;
@@ -101,7 +103,7 @@ export class XaiProvider implements Provider {
     const g = this.grant();
     let sub = "";
     try { sub = JSON.parse(Buffer.from(g!.id_token!.split(".")[1]!, "base64url").toString()).sub ?? ""; } catch {}
-    return fingerprint(this.id, process.env.KEEL_XAI_PLAN_BASE_URL, sub);
+    return fingerprint(this.id, this.broker.identity, sub);
   }
 
   status(): ProviderStatus {
@@ -247,7 +249,7 @@ export class XaiProvider implements Provider {
   }
 
   private base(g: Grant) {
-    return process.env.KEEL_XAI_PLAN_BASE_URL ?? (g.surface === "cli_proxy" ? PROXY : API);
+    return this.broker.value ?? (g.surface === "cli_proxy" ? PROXY : API);
   }
 
   private clientVersion(g: Grant): string {
@@ -272,7 +274,7 @@ export class XaiProvider implements Provider {
 
   // The plan refused on the API: try the proxy once and keep that choice.
   private moveToProxy(g: Grant, why: ProviderError): Grant | null {
-    if (g.surface !== "api" || g.surface_confirmed || process.env.KEEL_XAI_PLAN_BASE_URL) return null;
+    if (g.surface !== "api" || g.surface_confirmed || this.broker.value) return null;
     if (!(why.status === 401 || why.status === 403 || why.status === 402 || why.kind === "quota")) return null;
     const next = { ...g, surface: "cli_proxy" as const };
     this.save(next);

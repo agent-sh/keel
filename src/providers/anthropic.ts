@@ -2,6 +2,7 @@
 // shared Messages wire codec. Bedrock takes the same body (model in the path,
 // the API version in the body) and streams it in AWS event-stream frames.
 import { sigv4, type AwsCreds } from "./aws.ts";
+import { BrokerAddress } from "./broker-address.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { allPages, getJson, type ProviderError } from "./http.ts";
@@ -19,11 +20,14 @@ type Auth =
 
 export class AnthropicProvider implements Provider {
   private auth: Auth | null;
+  readonly broker: BrokerAddress;
 
   constructor(
     readonly id: "anthropic" | "bedrock",
     private env: Record<string, string | undefined> = process.env,
   ) {
+    const base = id === "bedrock" ? "ANTHROPIC_BEDROCK_BASE_URL" : "ANTHROPIC_BASE_URL";
+    this.broker = new BrokerAddress(base, env[base]);
     this.auth = this.makeAuth();
   }
 
@@ -84,7 +88,7 @@ export class AnthropicProvider implements Provider {
   async list(): Promise<ListedModel[]> {
     if (!this.auth) return [];
     if (this.id === "anthropic") {
-      const base = (this.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
+      const base = (this.broker.value || "https://api.anthropic.com").replace(/\/$/, "");
       // Every page, to the end: a listing that names a cursor twice or has no end fails and says so.
       return allPages(this.label, async (after, until) => {
         const d = await getJson(this.label, `${base}/v1/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ""}`, { ...this.headers(), "anthropic-version": API_VERSION }, this.secrets, until);
@@ -93,8 +97,7 @@ export class AnthropicProvider implements Provider {
     }
     // Bedrock: the inference profiles on the control plane. A local broker
     // serves the same path on its own address.
-    const e = this.env;
-    const base = e.ANTHROPIC_BEDROCK_BASE_URL ?? `https://bedrock.${this.region}.amazonaws.com`;
+    const base = this.broker.value ?? `https://bedrock.${this.region}.amazonaws.com`;
     const ids: string[] = [];
     let next = "";
     for (let page = 0; page < 20; page++) {
@@ -141,13 +144,13 @@ export class AnthropicProvider implements Provider {
     // (Claude Code sends the same two).
     if (req.tools.some((t) => t.defer)) req = withBeta(req, this.id === "bedrock" ? "tool-search-tool-2025-10-19" : "advanced-tool-use-2025-11-20");
     if (this.id === "anthropic") {
-      const base = (this.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
+      const base = (this.broker.value || "https://api.anthropic.com").replace(/\/$/, "");
       return runEvents(anthropicWire, req, ctx, onDelta, httpEvents({
         label: this.label, url: `${base}/v1/messages`, secrets: this.secrets,
         headers: { ...this.headers(), "anthropic-version": API_VERSION },
       }, req));
     }
-    const base = (this.env.ANTHROPIC_BEDROCK_BASE_URL ?? `https://bedrock-runtime.${this.region}.amazonaws.com`).replace(/\/$/, "");
+    const base = (this.broker.value ?? `https://bedrock-runtime.${this.region}.amazonaws.com`).replace(/\/$/, "");
     const url = `${base}/model/${encodeURIComponent(req.model)}/invoke-with-response-stream`;
     const codec = {
       ...anthropicWire,

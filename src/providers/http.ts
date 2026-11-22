@@ -3,6 +3,7 @@
 import { keyShaped } from "../core/conceal.ts";
 import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
+import { brokerFetch, directBrokerOrigin, refusedOrigins } from "./broker-address.ts";
 import { gatewayDown, neverSent } from "./unreachable.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
@@ -28,10 +29,15 @@ export class ProviderError extends Error {
 
 // A fetch failed before it returned headers. Only an explicit connect-stage
 // error makes the request safe to resend without counting a retry.
-export function fetchFailure(label: string, e: unknown, secrets: string[] = []): ProviderError {
+export function fetchFailure(label: string, e: unknown, secrets: string[] = [], url?: string): ProviderError {
   const msg = scrub(String((e as Error)?.message ?? e), secrets);
   const code = (e as any)?.code ?? (e as any)?.cause?.code;
-  return new ProviderError(neverSent(e) ? "unreachable" : "network", `${label}: ${msg}${typeof code === "string" && !msg.includes(code) ? ` (${code})` : ""}`);
+  const error = new ProviderError(neverSent(e) ? "unreachable" : "network", `${label}: ${msg}${typeof code === "string" && !msg.includes(code) ? ` (${code})` : ""}`);
+  if (code === "ConnectionRefused" || code === "ECONNREFUSED") {
+    const origin = url && directBrokerOrigin(url);
+    if (origin) refusedOrigins.set(error, origin);
+  }
+  return error;
 }
 
 // No key where the provider looks for one. The provider is not set up: nothing
@@ -161,12 +167,12 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
     const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) };
     if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: Buffer.byteLength(body), transport: "http", resent_after_auth: renewed || undefined });
     try {
-      res = await fetch(o.url, { method: "POST", headers: sent, body, signal: guard.signal });
+      res = await fetch(o.url, { ...brokerFetch(o.url), method: "POST", headers: sent, body, signal: guard.signal });
     } catch (e) {
       const stalled = guard.stalled();
       if (stalled) throw stalled;
       if (o.signal.aborted) throw new ProviderError("cancelled", "cancelled");
-      throw fetchFailure(o.label, e, o.secrets);
+      throw fetchFailure(o.label, e, o.secrets, o.url);
     }
     try { o.onHeaders?.(res.headers); } catch {}
     if (w) Object.assign(w, { status: res.status, request_id: requestId(res.headers), res_headers: keptHeaders(res.headers), headers_ms: Date.now() - t0 });
@@ -244,9 +250,9 @@ export async function allPages<T>(label: string, read: (cursor: string, until: n
 export async function getJson(label: string, url: string, headers: Record<string, string>, secrets: string[] = [], until?: number): Promise<any> {
   let r: Response;
   try {
-    r = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
+    r = await fetch(url, { ...brokerFetch(url), headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
   } catch (e) {
-    throw fetchFailure(label, e, secrets);
+    throw fetchFailure(label, e, secrets, url);
   }
   const text = await r.text();
   if (!r.ok) throw classify(label, r.status, r.headers, scrub(text, secrets));

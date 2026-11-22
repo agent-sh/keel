@@ -5,6 +5,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { addUsage, emptyUsage, type Usage } from "../core/types.ts";
 import { AnthropicProvider } from "./anthropic.ts";
+import { brokerEnvFile } from "./broker-address.ts";
 import { Catalog } from "./catalog.ts";
 import { CodexProvider } from "./codex.ts";
 import { endpoints } from "./config.ts";
@@ -50,7 +51,7 @@ const USAGE_MAX_AGE = 60_000;
 
 type ListingResult = { ok: true } | { ok: false; error: unknown };
 
-type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown) => void; providers?: Provider[] };
+type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown, at?: { recovered?: true }) => void; providers?: Provider[] };
 
 // A key read this recently is not read again by the refresh that asked for it.
 const JUST_LOOKED_MS = 1000;
@@ -78,6 +79,7 @@ export class Providers {
   // The providers that cannot be reached now, and the wait their sessions share (src/providers/outage.ts).
   readonly outages: Outages;
   private badFiles = new Set<string>();
+  private brokerFile = brokerEnvFile();
 
   constructor(readonly stateDir: string, private opts: Opts = {}) {
     this.catalog = new Catalog(stateDir);
@@ -272,14 +274,19 @@ export class Providers {
   private async fetchListing(p: Provider, identity?: string): Promise<ListingResult> {
     const seq = (this.started.get(p.id) ?? 0) + 1;
     this.started.set(p.id, seq);
+    // Keep address discovery inside the same in-flight listing as a model pick.
+    await p.broker?.reread(this.brokerFile);
+    const base = p.broker?.value;
     try {
       const models = p instanceof EndpointProvider && p.cfg.listing === false ? this.sectionModels(p) : await p.list();
       if ((this.applied.get(p.id) ?? 0) > seq) return { ok: true };
       this.applied.set(p.id, seq);
       this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
       this.cleared(p.id, "listing");
+      this.brokerAnswered(p, base);
       return { ok: true };
     } catch (e) {
+      p.broker?.noteRefusal(e);
       // A newer answer already landed: this older failure says nothing about it.
       if ((this.applied.get(p.id) ?? 0) > seq) return { ok: false, error: e };
       this.applied.set(p.id, seq);
@@ -452,6 +459,12 @@ export class Providers {
     if (!result.ok) throw result.error;
   }
 
+  private brokerAnswered(p: Provider, base: string | undefined) {
+    const moved = p.broker?.answered(base);
+    // ErrorTracker writes the log and the recovered Errors row together.
+    if (moved) this.opts.capture?.("provider", new Error(moved), { provider: p.id }, { recovered: true });
+  }
+
   cachedModel(id: string): ModelInfo | undefined {
     const provider = this.get(id.slice(0, id.indexOf(":")));
     if (!provider?.available()) return;
@@ -499,6 +512,7 @@ export class Providers {
       list: () => p.list(),
       stream: async (req: ProviderRequest, onDelta) => {
         const offer = speedOffer(info, req.speed);
+        const base = p.broker?.value;
         let sawHeaders = false;
         const onHeaders = (h: Headers) => {
           sawHeaders = true;
@@ -508,12 +522,17 @@ export class Providers {
         };
         // The provider answered: an outage of it is over, and what waited for it goes (once a request).
         let told = false;
-        const onAnswer = () => {
+        const answer = (accepted: boolean) => {
           if (told) return;
           told = true;
-          this.outages.answered(p.id);
+          // A response from the retired port cannot recover the new one.
+          if (base === p.broker?.value) {
+            if (accepted) this.brokerAnswered(p, base);
+            this.outages.answered(p.id);
+          }
           req.onAnswer?.();
         };
+        const onAnswer = () => answer(true);
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
@@ -529,7 +548,8 @@ export class Providers {
             throw new ProviderError("network", `the stream broke: ${(e as Error).message}`);
           }
           // Only a provider answer releases other waiters, not a generic gateway error.
-          if (typeof status === "number" && !unreachable(e) && ![502, 503, 504].includes(status)) onAnswer();
+          p.broker?.noteRefusal(e);
+          if (typeof status === "number" && !unreachable(e) && ![502, 503, 504].includes(status)) answer(false);
           this.note(p.id, e, "turn");
           throw e;
         }

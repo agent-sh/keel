@@ -10,6 +10,7 @@
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { BrokerAddress, directBrokerOrigin } from "./broker-address.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { getJson, fetchFailure, ProviderError, scrub } from "./http.ts";
@@ -63,7 +64,8 @@ export class CodexProvider implements Provider {
   readonly family = "gpt" as const;
   private home = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   private file = join(this.home, "auth.json");
-  private base = (process.env.KEEL_CODEX_BASE_URL ?? "https://chatgpt.com/backend-api/codex").replace(/\/$/, "");
+  readonly broker = new BrokerAddress("KEEL_CODEX_BASE_URL", process.env.KEEL_CODEX_BASE_URL);
+  private get base() { return (this.broker.value ?? "https://chatgpt.com/backend-api/codex").replace(/\/$/, ""); }
   private refreshing: Promise<AuthFile> | null = null;
 
   private read(): AuthFile | null {
@@ -79,7 +81,7 @@ export class CodexProvider implements Provider {
   }
 
   identity() {
-    return fingerprint(this.id, this.base, this.read()?.tokens?.account_id);
+    return fingerprint(this.id, this.broker.identity?.replace(/\/$/, "") ?? this.base, this.read()?.tokens?.account_id);
   }
 
   status(): ProviderStatus {
@@ -207,7 +209,9 @@ export class CodexProvider implements Provider {
     // would replace the response the turn's socket holds, and the turn's next
     // request would be sent whole.
     const key = `${req.sessionKey ?? ""}|${req.model}|${req.extraHeaders?.["x-codex-routing-hint"] ?? ""}|${req.purpose ?? "turn"}`;
-    if (req.sessionKey && this.sockets.usable(key)) {
+    // Use HTTP for a reloadable loopback broker: it reports a precise connect
+    // refusal and never reuses a socket from before a port move.
+    if (req.sessionKey && !directBrokerOrigin(this.base) && this.sockets.usable(key)) {
       const headers = { ...this.headers(a, req.sessionKey), "OpenAI-Beta": "responses_websockets=2026-02-06", ...req.extraHeaders };
       try {
         const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, this.sockets.events(key, headers, req, (m) => this.rateEvent(m, req)));

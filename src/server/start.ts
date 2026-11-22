@@ -140,7 +140,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
       errors.capture("server", new Error(file ? `At this start, ${f}.` : `A write the daemon before this one owed was not made at this start (${f}).`), { at: "the daemon before this one" });
     }
   }
-  const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
+  const providers = new Providers(stateDir, { capture: (source, e, ctx, at) => errors.capture(source, e, ctx, at) });
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
   engine.wentDown = life?.before?.down_ms;
   // Before any module: the turns this start finds cut are recorded whoever closes them.

@@ -192,6 +192,8 @@ export type ProviderStatus = {
 
 export interface Provider {
   readonly id: string;
+  // An environment-configured address of an HTTP provider. Not a credential source.
+  readonly broker?: import("./broker-address.ts").BrokerAddress;
   readonly label?: string;
   readonly wire?: Wire;
   readonly family: Family; // the default for models whose id says nothing

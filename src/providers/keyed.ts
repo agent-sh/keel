@@ -1,5 +1,6 @@
 // Drivers that authenticate with an API key: the OpenAI API (Responses) and
 // the Gemini API. Configured endpoints are endpoint.ts.
+import { BrokerAddress } from "./broker-address.ts";
 import { configured, fingerprint, forget, key, look, recheck, shown, sourceIdentity, unread, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { notChat } from "./family.ts";
@@ -16,13 +17,14 @@ abstract class KeyedProvider implements Provider {
   protected abstract src: KeySource;
 
   protected abstract readonly base: string;
+  abstract readonly broker: BrokerAddress;
 
   available() {
     return configured(this.src);
   }
 
   identity() {
-    return fingerprint(this.id, this.base, sourceIdentity(this.src));
+    return fingerprint(this.id, this.broker.identity?.replace(/\/$/, "") ?? this.base, sourceIdentity(this.src));
   }
 
   status(): ProviderStatus {
@@ -57,7 +59,8 @@ export class OpenAIProvider extends KeyedProvider {
   readonly wire = "openai_responses" as const;
   readonly family = "gpt" as const;
   protected src = { env: "OPENAI_API_KEY", cred: "openai-api-key" };
-  protected readonly base = (process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
+  readonly broker = new BrokerAddress("OPENAI_BASE_URL", process.env.OPENAI_BASE_URL);
+  protected get base() { return (this.broker.value ?? "https://api.openai.com/v1").replace(/\/$/, ""); }
 
   async list(): Promise<ListedModel[]> {
     const k = await this.key();
@@ -85,7 +88,8 @@ export class GeminiProvider extends KeyedProvider {
   readonly wire = "gemini_generate_content" as const;
   readonly family = "gemini" as const;
   protected src = { env: process.env.GEMINI_API_KEY ? "GEMINI_API_KEY" : "GOOGLE_API_KEY", cred: "gemini-api-key" };
-  protected readonly base = (process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com").replace(/\/$/, "");
+  readonly broker = new BrokerAddress("GEMINI_BASE_URL", process.env.GEMINI_BASE_URL);
+  protected get base() { return (this.broker.value ?? "https://generativelanguage.googleapis.com").replace(/\/$/, ""); }
   private thinks = new Map<string, boolean>();
 
   async list(): Promise<ListedModel[]> {

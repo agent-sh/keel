@@ -1,11 +1,12 @@
 // A provider that cannot be reached: which failures are that, the wait's
 // numbers, and the one wait every session of a provider shares.
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { errorClass } from "../admin/classes.ts";
 import { Bus } from "../core/bus.ts";
+import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { Engine } from "../engine/turn.ts";
 import { Providers } from "./registry.ts";
@@ -330,14 +331,104 @@ for (const restart of [false, true]) test(`a broker wait does not refill counted
   }
 });
 
+const openssl = Bun.which("openssl");
+test.skipIf(!openssl)("a self-signed loopback certificate keeps the counted retry path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-loopback-tls-"));
+  const cert = join(dir, "cert.pem"), key = join(dir, "key.pem");
+  try {
+    const made = Bun.spawnSync([openssl!, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost", "-keyout", key, "-out", cert], { stdout: "ignore", stderr: "ignore" });
+    expect(made.exitCode).toBe(0);
+    let sent = 0;
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: { cert: Bun.file(cert), key: Bun.file(key) }, fetch() { sent++; return new Response("unexpected request"); } });
+    try {
+      const { streamEvents } = await import("./http.ts");
+      const reply = streamEvents({ label: "stub", url: `https://127.0.0.1:${server.port}/`, body: {}, headers: {}, signal: never });
+      const err = await reply.next().catch((e) => e);
+      expect(err).toMatchObject({ kind: "network" });
+      expect(unreachable(err)).toBe(false);
+      expect(retryable(err)).toBe(true);
+      expect(sent).toBe(0);
+    } finally {
+      server.stop(true);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const sse = ['event: message_start\ndata: {"type":"message_start","message":{"id":"m","role":"assistant","model":"x","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}', 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}', 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}',
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}', 'event: message_stop\ndata: {"type":"message_stop"}'].join("\n\n") + "\n\n";
+
+test("a waiting Bedrock turn follows its broker to a new loopback port", async () => {
+  const { AnthropicProvider } = await import("./anthropic.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-broker-move-"));
+  const file = join(dir, "broker.env");
+  const before = process.env.KEEL_PROVIDER_ENV_FILE;
+  process.env.KEEL_PROVIDER_ENV_FILE = file;
+  const key = "ANTHROPIC_BEDROCK_BASE_URL";
+  const model = "global.anthropic.claude-fixture";
+  const calls: string[] = [];
+  const serve = (name: string) => Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+    if (req.method === "GET") return Response.json({ inferenceProfileSummaries: [{ status: "ACTIVE", inferenceProfileId: model }] });
+    // Re-reading the file must not change the credentials of the running provider.
+    calls.push(`${name}:${req.headers.get("authorization") ?? "none"}`);
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  } });
+  const a = serve("old");
+  const b = serve("new");
+  const portA = a.port!, portB = b.port!;
+  const base = (port: number) => `http://127.0.0.1:${port}`;
+  const write = (port: number) => writeFileSync(file, `${key}='${base(port)}'\nAWS_BEARER_TOKEN_BEDROCK=unused-fixture-value\nOPENAI_BASE_URL=http://127.0.0.1:1\n`);
+  const store = new Store(dir);
+  const bus = new Bus();
+  const errors = new ErrorTracker(store, bus);
+  const driver = new AnthropicProvider("bedrock", { [key]: base(portA), CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1" });
+  const providers = new Providers(dir, { providers: [driver], capture: (source: "provider", err: unknown, ctx?: unknown, at?: Parameters<ErrorTracker["capture"]>[3]) => errors.capture(source, err, ctx, at) });
+  // Local fixture only, including model discovery.
+  providers.catalog.load = async () => {};
+  const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
+  const session = store.createSession({ model: `${driver.id}:${model}`, workspace: dir });
+  let entered!: () => void;
+  const waiting = new Promise<void>((ok) => { entered = ok; });
+  providers.outages.listen({ open: () => entered() });
+  try {
+    write(portA);
+    engine.send(session.id, "first");
+    await engine.idle(session.id);
+    expect(calls).toEqual(["old:none"]);
+    a.stop(true);
+    engine.send(session.id, "second");
+    await Promise.race([waiting, Bun.sleep(5_000).then(() => { throw new Error("no outage after the first probes"); })]);
+    expect(engine.outageOf(session.id)?.provider).toBe(driver.id);
+    const t0 = Date.now();
+    write(portB);
+    await Promise.race([engine.idle(session.id), Bun.sleep(11_000).then(() => { throw new Error("turn still calls the retired port"); })]);
+    expect(calls).toEqual(["old:none", "new:none"]);
+    expect(store.events(session.id).filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["end_turn", "end_turn"]);
+    const rows = errors.list().filter((e) => e.message.includes("the broker moved"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ message: `the broker moved from port ${portA} to port ${portB}`, count: 1, context: { provider: driver.id } });
+    expect(rows[0]!.recovered_ts).toBeGreaterThanOrEqual(t0);
+    expect(process.env[key]).not.toBe(base(portB));
+    console.info(`loopback broker switch: ${Date.now() - t0} ms from write to completed turn`);
+  } finally {
+    await engine.drain(0);
+    providers.shutdown();
+    a.stop(true);
+    b.stop(true);
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+    if (before === undefined) delete process.env.KEEL_PROVIDER_ENV_FILE;
+    else process.env.KEEL_PROVIDER_ENV_FILE = before;
+  }
+}, 20_000);
+
 // A broker that signs for Keel renews an expired credential itself: the request goes once more, and only for that refusal.
 test("a broker's expired credential is retried once after it had time to renew; any other refusal is not", async () => {
   const { AnthropicProvider } = await import("./anthropic.ts");
   let calls = 0;
   let refuse: (n: number) => Response | null = () => null;
-  const sse = ['event: message_start\ndata: {"type":"message_start","message":{"id":"m","role":"assistant","model":"x","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}', 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
-    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}', 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}',
-    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}', 'event: message_stop\ndata: {"type":"message_stop"}'].join("\n\n") + "\n\n";
   const server = Bun.serve({ port: 0, fetch: () => refuse(++calls) ?? new Response(sse, { headers: { "content-type": "text/event-stream" } }) });
   try {
     const p = new AnthropicProvider("bedrock", { ANTHROPIC_BEDROCK_BASE_URL: `http://127.0.0.1:${server.port}`, CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1" });

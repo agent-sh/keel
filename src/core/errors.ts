@@ -16,7 +16,7 @@ export const detached = <T>(f: () => T): T => errorScope.exit(f);
 // `group`: what repeats of this failure share, when its words do not say (a
 // message that carries what varies: a duration's cause, a child's name). The
 // row is one per group instead of one per message shape.
-export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string };
+export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string; recovered?: true };
 export type ErrorCapture = Pick<ErrorRecord, "id" | "source"> & { context: unknown; turnSession?: string };
 
 const KEPT_MAX = 100;
@@ -153,8 +153,8 @@ export class ErrorTracker {
       // each wait and fall when the retry passes. It is unread when the retries run out (that
       // failure is captured without a retry to come), or when the kind was already open.
       const pending = typeof (context as any)?.retry === "number" && typeof (context as any)?.wait_ms === "number";
-      const quiet = pending && this.sites.failed(rec.id) === 0;
-      this.sites.note(rec, pending);
+      const quiet = (pending || at.recovered) && this.sites.failed(rec.id) === 0;
+      this.sites.note(rec, pending, at.recovered);
       if (quiet) rec = this.store.readError(rec.id, true) ?? rec;
       rec = this.sites.with([rec])[0]!;
     } catch (failed) { console.error(`[${source}] where it happened was not recorded: ${(failed as Error)?.message ?? failed}`); }

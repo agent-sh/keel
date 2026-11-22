@@ -28,7 +28,7 @@ const make = (state: string, ps: Provider[]) => {
 };
 const ids = (r: Providers, id: string) => r.listing(id).models.map((m) => m.model);
 
-test("concurrent picks share their provider's listing without waiting for other providers", async () => {
+test("concurrent picks and outage probes share the target listing without waiting for other providers", async () => {
   const target = fake("target");
   const other = fake("other");
   const r = make(dir(), [target.p, other.p]);
@@ -44,11 +44,13 @@ test("concurrent picks share their provider's listing without waiting for other 
   const full = next.models(true);
   await Bun.sleep(0);
   const during = next.resolve("target:next", { scoped: true });
+  const probe: Promise<void> = (next as any).reach("target");
   await Bun.sleep(0);
   expect(target.calls).toHaveLength(2);
   expect(other.calls).toHaveLength(1);
   target.calls[1]!.resolve([{ model: "next" }]);
   expect((await during).info.id).toBe("target:next");
+  await probe;
   other.calls[0]!.resolve([]);
   await full;
 });
