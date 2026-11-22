@@ -3,7 +3,7 @@
 // target, not of the link: `<workspace>/sk/../hooks.json` with `sk` a link
 // to Keel's config's skills folder is Keel's hooks file.
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
@@ -79,6 +79,27 @@ const writers = (p: string): [string, Tool, any][] => [
   ["apply_patch delete", tool(gptTools, "apply_patch"), { input: patch(`*** Delete File: ${p}`) }],
   ["apply_patch move", tool(gptTools, "apply_patch"), { input: patch(`*** Update File: plain.txt\n*** Move to: ${p}\n@@\n-plain\n+moved`) }],
 ];
+
+test("a chain of more links than the kernel follows is refused by the open, and never judged as a file of the workspace's", () => {
+  // ch0 -> ch1 -> ... -> ch40 -> Keel's hooks file: 41 links. The kernel follows 40 and refuses the path.
+  for (let i = 0; i <= 40; i++) symlinkSync(i === 40 ? join(config, "hooks.json") : `ch${i + 1}`, join(ws, `ch${i}`));
+  const given = `${ws}/ch0`;
+  expect(() => openSync(given, "r")).toThrow(/ELOOP/);
+  const walked = realOf(given);
+  expect(walked).toBe(given); // as it was given: not a link part way down the chain
+  expect(() => openSync(walked, "r")).toThrow(/ELOOP/);
+  expect(() => openSync(walked, "w")).toThrow(/ELOOP/);
+  expect(readFileSync(join(config, "hooks.json"), "utf8")).toBe("{}\n");
+  // One link fewer is a path the kernel opens, and it is judged where it lands.
+  expect(realOf(`${ws}/ch1`)).toBe(join(config, "hooks.json"));
+  expect(statSync(`${ws}/ch1`).ino).toBe(statSync(join(config, "hooks.json")).ino);
+  // The same with a folder at the chain's end and a new file under it, and with a relative path.
+  for (let i = 0; i <= 40; i++) symlinkSync(i === 40 ? config : `dh${i + 1}`, join(ws, `dh${i}`));
+  expect(realOf(`${ws}/dh0/new.json`)).toBe(`${ws}/dh0/new.json`);
+  expect(() => openSync(realOf(`${ws}/dh0/new.json`), "w")).toThrow(/ELOOP/);
+  expect(existsSync(join(config, "new.json"))).toBe(false);
+  expect(realOf(`${ws}/dh1/new.json`)).toBe(join(config, "new.json"));
+});
 
 test("a write through a workspace link followed by `..` is judged where it lands: every family's tools, absolute and relative", () => {
   for (const spelled of [`${ws}/sk/../hooks.json`, "sk/../hooks.json", `${ws}/twice/hooks.json`, `${ws}/sub/../sk/../hooks.json`]) {

@@ -67,8 +67,10 @@ export function realOf(p: string): string {
     let link = false;
     try { link = lstatSync(next).isSymbolicLink(); } catch { missing = true; at = next; continue; }
     if (!link) { at = next; continue; }
-    // (More links than the kernel follows: it refuses the path, and so does whatever opens what this returns.)
-    if (++links > 40) return [next, ...todo].join("/");
+    // More links than the kernel follows (40): it refuses the path. The path comes back as it was given, so
+    // whatever opens it walks the same links from the start and is refused the same way. Never the rest of
+    // the walk from here: opened, that would get a count of its own and reach a target nobody judged.
+    if (++links > 40) return isAbsolute(p) ? p : `${process.cwd()}/${p}`;
     let to: string;
     try { to = readlinkSync(next); } catch { missing = true; at = next; continue; }
     if (to.startsWith("/")) at = "/";
