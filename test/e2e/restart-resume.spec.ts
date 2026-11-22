@@ -483,6 +483,9 @@ test("a background agent is continued across restarts and its record matches wha
     await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "close_agent", input: { target: id } }])}` });
     await expect.poll(state_, { timeout: 30_000 }).toEqual(["stopped", false]);
     await expect.poll(async () => (await reports()).length, { timeout: 30_000 }).toBe(2);
+    // The agent's model is told its parent stopped the call, not the user.
+    const stoppedCall = ((await view(child)).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).at(-1);
+    expect(stoppedCall.content).toBe("Interrupted while this tool ran: the turn stopped by its parent.");
 
     // Continued three times in a row with the daemon down again before a step
     // ended: it is not continued a fourth time. It fails, nothing runs in its
@@ -1144,6 +1147,14 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await expect(due).toHaveCount(0);
     expect(await ends()).toEqual(["error", "end_turn"]);
     expect((await view()).session.settings.continue_at).toBeUndefined();
+    // The turn the harness went on with is not the owner's (it read "Owner's Resume").
+    const story = await (await fetch(`${d.url}/api/sessions/${sid}/timeline?format=text`)).text();
+    expect(story).toContain("Resumed by itself after the provider's wait, ");
+    expect(story).not.toContain("Owner's Resume");
+    // A rate limit is called a rate limit, with the time it lifts, in the row and the alert (it read "A usage limit is close").
+    expect(story).toMatch(/Rate limited: wait until \d\d:\d\d/);
+    const limits = ((await call("/api/alerts", undefined, "GET")).alerts as any[]).filter((a) => a.kind === "limit");
+    expect(limits.map((a) => a.title)).toEqual(["Rate limited: Rate limited for a while"]);
 
     // A daemon that restarts during the wait still continues it. The daemon is gone before the
     // time the provider named (a wait of twenty seconds), so the turn that follows is the next daemon's.

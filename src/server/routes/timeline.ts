@@ -50,12 +50,19 @@ export const liveOf = ({ store, engine }: Pick<Deps, "store" | "engine">): Live 
   secrets: secretsWaiting,
   jobs: (id) => jobsOf(id).filter((j) => j.background && running(j)).map((j) => ({ id: j.id, started: j.started })),
   watchOf: (id) => { const s = store.session(id); return s ? sessionState(s, { from: { store, engine } }).watch : undefined; },
-  // What a waiting agent waits on: the wait due first (a timer at its wake time), else its oldest.
+  // What a waiting agent waits on: the wait due first (a timer at its wake time), else its oldest,
+  // else a command it left running (its id), with since when.
   parkedOn: (id) => {
-    const rows = store.db.query<{ kind: string; spec: string }, [string]>("SELECT kind, spec FROM waits WHERE status = 'active' AND session_id = ? ORDER BY created").all(id);
-    const timers = rows.filter((w) => w.kind === "timer").map((w) => { try { return Number(JSON.parse(w.spec).at_ms) || 0; } catch { return 0; } }).filter(Boolean).sort((a, b) => a - b);
-    return timers.length ? { kind: "timer", until: timers[0] } : rows[0] ? { kind: rows[0].kind } : undefined;
+    const rows = store.db.query<{ kind: string; spec: string; created: number }, [string]>("SELECT kind, spec, created FROM waits WHERE status = 'active' AND session_id = ? ORDER BY created").all(id);
+    const at = (w: { spec: string }) => { try { return Number(JSON.parse(w.spec).at_ms) || 0; } catch { return 0; } };
+    const timer = rows.filter((w) => w.kind === "timer" && at(w)).sort((a, b) => at(a) - at(b))[0];
+    if (timer) return { kind: "timer", until: at(timer), since: timer.created };
+    if (rows[0]) return { kind: rows[0].kind, since: rows[0].created };
+    const job = jobsOf(id).find((j) => j.background && running(j));
+    return job ? { kind: "command", id: job.id, since: job.started } : undefined;
   },
+  // When the agent's running turn began: its time at work counts from there (a restart's turn goes on from the resume).
+  turnSince: (id) => { const t = engine.turnOf(id); return t ? store.event(t)?.ts : undefined; },
   isHeld: (id) => engine.isHeld(id),
   owed: hasPending,
   questions: allPendingQuestions,
@@ -136,9 +143,12 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
         if (last) page.rows = page.rows.filter((r) => newSince(r, last.ts) && !(id === ctx.sessionId && r.kind === "turn" && r.id === last.open_id));
         // "Last read" moves only over what a read showed whole: no filter, no older page, no bound of its
         // own, and nothing left for a next page. A read that was cut keeps the cursor, so the rows it did
-        // not show are still new to the next read.
+        // not show are still new to the next read. A first read for what is new has nothing to be new
+        // against: it shows the newest rows, the older ones are history (its last line says where they
+        // start), and the next read for what is new goes from it, on a timeline of any length.
         const turn = page.now?.lines.find((l) => l.kind === "turn" && l.open);
-        if (!input?.before && !only && input?.since === undefined && !page.next) markRead(ctx.sessionId, id, page.as_of, turn && { ts: turn.ts, id: turn.turn_event });
+        const whole = !page.next || (fresh && !last);
+        if (!input?.before && !only && input?.since === undefined && whole) markRead(ctx.sessionId, id, page.as_of, turn && { ts: turn.ts, id: turn.turn_event });
         return ok(timelineText(page, { title: s.title, ...(fresh ? { fresh: { since: last?.ts ?? null } } : {}) }));
       } catch (e) {
         return fail((e as Error).message);

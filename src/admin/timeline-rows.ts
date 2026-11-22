@@ -10,9 +10,9 @@
 import { localStamp, localTime, zoneNote } from "../core/clock.ts";
 import { PEER_PREFIX } from "../core/owner.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
-import { errorClass } from "./classes.ts";
+import { classOfText, errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
-import { FAIL_WORD, NEEDS, STATE_WORD, unreachableSince } from "../core/state-words.ts";
+import { FAIL_WORD, NEEDS, STATE_WORD, failWord, limitWord, unreachableSince } from "../core/state-words.ts";
 import { ownerStop, stopSays, stopper } from "../core/stoppers.ts";
 
 export type TimelineKind =
@@ -92,7 +92,7 @@ const WHO: Record<string, string> = {
   subagent: "an agent report", loop: "a loop run", goal: "a goal check", task: "its parent's task", parent: "its parent",
   peer: "another session", task_start: "a task from another session", verify_goal: "a goal verification", review: "a review request",
   review_fix: "review findings", diagnostic: "a diagnostic", helper_digest: "the helper's digest", failures: "a failure notice",
-  command: "the end of a command it waited on",
+  command: "the end of a command it waited on", provider_wait: "Keel, after the provider's wait",
 };
 // The same, as the words a turn's row starts with: the column scans by them.
 const LEAD: Record<string, string> = {
@@ -101,14 +101,17 @@ const LEAD: Record<string, string> = {
   subagent: "Agent report", loop: "Loop run", goal: "Goal check", task: "Parent's task", parent: "Parent's message",
   peer: "Message from another session", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
   review_fix: "Review findings", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
-  command: "Command ended",
+  command: "Command ended", provider_wait: "Resumed by itself after the provider's wait",
 };
-export type Opener = { about?: unknown; origin?: unknown; kind?: unknown; job?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown } | null | undefined;
+// `continued`: the harness went on with a failed turn by itself when the wait the provider asked for was over (its round).
+export type Opener = { about?: unknown; origin?: unknown; kind?: unknown; job?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown; continued?: unknown } | null | undefined;
 export const whoWords = (key: string) => WHO[key] ?? "something else";
 export function originOf(o: Opener): { key: string; words: string; lead: string; queued: boolean } {
   const origin = str(o?.origin), kind = str(o?.kind);
   // The end of a command its turn had been waiting on (a harness input that names the job, src/tools/jobs.ts).
-  const key = origin === "restart" ? "restart" : kind === "harness" && str(o?.job) ? "command" : kind && WHO[kind] ? kind : origin === "harness" && !kind ? "continue" : origin && WHO[origin] ? origin : kind || origin ? "other" : "owner";
+  // A harness prompt with no kind is the owner's Resume, unless the harness wrote it itself after the provider's wait.
+  const key = origin === "restart" ? "restart" : kind === "harness" && str(o?.job) ? "command" : kind && WHO[kind] ? kind
+    : origin === "harness" && !kind ? (o?.continued != null ? "provider_wait" : "continue") : origin && WHO[origin] ? origin : kind || origin ? "other" : "owner";
   return { key, words: WHO[key] ?? "something else", lead: LEAD[key] ?? "Other input", queued: origin === "queued" && key !== "queued" };
 }
 
@@ -332,7 +335,8 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
       return row("approval", `Approval asked${p?.tool ? ` for ${p.tool}` : ""}${p?.risk === "high" ? " (high risk)" : ""}`, pending ? { tone: "owner", open: true, sub: "asked" } : { sub: "asked" }, { approval_id: str(d.approval_id) });
     }
     if (a.sub === "question") return row("question", "Asked the owner a question", { sub: "asked" }, { call_id: str(d.call_id) });
-    if (a.sub === "limit") return row("limit", "A usage limit is close", { sub: "close" });
+    // Which limit, and when it lifts when the provider said (a rate limit is not a usage limit).
+    if (a.sub === "limit") return row("limit", d.cls ? `${limitWord(d.cls)}${typeof d.until === "number" ? `: wait until ${localTime(d.until).slice(0, 5)}` : ""}` : "A usage limit is close", { sub: "close" });
     return null;
   }
   if (a.kind === "turn" && a.sub === "goal") {
@@ -352,9 +356,11 @@ export const CLASS: Record<string, string> = FAIL_WORD;
 export function errorRow(e: Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts">): TimelineRow {
   const cls = e.source === "provider" ? errorClass({ message: e.message }) : null;
   const n = e.count ?? 1;
+  // A hook of the owner's that failed is the hook's, in its own words: the tool it ran for did not fail.
+  const hook = e.source === "tool" && /^Hook (timed out|failed on) /.test(e.message) ? e.message.split("\n")[0]!.slice(0, 200) : undefined;
   return clean({
     id: e.id, ts: e.ts, kind: "error" as const, sub: e.source, tone: (e.resolved_ts ? "plain" : "failed") as Tone,
-    text: `${SOURCE[e.source] ?? "Other"} error${cls && CLASS[cls] ? ` (${CLASS[cls]})` : ""}${n > 1 ? `, ${n} times in all sessions` : ""}${e.resolved_ts ? ", marked fixed" : ""}`,
+    text: `${hook ?? `${SOURCE[e.source] ?? "Other"} error${cls && CLASS[cls] ? ` (${CLASS[cls]})` : ""}`}${n > 1 ? `, ${n} times in all sessions` : ""}${e.resolved_ts ? ", marked fixed" : ""}`,
     turn_event: e.turn_event, ...refs({ error_id: e.id, span_id: e.span_id }),
   });
 }
@@ -391,7 +397,8 @@ export type NowInput = {
   held?: { since?: number; note_id?: string } | null; // a cut turn that was not continued
   waits: { id: string; kind: string; created: number; deadline: number }[];
   // `wait`: what an agent that waits is waiting on, and for a timer when it is due.
-  agents: { id: string; session_id: string; title: string; status: string; created: number; wait?: { kind: string; until?: number } }[];
+  // `since`: when what it does now began (its running turn, or its wait): the time it shows counts from there, not from its start.
+  agents: { id: string; session_id: string; title: string; status: string; created: number; since?: number; wait?: { kind: string; until?: number; id?: string; since?: number } }[];
   queue: { queued: number; steers: number; held: boolean; owed: boolean };
   loops: { id: string; name: string; next_ms: number }[];
   last?: { ts: number; outcome: string } | null;
@@ -402,8 +409,8 @@ const DOING = (s: TurnStatus, now: number, output?: number): string => {
     // A stream that gave output and then stopped says so, with how long it has been silent.
     case "model": return s.quiet ? `the model is answering, no output for ${dur(now - s.quiet)}` : s.connected ? "the model is answering" : "waiting for the model";
     case "tool": return `running ${s.names.slice(0, 3).join(", ")}${s.names.length > 3 ? ` and ${s.names.length - 3} more` : ""}`;
-    // A provider that cannot be reached is waited for, not retried by count.
-    case "retry": return s.unreachable ? `${STATE_WORD.wait.toLowerCase()}: ${lower(unreachableSince(localTime(s.unreachable).slice(0, 5)))}` : `retrying the model request (attempt ${s.attempt} of ${s.max})`;
+    // A provider that cannot be reached is waited for, not retried by count; a counted retry names its cause.
+    case "retry": { if (s.unreachable) return `${STATE_WORD.wait.toLowerCase()}: ${lower(unreachableSince(localTime(s.unreachable).slice(0, 5)))}`; const why = failWord(classOfText(s.message)); return `retrying the model request (attempt ${s.attempt} of ${s.max}${why ? `: ${why}` : ""})`; }
     case "compacting": return "compacting the context";
     default: return output ? "the model is answering" : "between steps";
   }
@@ -441,8 +448,12 @@ export function nowLines(n: NowInput): TimelineNow {
   } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
     // A parked agent says what it waits for; a timer's wake time makes the line say when it is due.
-    const parked = a.status === "waiting" ? `is ${STATE_WORD.wait.toLowerCase()} for ${a.wait ? waitWords(a.wait.kind) : "a wake of its own"}` : "is working";
-    add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${parked}`, { ts: a.created, open: true, ...(a.status === "waiting" && a.wait?.until ? { until: a.wait.until } : {}) }, { agent_id: a.id, child_session: a.session_id });
+    // A command it left running is named by its id, as its parent stops or reads it.
+    const on = !a.wait ? "a wake of its own" : a.wait.kind === "command" && a.wait.id ? `command ${a.wait.id}` : waitWords(a.wait.kind);
+    const parked = a.status === "waiting" ? `is ${STATE_WORD.wait.toLowerCase()} for ${on}` : "is working";
+    // Counted from what it does now: a turn resumed after a restart does not count the time the daemon was down.
+    const since = a.status === "waiting" ? a.wait?.since : a.since;
+    add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${parked}`, { ts: Math.max(a.created, since ?? a.created), open: true, ...(a.status === "waiting" && a.wait?.until ? { until: a.wait.until } : {}) }, { agent_id: a.id, child_session: a.session_id });
   }
   if (n.agents.length > AGENTS_SHOWN) add("agents", "agent", "live", `${n.agents.length - AGENTS_SHOWN} more agents are working`, { open: true });
   // A timer is due at its wake time (its deadline is a minute later: it fires, it does not time out).
@@ -480,7 +491,7 @@ export function timelineText(p: TimelinePage, opts: { title?: string; ids?: bool
   const at = p.as_of;
   const last = opts.fresh?.since;
   if (last != null && !p.rows.length && !p.next) return `Nothing new in session ${title(opts.title, p.session_id)} since you last read it at ${localTime(last)} (${dur(at - last)} ago).${p.now ? ` Now: ${STATE[p.now.state]}.` : ""}`;
-  const what = !opts.fresh ? "newest first" : last == null ? "newest first (no earlier read of yours is kept: every row)" : `new since you last read it at ${localTime(last)}, newest first`;
+  const what = !opts.fresh ? "newest first" : last == null ? `newest first (no earlier read of yours is kept: ${p.next ? "the newest rows; the next read with new goes from this one" : "every row"})` : `new since you last read it at ${localTime(last)}, newest first`;
   const out: string[] = [`Timeline of session ${title(opts.title, p.session_id)} (${p.session_id}), ${what}. ${zoneNote(at)}; read at ${localStamp(at)}.`];
   if (p.now) {
     out.push(`Now: ${STATE[p.now.state]}.`);

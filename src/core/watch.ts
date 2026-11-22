@@ -27,6 +27,7 @@
 // The words are the vocabulary's (src/core/state-words.ts): one word per
 // state, for a session and an agent alike, on the page and in a tool's answer.
 import type { Session, StoredEvent, TurnStatus } from "./types.ts";
+import { classOfText } from "../admin/classes.ts";
 import { COMMAND_IN_BACKGROUND, STATE_WORD, UNREACHABLE, WAITS_FOR, agentsWait, failWord, stateLabel, unreachableSince, waitsFor } from "./state-words.ts";
 
 // `stop`: the owner (or a parent) stopped the last turn, or it stopped at its
@@ -96,6 +97,7 @@ export type SessionState = {
   as_of?: number;
   offline?: boolean;
   stuck?: StuckMark; // the daemon's word that the running step is stuck
+  by?: string;      // stop: who stopped its last turn (a word of src/core/stoppers.ts), when known
 };
 
 // Something the session set up that will start its next turn. `kind`: a
@@ -220,9 +222,16 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
   // The provider answers again and the request that waited for it is on its way.
   if (st?.kind === "retry" && st.unreachable) return { why: "model", text: "Calling the model", ...since(f.turn) };
   // A retry says when the request goes again: the provider asked for the wait.
-  if (st?.kind === "retry") return { why: "retry", text: `Retry ${st.attempt} of ${st.max} of the model request`, ...since(f.turn), ...(st.at ? { until: st.at } : {}) };
+  // With why, when the failure has a class: "Retry 8 of 9: provider unreachable".
+  if (st?.kind === "retry") return { why: "retry", text: retryText(st), ...since(f.turn), ...(st.at ? { until: st.at } : {}) };
   if (st?.kind === "compacting") return { why: "compacting", text: "Compacting the context", ...since(f.turn) };
   return { why: "turn", ...(f.output ? { text: "The model is answering" } : {}), ...since(f.turn) };
+}
+
+// A retry of the model request in words, with the class of the failure it follows when it has one.
+export function retryText(st: { attempt: number; max: number; message?: string }): string {
+  const why = st.message ? failWord(classOfText(st.message)) : "";
+  return why ? `Retry ${st.attempt} of ${st.max}: ${why}` : `Retry ${st.attempt} of ${st.max} of the model request`;
 }
 
 // The time of day on the reader's 24-hour clock: 09:51.
@@ -264,14 +273,14 @@ export function stateLine(st: SessionState, now = Date.now()): string {
 
 // The session's own state and how its last turn ended, from its events when
 // they are loaded, else from the marks the daemon keeps on it (failed_ms, last_end).
-function own(s: Session, events: StoredEvent[] | undefined): { watch: Watch; end?: string } {
+function own(s: Session, events: StoredEvent[] | undefined): { watch: Watch; end?: string; by?: string } {
   if (s.phase === "working") return { watch: "work" };
   if (s.phase === "error") return { watch: "fail" };
   if (events) {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
       if (e.kind === "error") return { watch: "fail" };
-      if (e.kind === "turn_end") return { watch: ENDED[e.data.reason] ?? "done", end: String(e.data.reason ?? "") };
+      if (e.kind === "turn_end") return { watch: ENDED[e.data.reason] ?? "done", end: String(e.data.reason ?? ""), ...(typeof e.data.stopped_by === "string" ? { by: e.data.stopped_by } : {}) };
       if (e.kind === "user") break;
     }
     // A turn that started and never ended (the daemon stopped under it) failed.
@@ -279,7 +288,7 @@ function own(s: Session, events: StoredEvent[] | undefined): { watch: Watch; end
     return { watch: "idle" };
   }
   if (s.settings.failed_ms) return { watch: "fail", end: s.settings.last_end };
-  if (s.settings.last_end) return { watch: ENDED[s.settings.last_end] ?? "done", end: s.settings.last_end };
+  if (s.settings.last_end) return { watch: ENDED[s.settings.last_end] ?? "done", end: s.settings.last_end, ...(s.settings.last_end === "interrupted" && s.settings.stopped_by ? { by: s.settings.stopped_by } : {}) };
   return { watch: s.usage.output > 0 ? "done" : "idle" };
 }
 
@@ -300,7 +309,7 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   }
   // The caller knows only that it waits on the owner (a count, or a running turn whose every call does): said without the thing.
   if ((f.approvals ?? 0) > 0 || f.asking) return { watch: "need", agents, why: f.approvals ? "approval" : f.owner ? "owner" : "question", ...(f.owner ? { text: "Waits for your answer" } : {}), asks: Math.max(1, f.approvals ?? 0) };
-  const { watch: w, end } = own(s, events);
+  const { watch: w, end, by } = own(s, events);
   // How many of its agents wait: the rest work, and a head counts those.
   const parked = f.parked ? { parked: Math.min(agents, f.parked) } : {};
   // Its turn runs and can do nothing until its provider answers: it waits, and goes on by itself.
@@ -322,7 +331,7 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   // A turn the owner stopped, or a restart cut, waits on them, not on a timer.
   if (w === "stop") {
     const text = end === "max_steps" ? END_TEXT.max_steps! : f.queue?.held && f.queue.queued ? queued(f.queue.queued) : undefined;
-    return { watch: "stop", agents, ...(text ? { why: end === "max_steps" ? "max_steps" : "held", text } : {}) };
+    return { watch: "stop", agents, ...(text ? { why: end === "max_steps" ? "max_steps" : "held", text } : {}), ...(by && end === "interrupted" ? { by } : {}) };
   }
   if (w === "resume" || !f.pending?.length) return { watch: w, agents };
   // A command it left running in the background is work that goes on: working, with the command.

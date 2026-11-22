@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ProviderError } from "../providers/http.ts";
-import { errorClass } from "./classes.ts";
+import { classOfText, errorClass } from "./classes.ts";
 import { scaleZones, zoneBytes, zoneCache } from "./zones.ts";
 
 const msg = (role: "user" | "assistant", text: string) => ({ role, content: [{ type: "text" as const, text }] });
@@ -59,6 +59,12 @@ test("failures fall into classes by the driver's kind, the status, then the word
   expect(errorClass(new Error("read ECONNRESET"))).toBe("stream_drop");
   expect(errorClass(new Error("the stream broke: read ECONNRESET"))).toBe("stream_drop");
   expect(errorClass(new Error("something odd"))).toBe("other");
+  // A connection that never opened is not a stream that dropped: the box says the provider could not be reached.
+  expect(errorClass(new ProviderError("network", "Lab: Unable to connect. Is the computer able to access the url?"))).toBe("unreachable");
+  expect(errorClass(new ProviderError("network", "Bedrock: getaddrinfo EAI_AGAIN bedrock-runtime.example"))).toBe("unreachable");
+  expect(classOfText("Lab (local fake): Unable to connect. Is the computer able to access the url? (the provider asked to wait until 20:08 UTC+02:00, longer than a turn waits)")).toBe("unreachable");
+  expect(errorClass(new ProviderError("network", "Lab: the stream broke: The socket connection was closed unexpectedly."))).toBe("stream_drop");
+  expect(classOfText("HTTP 429: Scripted: 429 rate limited, retry after 1 min")).toBe("rate_limit");
   // The caller's own stop is decided by its signal, not here: an abort the
   // driver tagged, or one of no known origin, is a failure of the call.
   expect(errorClass(Object.assign(new Error("deadline"), { name: "AbortError", kind: "network" }))).toBe("stream_drop");

@@ -75,7 +75,8 @@ export type Live = {
   turnOf?(id: string): string | undefined;
   statusOf?(id: string): TurnStatus;
   outputOf?(id: string): number | undefined; // when the reply being streamed last gave output
-  parkedOn?(id: string): { kind: string; until?: number } | undefined; // what a waiting agent's session waits on
+  parkedOn?(id: string): { kind: string; until?: number; id?: string; since?: number } | undefined; // what a waiting agent's session waits on
+  turnSince?(id: string): number | undefined; // when the running turn of a session began
   plans?(): { id: string; session_id: string; created: number }[]; // plans presented for approval
   secrets?(): { id: string; session_id: string; created: number }[]; // secrets asked for and not given yet
   jobs?(id: string): { id: string; started: number }[]; // commands the session left running in the background
@@ -266,7 +267,7 @@ export class Timeline {
     const q = this.store.db.query<{ kind: string; parent: string | null; session_id: string; o: string | null }, [string]>(
       `SELECT kind, parent, session_id, CASE WHEN kind = 'user' THEN json_object('origin', data ->> '$.origin', 'kind', data ->> '$.kind', 'queue_id', data ->> '$.queue_id',
                   'wait_id', data ->> '$.wait_id', 'agent_id', data ->> '$.agent_id', 'loop_id', data ->> '$.loop_id', 'run_id', data ->> '$.run_id', 'from', data ->> '$.from',
-         'outcome', data ->> '$.outcome', 'status', data ->> '$.status', 'job', data ->> '$.job',
+         'outcome', data ->> '$.outcome', 'status', data ->> '$.status', 'job', data ->> '$.job', 'continued', data ->> '$.continued',
          'about', CASE WHEN data ->> '$.kind' IS NULL AND COALESCE(data ->> '$.origin', '') IN ('', 'steer', 'queued', 'voice', 'cli') THEN substr(data ->> '$.text', 1, 240) END)
          WHEN kind = 'turn_end' THEN json_object('reason', data ->> '$.reason') END AS o
        FROM events WHERE id = ?`);
@@ -315,7 +316,8 @@ export class Timeline {
     const opener = this.opener(sessionId, m.parent);
     // What woke it is said here, and has no row of its own (see folded).
     const w = opener?.kind === "wait" && opener.outcome === "fired" && typeof opener.wait_id === "string" ? look.wait?.(opener.wait_id) : undefined;
-    const g = opener?.kind === "subagent" && opener.status === "completed" && typeof opener.agent_id === "string" ? look.agent?.(opener.agent_id) : undefined;
+    // Whatever it came to: a failed agent's report is named as a finished one's is.
+    const g = opener?.kind === "subagent" && typeof opener.agent_id === "string" ? look.agent?.(opener.agent_id) : undefined;
     const end = f.end ? JSON.parse(f.end.data ?? "{}") : null;
     // What it spent, over every request made while it ran; a turn with no
     // such row (it is from before the table, or no request was recorded)
@@ -585,7 +587,7 @@ export class Timeline {
     const again = !turn && !live.isRunning?.(sessionId) ? this.store.session(sessionId)?.settings.continue_at : undefined;
     return nowLines({
       ts, turn, last, held, approvals, questions, waits, loops, plans, secrets, resumes: again ? { at: again.at, since: last?.ts } : null, jobs: live.jobs?.(sessionId) ?? [], watch: live.watchOf?.(sessionId),
-      agents: agents.map((a) => (a.status === "waiting" ? { ...a, wait: live.parkedOn?.(a.session_id) } : a)),
+      agents: agents.map((a) => (a.status === "waiting" ? { ...a, wait: live.parkedOn?.(a.session_id) } : { ...a, since: live.turnSince?.(a.session_id) })),
       // A turn the engine has taken up and not opened yet: its system prompt, its model, its first event.
       starting: !turn && !!live.isRunning?.(sessionId),
       queue: { queued: queued.find((r) => !r.steer)?.n ?? 0, steers: queued.find((r) => r.steer)?.n ?? 0, held: !!live.isHeld?.(sessionId), owed: !!live.owed?.(sessionId) },

@@ -24,9 +24,20 @@ const WORDS: [RegExp, ErrorClass][] = [
   [/prompt is too long|context.?(window|length)|maximum context|too many tokens|input is too long|input token count|exceeds? the maximum number of tokens|exceed.{0,30}context/i, "context_overflow"],
   [/unauthori[sz]ed|forbidden|invalid.{0,12}(api.?key|token|credential)|expired.{0,12}token|no credentials/i, "auth"],
   [/quota|billing|insufficient.{0,10}(credit|balance|funds)|payment/i, "quota"],
-  [/econnreset|econnrefused|etimedout|socket|terminated|stream (ended|closed|broke|went silent)|premature close|fetch failed|network|timed? ?out/i, "stream_drop"],
+  [/econnreset|etimedout|socket|terminated|stream (ended|closed|broke|went silent)|premature close|fetch failed|network|timed? ?out/i, "stream_drop"],
   [/internal server error|service unavailable|bad gateway/i, "server"],
 ];
+
+// The words of a connection that never opened: a refused or unresolved address, a socket that could
+// not be opened (Bun: "Unable to connect. Is the computer able to access the url?").
+const NEVER_OPENED = /\b(?:EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENETDOWN|ConnectionRefused|FailedToOpenSocket)\b|\bUnable to connect\b|getaddrinfo/i;
+
+// The class of a failed request from the text it is stored as (a turn's error, a retry's message):
+// an "HTTP 429: ..." opening gives its status.
+export function classOfText(message: string): ErrorClass {
+  const status = Number(/^HTTP (\d{3}):/.exec(message)?.[1] ?? 0);
+  return errorClass({ status, message }) ?? "other";
+}
 
 // null: not a failure of the call (a driver said it was cancelled). Whether
 // the owner stopped it is the caller's signal, checked before this: an abort
@@ -40,6 +51,10 @@ export function errorClass(e: unknown): ErrorClass | null {
   if (imageRefusal(e)) return "image";
   // The request could not be sent (the driver said so, or a stored message does).
   if (unreachable(e) || (!err.kind && !err.status && !err.statusCode && unreachableText(String(err.message ?? err ?? "")))) return "unreachable";
+  // A transport failure the driver could not place, whose words are those of a connection that never
+  // opened: no stream was open to drop. Said as what the failure box says, for display and counting
+  // only; whether a request may be sent again uncounted is the driver's proof alone.
+  if ((err.kind === "network" || !err.kind) && !err.status && NEVER_OPENED.test(String(err.message ?? err ?? ""))) return "unreachable";
   if (typeof err.kind === "string" && KIND[err.kind]) return KIND[err.kind]!;
   if (err.name === "AbortError" || err.name === "TimeoutError") return "stream_drop";
   const status = Number(err.status ?? err.statusCode ?? 0);

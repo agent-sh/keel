@@ -7,6 +7,7 @@
 // resume it now or call it off.
 import { CircleAlert, Clock, ExternalLink, Play, RotateCw } from "lucide-react";
 import { Fragment, useState } from "react";
+import { errorClass } from "../../../src/admin/classes.ts";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
 import { actions, reportError } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
@@ -65,7 +66,8 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
   const message = String(e.data.message ?? "The turn failed.");
   const http = /^HTTP (\d+): /.exec(message);
   const status = typeof e.data.status === "number" ? e.data.status : http ? Number(http[1]) : undefined;
-  const kind = kindOf(e.data.kind, status);
+  const said = kindOf(e.data.kind, status);
+  const kind = (said === "network" || said === undefined) && errorClass({ message, ...(said ? { kind: said } : {}), ...(status ? { status } : {}) }) === "unreachable" ? "unreachable" : said;
   const words = http ? message.slice(http[0].length) : message;
   const url = firstUrl(words);
   // Set while the session will go on by itself after this failure, and it is still the last thing in it.

@@ -1,5 +1,5 @@
 import { failWord } from "../core/state-words.ts";
-import { errorClass } from "../admin/classes.ts";
+import { classOfText } from "../admin/classes.ts";
 import { fingerprint } from "../core/store.ts";
 import { NUDGE_AT } from "../engine/repeat.ts";
 import { clip, inert } from "./core.ts";
@@ -124,10 +124,7 @@ export function exampleOf(message: string): string {
 }
 
 // The class of a failed request, from the text a turn's error is stored as.
-export function classOf(message: string): string {
-  const status = Number(/^HTTP (\d{3}):/.exec(message)?.[1] ?? 0);
-  return errorClass({ status, message }) ?? "other";
-}
+export const classOf = (message: string): string => classOfText(message);
 
 const label = (s?: string) => (s ? clip(s.replace(/[<>"\s\p{Cc}]+/gu, " ").trim(), LABEL_CHARS) : undefined);
 const sum = (refs: FailureRef[]) => refs.reduce((s, r) => s + r.owed, 0);

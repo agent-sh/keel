@@ -70,6 +70,8 @@ test("who started a turn: what the prompt says it is, then how it arrived", () =
   expect(originOf({ kind: "something-new" })).toMatchObject({ words: "something else", lead: "Other input" });
   // The owner's Continue is stored as a harness prompt; a note the harness writes names its kind.
   expect(originOf({ origin: "harness" })).toMatchObject({ key: "continue", lead: "Owner's Resume", words: "the owner's Resume" });
+  // The harness went on by itself after the provider's wait: not the owner's Resume.
+  expect(originOf({ origin: "harness", continued: 1 })).toMatchObject({ key: "provider_wait", lead: "Resumed by itself after the provider's wait" });
   expect(originOf({ origin: "harness", kind: "harness" })).toMatchObject({ key: "harness", lead: "Harness note" });
   expect(originOf({ kind: "failures" }).lead).toBe("Failure notice");
 });
@@ -157,6 +159,12 @@ test("now: what waits on the owner first, then what runs, then what is waited on
     ["wait", "plain", "Waiting for a timer"],
     ["queue", "plain", "2 queued prompts and 1 steer wait for the turn"],
   ]);
+  // An agent parked on a command names it; one at work counts from its running turn, not across the daemon's downtime.
+  const agents = nowLines({ ...quiet, agents: [
+    { id: "g1", session_id: "c1", title: "Stuck lane", status: "running", created: 10_000, since: 90_000 },
+    { id: "g2", session_id: "c2", title: "Long tool", status: "waiting", created: 10_000, wait: { kind: "command", id: "b23mvgd", since: 20_000 } },
+  ] }).lines;
+  expect(agents.map((l) => [l.text, l.ts])).toEqual([['Agent "Stuck lane" is working', 90_000], ['Agent "Long tool" is waiting for command b23mvgd', 20_000]]);
   // The ids a line leads by: the card, the turn's receipt.
   expect(busy.lines[0]).toMatchObject({ refs: { approval_id: "p1", call_id: "c1" } });
   expect(busy.lines[1]).toMatchObject({ turn_event: "t1", ts: 40_000 });

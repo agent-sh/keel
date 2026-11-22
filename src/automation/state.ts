@@ -13,6 +13,7 @@ import type { Session, StoredEvent, TurnStatus } from "../core/types.ts";
 import { statSync } from "node:fs";
 import { STUCK_AFTER, stuckOf, type After, type Progress } from "../core/stuck.ts";
 import { oneLine, stateOf, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
+import { stopSays } from "../core/stoppers.ts";
 import { UNREACHABLE_WORD, stateLabel, stateWords } from "../core/state-words.ts";
 import { zonedClock } from "../core/clock.ts";
 import { settings } from "../admin/settings.ts";
@@ -90,9 +91,10 @@ function failureOf(store: Store, s: Session): { cls?: string; text?: string; at?
   const hit = failures.get(key);
   if (hit) return hit;
   const e = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'error' ORDER BY seq DESC LIMIT 1").get(s.id);
-  let message = "";
-  try { message = String(JSON.parse(e?.data ?? "{}").message ?? ""); } catch {}
-  const cls = message ? errorClass({ message }) ?? undefined : undefined;
+  let message = "", kind: unknown, status: unknown;
+  try { ({ message = "", kind, status } = JSON.parse(e?.data ?? "{}")); message = String(message); } catch {}
+  // With the driver's kind and status the turn kept: its class is the one the failure box reads.
+  const cls = message ? errorClass({ message, ...(typeof kind === "string" ? { kind } : {}), ...(typeof status === "number" ? { status } : {}) }) ?? undefined : undefined;
   const out = { ...(cls && cls !== "other" ? { cls } : {}), ...(message ? { text: message.split("\n")[0]! } : {}), at };
   if (failures.size > 2000) failures.clear();
   failures.set(key, out);
@@ -267,6 +269,7 @@ export function stateWord(st: State): string {
   if (st.watch === "fail" && said.what) return `failed (${said.what})`;
   if (st.watch === "declined") return "declined by the model";
   if (st.watch === "stop" && st.why === "max_steps") return "stopped at the step budget";
+  if (st.watch === "stop" && st.by) return stopSays(st.by);
   return watchWord(st.watch, st.agents);
 }
 

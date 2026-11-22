@@ -70,8 +70,13 @@ export const FAIL_WORD: Record<string, string> = {
   auth: "sign-in", quota: "billing", refusal: "declined", image: "image refused", invalid_request: "invalid request", max_tokens: "output limit",
 };
 export const failWord = (cls: string | undefined) => (cls ? FAIL_WORD[cls] ?? "" : "");
+// A turn that failed on a limit of the provider's, by the limit's class: a rate limit is not a usage limit.
+const LIMIT_WORD: Record<string, string> = { rate_limit: "Rate limited", overloaded: "Overloaded", quota: "Usage limit" };
+export const limitWord = (cls: unknown) => LIMIT_WORD[String(cls ?? "")] ?? "Usage limit";
 
 const plural = (n: number) => `${n} agent${n === 1 ? "" : "s"}`;
+// A session counted as Failed for agents of it that failed, until the owner looks at it.
+export const agentsFailedText = (n: number) => `${n} of its agents failed`;
 
 // ---- A provider that cannot be reached. The turn waits and tries again by
 // itself (src/providers/outage.ts); every surface says it in these words.
@@ -268,6 +273,7 @@ export const ALERT_WORD: Record<string, string> = {
 // The word of one alert: a question that carries a plan is a Plan, one that asks for a secret a Secret,
 // and a turn the model declined is Declined, not Done (`declined`: its session reads so now and this is its newest word).
 export function alertWord(a: AlertLike, declined = false): string {
+  if (a.kind === "limit" && (a.data as { cls?: string } | null | undefined)?.cls) return limitWord((a.data as { cls?: string }).cls);
   if (a.kind === "question") return a.data?.plan_id ? "Plan" : a.data?.secret_id ? "Secret" : ALERT_WORD.question!;
   if (a.kind === "finished" && (declined || a.data?.end === "refusal")) return STATE_WORD.declined;
   return ALERT_WORD[a.kind] ?? a.kind;

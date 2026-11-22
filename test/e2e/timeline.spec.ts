@@ -455,6 +455,38 @@ test("a session reads its own timeline and its agents' through a tool, and no ot
   }
 });
 
+// Feature: "what is new since I last read" works on a timeline longer than a
+// page. A session of sixty-odd turns reads its own timeline twice with
+// `new: true`: the first read shows the newest page and says where the older
+// rows start, the second is one line. (Each read returned the first page
+// again: the cursor moved only after a read that had no older page.)
+test("a second read for what is new is one line on a timeline longer than a page", async () => {
+  const state = join(ROOT, `timeline-new-${Date.now()}`);
+  made.push(state);
+  for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
+  const [id] = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-transcript.ts"), join(state, "state"), join(state, "work"), "400", "Sixty turns"],
+    { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_FIXTURE_SHAPE: "turns" } })) as string[];
+  const d = await daemon(state);
+  const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+  try {
+    await call(`/api/sessions/${id}/permissions`, { mode: "full-auto" }, "PUT");
+    const tool = { name: "keel__session_timeline", input: { new: true } };
+    const ends = async () => { const v = await call(`/api/sessions/${id}`); return !v.running && (v.events as StoredEvent[]).filter((e) => e.kind === "turn_end").length; };
+    const before = await ends() as number;
+    expect(before).toBeGreaterThan(60);
+    await call(`/api/sessions/${id}/messages`, { text: script([tool, tool]) });
+    await expect.poll(ends, { timeout: 60_000 }).toBe(before + 1);
+    const got = ((await call(`/api/sessions/${id}`)).events as StoredEvent[]).flatMap((e) => (e.kind === "tool_result" ? (e.data.results as { content: string }[]) : [])).slice(-2).map((r) => r.content);
+    expect(got[0]!.split("\n")[0]).toContain("newest first (no earlier read of yours is kept: the newest rows; the next read with new goes from this one).");
+    expect(got[0]).toContain("Older rows: before=");
+    expect(got[1]).toMatch(/^Nothing new in session "Sixty turns" since you last read it at \d\d:\d\d:\d\d \(\d+ m?s ago\)\. Now: working\.$/);
+  } finally {
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+  }
+});
+
 // Feature: the timeline is read in bounded time whatever the session holds. A
 // session of 40,000 plain notes and no turn (none of them makes a row) opens
 // its Timeline at once, and the daemon answers other requests meanwhile: what
