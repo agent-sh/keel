@@ -201,16 +201,40 @@ export const auto = {
     says("/api/presence", { session_id, focused, page: PAGE, ...(shown.length ? { shown } : {}), ...(idle_ms === undefined ? {} : { idle_ms }) }),
 };
 
+// The list is read when the page's socket opens; after that a frame that changes the inbox is
+// applied to the list the page keeps, with the counts the frame carries. It is read again only
+// for what a frame cannot say: a daemon that sends no counts (an older one), and an alert
+// marked unread that the page does not hold.
 let alertsTimer: ReturnType<typeof setTimeout> | undefined;
 const refreshAlerts = () => {
   clearTimeout(alertsTimer);
   alertsTimer = setTimeout(() => auto.loadAlerts().catch(reportError), 150);
 };
+// What the page keeps of the list: the recent history and every unread alert, as the daemon's own answer does.
+const KEPT_ALERTS = 100;
+const keptAlerts = (list: Alert[]) => (list.length > KEPT_ALERTS ? list.filter((a, i) => i < KEPT_ALERTS || !a.read) : list);
+// What a read told by a frame read: the same alerts the daemon marked (src/automation/alerts.ts, markRead).
+// False for a frame that says something else (an ask that was settled): the list is read then, as before.
+type ReadFrame = { ids?: string[]; session_id?: string; all?: boolean; seen?: number; auto?: boolean; touch?: boolean; unread?: string; rev?: number };
+function applyRead(d: ReadFrame): boolean {
+  if (d.unread) {
+    if (!state.alerts.some((a) => a.id === d.unread)) return false;
+    set({ alerts: state.alerts.map((a) => (a.id === d.unread ? { ...a, read: false, kept: true, rev: d.rev ?? a.rev } : a)) });
+    return true;
+  }
+  if (!d.ids && !d.session_id && !d.all) return false;
+  const seen = Number.isFinite(d.seen) ? Number(d.seen) : Infinity;
+  const hit = (a: Alert) =>
+    !a.read && a.rev <= seen && !((d.auto || d.touch) && a.kept) && !(d.auto && CALLS.includes(a.kind)) &&
+    (d.ids ? d.ids.includes(a.id) : d.session_id ? a.session_id === d.session_id : !!d.all);
+  set({ alerts: state.alerts.map((a) => (hit(a) ? { ...a, read: true, kept: false } : a)) });
+  return true;
+}
 
 onFeature({
   frame: (f) => {
     if (f.name !== "automation") return;
-    const { kind, data: d } = f.data as { kind: string; data: any };
+    const { kind, data: d, counts } = f.data as { kind: string; data: any; counts?: Unread };
     // Records are ordered by the bus rev: a frame older than what a snapshot already showed is dropped.
     if (kind === "agent") {
       if (!newer(`agent:${d.id}`, f.rev)) return;
@@ -226,12 +250,16 @@ onFeature({
         set({ loops: rest });
       } else set({ loops: { ...state.loops, [d.id]: d } });
     } else if (kind === "alert") {
-      // A new alert goes on top; an update (a channel's handoff) keeps its place.
+      // A new alert goes on top; an update (a channel's handoff, a notification sent after all) keeps its place.
       const at = state.alerts.findIndex((a) => a.id === d.id);
-      const alerts = at >= 0 ? state.alerts.map((a, i) => (i === at ? { ...a, delivery: d.delivery } : a)) : [d, ...state.alerts];
+      const alerts = at >= 0 ? state.alerts.map((a, i) => (i === at ? { ...a, ...d } : a)) : keptAlerts([d, ...state.alerts]);
       set({ alerts, rev: Math.max(state.rev, d.rev ?? 0) });
-      refreshAlerts();
-    } else if (kind === "alerts_read") refreshAlerts();
+      if (counts) applyInbox(counts);
+      else refreshAlerts();
+    } else if (kind === "alerts_read") {
+      if (counts && applyRead(d)) applyInbox(counts);
+      else refreshAlerts();
+    }
     else if (kind === "snooze") {
       const { [d.session_id]: _, ...rest } = state.snoozes;
       set({ snoozes: d.snooze ? { ...rest, [d.session_id]: d.snooze } : rest });

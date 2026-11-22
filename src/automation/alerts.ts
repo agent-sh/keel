@@ -1,5 +1,5 @@
 import * as activity from "./activity.ts";
-import { D, alertHook, capture, clip, cursor, emit } from "./core.ts";
+import { D, alertHook, capture, clip, cursor, emit, inboxCounts } from "./core.ts";
 import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { allPendingQuestions, pendingQuestions } from "../tools/interact.ts";
@@ -721,6 +721,7 @@ export function farGone(machine: string, sessionId?: string) {
   }
 }
 alertHook.raise = (kind, sessionId, title, body, data) => void raise(kind as AlertKind, sessionId, title, body, data);
+inboxCounts.get = unreadCounts;
 
 // The notifications held back while the owner attended a session: each goes to its channels once
 // they no longer attend it, if it is still unread and (an ask) its card still waits. Nothing is

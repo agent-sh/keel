@@ -23,8 +23,13 @@ export function D(): Deps {
 // The tool family of a session's model, from the listing (never from its name).
 export const familyOf = (model: string) => D().providers.current().find((m) => m.id === model)?.family ?? "claude";
 
+// A frame that changes the inbox (an alert raised or changed, alerts read or marked unread)
+// carries the unread counts after it (`counts`), so a page applies it and reads nothing.
+export const inboxCounts: { get?: () => unknown } = {};
 export function emit(kind: "agent" | "wait" | "loop" | "alert" | "alerts_read" | "activity" | "snooze" | "goal" | "tasks", data: unknown) {
-  D().bus.emit({ t: "feature", name: "automation", data: { kind, data } });
+  let counts: unknown;
+  if (kind === "alert" || kind === "alerts_read") try { counts = inboxCounts.get?.(); } catch (e) { capture(e, { at: "inbox counts" }); }
+  D().bus.emit({ t: "feature", name: "automation", data: counts ? { kind, data, counts } : { kind, data } });
 }
 
 // Set by the alerts module; loops and agents raise through it.

@@ -47,7 +47,9 @@ export function relayed(machine: string, f: Frame): Frame | null {
         : f.data;
       // A session's state names the agent session its first ask waits in: that daemon's too.
       const state = f.name === "state" && f.data && typeof f.data === "object" && typeof (f.data as { child?: unknown }).child === "string" ? { ...f.data, child: map((f.data as { child: string }).child) } : null;
-      return { ...f, session_id: map(f.session_id), data: state ?? inner };
+      // The unread counts on an inbox frame are that daemon's inbox, not this one's: they stay there.
+      const own = d && inner && typeof inner === "object" && "counts" in inner ? (({ counts: _theirs, ...rest }) => rest)(inner as Record<string, unknown>) : inner;
+      return { ...f, session_id: map(f.session_id), data: state ?? own };
     }
     default: return null;
   }
