@@ -1,7 +1,9 @@
 // Permission gate routes and its beforeTool hook. app.ts wraps every handler
 // so a throw is captured as an error.
 import { deliver } from "../../automation/core.ts";
-import { closed } from "../../safety/refwatch.ts";
+import { sandboxSaid } from "../../safety/refwatch.ts";
+import { linkedWorktree } from "../../safety/sandbox.ts";
+import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
 import { stopKind } from "../../core/stops.ts";
 import { registerHooks } from "../../engine/hooks.ts";
@@ -39,15 +41,18 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   registerHooks({
     beforeTool: (s, call) => g.beforeTool(s, call),
     // What a confined command in a linked worktree changed outside its own
-    // branch is said in its result and in the session's activity.
+    // branch is said in its result and in the session's activity. What a
+    // confined command ran into (the read-only top, the read-only config,
+    // the network that is off) is said in its result, with the way this
+    // tool asks to leave the sandbox.
     afterTool: async (s, call, result) => {
       const watched = await g.refsChanged(s.id, call.id);
-      if (!watched) return;
+      const confined = call.tool.kind === "shell" ? call.ctx.confined : undefined;
+      if (!watched && !confined) return;
       const said = typeof result.content === "string" ? result.content : result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
-      // What the worktree's profile closes, when the command ran into it.
-      const shut = closed(said);
-      if (watched.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
-      const text = [watched.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, shut && `[sandbox] ${shut}`].filter(Boolean).join("\n\n");
+      const shut = confined ? sandboxSaid(said, { linked: !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool) }) : [];
+      if (watched?.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
+      const text = [watched?.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, ...shut.map((line) => `[sandbox] ${line}`)].filter(Boolean).join("\n\n");
       if (!text) return;
       // (A result that says the turn was stopped under the call is read by its exact words.)
       if (typeof result.content !== "string") result.content = [...result.content, { type: "text", text }];

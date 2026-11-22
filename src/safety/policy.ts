@@ -104,7 +104,10 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       }
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
       // Read from the running build's schema: a session may carry an older definition (Tool.built).
-      const escalate = !!(tool.built ?? tool.input_schema)?.properties?.sandbox_permissions && input?.sandbox_permissions === "require_escalated";
+      // Each family in the words its own harness taught it: Codex's shell
+      // takes sandbox_permissions, Claude Code's Bash dangerouslyDisableSandbox.
+      const shape = (tool.built ?? tool.input_schema)?.properties;
+      const escalate = (!!shape?.sandbox_permissions && input?.sandbox_permissions === "require_escalated") || (!!shape?.dangerouslyDisableSandbox && input?.dangerouslyDisableSandbox === true);
       const runs = tool.interpreter?.(input);
       return { kind: "shell", command: cmd, escalate: escalate || undefined, cwd, ...(runs !== undefined && !BASH.test(runs) ? { interpreter: runs } : {}) };
     }
@@ -340,4 +343,15 @@ function decideDrive(c: Extract<CallClass, { kind: "drive" }>, f: Facts): Decisi
   if (f.mode === "full-auto") return { allow: true };
   if (tools.includes(`drive:${c.target}`) || tools.includes("drive:*")) return { allow: true };
   return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: `drive:${c.target}` }] } };
+}
+
+// How a shell tool asks to run a command outside the sandbox, as a sentence
+// for a result that says the sandbox stopped it: by the parameter its family
+// has. Each such call is approved first: by the owner on a card, and in
+// full auto by what settles a high-risk call there.
+export function escapeOf(tool: { built?: any; input_schema?: any }): string {
+  const props = (tool.built ?? tool.input_schema)?.properties;
+  if (props?.sandbox_permissions) return 'If the command is needed, run it again with sandbox_permissions: "require_escalated" and a justification: it runs outside the sandbox only once that is approved.';
+  if (props?.dangerouslyDisableSandbox) return "If the command is needed, run it again with dangerouslyDisableSandbox: true: it runs outside the sandbox only once that is approved.";
+  return "If the command is needed, ask the owner to run it outside the sandbox.";
 }

@@ -207,26 +207,54 @@ later, for this checkout or another:
   something to keep read-only.
 - A session in a linked worktree gets its own directory in the repository's
   common git directory, and the shared stores there: objects, refs, logs,
-  `info`, and `reftable`, `lfs` and `rr-cache` when the repository has them.
+  and `reftable`, `lfs` and `rr-cache` when the repository has them.
   The top of the common directory is the main checkout's git directory, so
-  the session gets a private read-only view of it: the main checkout's
-  `HEAD`, index and the state of a merge, rebase, cherry-pick, revert or
-  bisect it is in the middle of cannot be changed, and none can be planted
-  (a planted rebase would run its `exec` line when the main checkout next
-  continues one). The worktree's own merge, rebase, cherry-pick, revert and
-  bisect keep their state in its own directory and work as usual.
+  the session gets a read-only view of it: the main checkout's `HEAD`,
+  index and the state of a merge, rebase, cherry-pick, revert or bisect it
+  is in the middle of cannot be changed, and none can be planted (a planted
+  rebase would run its `exec` line when the main checkout next continues
+  one). The view is live: a file there is read as it is now, so what the
+  main checkout stages or checks out while a command runs is seen by it.
+  `info` (exclude patterns, attributes, the sparse list, grafts) is
+  read-only too: it steers the main checkout's own git. The worktree's own
+  merge, rebase, cherry-pick, revert and bisect keep their state in its own
+  directory and work as usual.
 - A session in the main checkout keeps its `.git` writable, the state of its
   own operations included. The directories of linked worktrees checked out
   outside its folder are read-only. A worktree it makes inside its folder is
   its own, to commit in and to remove.
 - The folders that hold those files cannot be renamed away or replaced.
 
+git is told three things in every sandbox, through the environment
+(`GIT_CONFIG_COUNT`, after any settings your own environment carries): a new
+branch records no upstream, and no gc or maintenance starts after a commit.
+(A worktree session gets two more: `git fsck` does not report that
+`packed-refs` is a link, which it is in the view, and `git repack` does not
+write the server info under `info`, which is read-only there.)
+The config is read-only there, so `git checkout -b x origin/main` would
+otherwise fail on the upstream it cannot write. Branches made in a sandboxed
+session track nothing until you set that outside it.
+
+What still runs into the read-only config, in every sandboxed session:
+`git config`, `git remote add`, `git branch -u`, `git push -u`, `--track`.
+`git branch -m` renames the branch and then exits 128, because the branch's
+settings cannot be moved; deleting a branch leaves its settings behind.
+
 What a worktree session's read-only view closes, as plain errors from git:
 deleting a branch or a tag that is packed, `git pack-refs`, `git gc`,
-`git config`, `git worktree add`, changing a shallow clone's depth, and
-anything else that makes a new entry at the top of the common directory. A
-command that runs into one of these is told so in its result. Run it outside
-the sandbox when it is needed.
+`git worktree add`, changing a shallow clone's depth, a first `rr-cache` or
+`lfs` store, and anything else that makes a new entry at the top of the
+common directory. One oddity there: dropping the last stash when
+`refs/stash` is packed says "Dropped" and leaves the ref (the list is
+empty).
+
+A command that runs into the read-only top, the read-only config or a
+network that is off is told so in its result, with the way its tool asks to
+run outside the sandbox: Claude Code's Bash takes
+`dangerouslyDisableSandbox: true`, Codex's shell takes
+`sandbox_permissions: "require_escalated"`. Each such call is approved
+first: by you on a card, and in full auto by what settles a high-risk call
+there.
 
 `git submodule update` of a submodule that is already checked out rewrites
 that submodule's config, which is read-only: it fails in a sandboxed
@@ -240,9 +268,12 @@ What the sandbox does not stop:
   lock files next to the refs it changes, and a bind covers a path, not one
   ref. After each such command Keel compares the refs with what they were
   and says what changed outside the session's own branch, in the command's
-  result and in the session's activity. It names what changed while the
-  command ran, not who changed it: with several sessions in one repository,
-  another session's work can show up there.
+  result and in the session's activity: a ref moved or deleted, a ref made
+  where other checkouts read from (a replacement of a commit, notes), and a
+  name made to point at another ref. What the session's own commands made
+  earlier in the turn is its own. It names what changed while the command
+  ran, not who changed it: with several sessions in one repository, another
+  session's work can show up there.
 - A repository inside the session's folder that the session made or can
   write is its own, hooks and config included: a nested clone, a repository
   it starts with `git init`, a worktree checked out inside its folder. git
@@ -256,9 +287,20 @@ What the sandbox does not stop:
   another process replaces one of them while a sandboxed command is still
   running (`git config`, a new remote, a branch's upstream), that command
   sees the new file without the bind and can write it until it ends. The
-  shared `config` of a linked worktree's repository has no such gap.
+  shared `config` of a linked worktree's repository has no such gap; the
+  worktree's own `config.worktree`, which git reads only when the
+  repository turns per-worktree config on, has it.
 - A command that was moved to the background is compared when the call
   returns, not when the command ends.
+- In a repository whose refs are in reftable, the main checkout's `HEAD` is
+  a record in the shared ref store, which a worktree session writes. git
+  refuses to change another checkout's `HEAD` from a worktree; a program
+  that writes the tables itself is not stopped. The report after the command
+  names the change.
+- A `git pack-refs` or `git gc` you run outside while a worktree session
+  deletes a loose branch does not wait for the session's lock, which is
+  private to its sandbox: the deleted branch can come back from the packed
+  file.
 
 ## Keel's own git
 

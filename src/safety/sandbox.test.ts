@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { confine, linkedGitBinds, sandboxStatus } from "./sandbox.ts";
+import { confine, linkedGitBinds, sandboxStatus, sandboxTopsDir } from "./sandbox.ts";
 
 const git = (cwd: string, ...args: string[]) => {
   const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -29,21 +29,35 @@ test("a linked worktree's git directories are writable only when the layout conf
     const { main, wt, common } = repo(root);
     const prize = join(root, "prize");
 
-    // The real worktree: the pointer read-only, a private folder in place of
-    // the common directory's top with what the repository has there bound in
-    // (the shared stores writable, the rest read-only), its own directory
-    // writable but for the files that say where it is, and the top closed last.
+    // The real worktree: the pointer read-only; in place of the common
+    // directory's top a folder of Keel's own that holds a link for each plain
+    // file there (read where it is, through one read-only bind of the top)
+    // and the place of each folder (the shared stores bound writable, the rest
+    // read-only); its own directory writable but for the files that say where
+    // it is; and the top closed last.
     const b = linkedGitBinds(wt);
     const has = (...run: string[]) => b.some((_, i) => run.every((a, j) => b[i + j] === a));
-    expect(b.slice(0, 5)).toEqual(["--ro-bind", join(wt, ".git"), join(wt, ".git"), "--tmpfs", common]);
-    for (const store of ["objects", "refs", "logs", "info"]) expect(has("--bind", join(common, store), join(common, store))).toBe(true);
-    for (const closed of ["hooks", "config", "HEAD", "worktrees", "description"]) expect(has("--ro-bind", join(common, closed), join(common, closed))).toBe(true);
+    expect(b.slice(0, 4)).toEqual(["--ro-bind", join(wt, ".git"), join(wt, ".git"), "--bind"]);
+    const top = b[4]!;
+    expect([top.startsWith(sandboxTopsDir()), b[5]]).toEqual([true, common]);
+    for (const store of ["objects", "refs", "logs/refs"]) expect(has("--bind", join(common, store), join(common, store))).toBe(true);
+    for (const closed of ["hooks", "info", "worktrees"]) expect(has("--ro-bind", join(common, closed), join(common, closed))).toBe(true);
+    // The main checkout's own HEAD log: a link to the file as it is, in a folder that is part of the closed top.
+    expect([b.includes(join(common, "logs")), readlinkSync(join(top, "logs/HEAD"))]).toEqual([false, "../keel-sandbox/top/logs/HEAD"]);
     expect(has("--bind", join(common, "worktrees/wt"), join(common, "worktrees/wt"))).toBe(true);
     for (const f of ["config.worktree", "gitdir", "commondir"]) expect(has("--ro-bind", join(common, "worktrees/wt", f), join(common, "worktrees/wt", f))).toBe(true);
-    // packed-refs is a link into the scratch folder, never a bind of the file.
-    expect(has("--symlink", "keel-sandbox/packed-refs.1", join(common, "packed-refs"))).toBe(true);
-    expect(b.includes(join(common, "index.lock"))).toBe(false);
+    // No argument names a plain file of the top: each is a link in the folder.
+    for (const f of ["config", "HEAD", "description", "index", "packed-refs"]) expect(b.includes(join(common, f))).toBe(false);
+    expect(["config", "HEAD", "description", "packed-refs"].map((f) => readlinkSync(join(top, f)))).toEqual(["keel-sandbox/top/config", "keel-sandbox/top/HEAD", "keel-sandbox/top/description", "keel-sandbox/packed-refs.1"]);
+    expect(has("--ro-bind", common, join(common, "keel-sandbox/top"))).toBe(true);
     expect(b.slice(-2)).toEqual(["--remount-ro", common]);
+    // Three thousand files at the top cost no argument (bubblewrap takes 9,000).
+    for (let i = 0; i < 3000; i++) writeFileSync(join(common, `sharedindex.${i}`), "");
+    expect(linkedGitBinds(wt)).toHaveLength(b.length);
+    expect(readlinkSync(join(top, "sharedindex.2999"))).toBe("keel-sandbox/top/sharedindex.2999");
+    for (let i = 0; i < 3000; i++) rmSync(join(common, `sharedindex.${i}`));
+    linkedGitBinds(wt);
+    expect(existsSync(join(top, "sharedindex.0"))).toBe(false);
     // Only the worktree's own config.worktree is made (empty): nothing is added to the shared directory.
     expect(readFileSync(join(common, "worktrees/wt/config.worktree"), "utf8")).toBe("");
     for (const absent of ["config.worktree", "modules", "keel-sandbox"]) expect(existsSync(join(common, absent))).toBe(false);
@@ -134,6 +148,12 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
     // The worktree's own pointer, its own config.worktree and where it says it is.
     const own = run(wt, `(echo x > .git) 2>/dev/null || echo refused-pointer; for f in config.worktree gitdir commondir; do (echo x > ${common}/worktrees/wt/$f) 2>/dev/null || echo refused-$f; done`);
     for (const f of ["pointer", "config.worktree", "gitdir", "commondir"]) expect(own.out).toContain(`refused-${f}`);
+    // Nor can the pointer be moved away, removed, or swapped for a repository
+    // the session made (the daemon would then push from, and read, that one).
+    const pointer = readFileSync(join(wt, ".git"), "utf8");
+    const swapped = run(wt, "git init -q fake; (mv .git gone) 2>/dev/null || echo refused-move; (rm -f .git) 2>/dev/null || echo refused-remove; (mv -T fake/.git .git) 2>/dev/null || echo refused-swap; (ln -sf fake/.git .git) 2>/dev/null || echo refused-link; rm -rf fake gone");
+    expect(swapped.out).toBe("refused-move\nrefused-remove\nrefused-swap\nrefused-link\n");
+    expect(readFileSync(join(wt, ".git"), "utf8")).toBe(pointer);
 
     // A normal clone's git directory cannot be swapped for a copy: renamed
     // away, the read-only files would stay behind in the old one.
@@ -141,6 +161,11 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
     expect(swap.out).toContain(".git/hooks\n.git/worktrees");
     expect(swap.out.match(/Device or resource busy/g)).toHaveLength(3);
     expect(existsSync(join(main, "old"))).toBe(false);
+    // Nor replaced by a repository the session made, or removed as a folder.
+    const config = readFileSync(join(main, ".git/config"), "utf8");
+    const replaced = run(main, "git init -q fake; (mv -T fake/.git .git) 2>/dev/null || echo refused-swap; (mv .git/config .git/config2) 2>/dev/null || echo refused-config; (rmdir .git) 2>/dev/null || echo refused-rmdir; rm -rf fake copy");
+    expect(replaced.out).toBe("refused-swap\nrefused-config\nrefused-rmdir\n");
+    expect(readFileSync(join(main, ".git/config"), "utf8")).toBe(config);
     // A worktree the session makes inside its folder is its own: to commit
     // in, and to remove in a later command. The one beside the folder is not.
     const nested = run(main, `git worktree add -q -b inner inner 2>&1 && cd inner && ${commit}`);
@@ -238,6 +263,77 @@ test.skipIf(!sandboxStatus().available)("a linked worktree cannot plant an opera
       rmSync(process.env.TMPDIR!, { recursive: true, force: true });
       process.env.TMPDIR = tmp;
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The main checkout changes under a running command. The worktree's git reads
+// the top's files where they are, so what it decides from them holds: a
+// prune keeps what was staged meanwhile, and a branch the main checkout
+// switched to is not deleted.
+test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main checkout's index and HEAD as they are now", async () => {
+  const root = scratch();
+  const tmp = process.env.TMPDIR;
+  process.env.TMPDIR = mkdtempSync(join(tmpdir(), "keel-sandbox-tmp-"));
+  try {
+    const { main, wt, common } = repo(root);
+    git(main, "branch", "elsewhere");
+    const during = async (inside: string, outside: () => void) => {
+      rmSync(join(wt, "ready"), { force: true });
+      rmSync(join(wt, "go"), { force: true });
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${inside}`], { sandbox: "workspace-write", network: false }, wt), { cwd: wt, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      for (let i = 0; i < 200 && !existsSync(join(wt, "ready")); i++) await Bun.sleep(25);
+      outside();
+      writeFileSync(join(wt, "go"), "");
+      const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+      return out + err;
+    };
+    // Staged in the main checkout while the command waits, then changed on disk: the blob is only in the index.
+    await during("git prune; echo pruned-$?", () => { writeFileSync(join(main, "staged"), "only in the index\n"); git(main, "add", "staged"); writeFileSync(join(main, "staged"), "changed since\n"); });
+    expect(Bun.spawnSync(["git", "show", ":staged"], { cwd: main, stdout: "pipe" }).stdout.toString()).toBe("only in the index\n");
+    git(main, "fsck", "--no-dangling");
+    // The main checkout switches to a branch while the command waits: that branch is in use, and stays.
+    const said = await during("git branch -D elsewhere; echo deleted-$?", () => git(main, "checkout", "-q", "elsewhere"));
+    expect(said).toContain("deleted-1");
+    expect(said).toMatch(/used by worktree|checked out at/);
+    git(main, "rev-parse", "--verify", "-q", "refs/heads/elsewhere");
+
+    // The patterns, attributes and sparse list that steer the main checkout's own git, and its HEAD log: read-only.
+    const steer = run(wt, `for f in exclude attributes sparse-checkout grafts; do (echo '*' > ${common}/info/$f) 2>/dev/null && echo wrote-$f; done; (echo x >> ${common}/logs/HEAD) 2>/dev/null && echo wrote-log; (echo x > ${common}/logs/NEW) 2>/dev/null && echo made-log; test -s ${common}/logs/HEAD && echo read-log; echo done`);
+    expect(steer.out).toBe("read-log\ndone\n");
+    // A new branch from a remote-tracking one: made, with no upstream to write.
+    git(main, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const made = run(wt, `git checkout -q -b from-remote origin/main && git rev-parse --abbrev-ref HEAD && ${commit}`);
+    expect(made.out).toBe("from-remote\ncommitted\n");
+    // A commit starts no gc it could not run, and fsck is not told that packed-refs is a link.
+    git(main, "pack-refs", "--all");
+    // (And a repack does not try to write the server info under the read-only info folder.)
+    const quiet = run(wt, `git -c user.name=t -c user.email=t@t -c gc.autoDetach=false commit -q --allow-empty -m more 2>&1; git repack -ad -q 2>&1; git fsck --no-dangling 2>&1; echo quiet-$?`);
+    expect(quiet.out).toBe("quiet-0\n");
+  } finally {
+    rmSync(process.env.TMPDIR!, { recursive: true, force: true });
+    process.env.TMPDIR = tmp;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A bare repository has no log folder until a worktree of it commits, and
+// nothing can be made at its top from inside the sandbox.
+test.skipIf(!sandboxStatus().available)("a worktree of a bare repository commits, branches and stashes", () => {
+  const root = scratch();
+  try {
+    const seed = join(root, "seed"), bare = join(root, "bare.git"), wt = join(root, "bw");
+    mkdirSync(seed);
+    git(seed, "init", "-q", "-b", "main");
+    git(seed, "commit", "-q", "--allow-empty", "-m", "first");
+    git(root, "clone", "-q", "--bare", seed, bare);
+    rmSync(join(bare, "logs"), { recursive: true, force: true });
+    git(bare, "worktree", "add", "-q", "-b", "a", wt);
+    // No HEAD log is made for the bare repository, here or from inside.
+    const r = run(wt, `${commit}; git checkout -q -b topic && echo x > x && git add x && git stash -q && git stash pop -q && echo stashed; (: > ${bare}/logs/HEAD) 2>/dev/null && echo made-log`);
+    expect(r.out).toBe("committed\nstashed\n");
+    expect(existsSync(join(bare, "logs/HEAD"))).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

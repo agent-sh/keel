@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { asksLess, childMode, classify, decide, MODES, shellText, type Facts, type Mode, type Rule } from "./policy.ts";
+import { asksLess, childMode, classify, decide, MODES, shellText, type Facts, type Mode, type Rule, escapeOf } from "./policy.ts";
 
 const ws = "/w/repo";
 const rule = (kind: Rule["kind"], pattern: string): Rule => ({ id: pattern, kind, pattern, scope: ws, lifetime: "always", created: 0 });
@@ -32,6 +32,18 @@ test("a call's class comes from its tool's definition", () => {
   expect(classify(tool("keel__send_files", "remote"), { file_path: "a.ts" }, ws)).toEqual({ kind: "other" });
   expect(classify(tool("some_tool"), { command: "rm -rf build" }, ws)).toEqual({ kind: "other" });
   expect(classify(tool("Bash", "shell"), { command: "npm test", sandbox_permissions: "require_escalated" }, ws)).toEqual({ kind: "shell", command: "npm test", cwd: ws });
+  // Each family asks to leave the sandbox with its own parameter, and only with its own.
+  const claude = { properties: { command: {}, dangerouslyDisableSandbox: {} } };
+  expect(classify(tool("Bash", "shell", false, claude), { command: "git gc", dangerouslyDisableSandbox: true }, ws)).toEqual({ kind: "shell", command: "git gc", escalate: true, cwd: ws });
+  expect(classify(tool("Bash", "shell", false, claude), { command: "git gc", dangerouslyDisableSandbox: "true" }, ws)).toEqual({ kind: "shell", command: "git gc", cwd: ws });
+  expect(classify(tool("exec_command", "shell", false, escalating), { cmd: "git gc", dangerouslyDisableSandbox: true }, ws)).toEqual({ kind: "shell", command: "git gc", cwd: ws });
+  // It is asked of the owner in every mode that has a sandbox, and refused in a read-only session.
+  const out = { kind: "shell" as const, command: "git gc", escalate: true, cwd: ws };
+  expect(["full-auto", "auto-edits", "ask"].map((m) => kind(decide(out, facts(m as Mode, { sandboxed: true }))))).toEqual(["ask-high", "ask-high", "ask-high"]);
+  expect(kind(decide(out, facts("read-only", { sandboxed: true })))).toBe("deny");
+  expect(escapeOf(tool("Bash", "shell", false, claude))).toContain("dangerouslyDisableSandbox: true");
+  expect(escapeOf(tool("exec_command", "shell", false, escalating))).toContain('sandbox_permissions: "require_escalated"');
+  expect(escapeOf(tool("Bash", "shell"))).toBe("If the command is needed, ask the owner to run it outside the sandbox.");
   expect(classify(tool("Bash", "shell"), { command: "ls", session_id: "x" }, ws)).toEqual({ kind: "shell", command: "ls", cwd: ws });
 });
 

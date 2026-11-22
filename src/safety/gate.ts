@@ -458,11 +458,17 @@ export class Gate {
   // what it changed in the repository outside its own branch, in one
   // sentence, or no note.
   private watches = new Map<string, Watch>();
+  // The refs a session's own commands made in its running turn: deleting or
+  // moving one of them again is its own work, and is not reported.
+  private ownRefs = new Map<string, Set<string>>();
   async refsChanged(sessionId: string, callId: string): Promise<{ note?: string } | undefined> {
     const key = callKey(sessionId, callId);
     const w = this.watches.get(key);
     this.watches.delete(key);
-    return w && { note: await report(w) };
+    if (!w) return undefined;
+    let own = this.ownRefs.get(sessionId);
+    if (!own) this.ownRefs.set(sessionId, (own = new Set()));
+    return { note: await report(w, own) };
   }
 
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,
@@ -596,6 +602,7 @@ export class Gate {
   // A new turn: the run of refusals starts over.
   turnStarted(sessionId: string) {
     this.streak.delete(sessionId);
+    this.ownRefs.delete(sessionId);
   }
 
   // Full auto's high-risk call, settled without the owner: a retry the owner

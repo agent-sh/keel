@@ -63,6 +63,24 @@ test("confinement follows the class the gate judged, not an input field", async 
   expect(await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }))).toBeUndefined();
 });
 
+test("Claude Code's Bash asks to leave the sandbox with its own parameter, and gets the same card", async () => {
+  const { g, session, call } = scratchGate();
+  const claudeBash: Tool = { ...bash, input_schema: { type: "object", properties: { command: {}, dangerouslyDisableSandbox: {} } } };
+  g.setPerm("s1", { mode: "auto-edits", sandbox: "workspace-write" });
+  // Without the parameter the command is confined.
+  const plain = await g.beforeTool(session, call(claudeBash, { command: "git status" }));
+  expect(plain && "ctx" in plain && typeof plain.ctx?.wrapSpawn).toBe("function");
+  // With it the owner is asked, and nothing runs meanwhile.
+  const stop = new AbortController();
+  const asked = g.beforeTool(session, call(claudeBash, { command: "git gc", dangerouslyDisableSandbox: true }, stop.signal));
+  await Bun.sleep(20);
+  const cards = g.approvals({ session: "s1", pending: true });
+  expect(cards.map((a) => [a.tool, a.risk, a.why])).toEqual([["Bash", "high", "the command asks to run outside the sandbox"]]);
+  // Approved once: it runs with no confinement.
+  expect(g.resolve(cards[0]!.id, "s1", { choice: "once" })).toEqual({ ok: true });
+  expect(await asked).toBeUndefined();
+});
+
 test("Auto discards pending permission when policy or cwd changes and does not transfer a retry", async () => {
   const { g, session, call } = scratchGate();
   g.setSandboxCheck(() => false);

@@ -3,7 +3,8 @@
 // runs at a lower CPU and IO weight (and a memory cap when one is set). When
 // bwrap is missing or cannot start, sandboxing is unavailable and says why;
 // a session never believes it is confined when it is not.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
 import type { SessionPerm } from "./gate.ts";
@@ -271,13 +272,88 @@ export function linkedWorktree(workspace: string): { dot: string; own: string; c
   }
 }
 
-// The shared stores at the top of a common directory: writable for a linked worktree.
-const SHARED_STORES = new Set(["objects", "refs", "logs", "info", "reftable", "lfs", "rr-cache"]);
-const CODE = new Set(["hooks", "config", "config.worktree", "modules", "worktrees"]);
-// The scratch folder inside the private top: git's lock for packed-refs, and
-// the links to the file itself. More links than git resolves.
+// The shared stores at the top of a common directory: writable for a linked
+// worktree. `info` is not one: its exclude, attributes, sparse-checkout and
+// grafts files steer the main checkout's own git.
+const SHARED_STORES = new Set(["objects", "refs", "logs", "reftable", "lfs", "rr-cache"]);
+const CODE = new Set(["hooks", "config", "config.worktree", "modules", "worktrees", "info"]);
+// The scratch folder inside the private top: git's lock for packed-refs, the
+// links to the file itself (more links than git resolves), and the top of the
+// repository as it is, read-only (`top`).
 export const SCRATCH = "keel-sandbox";
 const LINKS = 8;
+// bubblewrap takes this many arguments at most.
+const ARGS_MAX = 9_000;
+
+// The folder mounted in place of a common directory's top, kept in Keel's
+// state folder (one per repository, read-only in every sandbox). It holds a
+// folder for each folder the top has (the place a bind goes) and, for each
+// plain file, a link into the read-only bind of the real top: a file is read
+// where it is, as it is now. One bind per file would hold the file of the
+// moment the command started (the main checkout's index and HEAD change under
+// a running command: a prune then drops what was staged since, and a branch
+// the main checkout switched to can be deleted), and would cost three
+// arguments a file.
+// Entries are added and links fixed, never a folder removed: it may be a
+// mount point of a command that is running.
+export const sandboxTopsDir = () => join(dirname(gitViewsDir()), "git-tops");
+let topsPruned = false;
+function topOf(common: string): string | null {
+  const root = sandboxTopsDir();
+  if (!topsPruned) {
+    topsPruned = true;
+    try {
+      for (const name of readdirSync(root)) {
+        let origin: string | undefined;
+        try { origin = readFileSync(join(root, name, SCRATCH, "origin"), "utf8"); } catch {} // not one of these
+        if (!origin || !existsSync(origin)) rmSync(join(root, name), { recursive: true, force: true });
+      }
+    } catch {} // none made yet
+  }
+  const top = join(root, createHash("sha256").update(common).digest("hex").slice(0, 24));
+  mkdirSync(join(top, SCRATCH), { recursive: true, mode: 0o700 });
+  if (kindOf(join(top, SCRATCH, "origin")) === "none") writeFileSync(join(top, SCRATCH, "origin"), common);
+  const link = (name: string, target: string) => {
+    const at = join(top, name);
+    let now: string | undefined;
+    try { now = readlinkSync(at); } catch {} // nothing there, or no link
+    if (now === target) return true;
+    if (now === undefined && kindOf(at) !== "none") return false; // a folder where a file is now: left closed
+    const tmp = `${at}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.lock`;
+    symlinkSync(target, tmp);
+    renameSync(tmp, at);
+    return true;
+  };
+  const have = new Set<string>([SCRATCH, "packed-refs"]);
+  for (const name of readdirSync(common)) {
+    if (name === "packed-refs" || name.endsWith(".lock")) continue;
+    const p = join(common, name);
+    const st = lstatSync(p);
+    // The scratch name must be free, and the stores and the code plain
+    // folders and files (a link could lead into the writable folder).
+    if (name === SCRATCH || ((SHARED_STORES.has(name) || CODE.has(name)) && !st.isDirectory() && !st.isFile())) return null;
+    if (SHARED_STORES.has(name) && !st.isDirectory()) return null;
+    have.add(name);
+    if (st.isDirectory()) {
+      const k = kindOf(join(top, name));
+      if (k === "other" || k === "file") rmSync(join(top, name), { force: true });
+      if (k !== "dir") mkdirSync(join(top, name));
+      // The log folder is not bound whole: the logs of the shared refs are
+      // (logs/refs), and the main checkout's own HEAD log is a link to the
+      // file as it is, read-only. With the folder itself part of the closed
+      // top, a HEAD log that is missing cannot be made either.
+      if (name === "logs") {
+        mkdirSync(join(top, "logs/refs"), { recursive: true });
+        if (!link("logs/HEAD", join("..", SCRATCH, "top/logs/HEAD"))) return null;
+      }
+    } else if (st.isFile()) { if (!link(name, join(SCRATCH, "top", name))) return null; }
+    else if (st.isSymbolicLink()) { if (!link(name, readlinkSync(p))) return null; }
+  }
+  if (!link("packed-refs", join(SCRATCH, "packed-refs.1"))) return null;
+  // What the top no longer has: its link goes (a folder stays, empty).
+  for (const name of readdirSync(top)) if (!have.has(name) && !name.endsWith(".lock") && kindOf(join(top, name)) !== "dir") rmSync(join(top, name), { force: true });
+  return top;
+}
 
 export function linkedGitBinds(workspace: string): string[] {
   const at = linkedWorktree(workspace);
@@ -288,37 +364,55 @@ export function linkedGitBinds(workspace: string): string[] {
     if (!plainFile(join(own, "config.worktree"))) return [];
     const modules = modulesOf(join(own, "modules"), realpathSync(workspace), { left: GIT_DIRS_MAX });
     if (!modules) return [];
+    // The logs of the shared refs are a store git makes at a first commit. A
+    // bare repository has none, and nothing can be made at the top from
+    // inside: the folder is made here (empty; git decides by itself what it
+    // logs). A repository whose refs are in reftable keeps its logs there.
+    const logs = join(common, "logs");
+    if (kindOf(logs) !== "none" || kindOf(join(common, "reftable")) !== "dir") {
+      if (!plainDir(logs) || !plainDir(join(logs, "refs"))) return [];
+    }
+    const top = topOf(common);
+    if (!top) return [];
     const scratch = join(common, SCRATCH);
-    const out = [...ro(dot), "--tmpfs", common];
+    const out = [...ro(dot), "--bind", top, common];
     for (const name of readdirSync(common).sort()) {
       const p = join(common, name);
-      const kind = kindOf(p);
-      // The stores and the code must be plain folders and files (a link could
-      // lead into the writable folder), and the scratch name must be free:
-      // else nothing is writable.
-      if (name === SCRATCH || ((SHARED_STORES.has(name) || CODE.has(name)) && kind === "other")) return [];
-      if (SHARED_STORES.has(name) && kind !== "dir") return [];
-      if (name === "packed-refs" || name.endsWith(".lock")) continue;
-      // Any other link is kept as the link it is; a socket or a pipe is left out.
-      if (kind === "other") { if (lstatSync(p).isSymbolicLink()) out.push("--symlink", readlinkSync(p), p); continue; }
-      out.push(...(kind === "dir" && SHARED_STORES.has(name) ? pin(p) : ro(p)));
+      if (kindOf(p) !== "dir") continue;
+      // Of the logs, those of the shared refs. The main checkout's own HEAD
+      // log stays read-only (it says which commits that checkout made
+      // itself, see refwatch.ts); the session's own is in its own directory.
+      out.push(...(name === "logs" ? pin(join(p, "refs")) : SHARED_STORES.has(name) ? pin(p) : ro(p)));
     }
     out.push(...pin(own));
     for (const f of ["config.worktree", "gitdir", "commondir"]) out.push(...ro(join(own, f)));
     out.push(...modules);
     // packed-refs: the links, the repository's top as it is (read-only), and
     // every name git could write a new file under, taken.
-    out.push("--tmpfs", scratch, "--ro-bind", common, join(scratch, "top"), "--symlink", join(SCRATCH, "packed-refs.1"), join(common, "packed-refs"));
+    out.push("--tmpfs", scratch, "--ro-bind", common, join(scratch, "top"));
     for (let i = 1; i <= LINKS; i++) {
       out.push("--symlink", i < LINKS ? `packed-refs.${i + 1}` : "top/packed-refs", join(scratch, `packed-refs.${i}`), "--dir", join(scratch, `packed-refs.${i}.new`));
     }
     // Last: the top itself. Nothing can be made in it from here on.
     out.push("--remount-ro", common);
-    return out;
+    return out.length > ARGS_MAX - 200 ? [] : out;
   } catch {
     return [];
   }
 }
+
+// What git is told in every sandbox, where the repository's config is
+// read-only and its housekeeping cannot run:
+// - a new branch records no upstream (`git checkout -b x origin/main` would
+//   fail on the write of the tracking lines, and leave HEAD where it was);
+// - no gc and no maintenance is started after a commit (each would print
+//   that it cannot take its lock).
+const SANDBOX_GIT: [string, string][] = [["branch.autoSetupMerge", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"]];
+// And in a linked worktree's view of the top:
+// - packed-refs is a link there: git fsck would report it as a broken ref file;
+// - info is read-only: a repack would say it cannot write the server info
+//   (info/refs, for a dumb http server) after packing.
+const LINKED_GIT: [string, string][] = [["fsck.badRefFiletype", "ignore"], ["repack.updateServerInfo", "false"]];
 
 // The argv that runs `argv` confined by the session's profile.
 // `scratch` is the session's own tool folder (a command's working-directory
@@ -330,17 +424,25 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
   const b = [st.bwrap!, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc",
     "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
   if (!perm.network) b.push("--unshare-net");
+  // git settings for every confined command, after any the owner's
+  // environment already carries (git-config(1), GIT_CONFIG_COUNT).
+  const settings = [...SANDBOX_GIT];
   if (perm.sandbox === "workspace-write") {
     b.push("--bind", workspace, workspace);
     const tmp = process.env.TMPDIR;
     if (tmp && existsSync(tmp) && !tmp.startsWith("/tmp")) b.push("--bind", tmp, tmp);
     // The repository's hooks and config run code outside the sandbox later:
     // they stay read-only. Commits still work.
-    b.push(...cloneGitBinds(workspace), ...linkedGitBinds(workspace));
+    const linked = linkedGitBinds(workspace);
+    b.push(...cloneGitBinds(workspace), ...linked);
+    if (linked.length) settings.push(...LINKED_GIT);
   }
+  const first = Math.max(0, Math.trunc(Number(process.env.GIT_CONFIG_COUNT ?? 0)) || 0);
+  settings.forEach(([k, v], i) => b.push("--setenv", `GIT_CONFIG_KEY_${first + i}`, k, "--setenv", `GIT_CONFIG_VALUE_${first + i}`, v));
+  b.push("--setenv", "GIT_CONFIG_COUNT", String(first + settings.length));
   // The views the daemon's own git reads repositories through (src/core/git.ts):
   // never writable, also for a session whose folder holds Keel's state folder.
-  if (perm.sandbox === "workspace-write" && existsSync(gitViewsDir())) b.push("--ro-bind", gitViewsDir(), gitViewsDir());
+  if (perm.sandbox === "workspace-write") for (const own of [gitViewsDir(), sandboxTopsDir()]) if (existsSync(own)) b.push("--ro-bind", own, own);
   for (const p of typeof scratch === "string" ? [scratch] : scratch ?? []) if (p && existsSync(p)) b.push("--bind", p, p);
   b.push("--", ...argv);
   return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;

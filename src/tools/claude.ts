@@ -35,6 +35,8 @@ const Bash: Tool = {
     timeout: { type: "number", description: "Optional timeout in milliseconds (max 600000)" },
     description: { type: "string", description: "What the command does, in 5-10 words" },
     run_in_background: { type: "boolean", description: "Run in the background; read its output file later" },
+    // (Claude Code's own parameter and wording. The gate asks the owner for every call that sets it.)
+    dangerouslyDisableSandbox: { type: "boolean", description: "Set this to true to dangerously override sandbox mode and run commands without sandboxing." },
   }, ["command"]),
   async run(input, ctx) {
     if (input.command != null && typeof input.command !== "string") return fail("command must be one string.");
