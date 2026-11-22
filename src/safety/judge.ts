@@ -8,6 +8,7 @@
 // else the session's own; the first that answers decides.
 import { settings } from "../admin/settings.ts";
 import type { Store } from "../core/store.ts";
+import type { StoredEvent } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { REVIEW_INPUT_LIMIT, REVIEW_SUMMARY_LIMIT, type ReviewAsk, type Verdict } from "./gate.ts";
 import { vault } from "./secrets.ts";
@@ -56,10 +57,42 @@ export function judgeModels(setting: string | undefined, sessionModel: string): 
 // not the owner's words.
 const NOT_OWNER = new Set(["harness", "restart"]);
 
-export function askedFor(store: Store, sessionId: string, n = 6): { owner: string[]; task?: string } {
+const ownerWords = (e: StoredEvent) => !(e.data.kind || NOT_OWNER.has(e.data.origin) || String(e.data.text).startsWith("[harness]"));
+const rootOf = (store: Store, sessionId: string) => {
   let root = store.session(sessionId);
-  const self = root;
   for (let i = 0; root?.parent_id && i < 32; i++) root = store.session(root.parent_id) ?? undefined;
+  return root;
+};
+
+// The bodies askedFor reads, in memory before it reads them: the root session's messages from its
+// end back to the owner's newest n, and a subagent's first message. A root session at rest holds no
+// bodies (it gave them back), and each message read back on the loop reads its whole run from the
+// table. Read here on the read thread, a run at a time (Store.warmBodies).
+export async function warmAsked(store: Store, sessionId: string, n = 6): Promise<void> {
+  try {
+    const self = store.session(sessionId), root = rootOf(store, sessionId);
+    if (root) {
+      await store.warm(root.id, false);
+      const line = store.lineage(root.id);
+      for (let i = line.length - 1, owners = 0; i >= 0 && owners < n; i--) {
+        const e = line[i]!;
+        if (e.kind !== "user") continue;
+        await store.warmBodies(root.id, e.seq, e.seq);
+        if (ownerWords(e)) owners++;
+      }
+    }
+    if (self?.parent_id) {
+      const first = store.lineage(self.id).find((e) => e.kind === "user");
+      if (first) await store.warmBodies(self.id, first.seq, first.seq);
+    }
+  } catch {
+    // What could not be read ahead is read by askedFor, as it was.
+  }
+}
+
+export function askedFor(store: Store, sessionId: string, n = 6): { owner: string[]; task?: string } {
+  const root = rootOf(store, sessionId);
+  const self = store.session(sessionId);
   const words = (id: string) => {
     const s = store.session(id);
     return s ? store.lineage(id) : [];
@@ -67,7 +100,7 @@ export function askedFor(store: Store, sessionId: string, n = 6): { owner: strin
   // The newest n of the owner's messages, read from the branch's end back: the prompts before them are not read.
   const owner: string[] = [];
   if (root) for (const e of store.back(root.id)) {
-    if (e.kind !== "user" || e.data.kind || NOT_OWNER.has(e.data.origin) || String(e.data.text).startsWith("[harness]")) continue;
+    if (e.kind !== "user" || !ownerWords(e)) continue;
     owner.unshift(`- ${String(e.data.text).slice(0, 1000)}`);
     if (owner.length >= n) break;
   }
@@ -118,6 +151,7 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
     // The session's rows are brought in off the loop when it is not in memory (a subagent's first call
     // after a start): the task it was given is looked for from its first event.
     if (a.session.parent_id && !store.isKept(a.session.id)) await store.warm(a.session.id, false);
+    await warmAsked(store, a.session.id);
     const p = judgePrompt(a, askedFor(store, a.session.id), policy());
     if (a.mode === "auto") {
       // The action itself has already passed the exact-input check. Other

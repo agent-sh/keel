@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import { diskFull, refusedWrite, STORE_REFUSES, type Store } from "../core/store.ts";
-import { firstAt, leafCount, lineage, pageOf, pageOfLine, replyBefore } from "../core/tree.ts";
+import { firstAt, leafCount, lineage, pageOf, pageOfLine, pageRange, replyBefore } from "../core/tree.ts";
 import { shownAsPrompt } from "../core/owner.ts";
 import type { StoredEvent } from "../core/types.ts";
 import type { Session } from "../core/types.ts";
@@ -125,6 +125,15 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     if (!e || e.session_id !== s.id) return null;
     const line = store.lineage(s.id);
     return line[firstAt(line, e.seq)]?.id === e.id ? line : null;
+  };
+
+  // The bodies of the part of a session's shown branch that a page asks for, in memory before the
+  // part is read out: a session at rest gave its bodies back, and reading them back on the loop
+  // waits for the disk (Store.warmBodies reads them on the read thread).
+  const warmPart = async (id: string, ask: { limit: number; before?: number; after?: number; at?: number }) => {
+    const line = store.lineage(id);
+    const [a, b] = pageRange(line, ask);
+    if (b > a) await store.warmBodies(id, line[a]!.seq, line[b - 1]!.seq).catch(() => {});
   };
 
   const wrap = (h: (req: Request & { params: any }, srv: Bun.Server<unknown>) => Promise<Response> | Response) =>
@@ -306,6 +315,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // brought in without their bodies, a part at a time, and what is
           // answered is read after that, in one piece.
           if (!bare) await store.warm(req.params.id, false);
+          // And the bodies of the part asked for, which a session at rest gave back: read off the loop, not while it is written out.
+          if (!bare && page > 0 && store.session(req.params.id)) await warmPart(req.params.id, { limit: page });
           // The rest runs in one piece after that wait, where the handler is no
           // longer timed as a whole: reading a long branch out and writing it
           // as JSON is named, should it hold the loop (src/admin/stall.ts).
@@ -406,7 +417,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       // session's). The session's own branch is the one the store keeps: its
       // edges are found by halving, and nothing else of the session is read.
       "/api/sessions/:id/page": {
-        GET: wrap((req) => {
+        GET: wrap(async (req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           const q = new URL(req.url).searchParams;
@@ -414,7 +425,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const limit = Math.min(Number(q.get("limit")) || 200, 2000);
           const head = q.get("head") || undefined, around = q.get("around") || undefined;
           const ask = { limit, before: num("before"), after: num("after") };
-          const own = (at?: number) => json(pageOfLine(store.lineage(s.id), { ...ask, at }, (parent) => store.versions(s.id, parent), s.head, true));
+          // (The part's bodies are read off the loop first: a session at rest holds none.)
+          const own = async (at?: number) => { await warmPart(s.id, { ...ask, at }); return json(pageOfLine(store.lineage(s.id), { ...ask, at }, (parent) => store.versions(s.id, parent), s.head, true)); };
           if (around) {
             const e = store.event(around);
             if (!e || e.session_id !== s.id) return bad("no such event in this session", 404);

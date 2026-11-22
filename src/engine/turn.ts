@@ -990,7 +990,8 @@ export class Engine {
     const line = this.lineage(id);
     const end = line.findLastIndex((e) => e.kind === "turn_end");
     if (end < 0) return undefined;
-    const d = line[end]!.data;
+    // (That one body: asked at every prompt of the owner's, and a session at rest holds no bodies.)
+    const d = this.store.body(line[end]!);
     if (d.reason !== "error" || d.steps !== 0 || !NOT_SENT.has(d.code)) return undefined;
     if (line.slice(end + 1).some((e) => e.kind !== "error" && !(e.kind === "note" && !e.data.model))) return undefined;
     const start = line.findLastIndex((e, i) => i < end && e.kind === "turn_start");
@@ -1686,6 +1687,24 @@ export class Engine {
     }
   }
 
+  // The bodies a turn's first request is made from are read off the loop before the turn reads
+  // them: the shown branch from its last checkpoint on (and that checkpoint's own event, which
+  // says where it keeps from). A session at rest gives its bodies back after two minutes, and a
+  // turn that starts then read them back a run at a time, on the loop, from the disk.
+  private async warmContext(id: string) {
+    try {
+      const line = this.lineage(id);
+      let at = line.length - 1;
+      while (at >= 0 && line[at]!.kind !== "compaction") at--;
+      if (at >= 0) await this.store.warmBodies(id, line[at]!.seq, line[at]!.seq);
+      const now = this.lineage(id);
+      const from = now[checkpointAt(now).keepFrom]?.seq;
+      if (from !== undefined) await this.store.warmBodies(id, from);
+    } catch {
+      // What could not be read ahead is read by the turn, as it was.
+    }
+  }
+
   private async loop(id: string, signal: AbortSignal) {
     let session = this.store.session(id)!;
     for (const h of allHooks()) {
@@ -1694,7 +1713,8 @@ export class Engine {
     }
     this.setting.add(id);
     // (A session not in memory yet has its pages read off the loop first: store.warm.)
-    const ready = await this.store.warm(id, false).then(() => this.step(session, session.model))
+    // (And the bodies its first request is made from, which a session at rest gave back: warmContext.)
+    const ready = await this.store.warm(id, false).then(() => this.warmContext(id)).then(() => this.step(session, session.model))
       .finally(() => this.setting.delete(id))
       // A setup that fails after the stop has nothing left to say: the turn is closed.
       // One that fails while the daemon parks its turns is closed below.
@@ -2963,10 +2983,11 @@ export class Engine {
     // so, and it is read by itself when the session is not in memory. An
     // agent's report into a long session nobody has open would otherwise
     // read the whole of it here, where the loop waits.
-    if (!this.store.isKept(id)) {
-      const last = this.store.headEvent(id);
-      if (last?.kind !== "turn_end" || last.data.reason !== "restart") return false;
-    }
+    // (For a session in memory too: its last event's kind is known without its body, and that one
+    // body is read by itself. Read through the branch, it brought its whole run back from the table.)
+    if (this.store.isKept(id) && this.lineage(id).at(-1)?.kind !== "turn_end") return false;
+    const last = this.store.headEvent(id);
+    if (last?.kind !== "turn_end" || last.data.reason !== "restart") return false;
     const line = this.lineage(id);
     const end = line.at(-1);
     if (end?.kind !== "turn_end" || end.data.reason !== "restart") return false;

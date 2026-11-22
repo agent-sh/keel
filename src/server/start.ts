@@ -92,6 +92,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // fills it (a hot reload's old store gives its thread up first).
   // A session that is not in memory has its pages read by the read thread before the loop reads them.
   store.offLoop = (sql, params) => readsOf(store).readAhead(sql, params);
+  store.readOff = (sql, params) => readsOf(store).rowsOff<{ data: string }>(sql, params);
   // A side row that could not be written is a gap in a ledger: said once a kind, never a failure of a turn.
   store.sideFailed = (e, what) => errors.capture("server", e, { at: "a side write", what });
   // A daemon that ends writes what waits first, however it ends short of a kill.

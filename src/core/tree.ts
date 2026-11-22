@@ -116,7 +116,9 @@ function turnEdge(line: readonly StoredEvent[], k: number): boolean {
 // its edges are found by halving on seq and nothing outside it is read.
 // `at`: the place of the event a page is asked around. `versions`: the
 // owner's prompts stored under a parent.
-export function pageOfLine(line: readonly StoredEvent[], ask: { limit: number; before?: number; after?: number; at?: number }, versions: (parent: string | null) => readonly StoredEvent[], head: string | null, on_head: boolean): Page {
+// The places of the part a page asks for on a branch already walked: from `a` up to `b`, read from
+// the events' kinds alone (no body), so a reader can have that part's bodies brought in first.
+export function pageRange(line: readonly StoredEvent[], ask: { limit: number; before?: number; after?: number; at?: number }): [number, number] {
   const limit = Math.max(1, Math.floor(ask.limit) || 1);
   let a: number, b: number;
   if (ask.at !== undefined) {
@@ -136,6 +138,11 @@ export function pageOfLine(line: readonly StoredEvent[], ask: { limit: number; b
   }
   // What failed in a turn is stored right after its end and shown with it: a part does not end between them.
   while (b > a && b < line.length && line[b]!.kind === "error") b++;
+  return [a, b];
+}
+
+export function pageOfLine(line: readonly StoredEvent[], ask: { limit: number; before?: number; after?: number; at?: number }, versions: (parent: string | null) => readonly StoredEvent[], head: string | null, on_head: boolean): Page {
+  const [a, b] = pageRange(line, ask);
   const part = line.slice(a, b);
   const out = new Map(part.map((e) => [e.id, e]));
   for (const e of part) if (e.kind === "user" && !e.data.origin) for (const v of versions(e.parent)) out.set(v.id, v);

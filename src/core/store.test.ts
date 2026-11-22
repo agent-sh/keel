@@ -637,3 +637,71 @@ test("under memory pressure the store gives back the kept events beyond a share 
   expect(store.giveBack(1)).toBe(0);
   store.shrink();
 });
+
+// A session at rest gives its event bodies back. What reads them again reads
+// a run of 64 from the table, on the loop: counted with who asked, and not
+// needed at all by a reader that has them read off the loop first.
+test("bodies read on the loop are counted by who asked; warmed off the loop, a turn's start reads none", async () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const s = seed.createSession({ model: "m", workspace: "/" });
+  for (let i = 0; i < 300; i++) seed.append(s.id, i % 2 ? "assistant" : "user", { text: `body ${i}`, i });
+  const store = new Store(dir);
+  store.serving = true;
+  const rest = () => { for (const k of ((store as any).kept as Map<string, { at: number }>).values()) k.at -= IDLE_KEPT_MS; (store as any).sweep(); };
+  const loop = () => store.bodyReads();
+  await store.warm(s.id, false);
+  expect(loop()).toMatchObject({ n: 0, rows: 0, off: 0 });
+  // Read through the events, on the loop: one run for the last event, counted under a label of the path that asked.
+  const reader = function turnStart() { return store.lineage(s.id).at(-1)!.data.i; };
+  expect(reader()).toBe(299);
+  expect(loop()).toMatchObject({ n: 1, rows: 300 - 256, off: 0 });
+  expect(loop().by).toHaveLength(1);
+  expect(loop().by[0]).toMatchObject({ n: 1, rows: 44 });
+  expect(loop().by[0]!.who).toContain("turnStart");
+  expect(loop().by[0]!.bytes).toBeGreaterThan(44 * 20);
+  expect(store.keptEvents().body_reads.n).toBe(1);
+  // At rest the bodies go. Warmed through the read thread, the part asked for is in memory and the loop read nothing.
+  rest();
+  const asked: unknown[][] = [];
+  const other = new Database(join(dir, "keel.db"), { readonly: true });
+  store.readOff = async (sql, params) => { asked.push(params); return other.query<{ data: string }, any[]>(sql).all(...params); };
+  const line = store.lineage(s.id);
+  await store.warmBodies(s.id, line[100]!.seq);
+  expect(asked.map((p) => [p[1], p[2]])).toEqual([[65, 128], [129, 192], [193, 256], [257, 300]]);
+  expect(line.slice(100).map((e) => e.data.i)).toEqual(Array.from({ length: 200 }, (_, i) => 100 + i));
+  expect(loop()).toMatchObject({ n: 1, off: 4 });
+  // Asked again, nothing is read; one part only, only its run.
+  await store.warmBodies(s.id, line[100]!.seq);
+  await store.warmBodies(s.id, line[10]!.seq, line[20]!.seq);
+  expect(asked).toHaveLength(5);
+  expect(asked[4]!.slice(1)).toEqual([1, 64]);
+  expect(loop()).toMatchObject({ n: 1, off: 5 });
+  // An event stored while its run is not in memory keeps its own body: the prompt after a rest, its
+  // turn's first events and their reader read nothing back. Its run, read later, holds it too.
+  rest();
+  const prompt = store.append(s.id, "user", { text: "after the rest", i: 300 });
+  const start = store.append(s.id, "turn_start", { model: "m" });
+  expect([store.lineage(s.id).at(-2)!.data.text, store.lineage(s.id).at(-1)!.data.model, prompt.data.i, start.data.model]).toEqual(["after the rest", "m", 300, "m"]);
+  expect(loop()).toMatchObject({ n: 1, off: 5 });
+  // One body by itself is one row, not a run (the last turn's end, asked at every prompt).
+  expect(store.body(line[5]!)).toEqual({ text: "body 5", i: 5 });
+  expect(loop()).toMatchObject({ n: 1, off: 5 });
+  await store.warmBodies(s.id, prompt.seq);
+  expect(store.lineage(s.id).slice(-3).map((e) => e.data.i ?? e.data.model)).toEqual([299, 300, "m"]);
+  expect((store as any).kept.get(s.id).fresh).toBeUndefined();
+  // No read thread, or one that does not answer: the runs are read here, and counted.
+  rest();
+  store.readOff = async () => undefined;
+  await store.warmBodies(s.id, line[280]!.seq);
+  expect(loop().n).toBe(2);
+  expect(line.at(-1)!.data.i).toBe(299);
+  // What the thread read of a run that grew meanwhile is not used: the run is read as it is now.
+  rest();
+  store.readOff = async (sql, params) => { const rows = other.query<{ data: string }, any[]>(sql).all(...params); store.append(s.id, "note", { text: "meanwhile" }); return rows; };
+  await store.warmBodies(s.id, line[280]!.seq);
+  expect(store.lineage(s.id).at(-1)!.data.text).toBe("meanwhile");
+  expect(store.lineage(s.id).slice(-4, -1).map((e) => e.data.i ?? e.data.model)).toEqual([299, 300, "m"]);
+  other.close();
+  store.db.close();
+});

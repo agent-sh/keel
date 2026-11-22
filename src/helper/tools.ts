@@ -88,10 +88,13 @@ const sessionRead: Tool = {
     const evs = store.lineage(s.id);
     const n = Math.min(20, Math.max(1, Number(input.turns) || 4));
     const out: string[] = [`${s.title || "(untitled)"} (${s.id}) in ${s.workspace}, model ${s.model}, ${sessionState(s).word}, last turn ended: ${s.settings.last_end ?? "none"}`];
-    const summary = evs.findLast((e) => e.kind === "compaction" && e.data.mode === "summary");
+    const summary = evs.findLast((e) => e.kind === "compaction" && store.body(e).mode === "summary");
     let from = 0;
     let prompts = 0;
     for (let i = evs.length - 1; i >= 0; i--) if (evs[i]!.kind === "user" && ++prompts >= n) { from = i; break; }
+    // (The bodies of those turns, and of the summary, are read off the loop: a session at rest holds none.)
+    if (summary) await store.warmBodies(s.id, summary.seq, summary.seq);
+    if (evs[from]) await store.warmBodies(s.id, evs[from]!.seq);
     if (summary && evs.indexOf(summary) < from) out.push(`Summary (${ago(summary.ts)}):\n${clip(String(summary.data.summary ?? ""), 3000)}`);
     const tools: string[] = [];
     const flush = () => { if (tools.length) out.push(`  tools: ${tools.splice(0).join(", ")}`); };

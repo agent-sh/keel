@@ -188,6 +188,10 @@ type Kept = {
   // by each message appended. It goes with the session, so it never holds
   // less than the session does.
   forks?: Map<string | null, StoredEvent[]>;
+  // The bodies of the events stored while their run was not in memory (a session at rest gave its
+  // bodies back, then got a prompt), by place: the newest events are what is read next, and reading
+  // one back would read its whole run from the table. They go when their run is read, or with the bodies.
+  fresh?: Map<number, { data: unknown; bytes: number }>;
   // When it was last read or appended to.
   at: number;
   // Dropped from the store: an event of it still held reads its body from the table.
@@ -268,7 +272,8 @@ const BACK_ROWS = 8192;
 const NEWEST_PART = 32;
 
 const pause = () => new Promise<void>((r) => setImmediate(r));
-// KEEL_TRACE_COLD=1: each whole-session read made on the loop is a line of the log, with who asked; =stack: and its call stack.
+const BODIES = "SELECT data FROM events WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq";
+// KEEL_TRACE_COLD=1: each whole-session read and each read of bodies made on the loop is a line of the log, with who asked; =stack: and its call stack.
 const TRACE_COLD = process.env.KEEL_TRACE_COLD;
 // SQLite's words for a write on a connection that takes none (PRAGMA query_only).
 export const refusedWrite = (e: unknown) => /readonly database|SQLITE_READONLY/i.test(`${(e as { code?: string })?.code ?? ""} ${(e as Error)?.message ?? e}`);
@@ -299,6 +304,7 @@ const within = <T>(p: Promise<T>, ms: number): Promise<T | false> => {
 };
 
 export type ColdReads = { n: number; rows: number; ms: number; by: { who: string; n: number; rows: number; ms: number }[] };
+export type BodyReads = { n: number; rows: number; bytes: number; ms: number; by: { who: string; n: number; rows: number; bytes: number; ms: number }[] };
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
 function rowToSession(r: SessionRow): Session {
@@ -384,6 +390,9 @@ export class Store {
   // by the daemon: what it reads is then in the operating system's memory
   // for the loop. It resolves when that is so, or when it is not worth waiting for.
   offLoop?: (sql: string, params: (string | number | null)[]) => Promise<unknown>;
+  // The rows of a statement, read on the read thread and handed over; undefined when that cannot
+  // be had now (no thread, or no answer in time): set by the daemon (Reads.rowsOff).
+  readOff?: (sql: string, params: (string | number | null)[]) => Promise<{ data: string }[] | undefined>;
   // A summary settled against its branch on the read thread (src/engine/settle-read.ts), set by the
   // daemon: without it the caller settles on the loop.
   settleOff?: (ask: SettleAsk) => Promise<Settled>;
@@ -957,6 +966,12 @@ export class Store {
         this.charge(k, text.length * BODY_COST);
       } else if (run) {
         this.drop(k, Math.floor(at / RUN));
+      } else if (!k.gone) {
+        // Its run is not in memory: the body is kept by itself (see `fresh`), a few runs' worth at most.
+        if ((k.fresh?.size ?? 0) >= 4 * RUN) this.dropFresh(k);
+        const bytes = text.length * BODY_COST;
+        (k.fresh ??= new Map()).set(at, { data: deepFreeze(JSON.parse(text)), bytes });
+        this.charge(k, bytes);
       }
       // The branch that ended at its parent now ends at it. An event on another
       // parent starts a branch, which is walked when it is asked for.
@@ -986,17 +1001,31 @@ export class Store {
     this.owed += k.bytes;
     k.gone = true;
     k.runs = [];
+    k.fresh = undefined;
     this.kept.delete(session_id);
     if (!this.kept.size) this.rest();
   }
   // The bodies a kept session read are given back; its events stay.
   private dropBodies(k: Kept) {
+    this.dropFresh(k);
     for (let i = 0; i < k.runs.length; i++) {
       const run = k.runs[i];
       if (!run) continue;
       this.owed += run.bytes;
       this.drop(k, i);
     }
+  }
+
+  // The bodies kept beside the runs go: all of them, or the ones of run `i` (it was read, and holds them).
+  private dropFresh(k: Kept, i?: number) {
+    if (!k.fresh) return;
+    for (const [at, f] of k.fresh) {
+      if (i !== undefined && Math.floor(at / RUN) !== i) continue;
+      k.fresh.delete(at);
+      this.charge(k, -f.bytes);
+      if (i === undefined) this.owed += f.bytes;
+    }
+    if (!k.fresh.size) k.fresh = undefined;
   }
 
   private charge(k: Kept, bytes: number) {
@@ -1023,11 +1052,27 @@ export class Store {
     return Object.freeze(e);
   }
 
+  // One event's body without the rest of its run: from memory when it is there, else that row
+  // alone. For a reader that needs a single body of a session at rest (its last turn's end): read
+  // through the event, it would bring the whole run back from the table, on the loop.
+  body(e: StoredEvent): any {
+    const k = this.kept.get(e.session_id);
+    if (k) {
+      let at = k.first >= 0 ? e.seq - k.first : firstAfter(k.all, e.seq - 1);
+      if (k.all[at]?.seq !== e.seq) at = firstAfter(k.all, e.seq - 1);
+      if (k.all[at]?.id !== e.id || k.runs[Math.floor(at / RUN)] || k.fresh?.has(at)) return e.data;
+    }
+    const r = this.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE id = ?").get(e.id);
+    return r ? JSON.parse(r.data) : e.data;
+  }
+
   // The body of the event with this seq, from its run.
   private bodyOf(k: Kept, seq: number): unknown {
     let at = k.first >= 0 ? seq - k.first : firstAfter(k.all, seq - 1);
     if (k.all[at]?.seq !== seq) at = firstAfter(k.all, seq - 1);
     const i = Math.floor(at / RUN);
+    const fresh = k.runs[i] ? undefined : k.fresh?.get(at);
+    if (fresh) return fresh.data;
     const run = k.runs[i] ?? this.read(k, i);
     run.used = ++this.tick;
     return run.data[at % RUN];
@@ -1036,11 +1081,30 @@ export class Store {
   // Reads and parses the bodies of one run, and keeps them with the session,
   // charged. For a session dropped since the event was handed out, the one
   // run read last stays with what was handed out and is charged to no one.
+  // This read is on the loop, and from the disk when the pages are not in memory: it is counted
+  // with who asked (`bodyReads`), and the stall watcher is told who while it runs. A reader that
+  // can wait has the bodies it needs read off the loop first (`warmBodies`).
   private read(k: Kept, i: number): Run {
     const end = Math.min(k.all.length, (i + 1) * RUN);
-    const rows = this.db
-      .query<{ data: string }, [string, number, number]>("SELECT data FROM events WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq")
-      .all(k.id, k.all[i * RUN]!.seq, k.all[end - 1]!.seq);
+    const who = asker();
+    const t0 = performance.now();
+    const rows = asking(who, () => this.db
+      .query<{ data: string }, [string, number, number]>(BODIES)
+      .all(k.id, k.all[i * RUN]!.seq, k.all[end - 1]!.seq));
+    const ms = performance.now() - t0;
+    let bytes = 0;
+    for (const r of rows) bytes += r.data.length;
+    const c = this.serving ? this.bodies : this.bodiesStart;
+    c.n++; c.rows += rows.length; c.bytes += bytes; c.ms += ms;
+    const by = c.by.get(who) ?? { n: 0, rows: 0, bytes: 0, ms: 0 };
+    by.n++; by.rows += rows.length; by.bytes += bytes; by.ms += ms;
+    c.by.set(who, by);
+    if (TRACE_COLD) console.log(`[store] ${rows.length} event bodies (${bytes} bytes) were read on the loop in ${ms.toFixed(1)} ms, asked by ${who}${TRACE_COLD === "stack" ? `\n${new Error("its callers").stack}` : ""}`);
+    return this.install(k, i, rows);
+  }
+  // The bodies of one run as the table gave them (on the loop, or on the read thread), parsed and kept.
+  private install(k: Kept, i: number, rows: { data: string }[]): Run {
+    const end = Math.min(k.all.length, (i + 1) * RUN);
     if (rows.length !== end - i * RUN) {
       // What is held is not what the table holds (the session was deleted, or
       // a write was undone outside atomic): it is read again from the table.
@@ -1057,6 +1121,7 @@ export class Store {
       k.runs[i] = run;
       return run;
     }
+    this.dropFresh(k, i);
     k.runs[i] = run;
     this.charge(k, run.bytes);
     this.trim(k, i);
@@ -1168,8 +1233,9 @@ export class Store {
   // How many sessions are kept and what they are charged, in bytes of memory,
   // against the budget (the resources report shows it).
   // `cold_reads`: the whole-session reads that were made on the loop (held), by who asked.
-  keptEvents(): { sessions: number; bytes: number; budget: number; cold_reads: ReturnType<Store["coldReads"]> } {
-    return { sessions: this.kept.size, bytes: this.keptBytes, budget: this.budget, cold_reads: this.coldReads() };
+  // `body_reads`: the reads of a run of event bodies that were made on the loop, by who asked.
+  keptEvents(): { sessions: number; bytes: number; budget: number; cold_reads: ReturnType<Store["coldReads"]>; body_reads: ReturnType<Store["bodyReads"]> } {
+    return { sessions: this.kept.size, bytes: this.keptBytes, budget: this.budget, cold_reads: this.coldReads(), body_reads: this.bodyReads() };
   }
 
   // A session's events as kept, from their rows without bodies.
@@ -1233,6 +1299,46 @@ export class Store {
     const of = (c: Store["cold"]): ColdReads => ({ n: c.n, rows: c.rows, ms: Math.round(c.ms), by: [...c.by].map(([who, v]) => ({ who, n: v.n, rows: v.rows, ms: Math.round(v.ms) })).sort((a, b) => b.ms - a.ms) });
     return { ...of(this.cold), start: of(this.coldStart) };
   }
+  // The reads of event bodies made on the loop since the start: how many (a run of up to 64 events
+  // each), of how many events and bytes, how long in all, and the same by who asked. `start`: the
+  // ones made before the daemon answered. `off`: the runs read on the read thread instead (warmBodies).
+  private bodies = { n: 0, rows: 0, bytes: 0, ms: 0, by: new Map<string, { n: number; rows: number; bytes: number; ms: number }>() };
+  private bodiesStart = { n: 0, rows: 0, bytes: 0, ms: 0, by: new Map<string, { n: number; rows: number; bytes: number; ms: number }>() };
+  private bodiesOff = 0;
+  bodyReads(): BodyReads & { start: BodyReads; off: number } {
+    const of = (c: Store["bodies"]): BodyReads => ({ n: c.n, rows: c.rows, bytes: c.bytes, ms: Math.round(c.ms), by: [...c.by].map(([who, v]) => ({ who, n: v.n, rows: v.rows, bytes: v.bytes, ms: Math.round(v.ms) })).sort((a, b) => b.ms - a.ms) });
+    return { ...of(this.bodies), start: of(this.bodiesStart), off: this.bodiesOff };
+  }
+
+  // The bodies of a session's events from the one numbered `from` on (to the one numbered `to`),
+  // in memory when this resolves, without the loop waiting for the disk: each run that is not in
+  // memory is read on the read thread and handed over, and the loop is given back between runs.
+  // For a reader that can wait and is about to read them (a turn before its first request, a page
+  // opening a part of a session). Where no thread reads (or it does not answer), the runs are read
+  // here, one at a time with the loop given back in between.
+  async warmBodies(session_id: string, from = 0, to = Infinity): Promise<void> {
+    await this.warm(session_id, false);
+    const k = this.kept.get(session_id);
+    if (!k || !k.all.length) return;
+    let t0 = performance.now();
+    for (let i = Math.floor(Math.min(firstAfter(k.all, from - 1), k.all.length - 1) / RUN); i * RUN < k.all.length && !k.gone && k.all[i * RUN]!.seq <= to; i++) {
+      const have = k.runs[i];
+      if (have) { have.used = ++this.tick; continue; }
+      const hi = k.all[Math.min(k.all.length, (i + 1) * RUN) - 1]!.seq;
+      const rows = this.readOff ? await this.readOff(BODIES, [session_id, k.all[i * RUN]!.seq, hi]).catch(() => undefined) : undefined;
+      if (k.gone) return;
+      if (k.runs[i]) continue;
+      // (The run as it stands now: an event stored meanwhile is in it, and was not read.)
+      const end = Math.min(k.all.length, (i + 1) * RUN);
+      if (rows && rows.length === end - i * RUN && k.all[end - 1]!.seq === hi) { this.install(k, i, rows); this.bodiesOff++; }
+      else this.read(k, i);
+      if (performance.now() - t0 < 4) continue;
+      await pause();
+      t0 = performance.now();
+    }
+    if (!k.gone) this.touch(session_id, k);
+  }
+
   // Whether the session's events are in memory (a reader that can wait brings them in first: warm).
   isKept(session_id: string): boolean { return this.kept.has(session_id); }
 

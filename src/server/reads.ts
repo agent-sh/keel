@@ -111,6 +111,18 @@ export class Reads {
     return this.run("sql", { sql, params }) as Promise<T[]>;
   }
 
+  // The rows of one statement, read on the thread and handed over, for a caller that would
+  // otherwise read them on the loop (a session's event bodies before a turn reads them). Undefined
+  // where no thread runs, or when it has not answered after `ms`: the caller then reads for itself.
+  rowsOff<T>(sql: string, params: (string | number | null)[], ms = AHEAD_MS): Promise<T[] | undefined> {
+    if (!this.thread || !this.start()) return Promise.resolve(undefined);
+    return new Promise<T[] | undefined>((ok) => {
+      const t = setTimeout(() => ok(undefined), ms);
+      t.unref?.();
+      this.sql<T>(sql, params).then((rows) => { clearTimeout(t); ok(rows); }, () => { clearTimeout(t); ok(undefined); });
+    });
+  }
+
   // A read whose answer nobody needs: it is made so the pages it touches
   // are in the operating system's memory when the loop reads them next (a
   // session about to be brought into memory). It is worth a wait only when

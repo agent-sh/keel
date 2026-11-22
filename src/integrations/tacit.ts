@@ -457,6 +457,29 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     try { rmSync(this.markFile(id), { force: true }); } catch {}
   }
 
+  // The bodies transcript() is about to read (the events stored since the file was written, or all
+  // of them for a file it writes whole), read off the loop first: a session at rest holds none, and
+  // read back on the loop they wait for the disk. Nothing is read for a file that is up to date.
+  private async warmTranscript(s: Session) {
+    try {
+      if (!this.flags(s.id).feed_memory) return;
+      const current = this.store.session(s.id);
+      if (!current) return;
+      const stamp = fileStamp(this.transcriptFile(s.id));
+      const cached = stamp === undefined ? undefined : this.markOf(s.id);
+      const same = !!cached && cached.model === current.model && cached.workspace === current.workspace && cached.stamp === stamp;
+      if (cached && same && cached.head === current.head) return;
+      await this.store.warm(s.id, false);
+      const line = this.store.lineage(s.id);
+      let at = -1;
+      if (cached && same) for (let i = line.length - 1; i >= 0; i--) if (line[i]!.id === cached.head) { at = i; break; }
+      const from = line[at + 1];
+      if (from) await this.store.warmBodies(s.id, from.seq);
+    } catch {
+      // What could not be read ahead is read by transcript(), as it was.
+    }
+  }
+
   transcript(s: Session): string {
     if (!this.flags(s.id).feed_memory) return this.transcriptFile();
     const path = this.transcriptFile(s.id);
@@ -721,11 +744,13 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   startBlock(s: Session) {
     return this.answer(this.startCall(s), "session-start", s.id);
   }
-  promptBlock(s: Session, prompt: string) {
+  async promptBlock(s: Session, prompt: string) {
+    await this.warmTranscript(s);
     return this.answer(this.call(s, "prompt", { prompt }), "prompt", s.id);
   }
   async preToolBlock(s: Session, tool: string, args: any): Promise<string | null> {
     const call = tacitToolCall(tool, args);
+    if (call) await this.warmTranscript(s);
     return call ? this.answer(this.call(s, "pre-tool", call), "pre-tool", s.id) : null;
   }
 
@@ -733,6 +758,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   // compaction waits for it so long; the process may go on.
   async preCompact(s: Session) {
     if (!this.bin || !this.flags(s.id).use_memory || !this.flags(s.id).feed_memory) return;
+    await this.warmTranscript(s);
     await within(running(this.hook("pre-compact", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) })), this.waitOf("pre-compact"));
   }
 
