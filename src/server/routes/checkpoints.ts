@@ -5,6 +5,7 @@ import { registerHooks } from "../../engine/hooks.ts";
 import { Bad, Checkpoints } from "../../safety/checkpoints.ts";
 import { folderUse, inUse } from "../inuse.ts";
 import type { Deps, RouteModule } from "../app.ts";
+import { readsOf } from "../reads.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -48,7 +49,12 @@ export const checkpointRoutes: RouteModule = (deps: Deps) => {
         if (!s) return bad("no such session", 404);
         const sh = c.shadow(s.workspace);
         const { turns, expired } = await c.turns(s);
-        return json({ turns, expired, scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
+        // `n`: the turn's place among the session's turns (its first is 1), the number its Tokens panel and
+        // `keel cost` give it; `turn` is its start's place in the history, the one a rewind and a diff take.
+        // (The starts alone, from the index that holds only those columns, on the read thread.)
+        const starts = turns.length ? (await readsOf(store).sql<{ seq: number }>("SELECT seq FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq", [s.id])).map((r) => r.seq) : [];
+        const place = new Map(starts.map((seq, i) => [seq, i + 1]));
+        return json({ turns: turns.map((t) => (place.has(t.turn) ? { ...t, n: place.get(t.turn) } : t)), expired, scope: sh.mode, reason: sh.reason ?? null, skipped: sh.skipped.slice(0, 50), skipped_count: sh.skipped.length });
       }),
     },
     "/api/sessions/:id/checkpoints/diff": {

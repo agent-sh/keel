@@ -278,11 +278,13 @@ const report = wrap("keel report [--session ID] [--note TEXT] [--dry-run] [--url
     return 0;
   });
 
-const USAGE_USAGE = `keel usage [--days N | --hours N] [--top N] [--slow [N]] [--url URL] [--json]
+const USAGE_USAGE = `keel usage [--days N | --hours N] [--top N] [--slow [N]] [--tools] [--url URL] [--json]
   Tokens, spend, cache and timings of the last N days (default 7) or hours, then the spend ranked:
   by session, and by agent tree (a session with the agents under it). --top N lists N rows of each (default 10).
-  --slow [N] lists instead the N model requests that took longest in the range, across sessions (default 20).`;
-const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "string" }, top: { type: "string" }, slow: { type: "boolean" } }, async (v, pos) => {
+  --slow [N] lists instead the N model requests that took longest in the range, across sessions (default 20).
+  --tools lists instead each tool's calls and failures, as Settings, Usage shows them, and under each tool
+  the sessions its failures happened in, the most first.`;
+const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "string" }, top: { type: "string" }, slow: { type: "boolean" }, tools: { type: "boolean" } }, async (v, pos) => {
   if (v.days !== undefined && v.hours !== undefined) return (console.error(`keel usage: --days and --hours do not mix\n\n${USAGE_USAGE}`), 3);
   const n = v.hours !== undefined ? Number(v.hours) : v.days === undefined ? 7 : Number(v.days);
   if (!(Number.isFinite(n) && n > 0)) return (console.error(`keel usage: --${v.hours !== undefined ? "hours is a number of hours" : "days is a number of days"} above 0\n\n${USAGE_USAGE}`), 3);
@@ -300,6 +302,21 @@ const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "stri
     out(r, !!v.json, () => [
       `The ${r.requests.length} slowest model requests of ${range}. ${z.note}.`,
       ...r.requests.map((q: any) => `  ${ms(q.latency_ms).padStart(9)}  first word ${ms(q.ttft_ms).padStart(8)}  ${z.stamp(q.ts)}  ${q.outcome === "ok" ? "" : `${q.error_class ?? q.outcome}  `}${q.model.slice(q.model.indexOf(":") + 1)}  ${(q.title ?? "a removed session").replace(/\s+/g, " ").slice(0, 48)}  [session=${q.session_id.slice(-12)}]`),
+    ].join("\n"));
+    return 0;
+  }
+  if (v.tools) {
+    const t = await call(url, `/api/telemetry?since_ms=${since}`);
+    const pct = (x: number) => `${Math.round(x * 100)}%`;
+    out({ since_ms: t.since_ms, until_ms: t.until_ms, total: { tool_calls: t.total.tool_calls, tool_errors: t.total.tool_errors }, tools: t.tools }, !!v.json, () => [
+      `Tools of ${range}: ${t.total.tool_calls} tool calls, ${t.total.tool_errors} failed. A tool's failures are listed by session.`,
+      ...(t.tools.length ? [] : ["  No tool calls in this range."]),
+      ...t.tools.slice(0, top).flatMap((x: any) => [
+        `  ${x.tool.padEnd(28)} ${String(x.tool_calls).padStart(6)} calls  ${x.tool_errors ? `${String(x.tool_errors).padStart(4)} failed (${pct(x.tool_error_rate)})` : "   0 failed"}  usual ${ms(x.p50_ms)}`,
+        ...(x.failed_in ?? []).map((f: any) => `      ${String(f.failed).padStart(4)} of ${f.calls} in ${f.title === undefined ? "a removed session" : JSON.stringify((f.title || "(untitled)").replace(/\s+/g, " ").slice(0, 48))}  [session=${f.session_id.slice(-12)}]`),
+        ...(x.failed_in_more ? [`      and ${x.failed_in_more} more sessions`] : []),
+      ]),
+      ...(t.tools.length > top ? [`  ${t.tools.length - top} more tools (--top N)`] : []),
     ].join("\n"));
     return 0;
   }

@@ -12,10 +12,11 @@ import { providerCommands } from "./providers.ts";
 import { rulesCmd } from "./rules.ts";
 import { run } from "./run.ts";
 import { sessionCommands } from "./sessions.ts";
+import { inspectCommands } from "./inspect.ts";
 
 export type Command = (argv: string[]) => Promise<number>;
 export const commands: Record<string, Command> = {
-  ...mobileCommands, ...acpCommands, ...adminCommands, ...pluginCommands, ...sessionCommands, ...loginCommands, ...providerCommands,
+  ...mobileCommands, ...acpCommands, ...adminCommands, ...pluginCommands, ...sessionCommands, ...inspectCommands, ...loginCommands, ...providerCommands,
   run,
   rules: rulesCmd,
   debug,

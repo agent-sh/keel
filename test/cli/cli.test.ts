@@ -1379,6 +1379,51 @@ describe("client commands against a running daemon", () => {
     expect(yes.code).toBe(0);
     expect(await state0()).toMatchObject({ state: "allowed", by: { client: "cli", seen: "whole" } });
   }, 120_000);
+
+  // The questions the page answers about one session, from a terminal: its messages with their
+  // states, its failures per tool, what it cost and what a turn changed.
+  test("messages, failures per tool by session, one session's cost, what a turn changed", async () => {
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const run = async (text: string, title: string) => {
+      const { session } = await (await fetch(`${url}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, workspace: WS }) })).json() as any;
+      expect((await k(["run", "--wait", "--json", "--permission-mode", "full-auto", "-r", session.id, text])).code).toBe(0);
+      return session.id as string;
+    };
+    const receiver = await run("hello", "Inspect receiver");
+    const calls = [
+      { name: "Bash", input: { command: "echo one > inspect-a.txt; echo two > inspect-b.txt" } },
+      { name: "Bash", input: { command: "echo 'error: build failed' >&2; exit 2" } },
+      { name: "keel__session_send", input: { to: receiver, text: "the build failed" } },
+    ];
+    const sender = await run(`script:calls ${JSON.stringify(calls)}`, "Inspect sender");
+
+    const m = await k(["messages", sender]);
+    expect(m.code).toBe(0);
+    expect(m.out).toContain('Session "Inspect sender"');
+    expect(m.out).toMatch(/sent to "Inspect receiver": (delivered|handled|queued)/);
+    expect(json((await k(["messages", sender, "--json"])).out).messages).toMatchObject([{ direction: "sent", other: { session_id: receiver } }]);
+
+    const tools = await k(["usage", "--tools", "--hours", "1"]);
+    expect(tools.code).toBe(0);
+    expect(tools.out).toMatch(/^\s+Bash\s+\d+ calls\s+\d+ failed/m);
+    expect(tools.out).toContain(`in "Inspect sender"  [session=${sender.slice(-12)}]`);
+
+    const cost = await k(["cost", sender]);
+    expect(cost.code).toBe(0);
+    expect(cost.out).toMatch(/^This session cost (\$\d+\.\d{4}|not priced)\+?: session "Inspect sender"/);
+    expect(cost.out).toMatch(/1 turn, \d+ requests?/);
+    expect(cost.out).toContain("Where the tokens went");
+    expect(cost.out).toMatch(/turn {3}1 /);
+
+    const changed = await k(["changes", sender]);
+    expect(changed.code).toBe(0);
+    expect(changed.out).toMatch(/turn {3}1 .*2 files, \+2 -0/);
+    const one = await k(["changes", sender, "1", "--diff"]);
+    expect(one.code).toBe(0);
+    expect(one.out).toMatch(/added {4} \+1 -0 {2}inspect-a\.txt/);
+    expect(one.out).toContain("+one");
+    expect((await k(["changes", sender, "7"])).err).toContain("turn 7 of this session changed no files");
+  }, 120_000);
 });
 
 // A daemon of its own for a group of tests, and plain calls to its API.

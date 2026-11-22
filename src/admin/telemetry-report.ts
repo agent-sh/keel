@@ -119,11 +119,23 @@ function rows(db: Database, q: Filter) {
   const tools = db.query<ToolRow, any[]>(`SELECT ts, tool, ms, is_error FROM telemetry_tools WHERE ${w} ORDER BY ts`).all(...args);
   const since = q.since ?? Math.min(calls[0]?.ts ?? Date.now(), tools[0]?.ts ?? Date.now());
   const until = q.until ?? Date.now();
-  return { calls, tools, since, until, bucket: q.bucket ?? pickBucket(until - since) };
+  return { calls, tools, since, until, bucket: q.bucket ?? pickBucket(until - since), where: w, args };
+}
+
+// The failed calls of each tool by session, the most failures first, with how many calls of that tool the session made.
+type FailedIn = { tool: string; session_id: string; title: string | null; failed: number; calls: number };
+function failedIn(db: Database, where: string, args: (string | number)[]): Map<string, FailedIn[]> {
+  const rows = db.query<FailedIn, any[]>(
+    `SELECT t.tool, t.session_id, s.title, SUM(t.is_error) AS failed, COUNT(*) AS calls FROM (SELECT tool, session_id, is_error FROM telemetry_tools WHERE ${where}) t
+     LEFT JOIN sessions s ON s.id = t.session_id GROUP BY t.tool, t.session_id HAVING SUM(t.is_error) > 0 ORDER BY failed DESC, calls DESC`).all(...args);
+  const by = new Map<string, FailedIn[]>();
+  for (const r of rows) (by.get(r.tool) ?? by.set(r.tool, []).get(r.tool)!).push(r);
+  return by;
 }
 
 export function reportOf(db: Database, q: Filter, limits: Limits) {
-  const { calls, tools, since, until, bucket } = rows(db, q);
+  const { calls, tools, since, until, bucket, where, args } = rows(db, q);
+  const failures = failedIn(db, where, args);
   const series = new Map<number, { calls: CallRow[]; tools: ToolRow[] }>();
   const at = (ts: number) => {
     const t = Math.floor(ts / bucket) * bucket;
@@ -148,7 +160,12 @@ export function reportOf(db: Database, q: Filter, limits: Limits) {
     // total_ms sums the timed calls only (`timed` of `tool_calls`); null when none was timed.
     tools: [...byTool.entries()].map(([tool, list]) => {
       const timed = list.filter((t) => t.ms !== null);
-      return { tool, ...toolStats(list), p50_ms: pct(list.map((t) => t.ms), 0.5), p95_ms: pct(list.map((t) => t.ms), 0.95), timed: timed.length, total_ms: timed.length ? timed.reduce((n, t) => n + t.ms!, 0) : null };
+      // `failed_in`: the sessions its failures happened in, the most first (ten of them; `failed_in_more` counts the rest).
+      const inSessions = failures.get(tool) ?? [];
+      return {
+        tool, ...toolStats(list), p50_ms: pct(list.map((t) => t.ms), 0.5), p95_ms: pct(list.map((t) => t.ms), 0.95), timed: timed.length, total_ms: timed.length ? timed.reduce((n, t) => n + t.ms!, 0) : null,
+        failed_in: inSessions.slice(0, 10).map(({ tool: _t, title, ...r }) => ({ ...r, ...(title !== null ? { title } : {}) })), ...(inSessions.length > 10 ? { failed_in_more: inSessions.length - 10 } : {}),
+      };
     })
       .sort((a, b) => b.tool_calls - a.tool_calls),
     breaks: BREAK_CAUSES.map((cause) => {
