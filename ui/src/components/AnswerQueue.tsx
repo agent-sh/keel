@@ -10,10 +10,11 @@
 // session, until nothing waits.
 //
 // The sequence is the owner's. It moves only after their own answer: a card
-// that leaves because it was answered elsewhere, stopped or granted ends it
-// where it is. And it ends as soon as they do something else: go to another
-// session or page, press outside the cards, type into a field that is not a
-// card's, press Escape outside a card, or leave the window.
+// that leaves because it was answered elsewhere or stopped ends it where it
+// is. And it ends as soon as they do something else: go to another session or
+// page, press outside the cards, type into a field that is not a card's,
+// press Escape outside a card, or leave the window; and by itself after a
+// quiet minute, saying so.
 //
 // A move the sequence makes never puts the keyboard in a message box, not for
 // a frame: a key pressed again right after an answer would send what that box
@@ -38,6 +39,8 @@ import { useSessionStates } from "../lib/watch.ts";
 import { Kbd } from "./Kbd.tsx";
 
 const KEYS = "alt+a";
+// How long the sequence stays on with nothing answered and no key or press on the cards.
+const QUIET_MS = 60_000;
 // What a session that needs the owner shows as a card above its message box (the daemon's `why`).
 const CARDS = new Set(["approval", "question", "plan", "secret"]);
 type State = {
@@ -140,12 +143,17 @@ export function AnswerQueue() {
     say("Nothing else waits for you.");
   }, [on, cur, idsKey, key]);
 
-  // Anything else the owner does ends the sequence, and so does leaving the window.
+  // Anything else the owner does ends the sequence, and so does leaving the window. So does a
+  // quiet minute: one with no answer and no key or press on the cards. (A sequence left on
+  // would move the page, much later, at the next answer given for another reason.)
   useEffect(() => {
     if (!on) return;
+    const quiet = () => { end(); say("The answering sequence ended after a quiet minute."); };
+    let idle = window.setTimeout(quiet, QUIET_MS);
     const act = (e: Event) => {
       const t = e.target instanceof HTMLElement ? e.target : null;
-      if (t?.closest('[data-testid="composer-asks"]')) return;
+      // On the cards, or in a popup that is a card's own (the grant of an approval): the sequence goes on.
+      if (t?.closest('[data-testid="composer-asks"], [data-ask-part]')) { window.clearTimeout(idle); idle = window.setTimeout(quiet, QUIET_MS); return; }
       if (e.type === "keydown") {
         const k = e as KeyboardEvent;
         const field = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
@@ -160,12 +168,13 @@ export function AnswerQueue() {
     addEventListener("blur", end);
     document.addEventListener("visibilitychange", hidden);
     return () => {
+      window.clearTimeout(idle);
       removeEventListener("pointerdown", act, true);
       removeEventListener("keydown", act, true);
       removeEventListener("blur", end);
       document.removeEventListener("visibilitychange", hidden);
     };
-  }, [on]);
+  }, [on, cur, idsKey]);
   return null;
 }
 

@@ -213,13 +213,16 @@ export const dropRepeats = (e: { key: string; repeat: boolean; target: EventTarg
 // card's pane: the box takes the keyboard as the key goes down, so the
 // character lands in it and what follows is typed there, in order. Letters
 // and digits always (a card with digits of its own takes them first); Space
-// while the card holds the keyboard by itself (once the owner put it there,
-// Space presses the control it is on). Returns whether the key was sent on.
+// while the card holds the keyboard by itself, or within the settle time of
+// its arrival (once the owner put it there and it has settled, Space presses
+// the control it is on): a key that would be refused is typed on, so that
+// either all of what is typed reaches the box or none. Returns whether the
+// key was sent on.
 export function typeToBox(e: { key: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; target: EventTarget | null; currentTarget: EventTarget | null }): boolean {
   const t = e.target as HTMLElement;
   if (e.altKey || e.ctrlKey || e.metaKey || e.key.length !== 1) return false;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable) return false;
-  if (e.key === " " && owned(t)) return false;
+  if (e.key === " " && owned(t) && keysSettled(t)) return false;
   const box = (e.currentTarget as HTMLElement).closest(".k-session")?.querySelector<HTMLElement>(BOX);
   if (!box) return false;
   ownFocus(box);

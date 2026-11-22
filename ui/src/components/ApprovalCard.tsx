@@ -9,6 +9,7 @@ import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, 
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
+import { tipSay } from "../lib/tips.ts";
 import { cn } from "../lib/utils.ts";
 import { BlockedCards } from "./BlockedCards.tsx";
 import { Spelled } from "./Spelled.tsx";
@@ -442,9 +443,11 @@ function useNudge() {
   return {
     mark: why ? true : undefined,
     line: <span className="sr-only" role="status" data-testid="approval-refused">{why}</span>,
-    refuse: (reason: string) => {
+    // `at`: the control that was pressed. The words stand at it for as long as the ring, for those who see.
+    refuse: (reason: string, at?: Element | null) => {
       window.clearTimeout(timer.current);
       setWhy(reason);
+      if (at) tipSay(at, reason, SETTLE_MS);
       timer.current = window.setTimeout(() => setWhy(""), SETTLE_MS);
     },
   };
@@ -524,8 +527,8 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
         const now = pressed.said(e);
         if (busy) return;
         const why = e.detail === 0 ? keyRefused(e.currentTarget) : "";
-        if (!now || now.length < 2) nudge.refuse("Not yet: it covers requests once they have stood still for a second");
-        else if (why) nudge.refuse(why);
+        if (!now || now.length < 2) nudge.refuse("Not yet: it covers requests once they have stood still for a second", e.currentTarget);
+        else if (why) nudge.refuse(why, e.currentTarget);
         else onAllow(now);
       }}
       className="k-allow-all inline-flex h-ctl-lg items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-raised"
@@ -608,7 +611,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     if (!arrival) return false;
     asked.current = true;
     if (arrival.to === "deny") { setReason((r) => r + arrival.typed); setDenying(true); }
-    else if (arrival.to === "card") takeKeys(list.current, true, false);
+    // (A card that is not all read is read on the list first, whatever the arrival asked for.)
+    else if (arrival.to === "card" || unread.current) takeKeys(list.current, true, false);
     else takeKeys(root.current, true);
     return true;
   };
@@ -635,19 +639,28 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // may and can be pressed: Enter then answers what was read. Once for each time the
   // keyboard is brought: an answer that hands the focus back to the list leaves it there,
   // and a card that may not have it leaves it on the list.
+  // Where the Allow is not whole in the region above the message box (a card taller than
+  // the region), there is nothing to wait for: it takes the keyboard, the region brings it
+  // into view, and it acts once it has stood there (its own settle time still applies).
   const moved = useRef(0);
+  const onceInRegion = () => {
+    const r = once.current?.getBoundingClientRect();
+    const tray = once.current?.closest('[data-testid="composer-tray"]')?.getBoundingClientRect();
+    return !!r && r.height > 0 && r.top >= Math.max(0, tray?.top ?? 0) - 0.5 && r.bottom <= Math.min(innerHeight, tray?.bottom ?? innerHeight) + 0.5;
+  };
   useEffect(() => {
     if (hold.keys !== "ready" || !hold.take || moved.current === hold.at) return;
     const at = document.activeElement;
     if (!(at === root.current || (first && at === list.current)) || !mayHold()) { moved.current = hold.at; return; }
-    if (!live) return;
+    if (!live && onceInRegion()) return;
     moved.current = hold.at;
     once.current?.focus({ preventScroll: true });
   }, [hold.keys, hold.take, hold.at, live, mustOpen]);
-  // The keyboard never rests on an answer of a card that is not all read (its text was found cut after the keyboard came).
+  // The keyboard never rests on an answer of a card that is not all read, nor on the card
+  // itself (its text was found cut after the keyboard came): it is read on the list.
   useEffect(() => {
     const at = document.activeElement as HTMLElement | null;
-    if (mustOpen && at && root.current?.contains(at) && (at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always")) toList();
+    if (mustOpen && at && (at === root.current || (root.current?.contains(at) && (at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always")))) toList();
   }, [mustOpen]);
   const held = useHandBack(root, list);
   // Leaving the reason (Esc, Back) puts the keyboard where the card's own rule would: on
@@ -668,7 +681,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);
-    held.current = !!root.current?.contains(document.activeElement);
+    // (The grant's popup is the card's own, drawn outside it: an answer given there held the keyboard too.)
+    held.current = !!root.current?.contains(document.activeElement) || !!document.activeElement?.closest("[data-ask-part]");
     setAnswering(true);
     setErr("");
     try {
@@ -706,6 +720,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The whole of what the daemon kept of the input, when the card shows only its start.
   const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
   const short = !whole && (cut || part);
+  // The row that opens and folds the text stays once it was used: folded, the text is measured
+  // again a render later, and a control that left for that render would drop the keyboard.
+  const opened = useRef(false);
+  if (whole) opened.current = true;
   const summary = (
     <>
       <pre
@@ -735,7 +753,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         </p>
       )}
       {/* Text that does not fit its box says so, and opens in place. Cut, it is read and answered on its own. */}
-      {(short || whole || marked) && (
+      {(short || whole || marked || opened.current) && (
         <div className={cn("mt-1 flex flex-wrap items-center gap-x-2 text-micro", !dense && "mx-4")}>
           {short && (
             <span className="text-warn" data-testid="approval-cut">
@@ -864,7 +882,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             onMouseDown={pressed.onMouseDown}
             onClick={(e) => {
               const why = refusalOf(pressed.said(e), e.detail === 0 ? e.currentTarget : null);
-              if (why) nudge.refuse(why);
+              if (why) nudge.refuse(why, e.currentTarget);
               else answer({ choice: "once" });
             }}
             className="k-allow h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised aria-disabled:cursor-default aria-disabled:opacity-50"
@@ -898,15 +916,17 @@ function AlwaysButton({ a, busy, live, armed, refusal, onGrant }: { a: Approval;
   const [open, setOpen] = useState(false);
   const pressed = usePress(armed, (ok) => ok);
   const nudge = useNudge();
+  const trigger = useRef<HTMLButtonElement>(null);
   return (
     <Popover.Root open={open} onOpenChange={(o, d) => {
       if (!o) return setOpen(o);
       const detail = (d.event as { detail?: number }).detail ?? 0;
       const why = refusal(pressed.said({ detail }), detail === 0 ? document.activeElement : null);
-      if (why) nudge.refuse(why);
+      if (why) nudge.refuse(why, trigger.current);
       else setOpen(o);
     }}>
       <Popover.Trigger
+        ref={trigger}
         disabled={busy}
         data-nudge={nudge.mark}
         onPointerDown={pressed.onPointerDown}
@@ -920,7 +940,8 @@ function AlwaysButton({ a, busy, live, armed, refusal, onGrant }: { a: Approval;
       {nudge.line}
       <Popover.Portal>
         <Popover.Positioner side="top" align="start" sideOffset={8} className="z-50">
-          <Popover.Popup className="w-[min(26rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+          {/* (Marked as a part of the card: a press in it is a press on the card, for the answering sequence and for the hand-back.) */}
+          <Popover.Popup data-ask-part="" className="w-[min(26rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
             <Popover.Title className="text-ui font-medium">Grant</Popover.Title>
             <Popover.Description className="mt-0.5 text-caption text-muted">
               {a.kind === "shell" ? "A trailing * covers any arguments. Edit the rule to narrow it." : "Calls this rule covers run without asking."}

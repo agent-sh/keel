@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import { stopKind } from "../../../src/core/stops.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
-import { dropRepeats, keyRefused, noteAnswer, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, keysSettled, noteAnswer, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { actions, failed, getState, useStore } from "../lib/store.ts";
 import { questions, resultText, type UiQuestion } from "../lib/tools.ts";
@@ -182,9 +182,13 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
   const oneKey = qs.length === 1 && !qs[0]!.multi && qs[0]!.options.length > 0;
   const most = Math.min(9, Math.max(0, ...qs.map((q) => q.options.length)));
   const digits = most > 1 ? `1 to ${most}` : "1";
-  // What the keys do, by how the card holds the keyboard: numbers are the card's only once the owner put it there.
+  // Numbers are the card's own only once the owner put the keyboard on it and it has been there for
+  // the settle time. Until then a number typed here goes on to the message box with the rest of
+  // what is typed (so that all of it gets there, or none), and no number is drawn on the options:
+  // the card shows a key only while that key answers, and the hint says what the keys do now.
+  const digitsOn = hold.own && hold.keys === "ready";
   const hint = !most ? "Tab goes to the field, Enter sends"
-    : !hold.own ? "Up and Down choose, Enter sends"
+    : !digitsOn ? "Up and Down choose, Enter sends"
     : oneKey ? `Press ${digits} to answer, or Up and Down then Enter`
     : `${digits} or Up and Down choose, Enter sends`;
   // Whole in the region above the message box, over the card's own Answer row: where the owner can read it.
@@ -224,8 +228,8 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
       return send(next, no);
     }
     if (field || !q) return;
-    // A number is the card's own once the owner put the keyboard on it: it picks, in the part the keyboard is in.
-    if (/^[1-9]$/.test(e.key) && !e.shiftKey && owned(t)) {
+    // A number is the card's own once the owner put the keyboard on it and it has settled: it picks, in the part the keyboard is in.
+    if (/^[1-9]$/.test(e.key) && !e.shiftKey && owned(t) && keysSettled(t)) {
       const o = q.options[Number(e.key) - 1];
       if (!o) return;
       e.preventDefault();
@@ -258,6 +262,7 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
       data-ask=""
       data-keys={hold.keys || undefined}
       data-own={hold.own || undefined}
+      data-digits={digitsOn || undefined}
       onKeyDownCapture={dropRepeats}
       onKeyDown={onKeyDown}
     >
@@ -288,8 +293,11 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
                         on ? "border-accent bg-accent-soft" : "border-line bg-sunken hover:border-line-strong",
                       )}
                     >
-                      {/* The key that picks it: lit once the numbers are the card's (the owner put the keyboard on it). */}
-                      {i < 9 && <kbd aria-hidden="true" className="mt-px grid h-[1.125rem] min-w-[1.125rem] shrink-0 place-items-center rounded-xs border border-line bg-raised px-1 text-micro font-medium text-faint group-data-[own]/card:border-line-strong group-data-[own]/card:text-fg pointer-coarse:hidden">{i + 1}</kbd>}
+                      {/* The key that picks it, drawn only while it does (the numbers are the card's). Else the
+                          mark of a choice, in the same room: nothing moves when the numbers come. */}
+                      {digitsOn && i < 9
+                        ? <kbd aria-hidden="true" data-testid="question-digit" className="mt-px grid size-[1.125rem] shrink-0 place-items-center rounded-xs border border-line-strong bg-raised text-micro font-medium text-fg pointer-coarse:hidden">{i + 1}</kbd>
+                        : <span aria-hidden="true" className="mt-px grid size-[1.125rem] shrink-0 place-items-center pointer-coarse:hidden"><span className={cn("size-2.5 border", q.multi ? "rounded-xs" : "rounded-full", on ? "border-accent bg-accent" : "border-line-strong")} /></span>}
                       <span className="flex min-w-0 flex-col gap-0.5">
                         <span className="text-ui font-medium">{o.label}</span>
                         {o.description && <span className="text-caption leading-snug text-muted">{o.description}</span>}
