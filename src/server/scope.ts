@@ -10,23 +10,29 @@
 import type { Frame, Session } from "../core/types.ts";
 
 export const ALL = "all"; // every socket, from its start
-export const EVERY = "live"; // every scoped frame, for a client that asked for all of them
+// Every scoped frame, for a client that did not say it wants only the sessions it names. Such a
+// socket is on this topic and on no session's or feed's own: on both it would get each frame twice.
+export const EVERY = "live";
+// A session's row: every one of them, for a socket that did not say `only` (and one that has not
+// resumed yet), or the ones a list needs (the gate below), for one that did. Never both.
+export const ROWS = "rows";
+export const LIST_ROWS = "rows:list";
 export const sessionTopic = (id: string) => `s:${id}`;
 // Frames one view reads, across sessions: the Activity list, a project's files, the daemon panel.
 export const FEEDS = ["activity", "artifacts", "awake"] as const;
 export const feedTopic = (name: string) => `f:${name}`;
-export const isScoped = (topic: string) => topic === EVERY || topic.startsWith("s:") || topic.startsWith("f:");
+export const isScoped = (topic: string) => topic === EVERY || topic === ROWS || topic === LIST_ROWS || topic.startsWith("s:") || topic.startsWith("f:");
 // A session of another daemon, as this daemon's pages name it (ui/src/lib/fleet-ids.ts).
 export const farId = (machine: string, id: string) => `${machine}--${id}`;
 const NAME = /^[\w-]{1,200}$/;
 export const named = (list: unknown, max = 512): string[] => (Array.isArray(list) ? list.filter((x): x is string => typeof x === "string" && NAME.test(x)).slice(0, max) : []);
 
 // Where a frame goes. `row`: a session's row, which the gate below decides for
-// ALL; `queue`: a queue, sent to ALL when it is not the one sent last.
+// LIST_ROWS; `queue`: a queue, sent to ALL when it is not the one sent last.
 export type Route = { topics: string[]; row?: { key: string; session: Session; gone: boolean }; queue?: { key: string; body: string } };
 export function route(f: Frame): Route {
   const one = (id: string): Route => ({ topics: [sessionTopic(id), EVERY] });
-  const row = (key: string, session: Session, deleted?: boolean): Route => ({ topics: [sessionTopic(key), EVERY], row: { key, session, gone: !!deleted || !!session.archived } });
+  const row = (key: string, session: Session, deleted?: boolean): Route => ({ topics: [sessionTopic(key), ROWS], row: { key, session, gone: !!deleted || !!session.archived } });
   const queue = (key: string, q: Extract<Frame, { t: "queue" }>): Route => ({ topics: [], queue: { key, body: JSON.stringify([q.queue, q.held]) } });
   switch (f.t) {
     case "event": return one(f.event.session_id);
@@ -72,7 +78,7 @@ export function rowChange(was: RowPrint | undefined, now: RowPrint): "shown" | "
   return was.phase !== now.phase || was.updated !== now.updated ? "lazy" : "none";
 }
 
-// Decides when a row goes to ALL. `send` publishes a frame's text there.
+// Decides when a row goes to the lists (LIST_ROWS). `send` publishes a frame's text there.
 type Kept = { told: RowPrint; at: number; late?: { print: RowPrint; data: string }; timer?: ReturnType<typeof setTimeout> };
 export class RowGate {
   private kept = new Map<string, Kept>();

@@ -15,7 +15,7 @@ import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { ClientFrame, DraftBlocks, Frame, SocketFrame } from "../core/types.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
-import { ALL, EVERY, FEEDS, feedTopic, isScoped, named, route, RowGate, sessionTopic } from "./scope.ts";
+import { ALL, EVERY, FEEDS, feedTopic, isScoped, LIST_ROWS, named, route, ROWS, RowGate, sessionTopic } from "./scope.ts";
 
 export class Live {
   // The reply each running turn has streamed since its last stored step.
@@ -43,7 +43,7 @@ export class Live {
   }
 
   // What the lists were last told of each session's row and queue.
-  private rows = new RowGate((data) => this.publish(ALL, data));
+  private rows = new RowGate((data) => this.publish(LIST_ROWS, data));
   private queues = new Map<string, string>();
 
   private track(f: Frame) {
@@ -66,6 +66,7 @@ export class Live {
 
   open(ws: Bun.ServerWebSocket<unknown>) {
     ws.subscribe(ALL);
+    ws.subscribe(ROWS); // every row, until the socket says it wants only what a list needs
     send(ws, { t: "hello", pid: process.pid, started_ms: this.started, ui: this.ui?.(), sessions_level: this.bus.sessionsLevel() });
     ws.send(JSON.stringify({ t: "questions", pending: allPendingQuestions(), rev: this.bus.rev() } satisfies Frame));
   }
@@ -82,17 +83,25 @@ export class Live {
     if (m.op !== "resume" && m.op !== "sub") return;
     // A resume says everything the socket hears from now on (a second one, after
     // the page lost track, replays again from its cursors); a sub adds to it.
-    if (m.op === "resume") for (const topic of [...(ws.subscriptions ?? [])]) if (isScoped(topic)) ws.unsubscribe(topic);
+    // A client that does not say `only` hears every session's stream, as before:
+    // by the one topic of all of them, and by no session's or feed's own beside
+    // it (it would get each frame twice: a reply drawn doubled as it streams).
+    const every = m.op === "resume" ? !m.only : (ws.subscriptions ?? []).includes(EVERY);
+    if (m.op === "resume") {
+      for (const topic of [...(ws.subscriptions ?? [])]) if (isScoped(topic)) ws.unsubscribe(topic);
+      ws.subscribe(every ? EVERY : LIST_ROWS);
+      if (every) ws.subscribe(ROWS);
+    }
     const cursors: Record<string, number> = {};
     for (const [id, seq] of Object.entries(m.cursors ?? {})) {
       if (!this.store.session(id)) continue;
       cursors[id] = this.replay(ws, id, Number(seq) || 0);
-      ws.subscribe(sessionTopic(id));
+      if (!every) ws.subscribe(sessionTopic(id));
     }
-    for (const id of named(m.watch)) ws.subscribe(sessionTopic(id));
-    for (const name of named(m.feeds)) if ((FEEDS as readonly string[]).includes(name)) ws.subscribe(feedTopic(name));
-    // A client that does not say it wants only these hears every session's stream, as before.
-    if (m.op === "resume" && !m.only) ws.subscribe(EVERY);
+    if (!every) {
+      for (const id of named(m.watch)) ws.subscribe(sessionTopic(id));
+      for (const name of named(m.feeds)) if ((FEEDS as readonly string[]).includes(name)) ws.subscribe(feedTopic(name));
+    }
     if (m.op === "resume") send(ws, { t: "replayed", cursors });
   }
 

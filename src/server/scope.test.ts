@@ -1,7 +1,7 @@
 // Where each frame goes, and when a session's row is told to the lists.
 import { expect, test } from "bun:test";
 import type { Frame, Session } from "../core/types.ts";
-import { ALL, EVERY, LAZY_MS, named, route, rowChange, RowGate, rowPrint } from "./scope.ts";
+import { ALL, EVERY, LAZY_MS, named, route, rowChange, RowGate, rowPrint, ROWS } from "./scope.ts";
 
 const row = (over: Partial<Session> = {}): Session => ({
   id: "s1", title: "One", model: "p:m", workspace: "/w", created: 1, updated: 10, phase: "idle", archived: false,
@@ -25,7 +25,8 @@ test("a session's stream goes to the sockets that named it; what a list needs go
   expect(topics({ t: "feature", name: "artifacts", session_id: "s1", data: {} })).toEqual(["f:artifacts", EVERY, "s:s1"]);
   expect(topics({ t: "feature", name: "awake", data: {} })).toEqual(["f:awake", EVERY]);
   // A row and a queue are decided apart (the gate, the last queue told).
-  expect(route({ t: "session", session: row() })).toMatchObject({ topics: ["s:s1", EVERY], row: { key: "s1", gone: false } });
+  // (A row is not on the topic of every stream: a socket that hears them all is on the topic of every row.)
+  expect(route({ t: "session", session: row() })).toMatchObject({ topics: ["s:s1", ROWS], row: { key: "s1", gone: false } });
   expect(route({ t: "session", session: row(), deleted: true }).row?.gone).toBe(true);
   expect(route({ t: "queue", session_id: "s1", queue: [], held: false })).toEqual({ topics: [], queue: { key: "s1", body: "[[],false]" } });
 });
