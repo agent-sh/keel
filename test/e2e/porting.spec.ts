@@ -53,7 +53,8 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
     hooks: {
       PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `bash ${join(H, "guard.sh")}`, timeout: 5 }] }],
       SessionStart: [{ hooks: [{ type: "command", command: "/usr/local/bin/tacit hook session-start" }] }],
-      Notification: [{ hooks: [{ type: "command", command: "notify-send hi" }] }],
+      // An event Keel has no moment for (it fires Notification since the hook events the other harnesses use came).
+      TeammateIdle: [{ hooks: [{ type: "command", command: "notify-send hi" }] }],
     },
     statusLine: { type: "command", command: "bash ~/.claude/statusline.sh" },
     // Mapped: a prefix and an exact command; already so: a read; left out: a compound
@@ -104,7 +105,7 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
     await expect(row("skills:codex")).toContainText("New");
     await expect(row("skills:codex-system")).toContainText("Codex's built-in skills");
     await expect(panel.locator('[data-port-item^="hooks:Claude Code:SessionStart"]')).toContainText("Keel runs tacit's hooks itself");
-    await expect(panel.locator('[data-port-item^="hooks:Claude Code:Notification"]')).toContainText("Keel has no Notification point");
+    await expect(panel.locator('[data-port-item^="hooks:Claude Code:TeammateIdle"]')).toContainText("Keel has no TeammateIdle point");
     await expect(panel.locator('[data-port-item^="hooks:Claude Code:PreToolUse"]')).toContainText("New");
     await expect(panel.locator(`[data-port-item="mcp:codex:port-${stamp}"]`)).toContainText("New");
     await expect(row("memory:claude")).toContainText("2 files in 1 project");
