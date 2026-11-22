@@ -5,6 +5,7 @@ import { paintedReader, readOnSteps, sawLines, SETTLE_MS, unseenLines, type Line
 import { dropRepeats, keyRefused, noteAnswer, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { setOpenPlans } from "../lib/plans.ts";
+import { wasBrought } from "../lib/shell.ts";
 import { api, onFeature, reportUnlessGone, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { trayGauge } from "./Composer.tsx";
@@ -64,6 +65,8 @@ export function PlanCards({ sessionId }: { sessionId: string }) {
 // without scrolling the plan; a press there before the plan was read is refused
 // and says how much of it was not seen. End and
 // Page Down on the text read on a step at a time, so no line is jumped over.
+// A plan that stood whole in view (none of it scrolled out, nothing over it) for the settle time
+// is read, and Approve then takes the keyboard by itself, as an approval's Allow once does.
 function Plan({ c, first }: { c: Card; first: boolean }) {
   const [editing, setEditing] = useState(false);
   const [plan, setPlan] = useState(c.plan);
@@ -88,6 +91,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const reading = useRef(false); // a reading on by End or Page Down is under way
   const queued = useRef(0); // presses made meanwhile, to make after it (Infinity: an End)
   const reader = useRef<PaintedReader | null>(null);
+  const [fits, setFits] = useState(false); // the whole plan stands in view, none of it scrolled out or under the foot
   useEffect(() => {
     const el = text.current;
     if (!el) return;
@@ -101,6 +105,8 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
       foot.current?.toggleAttribute("data-stick", stick);
       const stuck = stick && f!.top < r.bottom - 1 && f!.bottom > r.top;
       foot.current?.toggleAttribute("data-stuck", stuck);
+      // Whole in view: its box holds all of it, and the box stands in the region, clear of the foot.
+      setFits(el.scrollHeight - el.clientHeight <= 2 && r.height > 0 && !!box && r.top >= Math.max(0, box.top) - 0.5 && r.bottom <= Math.min(innerHeight, box.bottom) + 0.5 && !stuck);
       if (editing) { setRead(true); return; }
       if (read) return;
       const cs = getComputedStyle(el);
@@ -166,6 +172,17 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
       if (more > 0) { if (more !== Infinity) queued.current = more - 1; readOn(more === Infinity); }
     });
   };
+  // Brought here as a thing to answer, the keyboard on the text: once the settle time has passed
+  // and the plan stood whole in view, Approve takes it (once an arrival). Not for an owner
+  // brought from outside the page (a link, the desktop app): there it stays where it is read.
+  const moved = useRef(0);
+  const comes = hold.take && moved.current !== hold.at && at === "text" && read && fits && !editing && !wasBrought();
+  useEffect(() => {
+    if (hold.keys !== "ready" || !hold.take || moved.current === hold.at || !read) return;
+    moved.current = hold.at;
+    if (document.activeElement !== text.current || !fits || editing || wasBrought() || !approve.current || approve.current.disabled) return;
+    approve.current.focus({ preventScroll: true });
+  }, [hold.keys, hold.take, hold.at, read, fits]);
   const [nudge, setNudge] = useState("");
   useEffect(() => {
     if (!nudge) return;
@@ -174,6 +191,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   }, [nudge]);
   const send = (b: object) => { noteAnswer(c.id); return api(`/api/sessions/${c.session_id}/plan/${c.id}`, { method: "POST", body: JSON.stringify(b) }).catch((e) => setErr(failed(e, { at: "PlanCard" }))); };
   const hint = nudge ? nudge
+    : comes ? "Enter approves the plan in a moment"
     : at === "text" ? (read ? "Tab goes to Approve" : "Read to the end, then Tab goes to Approve")
     : at === "approve" && hold.keys === "ready" ? (read ? "Enter approves the plan" : "Read the plan to its end first")
     : "";

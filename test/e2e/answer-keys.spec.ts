@@ -409,7 +409,22 @@ test("a plan is approved by a key on Approve only once it was read to its end", 
   await scripted(request);
   await settle(request);
   const open1 = async (id: string) => (await (await request.get(`/api/sessions/${id}/plan`)).json()).open.length as number;
-  // (A plan that fits its box is walked with the other kinds above: Tab goes to Approve, Enter approves.)
+  // A plan that stands whole in view: once the settle time of the arrival has passed, Approve has
+  // the keyboard by itself (the hint said so meanwhile) and one Enter approves it.
+  const short = await create(request, "Plan the index", folder("plan"));
+  await ask(request, short, "plan");
+  await page.goto(`/s/${short}`);
+  const one = cardIn(page, short, "plan");
+  await expect(one.getByTestId("plan-text")).toBeFocused();
+  await expect(one.getByTestId("plan-hint")).toHaveText("Enter approves the plan in a moment");
+  await expect(one.getByTestId("plan-approve")).toBeFocused();
+  await expect(one).toHaveAttribute("data-keys", "ready");
+  await expect(one.getByTestId("plan-hint")).toHaveText("Enter approves the plan");
+  await shoot(page, "answer-keys-13-plan-whole");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => open1(short)).toBe(0);
+  await drop(request, short);
+  // (A plan that fits its box is walked with the other kinds above: the key that answers waits out the arrival.)
   // A plan longer than its box: a key on Approve does nothing until the text was scrolled to its end.
   const long = await create(request, "Plan the migration", folder("plan"));
   await request.put(`/api/sessions/${long}/permissions`, { data: { mode: "plan" } });
