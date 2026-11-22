@@ -14,7 +14,7 @@ import { ownerPrompt } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
 import { testBuild } from "../core/build.ts";
 import { BuildPins, coldReason } from "./build-pin.ts";
-import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
+import type { AssistantBlock, ErrorRecord, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
@@ -1285,6 +1285,8 @@ export class Engine {
     // What an image refusal changed for this request; kept for the session once it passes.
     let fixed: { cause: unknown; edge?: number; out?: string[] } | undefined;
     let resent = false;
+    // The failures this request was sent again after (a retry that passes heals them).
+    const retried: ErrorRecord[] = [];
 
     // The caller's count plus what the request gained since, at the model's bytes a token.
     const fits = () => {
@@ -1337,6 +1339,8 @@ export class Engine {
         this.measure(id, (h) => h.requestDone?.(session, req, res));
         this.boundThinking(id, res);
         if (fixed) this.imagesFixed(id, fixed, purpose);
+        // The failures this request was sent again for are healed: recorded, not open.
+        if (retried.length) this.errors.recovered(retried, id);
         return res;
       } catch (e) {
         clearInterval(hush);
@@ -1398,7 +1402,7 @@ export class Engine {
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
         const wait = backoffMs(attempt, e);
         if (wait > RETRY_WAIT_MAX_MS) throw new RetryTooLong(e, Date.now() + wait);
-        this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait });
+        retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait }));
         this.status(id, { kind: "retry", attempt: attempt + 1, max: RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
         await sleep(wait, signal);
       }

@@ -227,6 +227,26 @@ export type ErrorRecord = {
   message: string;
   stack?: string;
   context?: any;
+  // Where it happened, newest first: one entry per session (src/core/error-sites.ts).
+  sites?: ErrorSite[];
+  // Set when every occurrence was healed by a retry of its request: it is not
+  // an open failure. An occurrence that is not healed takes it away.
+  recovered_ts?: number;
+};
+
+// One kind of failure in one session: how often, when, and where its latest
+// occurrence there was (turn and span). `healed`: how many of them a retry of
+// the request made good.
+export type ErrorSite = {
+  session_id: string;
+  title?: string;
+  count: number;
+  healed: number;
+  first_ts: number;
+  ts: number;
+  healed_ts?: number;
+  turn_event?: string;
+  span_id?: string;
 };
 
 // Live, not stored: what the turn is doing besides streaming.

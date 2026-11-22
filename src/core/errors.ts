@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Bus } from "./bus.ts";
 import { sessionOf, type Store } from "./store.ts";
 import type { ErrorRecord } from "./types.ts";
+import { ErrorSites } from "./error-sites.ts";
 
 // The turn the running code belongs to. The engine opens one scope per turn it
 // starts, names the turn_start event once it is stored and takes the name away
@@ -22,7 +23,57 @@ export type ErrorCapture = Pick<ErrorRecord, "id" | "source"> & { context: unkno
 export class ErrorTracker {
   private captures = new Set<(e: ErrorCapture) => void>();
 
-  constructor(private store: Store, private bus: Bus) {}
+  // Where each kind happened, per session (error-sites.ts).
+  readonly sites: ErrorSites;
+
+  constructor(private store: Store, private bus: Bus) {
+    this.sites = new ErrorSites(store.db);
+  }
+
+  // One kind, and the list, each with where it happened and whether a retry healed it.
+  get(id: string): ErrorRecord | undefined {
+    const e = this.store.error(id);
+    return e && this.sites.with([e])[0];
+  }
+
+  // A kind named loosely: its id, or the start or the end of it (eight
+  // characters or more) when that names one kind, as a text row prints it.
+  find(ref: string): ErrorRecord | undefined {
+    const exact = this.get(ref);
+    if (exact || !/^[0-9a-f-]{8,}$/i.test(ref)) return exact;
+    const rows = this.store.db.query<{ id: string }, [string, string]>("SELECT id FROM errors WHERE id LIKE ?1 OR id LIKE ?2 LIMIT 2").all(`${ref}%`, `%${ref}`);
+    return rows.length === 1 ? this.get(rows[0]!.id) : undefined;
+  }
+
+  // `session`: the kinds that happened in that session or in an agent of it,
+  // whether or not they last happened there.
+  list(limit = 200, opts: { resolved?: boolean; read?: boolean; session?: string } = {}): ErrorRecord[] {
+    if (!opts.session) return this.sites.with(this.store.errors(limit, opts));
+    const there = this.sites.inScope(opts.session);
+    // A kind from before sites were kept is still found by where it last happened.
+    let last = new Set<string>();
+    try { last = new Set(this.store.errors(limit, opts).map((e) => e.id)); } catch {}
+    return this.sites.with(this.store.errors(5000, { resolved: opts.resolved, read: opts.read }).filter((e) => there.has(e.id) || last.has(e.id)).slice(0, limit));
+  }
+
+  // A retry of the request these failures came from passed: each is healed in
+  // its session. A kind left with nothing unhealed is recovered: it leaves the
+  // unread count (as a kind the owner read does) and says so on its row.
+  recovered(recs: ErrorRecord[], sessionId: string) {
+    const by = new Map<string, number>();
+    for (const r of recs) if (r.id) by.set(r.id, (by.get(r.id) ?? 0) + 1);
+    for (const [id, n] of by) {
+      try {
+        if (!this.sites.heal(id, sessionId, n)) continue;
+        let rec = this.get(id);
+        if (!rec) continue;
+        if (rec.recovered_ts && !rec.read_ts) { this.store.readError(id, true); rec = this.get(id)!; }
+        this.bus.emit({ t: "error", error: rec });
+      } catch (failed) {
+        console.error(`[errors] a healed failure was not marked: ${(failed as Error)?.message ?? failed}`);
+      }
+    }
+  }
 
   // The UI's error frames also carry read/resolved changes. Observe actual
   // captures separately, with this occurrence's context, not the folded row's session.
@@ -60,6 +111,8 @@ export class ErrorTracker {
       const now = Date.now();
       return { id: "", source, message: e.message, stack: e.stack, context, count: 1, first_ts: now, ts: now, session_id, turn_event, span_id } as ErrorRecord;
     }
+    // Where it happened is kept beside the kind; a store that will not take it leaves the kind as it is.
+    try { this.sites.note(rec); rec = this.sites.with([rec])[0]!; } catch (failed) { console.error(`[${source}] where it happened was not recorded: ${(failed as Error)?.message ?? failed}`); }
     this.bus.emit({ t: "error", error: rec });
     for (const listener of this.captures) {
       try { listener({ id: rec.id, source, context, turnSession: scope?.session }); } catch {}

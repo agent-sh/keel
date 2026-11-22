@@ -33,8 +33,10 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await row.locator("summary").click();
   expect(await isOpen()).toBe(true);
   await expect.poll(turned).toBe("90deg");
-  // The link is where it last happened, not where all three did.
-  await expect(row.getByTestId("error-session")).toContainText("Last in Error tracker check");
+  // Each session it happened in, with that session's own count: all three were in this one.
+  await expect(row.getByTestId("error-site")).toHaveCount(1);
+  await expect(row.getByTestId("error-site")).toContainText("Error tracker check");
+  await expect(row.getByTestId("error-site-count")).toHaveText("3x");
   await shoot(page, "errors-01-open");
 
   // Mark read: out of the badge, still listed, hidden by Unread only; kept by the daemon.
@@ -87,7 +89,7 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await expect(again.getByTestId("error-count")).toHaveText("5x");
 
   await again.locator("summary").click();
-  await again.getByTestId("error-session").click();
+  await again.getByTestId("error-site-open").click();
   await expect(page).toHaveURL(new RegExp(`/s/${s.id}`));
 
   // Resolve all resolves what was seen: a kind that happened again since

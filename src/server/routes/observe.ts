@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildBundle } from "../../admin/bundle.ts";
 import { detached } from "../../core/errors.ts";
+import { atSession } from "../../core/error-sites.ts";
 import { gitSync } from "../../core/git.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
 import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin/logs.ts";
@@ -144,8 +145,11 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   });
 
   const bundleFor = (q: { error_id?: string | null; session_id?: string | null; turn_event?: string | null; span_id?: string | null }) => {
-    const error = q.error_id ? store.error(q.error_id) : undefined;
-    if (q.error_id && !error) return { status: 404, error: "no such error" } as const;
+    const kind = q.error_id ? errors.find(q.error_id) : undefined;
+    if (q.error_id && !kind) return { status: 404, error: "no such error" } as const;
+    // Asked from a session: the bundle is of that session's own occurrence
+    // (its turn and span), not of wherever the kind happened last.
+    const error = kind && atSession(kind, q.session_id ?? undefined);
     if (!error && !q.session_id && !q.span_id) return { status: 400, error: "error_id, session_id or span_id" } as const;
     if (q.session_id && !store.session(q.session_id)) return { status: 404, error: "no such session" } as const;
     // A span alone names its own session: one that is not kept leaves nothing to bundle.
@@ -172,7 +176,8 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         const path = join(dir, `bundle-${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
         writeFileSync(path, b.markdown, { mode: 0o600 });
-        const err = body.error_id ? store.error(body.error_id) : undefined;
+        const kind = body.error_id ? errors.get(body.error_id) : undefined;
+        const err = kind && atSession(kind, body.session_id ?? undefined);
         const from = err?.session_id ? store.session(err.session_id) : body.session_id ? store.session(body.session_id) : undefined;
         // Keel's own failures are fixed in Keel's source when the daemon runs from it; others where they happened.
         const own = err && (err.source === "server" || err.source === "client");

@@ -381,7 +381,7 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   for (const part of ["In no turn: a request of its own", "## Trace of the request", `[span ${aside.span_id}]`]) expect(md).toContain(part);
   expect(md).not.toContain("## Trace of the turn");
 
-  await expect(row.getByTestId("error-session")).not.toContainText("at its turn");
+  await expect(row.getByTestId("error-site-open")).not.toHaveAttribute("title", /at the turn/);
   await expect(row.getByTestId("error-wire")).toBeVisible();
   await row.getByTestId("error-trace").click();
   const current = page.locator('[data-testid="trace-row"][aria-current="true"]');

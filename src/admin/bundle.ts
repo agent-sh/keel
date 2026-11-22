@@ -95,6 +95,14 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     out.push("## Failure", "");
     out.push(`- Source: ${e.source}; error id \`${e.id}\``);
     out.push(`- Seen ${e.count ?? 1} time(s): first ${iso(e.first_ts ?? e.ts)}, last ${iso(e.ts)}${e.resolved_ts ? `, marked resolved ${iso(e.resolved_ts)}` : ""}`);
+    // Every session the kind happened in, each with its own count: the bundle is of one of them.
+    // A session's own bundle names no other session.
+    if (e.recovered_ts) out.push(`- Recovered: each time, a retry of the request passed (last ${iso(e.recovered_ts)}).`);
+    if (!o.own && (e.sites?.length ?? 0) > 1) {
+      out.push(`- Happened in ${e.sites!.length} sessions; this bundle is of ${s ? `"${s.title || s.id}"` : "the last one"}:`);
+      for (const x of e.sites!.slice(0, 12)) out.push(`  - ${x.count}x in "${x.title || x.session_id}" (\`${x.session_id}\`), last ${iso(x.ts)}${x.healed >= x.count ? ", healed by a retry" : x.healed ? `, ${x.healed} healed by a retry` : ""}`);
+      if (e.sites!.length > 12) out.push(`  - and ${e.sites!.length - 12} more sessions`);
+    }
     out.push("", fence(clip(e.message, 4000)));
     if (e.context) out.push("", "Context when captured:", "", fence(clip(JSON.stringify(e.context, null, 2), 3000), "json"));
     if (e.stack) out.push("", "Stack:", "", fence(e.stack.split("\n").slice(0, 40).join("\n")));

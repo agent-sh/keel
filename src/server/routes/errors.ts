@@ -16,7 +16,8 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
     for (const e of open) {
       if (seen && !seen.has(e.id)) continue;
       if (seen && seen.get(e.id) !== (e.count ?? 1)) { changed.push(e.id); continue; }
-      bus.emit({ t: "error", error: (what === "resolve" ? store.resolveError(e.id, true) : store.readError(e.id, true))! });
+      if (what === "resolve") store.resolveError(e.id, true); else store.readError(e.id, true);
+      bus.emit({ t: "error", error: errors.get(e.id)! });
       n++;
     }
     return json({ [what === "resolve" ? "resolved" : "read"]: n, changed });
@@ -27,12 +28,13 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
         const q = new URL(req.url).searchParams;
         const flag = (k: string) => (q.get(k) === null ? undefined : q.get(k) === "1");
         // ?session=: what went wrong in that session's scope. `errors` are the
-        // kinds that last happened in it or in its agents; `failures` is its own
+        // kinds that happened in it or in its agents (each with every session
+        // it happened in: `sites`); `failures` is its own
         // grouped record (one row per cause, with counts and where), the same
         // one its model is told from.
         const session = q.get("session") ?? undefined;
-        const errors = store.errors(200, { resolved: flag("resolved"), read: flag("read"), session });
-        return json(session ? { errors, failures: recordOf(store, session) } : { errors });
+        const list = errors.list(200, { resolved: flag("resolved"), read: flag("read"), session });
+        return json(session ? { errors: list, failures: recordOf(store, session) } : { errors: list });
       },
       POST: async (req: Request) => {
         const b = (await req.json().catch(() => ({}))) as any;
@@ -49,7 +51,8 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
         if (!b || (b.resolved === undefined && b.read === undefined) || !ok(b.resolved) || !ok(b.read)) return json({ error: "resolved or read must be true or false" }, 400);
         if (!store.error(req.params.id)) return json({ error: "no such error" }, 404);
         if (typeof b.resolved === "boolean") store.resolveError(req.params.id, b.resolved);
-        const rec = typeof b.read === "boolean" ? store.readError(req.params.id, b.read)! : store.error(req.params.id)!;
+        if (typeof b.read === "boolean") store.readError(req.params.id, b.read);
+        const rec = errors.get(req.params.id)!;
         bus.emit({ t: "error", error: rec });
         return json({ record: rec });
       },

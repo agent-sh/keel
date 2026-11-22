@@ -2,7 +2,8 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Activity, Bug, Check, CheckCheck, ChevronRight, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
-import type { ErrorRecord } from "../../../src/core/types.ts";
+import type { ErrorRecord, ErrorSite } from "../../../src/core/types.ts";
+import { elsewhere, ERROR_STATE, errorState, healedWords } from "../../../src/admin/error-rows.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
@@ -11,9 +12,12 @@ import type { Cause } from "../../../src/admin/stall-cause.ts";
 import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
 
 // One row per kind of failure (the daemon folds repeats into a count), with
-// where it last happened and a way to mark it fixed. A resolved kind that
-// happens again comes back to Open. Marked read, a kind stays on the list but
-// leaves the badge; it is unread again when it happens again.
+// every session it happened in (each with its own count, latest time, and a
+// way to that session's own turn and trace) and a way to mark it fixed. A
+// resolved kind that happens again comes back to Open. Marked read, a kind
+// stays on the list but leaves the badge; it is unread again when it happens
+// again. A kind whose every occurrence a retry healed is Recovered: kept, and
+// out of the open list and the badge until it happens without healing.
 const tool = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
 
 // What the failing request's span says: the route, the attempt, the HTTP status and the provider's request id.
@@ -54,6 +58,63 @@ function StallCause({ c }: { c: Cause }) {
   );
 }
 
+// One session a kind happened in: its count, when it last did, whether a
+// retry healed it, and the way to that session's own turn, trace and bundle.
+function Site({ e, s }: { e: ErrorRecord; s: ErrorSite }) {
+  const title = useStore((st) => st.sessions[s.session_id]?.title) || s.title || "a session";
+  const [copied, setCopied] = useState(false);
+  const healed = healedWords(s);
+  const open = () => {
+    if (s.turn_event) setUI({ focusEvent: s.turn_event });
+    setUI({ errors: false });
+    navigate({ name: "session", id: s.session_id });
+  };
+  const trace = async () => {
+    const span = s.span_id ? await api<{ span: Span }>(`/api/debug/spans/${s.span_id}`).then((r) => r.span).catch((err) => { if (err?.status === 404) return null; throw err; }) : null;
+    if (span) openTrace(span.session_id, span.trace_id, span.span_id);
+    else if (s.turn_event) openTrace(s.session_id, traceOfTurn(s.turn_event));
+  };
+  return (
+    <li className="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-sm py-0.5 pl-1 pr-0.5 text-caption hover:bg-sunken" data-testid="error-site" data-session={s.session_id}>
+      <span className="text-right tabular-nums text-fg" data-testid="error-site-count">{s.count}x</span>
+      <button type="button" onClick={open} className="flex min-w-0 items-baseline gap-2 text-left text-muted hover:text-fg" title={`Opens ${title}${s.turn_event ? " at the turn it last failed in" : ""}`} data-testid="error-site-open">
+        <span className="truncate text-fg">{title}</span>
+        <span className="shrink-0 tabular-nums text-faint" title={when(s.ts)}>{ago(s.ts)}</span>
+        {healed && <span className="shrink-0 text-ok" data-testid="error-site-healed">{healed}</span>}
+      </button>
+      <span className="flex items-center gap-0.5">
+        {(s.turn_event || s.span_id) && (
+          <button type="button" className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" aria-label={`Trace of the failure in ${title}`} title="Opens this session's own trace at the request or tool call that failed" onClick={() => trace().catch(reportError)} data-testid="error-site-trace">
+            <Activity className="size-3.5" />
+          </button>
+        )}
+        <button type="button" className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" aria-label={`Copy the debug bundle of the failure in ${title}`} title="Copies the debug bundle of this session's own failure" onClick={(ev) => copyBundle({ error_id: e.id, session_id: s.session_id }, ev.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })} data-testid="error-site-bundle">
+          {copied ? <Check className="size-3.5 text-ok" /> : <ClipboardCopy className="size-3.5" />}
+        </button>
+      </span>
+    </li>
+  );
+}
+
+// Every session the kind happened in, newest first; the first few, then the rest on request.
+const SITES_SHOWN = 6;
+function Sites({ e }: { e: ErrorRecord }) {
+  const [all, setAll] = useState(false);
+  const sites = e.sites ?? [];
+  const rest = elsewhere(e);
+  if (!sites.length) return null;
+  const shown = all ? sites : sites.slice(0, SITES_SHOWN);
+  return (
+    <div className="flex flex-col gap-1" data-testid="error-sites">
+      <div className="text-caption text-muted">{sites.length === 1 ? "Happened in one session" : `Happened in ${sites.length} sessions`}{rest > 0 ? `, and ${rest} ${rest === 1 ? "time" : "times"} with no session recorded` : ""}</div>
+      <ul className="flex flex-col">{shown.map((s) => <Site key={s.session_id} e={e} s={s} />)}</ul>
+      {sites.length > shown.length && (
+        <button type="button" className="self-start rounded-sm px-1 text-caption text-muted hover:text-fg" onClick={() => setAll(true)} data-testid="error-sites-more">{sites.length - shown.length} more sessions</button>
+      )}
+    </div>
+  );
+}
+
 function Row({ e }: { e: ErrorRecord }) {
   const session = useStore((s) => (e.session_id ? s.sessions[e.session_id] : undefined));
   // The span this failure names, once asked for: kept, or gone (null: spans are pruned after a while).
@@ -63,6 +124,8 @@ function Row({ e }: { e: ErrorRecord }) {
   const [fixing, setFixing] = useState(false);
   const n = e.count ?? 1;
   const unread = !e.read_ts;
+  const state = errorState(e);
+  const sited = (e.sites?.length ?? 0) > 0;
   const target = { error_id: e.id };
   const named = got && got.id === e.span_id ? got.span : undefined;
   const find = async () => {
@@ -96,13 +159,14 @@ function Row({ e }: { e: ErrorRecord }) {
         <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform duration-150 group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
         <span className="rounded-xs bg-danger-soft px-1.5 py-px text-micro font-medium text-danger">{e.source}</span>
         <span className={cn("min-w-0 flex-1 truncate", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
+        {state === "recovered" && <span className="shrink-0 text-micro text-ok" title={`Every time, a retry of the request passed. Last healed ${when(e.recovered_ts!)}`} data-testid="error-recovered">{ERROR_STATE.recovered}</span>}
         {n > 1 && (
-          <span className="rounded-xs bg-sunken px-1.5 text-micro tabular-nums text-muted" data-testid="error-count" title={`${n} times since ${when(e.first_ts ?? e.ts)}`}>
+          <span className="rounded-xs bg-sunken px-1.5 text-micro tabular-nums text-muted" data-testid="error-count" title={`${n} times since ${when(e.first_ts ?? e.ts)}${(e.sites?.length ?? 0) > 1 ? `, in ${e.sites!.length} sessions` : ""}`}>
             {n}x
           </span>
         )}
         <span className="text-micro text-faint tabular-nums" title={when(e.ts)}>{ago(e.ts)}</span>
-        {!e.resolved_ts && (
+        {state === "open" && (
           <button
             type="button"
             className="grid size-6 shrink-0 place-items-center self-center rounded-md text-faint hover:bg-hover hover:text-fg"
@@ -119,10 +183,12 @@ function Row({ e }: { e: ErrorRecord }) {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted">
           <span>First <span className="tabular-nums text-fg">{when(e.first_ts ?? e.ts)}</span></span>
           {n > 1 && <span>Last <span className="tabular-nums text-fg">{when(e.ts)}</span></span>}
-          {e.read_ts && !e.resolved_ts && <span>Read <span className="tabular-nums text-fg">{when(e.read_ts)}</span></span>}
+          {e.read_ts && state === "open" && <span>Read <span className="tabular-nums text-fg">{when(e.read_ts)}</span></span>}
+          {state === "recovered" && <span>Healed by a retry <span className="tabular-nums text-fg">{when(e.recovered_ts!)}</span></span>}
           {e.resolved_ts && <span>Resolved <span className="tabular-nums text-fg">{when(e.resolved_ts)}</span></span>}
         </div>
         {named && <Wire s={named} />}
+        <Sites e={e} />
         {e.context?.kind === "stall" && e.context.cause && <StallCause c={e.context.cause as Cause} />}
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -155,7 +221,7 @@ function Row({ e }: { e: ErrorRecord }) {
               <Activity className="size-3.5" /> Trace
             </button>
           )}
-          {e.session_id && (
+          {e.session_id && !sited && (
             <button type="button" onClick={goTo} className="flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="error-session">
               <CornerDownRight className="size-3.5 shrink-0" />
               <span className="truncate">{n > 1 ? "Last in " : ""}{session?.title || (n > 1 ? "its session" : "Open the session")}</span>
@@ -183,13 +249,14 @@ function Row({ e }: { e: ErrorRecord }) {
 
 export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const errors = useStore((s) => s.errors);
-  const [tab, setTab] = useState<"open" | "resolved">("open");
+  const [tab, setTab] = useState<"open" | "recovered" | "resolved">("open");
   const panel = useId();
   const [unreadOnly, setUnreadOnly] = useState(false);
-  const openList = errors.filter((e) => !e.resolved_ts);
+  const openList = errors.filter((e) => errorState(e) === "open");
   const unread = openList.filter((e) => !e.read_ts);
+  const recovered = errors.filter((e) => errorState(e) === "recovered");
   const resolved = errors.filter((e) => e.resolved_ts);
-  const list = tab === "open" ? (unreadOnly ? unread : openList) : resolved;
+  const list = tab === "open" ? (unreadOnly ? unread : openList) : tab === "recovered" ? recovered : resolved;
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -210,15 +277,16 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               <X />
             </Dialog.Close>
           </div>
-          <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+          <div className="flex flex-col gap-1.5 border-b border-line px-3 py-2 whitespace-nowrap">
             <Seg
               kind="tabs"
               panel={panel}
               label="Which errors"
               value={tab}
               onChange={setTab}
-              options={([["open", "Open", openList.length], ["resolved", "Resolved", resolved.length]] as const).map(([id, label, n]) => ({ value: id, label: <>{label}<span className="text-micro tabular-nums text-faint">{n}</span></> }))}
+              options={([["open", ERROR_STATE.open, openList.length], ["recovered", ERROR_STATE.recovered, recovered.length], ["resolved", ERROR_STATE.resolved, resolved.length]] as const).map(([id, label, n]) => ({ value: id, label: <>{label}<span className="text-micro tabular-nums text-faint">{n}</span></> }))}
             />
+            <div className={cn("items-center gap-2", tab === "open" && openList.length > 0 ? "flex" : "hidden")}>
             {tab === "open" && (
               <label className="flex h-7 items-center gap-1.5 px-1.5 text-caption text-muted">
                 <input type="checkbox" checked={unreadOnly} onChange={(ev) => setUnreadOnly(ev.currentTarget.checked)} className="accent-[var(--accent)]" data-testid="errors-unread-only" />
@@ -235,9 +303,10 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
                 Resolve all
               </button>
             )}
+            </div>
           </div>
           <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex-1 overflow-y-auto p-2">
-            {list.length === 0 && <p className="k-empty px-3 py-4">{tab === "open" ? (unreadOnly && openList.length ? "Everything open is read." : "Nothing open has failed.") : "Nothing is marked resolved."}</p>}
+            {list.length === 0 && <p className="k-empty px-3 py-4">{tab === "open" ? (unreadOnly && openList.length ? "Everything open is read." : "Nothing open has failed.") : tab === "recovered" ? "Nothing failed and then passed on a retry." : "Nothing is marked resolved."}</p>}
             {list.map((e) => <Row key={e.id} e={e} />)}
           </div>
         </Dialog.Popup>

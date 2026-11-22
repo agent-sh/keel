@@ -2,13 +2,15 @@
 // a terminal.
 //   keel debug [ERROR_ID]            the debug bundle (Markdown) of an error, the newest open one by default
 //   keel debug --session ID [--turn EVENT]   the bundle of a session's turn (its last by default)
-//   keel debug errors [--all]        the open errors (every one with --all), newest first
+//   keel debug ERROR_ID --session ID that session's own occurrence of the error (a kind can happen in several)
+//   keel debug errors [--all]        the open errors (every one with --all), newest first, each with the sessions it happened in
 //   keel debug trace TRACE_ID        one trace's spans as a waterfall
 //   keel debug timeline SESSION      what happened in a session and what it is doing now, a line a row
 //   SESSION is a session's id, a prefix of it, or an agent's id or a prefix of that.
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N] [--session ID]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
 import { zonedStamp } from "../core/clock.ts";
+import { errorLines } from "../admin/error-rows.ts";
 import { formatLine, type LogLine } from "../admin/logs.ts";
 import { type Gap, type SpanLite, turnGaps, waitLabel } from "../admin/trace-rows.ts";
 import { chunks } from "../core/proc.ts";
@@ -16,7 +18,9 @@ import { authHeaders, findDaemon, refusal } from "./client.ts";
 
 const USAGE = `keel debug [ERROR_ID] | --session ID [--turn EVENT]   the debug bundle, as Markdown
                                                       (an id that names no error is read as a session: its last turn)
-keel debug errors [--all] [--json]                    the open errors, newest first
+keel debug ERROR_ID --session ID                      that session's own occurrence of an error that happened in several
+keel debug errors [--all] [--json]                    the open errors, newest first, each with the sessions it happened in
+                                                      and the ones a retry healed (recovered)
 keel debug trace TRACE_ID [--json]                    one trace's spans
 keel debug timeline SESSION [--since 1h] [--only failures|turns|agents] [--limit N] [--before CURSOR] [--no-ids] [--json]
                                                       what happened in a session, newest first, and what it does now
@@ -57,8 +61,7 @@ export async function debug(argv: string[]): Promise<number> {
     if (pos[0] === "errors") {
       const { errors } = await getJson(url, `/api/errors${v.all ? "" : "?resolved=0"}`);
       if (v.json) return (console.log(JSON.stringify(errors, null, 2)), 0);
-      if (!errors.length) console.log("No open errors.");
-      for (const e of errors) console.log(`${e.id}  ${time(e.ts)}  ${e.source.padEnd(8)} ${String(e.count ?? 1).padStart(4)}x  ${e.message.split("\n")[0].slice(0, 140)}`);
+      for (const l of errorLines(errors, { all: !!v.all })) console.log(l);
       return 0;
     }
     if (pos[0] === "trace") {
@@ -91,7 +94,8 @@ export async function debug(argv: string[]): Promise<number> {
     let q: string;
     if (v.session) {
       const { session } = await getJson(url, `/api/cli/resolve?id=${encodeURIComponent(v.session)}`);
-      q = `session_id=${encodeURIComponent(session.id)}${v.turn ? `&turn_event=${encodeURIComponent(v.turn)}` : ""}`;
+      // With an error id too: that session's own occurrence of the kind (a kind can happen in several).
+      q = `session_id=${encodeURIComponent(session.id)}${v.turn ? `&turn_event=${encodeURIComponent(v.turn)}` : ""}${pos[0] ? `&error_id=${encodeURIComponent(pos[0])}` : ""}`;
     }
     else {
       const id = pos[0] ?? (await getJson(url, "/api/errors?resolved=0")).errors[0]?.id;
