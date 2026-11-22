@@ -12,6 +12,7 @@ import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sen
 import { sendWaitingSoon } from "../lib/resend.ts";
 import { getState, onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
+import { stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { pastedFiles, shell, shellPaste } from "../lib/shell.ts";
@@ -806,7 +807,8 @@ const SessionComposer = memo(function SessionComposer({
             queueButton.current.focus();
             if (!queueKeySaid) { queueKeySaid = true; setNotice(`${queueKeys} queues`); }
           }
-          if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); (onEscape ?? onStop)?.(); }
+          // (Escape right after the pane was uncovered, a look or the start page left, stops nothing: lib/looks.ts.)
+          if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); if (onEscape) onEscape(); else if (!session || !stopHeld(session.id)) onStop?.(); }
         }}
         className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 text-read leading-relaxed outline-none placeholder:text-faint", rest ? "pb-3 pr-12" : "pb-1.5")}
       />

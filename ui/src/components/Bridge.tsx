@@ -15,11 +15,11 @@
 // another pane, and a session dropped on a pane's middle lands in it. The helm can be focused to the full
 // width. On a phone the sessions are pages you swipe between, with a dock of
 // their marks along the bottom.
-import { ArrowLeft, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, PinOff, Plus, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment } from "react";
+import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLeft, Pin, PinOff, Plus, X } from "lucide-react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
-import { keepLook, leaveLook, lookNow, noteLook, paneMove, tellSwap } from "../lib/looks.ts";
+import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
 import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
@@ -101,9 +101,13 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const focus = useStations((x) => x.focus);
   const panes = useStations((x) => x.count);
   const agents = st.agents;
+  const why = st.text ? whyText(st, now) : "";
+  // The tools the helm keeps in view take room beside the title (bridge.css counts them); another pane shows its tools over the header's end when it is pointed at.
+  const tools = helm ? (!focus && panes > 1 ? 6 : !focus ? 5 : 3) : 0;
   return (
-    <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}>
-      {/* The title first, in the width it needs. The state, its reason and the tools beside it when they fit, else on the line under it. */}
+    <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
+      style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${why}` : s.title || "New session"}>
+      {/* The title first, in the width it needs. The state and its reason beside it when they fit, else on the line under it. */}
       <div className="k-station-row k-station-identity">
         <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
         <div className="k-station-rest">
@@ -111,10 +115,10 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
           <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
           {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {timed(st) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
-          {st.text && <span className="k-station-why" data-testid="station-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
+          {why && <span className="k-station-why" data-testid="station-why" data-why={st.why} title={why}>{why}</span>}
         </span>
-        <span className="k-station-meta truncate" title={s.workspace}>
-          {s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}
+        <span className="k-station-meta" title={s.workspace}>
+          <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
         </span>
         <span className="k-station-tools">
           {!focus && panes > 1 && <PaneMenu id={s.id} label="Move to a pane" testid="station-place" className="k-tool k-tool-move"><PanelsTopLeft /></PaneMenu>}
@@ -182,29 +186,43 @@ function useDrop(slot: number | undefined) {
   };
 }
 
-// What a click on the row the pointer or the keys are on will do to a pane: said on that pane.
-type Aim = "here" | "back" | "fill" | "look";
-const AIMS: Record<Aim, string> = { here: "Is here", back: "Comes back here", fill: "Opens here", look: "Opens here for a look" };
-const AimTag = ({ how }: { how?: Aim }) => (how ? <span className="k-aim k-face-state" data-testid="pane-aim" aria-hidden="true">{AIMS[how]}</span> : null);
+// What a click on the row the pointer or the keys are on will do to a pane: said on that pane, in a
+// tab that hangs from its band (under the bar of a look). The row itself is described by the same
+// words for assistive technology (Bridge sets that as the keys reach it).
+function AimTag({ slot }: { slot?: number }) {
+  const how = useAim(slot);
+  return how ? <span className="k-aim k-face-state" data-testid="pane-aim">{AIMS[how]}</span> : null;
+}
 
 // The bar across the top of what lies over a pane's session (a look, the start
-// page): it names the session the pane holds and leads back to it, and a look
-// can be kept in its place.
-function LookBar({ under, onBack, keep }: { under: Session; onBack: () => void; keep?: () => void }) {
-  const w = useWatch(under);
+// page). It says what this is and whose pane it is: the session looked at, the
+// session the pane holds (its mark is live, and it says so in words when it
+// needs the owner or failed under the look), then the way back and, for a
+// look, the way to keep it. While a card of the look has the keyboard, Escape
+// is the card's key and the bar does not offer it (bridge.css).
+function LookBar({ under, looking, onBack, keep }: { under: Session; looking?: Session; onBack: () => void; keep?: () => void }) {
+  const st = useSessionState(under);
+  const w = st.watch;
   const title = under.title || "New session";
+  const state = w === "need" ? "needs you" : w === "fail" || w === "declined" ? "failed" : "";
   return (
-    <div className="k-look-bar" data-testid="look-bar" data-holds={under.id}>
-      <button type="button" className="k-look-back" data-testid="look-back" title={`Back to the session this pane holds: ${title} (Esc)`} aria-label={`Back to ${title}, the session this pane holds`} onClick={onBack}>
-        <ArrowLeft aria-hidden="true" />
-        <span className="k-look-to">Back to</span>
-        <Mark w={w} />
-        <span dir="auto" className="k-look-title">{title}</span>
-        <Kbd keys="escape" />
+    <div className="k-look-bar" data-testid="look-bar" data-holds={under.id} data-under={state ? w : undefined}>
+      <p className="k-look-says" data-testid="look-says">
+        <span className="k-look-this">{keep ? <>Looking at <b dir="auto">{looking?.title || "this session"}</b>.</> : "The start page."}</span>{" "}
+        <span className="k-look-holds" title={`This pane holds ${title}`}>This pane holds <Mark w={w} /><b dir="auto" className="k-look-title">{title}{!state && "."}</b>{state && <span className="k-look-state" data-testid="look-state">, {state}.</span>}</span>
+      </p>
+      <button type="button" className="k-look-act" data-testid="look-back" title={`Back to ${title}, the session this pane holds`} aria-label={`Back to ${title}${state ? `, ${state}` : ""}, the session this pane holds`} onClick={onBack}>
+        <ArrowLeft aria-hidden="true" />Back<Kbd keys="escape" className="k-look-esc" />
       </button>
-      {keep && <button type="button" className="k-look-keep" data-testid="look-keep" title={`This becomes the pane's session, in place of ${title} (Alt K, or a double click on its row)`} onClick={keep}>Keep here</button>}
+      {keep && <button type="button" className="k-look-act k-look-keep" data-testid="look-keep" title={`This becomes the pane's session, in place of ${title} (a double click on its row does the same)`} onClick={keep}>Keep here<Kbd keys="alt+k" /></button>}
     </div>
   );
+}
+
+// A line at the pane's foot for a few seconds: what left the pane, and where it is (lib/looks.ts).
+function PaneNote({ slot }: { slot?: number }) {
+  const text = usePaneNote(slot);
+  return text ? <p className="k-pane-note" role="status" data-testid="pane-note">{text}</p> : null;
 }
 
 // Tells the page when a pane's own session goes under something, shows again, or leaves the pane (lib/looks.ts).
@@ -220,11 +238,22 @@ function Swap({ session, slot, covered }: { session: string; slot: number; cover
   return null;
 }
 
+const head = (x: Session, on: boolean) => <><StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} />}</>;
+
+// One session's view in a pane: the pane's own, or a look over it (`back` leads out of that).
+// The same component in both places, so a look that is kept goes on as the pane's session
+// without being drawn anew. `quiet`: something lies over it. The pane then does not draw it
+// again (what changes in it draws itself: the conversation goes on), and its part of the
+// pane, the header and the panel, is drawn when it shows again.
+const Shown = memo(function Shown({ s, helm, quiet, back }: { s: Session; helm: boolean; quiet: boolean; back?: () => void }) {
+  return <SessionView id={s.id} panel={helm && !quiet} focus={helm && !quiet} back={back} header={head(s, helm)} />;
+}, (was, now) => (was.quiet && now.quiet) || (was.s === now.s && was.helm === now.helm && was.quiet === now.quiet && !was.back === !now.back));
+
 // A pane and the session it holds (`s`). What lies over it for now is drawn on
 // top, first in the pane so that whoever asks the pane for its message box or
 // its cards finds the ones on top: the start page (`fresh`), a look (`look`).
 // The pane's own session stays drawn under them, out of reach, as it was.
-function Station({ s, helm, slot, grow, look, fresh, aim }: { s: Session; helm: boolean; slot?: number; grow?: number; look?: { id: string; s?: Session }; fresh?: boolean; aim?: Aim }) {
+function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boolean; slot?: number; grow?: number; look?: { id: string; s?: Session }; fresh?: boolean }) {
   // What the pane shows on top: nothing of a session under the start page, the look, else its own.
   const top = fresh ? null : look ? look.s ?? null : s;
   const face = top ?? s;
@@ -241,7 +270,6 @@ function Station({ s, helm, slot, grow, look, fresh, aim }: { s: Session; helm: 
   // The pane's own session is drawn from the first time it shows: a page that opens on a look draws only the look.
   const drawn = useRef(!covered);
   if (!covered) drawn.current = true;
-  const head = (x: Session, on: boolean) => <><StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} />}</>;
   return (
     <section
       ref={ref}
@@ -253,7 +281,6 @@ function Station({ s, helm, slot, grow, look, fresh, aim }: { s: Session; helm: 
       data-slot={slot}
       data-watch={fresh ? undefined : top ? w : "idle"}
       data-helm={helm || undefined}
-      data-aim={aim}
       data-missing={!fresh && look && !look.s ? "" : undefined}
       data-testid={fresh ? undefined : "station"}
       aria-label={fresh ? "New session" : top ? `${top.title || "New session"}, ${watchLabel(w, agents)}${whereWords(top)}` : "Session not on this daemon"}
@@ -264,31 +291,30 @@ function Station({ s, helm, slot, grow, look, fresh, aim }: { s: Session; helm: 
       {...drop}
     >
       <div className="k-band" aria-hidden="true" />
-      <AimTag how={aim} />
+      <AimTag slot={slot} />
+      <PaneNote slot={slot} />
       {fresh && (
         <div key="new" className="k-view k-view-over" data-view="new">
           <div key="band" className="k-band" aria-hidden="true" />
-          <LookBar key="bar" under={look?.s ?? s} onBack={() => navigate({ name: "session", id: look?.id ?? s.id })} />
-          <StartBox key="view" onBack={() => navigate({ name: "session", id: look?.id ?? s.id })} />
+          <LookBar key="bar" under={look?.s ?? s} onBack={() => void leaveHome()} />
+          <StartBox key="view" beside onBack={() => void leaveHome()} />
         </div>
       )}
       {look && (
         <div key={look.id} className="k-view k-view-over" data-view="look" inert={fresh} data-station={fresh ? look.id : undefined}>
           <div key="band" className="k-band" aria-hidden="true" />
-          <LookBar key="bar" under={s} onBack={() => leaveLook(look.id)} keep={() => keepLook(look.id)} />
+          <LookBar key="bar" under={s} looking={look.s} onBack={() => leaveLook(look.id)} keep={() => keepLook(look.id)} />
           <Boundary key="view">
+            {/* In a pane that is not worked in a look is as compact as any other pane. */}
             {look.s
-              ? <SessionView id={look.id} panel={helm && !fresh} focus={helm && !fresh} back={() => leaveLook(look.id)} header={head(look.s, true)} />
+              ? <Shown s={look.s} helm={helm && !fresh} quiet={!!fresh} back={() => leaveLook(look.id)} />
               : <SessionView id={look.id} missingHeader={<MissingHead id={look.id} />} />}
           </Boundary>
         </div>
       )}
       {drawn.current && (
         <div key={s.id} className="k-view" data-view="own" inert={covered} data-station={covered ? s.id : undefined}>
-          <Boundary key="view">
-            {/* Under something it keeps the header it had, so nothing in it moves; the panel is the helm's. */}
-            <SessionView id={s.id} panel={helm && !covered} focus={helm && !covered} header={head(s, helm || covered)} />
-          </Boundary>
+          <Boundary key="view"><Shown s={s} helm={helm} quiet={covered} /></Boundary>
           {slot !== undefined && <Swap key="swap" session={s.id} slot={slot} covered={covered} />}
         </div>
       )}
@@ -296,13 +322,15 @@ function Station({ s, helm, slot, grow, look, fresh, aim }: { s: Session; helm: 
   );
 }
 
-function NewStation({ slot, grow, aim }: { slot?: number; grow?: number; aim?: Aim }) {
+// `beside`: other panes stand next to it: what needs the owner comes before the start box.
+function NewStation({ slot, grow, beside }: { slot?: number; grow?: number; beside?: boolean }) {
   const drop = useDrop(slot);
   return (
-    <section className="k-station k-station-new" data-slot={slot} data-helm data-aim={aim} style={grow === undefined ? undefined : { flexGrow: grow }} aria-label="New session" {...drop}>
+    <section className="k-station k-station-new" data-slot={slot} data-helm style={grow === undefined ? undefined : { flexGrow: grow }} aria-label="New session" {...drop}>
       <div className="k-band" aria-hidden="true" />
-      <AimTag how={aim} />
-      <StartBox />
+      <AimTag slot={slot} />
+      <PaneNote slot={slot} />
+      <StartBox beside={beside} />
     </section>
   );
 }
@@ -310,7 +338,7 @@ function NewStation({ slot, grow, aim }: { slot?: number; grow?: number; aim?: A
 // A pane with no session: it waits for the owner to put one in. It says what
 // needs them, as the start page does (the same headline and rows, answered
 // from here), offers the other sessions not on screen, and takes a dragged one.
-function EmptyPane({ slot, grow, next, aim }: { slot: number; grow: number; next: boolean; aim?: Aim }) {
+function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boolean }) {
   const { list, watches } = useLive();
   const agents = useAgentCounts();
   const shown = useStations((x) => x.shown);
@@ -320,9 +348,10 @@ function EmptyPane({ slot, grow, next, aim }: { slot: number; grow: number; next
   const drop = useDrop(slot);
   const put = (id: string) => { stations.place(id, slot); navigate({ name: "session", id }); };
   return (
-    <section className="k-station k-pane-empty" data-slot={slot} data-next={next || undefined} data-aim={aim} data-testid="pane-empty" style={{ flexGrow: grow }} aria-label={`Empty pane ${slot + 1}`} onPointerDown={() => stations.setActive(slot)} {...drop}>
+    <section className="k-station k-pane-empty" data-slot={slot} data-next={next || undefined} data-testid="pane-empty" style={{ flexGrow: grow }} aria-label={`Empty pane ${slot + 1}`} onPointerDown={() => stations.setActive(slot)} {...drop}>
       <div className="k-band" aria-hidden="true" />
-      <AimTag how={aim} />
+      <AimTag slot={slot} />
+      <PaneNote slot={slot} />
       <div className="k-pane-empty-body">
         <p className="k-pane-empty-word">Pane {slot + 1}<span>{next ? "the next session opens here" : "empty"}</span>
           {count > 1 && <button type="button" className="k-pane-empty-close" data-testid="pane-close" title="Close this pane" aria-label={`Close pane ${slot + 1}`} onClick={(e) => { e.stopPropagation(); stations.closePane(slot); }}><X /></button>}
@@ -377,6 +406,32 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   );
 }
 
+// The tab's words for assistive technology (the row the keys are on is described by them), and,
+// when the pane the row aims at is out of view in a row of panes that scrolls sideways, the tab
+// itself at that edge of the row with an arrow.
+function AimSays({ track }: { track: React.RefObject<HTMLElement | null> }) {
+  const aim = useAimed();
+  const [edge, setEdge] = useState<{ side: "left" | "right"; top: number; x: number } | null>(null);
+  useLayoutEffect(() => {
+    const row = track.current;
+    const pane = aim && row?.querySelector<HTMLElement>(`:scope > [data-slot="${aim.slot}"]`);
+    if (!row || !pane) return setEdge(null);
+    const r = row.getBoundingClientRect(), p = pane.getBoundingClientRect();
+    const mid = p.left + p.width / 2;
+    setEdge(mid > r.right ? { side: "right", top: r.top, x: innerWidth - r.right } : mid < r.left ? { side: "left", top: r.top, x: r.left } : null);
+  }, [aim?.slot, aim?.how]);
+  return (
+    <>
+      <span id="k-aim-says" className="sr-only">{aim ? `${AIMS[aim.how]}, in pane ${aim.slot + 1}` : ""}</span>
+      {aim && edge && (
+        <span className="k-aim k-aim-edge k-face-state" data-testid="pane-aim-edge" data-side={edge.side} style={{ top: edge.top, [edge.side]: edge.x }}>
+          {edge.side === "left" && <ArrowLeft aria-hidden="true" />}{AIMS[aim.how]}, pane {aim.slot + 1}{edge.side === "right" && <ArrowRight aria-hidden="true" />}
+        </span>
+      )}
+    </>
+  );
+}
+
 // A phone's pages: the helm and what asks for attention.
 const PHONE_PAGES = 6;
 // A row of the session list, when the pointer or the keys are on one.
@@ -398,16 +453,17 @@ export function Bridge() {
     if (!kept.seeded && loaded && !phone) stations.seed(helm);
   }, [kept.seeded, loaded]);
   // Opening a session shows it (kept below, by the rule in lib/panes.ts); this render already shows it there.
-  const st = helm ? opened(kept, helm) : kept;
+  const st = helm && !phone ? opened(kept, helm) : kept;
   // A look opened from the start page leads back to it when it is left.
   const from = useRef(route.name);
   useEffect(() => {
     const was = from.current;
     from.current = route.name;
-    if (!helm || !kept.seeded) return;
+    // (A phone has pages, not panes: what its pages show changes no pane.)
+    if (!helm || !kept.seeded || phone) return;
     stations.open(helm);
     if (getStations().over.includes(helm)) noteLook(helm, was === "new");
-  }, [helm, kept.seeded, route.name]);
+  }, [helm, kept.seeded, route.name, phone]);
   // The caret follows the helm. When the keys move it to another pane (Next pane, Previous
   // pane, a jump to a session that is on screen), the keyboard goes to that pane's message
   // box: what is typed next lands in the pane that is highlighted, not in the one left
@@ -440,28 +496,73 @@ export function Bridge() {
   useEffect(() => stations.setShown(onScreen));
 
   // Before the click: the pane a row of the list will change says so, while the pointer or the
-  // keys are on that row. And a double click on a row keeps the look it opened.
-  const [aimed, setAimed] = useState<string | null>(null);
+  // keys are on that row (lib/looks.ts keeps it, so moving over the list draws only the tab).
+  // The tab stays while the pointer crosses the list between rows (a folder's heading), and
+  // the row the keys are on is described by the tab's words. And a double click on a row keeps
+  // the look it opened: only when both clicks were on that row. When the list moved between
+  // them and the second click hit another row, nothing is placed, and that row is a look.
+  const aimedAt = useRef<string | null>(null);
+  const aimFor = (id: string | null): { slot: number; how: Aim } | null => {
+    const now = getStations(), all = getState().sessions;
+    if (!id || now.focus || now.slots.length < 2 || !all[id] || all[id]!.archived) return null;
+    const at = paneOf(now, id);
+    if (at >= 0) return { slot: at, how: "here" };
+    const own = now.slots.indexOf(id);
+    if (own >= 0) return { slot: own, how: "back" };
+    const to = target(now);
+    return { slot: to, how: now.slots[to] == null ? "fill" : "look" };
+  };
   useEffect(() => {
     if (phone) return;
-    const on = (e: Event) => setAimed(rowOf(e.target)?.dataset.session ?? null);
-    const off = (e: FocusEvent) => { if (rowOf(e.target) && !rowOf(e.relatedTarget)) setAimed(null); };
-    const keep = (e: MouseEvent) => { const id = rowOf(e.target)?.dataset.session; if (id && !e.ctrlKey && !e.metaKey) keepLook(id); };
-    document.addEventListener("pointerover", on);
-    document.addEventListener("focusin", on);
-    document.addEventListener("focusout", off);
+    const aimAt = (id: string | null) => { aimedAt.current = id; setAim(aimFor(id)); };
+    const over = (e: Event) => {
+      const row = rowOf(e.target);
+      if (row) aimAt(row.dataset.session ?? null);
+      else if (!(e.target instanceof Element && e.target.closest('[data-testid="session-list"]'))) aimAt(null);
+    };
+    const into = (e: FocusEvent) => {
+      const row = rowOf(e.target);
+      if (!row) return;
+      aimAt(row.dataset.session ?? null);
+      row.setAttribute("aria-describedby", "k-aim-says");
+    };
+    const out = (e: FocusEvent) => {
+      const row = rowOf(e.target);
+      if (!row) return;
+      row.removeAttribute("aria-describedby");
+      if (!rowOf(e.relatedTarget)) aimAt(null);
+    };
+    const clicks: (string | null)[] = [null, null];
+    const click = (e: MouseEvent) => { clicks.shift(); clicks.push(rowOf(e.target)?.dataset.session ?? null); };
+    const keep = (e: MouseEvent) => {
+      const id = rowOf(e.target)?.dataset.session;
+      if (id && clicks[0] === id && clicks[1] === id && !e.ctrlKey && !e.metaKey) keepLook(id);
+    };
+    document.addEventListener("pointerover", over);
+    document.addEventListener("focusin", into);
+    document.addEventListener("focusout", out);
+    document.addEventListener("click", click, true);
     document.addEventListener("dblclick", keep);
-    return () => { document.removeEventListener("pointerover", on); document.removeEventListener("focusin", on); document.removeEventListener("focusout", off); document.removeEventListener("dblclick", keep); setAimed(null); };
+    return () => {
+      document.removeEventListener("pointerover", over); document.removeEventListener("focusin", into); document.removeEventListener("focusout", out);
+      document.removeEventListener("click", click, true); document.removeEventListener("dblclick", keep);
+      aimAt(null);
+    };
   }, [phone]);
-  const aim = useMemo((): { slot: number; how: Aim } | null => {
-    if (!aimed || focus || st.slots.length < 2 || !sessions[aimed] || sessions[aimed]!.archived) return null;
-    const at = paneOf(st, aimed);
-    if (at >= 0) return { slot: at, how: "here" };
-    const own = st.slots.indexOf(aimed);
-    if (own >= 0) return { slot: own, how: "back" };
-    const to = target(st);
-    return { slot: to, how: st.slots[to] == null ? "fill" : "look" };
-  }, [aimed, focus, st.slots, st.over, st.active, sessions]);
+  // What the click will do changes with the panes (the row that was clicked is on screen now).
+  useEffect(() => { if (aimedAt.current) setAim(aimFor(aimedAt.current)); }, [kept.slots, kept.over, kept.active, kept.focus, sessions]);
+  // A window narrowed to a phone's width and widened again shows what it showed: the same page, the same looks.
+  const desk = useRef<typeof route | null>(null);
+  const wide = useRef(!phone);
+  useEffect(() => {
+    // (Only a window that was wide: a page opened on a phone has no panes to come back to.)
+    if (phone) { if (wide.current) desk.current = getUI().route; wide.current = false; return; }
+    wide.current = true;
+    const was = desk.current;
+    desk.current = null;
+    if (was && (was.name === "new" || (was.name === "session" && sessions[was.id]))) navigate(was, true);
+  }, [phone]);
+  const needUnder = useNeedUnderLooks();
 
   // The width a panel beside the helm takes: the helm's narrowest grows by it (bridge.css).
   const side = usePanelSide();
@@ -532,7 +633,7 @@ export function Bridge() {
   const stack = st.slots.length > 1;
   return (
     <>
-      <main ref={track} className="k-stations" style={{ "--k-side-w": `${side.width}px` } as CSSProperties} data-count={phone ? pages.length + (fresh ? 1 : 0) : slots.length} data-focus={focus || undefined} data-testid="bridge">
+      <main ref={track} className="k-stations" style={{ "--k-side-w": `${side.width}px` } as CSSProperties} data-count={phone ? pages.length + (fresh ? 1 : 0) : slots.length} data-focus={focus || undefined} data-need-under={needUnder.length || undefined} data-testid="bridge">
         {phone && helm && !sessions[helm] && missing(helm, helm)}
         {/* One keyed list for both layouts: a session keeps its pane (and what its panel shows) when the window crosses phone width. */}
         {[...(phone ? pages.map((s) => <Station key={pageKey(s.id)} s={s} helm={s.id === helm} />) : []), ...slots.flatMap(({ id, i }, n) => {
@@ -542,21 +643,21 @@ export function Bridge() {
           const over = st.over[i] && !gone(st.over[i]!) ? st.over[i]! : null;
           const isNew = i === startAt;
           const on = isNew || (!!helm && (over ?? id) === helm);
-          const how = aim?.slot === i ? aim.how : undefined;
           // Beside other panes the start page lies over the pane's session, which stays drawn; one pane is a page that is turned.
-          const pane = isNew && !stack ? <NewStation key={`new-${key}`} slot={i} grow={grow} aim={how} />
-            : own ? <Station key={key} s={own} helm={on} slot={i} grow={grow} fresh={isNew} look={over ? { id: over, s: sessions[over] } : undefined} aim={how} />
+          const pane = isNew && !stack ? <NewStation key={`new-${key}`} slot={i} grow={grow} />
+            : own ? <Station key={key} s={own} helm={on} slot={i} grow={grow} fresh={isNew} look={over ? { id: over, s: sessions[over] } : undefined} />
             // Its own session is gone and a look lies over it: the look is its session (stations.drop says so next).
-            : over && sessions[over] ? <Station key={key} s={sessions[over]!} helm={on} slot={i} grow={grow} fresh={isNew} aim={how} />
-            : isNew ? <NewStation key={`new-${key}`} slot={i} grow={grow} aim={how} />
+            : over && sessions[over] ? <Station key={key} s={sessions[over]!} helm={on} slot={i} grow={grow} fresh={isNew} />
+            : isNew ? <NewStation key={`new-${key}`} slot={i} grow={grow} beside={stack} />
             : id && id === helm ? missing(id, `gone-${key}`, i, grow)
-            : <EmptyPane key={`empty-${key}`} slot={i} grow={grow} next={!fresh && target(st) === i} aim={how} />;
+            : <EmptyPane key={`empty-${key}`} slot={i} grow={grow} next={!fresh && target(st) === i} />;
           const before = slots[n - 1];
           return before ? [<Grip key={`grip-${i}`} className="k-split" testid="pane-grip" label={`Width of panes ${before.i + 1} and ${i + 1}`} now={(100 * weights[before.i]!) / (weights[before.i]! + weights[i]!)} {...grip(before.i)} />, pane] : [pane];
         })]}
         {phone && (fresh || (!helm && pages.length === 0)) && <NewStation />}
       </main>
       {phone && <PhoneDock list={pages} helm={helm} />}
+      {!phone && <AimSays track={track} />}
     </>
   );
 }

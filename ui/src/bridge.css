@@ -408,6 +408,10 @@
 .k-stations { flex: 1; min-width: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; }
 .k-station { --k-band-h: 0.3125rem; position: relative; flex: 1 1 0; min-width: 26rem; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
 .k-station[data-helm] { background: var(--raised); }
+/* The paper under a pane's header (tools that lie over the header fade into it). */
+.k-station { --k-head-bg: var(--bg); }
+.k-station[data-helm] { --k-head-bg: var(--raised); }
+.k-station[data-watch="need"]:not([data-helm]) { --k-head-bg: color-mix(in oklch, var(--st-need) 7%, var(--bg)); }
 /* The pane worked in, among several: an ink rule under its band, the width of the pane,
    on its lighter paper. It lies over the pane (nothing moves when the helm does). The
    other panes keep their text as it is and lose only the rule. */
@@ -422,25 +426,45 @@
 .k-view { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .k-view-over { position: absolute; inset: 0; z-index: 2; background: inherit; box-shadow: inherit; }
 .k-view[inert] { visibility: hidden; }
-/* The bar across the top of what lies over a pane's session: the session the pane holds
-   (its mark is live), the way back to it, and the way to keep a look in its place. */
-.k-look-bar { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; min-height: 2.25rem; padding: 0.3125rem 0.75rem 0.25rem 1rem; border-bottom: 1px solid var(--line); background: var(--sunken); font-size: var(--text-caption); line-height: 1.0625rem; }
-.k-look-back { display: inline-flex; align-items: center; gap: 0.4375rem; flex: 0 1 auto; min-width: 0; height: var(--spacing-ctl-md); padding: 0 0.4375rem 0 0.3125rem; border-radius: 0.25rem; color: var(--muted); }
-.k-look-back:hover { background: var(--hover); color: var(--fg); }
-.k-look-back:focus-visible, .k-look-keep:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-.k-look-back svg { flex-shrink: 0; width: 0.875rem; height: 0.875rem; }
-.k-look-back .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; margin-left: 0.125rem; }
-.k-look-to { flex-shrink: 0; white-space: nowrap; }
-.k-look-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); }
-.k-look-back kbd { flex-shrink: 0; }
-.k-look-keep { flex-shrink: 0; height: var(--spacing-ctl-md); margin-left: auto; padding: 0 0.625rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 500; white-space: nowrap; color: var(--fg); }
-.k-look-keep:hover { background: var(--hover); }
+/* The bar across the top of what lies over a pane's session, one line of a fixed height. It
+   says what this is and whose pane it is ("Looking at X. This pane holds Y."), then the way
+   back and the way to keep a look. In a narrow pane the first sentence gives way (the header
+   under the bar names the session), then the held session's title is cut. */
+.k-look-bar { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: 2.375rem; padding: 0 0.625rem 0 1.375rem; border-bottom: 1px solid var(--line); background: var(--sunken); font-size: var(--text-caption); line-height: 1.0625rem; container-type: inline-size; }
+/* (One line of two sentences. When both do not fit, the first goes to a line above that is not
+   shown, and the second, whose pane this is, has the line; then its title is cut.) */
+.k-look-says { flex: 1 1 0; min-width: 0; height: 1.0625rem; display: flex; flex-wrap: wrap; align-content: flex-end; column-gap: 0.4375rem; overflow: hidden; white-space: nowrap; color: var(--muted); }
+.k-look-says b { font-weight: 600; color: var(--fg); }
+.k-look-this { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.k-look-holds { flex: 0 1 auto; min-width: 0; max-width: 100%; height: 1.0625rem; display: flex; align-items: center; }
+.k-look-holds .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; margin: 0 0.375rem 0 0.4375rem; }
+.k-look-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The pane's own session needs the owner, or failed, while it is under the look: said in words, in the state's ink. */
+.k-look-state { flex-shrink: 0; font-weight: 600; color: var(--st-need-ink); }
+.k-look-bar:is([data-under="fail"], [data-under="declined"]) .k-look-state { color: var(--st-fail-ink); }
+.k-look-act { display: inline-flex; align-items: center; gap: 0.4375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-look-act:hover { background: var(--hover); }
+.k-look-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.k-look-act svg { flex-shrink: 0; width: 0.875rem; height: 0.875rem; color: var(--muted); }
+@container (max-width: 31rem) { .k-look-keep kbd { display: none; } }
+/* On a card of the look Escape is the card's own key: the bar does not offer it there. */
+.k-view:has([data-ask-card]:focus-within) .k-look-esc { display: none; }
+/* A line at the pane's foot for a few seconds: what left the pane, and where it is. */
+.k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1.25rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1.25rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in 160ms var(--ease-out); }
+@keyframes k-note-in { from { opacity: 0; } }
 /* Before the click: the pane a row of the list will change, while the pointer or the keys
-   are on that row. Its band goes to ink and a tab hangs from it that says what the click does. */
-.k-station[data-aim] .k-band { background-color: var(--fg); }
-.k-station[data-aim] .k-band::after { content: none; }
-.k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 0.3125rem 0.3125rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
+   are on that row. Its band goes to ink and a tab hangs from it that says what the click
+   does; under the bar of a look or of the start page, so the bar's words and keys stay
+   readable. When that pane is out of view in a row of panes that scrolls sideways, the
+   tab stands at that edge of the row with an arrow. */
+.k-station:has(> .k-aim) .k-band { background-color: var(--fg); }
+.k-station:has(> .k-aim) .k-band::after { content: none; }
+.k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 0.3125rem 0.3125rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
+.k-station:is([data-look], .k-station-new[data-holds]) > .k-aim { top: calc(var(--k-band-h) + 2.375rem); }
 .k-station[data-drop] .k-aim { display: none; }
+.k-aim-edge { position: fixed; z-index: 46; left: auto; transform: none; border-radius: 0 0 0 0.3125rem; }
+.k-aim-edge[data-side="left"] { border-radius: 0 0 0.3125rem 0; }
+.k-aim-edge svg { width: 0.75rem; height: 0.75rem; }
 .k-station:has(+ .k-grip) { border-right: 0; }
 /* A header is the pane's handle: drag it onto another pane to trade places. */
 .k-station-head[draggable="true"] { cursor: grab; }
@@ -559,25 +583,42 @@ html[data-resizing] iframe { pointer-events: none; }
 /* In an open session, identity and state share a line. Only the other
    panes need a preview of a conversation that does not hold the keyboard.
    The title comes first and takes the width it needs, up to the pane's. The
-   state, its reason and the tools stand beside it when all of them fit, else
-   on the line under it: the reason never squeezes the title. Whether they fit
-   is decided by the title and the pane, not by what the reason says (it counts
-   as a fixed width and takes what is left), so the header keeps its height as
-   the state changes. Title and reason are one line each, cut with an ellipsis;
-   the whole is the tooltip, and both show whole while the keys are on the tools. */
+   state stands beside it, on one line, when the title leaves room for the
+   state's word and its clock beside the tools, and its reason has what is
+   left there; else state and reason go to the line under the title, where the
+   reason has the pane's width. Which of the two is decided by the title and
+   the pane alone (the room is a fixed measure, not what the reason happens to
+   say), so the header keeps its height while the state changes. Where room is
+   short the folder gives way first, then the reason is cut; the title is never
+   squeezed by either. Each
+   is one line cut with an ellipsis, whole in its tooltip, and both are shown
+   whole in a note under the header while the keys are on its tools. */
+.k-station-head { --k-tools-w: calc(var(--k-tools, 0) * (var(--spacing-ctl-md) + 1px)); --k-state-room: 8rem; }
 .k-station-identity { flex-wrap: wrap; column-gap: 0.625rem; row-gap: 0.125rem; }
 .k-station-identity .k-station-title { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; margin: 0; white-space: nowrap; text-overflow: ellipsis; }
-.k-station-rest { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 0.625rem; min-height: 1.625rem; }
-.k-station-identity .k-station-state { display: flex; align-items: center; gap: 0.4375rem; flex: 1 1 auto; min-width: 11rem; }
-.k-station-identity .k-station-why { flex: 1 1 0; width: 0; }
-.k-station-head:has(.k-station-tools :focus-visible) .k-station-title { white-space: normal; overflow-wrap: anywhere; }
-.k-station-head:has(.k-station-tools :focus-visible) .k-station-rest { flex-wrap: wrap; }
-.k-station-head:has(.k-station-tools :focus-visible) .k-station-why { flex-basis: 100%; width: auto; max-width: none; order: 1; white-space: normal; overflow-wrap: anywhere; }
+.k-station-rest { flex: 1 1 calc(var(--k-state-room) + var(--k-tools-w)); min-width: 0; display: flex; align-items: center; gap: 0.625rem; min-height: 1.625rem; }
+.k-station-identity .k-station-state { display: flex; align-items: center; gap: 0.4375rem; flex: 0 1 auto; min-width: 0; }
+.k-station-identity .k-station-why { flex: 0 1 auto; max-width: none; }
+.k-station-head:has(.k-station-tools :focus-visible) { z-index: 6; }
+.k-station-head:has(.k-station-tools :focus-visible)::after {
+  content: attr(data-whole); position: absolute; z-index: 1; top: calc(100% + 0.25rem); left: 1rem; right: 1rem; padding: 0.5rem 0.75rem; border: 1px solid var(--line-strong); border-radius: 0.3125rem;
+  background: var(--raised); box-shadow: var(--shadow-2); font-size: var(--text-caption); line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; color: var(--fg); pointer-events: none;
+}
 .k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; }
-.k-station-identity .k-station-meta { flex: 0 1 auto; max-width: 13rem; margin: 0; }
+/* The folder has only the room nothing else wants: it grows from nothing into what the state and its reason leave, and says nothing in a sliver. */
+.k-station-identity .k-station-meta { flex: 1 1 0; width: 0; max-width: 13rem; margin: 0; container-type: inline-size; }
+@container (max-width: 2.5rem) { .k-station-where { display: none; } }
 .k-station-identity .k-station-tools { flex-shrink: 0; margin-left: auto; }
+/* A pane that is not worked in shows its tools when it is pointed at or the keys are in it:
+   they lie over the end of the header's first line and take no room from the title or the reason. */
+.k-station:not([data-helm]) .k-station-identity .k-station-tools { position: absolute; top: 0.6875rem; right: 0.75rem; margin: 0; padding-left: 1.25rem; background: linear-gradient(90deg, transparent, var(--k-head-bg) 1rem); }
 .k-station-head:has(.k-station-identity) { container-type: inline-size; }
 @container (max-width: 35rem) { .k-station-identity .k-station-meta { display: none; } }
+/* A narrow pane worked in: the tools that move the pane give way (the keys and the list's menu move it), and the title has their room. */
+@container (max-width: 34rem) {
+  .k-station[data-helm] .k-station-identity .k-tool-move { display: none; }
+  .k-station[data-helm] .k-station-rest { --k-tools-w: calc(min(var(--k-tools, 0), 3) * (var(--spacing-ctl-md) + 1px)); }
+}
 /* Pinned: a tab hanging from the band. */
 .k-pin-mark { position: absolute; left: 0; top: 0; width: 0.1875rem; height: 1.375rem; background: var(--fg); }
 
@@ -833,7 +874,13 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-tick-kids .k-child-session > * { display: none; }
 .k-tick-kids .k-child-session::before { content: ""; width: 0.3125rem; height: 0.3125rem; border-radius: 50%; background: var(--line-strong); }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
-@media (max-width: 767px) { .k-station-meta { display: none; } .k-station-tools { margin-left: auto; } }
+@media (max-width: 767px) {
+  .k-station-meta { display: none; }
+  /* A phone's header: the title and the tools on the first line, the state and its reason on the second, in the page's width. */
+  .k-station-identity .k-station-title { max-width: calc(100% - 3 * (var(--spacing-ctl-md) + 1px) - 0.5rem); }
+  .k-station-identity .k-station-rest { flex-basis: 100%; }
+  .k-station .k-station-identity .k-station-tools { position: absolute; top: 0.5rem; right: 0.875rem; margin: 0; padding: 0; background: none; }
+}
 
 /* ---------- Side panels ---------- */
 /* The container itself is k-surface (styles.css); here is only where it stands. */
