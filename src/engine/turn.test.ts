@@ -850,3 +850,49 @@ test("the calls without a result are the same read from the checkpoint as from t
   expect(owed).toBeGreaterThan(100);
   expect(compacted).toBeGreaterThan(lines / 3);
 });
+
+// A turn another agent runs stores a reply at each tool call. The text it streamed is joined for a
+// moment before it is a frame: what the join still holds goes out before the event that stores it,
+// never after (a page drops its draft at that event, and would show the stored text again).
+test("an external turn's streamed text is all sent before the event that stores it", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { allHooks } = await import("./hooks.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "external-order-"));
+  const store = new Store(dir);
+  const bus = new Bus();
+  const s = store.createSession({ model: "fixture:m", workspace: dir });
+  const engine = new Engine(store, bus, {} as any, { capture: (_s: string, e: unknown) => { throw e; } } as any, dir);
+  const seen: string[] = [];
+  bus.on((f) => {
+    if (f.t === "delta" && f.session_id === s.id) seen.push(`delta ${f.text}`);
+    else if (f.t === "event" && f.event.session_id === s.id && (f.event.kind === "assistant" || f.event.kind === "turn_end")) seen.push(f.event.kind);
+  });
+  const hooksBefore = allHooks().length;
+  allHooks().push({ external: (session) => session.id === s.id ? async ({ append, delta }) => {
+    // A message in pieces, then a tool call: the reply is stored at once, while pieces of it still wait to be sent.
+    for (const text of ["I will ", "read the ", "file."]) delta("text", 1, text);
+    append("assistant", { blocks: [{ type: "text", text: "I will read the file." }], model: "fixture:m", stop: "tool_use" });
+    await Bun.sleep(60); // the tool runs
+    for (const text of ["Now ", "the next ", "message."]) delta("text", 1, text);
+    append("assistant", { blocks: [{ type: "text", text: "Now the next message." }], model: "fixture:m", stop: "end_turn" });
+    return { reason: "end_turn" };
+  } : undefined });
+  try {
+    engine.send(s.id, "start");
+    for (let i = 0; i < 300 && !seen.includes("turn_end"); i++) await Bun.sleep(10);
+    const text = (from: number, to: number) => seen.slice(from, to).filter((x) => x.startsWith("delta ")).map((x) => x.slice(6)).join("");
+    const first = seen.indexOf("assistant"), second = seen.indexOf("assistant", first + 1), end = seen.indexOf("turn_end");
+    expect([first > 0, second > first, end > second]).toEqual([true, true, true]);
+    expect(text(0, first)).toBe("I will read the file.");
+    expect(text(first, second)).toBe("Now the next message.");
+    expect(text(second, seen.length)).toBe("");
+  } finally {
+    allHooks().length = hooksBefore;
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

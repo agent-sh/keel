@@ -1671,7 +1671,8 @@ export class Engine {
       const r = await run({
         signal,
         events: () => this.lineage(id),
-        append: (kind, data) => this.append(id, kind, data),
+        // (What the join still holds of the text goes out before the event that stores it: a page drops its draft at that event.)
+        append: (kind, data) => { this.deltas.end(id); return this.append(id, kind, data); },
         delta: (kind, index, text) => this.deltas.push(id, { kind, index, text }),
         status: (s) => this.status(id, s),
       });
