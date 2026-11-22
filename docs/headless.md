@@ -172,6 +172,9 @@ A command that runs the session inside itself has no daemon to lose. With a daem
   result is `error_during_execution` with the reason.
 - A request that was open is withdrawn while the daemon restarts (`control_cancel_request`)
   and asked again after it, under the same `request_id`: answer the second one.
+- A restart the daemon calls off (the backup it makes first failed) cuts nothing. The command
+  writes no line for it: a request that is open stays open and its answer is taken, a running
+  turn goes on, and a prompt kept back while the daemon drained is sent (`daemon_back`).
 - A daemon that answers but takes no refusal of a request for 90 seconds ends the command the
   same way, with exit 3.
 - When the address answers as a daemon that does not have the session (another state folder),

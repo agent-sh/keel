@@ -9,6 +9,7 @@ import type { Deps } from "../server/app.ts";
 import { flushAll } from "../automation/core.ts";
 import { buildInfo } from "../core/build.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
+import { pidHolds, pidLive, pidState } from "../core/pid.ts";
 import { addAdmission } from "../server/admission.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
 import { describeStall, type Stall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
@@ -32,18 +33,38 @@ export function servicedDaemon(): { pid: number; url: string; state_dir: string 
   } catch { return undefined; }
 }
 
-const alive = (pid: number) => {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as any).code === "EPERM"; }
-};
+// A daemon that works. One that was killed or has exited keeps its pid for a
+// while (src/core/pid.ts): it is no daemon any more.
+const alive = pidLive;
 
-// A restart passes the old daemon's pid: wait (up to a minute) until it exits.
+// How long a start waits for a daemon that is going to be gone: the one a
+// restart names, and one that was killed and is still leaving.
+const GOING_MS = 60_000;
+
+// A restart passes the old daemon's pid: wait (up to a minute) until it has
+// let go of its port and its folder. One that has ended and only waits for a
+// parent to read its end holds neither, and is not waited for.
 export function waitForPredecessor() {
   const waitFor = Number(process.env.KEEL_WAIT_FOR_PID || 0);
   if (waitFor && waitFor !== process.pid) {
-    const until = Date.now() + 60_000;
-    while (alive(waitFor) && Date.now() < until) Bun.sleepSync(100);
+    const until = Date.now() + GOING_MS;
+    while (pidHolds(waitFor) && Date.now() < until) Bun.sleepSync(100);
   }
   delete process.env.KEEL_WAIT_FOR_PID;
+}
+
+// A start right after a daemon of this folder was killed: the kernel keeps
+// that daemon's port and its claim until its last thread is out, which takes
+// a moment, and longer on a busy disk. The start waits for it, as a restart
+// waits for the daemon before it, instead of finding the port taken or the
+// folder claimed by a process that is already going.
+export function waitForLeaving(stateDir: string) {
+  waitForPredecessor();
+  let pid = 0;
+  try { pid = Number(JSON.parse(readFileSync(join(stateDir, LOCK), "utf8")).pid) || 0; } catch {}
+  if (!pid || pid === process.pid) return;
+  const until = Date.now() + GOING_MS;
+  while (pidState(pid) === "leaving" && Date.now() < until) Bun.sleepSync(25);
 }
 
 // Who answers on host:port, if anything does: Bun lets a second server bind a
@@ -62,13 +83,14 @@ export async function portHolder(host: string, port: number): Promise<string | n
 }
 
 // Refuses a second daemon on the same state folder, before anything of the
-// state is opened. A restart passes the old pid: wait for it to exit. The
-// lock file says who holds the folder and where it answers; one left by a
-// daemon that died is written over.
+// state is opened. A restart passes the old pid: wait for it to exit, and for
+// one that was killed to have left. The lock file says who holds the folder
+// and where it answers; one left by a daemon that died is written over, also
+// while that daemon's pid is still there as a zombie.
 export function acquireLock(stateDir: string) {
   if (hasClaim(stateDir)) return;
   const path = join(stateDir, LOCK);
-  waitForPredecessor();
+  waitForLeaving(stateDir);
   const held = () => {
     try { return JSON.parse(readFileSync(path, "utf8") || "{}") as { pid?: number; url?: string }; } catch { return {}; }
   };

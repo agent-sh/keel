@@ -6,7 +6,7 @@
 // KEEL_CLI_SCRATCH names it (default: one per process, removed at the end).
 // KEEL_CLI_BIN runs a binary built before instead of building one.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -250,6 +250,63 @@ describe("keel serve on a port taken after its check", () => {
       holder.kill();
     }
   }, 60_000);
+});
+
+describe("keel serve after a daemon whose pid is still there", () => {
+  // A daemon that was killed keeps its pid until its parent reads its end. Under a parent that
+  // never does (here: a sleep), it is there for good, and it holds nothing: not the folder, not the port.
+  const under = async (state: string, port: number, log: string) => {
+    const sh = Bun.spawn(["sh", "-c", '"$0" serve --bind "127.0.0.1:$1" --state-dir "$2" --workspace "$3" > "$4" 2>&1 & echo $!; exec sleep 600', BIN, String(port), state, WS, log],
+      { cwd: WS, env: { ...ENV, KEEL_DRAIN_MS: "300" }, stdout: "pipe", stderr: "ignore" });
+    const reader = sh.stdout.getReader();
+    const pid = Number(new TextDecoder().decode((await reader.read()).value).trim());
+    reader.releaseLock();
+    return { pid, parent: sh };
+  };
+  const answers = async (url: string, not?: number, ms = 30_000) => {
+    const t0 = Date.now();
+    for (;;) {
+      const pid = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(3000) }).then(async (r) => ((await r.json()) as { pid: number }).pid, () => undefined);
+      if (pid && pid !== not) return { pid, ms: Date.now() - t0 };
+      if (Date.now() - t0 > ms) return { pid: undefined, ms: Date.now() - t0 };
+      await Bun.sleep(50);
+    }
+  };
+  const listens = (port: number) => Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {}, error() {} } }).then((c) => (c.end(), true), () => false);
+  const state = (pid: number) => { try { const st = readFileSync(`/proc/${pid}/stat`, "utf8"); return st.slice(st.lastIndexOf(")") + 2)[0]; } catch { return "gone"; } };
+
+  test.skipIf(process.platform !== "linux")("a killed daemon is replaced at once, and a restart does not wait for the daemon it replaces to be read by its parent", async () => {
+    const dir = join(SCRATCH, "state-zombie"), port = freePort(), url = `http://127.0.0.1:${port}`;
+    mkdirSync(dir, { recursive: true });
+    const first = await under(dir, port, join(SCRATCH, "zombie-1.log"));
+    let second: Awaited<ReturnType<typeof under>> | undefined;
+    let last: number | undefined;
+    try {
+      expect((await answers(url)).pid).toBe(first.pid);
+      process.kill(first.pid, "SIGKILL");
+      while (await listens(port)) await Bun.sleep(25);
+      // Its pid is still there, and the lock file still names it.
+      for (let i = 0; i < 200 && state(first.pid) !== "Z"; i++) await Bun.sleep(25);
+      expect([state(first.pid), json(readFileSync(join(dir, "daemon.lock"), "utf8")).pid]).toEqual(["Z", first.pid]);
+      // A start on its folder and its port takes both.
+      second = await under(dir, port, join(SCRATCH, "zombie-2.log"));
+      const took = await answers(url, first.pid);
+      expect([took.pid, readFileSync(join(SCRATCH, "zombie-2.log"), "utf8")]).toEqual([second.pid, expect.stringContaining("keel listening")]);
+      // A restart: the daemon that drained stays as a zombie under its parent, and the one it started answers
+      // without the minute a start gives a daemon before it to go.
+      const drained = await (await fetch(`${url}/api/drain`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ timeout_seconds: 1, restart: true }) })).json();
+      expect(drained).toMatchObject({ ok: true, restart: true });
+      const next = await answers(url, second.pid, 45_000);
+      last = next.pid;
+      expect(next.pid).toBeGreaterThan(0);
+      expect(next.ms).toBeLessThan(30_000);
+      expect(state(second.pid)).toBe("Z");
+    } finally {
+      for (const pid of [first.pid, second?.pid, last]) if (pid) try { process.kill(pid, "SIGKILL"); } catch {}
+      first.parent.kill("SIGKILL");
+      second?.parent.kill("SIGKILL");
+    }
+  }, 120_000);
 });
 
 describe("keel help serve", () => {
@@ -523,29 +580,70 @@ const freePort = () => 20_000 + Math.floor(Math.random() * 20_000);
 
 // A daemon on one port and one state folder that is restarted in place:
 // gracefully (it drains, parks its turns and starts itself again) or killed
-// and started again.
+// and started again. Every start's output is kept, and each wait is on what
+// the daemon itself does (its process, its lock, what it says of its drain),
+// so a start that fails says why at once and a slow one is waited for.
 async function restartable(state: string) {
   const port = freePort();
   const url = `http://127.0.0.1:${port}`;
   const env = { ...ENV, KEEL_DRAIN_MS: "300", KEEL_RESUME_AT_ONCE: "1" };
-  const pid = async () => ((await (await fetch(`${url}/api/health`)).json()) as { pid: number }).pid;
-  const up = async (not?: number) => {
-    for (let i = 0; i < 600; i++) {
-      try { const now = await pid(); if (now !== not) return now; } catch {}
+  const logs = `${state}-logs`;
+  mkdirSync(logs, { recursive: true });
+  let log = "", starts = 0, drained: unknown;
+  // The daemon this test started last, and how it ended (a graceful restart's successor is no child of the test).
+  let child: { pid: number; code: number | null } | undefined;
+  const exists = (pid?: number) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
+  const lockPid = () => { try { return JSON.parse(readFileSync(join(state, "daemon.lock"), "utf8")).pid as number; } catch { return undefined; } };
+  const status = async () => (await (await fetch(`${url}/api/daemon`, { signal: AbortSignal.timeout(5000) })).json()) as { pid: number; draining: unknown; restart_failed: { error: string } | null };
+  const listens = () => Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {}, error() {} } }).then((c) => (c.end(), true), () => false);
+  const known = () => {
+    let tail = "";
+    try { tail = readFileSync(log, "utf8").trim().split("\n").slice(-12).join("\n"); } catch {}
+    return `${drained === undefined ? "" : `\nthe drain's answer: ${JSON.stringify(drained)}`}\nthe lock names pid ${lockPid() ?? "none"}${child ? `; the daemon this test started (pid ${child.pid}) ${child.code === null ? "runs" : `exited ${child.code}`}` : ""}\nthe daemon's output (${log}):\n${tail || "(none)"}`;
+  };
+  // Waits for a daemon other than `old` to answer. It goes on waiting while one is on its way (the old one says it
+  // drains, or a process that is to answer is there), and stops when none is: the start exited, the restart was called off.
+  const up = async (old?: number) => {
+    const t0 = Date.now();
+    let moved = t0;
+    for (;;) {
+      const d = await status().catch(() => null);
+      if (d && d.pid !== old) return d.pid;
+      if (d && !d.draining && d.restart_failed) throw new Error(`the restart was called off: ${d.restart_failed.error}${known()}`);
+      if (!old && child && child.code !== null) throw new Error(`the daemon exited ${child.code} before it answered at ${url}${known()}`);
+      const lock = lockPid();
+      if ((d && d.draining) || exists(old) || (child?.code === null && exists(child.pid)) || (lock !== old && exists(lock))) moved = Date.now();
+      if (Date.now() - moved > 20_000) throw new Error(`no daemon came up at ${url}, and none is on its way${known()}`);
+      if (Date.now() - t0 > 180_000) throw new Error(`no daemon answered at ${url} in three minutes${known()}`);
       await Bun.sleep(50);
     }
-    throw new Error(`no daemon came up at ${url}`);
   };
-  const down = async () => { for (let i = 0; i < 200; i++) { try { await pid(); } catch { return; } await Bun.sleep(50); } throw new Error(`the daemon at ${url} did not go down`); };
-  const start = () => { Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", WS], { cwd: WS, env, stdout: "ignore", stderr: "ignore" }); return up(); };
+  // The daemon's port is closed: its files are, so its claim on the folder is free.
+  const down = async (pid: number) => {
+    const t0 = Date.now();
+    while (await listens()) {
+      if (Date.now() - t0 > 60_000) throw new Error(`the daemon at ${url} (pid ${pid}, ${exists(pid) ? "still a process" : "no process any more"}) did not go down${known()}`);
+      await Bun.sleep(25);
+    }
+  };
+  const start = () => {
+    log = join(logs, `start-${++starts}.log`);
+    const fd = openSync(log, "w");
+    const p = Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", WS], { cwd: WS, env, stdout: fd, stderr: fd });
+    closeSync(fd);
+    const mine = (child = { pid: p.pid, code: null as number | null });
+    void p.exited.then((code) => (mine.code = code));
+    return up();
+  };
   let now = await start();
   const api = async (path: string, body?: unknown) =>
     (await fetch(url + path, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
   return {
     url, api,
-    graceful: async () => { const old = now; await api("/api/drain", { timeout_seconds: 1, restart: true }); now = await up(old); },
-    killed: async () => { process.kill(now, "SIGKILL"); await down(); now = await start(); },
-    stop: async () => { try { process.kill(now, "SIGTERM"); await down(); } catch {} },
+    graceful: async () => { const old = now; drained = await api("/api/drain", { timeout_seconds: 1, restart: true }); now = await up(old); },
+    // Started again as soon as the port is closed: the killed daemon's pid may still be there.
+    killed: async () => { drained = undefined; process.kill(now, "SIGKILL"); await down(now); now = await start(); },
+    stop: async () => { try { process.kill(now, "SIGTERM"); await down(now); } catch {} },
   };
 }
 const isResult = (l: any) => l.type === "result";

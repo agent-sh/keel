@@ -16,7 +16,7 @@ import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
 import { serve } from "./app.ts";
 import { routeModules } from "./routes/index.ts";
-import { portHolder, waitForPredecessor } from "../admin/daemon.ts";
+import { portHolder, waitForLeaving } from "../admin/daemon.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
 import { beginLife, lifeListening, Restarts } from "../admin/life.ts";
 import { beginWatch, during, timed } from "../admin/stall.ts";
@@ -33,9 +33,10 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   if ("error" in bind) throw new Error(bind.error);
   const { hostname, port } = bind;
   // Once per process (a hot reload serves the same port again): a port that
-  // something already answers on is refused, after a restart's old daemon is gone.
+  // something already answers on is refused, after a restart's old daemon is
+  // gone and one that was killed has left.
   if (!(globalThis as { __keelEngine?: unknown }).__keelEngine && port !== 0) {
-    waitForPredecessor();
+    waitForLeaving(stateDir);
     const holder = await portHolder(hostname, port);
     if (holder) {
       console.error(`keel: ${opts.bind} is already in use by ${holder}; pick another --bind or stop it first`);
