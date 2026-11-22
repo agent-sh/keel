@@ -38,7 +38,9 @@ check() { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
 wait_for() { local s=$1; shift; for _ in $(seq 1 $((s * 4))); do if eval "$*" > /dev/null 2>&1; then return 0; fi; sleep 0.25; done; return 1; }
 py() { python3 -c "$@"; }
 # the running app (the window list is asked by process: the window class differs between Wayland and X11)
-app_pid() { pgrep -n -x keel-desktop || echo 0; }
+# Only this check's own app counts: another keel-desktop on the machine is not its business.
+app_pids() { for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -qx "KEEL_DESKTOP_DIR=$D/shell" && echo "$p"; done; }
+app_pid() { app_pids | tail -1 | grep . || echo 0; }
 logged() { grep -c "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null || true; }
 last() { grep "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null | tail -1; }
 # a picture of the app's largest window alone (of the whole desktop with `all`)
@@ -114,6 +116,11 @@ sleep 3
 read -r X Y W H _ <<< "$(geometry)"
 check "the window has the remembered size (1920x1040, got ${W}x${H})" "[ \"$W\" = 1920 ] && [ \"$H\" = 1040 ]"
 shot 01-window-light
+zoom() { py 'import json,sys; print(json.load(open(sys.argv[1])).get("zoom"))' "$D/shell/shell.json"; }
+$A key --id "$WS" ctrl+plus > /dev/null 2>&1; sleep 0.6
+check "Ctrl and plus zooms the page, and the zoom is remembered" "[ \"\$(zoom)\" = 1.1 ]"
+$A key --id "$WS" ctrl+0 > /dev/null 2>&1; sleep 0.6
+check "Ctrl and zero puts it back" "[ \"\$(zoom)\" = 1.0 ]"
 
 # --- 2. a daemon restart under the window
 $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + 336)) > /dev/null 2>&1
@@ -154,7 +161,7 @@ shot 04-notification-click-light
 
 # --- 5. a second launch and a keel:// link
 "$SHELL_BIN" "keel://session/$ask"; code=$?
-check "a second launch ends at once and hands its link to the first" "[ $code = 0 ] && wait_for 10 \"last present | grep -q '/s/$ask'\" && [ \"\$(pgrep -x keel-desktop | wc -l)\" = 1 ]"
+check "a second launch ends at once and hands its link to the first" "[ $code = 0 ] && wait_for 10 \"last present | grep -q '/s/$ask'\" && [ \"\$(app_pids | wc -l)\" = 1 ]"
 check "the link's session is on screen" "wait_for 10 \"geometry | grep -q 'clean the build output'\""
 "$SHELL_BIN" "keel://session/../../etc/passwd" 2> /dev/null
 check "a link to anything but a place of the page is refused" "sleep 1; ! last present | grep -q passwd"
@@ -185,7 +192,7 @@ sleep 1; shot 08-not-running-dark
 daemon_up; wait_for 20 'last link | grep -q Up'
 $A resize-window --id "$WS" --pid "$(app_pid)" 1500 900 > /dev/null 2>&1; sleep 1.5
 pick 10
-check "quit from the tray ends the app" "wait_for 10 '[ \"\$(pgrep -x keel-desktop | wc -l)\" = 0 ]'"
+check "quit from the tray ends the app" "wait_for 10 '[ \"\$(app_pids | wc -l)\" = 0 ]'"
 check "the daemon keeps running" "api /api/health | grep -q pid && api /api/shell | grep -q '\"attached\":false'"
 check "the size was saved (1500x900)" "py 'import json; d=json.load(open(\"$D/shell/shell.json\")); assert abs(d[\"width\"]-1500) <= 2 and abs(d[\"height\"]-900) <= 2, d'"
 
