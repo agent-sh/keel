@@ -181,6 +181,10 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     await send(request, chatty, script([{ name: "Bash", input: { command: `until [ -f ${gates.tool} ]; do echo tick; sleep 1; done` } }]));
     // The parent's own turn is blocked on its agent: the agent is the piece of work, not the parent.
     await send(request, parent, script([{ name: "spawn_agent", input: { message: `Read the billing service\nscript:hold ${gates.agent}`, isolation: "none" } }, { name: "wait_agent", input: {} }]));
+    // A coordinator whose turn ended with an agent at work in the background: told of its silence once.
+    const lead = await start(request, "Coordinate the log survey");
+    made.push(lead);
+    await send(request, lead, script([{ name: "spawn_agent", input: { message: `Survey the access logs\nscript:hold ${gates.agent}`, isolation: "none" } }]));
     const child = async () => ((await (await request.get(`/api/sessions/${parent}/agents`)).json()).agents as { session_id: string; status: string }[])[0]?.session_id;
     await expect.poll(child, { timeout: 30_000 }).toBeTruthy();
     const agent = (await child())!;
@@ -199,6 +203,13 @@ test("is anything stuck: a held stream, a silent command and a stalled agent are
     expect(items.find((i) => i.session_id === tool)).toMatchObject({ what: "tool", agent: false });
     expect(items.find((i) => i.session_id === agent)).toMatchObject({ what: "stream", agent: true, parent_id: parent });
     for (const i of items) expect(i.elapsed_ms).toBeGreaterThanOrEqual(5000);
+    // The coordinator is told, once, which agent made no progress and on what; it is not told again.
+    const told = async () => ((await (await request.get(`/api/sessions/${lead}`)).json()).events as { kind: string; data: { kind?: string; status?: string; text?: string } }[])
+      .filter((e) => e.kind === "user" && e.data.kind === "harness" && e.data.status === "silent").map((e) => e.data.text ?? "");
+    await expect.poll(async () => (await told()).length, { timeout: 60_000 }).toBe(1);
+    expect((await told())[0]).toMatch(/^\[harness\] Agent "Survey the access logs" \(\w+\) has made no progress: the model is answering, no output for \d+s\. It is still running and has not reported\./);
+    await page.waitForTimeout(12_000);
+    expect(await told()).toHaveLength(1);
     // The parent runs (blocked in wait_agent), and the chatty command runs, and neither is listed.
     expect((await stateOf(request, parent))?.watch).toBe("work");
     expect((await stateOf(request, chatty))?.watch).toBe("work");

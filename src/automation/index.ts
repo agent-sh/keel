@@ -27,6 +27,7 @@ import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop, messageHooks, waitAckHooks } from "./tools.ts";
 import { verifierSession } from "./verify.ts";
 import * as waits from "./waits.ts";
+import * as silent from "./silent.ts";
 import { liveAgents } from "./state.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
@@ -70,6 +71,7 @@ function init(deps: Deps) {
   snooze.migrate();
   consult.migrate();
   goals.migrate();
+  silent.migrate();
   failures.init();
   outage.bind();
   // A called-off restart checks the goal turns its drain put off.
@@ -165,6 +167,9 @@ function init(deps: Deps) {
 
   // A goal's verifier archived or deleted while its verification waits on it: the verification ends there.
   deps.bus.on((f) => { if (f.t === "session") verifierSession(f.session, !!f.deleted); });
+
+  // An agent that made no progress past the stuck limit is told to its parent, once (silent.ts).
+  deps.bus.on((f) => { if (f.t === "feature" && f.name === "state" && f.session_id) silent.onState(f.session_id, f.data); });
 
   // A hold that ended with no turn sends what it held (agents.onQueue).
   deps.bus.on((f) => { if (f.t === "queue") agents.onQueue(f); });
