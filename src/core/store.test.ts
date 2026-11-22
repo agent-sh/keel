@@ -58,11 +58,11 @@ test("a cursor read parses only the events after the cursor, and finds them in m
   expect(looked).toBeLessThanOrEqual(10 + Math.ceil(Math.log2(N)) + 1);
   expect(warm).toEqual(tail);
 
-  // Cursor zero is the whole session, as a list of the caller's own; past the end is nothing.
+  // Cursor zero is the whole session: one list for every reader until the next event, and none
+  // that grows under a reader that holds it (see the test of appends below). Past the end is nothing.
   const whole = cold.events(id, 0);
   expect(whole.length).toBe(N);
-  whole.pop();
-  expect(cold.events(id).length).toBe(N);
+  expect(cold.events(id)).toBe(whole);
   expect(cold.events(id, N)).toEqual([]);
   expect(cold.events(id, N + 50)).toEqual([]);
   expect(new Store(dir).events(id, N)).toEqual([]);
@@ -486,4 +486,53 @@ test("a session not in memory has its pages read off the loop before the loop re
   other.offLoop = async () => { throw new Error("no read thread"); };
   await other.warm(s.id);
   expect(other.events(s.id)).toHaveLength(40);
+});
+
+// An append does nothing that grows with the session: the branch it ends is
+// not copied for it (the events appended join the branch when it is next
+// read), and every event as one list is made once for the readers between two
+// appends. What a reader holds stays as it was read.
+test("an append costs the same in a long session as in a new one, and what a reader holds stays as it was", () => {
+  const store = new Store(scratch());
+  const fill = (n: number) => {
+    const s = store.createSession({ model: "m", workspace: "/" });
+    store.db.transaction(() => { for (let i = 0; i < n; i++) store.append(s.id, i % 2 ? "assistant" : "user", i % 2 ? { blocks: [] } : { text: `prompt ${i}` }); })();
+    return s.id;
+  };
+  const longId = fill(50_000);
+  const shortId = fill(10);
+
+  // The branch and the whole, held across appends: neither changes under its reader.
+  const line = store.lineage(longId);
+  const whole = store.events(longId);
+  const last = line.at(-1)!.id;
+  expect(store.events(longId)).toBe(whole);
+  const added = [store.append(longId, "note", { text: "one" }), store.append(longId, "note", { text: "two" })];
+  expect(line.length).toBe(50_000);
+  expect(line.at(-1)!.id).toBe(last);
+  expect(whole.length).toBe(50_000);
+  const next = store.lineage(longId);
+  expect(next.length).toBe(50_002);
+  expect(next.slice(-2).map((e) => e.id)).toEqual(added.map((e) => e.id));
+  expect(next.slice(0, 50_000).every((e, i) => e === line[i])).toBe(true);
+  expect(store.lineage(longId)).toBe(next);
+  expect(store.events(longId).length).toBe(50_002);
+  // An edited prompt (another parent) shows another branch: walked again, the one held unchanged.
+  const edit = store.append(longId, "user", { text: "edited" }, line[9]!.id);
+  expect(store.lineage(longId).map((e) => e.id)).toEqual([...line.slice(0, 10).map((e) => e.id), edit.id]);
+  expect(next.length).toBe(50_002);
+
+  // 1,000 appends at a time, the two sessions taking turns: the least of five rounds each.
+  const time = (id: string) => {
+    const t0 = performance.now();
+    for (let i = 0; i < 1000; i++) store.append(id, "note", { text: "y".repeat(200) });
+    return performance.now() - t0;
+  };
+  store.lineage(longId);
+  store.lineage(shortId);
+  let long = Infinity, short = Infinity;
+  for (let round = 0; round < 5; round++) { short = Math.min(short, time(shortId)); long = Math.min(long, time(longId)); }
+  // (With a copy of the branch at each append the long session took three times the new one's time.)
+  expect(long).toBeLessThan(short * 1.8 + 5);
+  expect(store.lineage(longId).length).toBe(11 + 5000);
 });

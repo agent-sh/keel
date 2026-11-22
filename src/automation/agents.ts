@@ -695,7 +695,7 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
 // just written. A reply cut at the output limit and the reply that continues
 // it are one answer.
 const NO_FINAL = "(No final answer. Before its last tool call it wrote:)\n";
-function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string; events: StoredEvent[] } {
+function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string; events: readonly StoredEvent[] } {
   const evs = D().store.events(a.session_id, a.first_seq);
   const rounds: { text: string; note?: boolean }[] = [];
   let final = "";

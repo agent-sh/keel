@@ -2,7 +2,7 @@
 import type { StoredEvent } from "./types.ts";
 
 // The branch that ends at `head`, oldest first.
-export function lineage(events: StoredEvent[], head: string | null): StoredEvent[] {
+export function lineage(events: readonly StoredEvent[], head: string | null): StoredEvent[] {
   if (!head) return [];
   const byId = new Map(events.map((e) => [e.id, e]));
   const out: StoredEvent[] = [];
@@ -15,7 +15,7 @@ export function lineage(events: StoredEvent[], head: string | null): StoredEvent
 }
 
 // The newest event at or below `id`: where the branch that grew from it ends.
-export function leafOf(events: StoredEvent[], id: string): string {
+export function leafOf(events: readonly StoredEvent[], id: string): string {
   const children = new Map<string, StoredEvent[]>();
   for (const e of events) if (e.parent) (children.get(e.parent) ?? children.set(e.parent, []).get(e.parent)!).push(e);
   let best = events.find((e) => e.id === id);
@@ -30,7 +30,7 @@ export function leafOf(events: StoredEvent[], id: string): string {
 }
 
 // The other versions of a prompt: user events with the same parent, in order.
-export function versions(events: StoredEvent[], e: StoredEvent): StoredEvent[] {
+export function versions(events: readonly StoredEvent[], e: StoredEvent): StoredEvent[] {
   if (e.kind !== "user") return [e];
   return events.filter((x) => x.kind === "user" && x.parent === e.parent && !x.data.origin);
 }
@@ -152,7 +152,7 @@ export function pageOfLine(line: readonly StoredEvent[], ask: { limit: number; b
 
 // The same from every event of a session, for a branch nobody keeps (another
 // branch than the session's, an event of one): the branch is walked here.
-export function pageOf(events: StoredEvent[], sessionHead: string | null, ask: PageAsk): Page | null {
+export function pageOf(events: readonly StoredEvent[], sessionHead: string | null, ask: PageAsk): Page | null {
   let head = ask.head ?? sessionHead;
   let line: StoredEvent[];
   let at: number | undefined;

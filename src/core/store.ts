@@ -133,7 +133,12 @@ type Kept = {
   // The branch the session shows, as it was last read: its events from the
   // first to the head. Walked once, it grows by each event appended at its
   // head, and is walked again only when the session shows another branch.
-  line?: { head: string; events: readonly StoredEvent[] };
+  // `more`: the events appended at its head since it was last read; they
+  // join `events` when it is next read (Store.lineage), so an append does
+  // nothing that grows with the branch's length.
+  line?: { head: string; events: readonly StoredEvent[]; more: StoredEvent[] };
+  // Every event as one array handed to readers (Store.events), until the next append.
+  whole?: readonly StoredEvent[];
   // The owner-side messages that share a parent with another (the versions of
   // a prompt are among them), by that parent: for a reader that shows a part
   // of a branch with the count of versions on each prompt. Made from the
@@ -504,8 +509,10 @@ export class Store {
       }
       // The branch that ended at its parent now ends at it. An event on another
       // parent starts a branch, which is walked when it is asked for.
-      // A new array: a reader that holds the branch as it was keeps it.
-      k.line = k.line?.head === p ? { head: id, events: [...k.line.events, held] } : undefined;
+      // (A reader that holds the branch as it was keeps it: see lineage.)
+      if (k.line?.head === p) { k.line.more.push(held); k.line.head = id; }
+      else k.line = undefined;
+      k.whole = undefined;
       // A message under a parent that already has several joins them. One under
       // the newest event starts nothing (nothing else is stored there yet); one
       // under any other event may be a second version: the map is made again
@@ -844,7 +851,13 @@ export class Store {
     const head = this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null;
     if (!head) return [];
     const k = this.held(session_id);
-    if (k.line?.head === head) return k.line.events;
+    if (k.line?.head === head) {
+      // What was appended at its head since it was read joins it, as a new
+      // array: a reader that holds the branch as it was keeps it. One copy
+      // for the appends between two reads, not one an append.
+      if (k.line.more.length) k.line = { head, events: k.line.events.concat(k.line.more), more: [] };
+      return k.line.events;
+    }
     const all = k.all;
     const out: StoredEvent[] = [];
     let want: string | null = head;
@@ -855,14 +868,16 @@ export class Store {
       want = all[at]!.parent;
     }
     out.reverse();
-    k.line = { head, events: out };
+    k.line = { head, events: out, more: [] };
     return out;
   }
 
   // Every event of the session, all branches, in seq order. With a cursor,
   // only the events after it: a reader that is catching up pays for what it
-  // missed, not for the session.
-  events(session_id: string, afterSeq = 0): StoredEvent[] {
+  // missed, not for the session. The whole is one array shared by the readers
+  // between two appends (read-only: no reader changes it), and never one that
+  // grows under a reader that holds it.
+  events(session_id: string, afterSeq = 0): readonly StoredEvent[] {
     if (afterSeq > 0) {
       const k = this.kept.get(session_id);
       if (k) {
@@ -876,7 +891,8 @@ export class Store {
         .all(session_id, afterSeq)
         .map((r) => deepFreeze(rowToEvent(r)));
     }
-    return this.held(session_id).all.slice();
+    const k = this.held(session_id);
+    return (k.whole ??= k.all.slice());
   }
 
   // The last event of the branch the session shows, read by itself: for a
@@ -935,7 +951,7 @@ export class Store {
   // An event that names another one (a checkpoint's `covered`, a clear's
   // `undo_head`, a summary's `from_event`) names the copy of it; a name that
   // points outside the copied line is dropped, never left pointing at the source.
-  copyEvents(session_id: string, events: StoredEvent[]): string | null {
+  copyEvents(session_id: string, events: readonly StoredEvent[]): string | null {
     let prev: string | null = null;
     const ids = new Map(events.map((e) => [e.id, Bun.randomUUIDv7()] as const));
     const tx = this.db.transaction(() => {

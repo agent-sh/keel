@@ -47,7 +47,7 @@ export const noCommands = (): Commands => ({ seq: 0, calls: [], ids: new Set(), 
 // every session was before: slower for it, and nothing grows without end.
 export const COMMANDS_KEPT = 4 * 1024 * 1024;
 
-export function readCommands(c: Commands, events: StoredEvent[]): Commands {
+export function readCommands(c: Commands, events: readonly StoredEvent[]): Commands {
   for (const e of events) {
     c.seq = Math.max(c.seq, e.seq);
     if (e.kind === "assistant") {
