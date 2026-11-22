@@ -572,6 +572,12 @@ const RATIO_MIN = 1;
 // learned ratio comes from tool-heavy sessions and sits far lower. A context
 // counted from bytes alone holds at least its bytes over this.
 export const RATIO_MAX = 5;
+// A measured count is taken to be of another context when the bytes before
+// it are this many times more than it could hold at RATIO_MAX bytes a token.
+// Forty bytes a token: far from any real ratio (escaped JSON runs to six or
+// seven, long runs of one character to a few times that), so a context a
+// reply did measure is never counted from its bytes for this.
+const NOT_THIS_CONTEXT = 8;
 const RATIO_RATE = 0.2; // each new reply moves the learned ratio a fifth of the way (Gemini CLI's adaptive estimate)
 // Below this many counted tokens a request says little about the ratio.
 const RATIO_SAMPLE_TOKENS = 2_000;
@@ -638,13 +644,20 @@ export function contextTokens(lineage: readonly StoredEvent[], model?: string, p
     for (let i = from; i < lineage.length; i++) bytes += tailBytes(lineage[i]!, per);
     return Math.round(bytes / per);
   };
+  // A reply measured before the checkpoint counted the history it replaced.
+  const whole = () => { const estimated = tail(Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at)); return { used: estimated + prefix, measured: 0, estimated }; };
   const from = (at: number) => {
     const last: Usage = lineage[at]!.data.usage;
     const measured = last.input + last.cache_read + last.cache_write + last.output, estimated = tail(at + 1);
+    // A count the bytes cannot be: the reply measured another context than
+    // the one that lies before it here (a history imported whole from a
+    // harness that had compacted it, each reply's count that of its context
+    // then). The context is counted from its bytes, as one no reply measured.
+    // (A provider that reports no usage at all measured nothing: its replies are not held to this.)
+    const bytes = whole();
+    if (measured > 0 && (measured + estimated) * RATIO_MAX * NOT_THIS_CONTEXT < bytes.estimated * per) return bytes;
     return { used: measured + estimated, measured, estimated, last };
   };
-  // A reply measured before the checkpoint counted the history it replaced.
-  const whole = () => { const estimated = tail(Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at)); return { used: estimated + prefix, measured: 0, estimated }; };
   const mine = own >= 0 ? from(own) : whole();
   if (other < 0) return mine;
   const floor = from(other);
@@ -724,7 +737,39 @@ const PATH_NOTE_BYTES = 330;
 // the model adds its text, and an attached file adds what it resolves to (its
 // text when it goes inline, else the note with its path; a PDF read natively
 // is model-specific and counted as that note).
+// An event's bytes are worked out once: an event never changes, and a count
+// of a context walks every event after its checkpoint, several times a step
+// (a tool result is serialized to be counted). `per` matters to images alone.
+const counted = new WeakMap<StoredEvent, { per: number; n: number }>();
 function tailBytes(e: StoredEvent, per = BYTES_PER_TOKEN): number {
+  const had = counted.get(e);
+  if (had && had.per === per) return had.n;
+  const n = eventBytes(e, per);
+  counted.set(e, { per, n });
+  return n;
+}
+
+// Counts the events of a context that were not counted yet, a slice at a
+// time with the event loop turning in between: the first count of a history
+// of tens of megabytes (an import that was never compacted here) serializes
+// all of it. A context counted already costs a lookup an event and no turn
+// of the loop.
+export async function countPaced(lineage: readonly StoredEvent[], model?: string): Promise<void> {
+  const cp = checkpointAt(lineage);
+  const per = bytesPerToken(model);
+  let worked = 0;
+  for (let i = Math.max(0, Math.min(cp.keepFrom, cp.at < 0 ? cp.keepFrom : cp.at)); i < lineage.length; i++) {
+    const e = lineage[i]!;
+    const had = counted.get(e);
+    if (had && had.per === per) continue;
+    if ((worked += tailBytes(e, per)) >= PACE_BYTES) {
+      worked = 0;
+      await new Promise<void>((ok) => setImmediate(ok));
+    }
+  }
+}
+
+function eventBytes(e: StoredEvent, per: number): number {
   if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : replyBytes(e.data.blocks ?? []);
   if (e.kind === "tool_result") return jsonBytes(e.data.results ?? [], per);
   if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
@@ -769,7 +814,8 @@ export const TRANSCRIPT_CLIP = 2_000;
 // left out here; `answer`: the reply that ended a turn (one with no call in
 // it), kept for as long as anything else can go. What the model wrote
 // between two calls is part of the work.
-type Piece = { text: string; output?: boolean; call?: boolean; said?: boolean; answer?: boolean };
+// `bytes`: the UTF-8 bytes of `text`, where they are known without putting it together.
+type Piece = { text: string; bytes?: number; output?: boolean; call?: boolean; said?: boolean; answer?: boolean };
 
 function pieces(m: Message): Piece[] {
   const out: Piece[] = [];
@@ -783,7 +829,9 @@ function pieces(m: Message): Piece[] {
       const head = `[result of ${b.tool_use_id}${b.is_error ? ", an error" : ""}]\n`;
       // Put together when it is read: a history of thousands of long outputs
       // is not copied whole to plan a transcript that keeps a line of each.
-      out.push({ get text() { return `${head}${body}\n`; }, output: true });
+      // (Its size is the sizes of its parts: the head ends a line and a line end follows the body, so no
+      // character pairs across the joins. Measured so, an output that is then cut to a line is never copied.)
+      out.push({ get text() { return `${head}${body}\n`; }, get bytes() { return utf8Bytes(head) + utf8Bytes(body) + 1; }, output: true });
     } else if (b.type === "image") out.push({ text: `[${who} sent an image]\n` });
     else if (b.type === "attachment") out.push({ text: `[${who} attached the file ${b.name}]\n` });
     // thinking and other provider blocks are not part of the transcript
@@ -851,7 +899,7 @@ function* transcriptPlan(messages: Message[], budget: number, maxParts: number):
     if (m.role === "assistant") reply = at;
     for (const p of pieces(m)) {
       all.push(p);
-      size.push(utf8Bytes(p.text));
+      size.push(p.bytes ?? utf8Bytes(p.text));
       round.push(p.said ? -1 : reply);
       if (due(size.at(-1)!)) yield;
     }

@@ -31,7 +31,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -1836,6 +1836,11 @@ export class Engine {
       }
     };
     try {
+      // What the turn reads from here on is its context: the events after the last checkpoint, with
+      // their bodies. They are brought in a slice at a time first. A context is a window's worth and
+      // most of it is in memory already; a history no checkpoint was ever made in (an import) is all
+      // of the session, and read in one piece it held the loop for as long as the read took.
+      await this.warmContext(id);
       // Calls a restart cut while they waited for the owner: asked again on
       // the same card before the model is asked anything.
       const owed = owedCalls(id, this.lineage(id));
@@ -1873,6 +1878,8 @@ export class Engine {
         // The last step of the budget answers in words: the request keeps its
         // tools (the cached prefix), and calls it still makes are not run.
         if (budget > 0 && steps === budget) this.append(id, "user", { text: `[harness] This is the last model step this turn may take (the session's step budget is ${budget}). Do not call tools: reply with where the work stands and what is left to do.`, origin: "harness" });
+        // (A history not counted yet is counted here in slices: the counts below then read what is kept.)
+        await countPaced(this.lineage(id), st.info.id);
         let events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
         const used = this.used(events, st);
@@ -2637,6 +2644,9 @@ export class Engine {
   // `trigger`: what started it (the threshold, a request that did not fit, the owner).
   async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner"; signal?: AbortSignal; step?: Step; next?: ModelInfo } = {}) {
     const session = this.store.session(id)!;
+    // (Asked for between turns too: a history not read or counted yet is read and counted in slices first.)
+    await this.warmContext(id);
+    await countPaced(this.lineage(id), opts.step?.info.id ?? session.model);
     const events = this.lineage(id);
     // A turn with no reply yet: the prompts that opened it stay out of the summary and follow it whole.
     const upto = summarizable(events);

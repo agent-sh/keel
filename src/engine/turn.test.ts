@@ -533,7 +533,8 @@ test("threshold compaction: nothing new is not summarized, an empty summary does
   const store = new Store(dir);
   const asked: string[] = [];
   const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
-  const usage = { input: 1, output: 1, cache_read: 0, cache_write: 0 };
+  // (A count its context could be: one that the bytes before it cannot be is not taken for a measure of them.)
+  const usage = { input: 700, output: 1, cache_read: 0, cache_write: 0 };
   const provider = {
     id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
     stream: async (req: any) => {

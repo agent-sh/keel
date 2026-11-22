@@ -6,7 +6,7 @@
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../core/types.ts";
-import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
+import { BYTES_PER_TOKEN, countPaced, contextBytes, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -468,4 +468,56 @@ test("the kept messages read from the last checkpoint are the ones a walk over t
   expect(summaries).toBeGreaterThan(100);
   expect(ahead).toBeGreaterThan(30);
   expect(nested).toBeGreaterThan(3);
+});
+
+// A history brought in whole from a harness that had compacted it: each
+// reply's count is of the context it had there, not of what lies before it
+// here. Held to that count, the whole history was built into a request the
+// provider then refused, twice, megabytes of it each time.
+test("a measured count the bytes cannot be is not this context's: it is counted from its bytes", async () => {
+  const reply = (text: string, input: number) => ev("assistant", { blocks: [{ type: "text", text }], usage: { input, output: 10, cache_read: 0, cache_write: 0 }, stop: "end_turn" });
+  const long = Array.from({ length: 400 }, (_, i) => [ev("user", { text: `step ${i}` }), reply("x".repeat(10_000), 30_000)]).flat();
+  // Four megabytes behind a reply that says 30,000 tokens: a million tokens at the default bytes a token.
+  const t = contextTokens(long);
+  expect(t.measured).toBe(0);
+  expect(t.used).toBeGreaterThan(900_000);
+  // With the request's own prefix on top, as for any context no reply measured.
+  expect(contextTokens(long, undefined, 5_000).used).toBe(t.used + 5_000);
+  // A count that is merely low for its bytes (escaped output, long runs of one character) stands: twenty bytes a token here.
+  const dense = [ev("user", { text: "go" }), reply("x".repeat(590_000), 30_000)];
+  expect(contextTokens(dense).measured).toBe(30_010);
+  // The count of a long history is taken in slices, and kept: the same answer, and nothing left to count.
+  const fresh = Array.from({ length: 300 }, (_, i) => [ev("user", { text: `step ${i}` }), ev("tool_result", { results: [{ type: "tool_result", tool_use_id: `c${i}`, content: "y".repeat(20_000) }] })]).flat();
+  // (Turns of the loop are counted by a job that runs once in each, not by a clock: six megabytes, a turn a megabyte.)
+  const turnsWhile = async (work: () => Promise<void>) => {
+    let turns = 0, on = true;
+    const turn = () => { turns++; if (on) setImmediate(turn); };
+    setImmediate(turn);
+    await work();
+    on = false;
+    return turns;
+  };
+  expect(await turnsWhile(() => countPaced(fresh))).toBeGreaterThanOrEqual(5);
+  const before = contextBytes(fresh);
+  expect(before).toBeGreaterThan(6_000_000);
+  expect(await turnsWhile(() => countPaced(fresh))).toBe(0);
+  expect(contextBytes(fresh)).toBe(before);
+});
+
+// An output's size in the transcript is taken from its parts, without putting the piece together:
+// the same number as the piece's own bytes, also where the output ends in half a character.
+test("a tool output is measured in the transcript as it is written there", () => {
+  const out = (content: string) => [
+    { role: "user", content: [{ type: "text", text: "go" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "Bash", input: { command: "ls" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content }] },
+  ] as any;
+  for (const content of ["plain output\n", "מוכן 🌍", "cut in half \ud83d", ""]) {
+    const text = `[result of c1]\n${content}\n`;
+    // A budget of exactly the transcript's bytes holds it in one part; one byte less does not.
+    const whole = transcriptParts(out(content), 1 << 20).parts.join("");
+    expect(whole.endsWith(text)).toBe(true);
+    expect(transcriptParts(out(content), utf8Bytes(whole)).parts).toHaveLength(1);
+    expect(transcriptParts(out(content), utf8Bytes(whole) - 1).parts.length).toBeGreaterThan(1);
+  }
 });

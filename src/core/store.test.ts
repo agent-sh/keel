@@ -507,6 +507,30 @@ test("a session not in memory has its pages read off the loop before the loop re
   expect(other.events(s.id)).toHaveLength(40);
 });
 
+// A turn reads its context: the events after the last checkpoint. Their
+// bodies alone are brought in, in slices, and a later read of that part reads
+// nothing more.
+test("the bodies from an event on are read in slices, and no body before it", async () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const s = seed.createSession({ model: "m", workspace: "/" });
+  for (let i = 0; i < 1000; i++) seed.append(s.id, "user", { text: "z".repeat(2000), i });
+  const store = new Store(dir);
+  await store.warm(s.id, false);
+  const bare = store.keptEvents().bytes;
+  const all = store.events(s.id);
+  await store.warm(s.id, true, all[900]!.seq);
+  const part = store.keptEvents().bytes - bare;
+  // A tenth of the bodies, to the run (64 events) the first one lies in.
+  expect(part).toBeGreaterThan(100 * 2000 * 2);
+  expect(part).toBeLessThan(170 * 2000 * 3);
+  // Reading that part reads nothing more; an event before it reads its own run.
+  expect(all.slice(900).every((e) => (e.data as { i: number }).i >= 900)).toBe(true);
+  expect(store.keptEvents().bytes - bare).toBe(part);
+  expect((all[10]!.data as { i: number }).i).toBe(10);
+  expect(store.keptEvents().bytes - bare).toBeGreaterThan(part);
+});
+
 // An append does nothing that grows with the session: the branch it ends is
 // not copied for it (the events appended join the branch when it is next
 // read), and every event as one list is made once for the readers between two

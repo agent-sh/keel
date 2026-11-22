@@ -1388,7 +1388,8 @@ export class Store {
   // opening a long one) finds it there instead of reading it in one piece.
   // `bodies: false`: the events alone, for a reader that takes a part of the
   // session (it reads the bodies of that part, and no other).
-  async warm(session_id: string, bodies = true): Promise<void> {
+  // `fromSeq`: the bodies from that event on alone (a turn reads its context: what follows the last checkpoint).
+  async warm(session_id: string, bodies = true, fromSeq = 0): Promise<void> {
     let k = this.kept.get(session_id);
     if (!k) {
       // A session that is not in memory is read from the database file, and
@@ -1431,7 +1432,7 @@ export class Store {
       k = this.kept.get(session_id) ?? this.keep(session_id, rows);
     }
     if (!bodies) return;
-    await this.fill(k, 0, k.all.length, true);
+    await this.fill(k, fromSeq > 0 ? firstAfter(k.all, fromSeq - 1) : 0, k.all.length, true);
     if (!k.gone) this.touch(session_id, k);
   }
 
