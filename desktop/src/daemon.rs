@@ -4,13 +4,18 @@
 //! the daemon admits it the way it admits a local page: by who owns the
 //! loopback socket. It therefore sends no token. Only when a daemon proven to
 //! be this account's refuses a call (it cannot read who owns the socket) is
-//! the state folder's token sent, to that daemon alone. A listener that merely
-//! sits on the daemon's port never sees it, and an address that is not this
-//! machine's is not spoken to at all. Nothing is added to admission.
+//! the state folder's token sent, to that daemon alone: the state folder's
+//! lock must name a live process of this account by its pid and by when it
+//! was born (a pid alone is given to another process once its own has gone),
+//! and the socket listening on the port must be this account's. A listener
+//! that merely sits on the daemon's port never sees it, and an address that
+//! is not this machine's is not spoken to at all. Nothing is added to
+//! admission.
 use crate::http;
 use serde_json::Value;
 use std::fs;
 use std::io;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -49,7 +54,8 @@ pub enum Event {
     /// Why the app does not speak to the address it was given.
     Refused(String),
     Needs(u32),
-    Notify { key: String, alert: String, title: String, body: String, urgent: bool, ack: Option<u64> },
+    /// `ack` and `stream` go back to the daemon once the notification is on screen.
+    Notify { key: String, alert: String, title: String, body: String, urgent: bool, ack: Option<u64>, stream: String },
     Withdraw(String),
     Snooze(Option<i64>),
 }
@@ -95,12 +101,59 @@ fn me() -> u32 {
     fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(u32::MAX)
 }
 
-/// What a live daemon wrote in a note: its pid, its address and, in the service's note, its state folder.
-pub fn noted(text: &str, alive: impl Fn(u64) -> bool) -> Option<(u64, String, Option<PathBuf>)> {
+/// What a live daemon wrote in a note: its pid, when it was born, its address and, in the service's note, its state folder.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Noted {
+    pub pid: u64,
+    pub born: Option<String>,
+    pub url: String,
+    pub state_dir: Option<PathBuf>,
+}
+
+pub fn noted(text: &str, alive: impl Fn(u64) -> bool) -> Option<Noted> {
     let v: Value = serde_json::from_str(text).ok()?;
     let pid = v.get("pid")?.as_u64()?;
     let url = v.get("url")?.as_str()?;
-    alive(pid).then(|| (pid, url.trim_end_matches('/').to_string(), v.get("state_dir").and_then(Value::as_str).map(PathBuf::from)))
+    alive(pid).then(|| Noted {
+        pid,
+        born: v.get("born").and_then(Value::as_str).map(String::from),
+        url: url.trim_end_matches('/').to_string(),
+        state_dir: v.get("state_dir").and_then(Value::as_str).map(PathBuf::from),
+    })
+}
+
+/// What names one process for as long as the machine is up, as the daemon writes it in its
+/// lock (src/core/pid.ts): the boot's id, and the clock ticks since boot at which it started.
+pub fn born_in(stat: &str, boot: &str) -> Option<String> {
+    let ticks = stat.get(stat.rfind(')')? + 2..)?.split(' ').nth(19)?;
+    (!ticks.is_empty() && !boot.trim().is_empty()).then(|| format!("{}:{ticks}", boot.trim()))
+}
+
+fn born(pid: u64) -> Option<String> {
+    born_in(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?, &fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?)
+}
+
+/// The accounts of the sockets listening on `port`, from the kernel's table of TCP sockets
+/// (/proc/net/tcp and tcp6, as the daemon's own admission reads them): state 0A is listening,
+/// the local port is the hexadecimal after the colon, the account is the eighth column.
+pub fn listen_uids(table: &str, port: u16) -> Vec<u32> {
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let local = f.get(1)?.rsplit_once(':')?.1;
+            (f.get(3) == Some(&"0A") && u16::from_str_radix(local, 16).ok()? == port).then(|| f.get(7)?.parse().ok()).flatten()
+        })
+        .collect()
+}
+
+fn listeners(port: u16) -> Vec<u32> {
+    ["/proc/net/tcp", "/proc/net/tcp6"].iter().filter_map(|t| fs::read_to_string(t).ok()).flat_map(|t| listen_uids(&t, port)).collect()
+}
+
+fn port_of(url: &str) -> u16 {
+    http::authority(url).ok().and_then(|a| a.rsplit_once(':')).and_then(|(_, p)| p.parse().ok()).unwrap_or(80)
 }
 
 fn service_note() -> PathBuf {
@@ -116,38 +169,71 @@ pub fn find(w: &Where) -> Found {
     if let Some(u) = w.url.clone().or_else(env_url) {
         return Found { url: trim(&u), state_dir: dir, named: true };
     }
-    if let Some((_, url, _)) = fs::read_to_string(dir.join("daemon.lock")).ok().and_then(|t| noted(&t, alive)) {
-        return Found { url, state_dir: dir, named: false };
+    if let Some(n) = fs::read_to_string(dir.join("daemon.lock")).ok().and_then(|t| noted(&t, alive)) {
+        return Found { url: n.url, state_dir: dir, named: false };
     }
     if w.state_dir.is_none() && env_path("KEEL_STATE_DIR").is_none() {
-        if let Some((_, url, Some(state))) = fs::read_to_string(service_note()).ok().and_then(|t| noted(&t, alive)) {
+        if let Some(Noted { url, state_dir: Some(state), .. }) = fs::read_to_string(service_note()).ok().and_then(|t| noted(&t, alive)) {
             return Found { url, state_dir: state, named: false };
         }
     }
     Found { url: DEFAULT_URL.to_string(), state_dir: dir, named: false }
 }
 
-/// An address of this machine: the app speaks to no other.
+/// The host of an address, without its port or brackets.
+fn host_of(url: &str) -> Option<String> {
+    let host = http::authority(url).ok()?;
+    Some(match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or("").to_string(),
+        None => host.rsplit_once(':').map_or(host, |(h, _)| h).to_string(),
+    })
+}
+
+/// Whether every address a name resolved to is this machine's own loopback (and there is one).
+pub fn all_here(addrs: &[IpAddr]) -> bool {
+    !addrs.is_empty() && addrs.iter().all(IpAddr::is_loopback)
+}
+
+/// An address of this machine: the app speaks to no other. A loopback
+/// address as written, or `localhost` and a name under it, which are taken
+/// at their word only after they resolve: every address they resolve to must
+/// be a loopback one (a hosts file can point such a name anywhere).
 pub fn loopback(url: &str) -> bool {
-    let Ok(host) = http::authority(url) else { return false };
-    let name = match host.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(""),
-        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
-    };
-    let lower = name.to_ascii_lowercase();
-    lower == "localhost" || lower.ends_with(".localhost") || lower == "::1" || (lower.starts_with("127.") && lower.split('.').count() == 4 && lower.split('.').all(|p| p.parse::<u8>().is_ok()))
+    let Some(host) = host_of(url) else { return false };
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return ip.is_loopback();
+    }
+    let lower = host.to_ascii_lowercase();
+    if lower != "localhost" && !lower.ends_with(".localhost") {
+        return false;
+    }
+    (lower.as_str(), port_of(url)).to_socket_addrs().is_ok_and(|a| all_here(&a.map(|s| s.ip()).collect::<Vec<_>>()))
+}
+
+/// Why the app does not speak to an address, when it does not.
+pub fn refusal(url: &str) -> Option<String> {
+    (!loopback(url)).then(|| format!("{url} is not an address of this machine."))
 }
 
 /// Whether the state folder's token may be sent to the daemon at `url`: only
-/// after it refused a call for want of it, and only when the folder's own lock
-/// names a live process of this account at that same address.
-pub fn may_send_token(status: u16, url: &str, lock: Option<(u64, String)>, owner: impl Fn(u64) -> Option<u32>, me: u32) -> bool {
-    (status == 401 || status == 403) && loopback(url) && lock.is_some_and(|(pid, at)| at == url && owner(pid) == Some(me))
+/// after it refused a call for want of it, and only when the folder's own
+/// lock names, at that same address, a live process of this account that was
+/// born when the lock says (`process` gives a pid's account and birth), and
+/// every socket listening on the port is this account's.
+pub fn may_send_token(status: u16, url: &str, lock: Option<&Noted>, process: impl Fn(u64) -> Option<(u32, String)>, listening: &[u32], me: u32) -> bool {
+    (status == 401 || status == 403)
+        && loopback(url)
+        && !listening.is_empty()
+        && listening.iter().all(|uid| *uid == me)
+        && lock.is_some_and(|l| l.url == url && l.born.as_ref().is_some_and(|b| process(l.pid).is_some_and(|(uid, born)| uid == me && born == *b)))
 }
 
 fn token_for(found: &Found, status: u16) -> Option<String> {
-    let lock = fs::read_to_string(found.state_dir.join("daemon.lock")).ok().and_then(|t| noted(&t, alive)).map(|(pid, url, _)| (pid, url));
-    if !may_send_token(status, &found.url, lock, owner, me()) {
+    if status != 401 && status != 403 {
+        return None;
+    }
+    let lock = fs::read_to_string(found.state_dir.join("daemon.lock")).ok().and_then(|t| noted(&t, alive));
+    if !may_send_token(status, &found.url, lock.as_ref(), |pid| Some((owner(pid)?, born(pid)?)), &listeners(port_of(&found.url)), me()) {
         return None;
     }
     fs::read_to_string(found.state_dir.join("api-token")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
@@ -174,13 +260,13 @@ fn healthy(url: &str) -> bool {
         .is_some_and(|v| v.get("pid").is_some_and(Value::is_number))
 }
 
-fn told(event: &str, data: &str) -> Option<Event> {
+fn told(event: &str, data: &str, stream: &str) -> Option<Event> {
     let v: Value = serde_json::from_str(data).ok()?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     Some(match event {
         "hello" => Event::Needs(v.get("needs")?.as_u64()? as u32),
         "needs" => Event::Needs(v.get("n")?.as_u64()? as u32),
-        "notify" => Event::Notify { key: s("key"), alert: s("alert"), title: s("title"), body: s("body"), urgent: v.get("urgency").and_then(Value::as_u64) == Some(2), ack: v.get("ack").and_then(Value::as_u64) },
+        "notify" => Event::Notify { key: s("key"), alert: s("alert"), title: s("title"), body: s("body"), urgent: v.get("urgency").and_then(Value::as_u64) == Some(2), ack: v.get("ack").and_then(Value::as_u64), stream: stream.to_string() },
         "withdraw" => Event::Withdraw(s("key")),
         "snooze" => Event::Snooze(v.get("until_ms").and_then(Value::as_i64)),
         _ => return None,
@@ -201,9 +287,9 @@ pub fn watch(w: Where, engine: &'static str, tell: impl Fn(Event) + Send + 'stat
         };
         loop {
             let found = find(&w);
-            if !loopback(&found.url) {
+            if let Some(why) = refusal(&found.url) {
                 say(Link::Down, &found.url, &tell);
-                tell(Event::Refused(format!("The app opens a daemon on this machine only, and {} is not one. Open that one in a browser.", found.url)));
+                tell(Event::Refused(why));
                 thread::sleep(Duration::from_secs(5));
                 continue;
             }
@@ -213,15 +299,18 @@ pub fn watch(w: Where, engine: &'static str, tell: impl Fn(Event) + Send + 'stat
                 let token = ask(&found, "GET", "/api/shell", None, Duration::from_secs(3)).ok().and_then(|(_, t)| t);
                 // `acks=1`: the app shows what it is handed and says so each time (the daemon shows what it hears nothing about).
                 let path = format!("/api/shell/events?engine={engine}&version={}&acks=1", env!("CARGO_PKG_VERSION"));
+                // What this stream's hello gave it: an alert of this stream is acknowledged with it.
+                let mut stream = String::new();
                 let hello = http::stream(&found.url, &path, token.as_deref(), Duration::from_secs(20), |event, data| {
-                    if let Some(e) = told(event, data) {
-                        tell(e);
-                    }
                     if event == "hello" {
                         let v = serde_json::from_str::<Value>(data).unwrap_or_default();
-                        if let Some(e) = told("snooze", &serde_json::json!({ "until_ms": v.get("snooze_until") }).to_string()) {
+                        stream = v.get("stream").and_then(Value::as_str).unwrap_or("").to_string();
+                        if let Some(e) = told("snooze", &serde_json::json!({ "until_ms": v.get("snooze_until") }).to_string(), &stream) {
                             tell(e);
                         }
+                    }
+                    if let Some(e) = told(event, data, &stream) {
+                        tell(e);
                     }
                     true
                 });
@@ -267,6 +356,8 @@ fn on_path(name: &str) -> Option<PathBuf> {
 /// How the daemon is started.
 #[derive(Debug, PartialEq)]
 pub enum Plan {
+    /// Nothing is started: the address named is not this machine's, and the app would not speak to a daemon there.
+    Refused,
     /// The owner's service runs it: `systemctl --user start <unit>`.
     Unit,
     /// `keel <args>` as a process of its own: in a scope of the service manager,
@@ -280,6 +371,9 @@ pub enum Plan {
 /// the daemon is started where the app will look: on the address it was given
 /// (the command line or KEEL_URL) and the state folder it was given.
 pub fn start_plan(w: &Where, env_url: Option<&str>, env_state: bool, unit: bool, service_manager: bool) -> Plan {
+    if w.url.as_deref().or(env_url).is_some_and(|u| !loopback(u)) {
+        return Plan::Refused;
+    }
     let named = w.url.is_some() || w.state_dir.is_some() || env_url.is_some() || env_state;
     if unit && !named {
         return Plan::Unit;
@@ -303,14 +397,24 @@ fn service_manager() -> bool {
     env_path("XDG_RUNTIME_DIR").is_some_and(|d| d.join("systemd/private").exists()) && on_path("systemd-run").is_some()
 }
 
-/// Starts the daemon as a process of its own: it outlives the app.
-pub fn start(w: &Where, log: &Path) -> io::Result<()> {
+/// Starts the daemon as a process of its own: it outlives the app. Off the
+/// caller's thread (asking the service manager can take a while); `done` is
+/// told whether the start was made.
+pub fn start(w: &Where, log: &Path, done: impl FnOnce(io::Result<()>) + Send + 'static) {
+    let (w, log) = (w.clone(), log.to_path_buf());
+    thread::spawn(move || done(start_now(&w, &log)));
+}
+
+fn start_now(w: &Where, log: &Path) -> io::Result<()> {
     let plan = start_plan(w, env_url().as_deref(), env_path("KEEL_STATE_DIR").is_some(), unit_installed(), service_manager());
-    if plan == Plan::Unit {
-        let done = Command::new("systemctl").args(["--user", "start", UNIT]).stdin(Stdio::null()).status()?;
-        return if done.success() { Ok(()) } else { Err(io::Error::other(format!("systemctl --user start {UNIT} failed"))) };
-    }
-    let Plan::Serve { args, scope } = plan else { unreachable!() };
+    let (args, scope) = match plan {
+        Plan::Refused => return Err(io::Error::new(io::ErrorKind::InvalidInput, "the address is not this machine's")),
+        Plan::Unit => {
+            let done = Command::new("systemctl").args(["--user", "start", UNIT]).stdin(Stdio::null()).status()?;
+            return if done.success() { Ok(()) } else { Err(io::Error::other(format!("systemctl --user start {UNIT} failed"))) };
+        }
+        Plan::Serve { args, scope } => (args, scope),
+    };
     let bin = keel_bin(w).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the keel program was not found beside the app or on the PATH"))?;
     if let Some(dir) = log.parent() {
         fs::create_dir_all(dir)?;
@@ -354,8 +458,9 @@ mod tests {
 
     #[test]
     fn a_note_of_a_live_daemon_gives_its_address() {
-        assert_eq!(noted(r#"{"pid":7,"url":"http://127.0.0.1:1234/"}"#, |_| true), Some((7, "http://127.0.0.1:1234".to_string(), None)));
-        assert_eq!(noted(r#"{"pid":7,"url":"http://127.0.0.1:1234","state_dir":"/s"}"#, |_| true).and_then(|n| n.2), Some(PathBuf::from("/s")));
+        let n = noted(r#"{"pid":7,"born":"boot:99","url":"http://127.0.0.1:1234/"}"#, |_| true).unwrap();
+        assert_eq!((n.pid, n.url.as_str(), n.born.as_deref(), n.state_dir.clone()), (7, "http://127.0.0.1:1234", Some("boot:99"), None));
+        assert_eq!(noted(r#"{"pid":7,"url":"http://127.0.0.1:1234","state_dir":"/s"}"#, |_| true).and_then(|n| n.state_dir), Some(PathBuf::from("/s")));
         assert_eq!(noted(r#"{"pid":7,"url":"http://127.0.0.1:1234"}"#, |_| false), None);
         assert_eq!(noted(r#"{"pid":7}"#, |_| true), None);
         assert_eq!(noted("not json", |_| true), None);
@@ -370,33 +475,78 @@ mod tests {
 
     #[test]
     fn only_this_machine_is_spoken_to() {
-        for ok in ["http://127.0.0.1:47960", "http://localhost:1", "http://keel.localhost:8080", "http://[::1]:47960", "http://127.8.9.1:2"] {
+        for ok in ["http://127.0.0.1:47960", "http://[::1]:47960", "http://127.8.9.1:2"] {
             assert!(loopback(ok), "{ok}");
         }
         for no in ["http://example.com:47960", "http://10.0.0.5:47960", "http://127.0.0.1.evil.example:1", "http://localhost.evil.example", "https://127.0.0.1:1", "http://1270.0.0.1:1", "http://[::2]:1", ""] {
             assert!(!loopback(no), "{no}");
         }
+        assert!(refusal("http://10.0.0.9:44825").is_some_and(|w| w.contains("10.0.0.9:44825")));
+        assert!(refusal("http://127.0.0.1:47960").is_none());
     }
 
-    // The review's case: a listener on the daemon's port while the daemon is down got the token on every poll.
+    // The review's case: a name under localhost was taken at its word; it is taken at what it resolves to.
+    #[test]
+    fn a_name_is_this_machine_only_when_every_address_it_resolves_to_is() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(all_here(&[ip("127.0.0.1"), ip("::1")]));
+        assert!(!all_here(&[ip("127.0.0.1"), ip("10.0.0.9")]));
+        assert!(!all_here(&[ip("192.168.1.4")]));
+        assert!(!all_here(&[]));
+    }
+
+    #[test]
+    fn a_process_is_named_by_its_boot_and_its_start() {
+        let stat = "4242 (keel (serve) x) S 1 4242 4242 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 9 0 777123 1000 200 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+        assert_eq!(born_in(stat, "b00t-1d\n").as_deref(), Some("b00t-1d:777123"));
+        assert_eq!(born_in("garbage", "b00t"), None);
+        assert_eq!(born_in(stat, ""), None);
+    }
+
+    #[test]
+    fn the_sockets_listening_on_a_port_have_owners() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 0100007F:BB58 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 12345 1 0000000000000000 100 0 0 10 0\n\
+   1: 0100007F:BB58 0100007F:D2F0 01 00000000:00000000 00:00000000 00000000  1001        0 12346 1 0000000000000000 20 4 30 10 -1\n\
+   2: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1002        0 12347 1 0000000000000000 100 0 0 10 0\n";
+        assert_eq!(listen_uids(table, 0xBB58), [1000]);
+        assert_eq!(listen_uids(table, 0x1F90), [1002]);
+        assert!(listen_uids(table, 9).is_empty());
+        assert!(listen_uids("", 9).is_empty());
+    }
+
+    // The review's cases: a listener on the daemon's port while the daemon is down got the token on
+    // every poll; and a lock left by a crash, whose pid was since given to another process of this
+    // account, got it too.
     #[test]
     fn the_token_goes_only_to_this_accounts_daemon_after_it_asked() {
         let url = "http://127.0.0.1:47960";
-        let lock = || Some((42u64, url.to_string()));
-        let mine = |pid: u64| (pid == 42).then_some(1000u32);
+        let lock = Noted { pid: 42, born: Some("boot:500".into()), url: url.to_string(), state_dir: None };
+        let daemon = |pid: u64| (pid == 42).then(|| (1000u32, "boot:500".to_string()));
+        let mine = [1000u32];
         // Never unasked: a health poll, a call that was answered, a stranger's 500.
         for status in [200, 204, 404, 500, 0] {
-            assert!(!may_send_token(status, url, lock(), mine, 1000), "{status}");
+            assert!(!may_send_token(status, url, Some(&lock), daemon, &mine, 1000), "{status}");
         }
-        assert!(may_send_token(403, url, lock(), mine, 1000));
-        assert!(may_send_token(401, url, lock(), mine, 1000));
-        // A listener that is not the state folder's daemon: no lock, a dead or foreign process, another address.
-        assert!(!may_send_token(403, url, None, mine, 1000));
-        assert!(!may_send_token(403, url, Some((7, url.to_string())), mine, 1000));
-        assert!(!may_send_token(403, url, lock(), |_| Some(1001), 1000));
-        assert!(!may_send_token(403, url, Some((42, "http://127.0.0.1:1".to_string())), mine, 1000));
+        assert!(may_send_token(403, url, Some(&lock), daemon, &mine, 1000));
+        assert!(may_send_token(401, url, Some(&lock), daemon, &mine, 1000));
+        // No lock, a dead process, another account's process, another address.
+        assert!(!may_send_token(403, url, None, daemon, &mine, 1000));
+        assert!(!may_send_token(403, url, Some(&Noted { pid: 7, ..lock.clone() }), daemon, &mine, 1000));
+        assert!(!may_send_token(403, url, Some(&lock), |_| Some((1001, "boot:500".to_string())), &mine, 1000));
+        assert!(!may_send_token(403, url, Some(&Noted { url: "http://127.0.0.1:1".into(), ..lock.clone() }), daemon, &mine, 1000));
+        // The pid is alive and this account's, but it is not the process the lock was written by:
+        // born at another time, in another boot, or the lock does not say when.
+        assert!(!may_send_token(403, url, Some(&lock), |_| Some((1000, "boot:90210".to_string())), &mine, 1000));
+        assert!(!may_send_token(403, url, Some(&lock), |_| Some((1000, "other-boot:500".to_string())), &mine, 1000));
+        assert!(!may_send_token(403, url, Some(&Noted { born: None, ..lock.clone() }), daemon, &mine, 1000));
+        // The socket on the port is another account's, or one of two is, or none is seen.
+        assert!(!may_send_token(403, url, Some(&lock), daemon, &[1001], 1000));
+        assert!(!may_send_token(403, url, Some(&lock), daemon, &[1000, 1001], 1000));
+        assert!(!may_send_token(403, url, Some(&lock), daemon, &[], 1000));
         // Another machine, whatever it says.
-        assert!(!may_send_token(403, "http://example.com:47960", Some((42, "http://example.com:47960".to_string())), mine, 1000));
+        let far = "http://example.com:47960";
+        assert!(!may_send_token(403, far, Some(&Noted { url: far.into(), ..lock.clone() }), daemon, &mine, 1000));
     }
 
     #[test]
@@ -410,21 +560,25 @@ mod tests {
         assert_eq!(start_plan(&bare, Some("http://127.0.0.1:48000"), false, true, false), Plan::Serve { args: vec!["serve".into(), "--bind".into(), "127.0.0.1:48000".into()], scope: false });
         let w = Where { url: Some("http://127.0.0.1:48001".into()), state_dir: Some("/x/state".into()), keel: None };
         assert_eq!(start_plan(&w, Some("http://127.0.0.1:48000"), false, true, true), Plan::Serve { args: vec!["serve".into(), "--bind".into(), "127.0.0.1:48001".into(), "--state-dir".into(), "/x/state".into()], scope: true });
+        // The review's case: an address that is not this machine's. The app would not speak to a
+        // daemon there, so it starts none (it ran `serve --bind 10.0.0.9:44825` before).
+        assert_eq!(start_plan(&bare, Some("http://10.0.0.9:44825"), false, false, true), Plan::Refused);
+        assert_eq!(start_plan(&Where { url: Some("http://10.0.0.9:44825".into()), ..Default::default() }, None, false, true, true), Plan::Refused);
         // A state folder from the environment is the daemon's to read; it still keeps the service out of it.
         assert_eq!(start_plan(&bare, None, true, true, false), Plan::Serve { args: vec!["serve".into()], scope: false });
     }
 
     #[test]
     fn the_stream_is_read_into_events() {
-        assert!(matches!(told("hello", r#"{"pid":1,"needs":3,"snooze_until":null}"#), Some(Event::Needs(3))));
-        assert!(matches!(told("needs", r#"{"n":0}"#), Some(Event::Needs(0))));
-        match told("notify", r#"{"key":"s1","alert":"a1","title":"T","body":"B","urgency":2,"kind":"approval","ack":9}"#) {
-            Some(Event::Notify { key, alert, title, body, urgent, ack }) => assert_eq!((key.as_str(), alert.as_str(), title.as_str(), body.as_str(), urgent, ack), ("s1", "a1", "T", "B", true, Some(9))),
+        assert!(matches!(told("hello", r#"{"pid":1,"needs":3,"snooze_until":null}"#, ""), Some(Event::Needs(3))));
+        assert!(matches!(told("needs", r#"{"n":0}"#, ""), Some(Event::Needs(0))));
+        match told("notify", r#"{"key":"s1","alert":"a1","title":"T","body":"B","urgency":2,"kind":"approval","ack":9}"#, "st-1") {
+            Some(Event::Notify { key, alert, title, body, urgent, ack, stream }) => assert_eq!((key.as_str(), alert.as_str(), title.as_str(), body.as_str(), urgent, ack, stream.as_str()), ("s1", "a1", "T", "B", true, Some(9), "st-1")),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(told("snooze", r#"{"until_ms":null}"#), Some(Event::Snooze(None))));
-        assert!(matches!(told("snooze", r#"{"until_ms":99}"#), Some(Event::Snooze(Some(99)))));
-        assert!(told("unknown", "{}").is_none());
-        assert!(told("needs", "garbage").is_none());
+        assert!(matches!(told("snooze", r#"{"until_ms":null}"#, ""), Some(Event::Snooze(None))));
+        assert!(matches!(told("snooze", r#"{"until_ms":99}"#, ""), Some(Event::Snooze(Some(99)))));
+        assert!(told("unknown", "{}", "").is_none());
+        assert!(told("needs", "garbage", "").is_none());
     }
 }

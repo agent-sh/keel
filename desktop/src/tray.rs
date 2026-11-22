@@ -67,6 +67,8 @@ pub struct Shown {
     pub needs: u32,
     pub paused: bool,
     pub link: Link,
+    /// The daemon's address is not this machine's: there is nothing here to start.
+    pub refused: bool,
 }
 
 /// The first line of the menu and the mark's tooltip.
@@ -98,7 +100,8 @@ pub fn menu(s: &Shown) -> Vec<(i32, String, bool, Option<Pick>)> {
             m.push((5, String::new(), true, None));
             m.push(if s.paused { (6, "Resume Notifications".into(), true, Some(Pick::Resume)) } else { (7, "Pause Notifications for an Hour".into(), true, Some(Pick::Pause)) });
         }
-        Link::Down => m.push((8, "Start Keel".into(), true, Some(Pick::Start))),
+        Link::Down if !s.refused => m.push((8, "Start Keel".into(), true, Some(Pick::Start))),
+        Link::Down => {}
         Link::Restarting => {}
     }
     m.push((9, String::new(), true, None));
@@ -200,7 +203,7 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(conn: &gio::DBusConnection, symbolic: bool, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
-        let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down }));
+        let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down, refused: false }));
         let revision = Rc::new(Cell::new(1u32));
         let available = Rc::new(Cell::new(false));
         let on_pick = Rc::new(on_pick);
@@ -371,7 +374,7 @@ mod tests {
     use super::*;
 
     fn s(needs: u32, paused: bool, link: Link) -> Shown {
-        Shown { needs, paused, link }
+        Shown { needs, paused, link, refused: false }
     }
 
     #[test]
@@ -398,6 +401,8 @@ mod tests {
         assert_eq!(picks(&s(0, true, Link::Up)), [Pick::Open, Pick::New, Pick::Resume, Pick::Quit, Pick::QuitAll]);
         assert_eq!(picks(&s(2, false, Link::Down)), [Pick::Open, Pick::Start, Pick::Quit]);
         assert_eq!(picks(&s(2, false, Link::Restarting)), [Pick::Open, Pick::Quit]);
+        // An address the app does not speak to: nothing to start there.
+        assert_eq!(picks(&Shown { refused: true, ..s(0, false, Link::Down) }), [Pick::Open, Pick::Quit]);
         // Ids are one per item, so a click on an old menu never picks another item.
         let ids: Vec<i32> = menu(&s(0, false, Link::Up)).iter().map(|i| i.0).collect();
         let mut sorted = ids.clone();

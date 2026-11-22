@@ -40,6 +40,17 @@ pub enum Showing {
     Away,
 }
 
+/// What the calm page says while the daemon is away.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Away {
+    pub link: Link,
+    pub starting: bool,
+    pub url: String,
+    pub note: String,
+    /// The address is not this machine's: the app does not speak to it, and offers no start.
+    pub refused: bool,
+}
+
 /// How a window is opened.
 pub struct Opening {
     /// The app's window, or a session's own.
@@ -77,7 +88,7 @@ pub trait View {
     /// page then leaves that to the title bar; any other loss it shows itself).
     fn daemon_away(&self);
     /// Shows the calm page for a daemon that is away; one already showing changes its words in place.
-    fn away(&self, look: &Look, link: &Link, starting: bool, url: &str, note: &str);
+    fn away(&self, look: &Look, state: &Away);
     /// The daemon's state beside the window's controls, while the page is up without its daemon.
     fn link(&self, link: &Link);
     fn look(&self, look: &Look);

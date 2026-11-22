@@ -4,6 +4,7 @@
 //! page to post a message to the app: `post`, a JavaScript expression over
 //! the string `s`.
 use crate::daemon::Link;
+use crate::view::Away;
 use crate::prefs::Look;
 
 /// Injected before the page's own scripts, in the top frame of the daemon's
@@ -16,10 +17,14 @@ use crate::prefs::Look;
 /// `key`, a value of this window alone that lives in this closure: a frame
 /// that cannot reach the top frame's script cannot send a message the app
 /// acts on.
+///
+/// The origin tested is the document's own (`self.origin`), not its
+/// address's: a document the daemon serves sandboxed (an artifact's raw
+/// address) keeps the address and has an opaque origin, and gets nothing.
 pub fn bridge(engine: &str, window: &str, tray: bool, post: &str, key: &str, origin: &str) -> String {
     format!(
         r#"(() => {{
-  if (window.top !== window || window.keelShell || location.origin !== {origin}) return;
+  if (window.top !== window || window.keelShell || self.origin !== {origin}) return;
   const key = {key};
   const post = (m) => {{ try {{ const s = JSON.stringify({{ ...m, key }}); {post}; }} catch (e) {{}} }};
   Object.defineProperty(window, "keelShell", {{ value: Object.freeze({{
@@ -38,21 +43,26 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// The words of the page for a state of the daemon: headline, line under it, whether the button shows.
-pub fn words(link: &Link, starting: bool) -> (&'static str, &'static str, bool) {
-    match (link, starting) {
-        (Link::Restarting, _) => ("Keel is restarting", "Your sessions carry on where they were. This window comes back by itself.", false),
-        (_, true) => ("Starting Keel", "The daemon is coming up. This takes a moment.", false),
-        (Link::Down, _) => ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true),
-        (Link::Up, _) => ("Opening Keel", "", false),
+/// The words of the page for a state of the daemon: headline, line under it, whether the
+/// button shows, whether the bar that says something is under way shows.
+pub fn words(a: &Away) -> (&'static str, &'static str, bool, bool) {
+    if a.refused {
+        return ("This Keel is on another machine", "The app opens the Keel of this machine. Open that address in a browser, or start the app without it.", false, false);
+    }
+    match (&a.link, a.starting) {
+        (Link::Restarting, _) => ("Keel is restarting", "Your sessions carry on where they were. This window comes back by itself.", false, true),
+        (_, true) => ("Starting Keel", "The daemon is coming up. This takes a moment.", false, true),
+        (Link::Down, _) => ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true, false),
+        (Link::Up, _) => ("Opening Keel", "", false, true),
     }
 }
 
 /// The page shown while the daemon is away: the product's mark, what is
 /// happening in one line, and one button. `setState` moves it between its
 /// states without a reload, so nothing flashes.
-pub fn away(l: &Look, link: &Link, starting: bool, url: &str, note: &str, post: &str, key: &str) -> String {
-    let (head, line, button) = words(link, starting);
+pub fn away(l: &Look, a: &Away, post: &str, key: &str) -> String {
+    let (head, line, button, bar) = words(a);
+    let (url, note) = (a.url.as_str(), a.note.as_str());
     format!(
         r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Keel</title><style>
 :root {{ color-scheme: {scheme}; }}
@@ -76,7 +86,7 @@ button:focus-visible {{ outline: 2px solid {need}; outline-offset: 2px; }}
 </style></head><body><main data-testid="shell-away">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Keel"><rect width="32" height="32" rx="8" fill="#0e6a80"/><path d="M6 11.5h20c-1.1 4.9-5 7.6-10 7.6s-8.9-2.7-10-7.6z" fill="#f4faf9"/><path d="M14.6 18.6h2.8l-.7 6.4h-1.4z" fill="#f4faf9"/></svg>
 <h1 id="head">{head}</h1><p id="line">{sub}</p>
-<div class="act"><button id="start" type="button" {hide_button}>Start Keel</button><div class="bar" id="bar" role="progressbar" aria-label="Working" {hide_bar}></div></div>
+<div class="act" id="act" {hide_act}><button id="start" type="button" {hide_button}>Start Keel</button><div class="bar" id="bar" role="progressbar" aria-label="Working" {hide_bar}></div></div>
 <p class="note" id="note" {hide_note}>{note}</p>
 <div class="where" id="where">{url}</div>
 </main><script>
@@ -85,7 +95,7 @@ const post = (m) => {{ const s = JSON.stringify({{ ...m, key: {key} }}); {post};
 $("start").addEventListener("click", () => post({{ t: "start" }}));
 window.setState = (s) => {{
   $("head").textContent = s.head; $("line").textContent = s.line;
-  $("start").hidden = !s.button; $("bar").hidden = s.button;
+  $("start").hidden = !s.button; $("bar").hidden = !s.bar; $("act").hidden = !s.button && !s.bar;
   $("note").textContent = s.note || ""; $("note").hidden = !s.note;
   if (s.url) $("where").textContent = s.url;
   if (s.button) $("start").focus();
@@ -97,38 +107,58 @@ if (!$("start").hidden) $("start").focus();
         font = (16.0 * l.scale).round(),
         head = head, sub = line,
         hide_button = if button { "" } else { "hidden" },
-        hide_bar = if button { "hidden" } else { "" },
+        hide_bar = if bar { "" } else { "hidden" },
+        hide_act = if button || bar { "" } else { "hidden" },
         hide_note = if note.is_empty() { "hidden" } else { "" },
         note = esc(note), url = esc(url), post = post, key = serde_json::Value::String(key.to_string()),
     )
 }
 
 /// The same state as a call of the away page's `setState`.
-pub fn away_state(link: &Link, starting: bool, url: &str, note: &str) -> String {
-    let (head, line, button) = words(link, starting);
-    format!("window.setState && window.setState({})", serde_json::json!({ "head": head, "line": line, "button": button, "note": note, "url": url }))
+pub fn away_state(a: &Away) -> String {
+    let (head, line, button, bar) = words(a);
+    format!("window.setState && window.setState({})", serde_json::json!({ "head": head, "line": line, "button": button, "bar": bar, "note": a.note, "url": a.url }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn state(link: Link, starting: bool, refused: bool) -> Away {
+        Away { link, starting, url: "http://127.0.0.1:1/<b>".into(), note: "could not start: <script>alert(1)</script>".into(), refused }
+    }
+
     #[test]
     fn the_away_page_says_one_thing_per_state() {
-        assert_eq!(words(&Link::Down, false), ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true));
-        assert!(!words(&Link::Restarting, false).2);
-        assert!(!words(&Link::Restarting, true).2);
-        assert_eq!(words(&Link::Down, true).0, "Starting Keel");
+        assert_eq!(words(&state(Link::Down, false, false)), ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true, false));
+        assert_eq!((words(&state(Link::Restarting, false, false)).2, words(&state(Link::Restarting, false, false)).3), (false, true));
+        assert!(!words(&state(Link::Restarting, true, false)).2);
+        assert_eq!(words(&state(Link::Down, true, false)).0, "Starting Keel");
+    }
+
+    // The review's case: with an address that is not this machine's, the first page offered Start.
+    #[test]
+    fn a_refused_address_has_no_start_and_says_so_in_the_first_page() {
+        let a = state(Link::Down, false, true);
+        let (head, _, button, bar) = words(&a);
+        assert_eq!((head, button, bar), ("This Keel is on another machine", false, false));
+        let html = away(&Look::of(false), &a, "send(s)", "k1");
+        assert!(html.contains("This Keel is on another machine"));
+        assert!(html.contains(r#"<button id="start" type="button" hidden>"#));
+        assert!(html.contains(r#"id="bar" role="progressbar" aria-label="Working" hidden"#));
+        assert!(away_state(&a).contains(r#""button":false"#));
     }
 
     #[test]
     fn what_is_shown_is_text_not_markup() {
-        let html = away(&Look::of(true), &Link::Down, false, "http://127.0.0.1:1/<b>", "could not start: <script>alert(1)</script>", "send(s)", "k1");
+        let html = away(&Look::of(true), &state(Link::Down, false, false), "send(s)", "k1");
         assert!(html.contains("send(s)"));
         assert!(!html.contains("<script>alert(1)"));
         assert!(html.contains("&lt;script&gt;alert(1)"));
         assert!(html.contains("http://127.0.0.1:1/&lt;b&gt;"));
-        assert!(away_state(&Link::Down, false, "u", "a\"b</script>").contains(r#"a\"b"#));
+        let mut a = state(Link::Down, false, false);
+        a.note = "a\"b</script>".into();
+        assert!(away_state(&a).contains(r#"a\"b"#));
     }
 
     #[test]
@@ -137,13 +167,16 @@ mod tests {
         assert!(b.contains(r#"window: "main""#) && b.contains("tray: true") && b.contains("keelShell") && b.contains(r#"engine: "webkit""#) && b.contains("send(s)"));
     }
 
+    // The review's case: a sandboxed document of the daemon's origin (an artifact's raw address
+    // in the main frame) keeps the address's origin in `location` and got the object.
     #[test]
-    fn the_bridge_is_for_the_daemons_origin_and_keys_every_message() {
+    fn the_bridge_is_for_documents_of_the_daemons_origin_and_keys_every_message() {
         let b = bridge("webkit", "main", true, "send(s)", "secret\"-key", "http://127.0.0.1:47960");
-        assert!(b.contains(r#"location.origin !== "http://127.0.0.1:47960""#));
+        assert!(b.contains(r#"self.origin !== "http://127.0.0.1:47960""#));
+        assert!(!b.contains("location.origin"));
         // The key is a string of the script, whatever it holds, and goes into every message.
         assert!(b.contains(r#"const key = "secret\"-key";"#) && b.contains("...m, key"));
-        let a = away(&Look::of(false), &Link::Down, false, "u", "", "send(s)", "k2");
+        let a = away(&Look::of(false), &state(Link::Down, false, false), "send(s)", "k2");
         assert!(a.contains(r#"key: "k2""#));
     }
 }

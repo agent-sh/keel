@@ -23,8 +23,13 @@ pub fn authority(base: &str) -> io::Result<&str> {
 fn connect(base: &str, timeout: Duration) -> io::Result<TcpStream> {
     let host = authority(base)?;
     let with_port = if host.contains(':') && !host.ends_with(']') { host.to_string() } else { format!("{host}:80") };
-    let addr = with_port.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the daemon's address does not resolve"))?;
-    let s = TcpStream::connect_timeout(&addr, timeout)?;
+    // Whatever the name says, the connection is made only to a loopback address it resolved to.
+    let addrs: Vec<_> = with_port.to_socket_addrs()?.collect();
+    if addrs.iter().any(|a| !a.ip().is_loopback()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the daemon's address is not this machine's"));
+    }
+    let addr = addrs.first().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the daemon's address does not resolve"))?;
+    let s = TcpStream::connect_timeout(addr, timeout)?;
     s.set_read_timeout(Some(timeout))?;
     s.set_write_timeout(Some(timeout))?;
     s.set_nodelay(true).ok();

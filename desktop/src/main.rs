@@ -4,6 +4,7 @@
 //! alerts as native notifications whose click lands in the window, and opens
 //! keel:// links. The daemon is a process of its own: the app follows it
 //! across restarts and never stops it unless asked, and asks first then.
+mod clip;
 mod daemon;
 mod http;
 mod instance;
@@ -26,7 +27,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tray::{Pick, Shown, Tray};
-use view::{Ask, Engine, Opening, Showing, View};
+use view::{Ask, Away, Engine, Opening, Showing, View};
 
 /// The application's id: its name on the session bus, its window's app id and the name of its desktop file.
 pub const APP_ID: &str = "io.github.agent_sh.Keel";
@@ -90,6 +91,8 @@ struct Shell {
     paused_until: Cell<Option<i64>>,
     starting: Cell<bool>,
     note: RefCell<String>,
+    /// The daemon's address is not this machine's: the app does not speak to it and starts nothing there.
+    refused: Cell<bool>,
     /// The desktop's activation token of the request being served: it lets the window take the focus.
     token: RefCell<Option<String>>,
     devtools: bool,
@@ -120,7 +123,7 @@ impl Shell {
 
     fn show_tray(&self) {
         if let Some(t) = self.tray.borrow().as_ref() {
-            t.show(Shown { needs: self.needs.get(), paused: self.paused(), link: self.link.borrow().clone() });
+            t.show(Shown { needs: self.needs.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get() });
             self.note_done("tray", serde_json::json!({ "needs": self.needs.get(), "paused": self.paused(), "headline": tray::headline(&t.shown()) }));
         }
     }
@@ -149,7 +152,11 @@ impl Shell {
                 self.note_done("load", serde_json::json!({ "window": if win.is_main() { "main" } else { "session" }, "path": win.wanted() }));
             }
         } else if win.showing() != Showing::App {
-            win.away(&self.prefs.borrow().look, &link, self.starting.get(), &url, &self.note.borrow());
+            let state = Away { link: link.clone(), starting: self.starting.get(), url, note: self.note.borrow().clone(), refused: self.refused.get() };
+            if win.showing() != Showing::Away {
+                self.note_done("away", serde_json::json!({ "refused": state.refused, "note": state.note }));
+            }
+            win.away(&self.prefs.borrow().look, &state);
         } else {
             // The page stays as it is, and is told the title bar says the daemon is away.
             win.daemon_away();
@@ -219,28 +226,37 @@ impl Shell {
     }
 
     fn start_daemon(self: &Rc<Self>) {
-        if self.starting.get() || *self.link.borrow() == Link::Up {
+        if self.starting.get() || self.refused.get() || *self.link.borrow() == Link::Up {
             return;
         }
         let log = prefs::dir().join("daemon.log");
-        match daemon::start(&self.place, &log) {
-            Ok(()) => {
-                self.starting.set(true);
-                self.note.borrow_mut().clear();
-                // A daemon that did not come up: say so, and where it wrote.
-                glib::timeout_add_seconds_local_once(25, move || {
-                    with_shell(|s| {
-                        if s.starting.replace(false) {
-                            *s.note.borrow_mut() = format!("The daemon did not come up. Its output is in {}.", log.display());
-                            s.refill();
-                        }
-                    })
-                });
-            }
-            Err(e) => *self.note.borrow_mut() = format!("Could not start the daemon: {e}."),
-        }
-        self.note_done("start", serde_json::json!({ "starting": self.starting.get(), "note": *self.note.borrow() }));
+        self.starting.set(true);
+        self.note.borrow_mut().clear();
+        self.note_done("start", serde_json::json!({ "starting": true }));
         self.refill();
+        // Off the main loop: asking the service manager to start a unit can take a while.
+        let said = log.clone();
+        daemon::start(&self.place, &log, move |made| {
+            on_main(move |s| match made {
+                Ok(()) => {
+                    // A daemon that did not come up: say so, and where it wrote.
+                    glib::timeout_add_seconds_local_once(25, move || {
+                        with_shell(|s| {
+                            if s.starting.replace(false) {
+                                *s.note.borrow_mut() = format!("The daemon did not come up. Its output is in {}.", said.display());
+                                s.refill();
+                            }
+                        })
+                    });
+                }
+                Err(e) => {
+                    s.starting.set(false);
+                    *s.note.borrow_mut() = format!("Could not start the daemon: {e}.");
+                    s.note_done("start-failed", serde_json::json!({ "note": *s.note.borrow() }));
+                    s.refill();
+                }
+            })
+        });
     }
 
     fn refill(&self) {
@@ -337,16 +353,17 @@ impl Shell {
                 self.needs.set(n);
                 self.show_tray();
             }
-            Event::Notify { key, alert, title, body, urgent, ack } => {
+            Event::Notify { key, alert, title, body, urgent, ack, stream } => {
                 if let Some(n) = self.notifier.borrow().as_ref() {
-                    n.show(APP_ID, &key, &alert, &title, &body, urgent, ack);
+                    n.show(APP_ID, &key, &alert, &title, &body, urgent, ack.map(|n| (n, stream)));
                 }
                 self.note_done("notify", serde_json::json!({ "key": key, "alert": alert, "title": title }));
             }
             Event::Refused(why) => {
-                if *self.note.borrow() != why {
+                if !self.refused.replace(true) || *self.note.borrow() != why {
                     *self.note.borrow_mut() = why;
                     self.refill();
+                    self.show_tray();
                 }
             }
             Event::Withdraw(key) => {
@@ -387,9 +404,10 @@ impl Shell {
             return self.quit();
         }
         daemon::call(&self.place, "GET", "/api/shell".into(), None, |v| {
-            let running = v.as_ref().map(running_titles).unwrap_or_default();
+            // (None: the daemon did not say. That is not "nothing is working".)
+            let running = v.as_ref().and_then(running_titles);
             on_main(move |s| {
-                let (question, detail) = stop_words(&running);
+                let (question, detail) = stop_words(running.as_deref());
                 s.note_done("confirm", serde_json::json!({ "question": question, "detail": detail }));
                 // The window comes up under the question, so it is seen.
                 s.open(None, false);
@@ -442,17 +460,20 @@ impl Shell {
 }
 
 /// The titles of the sessions with a turn at work, as the daemon tells its app (GET /api/shell).
-fn running_titles(shell: &serde_json::Value) -> Vec<String> {
-    shell.get("running").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).map(String::from).collect()).unwrap_or_default()
+/// None when the answer does not say.
+fn running_titles(shell: &serde_json::Value) -> Option<Vec<String>> {
+    Some(shell.get("running")?.as_array()?.iter().filter_map(|t| t.as_str()).map(String::from).collect())
 }
 
-/// What the owner is asked before the daemon is stopped.
-fn stop_words(running: &[String]) -> (String, String) {
+/// What the owner is asked before the daemon is stopped. `running`: the sessions at work, or
+/// None when that could not be read.
+fn stop_words(running: Option<&[String]>) -> (String, String) {
     let question = "Stop Keel and quit?".to_string();
     let detail = match running {
-        [] => "No session is working. Keel stops, and starts again when you open the app.".to_string(),
-        [one] => format!("\u{201c}{one}\u{201d} is working and will be stopped. It can go on when Keel starts again."),
-        many => {
+        None => "What is working now could not be read. Any session at work will be stopped; it can go on when Keel starts again.".to_string(),
+        Some([]) => "No session is working. Keel stops, and starts again when you open the app.".to_string(),
+        Some([one]) => format!("\u{201c}{one}\u{201d} is working and will be stopped. It can go on when Keel starts again."),
+        Some(many) => {
             let shown: Vec<String> = many.iter().take(4).map(|t| format!("\u{201c}{t}\u{201d}")).collect();
             let rest = many.len() - shown.len();
             format!("{} sessions are working and will be stopped: {}{}. They can go on when Keel starts again.", many.len(), shown.join(", "), if rest > 0 { format!(" and {rest} more") } else { String::new() })
@@ -514,7 +535,9 @@ fn main() -> glib::ExitCode {
             needs: Cell::new(0),
             paused_until: Cell::new(None),
             starting: Cell::new(false),
-            note: RefCell::new(String::new()),
+            // Known before the first window: an address the app does not speak to says so in its first page.
+            note: RefCell::new(daemon::refusal(&daemon::find(&place).url).unwrap_or_default()),
+            refused: Cell::new(daemon::refusal(&daemon::find(&place).url).is_some()),
             token: RefCell::new(None),
             devtools,
             log: std::env::var_os("KEEL_DESKTOP_LOG").map(PathBuf::from),
@@ -533,7 +556,7 @@ fn main() -> glib::ExitCode {
                 &conn,
                 |alert, token| with_shell(|s| s.clicked(alert, token)),
                 // The notification is on screen: the daemon is told, and does not show it itself.
-                |ack| with_shell(|s| daemon::call(&s.place, "POST", "/api/shell/ack".into(), Some(serde_json::json!({ "ack": ack }).to_string()), |_| {})),
+                |(ack, stream)| with_shell(|s| daemon::call(&s.place, "POST", "/api/shell/ack".into(), Some(serde_json::json!({ "ack": ack, "stream": stream }).to_string()), |_| {})),
             ));
             // Asked for only: the desktop shows its own dialog for it.
             if shortcut {
@@ -572,14 +595,17 @@ mod tests {
     #[test]
     fn stopping_the_daemon_names_the_turns_it_ends() {
         let shell = serde_json::json!({ "attached": true, "running": ["Fix the build", "Untitled session"] });
-        assert_eq!(running_titles(&shell), ["Fix the build", "Untitled session"]);
-        assert!(running_titles(&serde_json::json!({})).is_empty());
-        let (q, d) = stop_words(&["Fix the build".to_string()]);
+        assert_eq!(running_titles(&shell).unwrap(), ["Fix the build", "Untitled session"]);
+        assert_eq!(running_titles(&serde_json::json!({ "running": [] })), Some(vec![]));
+        let (q, d) = stop_words(Some(&["Fix the build".to_string()]));
         assert_eq!(q, "Stop Keel and quit?");
         assert!(d.contains("\u{201c}Fix the build\u{201d} is working and will be stopped"));
+        // The review's case: when the daemon's answer could not be read, the question said "No session is working".
+        assert_eq!(running_titles(&serde_json::json!({})), None);
+        assert!(stop_words(None).1.starts_with("What is working now could not be read"));
+        assert!(stop_words(Some(&[])).1.starts_with("No session is working"));
         let many: Vec<String> = (1..=6).map(|n| format!("T{n}")).collect();
-        let (_, d) = stop_words(&many);
+        let (_, d) = stop_words(Some(&many));
         assert!(d.starts_with("6 sessions are working") && d.contains("\u{201c}T4\u{201d} and 2 more") && !d.contains("T5"));
-        assert!(stop_words(&[]).1.starts_with("No session is working"));
     }
 }

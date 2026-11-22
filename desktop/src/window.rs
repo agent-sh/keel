@@ -6,12 +6,16 @@
 //! What content inside the web view can reach, and who may use it, is listed
 //! in desktop/README.md ("What the page can reach"). The rule here: only the
 //! top frame of the daemon's own origin, or the app's own away page, is
-//! listened to; everything else in the view is content.
+//! listened to; everything else in the view is content. The engine itself
+//! grants content nothing: every permission request is refused, and its
+//! asynchronous clipboard is switched off (clip.rs says how a paste and a
+//! copy of the page reach the clipboard instead).
+use crate::clip::Gate;
 use crate::daemon::{Link, DEFAULT_URL};
 use crate::links;
 use crate::page;
 use crate::prefs::Look;
-use crate::view::{Ask, Asked, Engine, Opening, Showing, View};
+use crate::view::{Ask, Asked, Away, Engine, Opening, Showing, View};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use serde_json::Value;
@@ -22,8 +26,6 @@ use webkit::prelude::*;
 
 /// How a page of this engine posts the string `s` to the app.
 const POST: &str = "window.webkit.messageHandlers.keel.postMessage(s)";
-/// How long after the page's own paste handler asked the clipboard may be read.
-const PASTE_WINDOW: Duration = Duration::from_secs(2);
 
 fn style(l: &Look) -> String {
     let px = |n: f64| format!("{:.0}px", (n * l.scale).round());
@@ -58,7 +60,9 @@ window.dialog.message .dialog-action-area button:hover {{ background: alpha({fg}
 window.dialog.message .dialog-action-area button:active {{ background: alpha({fg}, 0.12); }}
 window.dialog.message .dialog-action-area button:first-child {{ border-bottom-left-radius: {sheet}; }}
 window.dialog.message .dialog-action-area button label {{ color: {fg}; }}
-window.dialog.message .dialog-action-area button:last-child {{ border-bottom-right-radius: {sheet}; font-weight: 600; }}
+window.dialog.message .dialog-action-area button:last-child {{ border-bottom-right-radius: {sheet}; }}
+window.dialog.message .dialog-action-area button.default, window.dialog.message .dialog-action-area button:focus {{ font-weight: 600; }}
+window.dialog.message .dialog-action-area button:focus {{ outline: 2px solid {need}; outline-offset: -3px; }}
 "#,
         bg = l.bg, panel = l.panel, fg = l.fg, muted = l.muted, line = l.line, need = l.need,
         h = px(34.0), pad = px(6.0), font = px(13.0), small = px(12.0), btn = px(26.0), radius = px(7.0), icon = px(16.0),
@@ -173,8 +177,10 @@ struct Win {
     loading: Cell<bool>,
     slow: Cell<bool>,
     me: RefCell<Weak<Win>>,
-    /// Until when the clipboard may be read: set by the page's own paste handler, for one read.
-    paste_until: Cell<Option<Instant>>,
+    /// When the app reads or writes the clipboard for the page (clip.rs).
+    gate: RefCell<Gate>,
+    /// The away page's last state, said again once that page has loaded.
+    away_js: RefCell<String>,
     title: gtk::Label,
     pill: gtk::Box,
     pill_text: gtk::Label,
@@ -192,10 +198,13 @@ pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
         return None;
     }
     let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let id = || m.get("id").and_then(Value::as_u64).unwrap_or(0);
     match m.get("t").and_then(Value::as_str)? {
         "start" => Some(Asked1::Ask(Ask::Start)),
         "window" => Some(Asked1::Ask(Ask::Window(s("path")))),
-        "paste" => Some(Asked1::Paste),
+        "paste" => Some(Asked1::Paste(id())),
+        "copying" => Some(Asked1::Copying),
+        "copy" => Some(Asked1::Copy(id(), s("text"))),
         "look" => {
             let base = Look::of(m.get("dark").and_then(Value::as_bool).unwrap_or(false));
             let color = |k: &str, or: &str| m.get(k).and_then(Value::as_str).and_then(crate::prefs::hex).unwrap_or(or).to_string();
@@ -214,11 +223,16 @@ pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
     }
 }
 
-/// A checked message: something for the application, or the page's paste handler about to read the clipboard.
+/// A checked message: something for the application, or the page's use of the clipboard
+/// (each with the number its answer carries back).
 #[derive(Debug)]
 pub enum Asked1 {
     Ask(Ask),
-    Paste,
+    /// The owner pasted and the paste event carried nothing: what the clipboard holds.
+    Paste(u64),
+    /// A copy is coming, said at the owner's press.
+    Copying,
+    Copy(u64, String),
 }
 
 impl Win {
@@ -242,6 +256,17 @@ impl Win {
         settings.set_enable_write_console_messages_to_stdout(devtools);
         settings.set_enable_back_forward_navigation_gestures(false);
         settings.set_user_agent_with_application_details(Some("Keel"), Some(env!("CARGO_PKG_VERSION")));
+        // No frame reads or writes the clipboard through the engine (clip.rs): script access stays
+        // off, and so does the asynchronous clipboard, which would otherwise give any frame a write
+        // some seconds after a click in it.
+        settings.set_javascript_can_access_clipboard(false);
+        if let Some(features) = webkit::Settings::all_features() {
+            for f in (0..features.length()).filter_map(|i| features.get(i)) {
+                if f.identifier().as_deref() == Some("AsyncClipboardAPI") {
+                    settings.set_feature_enabled(&f, false);
+                }
+            }
+        }
 
         let view = webkit::WebView::builder().network_session(session).user_content_manager(&ucm).settings(&settings).hexpand(true).vexpand(true).build();
         view.set_background_color(&rgba(&look.bg));
@@ -284,7 +309,8 @@ impl Win {
             loading: Cell::new(false),
             slow: Cell::new(false),
             me: RefCell::new(Weak::new()),
-            paste_until: Cell::new(None),
+            gate: RefCell::new(Gate::default()),
+            away_js: RefCell::new(String::new()),
             title,
             pill,
             pill_text,
@@ -308,7 +334,23 @@ impl Win {
             let Ok(m) = serde_json::from_str::<Value>(&value.to_str()) else { return };
             match asked(&m, &win.key) {
                 Some(Asked1::Ask(what)) => a(&win, what),
-                Some(Asked1::Paste) => win.paste_until.set(Some(Instant::now() + PASTE_WINDOW)),
+                Some(Asked1::Paste(id)) => {
+                    if win.gate.borrow().may_read(Instant::now()) {
+                        win.paste(id);
+                    } else {
+                        win.tell(&serde_json::json!({ "pasted": { "id": id, "refused": true, "images": [] } }));
+                    }
+                }
+                Some(Asked1::Copying) => {
+                    win.gate.borrow_mut().arm(Instant::now());
+                }
+                Some(Asked1::Copy(id, text)) => {
+                    let ok = win.gate.borrow_mut().take(Instant::now());
+                    if ok {
+                        win.window.clipboard().set_text(&text);
+                    }
+                    win.tell(&serde_json::json!({ "copied": { "id": id, "ok": ok } }));
+                }
                 None => {}
             }
         });
@@ -318,15 +360,23 @@ impl Win {
         let (weak, a) = (Rc::downgrade(&win), ask.clone());
         win.view.connect_decide_policy(move |_, decision, kind| {
             let Some(win) = weak.upgrade() else { return false };
-            // The main frame stays on the daemon's own origin: a document from anywhere else is
-            // refused when its answer arrives, before any of it is shown or run, and the page stays.
+            // The main frame shows places of the daemon's page and nothing else: any other document
+            // (another origin's, or one the daemon serves that is no page, like an artifact's raw
+            // address) is refused when its answer arrives, before any of it is shown or run, and the
+            // page stays. A file of the daemon's to keep is saved instead; the page stays there too.
             if let Some(r) = decision.downcast_ref::<webkit::ResponsePolicyDecision>() {
                 let uri = r.request().and_then(|q| q.uri()).map(|u| u.to_string()).unwrap_or_default();
-                if r.is_main_frame_main_resource() && !win.ours(&uri) {
-                    decision.ignore();
-                    return true;
+                if !r.is_main_frame_main_resource() || win.ours(&uri) {
+                    return false;
                 }
-                return false;
+                let of_daemon = win.showing.get() == Showing::App && origin(&uri) == *win.origin.borrow();
+                let file = r.response().and_then(|x| x.suggested_filename()).is_some_and(|n| !n.is_empty()) || !r.is_mime_type_supported();
+                if of_daemon && file {
+                    decision.download();
+                } else {
+                    decision.ignore();
+                }
+                return true;
             }
             let Some(d) = decision.downcast_ref::<webkit::NavigationPolicyDecision>() else { return false };
             let Some(action) = d.navigation_action() else { return false };
@@ -371,18 +421,19 @@ impl Win {
                 win.loading.set(false);
                 win.slow.set(false);
                 win.pill_now();
+                // A state the away page was told before it had loaded is told again.
+                if win.showing.get() == Showing::Away {
+                    let js = win.away_js.borrow().clone();
+                    if !js.is_empty() {
+                        v.evaluate_javascript(&js, None, None, gio::Cancellable::NONE, |_| {});
+                    }
+                }
             }
         });
 
-        // The clipboard is read only right after the page's own paste handler said it would; nothing else is granted.
-        let weak = Rc::downgrade(&win);
-        win.view.connect_permission_request(move |_, req| {
-            let armed = weak.upgrade().and_then(|w| w.paste_until.take()).is_some_and(|t| Instant::now() < t);
-            if armed && req.is::<webkit::ClipboardPermissionRequest>() {
-                req.allow();
-            } else {
-                req.deny();
-            }
+        // The engine grants content nothing: not the clipboard (clip.rs), not a device, not a place.
+        win.view.connect_permission_request(|_, req| {
+            req.deny();
             true
         });
 
@@ -436,6 +487,7 @@ impl Win {
         let weak = Rc::downgrade(&win);
         keys.connect_key_pressed(move |_, key, _, mods| {
             let Some(win) = weak.upgrade() else { return glib::Propagation::Proceed };
+            win.gate.borrow_mut().input(Instant::now());
             if !mods.contains(gdk::ModifierType::CONTROL_MASK) || mods.contains(gdk::ModifierType::ALT_MASK) {
                 return glib::Propagation::Proceed;
             }
@@ -454,6 +506,17 @@ impl Win {
             glib::Propagation::Stop
         });
         win.window.add_controller(keys);
+        // The owner's press of a button in the window, seen before the page sees it (clip.rs).
+        let press = gtk::GestureClick::new();
+        press.set_button(0);
+        press.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&win);
+        press.connect_pressed(move |_, _, _, _| {
+            if let Some(win) = weak.upgrade() {
+                win.gate.borrow_mut().input(Instant::now());
+            }
+        });
+        win.window.add_controller(press);
 
         let (weak, a) = (Rc::downgrade(&win), ask.clone());
         win.pill_start.connect_clicked(move |_| {
@@ -476,7 +539,26 @@ impl Win {
     /// An address the main frame may show: the app's own page (about:blank), or the daemon's origin while its page is up.
     /// (An event of the away page may still come after the daemon's page was asked for: it is the app's own too.)
     fn ours(&self, uri: &str) -> bool {
-        uri.is_empty() || uri.starts_with("about:") || (self.showing.get() == Showing::App && origin(uri) == *self.origin.borrow())
+        uri.is_empty() || uri.starts_with("about:") || (self.showing.get() == Showing::App && links::main_frame_may_show(uri, &self.origin.borrow()))
+    }
+
+    /// What the clipboard holds, read by the app and handed to the page that asked: its text,
+    /// and a picture as PNG. Nothing else of the web view ever sees it.
+    fn paste(self: &Rc<Self>, id: u64) {
+        let clipboard = self.window.clipboard();
+        let (win, board) = (self.clone(), clipboard.clone());
+        clipboard.read_text_async(gio::Cancellable::NONE, move |text| {
+            let text = text.ok().flatten().map(|t| t.to_string());
+            board.read_texture_async(gio::Cancellable::NONE, move |texture| {
+                let images: Vec<Value> = texture
+                    .ok()
+                    .flatten()
+                    .map(|t| serde_json::json!({ "type": "image/png", "data": glib::base64_encode(&t.save_to_png_bytes()).to_string() }))
+                    .into_iter()
+                    .collect();
+                win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": images } }));
+            });
+        });
     }
 
     fn tell(&self, detail: &Value) {
@@ -573,16 +655,18 @@ impl View for Win {
         self.tell(&serde_json::json!({ "daemon": "away" }));
     }
 
-    fn away(&self, look: &Look, link: &Link, starting: bool, url: &str, note: &str) {
+    fn away(&self, look: &Look, state: &Away) {
+        let js = page::away_state(state);
+        *self.away_js.borrow_mut() = js.clone();
         if self.showing.get() == Showing::Away {
-            self.view.evaluate_javascript(&page::away_state(link, starting, url, note), None, None, gio::Cancellable::NONE, |_| {});
+            self.view.evaluate_javascript(&js, None, None, gio::Cancellable::NONE, |_| {});
         } else {
             self.ucm.remove_all_scripts();
             self.showing.set(Showing::Away);
             self.loading.set(false);
             self.slow.set(false);
             self.title.set_label("Keel");
-            self.view.load_html(&page::away(look, link, starting, url, note, POST, &self.key), Some("about:blank"));
+            self.view.load_html(&page::away(look, state, POST, &self.key), Some("about:blank"));
         }
     }
 
@@ -637,7 +721,9 @@ mod tests {
             r#"{"t":"window","path":"/s/abc"}"#,
             r##"{"t":"look","dark":true,"bg":"#ff0000","scale":3}"##,
             r#"{"t":"start"}"#,
-            r#"{"t":"paste"}"#,
+            r#"{"t":"paste","id":1}"#,
+            r#"{"t":"copying"}"#,
+            r#"{"t":"copy","id":2,"text":"planted"}"#,
             r#"{"t":"window","path":"/s/abc","key":"guess"}"#,
             r#"{"t":"window","path":"/s/abc","key":""}"#,
         ] {
@@ -651,7 +737,9 @@ mod tests {
         let m = |raw: &str| asked(&serde_json::from_str(raw).unwrap(), "k-123");
         assert!(matches!(m(r#"{"t":"window","path":"/s/abc","key":"k-123"}"#), Some(Asked1::Ask(Ask::Window(p))) if p == "/s/abc"));
         assert!(matches!(m(r#"{"t":"start","key":"k-123"}"#), Some(Asked1::Ask(Ask::Start))));
-        assert!(matches!(m(r#"{"t":"paste","key":"k-123"}"#), Some(Asked1::Paste)));
+        assert!(matches!(m(r#"{"t":"paste","id":7,"key":"k-123"}"#), Some(Asked1::Paste(7))));
+        assert!(matches!(m(r#"{"t":"copying","key":"k-123"}"#), Some(Asked1::Copying)));
+        assert!(matches!(m(r#"{"t":"copy","id":8,"text":"words","key":"k-123"}"#), Some(Asked1::Copy(8, t)) if t == "words"));
         assert!(matches!(m(r#"{"t":"look","dark":true,"bg":"red","key":"k-123"}"#), Some(Asked1::Ask(Ask::Look(l))) if l.dark && l.bg == Look::of(true).bg));
         // No message opens the browser: only the owner's click on a link does.
         assert!(m(r#"{"t":"external","url":"https://x.example/","key":"k-123"}"#).is_none());

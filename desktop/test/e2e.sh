@@ -11,7 +11,10 @@
 # that tries to leave the daemon's origin, a stranger on the daemon's port
 # (who must never be sent the token), an app that is stopped or has no
 # notification service when an alert comes, a link to a session with a
-# request waiting followed by Return, and quitting with a turn at work.
+# request waiting followed by Return, and quitting with a turn at work; and of
+# its second review: a frame the owner clicked in racing the owner's paste for
+# the clipboard, the main frame at an artifact's own address, a lock whose pid
+# was given to another process, and an address that is not this machine's.
 #
 #   desktop/test/e2e.sh                   native Wayland GNOME workspace
 #   KEEL_E2E_BACKEND=x11 desktop/test/e2e.sh   an X11 workspace (also checks a session's own window)
@@ -115,7 +118,9 @@ for _ in 1 2 3 4 5 6; do FOREIGN=$((46200 + RANDOM % 1700)); ss -ltn | grep -q "
 sed "s/FOREIGN_PORT/$FOREIGN/" "$HERE/probe.js" > "$D/probe.js"
 export KEEL_DESKTOP_PROBE="$D/probe.js"
 echo '{"width":1920,"height":1040,"maximized":false}' > "$D/shell/shell.json"
-launch() { (setsid nohup "$SHELL_BIN" "$@" >> "$D/shell.out" 2>&1 < /dev/null &); }
+# (A home of the app's own: what it saves goes to this check's folder, never the owner's.)
+mkdir -p "$D/apphome"
+launch() { (HOME="$D/apphome" setsid nohup "$SHELL_BIN" "$@" >> "$D/shell.out" 2>&1 < /dev/null &); }
 said() { grep -a "^PROBE $1" "$D/shell.out" 2> /dev/null | tail -1; }
 delivery() { api "/api/alerts?limit=20" | py 'import json,sys
 d=json.load(sys.stdin); d=d.get("alerts", d)
@@ -224,6 +229,38 @@ check "it has the engine's channel but not the app's object, and none of its mes
 check "it read nothing from the clipboard" "grep -aq '^PROBE ARTIFACT CLIP exec=' '$D/shell.out' && ! grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q 'clipboard-secret' && ! grep -aq '^PROBE ARTIFACT CLIP event=' '$D/shell.out' && grep -aq '^PROBE ARTIFACT CLIP read refused' '$D/shell.out'"
 [ -n "$SECRET" ] || echo "# note: no wl-copy for this backend, so the clipboard held no secret; the refusal itself was still checked"
 
+# --- 5b2. the review's race: the owner clicks once inside the artifact, then pastes a copied picture into the message box
+read -r X Y W H _ <<< "$(geometry)"
+if [ -n "$SECRET" ]; then
+  py 'import struct,sys,zlib
+def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+w, h = 40, 30
+rows = b"".join(b"\x00" + bytes([18, 128, 153]) * w for _ in range(h))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))' "$D/paste.png"
+  (wl-copy -t image/png < "$D/paste.png" > /dev/null 2>&1 &); sleep 1
+  # inside the frame (it sits in the lower right corner of the page), then the message box, then the paste key
+  $A click --id "$WS" $((X + W - 16 - 176)) $((Y + H - 16 - 96)) > /dev/null 2>&1; sleep 0.7
+  $A click --id "$WS" $((X + 1120)) $((Y + 953)) > /dev/null 2>&1; sleep 0.4
+  $A key --id "$WS" ctrl+v > /dev/null 2>&1
+  check "the owner's paste of a copied picture attaches it" "wait_for 10 \"said AT | grep -q 'imgs=1'\""
+  sleep 4
+  check "the frame the owner had clicked in asked for the clipboard and got nothing" "grep -aq '^PROBE ARTIFACT CLICKED' '$D/shell.out' && grep -aq '^PROBE ARTIFACT CLIP timer' '$D/shell.out' && ! grep -a '^PROBE ARTIFACT CLIP timer' '$D/shell.out' | grep -q 'read='"
+else
+  echo "# note: the paste of a copied picture needs wl-copy and the native Wayland backend"
+fi
+
+# --- 5b3. the clipboard through the app: at the owner's press, and not without one
+$A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+$A key --id "$WS" F7 > /dev/null 2>&1
+check "a copy announced at the owner's press is written" "wait_for 5 \"grep -aq '^PROBE COPIED id=9001 ok=true' '$D/shell.out'\""
+check "a copy four seconds later, with no press, is refused" "wait_for 8 \"grep -aq '^PROBE COPIED id=9002 ok=false' '$D/shell.out'\""
+if [ -n "$SECRET" ] && command -v wl-paste > /dev/null; then
+  check "the clipboard holds the copy the press allowed" "[ \"\$(wl-paste -n 2> /dev/null)\" = copied-by-the-check ]"
+fi
+$A key --id "$WS" F6 > /dev/null 2>&1
+check "a paste is read at the owner's press" "wait_for 5 \"grep -aq '^PROBE PASTED id=9003 refused=false' '$D/shell.out'\""
+check "a paste four seconds later, with no press, is refused" "wait_for 8 \"grep -aq '^PROBE PASTED id=9004 refused=true' '$D/shell.out'\""
+
 # --- 5c. the main frame stays on the daemon's origin
 (python3 "$HERE/listener.py" "$FOREIGN" 200 12 > "$D/foreign.out" 2>&1 &)
 read -r X Y W H _ <<< "$(geometry)"
@@ -231,6 +268,14 @@ $A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
 $A key --id "$WS" F8 > /dev/null 2>&1
 # The page's own script still reports after the attempt: the page that was there is the page that is there.
 check "a page that tries to leave the daemon's origin stays where it was, not loaded again" "wait_for 10 \"said LEAVING | grep -q LEAVING\" && sleep 5 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ] && ! geometry | grep -qi foreign"
+
+# --- 5c2. the main frame shows places of the page only: not an artifact's own address, which is a sandboxed document
+$A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+$A key --id "$WS" F9 > /dev/null 2>&1
+check "the main frame does not show an artifact's own address, and the artifact gets no app object" "wait_for 10 \"said GOING-RAW | grep -q GOING\" && sleep 5 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && ! grep -aq '^PROBE ARTIFACT handler=true keelShell=object' '$D/shell.out' && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ]"
+# The same address as a file to keep is saved, and the page is not loaded again.
+$A key --id "$WS" F10 > /dev/null 2>&1
+check "a navigation that is a file to keep is saved, and the page stays" "wait_for 10 \"[ -s '$D/apphome/Downloads/shell-probe.html' ]\" && sleep 3 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
 
 # --- 5d. focus: a launch with the desktop's activation token brings the window in front of another app, and only then
 if [ "$BACKEND" = gnome ]; then
@@ -289,7 +334,7 @@ api "/api/sessions/$run/interrupt" '{}' POST > /dev/null 2>&1
 $A resize-window --id "$WS" --pid "$(app_pid)" 1500 900 > /dev/null 2>&1; sleep 1.5
 pick 10
 check "quit from the tray ends the app" "wait_for 10 '[ \"\$(app_pids | wc -l)\" = 0 ]'"
-check "the daemon keeps running" "api /api/health | grep -q pid && api /api/shell | grep -q '\"attached\":false'"
+check "the daemon keeps running, and sees the app gone" "api /api/health | grep -q pid && wait_for 10 \"api /api/shell | grep -q '\\\"attached\\\":false'\""
 check "the size was saved (1500x900)" "py 'import json; d=json.load(open(\"$D/shell/shell.json\")); assert abs(d[\"width\"]-1500) <= 2 and abs(d[\"height\"]-900) <= 2, d'"
 
 # --- 9. started with no daemon: the calm page and its one button
@@ -324,11 +369,26 @@ fi
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
 daemon_down
 check "the state folder holds a token to protect" "[ -s '$D/dev/state/api-token' ]"
+# The review's case: a lock left by a crash, whose pid a live process of this account has since
+# been given (here the stand-in tray host), at the stranger's address.
+printf '{"pid":%s,"born":"another-boot:1","url":"%s"}' "$(cat "$D/host-tray.pid")" "$URL" > "$D/dev/state/daemon.lock"
 (python3 "$HERE/listener.py" "$PORT" 403 14 health > "$D/stranger.out" 2>&1 &)
 sleep 0.5; launch
 check "the app spoke to the stranger, on the health path and past it" "wait_for 12 \"grep -q 'REQUEST GET /api/health' '$D/stranger.out' && grep -q 'REQUEST GET /api/shell' '$D/stranger.out'\""
 sleep 3
-check "and never sent it the token" "! grep -q 'authorization=yes' '$D/stranger.out'"
+check "and never sent it the token, though the lock names a live process of this account" "! grep -q 'authorization=yes' '$D/stranger.out'"
+
+# --- 12. an address that is not this machine's: the first page says so, and nothing is started there
+(eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+printf '#!/usr/bin/env bash\necho "$@" > "%s"\n' "$D/stub-ran" > "$D/keel-stub"; chmod +x "$D/keel-stub"
+starts=$(logged start)
+(export KEEL_URL="http://10.0.0.9:$PORT" KEEL_BIN="$D/keel-stub"; launch)
+wait_for 30 '[ "$(windows)" = 1 ]'; sleep 3
+check "the first page says the address is not this machine's" "last away | grep -q '\"refused\":true' && last away | grep -q '10.0.0.9:$PORT'"
+check "the tray offers no start for it" "! menu | grep -q 'Start Keel'"
+shot 13-refused-address-dark
+$A key --id "$WS" Return > /dev/null 2>&1; sleep 3
+check "Return starts nothing there" "[ ! -e '$D/stub-ran' ] && [ \"\$(logged start)\" = \"$starts\" ]"
 
 echo "$((n - fails)) of $n passed"
 [ "$fails" = 0 ]

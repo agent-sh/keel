@@ -30,6 +30,21 @@ try { pasted = document.execCommand("paste"); } catch (e) {}
 setTimeout(() => say("CLIP exec=" + pasted + " field=" + JSON.stringify(t.value)), 600);
 if (navigator.clipboard && navigator.clipboard.readText) navigator.clipboard.readText().then((v) => say("CLIP read=" + JSON.stringify(v)), (e) => say("CLIP read refused"));
 else say("CLIP read refused");
+// The review's race: the owner clicks once inside this frame, and its handler then asks for the
+// clipboard on timers, hoping to be first when the owner pastes a picture into the message box.
+addEventListener("click", (e) => {
+  if (!e.isTrusted) return;
+  say("CLICKED");
+  for (const ms of [50, 300, 600, 900, 1200, 1500, 1800, 2200, 2600, 3200]) {
+    setTimeout(async () => {
+      if (!navigator.clipboard || !navigator.clipboard.read) return say("CLIP timer none");
+      try {
+        const items = await navigator.clipboard.read();
+        say("CLIP timer read=" + items.map((i) => i.types.join("+")).join(","));
+      } catch (err) { say("CLIP timer refused"); }
+    }, ms);
+  }
+});
 // A click no owner made.
 document.getElementById("out").click();
 try { window.open("https://example.com/opened-by-a-frame"); } catch (e) {}

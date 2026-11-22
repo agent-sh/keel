@@ -59,6 +59,14 @@ pub fn link_path(link: &str) -> Option<String> {
     page_path(&path)
 }
 
+/// Whether the main frame may show `uri` while the daemon's page is up: a
+/// place of the page at the daemon's origin, and nothing else the daemon
+/// serves (an artifact's raw address is a sandboxed document; an API answer is
+/// no page).
+pub fn main_frame_may_show(uri: &str, origin: &str) -> bool {
+    !origin.is_empty() && uri.strip_prefix(origin).is_some_and(|rest| page_path(rest.split('#').next().unwrap_or(rest)).is_some())
+}
+
 /// A path without its query: what a launch or a link may name.
 pub fn place(path: &str) -> &str {
     path.split(['?', '#']).next().unwrap_or(path)
@@ -130,6 +138,27 @@ mod tests {
         ] {
             assert_eq!(link_path(bad), None, "{bad}");
         }
+    }
+
+    // The review's case: the main frame at an artifact's raw address got the app's object.
+    #[test]
+    fn the_main_frame_shows_places_of_the_page_only() {
+        let o = "http://127.0.0.1:47960";
+        for ok in ["http://127.0.0.1:47960/", "http://127.0.0.1:47960/s/abc", "http://127.0.0.1:47960/s/abc?e=ev1#x", "http://127.0.0.1:47960/settings/models"] {
+            assert!(main_frame_may_show(ok, o), "{ok}");
+        }
+        for no in [
+            "http://127.0.0.1:47960/api/sessions/abc/artifacts/raw?path=%2Fx%2Fevil.html",
+            "http://127.0.0.1:47960/api/health",
+            "http://127.0.0.1:47961/",
+            "http://127.0.0.1:47960.evil.example/",
+            "http://127.0.0.1:47960",
+            "about:blank",
+            "",
+        ] {
+            assert!(!main_frame_may_show(no, o), "{no}");
+        }
+        assert!(!main_frame_may_show("http://127.0.0.1:47960/", ""));
     }
 
     // The review's case: a frame's script opened window after window.

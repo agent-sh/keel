@@ -37,7 +37,7 @@ struct Shown {
 pub struct Notifier {
     conn: gio::DBusConnection,
     shown: Rc<RefCell<Shown>>,
-    on_shown: Rc<dyn Fn(u64)>,
+    on_shown: Rc<dyn Fn((u64, String))>,
 }
 
 /// The hints of one notification: whose it is, and how urgent.
@@ -65,7 +65,7 @@ impl Notifier {
     /// empty alert: the one for many). `on_shown(ack)` runs when the service
     /// took a notification the daemon wants acknowledged.
     #[allow(deprecated)]
-    pub fn new(conn: &gio::DBusConnection, on_click: impl Fn(String, Option<String>) + 'static, on_shown: impl Fn(u64) + 'static) -> Self {
+    pub fn new(conn: &gio::DBusConnection, on_click: impl Fn(String, Option<String>) + 'static, on_shown: impl Fn((u64, String)) + 'static) -> Self {
         let shown = Rc::new(RefCell::new(Shown::default()));
         let s = shown.clone();
         conn.signal_subscribe(Some(NAME), Some(NAME), None, Some(PATH), None, gio::DBusSignalFlags::NONE, move |_, _, _, _, signal, params| {
@@ -114,7 +114,7 @@ impl Notifier {
         Self { conn: conn.clone(), shown, on_shown: Rc::new(on_shown) }
     }
 
-    fn send(&self, app_id: &str, slot: &str, alert: &str, title: &str, body: &str, urgent: bool, ack: Option<u64>) {
+    fn send(&self, app_id: &str, slot: &str, alert: &str, title: &str, body: &str, urgent: bool, ack: Option<(u64, String)>) {
         let (replaces, markup) = {
             let sh = self.shown.borrow();
             (sh.ids.get(slot).copied().unwrap_or(0), sh.markup)
@@ -136,7 +136,7 @@ impl Notifier {
         });
     }
 
-    pub fn show(&self, app_id: &str, key: &str, alert: &str, title: &str, body: &str, urgent: bool, ack: Option<u64>) {
+    pub fn show(&self, app_id: &str, key: &str, alert: &str, title: &str, body: &str, urgent: bool, ack: Option<(u64, String)>) {
         let (as_many, count, singles) = {
             let mut sh = self.shown.borrow_mut();
             let as_many = together(&sh.keys, sh.many, key);
