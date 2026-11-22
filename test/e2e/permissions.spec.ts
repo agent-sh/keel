@@ -1,13 +1,15 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, scriptBash, shoot } from "./shots.ts";
 
 // Feature: the permission gate. A command that changes things asks; "always
 // allow" stores a grant that covers the next one; a grant is revoked from the
 // grants panel; read-only mode refuses; a denial's reason reaches the model.
+// (The gate is the product's: a real model reaches it from a prompt in words,
+// the stand-in from the same command in its script, and its reply quotes the
+// last result it was given.)
 test("permission gate", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it has to try the gated tool calls a plain prompt leads to");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `perm-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
@@ -23,7 +25,7 @@ test("permission gate", async ({ page, request }) => {
   const turns = () => page.getByTestId("turn-end");
 
   // 1. A command that writes asks first; the turn waits.
-  await say("Run exactly this Bash command and nothing else: touch alpha.txt. Then reply with one word: ok.");
+  await say(ask("Run exactly this Bash command and nothing else: touch alpha.txt. Then reply with one word: ok.", scriptBash("touch alpha.txt")));
   const card = page.getByTestId("approval");
   await expect(card).toBeVisible({ timeout: 60_000 });
   await expect(card.getByTestId("approval-summary")).toContainText("touch alpha.txt");
@@ -42,7 +44,7 @@ test("permission gate", async ({ page, request }) => {
   expect(existsSync(join(ws, "alpha.txt"))).toBe(true);
 
   // 3. The grant covers the next touch: no card.
-  await say("Run exactly this Bash command and nothing else: touch beta.txt. Then reply with one word: ok.");
+  await say(ask("Run exactly this Bash command and nothing else: touch beta.txt. Then reply with one word: ok.", scriptBash("touch beta.txt")));
   await expect(turns()).toHaveCount(2, { timeout: 120_000 });
   await expect(card).toHaveCount(0);
   expect(existsSync(join(ws, "beta.txt"))).toBe(true);
@@ -70,7 +72,7 @@ test("permission gate", async ({ page, request }) => {
   await page.getByTestId("mode-read-only").click();
   await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
   await page.keyboard.press("Escape");
-  await say("Run exactly this Bash command once and nothing else: touch gamma.txt. If it fails, do not retry; reply with one word: refused.");
+  await say(ask("Run exactly this Bash command once and nothing else: touch gamma.txt. If it fails, do not retry; reply with one word: refused.", scriptBash("touch gamma.txt")));
   await expect(turns()).toHaveCount(3, { timeout: 120_000 });
   await expect(card).toHaveCount(0);
   expect(existsSync(join(ws, "gamma.txt"))).toBe(false);
@@ -79,13 +81,15 @@ test("permission gate", async ({ page, request }) => {
   // 6. Deny with a reason: the model sees it.
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
   await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
-  await say("Run exactly this Bash command once and nothing else: rm alpha.txt. If it is denied, do not retry; quote the reason you were given.");
+  await say(ask("Run exactly this Bash command once and nothing else: rm alpha.txt. If it is denied, do not retry; quote the reason you were given.", scriptBash("rm alpha.txt")));
   await expect(card).toBeVisible({ timeout: 60_000 });
   // The card is a named group: what it asks, with its command as the description.
   await expect(page.getByRole("group", { name: /Run this command\?/ })).toHaveAccessibleDescription(/rm alpha\.txt/);
   await expect(card).toContainText("Esc to deny with a reason");
   // Escape opens the reason, Escape again goes back: the card stays open, nothing is sent.
+  // (An Escape pressed as the keyboard arrives on a card answers nothing: the card says when its keys are taken.)
   await card.getByTestId("allow-once").focus();
+  await expect(page.getByTestId("approvals")).toHaveAttribute("data-keys", "ready");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("deny-reason")).toBeFocused();
   await page.keyboard.press("Escape");

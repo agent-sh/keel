@@ -1,14 +1,16 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, shoot } from "./shots.ts";
 
 // Feature: the Claude tool profile in the UI. A plan checklist, a file
 // written and edited (shown as a diff), a background command with its job in
 // the dock and its end reported to the model, and a question the turn waits
-// on until the owner answers it in the transcript.
+// on until the owner answers it in the transcript. (A real model makes the
+// calls from words; the stand-in makes the same calls from its script, and
+// its last reply quotes the answer it was given. What each call shows is the
+// product's.)
 test("claude tools: plan, edit diff, background job, question", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it exercises the tools a Claude model is given, called from plain prompts");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // This feature is the tools, not the approval cards: run them without asking.
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
@@ -20,14 +22,22 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   await page.goto(`/s/${session.id}`);
 
-  await page.getByTestId("composer").fill(
+  const todos = (done: boolean) => ["write file", "edit file", "start job"].map((content, i) => ({ content, activeForm: content, status: done ? "completed" : i === 0 ? "in_progress" : "pending" }));
+  await page.getByTestId("composer").fill(ask(
     `Do exactly these steps with your tools, one call each, in order: ` +
     `1) TodoWrite a 3-item plan: "write file", "edit file", "start job" (first in_progress). ` +
     `2) Write ${name} in the working directory with the two lines "alpha" and "beta". ` +
     `3) Edit ${name}: replace "beta" with "gamma". ` +
     `4) Bash with run_in_background true: echo step-1-of-3; sleep 4; echo job-finished. ` +
     `5) TodoWrite the same plan with all three completed. Then reply "ok".`,
-  );
+    `script:calls ${JSON.stringify([
+      { name: "TodoWrite", input: { todos: todos(false) } },
+      { name: "Write", input: { file_path: join(ws, name), content: "alpha\nbeta\n" } },
+      { name: "Edit", input: { file_path: join(ws, name), old_string: "beta", new_string: "gamma" } },
+      { name: "Bash", input: { command: "echo step-1-of-3; sleep 4; echo job-finished", run_in_background: true } },
+      { name: "TodoWrite", input: { todos: todos(true) } },
+    ])}`,
+  ));
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 150_000 });
   // A plan update is a line in the conversation; its list opens on demand. So does an edit's diff.
@@ -48,11 +58,13 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   await expect(page.locator('[data-tool="Write"]')).toContainText("alpha");
   await shoot(page, "tools-02-write-open");
 
-  // The job's end reaches the model with the next request.
-  await page.getByTestId("composer").fill(
+  // The job's end reaches the model with the next request: it has ended by then (it takes four seconds).
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs[0]?.running, { timeout: 30_000 }).toBe(false);
+  await page.getByTestId("composer").fill(ask(
     "Use AskUserQuestion once: ask which color to use, header \"Color\", options Teal and Amber. " +
     "After my answer, say the background job's status and my color in one sentence.",
-  );
+    `script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ question: "Which color should I use?", header: "Color", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } }])}`,
+  ));
   await page.keyboard.press("Enter");
   const q = page.locator('[data-testid="question"][data-state="open"]');
   await expect(q).toBeVisible({ timeout: 90_000 });

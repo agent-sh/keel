@@ -1,13 +1,12 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, choose, SCRIPTED } from "./shots.ts";
+import { ask, choose, HAIKU, shoot } from "./shots.ts";
 
 // Feature: plan mode. The session reads and plans but changes nothing; the
 // model presents its plan on a card; the owner sends it back once, then
 // approves it and picks the mode the work goes on in, and the work happens.
 test("plan mode and plan approval", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it has to write a plan and carry it out after approval");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `plan-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
@@ -18,7 +17,14 @@ test("plan mode and plan approval", async ({ page, request }) => {
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("permission-mode")).toHaveText("Plan");
 
-  await page.getByTestId("composer").fill("Plan how to create hello.txt containing the line hi. Present the plan with your plan tool; after it is approved, create the file with one command.");
+  // A real model plans from words. The stand-in presents the plan its script holds, presents the
+  // second one when the first comes back, and runs the command once a plan is approved: the card,
+  // the modes and the gate after it are the product's.
+  const first = "1. Create hello.txt with the line hi, in one command.";
+  await page.getByTestId("composer").fill(ask(
+    "Plan how to create hello.txt containing the line hi. Present the plan with your plan tool; after it is approved, create the file with one command.",
+    `script:calls ${JSON.stringify([{ name: "present_plan", input: { plan: first } }, { name: "present_plan", input: { plan: `${first}\n2. The file ends with a newline.` } }, { name: "Bash", input: { command: "echo hi > hello.txt" } }])}`,
+  ));
   await page.keyboard.press("Enter");
   const card = page.getByTestId("plan-card");
   await expect(card).toBeVisible({ timeout: 90_000 });
@@ -53,9 +59,9 @@ test("plan mode and plan approval", async ({ page, request }) => {
   await expect(card).toHaveCount(0);
   await expect(page.getByTestId("permission-mode")).toHaveText("Auto edits");
   // Auto edits still asks before a command that writes (no sandbox here).
-  const ask = page.getByTestId("approval");
-  await expect(ask).toBeVisible({ timeout: 90_000 });
-  await ask.getByTestId("allow-once").click();
+  const asks = page.getByTestId("approval");
+  await expect(asks).toBeVisible({ timeout: 90_000 });
+  await asks.getByTestId("allow-once").click();
   await expect.poll(() => existsSync(join(ws, "hello.txt")), { timeout: 120_000 }).toBe(true);
   expect(readFileSync(join(ws, "hello.txt"), "utf8").trim()).toBe("hi");
   const { plan } = await (await request.get(`/api/sessions/${session.id}/plan`)).json();
