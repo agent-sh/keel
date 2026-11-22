@@ -278,3 +278,48 @@ test("the keyboard goes to the message box when what held it goes away", async (
     for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
   }
 });
+
+test("the palette closed with no pick gives the keyboard back to where it was", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  try {
+    const [a] = await mkSessions(request, made, ["Return: the session on screen"]) as [string];
+    const box = page.getByTestId("composer");
+    const palette = page.getByTestId("palette-input");
+    await page.goto(`/s/${a}`);
+    await expect(box).toBeFocused();
+
+    // A menu opened and closed earlier is not where the palette sends the keyboard back to.
+    await page.getByTestId("session-menu").first().click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("session-menu").first()).toBeFocused();
+    await box.click();
+    await page.keyboard.type("half a thought");
+    await page.keyboard.press("Control+k");
+    await palette.waitFor();
+    await page.keyboard.press("Escape");
+    await expect(palette).toHaveCount(0);
+    await expect(box).toBeFocused();
+    await page.keyboard.type(", finished");
+    await expect(box).toHaveValue("half a thought, finished");
+    await box.fill("");
+
+    // From a row of the list: back on that row.
+    await rowOf(page, a).focus();
+    await page.keyboard.press("Control+k");
+    await palette.waitFor();
+    await page.keyboard.press("Escape");
+    await expect(rowOf(page, a)).toBeFocused();
+
+    // A pick is not put back: the command it ran has the keyboard's next place.
+    await box.click();
+    await page.keyboard.press("Control+k");
+    await palette.fill("Focus the session list");
+    await expect(page.getByRole("option").filter({ hasText: "Focus the session list" }).first()).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(palette).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest('[data-testid="session-list"]'))).toBe(true);
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`).catch(() => {});
+  }
+});

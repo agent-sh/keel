@@ -28,6 +28,15 @@ const Archived = () => <span className="ml-2 rounded-xs bg-sunken px-1 py-px tex
 
 export function Palette() {
   const open = useUI((s) => s.palette);
+  // Where the keyboard was when the palette opened. Closed with no pick (Escape, a press beside
+  // it) the keyboard goes back there, if that is still on the page. Left to the dialog, it went
+  // to the button of whatever menu or panel was opened last, however long ago that had closed.
+  // After a pick the command says where the keyboard goes: nothing is put back.
+  const from = useRef<Element | null>(null);
+  const wasOpen = useRef(false);
+  const picked = useRef(false);
+  if (open && !wasOpen.current) { from.current = document.activeElement; picked.current = false; }
+  wasOpen.current = open;
   const route = useUI((s) => s.route);
   const sessions = useStore((s) => s.sessions);
   const models = useModels();
@@ -155,6 +164,7 @@ export function Palette() {
 
   const pick = (e?: Entry) => {
     if (!e) return;
+    picked.current = true;
     setUI({ palette: false });
     e.run();
   };
@@ -165,6 +175,11 @@ export function Palette() {
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity duration-150 data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="palette"
+          finalFocus={() => {
+            const el = from.current;
+            from.current = null;
+            return !picked.current && el instanceof HTMLElement && el !== document.body && el.isConnected && el.getClientRects().length > 0 ? el : false;
+          }}
           aria-label="Search and commands"
           className={cn(
             "fixed left-1/2 top-[12vh] z-50 flex max-h-[min(34rem,76vh)] w-[min(40rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-col overflow-hidden",
