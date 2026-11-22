@@ -68,6 +68,9 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   const backNow = useRef(back);
   backNow.current = back;
   const goBack = useMemo(() => (back ? () => backNow.current?.() : undefined), [!back]);
+  // The conversation is drawn by what changes in it, not each time its pane draws its part (the
+  // header, the panel, the message box): a long one is not gone through again for those.
+  const transcript = useMemo(() => <Transcript sessionId={id} />, [id]);
   if (!session && (missing === id || gone)) {
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">
@@ -98,7 +101,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
       <div className="relative flex min-h-0 flex-1">
         <div className="k-session flex min-w-0 flex-1 flex-col" inert={covered}>
           {/* Until the conversation is here (its events, and the chunk that draws them), the pane says it is loading. */}
-          <Boundary><Suspense fallback={<TranscriptLoading />}>{loaded ? <Transcript sessionId={session.id} /> : <TranscriptLoading unreached={unreached === id} />}</Suspense></Boundary>
+          <Boundary><Suspense fallback={<TranscriptLoading />}>{loaded ? transcript : <TranscriptLoading unreached={unreached === id} />}</Suspense></Boundary>
           {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
           <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
