@@ -55,8 +55,8 @@ starts it: the `keel` program beside the app, `KEEL_BIN`, or the one on the
   the page's colors are remembered. The title bar follows the page's theme
   and text size.
 - **Links and files.** A link out of Keel opens in your browser. A file the
-  page offers is saved to your downloads folder. Dropping and pasting files
-  works as in a browser.
+  page offers is saved to your downloads folder, under a free name. A copied
+  screenshot pastes into the message box.
 
 ## How it fits the daemon
 
@@ -143,7 +143,12 @@ inside the app; what it posts to `webkit.messageHandlers.probe` is printed.
 
 - The system web view lays out a heavy page (several long panes streaming at
   once) more slowly than Chromium does. For that work a browser tab is still
-  the faster window.
+  the faster window. The engine is a seam (above) so this can change.
+- Not proven by the check, which has no real pointer or input method: a file
+  dropped on the window, and typing through an input method. A real desktop
+  session is also what proves the tray with a shell's own tray host, a
+  notification's click through the desktop's own service, and a second
+  window on a real Wayland session.
 - On NVIDIA drivers WebKitGTK can show a blank window; start the app with
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` there.
 - macOS and Windows are not built. The parts that are Linux's are the tray
