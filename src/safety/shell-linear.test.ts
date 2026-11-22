@@ -11,7 +11,8 @@
 import { expect, test } from "bun:test";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { decide } from "./policy.ts";
-import { isReadOnly, matchRule, risksOf, shimmedRead, suggestRule, type Simple } from "./shell.ts";
+import { risksOf as risksIn } from "./risk.ts";
+import { isReadOnly, matchRule, shimmedRead, suggestRule, type Simple } from "./shell.ts";
 import { READERS, SHIMMED } from "./shell-reads.ts";
 
 const N = 100_000;
@@ -33,6 +34,7 @@ const timed = (f: () => unknown) => {
   return best;
 };
 const part = (words: string[]): Simple => ({ words, text: words.join(" "), redirects: false });
+const risksOf = (parts: Simple[]) => risksIn(parts, { cwd: "/w", home: "/h", workspace: "/w" });
 
 // The words that lead into each parser: a subcommand, an option that takes a value, a keyword an address follows.
 const LEADS: Record<string, string[][]> = {
@@ -65,7 +67,10 @@ test("the risk rules and the grants read such a word in step with its length too
   const note = (what: string, word: string, ms: number) => { if (ms > LIMIT) slow.push(`${what} ${word.slice(0, 12)}...${word.slice(-3)}: ${ms.toFixed(0)} ms`); };
   // What the never-allowed and high-risk rules read: targets, modes, devices, credentials, pushes, a script's text.
   const RISKY = ["rm -rf", "rm -r --", "chmod -R 777", "chown -R u", "dd", "dd if=a", "shred", "git push", "git push --force origin", "git reset --hard", "git clean -f", "sudo", "sudo rm -rf", "curl", "python3 -c",
-    "cat", "ssh -i", "mv", "mkfs.ext4", "git -C"];
+    "cat", "ssh -i", "mv", "mkfs.ext4", "git -C",
+    // What the risk classes read (risk.ts): targets and patterns, a remote command, SQL, a nested script, code, a setting's key, a pattern of names, a file to send.
+    "rm", "truncate -s 0", "find", "find . -name", "find . -delete -name", "xargs rm", "env", "timeout 5 rm -rf", "rsync --delete a", "ssh host", "kubectl delete", "aws s3", "psql -c", "sqlite3 a.db", "bash -c", "sh -c",
+    "eval", "node -e", "perl -e", "git config --global", "git -c", "git branch -D", "pkill -f", "kill -9", "crontab", "npm install", "pip install", "curl -d", "curl -X DELETE", "scp", "nc host 80", "make", "npm run", "export"];
   for (const word of words) {
     for (const lead of RISKY) {
       const p = part([...lead.split(" "), word]);

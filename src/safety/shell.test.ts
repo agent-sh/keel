@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { highRisk, isReadOnly, matchRule, readForm, readOnlyCommand, resolveVariables, risksOf, splitCommand, suggestRule } from "./shell.ts";
+import { risksOf as risksIn } from "./risk.ts";
+import { highRisk, isReadOnly, matchRule, readForm, readOnlyCommand, resolveVariables, splitCommand, suggestRule, type Simple } from "./shell.ts";
 
 const split = (c: string) => splitCommand(c)!;
+const risksOf = (parts: Simple[]) => risksIn(parts, { cwd: "/w", home: "/h", workspace: "/w" }).map((r) => r.why);
 const ro = (c: string) => split(c).every(isReadOnly);
 
 test("splits on operators and finds commands inside substitutions", () => {

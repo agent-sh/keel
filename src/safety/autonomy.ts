@@ -172,7 +172,7 @@ export function preAllow(command: Simple[], cwd: string, home: string, look: Loo
 const ROOTS = ["/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64", "/opt", "/proc", "/root", "/sbin", "/srv", "/sys", "/usr", "/var", "/Users", "/System", "/Library", "/Applications"];
 
 // Where a credential lives (private keys, tokens, cloud and registry logins, the keyring).
-const CRED_PATH = /(^|[\s'"=@:/])(?:~|\$\{?HOME\}?|\/home\/[^/\s]+|\/Users\/[^/\s]+|\/root)?\/?\.(?:ssh(?![^\s'"]{0,300}\.pub\b)(?:\/[^\s'"]*)?(?=$|[\s'"])|aws\/credentials|aws\/config|netrc|git-credentials|docker\/config\.json|kube\/config|config\/gh\/hosts\.yml|npmrc|pypirc|gnupg\b[^\s'"]*|config\/gcloud[^\s'"]*|azure[^\s'"]*|password-store[^\s'"]*)|\/etc\/(shadow|gshadow|sudoers)\b|\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/;
+export const CRED_PATH = /(^|[\s'"=@:/])(?:~|\$\{?HOME\}?|\/home\/[^/\s]+|\/Users\/[^/\s]+|\/root)?\/?\.(?:ssh(?![^\s'"]{0,300}\.pub\b)(?:\/[^\s'"]*)?(?=$|[\s'"])|aws\/credentials|aws\/config|netrc|git-credentials|docker\/config\.json|kube\/config|config\/gh\/hosts\.yml|npmrc|pypirc|gnupg\b[^\s'"]*|config\/gcloud[^\s'"]*|azure[^\s'"]*|password-store[^\s'"]*)|\/etc\/(shadow|gshadow|sudoers)\b|\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/;
 const CRED_PROGRAM = /^(secret-tool|security|pass|gpg|keyring|op|bw|vault|aws-vault)$/;
 const KEY_USERS = new Set(["ssh", "scp", "sftp", "rsync", "ssh-add", "ssh-keygen", "ssh-copy-id", "git", "chmod", "chown", "ls", "stat", "test", "["]);
 const INTERPRETERS = /^(python3?|node|perl|ruby|bun|deno|php)$/;

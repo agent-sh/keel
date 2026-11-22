@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realOf } from "../core/paths.ts";
@@ -467,4 +467,50 @@ test("a card takes a one-time answer or a denial while the store takes no writes
   store.db.exec("PRAGMA query_only = OFF");
   store.refuse(false);
   expect([store.owes, g.approval(a!.id)?.state]).toEqual([0, "allowed"]);
+});
+
+// The risk classes read what git says of a folder a command deletes (risk.ts): the gate asks git before it decides.
+test("a delete inside the folder is high risk by what git keeps there, and a card that waits is judged again with the same answer", async () => {
+  const { g, session, call } = scratchGate();
+  g.setSandboxCheck(() => false);
+  const ws = session.workspace;
+  const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: ws, stdout: "ignore", stderr: "ignore" });
+  git("init", "-q");
+  for (const f of ["build/gen.sh", "build/pack.sh", "out/a.o", "out/b.o", "fresh/one.ts", "fresh/two.ts", "single/only.ts", "lib/nested/.git/HEAD"]) { mkdirSync(join(ws, f, ".."), { recursive: true }); writeFileSync(join(ws, f), "x\n"); }
+  writeFileSync(join(ws, ".gitignore"), "out/\n");
+  git("add", "build", ".gitignore");
+  git("commit", "-q", "-m", "first");
+  expect(existsSync(join(ws, ".git"))).toBe(true);
+  g.setPerm("s1", { mode: "ask", sandbox: "off" });
+  const open = () => g.approvals({ session: "s1", pending: true });
+  const card = async (command: string) => {
+    const asked = g.beforeTool(session, call(bash, { command }));
+    for (let i = 0; i < 100 && !open().length; i++) await Bun.sleep(10);
+    const [a] = open();
+    return { a: a!, asked };
+  };
+  const answer = async (c: Awaited<ReturnType<typeof card>>) => { g.resolve(c.a.id, "s1", { choice: "deny" }); await c.asked; };
+  // A folder git ignores is build output; a tracked one, or new files nobody has added yet, is work; a repository of its own is.
+  for (const [command, risk, rule] of [["rm -rf out", "low", undefined], ["rm -rf build", "high", "destroys"], ["rm -rf fresh", "high", "destroys"], ["rm -rf single", "low", undefined], ["rm -rf lib/nested", "high", "destroys"],
+    ["find . -name '*.sh' -delete", "high", "destroys"], ["find . -name '*.o' -delete", "low", undefined]] as const) {
+    const c = await card(command);
+    expect([command, c.a.risk, c.a.rule]).toEqual([command, risk, rule]);
+    await answer(c);
+  }
+  // The card for the tracked folder stays the owner's when a grant that names rm arrives, though its name alone reads as build output.
+  const held = await card("rm -rf build");
+  const other = g.beforeTool(session, call(bash, { command: "rm stale.txt" }));
+  for (let i = 0; i < 100 && open().length < 2; i++) await Bun.sleep(10);
+  const low = open().find((a) => a.summary === "rm stale.txt")!;
+  expect([low.risk, low.suggest]).toEqual(["low", [{ kind: "shell", pattern: "rm *" }]]);
+  g.resolve(low.id, "s1", { choice: "session" });
+  await other;
+  expect(open().map((a) => a.id)).toEqual([held.a.id]);
+  await answer(held);
+  // Full auto: what is high risk goes to the judge, what is not runs, and the rules settle only what they can read.
+  let judged: string[] = [];
+  g.judge = async (r) => (judged.push(r.summary), { allow: true, risk: "high", reason: "fixture", model: "m" });
+  g.setPerm("s1", { mode: "full-auto", sandbox: "off" });
+  for (const command of ["rm -rf out", "git reset --hard", "rm -rf build", "git reset --hard && npm publish"]) expect([command, await g.beforeTool(session, call(bash, { command }))]).toEqual([command, undefined]);
+  expect(judged).toEqual(["rm -rf build", "git reset --hard && npm publish"]);
 });

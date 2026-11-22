@@ -6,7 +6,8 @@ import { gitSync, innerWorkSync, type InnerWork } from "../core/git.ts";
 import { contains } from "../core/paths.ts";
 import type { Session } from "../core/types.ts";
 import { gitCall, located, protectedBranch, pushPlan, type RepoFacts } from "./autonomy.ts";
-import { highRisk, lineRisk, splitCommand } from "./shell.ts";
+import { analyse } from "./risk.ts";
+import { splitCommand } from "./shell.ts";
 import { timed } from "../admin/stall.ts";
 
 const KEEP_MS = 5_000;
@@ -103,14 +104,15 @@ export function repoContext(command: string, cwd: string, home: string, session:
   const out: string[] = [];
   const seen = new Set<string>();
   const yes = (b: boolean | null) => (b === null ? "unknown" : b ? "yes" : "no");
-  for (const { s, dir } of located(parts, cwd, home)) {
-    const risk = highRisk(s);
-    if (!risk) continue;
+  const risks = analyse(parts, { cwd, home, workspace: session.workspace });
+  located(parts, cwd, home).forEach(({ s, dir }, i) => {
+    const risk = [...new Set(risks.per[i]!.map((r) => r.why))].join(" and ");
+    if (!risk) return;
     const g = gitCall(s.words, dir, home);
     const at = g?.dir ?? dir;
     out.push(`- \`${s.text.slice(0, 300)}\` ${risk}; it runs in ${at ?? "a folder the rules cannot follow (a cd through a variable or a subshell)"}${at ? ` (inside the session folder: ${yes(contains(session.workspace, at))})` : ""}.`);
     const f = at ? lookRepo(at) : null;
-    if (!at || !f) continue;
+    if (!at || !f) return;
     if (!seen.has(f.root)) {
       seen.add(f.root);
       const created = f.branch ? branchCreated(f.root, f.branch) : null;
@@ -119,7 +121,7 @@ export function repoContext(command: string, cwd: string, home: string, session:
     }
     if (g?.sub === "push") {
       const plan = pushPlan(g.args, f);
-      if (!plan) { out.push("  The push's arguments are in a form the rules do not read."); continue; }
+      if (!plan) { out.push("  The push's arguments are in a form the rules do not read."); return; }
       const def = plan.known ? f.defaultOf(plan.remote) : null;
       const each = plan.updates.filter((u) => u.force || u.delete).map((u) => {
         const own = u.branch ? branchCreated(f.root, u.dst) : null;
@@ -127,8 +129,7 @@ export function repoContext(command: string, cwd: string, home: string, session:
       });
       out.push(`  The push goes to ${plan.known ? `remote ${plan.remote}` : `${plan.remote}, which is not a configured remote`}${plan.wide ? ` with ${plan.wide}` : ""}: ${each.join("; ") || "no forced update or delete it could read"}.`);
     }
-  }
-  const whole = lineRisk(parts);
-  if (whole) out.push(`- The line as a whole ${whole}: a program fetches from the network and a shell or interpreter runs what it reads.`);
+  });
+  for (const whole of new Set(risks.line.map((r) => r.why))) out.push(`- The line as a whole ${whole}.`);
   return out.join("\n") || "No part of the command was found high risk by the rules.";
 }

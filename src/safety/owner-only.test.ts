@@ -65,8 +65,8 @@ test("a command whose plain shape writes an owner-only file is the owner's, befo
     // A grant that covers the command and a sandbox do not answer for it.
     expect([command, shell(command, "auto-edits", { sandboxed: true })]).toEqual([command, "owner"]);
     expect([command, shell(command, "ask", { rules: [{ id: "r", kind: "shell", pattern: `${command.split(" ")[0]} *`, scope: ws, lifetime: "always", created: 0 }] })]).toEqual([command, "owner"]);
-    // Full auto runs it as it runs such an edit; Read only refuses it.
-    expect([command, shell(command, "full-auto")]).toEqual([command, "allow"]);
+    // Full auto runs it as it runs such an edit (a delete outside the session's folder goes to its judge, risk.ts); Read only refuses it.
+    expect([command, shell(command, "full-auto")]).toEqual([command, command.startsWith("rm ") ? "ask-high" : "allow"]);
     expect([command, shell(command, "read-only")]).toEqual([command, "deny"]);
   }
   // Reading such a file, naming it without writing it, and writing elsewhere are what they were.

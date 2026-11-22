@@ -8,12 +8,13 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
-import { locate } from "../core/git.ts";
+import { git, locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
+import { keptAsks, risksOf } from "./risk.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
 import { realPrograms } from "./shims.ts";
@@ -124,7 +125,11 @@ export type Judged = { session_id: string; call_id: string; tool: string; summar
 // stops the turn after 3): the work goes on, the loop of retries does not.
 export const STREAK = 3;
 
-type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string };
+type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string; facts?: CallFacts };
+// What the gate looked up for one call before it decided (the policy itself reads no disk): whether a program's
+// name is the program itself, and what git says of the paths a command deletes. A card that waits is judged again
+// with the same answers.
+type CallFacts = { real?: (program: string) => boolean; kept?: (specs: string[]) => number | null };
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
 type AutoShell = { path: string; identity: string; interpreter: string };
@@ -206,6 +211,7 @@ function localShellDir(session: Session, call: ToolCall, target: Target, cls: Ca
 export class Gate {
   private lastCard = 0; // when the newest card was made
   private waiting = new Map<string, Waiter>();
+  private checking = new Map<string, CallFacts>(); // the facts of the calls being checked now, by session and call
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
@@ -467,13 +473,13 @@ export class Gate {
   // `real`: for a command that names a program a version manager may stand in for, whether each such name is
   // the program itself here (see `shimmed`). Without it those forms ask.
   // `before`: only the standing rules that are not younger than this time (a held card's own).
-  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, real?: (program: string) => boolean, before?: number): Decision {
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, facts?: CallFacts, before?: number): Decision {
     const p = this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real,
+      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real: facts?.real, kept: facts?.kept,
       // What Keel itself runs things from: a change there is the owner's alone
       // (on this machine's disk). With it, the scripts the owner's hooks and a
       // pinned repository's hooks run: no pin holds one outside .keel/. Read
@@ -497,6 +503,30 @@ export class Gate {
   private async real(names: string[]): Promise<(program: string) => boolean> {
     const found = await realPrograms(names);
     return (program) => found.get(program) === true;
+  }
+
+  // What git says of the paths a command would delete inside the session's folder: how many files it does not
+  // ignore each covers (none, one, more). Asked only for a line that deletes there, off the loop and within a
+  // deadline; what git does not answer in time is not known, and the policy then goes by the names. A folder that
+  // is a repository of its own is more than one file. Nothing is asked for a session on another machine.
+  private keptAsks(session: Session, cls: CallClass): string[][] {
+    if (cls.kind !== "shell" || session.machine) return [];
+    const parts = splitCommand(cls.command);
+    return parts ? keptAsks(parts, { cwd: cls.cwd ?? session.workspace, home: homedir(), workspace: session.workspace, scratch: this.scope(session).scratch }).slice(0, 16) : [];
+  }
+  private async kept(session: Session, asks: string[][]): Promise<CallFacts["kept"]> {
+    const found = new Map<string, number | null>();
+    await Promise.all(asks.map(async (specs) => {
+      const key = specs.join("\0");
+      if (found.has(key)) return;
+      found.set(key, null);
+      if (specs.some((x) => x.startsWith(":(literal)") && existsSync(join(x.slice(10), ".git")))) { found.set(key, 2); return; }
+      const r = await git(session.workspace, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...specs], { read: true, timeout: 1_500 });
+      if (r.code !== 0) return;
+      const first = r.out.indexOf("\0");
+      found.set(key, first < 0 ? 0 : r.out.indexOf("\0", first + 1) < 0 && !r.out.slice(0, first).endsWith("/") ? 1 : 2);
+    }));
+    return (specs) => found.get(specs.join("\0")) ?? null;
   }
 
   // Set by the hooks module: the files and folders the session's hooks run things from.
@@ -575,6 +605,9 @@ export class Gate {
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,
   // and grants for that tool alone. Returns the class it judged.
   async check(session: Session, call: ToolCall): Promise<CheckResult> {
+    try { return await this.checked(session, call); } finally { this.checking.delete(callKey(session.id, call.id)); }
+  }
+  private async checked(session: Session, call: ToolCall): Promise<CheckResult> {
     if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
     const name = target?.name ?? call.tool.name;
@@ -583,14 +616,19 @@ export class Gate {
     const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;
     // Nothing is waited for unless the line names such a program.
     const names = this.shimmed(session, cls);
-    const dNow = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source, names.length ? await this.real(names) : undefined);
+    const judged = cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls;
+    // Nor unless it deletes inside the folder.
+    const asks = this.keptAsks(session, judged);
+    const facts: CallFacts = { real: names.length ? await this.real(names) : undefined, kept: asks.length ? await this.kept(session, asks) : undefined };
+    this.checking.set(callKey(session.id, call.id), facts);
+    const dNow = this.evaluate(session, name, judged, target?.source, facts);
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
     const back = this.recovered(session.id, call, false) ?? (mode === "auto" ? this.recovered(session.id, call, true) : undefined);
     if (back) {
       // A card that is read first waits for its own answer: a rule made after it opened does not settle it (see `recheck`).
       const d = back.state === "pending" && this.form(back).hold.length
-        ? this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source, names.length ? await this.real(names) : undefined, back.created) : dNow;
+        ? this.evaluate(session, name, judged, target?.source, facts, back.created) : dNow;
       // Do not authorize a recovered non-hook card under the new mode. A
       // saved answer is not evidence about the current binding or landing.
       if (mode === "auto" || back.autoOwner) {
@@ -731,7 +769,9 @@ export class Gate {
     }
     if (!auto && cls.kind === "shell" && !cls.escalate) {
       const parts = splitCommand(cls.command);
-      const rule = parts ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
+      // The rules settle git's own forms from the repository's state. A line that is high risk for anything else goes to the judge.
+      const where = { cwd: cls.cwd ?? session.workspace, home: homedir(), workspace: session.workspace, scratch: this.scope(session).scratch, kept: this.checking.get(callKey(session.id, call.id))?.kept };
+      const rule = parts && risksOf(parts, where).every((r) => r.git) ? preAllow(parts, where.cwd, where.home, lookRepo) : null;
       if (rule) return ran("rule", rule), { cls };
     }
     // What is judged is what runs, whole: the judge is sent the start of a
@@ -882,7 +922,7 @@ export class Gate {
     // the card is answered, so answered cards do not pile up on it.
     let onAbort = () => {};
     const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
-      this.waiting.set(a.id, { resolve, call, cls, session, name, once: a.once, bind: a.bind });
+      this.waiting.set(a.id, { resolve, call, cls, session, name, once: a.once, bind: a.bind, facts: this.checking.get(callKey(session.id, call.id)) });
       onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
         // Parked for a stop: the card stays open for the next daemon, which
@@ -1021,7 +1061,7 @@ export class Gate {
       if (w.once || !which(w)) continue; // a one-call card only the owner answers
       const a = this.approval(id);
       if (!a) continue;
-      const d = this.evaluate(w.session, w.name, w.cls, w.bind, undefined, this.form(a).hold.length ? a.created : undefined);
+      const d = this.evaluate(w.session, w.name, w.cls, w.bind, w.facts, this.form(a).hold.length ? a.created : undefined);
       const mode = this.perm(w.session.id).mode;
       if (mode === "auto" || a.autoOwner) {
         if (mode === "auto" && a.autoOwner && !("deny" in d)) continue;

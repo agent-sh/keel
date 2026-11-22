@@ -139,7 +139,7 @@ test("a command that writes is never run as a read: refused in Read only and Pla
   const sh = (command: string) => ({ kind: "shell" as const, command });
   const writes = [
     "> f", "{ echo a; } > f", "for x in 1; do echo a; done > f", "if true; then echo a; fi > f", "echo x >&f", "cat <>f",
-    "git reflog expire --expire=now --all", "git reflog delete HEAD@{1}", "date -s 2020-01-01",
+    "date -s 2020-01-01", "git reflog show --date=iso > f",
     // The same redirect after the other compound commands, and with no command before it.
     "(echo a; echo b) > f", "while read l; do echo $l; done < in > f", "case x in x) echo a;; esac > f", "ls | { cat; } >> f", ">> f", "2> f", "&> f", ">| f",
     "f() { echo a; } > f; f", "echo x &>>f", "cat <<EOF > f\nhi\nEOF", "cat <<EOF\n$(touch f)\nEOF", "fi", "# nothing but a comment",
@@ -148,6 +148,11 @@ test("a command that writes is never run as a read: refused in Read only and Pla
     expect([c, kind(decide(sh(c), facts("read-only")))]).toEqual([c, "deny"]);
     expect([c, kind(decide(sh(c), facts("plan")))]).toEqual([c, "deny"]);
     expect([c, kind(decide(sh(c), facts("ask")))]).toEqual([c, "ask-low"]);
+  }
+  // A write that loses what nothing brings back is never a read either, and asks as high risk (risk.ts).
+  for (const c of ["git reflog expire --expire=now --all", "git reflog delete HEAD@{1}"]) {
+    expect([c, kind(decide(sh(c), facts("read-only")))]).toEqual([c, "deny"]);
+    expect([c, kind(decide(sh(c), facts("ask")))]).toEqual([c, "ask-high"]);
   }
   const reads = [
     "ls 2>/dev/null", "cat a 2>&1 | head", "ls >&2", "ls 2>&-", "{ ls; pwd; }", "(cd sub && ls)", "for f in a b; do cat $f; done", "if [ -f a ]; then cat a; fi",
@@ -186,7 +191,8 @@ test("a command another interpreter runs is never read as a read", () => {
   expect(shellText({ command: ["sh", "-c", "ls"] })).toBe("sh -c ls");
   const argv = { kind: "shell" as const, command: shellText({ command: ["find", ".", "'", "-delete", "-name", "'"] })!, cwd: ws };
   expect(kind(decide(argv, facts("read-only")))).toBe("deny");
-  expect(kind(decide(argv, facts("ask")))).toBe("ask-low");
+  // (It deletes what it matches over the whole folder: high risk, risk.ts.)
+  expect(kind(decide(argv, facts("ask")))).toBe("ask-high");
 });
 
 test("a Read only session and the owner's card are told the form of a command that would be read as a read", () => {

@@ -3,7 +3,8 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
-import { isReadOnly, matchRule, readForm, resolveVariables, risksOf, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
+import { RULE_WORDS, risksOf } from "./risk.ts";
+import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
 import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
@@ -70,6 +71,7 @@ export type CallClass =
 // `notice`: a line for the owner on the card (the form of the command that would not have asked).
 // `rule`: the class of the rule that asks, in a few words (what a folded call is
 // marked with in the transcript); `why` is the sentence the approval card shows.
+// A high-risk command's class is one of five (risk.ts RULE_WORDS).
 export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string };
 export type Decision =
   | { allow: true; why?: string }
@@ -153,7 +155,13 @@ export function shellText(input: any): string | null {
   return null;
 }
 
-export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.keel\/hooks\/|\.claude\/hooks\/|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/|node_modules\/(?:\.bin|@typescript|typescript|typescript-language-server|pyright|basedpyright)\/|\.venv\/bin\/)/;
+// A repository's files that run, or configure what runs, later and outside
+// any sandbox: git's hooks and config, direnv, the MCP and hook files of the
+// harnesses, an editor's tasks, the folders commands and language servers are
+// found in, and the workflow files a CI host runs with the repository's
+// secrets at the next push (GitHub, GitLab, CircleCI, Azure, Bitbucket,
+// Buildkite, Jenkins, Forgejo, Gitea, Woodpecker, Drone, Travis and others).
+export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.keel\/hooks\/|\.claude\/hooks\/|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/|\.github\/(?:workflows|actions)\/|\.gitlab-ci\.yml$|\.gitlab\/ci\/|\.circleci\/|\.buildkite\/|\.forgejo\/workflows\/|\.gitea\/workflows\/|\.woodpecker(?:\.ya?ml$|\/)|\.drone\.ya?ml$|\.travis\.yml$|azure-pipelines\.ya?ml$|\.azure-pipelines\/|bitbucket-pipelines\.yml$|Jenkinsfile$|appveyor\.yml$|\.semaphore\/|\.teamcity\/|node_modules\/(?:\.bin|@typescript|typescript|typescript-language-server|pyright|basedpyright)\/|\.venv\/bin\/)/;
 
 // Files whose words can name a program a language server loads or runs
 // (src/lsp/servers.ts): a plugin in a TypeScript project file, the
@@ -305,6 +313,9 @@ export const ownPath = (p: string, f: Pick<Facts, "workspace" | "scratch">) => (
 export type Facts = {
   mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[]; bins?: string[];
   own?: () => { home: string; config: string[]; bins?: string[]; land: (p: string) => string[] };
+  // How many files git does not ignore the pathspecs cover (risk.ts Where.kept): asked of git by the gate before it
+  // decides. Without it a recursive delete inside the folder is judged by the names of what it deletes.
+  kept?: (specs: string[]) => number | null;
   // Whether a program's name on this machine is the program itself and not a version manager's shim (shims.ts):
   // looked up by the gate before it decides, so this only reads the answer. Without it the reading forms of such
   // programs (node --version) are not reads.
@@ -392,11 +403,12 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
     const o = ownerOnlyNamed(w, cwd, f, "writes");
     if (o) return onlyOwner(`the command: ${o.why}`, o.rule);
   }
-  const risks = risksOf(parts);
+  const risks = risksOf(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, kept: f.kept, land: f.own && ((p) => f.own!().land(p)) });
   if (risks.length) {
-    if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]}.` };
-    // (Each risk is the rule's own few words; a line of several is named by its first.)
-    return { ask: { risk: "high", why: `the command ${risks.join(" and ")}`, rule: risks.length > 1 ? `${risks[0]}, and ${risks.length - 1} more` : risks[0], suggest: [] } };
+    if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]!.why}.` };
+    // (The rule is the first reason's class in its few words; a line of several classes says how many more.)
+    const classes = [...new Set(risks.map((r) => r.rule))];
+    return { ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${RULE_WORDS[classes[0]!]}, and ${classes.length - 1} more` : RULE_WORDS[classes[0]!], suggest: [] } };
   }
   if (f.mode === "full-auto") return { allow: true };
   const shellRules = f.rules.filter((r) => r.kind === "shell");

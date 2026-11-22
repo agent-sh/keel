@@ -100,7 +100,9 @@ test("a hook's allow answers the card the owner would have got, for a call insid
   // What leaves the session's scope still asks: an edit outside the workspace, a command nothing confines, a tool.
   expect((await outcome(write(outside()))).what).toBe("card low");
   expect((await outcome(bash("npm install left-pad"))).what).toBe("card low");
-  expect((await outcome(bash("rm -rf /var/lib/thing"))).what).toBe("card low");
+  expect((await outcome(bash("mv build /var/lib/thing"))).what).toBe("card low");
+  // (A delete outside the session's folder is high risk, which no hook answers.)
+  expect((await outcome(bash("rm -rf /var/lib/thing"))).what).toBe("card high");
   // A command whose plain shape writes a start file is the owner's alone: a card no grant is offered on.
   const start = await outcome(bash(`echo x >> ${homedir()}/.bashrc`));
   expect([start.what, start.card?.suggest]).toEqual(["card high", []]);

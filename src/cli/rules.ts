@@ -62,7 +62,7 @@ export const rulesCmd = command("rules", USAGE, {
     const verdict = "allow" in d ? "allow" : "deny" in d ? "deny" : "ask";
     if (v.json) return (printJson({ sample, tool, mode, cwd, decision: verdict, detail: d, rules: rules.length }), EXIT.ok);
     const why = "allow" in d ? d.why : "deny" in d ? d.deny : d.ask.why;
-    console.log(`${verdict}${"ask" in d ? ` (${d.ask.risk} risk)` : ""}: ${tool} ${line(sample)} in ${cwd}, mode ${mode}, ${rules.length} rule${rules.length === 1 ? "" : "s"} in scope`);
+    console.log(`${verdict}${"ask" in d ? ` (${d.ask.risk} risk${d.ask.rule ? `: ${d.ask.rule}` : ""})` : ""}: ${tool} ${line(sample)} in ${cwd}, mode ${mode}, ${rules.length} rule${rules.length === 1 ? "" : "s"} in scope`);
     if (why) console.log(`  ${why}`);
     if ("ask" in d && d.ask.suggest.length) console.log(`  an "always" would grant: ${d.ask.suggest.map((s) => `${s.kind} ${s.pattern}`).join(", ")}`);
     return EXIT.ok;

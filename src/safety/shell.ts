@@ -955,9 +955,6 @@ export function lineRisk(parts: Simple[]): string | null {
   return runs ? "runs a downloaded script" : null;
 }
 
-// Every reason the line is high risk: each part's, and the line's own.
-export const risksOf = (parts: Simple[]): string[] => [...new Set([...parts.map(highRisk), lineRisk(parts)].filter((r): r is string => !!r))];
-
 // A rule pattern in Claude Code's form: `git log *` matches `git log` and
 // anything after it; a pattern without `*` matches exactly. `*` elsewhere
 // stands for any text.
