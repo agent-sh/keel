@@ -1,23 +1,32 @@
 // The keel: the rail along the left edge. It is the list whenever there is
 // room: sessions by folder and machine, each with its title, state and time,
-// and the archive. Folded (Ctrl B, or no room beside the stations asked for)
-// it is a column of marks, each a session's state and a short code of its
-// title, banded by what it needs from you. A card beside the entry under the
-// pointer or the focus says the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
+// and the archive. A row keeps its place and its height: what its session
+// needs is said by its mark and its word, and counted on the line above the
+// list, where a press goes to the next one. Under the pointer or the keyboard
+// nothing moves at all (lib/list-order.ts, lib/list-hold.ts). With little
+// room beside the panes the list is one line a session, the mark and the
+// title. Folded (Ctrl B, or no room for a title) it is a column of marks,
+// each a session's state and a short code of its title, banded by what it
+// needs from you. A card beside the entry under the pointer or the focus says
+// the rest. On a phone the list is a drawer.
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
-import { machineName, useFleet } from "../lib/fleet.ts";
+import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
+import { actedOn, forgetActed, jumpNext, listActed, nameCounts, onUnfilter, useActed, useCounts, useHand, type Hand, type Kind } from "../lib/list-hold.ts";
+import { folders, held as heldList, tally } from "../lib/list-order.ts";
+import { useQueued } from "../lib/queued.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
+import { opened, openFocus } from "../lib/self-focus.ts";
 import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { AT_REST, branchOf, lastLine, LIST_TIER, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { AT_REST, branchOf, lastLine, useSessionState, useSessionStates, WATCH_LABEL, watchLabel, type SessionState, type Watch } from "../lib/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
-import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
+import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
 import { failWord, folderOf, Mark, modelOf, stateClock, timed, useNow, whyText } from "./Mark.tsx";
@@ -36,36 +45,28 @@ import { StuckStrip } from "./Stuck.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
-// Sessions grouped by folder (and machine, for another machine's), each in
-// the list's order; the folders in the order of their first session (by
-// name: the folder's name).
-function groups(sessions: Session[], cmp: (a: Session, b: Session) => number, byName: boolean) {
-  const by = new Map<string, Session[]>();
-  for (const s of sessions) {
-    const k = `${s.machine ?? ""}\u0000${s.workspace}`;
-    (by.get(k) ?? by.set(k, []).get(k)!).push(s);
-  }
-  return [...by.entries()]
-    .map(([k, list]) => ({ key: k, ws: list[0]!.workspace, machine: list[0]!.machine ?? undefined, list: list.sort(cmp) }))
-    .sort((a, b) => (byName ? base(a.ws).localeCompare(base(b.ws)) : 0) || cmp(a.list[0]!, b.list[0]!));
-}
+// What the list is drawn from, for every group in it: the states its order and
+// its folds read (held still under the hand), the sessions that left while it
+// was held, and whether the list is the narrow one.
+const ListCtx = createContext<{ watches: Record<string, Watch>; gone: Set<string>; narrow: boolean }>({ watches: {}, gone: new Set(), narrow: false });
 
 // The card beside an entry: shown at once for a mark (it has no words of its
 // own), after a pause for a list row (its title is already there), and at
 // once for either on keyboard focus.
-// `row`: the entry is a list row, which already shows the title, the state and the folder.
+// `row`: the entry is a list row, which already shows the title, the state and the folder
+// (a row of the narrow list shows the title only: its card is the whole one).
 type Card = { s: Session; y: number; left: number; row: boolean };
-const CardCtx = createContext<(s: Session, wait: number) => Record<string, (e: { currentTarget: HTMLElement }) => void>>(() => ({}));
+const CardCtx = createContext<(s: Session, wait: number, row?: boolean) => Record<string, (e: { currentTarget: HTMLElement }) => void>>(() => ({}));
 function useCard() {
   const [card, setCard] = useState<Card | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const hide = () => { clearTimeout(timer.current); setCard(null); };
-  const bind = (s: Session, wait: number) => {
+  const bind = (s: Session, wait: number, row = wait > 0) => {
     const show = (ms: number) => (e: { currentTarget: HTMLElement }) => {
       const r = e.currentTarget.getBoundingClientRect();
       const edge = e.currentTarget.closest(".k-rail")?.getBoundingClientRect().right ?? r.right;
       clearTimeout(timer.current);
-      const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8, row: wait > 0 });
+      const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8, row });
       if (ms) timer.current = setTimeout(set, ms); else set();
     };
     return { onPointerEnter: show(wait), onPointerLeave: hide, onFocus: show(0), onBlur: hide, onClick: hide, onDragStart: hide };
@@ -95,8 +96,34 @@ function stepRows(e: KeyboardEvent<HTMLElement>) {
   (e.key === "Home" ? rows[0] : e.key === "End" ? rows.at(-1) : rows[i + (e.key === "ArrowDown" ? 1 : -1)])?.focus();
 }
 
-// States a row spells out; a finished or untouched session is its mark alone.
+// Whether the hand is on the list (lib/list-hold.ts): the rail says, the lists in it read.
+const HandCtx = createContext<Pick<Hand, "held"> & Partial<Pick<Hand, "on">>>({ held: false });
+
+// The sessions and the states a list is ordered from: as they are, or, while
+// the hand is on the list, as they were when it arrived (lib/list-order.ts).
+// `key`: what the owner chose for the list (its tab, filter and arrangement):
+// a change of theirs is drawn at once.
+const NONE = new Set<string>(), NO_LATE: Session[] = [];
+function useHeld(held: boolean, key: string, now: Session[], watches: Record<string, Watch>) {
+  const snap = useRef<{ key: string; list: Session[]; watches: Record<string, Watch> } | null>(null);
+  useActed();
+  const was = held && snap.current?.key === key ? snap.current : null;
+  if (!was) {
+    snap.current = { key, list: now, watches };
+    return { list: now, watches, gone: NONE, late: NO_LATE };
+  }
+  const r = heldList(was.list, now, actedOn);
+  // A session the owner acted on, and one that came since, are in the state they are in now.
+  const ws = { ...was.watches };
+  for (const s of [...r.list, ...r.late]) if (actedOn(s.id) || !(s.id in ws)) ws[s.id] = watches[s.id] ?? "idle";
+  snap.current = { key, list: r.list, watches: was.watches };
+  return { list: r.list, watches: ws, gone: r.gone, late: r.late };
+}
+
+// States a row spells out in their ink; a session at rest says its word quietly.
 const SPELLED: Watch[] = ["need", "work", "wait", "fail", "declined", "resume", "stop"];
+// States whose session may hold a message of the owner's in its queue.
+const QUEUES: Watch[] = ["work", "wait", "need", "stop", "resume"];
 
 // Opens a session in a new pane beside the one worked in (Ctrl or middle click, the row's button).
 export function openBeside(id: string) {
@@ -105,22 +132,56 @@ export function openBeside(id: string) {
   navigate({ name: "session", id });
 }
 
-function Row({ s, active, where }: { s: Session; active: boolean; where?: boolean }) {
+// The row of a session a pane already shows was pressed: the keyboard goes to
+// that pane's message box, by the rule for a box that takes it by itself
+// (lib/self-focus.ts). A pane where a card waits keeps the cards' own rule.
+function intoBox(id: string) {
+  const pane = document.querySelector(`.k-station[data-station="${CSS.escape(id)}"]`);
+  const cards = pane?.querySelector<HTMLElement>('[data-testid="composer-asks"]');
+  if (!pane || (cards && cards.childElementCount > 0 && cards.offsetHeight > 0)) return;
+  opened();
+  openFocus(pane.querySelector<HTMLElement>('[data-testid="composer"]'));
+}
+
+// The row after this one in the list (before it, for the last): where the keyboard goes when this one leaves.
+function neighbour(row: HTMLElement | null): HTMLElement | undefined {
+  const rows = [...(row?.closest('[data-testid="session-list"]')?.querySelectorAll<HTMLElement>('[data-testid="session-row"]') ?? [])];
+  const i = row ? rows.indexOf(row) : -1;
+  return i < 0 ? undefined : rows[i + 1] ?? rows[i - 1];
+}
+
+// `given`: the session as the list ordered it (held still under the hand); the row shows it as it is now.
+// `gone`: it left the list while the list was held, and its row stays, dimmed, until the hand has left.
+function Row({ s: given, active, where, gone }: { s: Session; active: boolean; where?: boolean; gone?: boolean }) {
+  const live = useStore((x) => x.sessions[given.id]);
+  const deleted = useStore((x) => !!x.gone[given.id]);
+  const s = live ?? given;
+  const { narrow } = useContext(ListCtx);
   const restore = s.archived;
   const st = useSessionState(s);
   const w = st.watch;
-  const now = useNow(timed(st));
-  const card = useContext(CardCtx)(s, 450);
+  // A machine that does not answer: what its rows say is the last it told, so they are dimmed and their clocks stand.
+  const offline = useWhere(s)?.reach === "offline";
+  const now = useNow(timed(st) && !offline);
+  const card = useContext(CardCtx)(s, narrow ? 250 : 450, !narrow);
   // A message of the session waits for the daemon to be back and goes out by itself: said on the
   // state line, whatever the state is (it is the reason itself when the session is otherwise at rest).
   const waitingSend = useWaitingSend(s.id);
+  const queued = useQueued(s.id, QUEUES.includes(w) && !restore);
   const shown = useStations((x) => x.shown.includes(s.id));
   const panes = useStations((x) => x.count);
   const [placing, setPlacing] = useState(false);
   const row = useRef<HTMLDivElement>(null);
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
+  const left = !gone ? null : deleted || (!live && !given.archived) ? "Deleted" : given.archived ? "Restored" : "Archived";
   // The card beside the row is away while the menu of panes is open over it.
   useEffect(() => { if (placing && row.current) card.onClick?.({ currentTarget: row.current }); }, [placing]);
+  const open = (beside: boolean) => {
+    if (left === "Deleted") return;
+    if (beside) return openBeside(s.id);
+    navigate({ name: "session", id: s.id });
+    if (shown) intoBox(s.id);
+  };
   return (
     <div
       ref={row}
@@ -131,18 +192,20 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       data-watch={w}
       data-shown={shown || undefined}
       data-unread={unread || undefined}
+      data-offline={offline || undefined}
+      data-gone={gone || undefined}
+      aria-disabled={left === "Deleted" || undefined}
       aria-current={active ? "page" : undefined}
       {...(placing ? {} : card)}
       draggable
       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
-      onClick={(e) => { card.onClick?.(e); if (e.ctrlKey || e.metaKey) openBeside(s.id); else navigate({ name: "session", id: s.id }); }}
+      onClick={(e) => { card.onClick?.(e); open(e.ctrlKey || e.metaKey); }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openBeside(s.id); } }}
       onKeyDown={(e) => {
         if (e.key !== "Enter" || e.target !== e.currentTarget) return;
         // Shift Enter: the menu of panes, to place the session in one of them.
         if (e.shiftKey && panes > 1 && !restore && !phone()) { e.preventDefault(); return setPlacing(true); }
-        if (e.ctrlKey || e.metaKey) openBeside(s.id);
-        else navigate({ name: "session", id: s.id });
+        open(e.ctrlKey || e.metaKey);
       }}
       className="k-row group"
     >
@@ -150,46 +213,66 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       <span className="k-row-main">
         <span className="k-row-title" title={s.title || undefined}>{s.title || "New session"}</span>
       </span>
-      {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
-      <SessionBadges sessionId={s.id} />
-      {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
-      {timed(st)
-        ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
-        : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
-      {!restore && !shown && !phone() && (
-        <button type="button" tabIndex={-1} title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
-          <Columns2 />
+      {/* The first line's end: the tag, the marks, the time, and under the pointer the row's actions in the time's place. */}
+      <span className="k-row-end">
+        {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
+        <SessionBadges sessionId={s.id} />
+        {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
+        {offline
+          ? <span className="k-row-time group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-offline title="Its machine does not answer: this is the last it told">offline</span>
+          : timed(st)
+          ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
+          : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
+        {!restore && !shown && !phone() && (
+          <button type="button" tabIndex={-1} title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
+            <Columns2 />
+          </button>
+        )}
+        {!restore && panes > 1 && !phone() && (
+          <PaneMenu id={s.id} label="Place in a pane (Shift Enter)" testid="row-place" tabIndex={-1} open={placing} onOpenChange={setPlacing} back={row} className="k-row-act hidden group-hover:grid group-focus-within:grid data-popup-open:grid">
+            <PanelsTopLeft />
+          </PaneMenu>
+        )}
+        <button
+          type="button"
+          tabIndex={-1}
+          data-testid="row-archive"
+          title={restore ? "Restore" : "Archive"}
+          aria-label={restore ? "Restore session" : "Archive session"}
+          onClick={(e) => {
+            e.stopPropagation();
+            // What the owner does to a row shows at once, also in a list held still under their hand.
+            listActed(s.id);
+            // Done from the keyboard, the keyboard goes on to the next row (a press with the pointer leaves it to the message box).
+            if (e.detail === 0) neighbour(row.current)?.focus();
+            archive(s, !restore).catch(reportError);
+          }}
+          className="k-row-act hidden group-hover:grid group-focus-within:grid"
+        >
+          {restore ? <ArchiveRestore /> : <Archive />}
         </button>
-      )}
-      {!restore && panes > 1 && !phone() && (
-        <PaneMenu id={s.id} label="Place in a pane (Shift Enter)" testid="row-place" tabIndex={-1} open={placing} onOpenChange={setPlacing} back={row} className="k-row-act hidden group-hover:grid group-focus-within:grid data-popup-open:grid">
-          <PanelsTopLeft />
-        </PaneMenu>
-      )}
-      <button
-        type="button"
-        tabIndex={-1}
-        data-testid="row-archive"
-        title={restore ? "Restore" : "Archive"}
-        aria-label={restore ? "Restore session" : "Archive session"}
-        onClick={(e) => {
-          e.stopPropagation();
-          archive(s, !restore).catch(reportError);
-        }}
-        className="k-row-act hidden group-hover:grid group-focus-within:grid"
-      >
-        {restore ? <ArchiveRestore /> : <Archive />}
-      </button>
-      {/* Two lines at most. The second is the state with why, as wide as the row (and the folder, where the list is not grouped by it). */}
-      {(SPELLED.includes(w) || where || waitingSend) && (
-        <span className="k-row-sub">
-          {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>}
-          {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-          {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
-          {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
-          {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
-        </span>
-      )}
+      </span>
+      {/* The second line is every row's, with words or without: the state with why, as wide as the row
+          (and the folder, where the list is not grouped by it). A row is as high at rest as at work. */}
+      <span className="k-row-sub">
+        {left
+          ? <span className="k-row-state" data-testid="row-gone">{left}</span>
+          : SPELLED.includes(w)
+          ? <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
+          : <span className="k-row-state k-row-rest" data-testid="row-rest">{WATCH_LABEL[w]}</span>}
+        {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
+        {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
+        {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
+        {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
+        {/* The line's end, under the time: a message of theirs that waits in the session's queue, and
+            new since they looked (when the state does not already call them). */}
+        {!left && (queued > 0 || (unread && !["need", "fail", "declined"].includes(w))) && (
+          <span className="k-row-marks">
+            {queued > 0 && <span className="k-row-queued" data-testid="row-queued" title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}>{queued} queued</span>}
+            {unread && !["need", "fail", "declined"].includes(w) && <span className="k-row-new" data-testid="row-new" title="New since you looked">new</span>}
+          </span>
+        )}
+      </span>
     </div>
   );
 }
@@ -201,30 +284,36 @@ function rootSessionId(sessions: Record<string, Session>, current: string | null
   return s?.id ?? current;
 }
 
-// A folder shows its newest sessions; the rest open on request (and the open
+// A folder shows its first sessions; the rest open on request (and the open
 // one is always shown, also when it is a subagent's: its parent's row then).
 // A session that needs the owner, failed, works or waits is never folded
-// away: only the ones at rest are (done, stopped, not started).
-// Within the folder what needs the owner comes first, then what failed, what
-// waits, what works, then what is at rest; inside each the list's own order holds.
+// away: only the ones at rest are (done, stopped, not started), and a press
+// on a count above the list unfolds the one it goes to. A row that was shown
+// stays shown until they ask for fewer, so a turn that ends takes no row away. The order is the list's own
+// (lib/list-order.ts): a row is where the arrangement puts it, not where its state would.
 const SHOWN = 6;
-export function Group({ list: given, current, every, where }: { list: Session[]; current: string | null; every?: boolean; where?: boolean }) {
+export function Group({ list, current, every, where }: { list: Session[]; current: string | null; every?: boolean; where?: boolean }) {
   const [more, setAll] = useState(false);
   const all = more || !!every;
   const root = useStore((x) => rootSessionId(x.sessions, current));
-  const watches = useWatches(given);
-  const list = useMemo(() => [...given].sort((a, b) => LIST_TIER[watches[a.id] ?? "idle"] - LIST_TIER[watches[b.id] ?? "idle"]), [given, watches]);
-  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || !AT_REST.includes(watches[s.id] ?? "idle"));
+  const { watches, gone } = useContext(ListCtx);
+  const kept = useRef(new Set<string>());
+  useActed();
+  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || kept.current.has(s.id) || actedOn(s.id) || !AT_REST.includes(watches[s.id] ?? "idle"));
+  for (const s of shown) kept.current.add(s.id);
   return (
     <div className="flex flex-col gap-px">
       {shown.map((s) => (
         <div key={s.id}>
-          <Row s={s} active={current === s.id} where={where} />
-          <SessionChildren parentId={s.id} current={current} />
+          <Row s={s} active={current === s.id} where={where} gone={gone.has(s.id)} />
+          {/* The agents' line under the row. Its height is held with the list's (see Index). */}
+          <div className="k-row-kids" onClickCapture={(e) => { e.currentTarget.style.height = ""; e.currentTarget.style.overflow = ""; }}>
+            <SessionChildren parentId={s.id} current={current} />
+          </div>
         </div>
       ))}
       {list.length > shown.length && <button type="button" onClick={() => setAll(true)} className="k-more">{list.length - shown.length} more</button>}
-      {more && list.length > SHOWN && <button type="button" onClick={() => setAll(false)} className="k-more">Show fewer</button>}
+      {more && list.length > SHOWN && <button type="button" onClick={() => { kept.current.clear(); setAll(false); }} className="k-more">Show fewer</button>}
     </div>
   );
 }
@@ -241,7 +330,9 @@ let openOn: "active" | "archived" = "active";
 // Folded: one mark per session, banded by what each needs from you, each band
 // headed by its word and count, in the list's order: what needs you, what
 // failed, what waits, what works, then what is at rest. Within a band the
-// newest work is on top. Every band is on screen: one with more marks than
+// newest session is on top, and a mark keeps that place while its session
+// works. Under the hand the marks stay in the band they were in: the mark
+// itself shows the state as it is. Every band is on screen: one with more marks than
 // the rail has room for ends in a count that opens the list. A finished
 // session you have not looked at keeps a full mark; one you have seen goes
 // quiet. Hovering or focusing a mark shows its card.
@@ -292,15 +383,22 @@ function useRailRoom(bands: number, marks: number) {
 }
 function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
-  const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.updated - a.updated), [sessions]);
-  const codes = useMemo(() => callsigns(list), [list]);
-  const states = useSessionStates(list);
-  const watches = useMemo(() => Object.fromEntries(list.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>, [list, states]);
+  const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.created - a.created || b.id.localeCompare(a.id)), [sessions]);
+  const codes = useMemo(() => callsigns(live), [live]);
+  const states = useSessionStates(live);
+  const now = useMemo(() => Object.fromEntries(live.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>, [live, states]);
+  // Held: each mark in the band it was in, one whose session left still there (dimmed), and what came since in a band of its own at the end.
+  const { list: ordered, watches: banded, gone, late } = useHeld(useContext(HandCtx).held, "marks", live, now);
+  const list = ordered.map((s) => sessions[s.id] ?? s);
+  const watches = now;
   const shown = useStations((x) => x.shown);
   const unread = useAuto((s) => s.unread.sessions);
   const bind = useContext(CardCtx);
-  const bands = BANDS.map((b) => ({ ...b, items: list.filter((s) => b.w.includes(watches[s.id]!)) })).filter((b) => b.items.length);
-  const { probe, rows } = useRailRoom(bands.length, list.length);
+  const bands = [
+    ...BANDS.map((b) => ({ ...b, items: list.filter((s) => b.w.includes(banded[s.id] ?? "idle")) })),
+    { w: ["idle"] as Watch[], label: "New", short: "New", items: late },
+  ].filter((b) => b.items.length);
+  const { probe, rows } = useRailRoom(bands.length, list.length + late.length);
   const fit = fitBands(bands.map((b) => b.items.length), rows);
   return (
     <>
@@ -328,14 +426,15 @@ function Marks({ current }: { current: string | null }) {
                       data-watch={watches[s.id]}
                       data-shown={shown.includes(s.id) || undefined}
                       data-unread={unread[s.id] ? true : undefined}
+                      data-gone={gone.has(s.id) || undefined}
                       aria-current={current === s.id ? "page" : undefined}
-                      aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id]!, states[s.id]!.agents)}${states[s.id]!.text ? `: ${states[s.id]!.text}` : ""}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}`}
+                      aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id] ?? "idle", states[s.id]?.agents ?? 0)}${states[s.id]?.text ? `: ${states[s.id]!.text}` : ""}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}`}
                       {...card}
                       draggable
                       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
                       onClick={(e) => { card.onClick?.(e); navigate({ name: "session", id: s.id }); }}
                     >
-                      <Mark w={watches[s.id]!} />
+                      <Mark w={watches[s.id] ?? "idle"} />
                       <span className="k-tick-code" data-testid="rail-code" aria-hidden="true">{codes[s.id]}</span>
                       <WherePip s={s} />
                       <span className="sr-only">{s.title || "New session"}</span>
@@ -413,8 +512,63 @@ function RailCard({ s: given, y, left, row }: { s: Session; y: number; left: num
   );
 }
 
+// The line above the list: how many sessions need the owner, failed, work, have
+// something new, or sit on a machine that does not answer. It is always there
+// and always as high, so nothing under it moves when a count comes or goes. A
+// press on a count goes to the row of the next session it names, wherever
+// that row is (Alt A, the key that was there before, opens the next that needs them).
+const COUNTS: { kind: Kind; word: (n: number) => string; watch?: Watch; says: string }[] = [
+  { kind: "need", word: (n) => (n === 1 ? "needs you" : "need you"), watch: "need", says: "Needs you" },
+  { kind: "fail", word: () => "failed", watch: "fail", says: "Failed" },
+  { kind: "work", word: () => "working", watch: "work", says: "Working" },
+  { kind: "unread", word: () => "new", says: "New since you looked" },
+  { kind: "offline", word: () => "offline", says: "On a machine that does not answer" },
+];
+function Summary() {
+  const counts = useCounts();
+  const sessions = useStore((s) => s.sessions);
+  const shown = COUNTS.filter((c) => counts[c.kind].length > 0);
+  const calls = counts.need.length + counts.fail.length > 0;
+  return (
+    <div className="k-sum" data-testid="list-summary" role="group" aria-label="What the sessions need">
+      {!calls && <span className="k-sum-calm" data-testid="sum-calm">Nothing needs you</span>}
+      {shown.map((c) => {
+        const ids = counts[c.kind];
+        const names = ids.slice(0, 6).map((id) => sessions[id]?.title || "New session").join("; ");
+        return (
+          <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} onClick={() => jumpNext(c.kind)}
+            aria-label={`${ids.length} ${c.word(ids.length)}. Go to the next`} title={`${c.says}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
+            {c.watch ? <Mark w={c.watch} /> : c.kind === "offline" ? <ServerOff aria-hidden="true" /> : <span className="k-sum-dot" aria-hidden="true" />}
+            <b className="k-sum-n">{ids.length}</b>
+            <span className="k-sum-word">{c.word(ids.length)}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Keeps whom each count names, for the line above the list and for the key, also while the list is folded.
+function CountsKeeper() {
+  const sessions = useStore((s) => s.sessions);
+  const top = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper), [sessions]);
+  const states = useSessionStates(top);
+  const unread = useAuto((x) => x.unread.sessions);
+  // The machines that do not answer, as one word: it changes when one of them does.
+  const down = useFleet((x) => [...new Set(top.map((s) => s.machine).filter((m): m is string => !!m))].filter((m) => machineReach(m, x).state === "offline").sort().join(" "));
+  const counts = useMemo(() => {
+    const off = new Set(down.split(" ").filter(Boolean));
+    return { ...tally(top, states as Record<string, SessionState>, unread), offline: top.filter((s) => s.machine && off.has(s.machine)).map((s) => s.id) };
+  }, [top, states, unread, down]);
+  useEffect(() => nameCounts(counts), [counts]);
+  return null;
+}
+
 function Index({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
+  const hand = useContext(HandCtx), held = hand.held;
+  const narrow = useRail().narrow;
+  const nav = useRef<HTMLElement>(null);
   useFleet((s) => s.machines.length); // machine names in the group heads
   const [tab, setTab] = useState<"active" | "archived">(() => { const t = openOn; openOn = "active"; return t; });
   const panel = useId();
@@ -448,15 +602,37 @@ function Index({ current }: { current: string | null }) {
   // The filter words and the arrangement (ListArrange.tsx): pinned sessions stay in view unless the words leave them out.
   const [q, setQ] = useState("");
   const arr = useArrange();
-  const watches = useWatches(base_);
-  const listed = base_.filter((s) => (!tag || (s.settings.tags ?? []).includes(tag)) && (!q || matches(s, q)));
+  const states = useSessionStates(base_);
+  const liveWatches = useMemo(() => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, st.watch])) as Record<string, Watch>, [states]);
+  // Under the hand the list is drawn from what it held when the hand arrived: no row moves.
+  const from = useHeld(held, `${tab}|${tag ?? ""}|${q}|${arr.group}|${arr.sort}|${arr.hideDone}`, base_, liveWatches);
+  const watches = from.watches;
+  const fits = (s: Session) => (!tag || (s.settings.tags ?? []).includes(tag)) && (!q || matches(s, q));
+  const listed = from.list.filter(fits);
+  // What came while the list was held waits at its end.
+  const late = from.late.filter(fits);
+  // What the owner did is in the list once it is drawn free of the hand: nothing of it is kept for the next hold.
+  const acts = useActed();
+  useEffect(() => {
+    if (held) return;
+    const t = setTimeout(forgetActed, 2000);
+    return () => clearTimeout(t);
+  }, [held, acts]);
+  // The agents' line under a row is as high as it was when the hand arrived (a press on it is theirs: Group lets it go).
+  useLayoutEffect(() => {
+    const els = held ? [...(nav.current?.querySelectorAll<HTMLElement>(".k-row-kids") ?? [])] : [];
+    for (const el of els) { el.style.height = `${el.getBoundingClientRect().height}px`; el.style.overflow = "clip"; }
+    return () => { for (const el of els) { el.style.height = ""; el.style.overflow = ""; } };
+  }, [held]);
+  // A count pressed above the list shows every session again when its row is filtered out.
+  useEffect(() => { onUnfilter(() => { setQ(""); setTags({}); }); return () => onUnfilter(null); }, []);
   const pinned = listed.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!);
   // Keep the open branch in the list even when its root finishes.
   const root = rootSessionId(sessions, current);
   const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root));
   const hidden = listed.length - pinned.length - rest.length;
-  const cmp = order(arr, watches);
-  const grouped = arr.group === "folder" ? groups(rest, cmp, arr.sort === "name") : [];
+  const cmp = order<Session>(arr, watches);
+  const grouped = arr.group === "folder" ? folders(rest, arr, watches) : [];
   // By project or by their folders, the archive is one list (a project's archived sessions are on its page).
   const flat = arr.group === "flat" || ((arr.group === "project" || arr.group === "mine") && tab !== "active") ? [...rest].sort(cmp) : [];
   // Same-named folders read apart (beta/api, alpha/api); a machine's folders are named among its own.
@@ -472,7 +648,7 @@ function Index({ current }: { current: string | null }) {
     <>
       <Seg kind="tabs" panel={panel} fill className="mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
       <ListFind q={q} setQ={setQ} />
-      {tags.length > 0 && (
+      {tags.length > 0 && !narrow && (
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (
             <button key={t} type="button" aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}
@@ -484,14 +660,16 @@ function Index({ current }: { current: string | null }) {
       )}
       {/* The tabs' panel: it takes no box of its own, the list keeps its place in the rail. */}
       <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="contents">
-      <nav className="k-index" data-testid="session-list" aria-label="Sessions" onKeyDown={stepRows}>
+      <Summary />
+      <ListCtx.Provider value={{ watches, gone: from.gone, narrow }}>
+      <nav ref={nav} className="k-index" data-testid="session-list" data-held={held || undefined} aria-label="Sessions" onKeyDown={stepRows} {...hand.on}>
         {pinned.length > 0 && (
           <section className="k-group" data-testid="pinned-group">
             <h2 className="k-group-head"><Pin /><span className="truncate">Pinned</span></h2>
             <Group list={pinned} current={current} every={!!q} where />
           </section>
         )}
-        {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && (
+        {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && late.length === 0 && (
           q
             ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="k-link text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
             : hidden > 0
@@ -528,7 +706,14 @@ function Index({ current }: { current: string | null }) {
         {hidden > 0 && (grouped.length > 0 || flat.length > 0) && (
           <button type="button" className="k-more" data-testid="hidden-done" onClick={() => setArrange({ hideDone: false })}>{hidden} finished hidden</button>
         )}
+        {late.length > 0 && (
+          <section className="k-group" data-testid="late-group">
+            <h2 className="k-group-head"><Plus /><span className="truncate">New</span></h2>
+            <Group list={late} current={current} every where />
+          </section>
+        )}
       </nav>
+      </ListCtx.Provider>
       </div>
     </>
   );
@@ -549,6 +734,17 @@ export function Sidebar({ open }: { open: boolean }) {
   const aside = useRef<HTMLElement>(null);
   useUI((s) => s.listW);
   useEffect(hide, [open, current]);
+  // The hand on the list: while it is there, nothing in the list moves, and what stands above it keeps its height.
+  const hand = useHand();
+  useEffect(() => hand.reset(), [open]);
+  const top = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = hand.held ? top.current : null;
+    if (!el) return;
+    el.style.height = `${el.getBoundingClientRect().height}px`;
+    el.style.overflow = "clip";
+    return () => { el.style.height = ""; el.style.overflow = ""; };
+  }, [hand.held]);
   // The one control that shows the list or folds it, in the same corner either way.
   const Toggle = open ? PanelLeftClose : PanelLeftOpen;
   const toggle = (
@@ -567,14 +763,14 @@ export function Sidebar({ open }: { open: boolean }) {
   );
 
   return (
-    <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: listWidth() } : undefined}>
+    <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-narrow={(open && rail.narrow) || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: rail.over ? listWidth() : rail.width } : undefined}>
       <div className="k-rail-brand">
         <span className="k-logo" data-live={connected || undefined} title={connected ? "Connected to the daemon" : "Reconnecting to the daemon"}><Logo /></span>
         <span className="k-brand-name">Keel</span>
         {open && !phone() && <PaneCount />}
         {open && toggle}
       </div>
-      {open && !rail.over && !phone() && (
+      {open && !rail.over && !rail.narrow && !phone() && (
         <Grip
           className="k-rail-grip"
           testid="list-grip"
@@ -608,11 +804,14 @@ export function Sidebar({ open }: { open: boolean }) {
           <Sparkles /><span className="k-act-label">Helper</span>{open && <Kbd keys="mod+j" className="k-act-key ml-auto" />}
         </button>
       </div>
-      <StuckStrip open={open} />
+      <div ref={top} className="k-rail-top"><StuckStrip open={open} /></div>
+      <CountsKeeper />
       <CardCtx.Provider value={bind}>
-        <div id="k-sessions" className="k-rail-body">
-          {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" aria-label="Sessions by state" onKeyDown={stepRows}><Marks current={current} /></nav>}
-        </div>
+        <HandCtx.Provider value={hand}>
+          <div id="k-sessions" className="k-rail-body">
+            {open ? <Index current={current} /> : <nav className="k-rail-list" data-testid="session-list" data-held={hand.held || undefined} aria-label="Sessions by state" onKeyDown={stepRows} {...hand.on}><Marks current={current} /></nav>}
+          </div>
+        </HandCtx.Provider>
       </CardCtx.Provider>
       {card && <RailCard s={card.s} y={card.y} left={card.left} row={card.row} />}
       <div className="k-rail-foot">

@@ -274,11 +274,11 @@
    being listed here; no other rule and no component names the face
    (src/ui-conventions.test.ts). */
 /* 1. A state word: Working, Needs you, Failed, Done, Stopped, Offline. */
-.k-face-state, .k-station-word, .k-row-state, .k-row-class, .k-stuck-head, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-act-mark, .k-pane-empty-word {
+.k-face-state, .k-station-word, .k-row-state, .k-row-class, .k-row-new, .k-row-queued, .k-sum-word, .k-stuck-head, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-act-mark, .k-pane-empty-word {
   font-family: var(--font-inst); font-stretch: 75%;
 }
 /* 2. A figure a glance reads: a clock, an age, a count. */
-.k-face-figure, .k-station-clock, .k-row-time, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
+.k-face-figure, .k-station-clock, .k-row-time, .k-sum-n, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
   font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
 }
 /* 3. A session's call sign on the folded rail. */

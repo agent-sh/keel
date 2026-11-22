@@ -1,8 +1,12 @@
 // The form the rail takes, and the measures the bridge lays out by. The rail
 // is the readable list (titles, state, time, by folder) whenever the panes
-// the owner chose still fit beside it. Only when they do not (many panes, a
-// side panel beside the helm, a narrow window), or when the list was folded by choice, is it
-// the column of marks; the list is then one press away, laid over the panes
+// the owner chose still fit beside it: at the width they gave it, else as
+// wide as the room beside the panes, down to the narrowest the list is
+// dragged to. With less room than that it is still a list of titles, one
+// line a session (the mark and the title, cut), down to a width where a
+// title can be read. Only below that (many panes, a side panel beside the
+// helm, a narrow window), or when the list was folded by choice, is it the
+// column of marks; the list is then one press away, laid over the panes
 // until a session is picked. Every measure is a rem, so it follows the text size.
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { getStations, MAX_PANES, useStations } from "./stations.ts";
@@ -24,7 +28,8 @@ function rootPx(): number {
 const rem = (n: number) => (n * rootPx()) / 16 || n * getUI().scale;
 export const railWidth = () => rem(64); // the marks
 export const paneMin = () => rem(416); // matches .k-station's min-width (26rem)
-const LIST = 300, LIST_MIN = 232, LIST_MAX = 560;
+// NARROW: the least a list of titles is worth: a dozen letters of a title beside its mark.
+const LIST = 300, LIST_MIN = 232, LIST_MAX = 560, NARROW = 120;
 export const listBounds = () => ({ min: rem(LIST_MIN), max: Math.max(rem(LIST_MIN), Math.min(rem(LIST_MAX), innerWidth - paneMin())), base: rem(LIST) });
 // The list's width: the dragged one within what fits, else the default.
 export function listWidth() {
@@ -67,19 +72,32 @@ function needed(width: number): number {
   return panes() * paneMin() + (beside ? sessionMin() - paneMin() + panelWidth(width) : 0);
 }
 
-// No room for the list beside the panes.
-export const railTight = (width = innerWidth) => !phone() && width - listWidth() < needed(width);
+// The room the list has beside the panes at their narrowest (a pixel for each pane's divider).
+const listRoom = (width: number) => Math.floor(width - needed(width)) - panes();
+// The list beside the panes: at the owner's width or what the room gives, while
+// that is a width the list is dragged to; with less, the narrow list of titles.
+function beside(width: number): { width: number; narrow: boolean } | null {
+  const room = listRoom(width);
+  const full = Math.min(listWidth(), room);
+  if (full >= Math.floor(rem(LIST_MIN))) return { width: full, narrow: false };
+  return room >= rem(NARROW) ? { width: room, narrow: true } : null;
+}
+
+// No room for a list of titles beside the panes.
+export const railTight = (width = innerWidth) => !phone() && !beside(width);
 
 // How many panes the window can hold (beside the folded rail).
 export const panesMax = (width = innerWidth) => Math.min(MAX_PANES, Math.max(1, Math.floor((width - railWidth()) / paneMin())));
 
-export type RailForm = { list: boolean; tight: boolean; over: boolean; width: number };
+// `narrow`: the list is the one-line list of titles. `width`: what the rail takes beside the panes.
+export type RailForm = { list: boolean; tight: boolean; over: boolean; narrow: boolean; width: number };
 export function railForm(width = innerWidth): RailForm {
   const ui = getUI();
-  const tight = railTight(width);
+  const fit = phone() ? { width: listWidth(), narrow: false } : beside(width);
+  const tight = !fit;
   const over = tight && ui.peek;
   const list = phone() || (ui.sidebar && !tight) || over;
-  return { list, tight, over, width: list && !over ? listWidth() : railWidth() };
+  return { list, tight, over, narrow: list && !over && !!fit?.narrow, width: list && !over ? fit!.width : railWidth() };
 }
 
 export function useRail(): RailForm {
@@ -130,8 +148,8 @@ export function toggleList(show?: boolean) {
 
 // A short code per session for its mark on the folded rail: the initials of
 // the title's first two telling words, so the mark reads as the session.
-// Two sessions never share one: the older keeps the initials, the newer takes
-// other letters of its title.
+// Two sessions never share one, in a folder or across them: the older keeps
+// the initials, the newer takes other letters of its title.
 const FILLER = new Set("a an the to of for and or in on at by with from into is are be how why what when where which that this it its as do does".split(" "));
 const letters = (w: string) => [...w].filter((c) => /[\p{L}\p{N}]/u.test(c));
 export function callsigns(sessions: { id: string; title: string; created: number }[]): Record<string, string> {

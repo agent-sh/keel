@@ -3,6 +3,7 @@
 // commands. The daemon keeps the marks; every client sees the same.
 import type { Session } from "../../../src/core/types.ts";
 import { confirmAction } from "../components/Confirm.tsx";
+import { listActed } from "./list-hold.ts";
 import { actions, api } from "./store.ts";
 
 export type Marks = { session_id: string; pinned: boolean; accept_messages: boolean; peer_turns: number; unread: boolean };
@@ -17,6 +18,7 @@ export const isPinned = (s: Session | undefined) => !!s?.settings.pinned_ms;
 
 // A pinned session leads the list on every device.
 export async function pin(id: string, on: boolean) {
+  listActed(id); // the owner's own act: the list shows it at once, held or not
   await actions.patch(id, { pinned: on } as any);
 }
 
@@ -33,6 +35,7 @@ export const setMaxSteps = (id: string, n: number) => actions.patch(id, { max_st
 // Archive; when the session still runs background commands, ask first and
 // stop them with it.
 export async function archive(s: Session, on = true) {
+  listActed(s.id);
   try {
     return await actions.patch(s.id, { archived: on });
   } catch (e) {

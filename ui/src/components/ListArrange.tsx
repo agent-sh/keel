@@ -1,29 +1,39 @@
 // How the session list is arranged: one compact control above it. A filter
 // box (title or folder words), and one menu for the rest: grouped by project,
-// by the owner's own folders, by working folder or one flat list, sorted by recent work, name or state, finished sessions
-// shown or hidden. The arrangement is kept; the filter words are not.
+// by the owner's own folders, by working folder or one flat list; sorted by
+// when a session was made (the default: a row keeps its place), by name, by
+// recent work or by state; finished sessions shown or hidden. The arrangement
+// is kept; the filter words are not. The order itself is lib/list-order.ts.
 import { Menu } from "@base-ui/react/menu";
 import { Check, Search, SlidersHorizontal, X } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { WATCH_RANK, type Watch } from "../lib/watch.ts";
+import { DEFAULT, keep, readArrange, type Arrange } from "../lib/list-order.ts";
+import type { Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 
-export type Arrange = { group: "project" | "mine" | "folder" | "flat"; sort: "recent" | "name" | "state"; hideDone: boolean };
-const DEFAULT: Arrange = { group: "folder", sort: "recent", hideDone: false };
+export { order, type Arrange } from "../lib/list-order.ts";
 const KEY = "keel.listArrange";
 
-let arrange: Arrange = (() => {
-  try { return { ...DEFAULT, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") }; } catch { return DEFAULT; }
-})();
+// The arrangement the browser keeps, on this version's defaults. A browser
+// that ran Keel before is told once, in the menu, that the default changed.
+const used = () => { for (let i = 0; i < localStorage.length; i++) if (localStorage.key(i)!.startsWith("keel.")) return true; return false; };
+let kept = readArrange(localStorage.getItem(KEY), used());
+let arrange: Arrange = kept.arrange;
 const subs = new Set<() => void>();
-export function setArrange(patch: Partial<Arrange>) {
-  arrange = { ...arrange, ...patch };
-  localStorage.setItem(KEY, JSON.stringify(arrange));
+const write = (next: typeof kept) => {
+  kept = next;
+  arrange = next.arrange;
+  localStorage.setItem(KEY, keep(next));
   subs.forEach((f) => f());
-}
-export const useArrange = () => useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => arrange);
+};
+// A first visit is on this version from the start: nothing changed for it, so no later load says so.
+if (localStorage.getItem(KEY) === null && !kept.note) localStorage.setItem(KEY, keep(kept));
+export const setArrange = (patch: Partial<Arrange>) => write({ ...kept, arrange: { ...arrange, ...patch } });
+const sub = (f: () => void) => (subs.add(f), () => subs.delete(f));
+export const useArrange = () => useSyncExternalStore(sub, () => arrange);
+const useNote = () => useSyncExternalStore(sub, () => kept.note);
 
 // Every word of the filter is in the title or the folder path.
 export const matches = (s: Session, q: string) => {
@@ -32,24 +42,19 @@ export const matches = (s: Session, q: string) => {
 };
 export const finished = (w: Watch | undefined) => w === "done" || w === "idle";
 
-// The order within a list (and of folders, by their first session).
-export function order(a: Arrange, watches: Record<string, Watch>) {
-  const name = (s: Session) => s.title || "New session";
-  if (a.sort === "name") return (x: Session, y: Session) => name(x).localeCompare(name(y)) || y.updated - x.updated;
-  if (a.sort === "state") return (x: Session, y: Session) => WATCH_RANK[watches[x.id] ?? "idle"] - WATCH_RANK[watches[y.id] ?? "idle"] || y.updated - x.updated;
-  return (x: Session, y: Session) => y.updated - x.updated;
-}
-
 const GROUPS: [Arrange["group"], string][] = [["project", "By project"], ["mine", "By my folders"], ["folder", "By working folder"], ["flat", "One list"]];
+// The first two keep a row where it is; the last two move it as its session works.
 const SORTS: { v: Arrange["sort"]; label: string }[] = [
+  { v: "created", label: "Newest first (rows stay put)" },
+  { v: "name", label: "Name" },
   { v: "recent", label: "Recent activity" },
   { v: "state", label: "State (needs you first)" },
-  { v: "name", label: "Name" },
 ];
 const label = "k-label px-2.5 pt-1.5 pb-1";
 
 export function ListFind({ q, setQ }: { q: string; setQ: (q: string) => void }) {
   const a = useArrange();
+  const note = useNote();
   const changed = a.group !== DEFAULT.group || a.sort !== DEFAULT.sort || a.hideDone !== DEFAULT.hideDone;
   const radio = (on: boolean) => <span className="grid w-3.5 shrink-0 place-items-center">{on && <Check className="size-3.5 text-accent" />}</span>;
   return (
@@ -65,13 +70,15 @@ export function ListFind({ q, setQ }: { q: string; setQ: (q: string) => void }) 
         spellCheck={false}
       />
       {q && <button type="button" className="k-find-btn" aria-label="Clear the filter" onClick={() => setQ("")}><X /></button>}
-      <Menu.Root>
+      {/* The note about the changed default is read once: it is gone when the menu that showed it closes. */}
+      <Menu.Root onOpenChange={(open) => { if (!open && note) write({ ...kept, note: false }); }}>
         <Menu.Trigger className={cn("k-find-btn", changed && "k-find-on")} data-testid="list-arrange" aria-label="Arrange the list" title="Group, sort and show">
           <SlidersHorizontal />
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="end" sideOffset={6} className="z-50 outline-none">
             <Menu.Popup className={cn(popupClass, "w-60")} data-testid="arrange-menu">
+              {note && <p className="k-arrange-note" data-testid="arrange-note">Rows now keep their place.</p>}
               <div className={label}>Group</div>
               {GROUPS.map(([g, name]) => (
                 <Menu.Item key={g} closeOnClick={false} className={itemClass} data-testid={`arrange-group-${g}`} aria-checked={a.group === g} role="menuitemradio" onClick={() => setArrange({ group: g })}>

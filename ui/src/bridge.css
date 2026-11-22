@@ -230,11 +230,15 @@
 .k-group:first-child { margin-top: 0.25rem; }
 .k-group-head { display: flex; align-items: center; gap: 0.375rem; height: var(--spacing-ctl-md); padding: 0 0.5rem; font-size: var(--text-caption); font-weight: 500; color: var(--faint); }
 .k-group-head svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
-/* A row: the mark, the title over two lines at most, the state spelled out
-   when it is not simply finished, the time. */
-.k-row { position: relative; display: flex; align-items: flex-start; gap: 0.5625rem; min-height: 1.875rem; padding: 0.375rem 0.375rem 0.375rem 0.5625rem; border-radius: 0.25rem; font-size: var(--text-ui); line-height: 1.125rem; color: var(--muted); user-select: none; }
-.k-row > .k-mark { margin-top: 0.25rem; }
-.k-row-main { min-width: 0; flex: 1 1 0; display: flex; flex-direction: column; }
+/* A row: two lines, always. The first is the mark, the title and the line's
+   end (the tag, the marks, the time; under the pointer the row's actions in
+   the time's place). The second is the state with why. Each line has its
+   height in the row's grid whether it holds words or not, so a row is as high
+   at rest as at work, at every text size and width, and a state that changes
+   moves no row under it. */
+.k-row { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 1.25rem 1rem; column-gap: 0.5625rem; row-gap: 0.0625rem; align-items: center; padding: 0.25rem 0.375rem 0.25rem 0.5625rem; border-radius: 0.25rem; font-size: var(--text-ui); line-height: 1.125rem; color: var(--muted); user-select: none; }
+.k-row-main { min-width: 0; display: flex; flex-direction: column; }
+.k-row-end { display: flex; align-items: center; gap: 0.375rem; min-width: 0; height: 1.25rem; }
 .k-row-state { margin-top: 1px; font-weight: 700; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-state { color: var(--st-need-ink); }
 .k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
@@ -248,10 +252,9 @@
 :is(.k-row-why, .k-station-why)[data-why="stalled"] { color: var(--st-work-ink); font-weight: 500; }
 .k-row[data-watch="fail"] .k-row-state { color: var(--st-fail-ink); }
 .k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
-.k-row > :is(.k-needs, .k-row-tag, svg, .k-snoozed-mark) { margin-top: 1px; }
 .k-row:hover { background: var(--hover); color: var(--fg); }
 .k-row[aria-current] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
-.k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.375rem; bottom: 0.375rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
+.k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.3125rem; bottom: 0.3125rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
 .k-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Finished and seen rows step back; what moved or needs them stays in ink. */
@@ -300,11 +303,24 @@
 /* A folded rail's mark: a pip in the machine's colour at the code's corner. */
 .k-where-pip { --where: var(--muted); position: absolute; right: 0.25rem; top: 0.25rem; width: 0.375rem; height: 0.375rem; border-radius: 1px; background: var(--where); box-shadow: 0 0 0 1.5px var(--panel); }
 .k-where-pip[data-reach="offline"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-fail), 0 0 0 1.5px var(--panel); }
-/* A row's second line: its state word and where it runs. */
-/* The second line is the row's own: under the title, as wide as the row (the time column is the first line's). */
-.k-row { flex-wrap: wrap; row-gap: 0.0625rem; padding-block: 0.3125rem; }
-.k-row-sub { order: 9; flex: 0 0 100%; display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; padding-left: 1.1875rem; line-height: 1rem; }
+/* A row's second line: its state word, why, and where it runs. It is the row's own: under the
+   title, to the row's end (the time column is the first line's), one line high with words or without. */
+.k-row-sub { grid-column: 2 / -1; grid-row: 2; display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; height: 1rem; line-height: 1rem; }
 .k-row-sub .k-row-state { margin-top: 0; white-space: nowrap; }
+/* At rest the word is said quietly: the mark has the colour, the title the ink. */
+.k-row-sub .k-row-rest { font-weight: 500; color: var(--faint); }
+/* New since they looked, and a message of theirs that waits in the session's queue: a word each, at the line's end under the time. */
+.k-row-marks { display: flex; align-items: baseline; gap: 0.375rem; flex-shrink: 0; margin-left: auto; }
+.k-row-in + .k-row-marks { margin-left: 0; }
+.k-row-new, .k-row-queued { flex-shrink: 0; white-space: nowrap; font-weight: 700; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.k-row-new { color: var(--accent-ink); }
+.k-row-queued { color: var(--st-wait-ink); }
+/* A machine that does not answer: its rows say the last it told, stepped back, the clock's place saying offline.
+   A session that left the list while the hand held it still looks the same until the hand has gone. */
+.k-row:is([data-offline], [data-gone]) :is(.k-row-title, .k-row-state, .k-row-why, .k-row-class, .k-row-time) { color: var(--faint); font-weight: 500; }
+.k-row:is([data-offline], [data-gone]) .k-row-class { box-shadow: inset 0 0 0 1px var(--line-strong); }
+.k-row:is([data-offline], [data-gone]) > .k-mark, .k-tick[data-gone] { opacity: 0.45; filter: grayscale(1); }
+.k-row-time[data-offline] { letter-spacing: 0.02em; }
 .k-row-sub .k-row-class { align-self: center; }
 /* A message that waits for the daemon to be back: it goes out by itself, so it is said in the waiting ink, not the owner's. */
 .k-row-send { flex-shrink: 0; white-space: nowrap; font-size: var(--text-micro); font-weight: 500; color: var(--st-wait-ink); }
@@ -313,11 +329,60 @@
 .k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }
 .k-row-sub .k-where { flex-shrink: 1; }
 /* A row's actions take the time's place under the pointer and its line's height (1.25rem): the row is as high as at rest, and the rows under it stay where they are. */
-.k-row-act { flex-shrink: 0; margin: -0.125rem 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: 0.1875rem; color: var(--faint); }
+.k-row-act { flex-shrink: 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: 0.1875rem; color: var(--faint); }
 .k-row-act:hover { background: var(--hover); color: var(--fg); }
 .k-row-act svg { width: 0.875rem; height: 0.875rem; }
 .k-more { height: var(--spacing-ctl-md); padding-left: 1.75rem; border-radius: 0.25rem; text-align: left; font-size: var(--text-caption); color: var(--faint); }
 .k-more:hover { background: var(--hover); color: var(--muted); }
+/* The line above the list: how many need the owner, failed, work, have something new or sit on a
+   machine that does not answer; a press on a count goes to the next one it names. One line, always
+   there and always as high, so a count that comes or goes moves nothing under it. Narrower, the
+   words that say least go first; the counts and their marks stay. */
+.k-sum { display: flex; align-items: center; gap: 0.0625rem; flex-shrink: 0; height: 1.75rem; margin: 0 0.625rem 0.125rem; overflow: hidden; border-bottom: 1px solid var(--line); }
+.k-sum-chip { display: inline-flex; align-items: center; gap: 0.3125rem; flex-shrink: 0; height: 1.375rem; padding: 0 0.375rem; border-radius: 0.1875rem; white-space: nowrap; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-sum-chip:hover { background: var(--hover); color: var(--fg); }
+.k-sum-chip:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.k-sum-chip .k-mark { width: 0.5rem; height: 0.5rem; }
+.k-sum-chip svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--st-fail-ink); }
+.k-sum-dot { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--accent-ink); }
+.k-sum-n { font-weight: 700; color: var(--fg); }
+.k-sum-word { font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.k-sum-chip[data-kind="need"] :is(.k-sum-n, .k-sum-word) { color: var(--st-need-ink); }
+.k-sum-chip[data-kind="fail"] :is(.k-sum-n, .k-sum-word) { color: var(--st-fail-ink); }
+/* The turning ring says working; its count needs no word. */
+.k-sum-chip[data-kind="work"] .k-sum-word { display: none; }
+.k-sum-calm { min-width: 0; padding: 0 0.375rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--faint); }
+/* What calls the owner keeps its words; beside both a need and a failure the other counts are their marks and figures. */
+.k-sum:has([data-kind="need"]):has([data-kind="fail"]) .k-sum-chip:is([data-kind="unread"], [data-kind="offline"]) .k-sum-word { display: none; }
+@container rail (max-width: 18rem) { .k-sum-chip:is([data-kind="unread"], [data-kind="offline"]) .k-sum-word { display: none; } }
+/* Under the line a machine's separator needs no rule of its own. */
+.k-index > .k-machine-sep:first-child { padding-top: 0.125rem; border-top: 0; }
+@container rail (max-width: 15.5rem) { .k-sum-chip[data-kind="fail"] .k-sum-word { display: none; } .k-sum-chip { padding: 0 0.25rem; } }
+/* What stands above the list (the steps without progress) keeps its height while the hand is on the list. */
+.k-rail-top { flex-shrink: 0; }
+/* In the rail a working mark stands still: a dozen turning rings beside the panes pull the eye
+   all day and cost style work every frame. The ring's gap, its colour, the word and the clock
+   that counts say working. */
+.k-rail .k-mark[data-watch="work"] { animation: none; }
+
+/* The narrow list: with little room beside the panes a session is one line, its mark and its
+   title cut with an ellipsis. The state is the mark; the card beside the row says the rest. */
+.k-rail[data-narrow] .k-index { padding-inline: 0.375rem; }
+.k-rail[data-narrow] .k-row { grid-template-rows: 1.25rem; column-gap: 0.4375rem; padding: 0.25rem 0.25rem 0.25rem 0.4375rem; }
+.k-rail[data-narrow] :is(.k-row-sub, .k-row-end) { display: none; }
+.k-rail[data-narrow] .k-row[data-shown]::before { left: -0.375rem; top: 0.25rem; bottom: 0.25rem; }
+.k-rail[data-narrow] .k-group { margin-top: 0.5rem; }
+.k-rail[data-narrow] .k-group-head { padding: 0 0.375rem; }
+.k-rail[data-narrow] .k-sum { margin-inline: 0.375rem; }
+.k-rail[data-narrow] .k-sum-word { display: none; }
+.k-rail[data-narrow] .k-find { margin-inline: 0.375rem; }
+/* The agents' line keeps its count and the mark of one that asks; the rest of its words are on the card and in the wider list. */
+.k-rail[data-narrow] .k-session-children { margin-left: 0.375rem; padding-left: 0.25rem; }
+.k-rail[data-narrow] .k-session-children > button > span:not(.k-mark) ~ span { display: none; }
+
+/* The note in the Arrange menu about a default that changed: read once. */
+.k-arrange-note { margin: 0.125rem 0.625rem 0.25rem; padding-bottom: 0.4375rem; border-bottom: 1px solid var(--line); font-size: var(--text-micro); line-height: 1.4; color: var(--muted); }
+
 /* The list with nothing in it: the shared empty line (k-empty in styles.css), at the rows' edge. */
 .k-index .k-empty { padding: 1.5rem 0.5rem 0; }
 
