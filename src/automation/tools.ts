@@ -96,6 +96,19 @@ const Agent: Tool = {
   }),
 };
 
+// The sender's name for a message: the call that sent it. The same call run
+// again (its result was lost) sends nothing twice.
+const callKey = (ctx: ToolContext) => (ctx.callId ? `call:${ctx.sessionId}:${ctx.callId}` : undefined);
+// When the agent reads a message that was taken: now, or from its queue.
+function whenRead(r: agents.MessageSent): string {
+  if (r.duplicate) return "This call's message was already sent; it was not sent again.";
+  if (!r.waits) return "It reads it now.";
+  const n = r.agent.messages_waiting ?? 1;
+  const where = `It is kept in its queue${n > 1 ? ` (${n} of your messages wait there)` : ""}`;
+  if (D().engine.isDraining()) return `${where}: the daemon is restarting, and the agent reads it when it is back.`;
+  return `${where}: the agent is working and reads it after its current step, which can take as long as the tool it is running.`;
+}
+
 const SendMessage: Tool = {
   name: "SendMessage",
   families: CLAUDE,
@@ -111,8 +124,8 @@ const SendMessage: Tool = {
     required: ["to", "message"],
   },
   run: (input, ctx) => guard(async () => {
-    const a = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.to ?? input.agent_id)).id, String(input.message));
-    return ok(`Sent to ${a.id}. Its report arrives as a message.`);
+    const r = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.to ?? input.agent_id)).id, String(input.message), false, callKey(ctx));
+    return ok(`Sent to ${r.agent.id}. ${whenRead(r)} Its report arrives as a message.`);
   }),
 };
 
@@ -178,8 +191,8 @@ const send_input: Tool = {
     required: ["target", "message"],
   },
   run: (input, ctx) => guard(async () => {
-    const a = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt);
-    return ok(JSON.stringify({ submission_id: `${a.id}-${Date.now()}` }));
+    const r = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt, callKey(ctx));
+    return ok(JSON.stringify({ submission_id: `${r.agent.id}-${Date.now()}`, delivery: whenRead(r) }));
   }),
 };
 

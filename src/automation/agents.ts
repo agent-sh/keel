@@ -16,7 +16,7 @@ import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
 import { carriedPlugins } from "../tools/skills.ts";
 import { checkpointAt } from "../engine/compact.ts";
-import { STALLED_MAX } from "../engine/turn.ts";
+import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 
 // Subagents: a child session with its own context that works on one task and
@@ -63,6 +63,7 @@ export type AgentRecord = {
   stopped_by?: StopBy | null;
   end_reason?: string | null; // the turn-end reason that settled it (refusal, max_steps, ...)
   call_id?: string | null; // the tool_use id of the call that started it
+  messages_waiting?: number; // its parent's messages still in its queue: it reads them at its next step, or when it goes on
 };
 
 export type AgentDef = {
@@ -150,8 +151,10 @@ type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { backg
 const toRec = (r: Row): AgentRecord => {
   const { def, output_schema, schema_tries, restarts, park_told, task, ...rest } = r;
   void def; void schema_tries; void restarts; void park_told; void task;
-  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema };
+  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, messages_waiting: waitingFor(r.session_id) };
 };
+// The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
+const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
 
 export const get = (id: string) => {
   const r = D().store.db.query<Row, [string]>("SELECT * FROM agents WHERE id = ?").get(id);
@@ -865,6 +868,9 @@ export function onSessionDeleted(sessionId: string) {
 // resumed an empty queue, a session moved here in the middle of a turn) has
 // no turn end to send what was held: it goes now.
 export function onQueue(f: { session_id: string; held: boolean }) {
+  // An agent's queue changed: its parent's list says how many messages wait for it.
+  const a = byChild(f.session_id);
+  if (a) emit("agent", a);
   if (f.held || D().engine.isRunning(f.session_id)) return;
   releaseOwed(f.session_id);
   failures.wake(f.session_id);
@@ -929,7 +935,10 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // continues the turn or ends the agent (onCutTurn, onCutTurnHeld).
   if (reason === "restart" && !stopping.has(a.id)) return;
   const { engine } = D();
-  if (engine.isRunning(sessionId) || hasPending(sessionId)) return;
+  if (engine.isRunning(sessionId) || hasPending(sessionId) || redirecting.has(a.id)) return;
+  // A message of its parent waits and no stop holds it: its turn starts by
+  // itself (the next daemon starts it when this one is on its way down).
+  if (!stopping.has(a.id) && !engine.isHeld(sessionId) && waitingFor(sessionId)) return;
   const waitingOn = stopping.has(a.id) ? "" : waits.describeActive(sessionId);
   if (waitingOn) {
     update(a.id, { status: "waiting", result: collectResult(a) });
@@ -968,6 +977,9 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   const got = collect(a, status === "incomplete" ? how.end_reason : undefined);
   let result = got.text;
   if (how.note) result += `${result ? "\n\n" : ""}${how.note}`;
+  // What its parent sent and it never read is said with its report, not left to be found.
+  const unread = waitingFor(a.session_id);
+  if (unread) result += `${result ? "\n\n" : ""}(It ended before it read ${unread === 1 ? "1 message" : `${unread} messages`} from the session that started it. ${unread === 1 ? "It is" : "They are"} still in its queue, and it reads ${unread === 1 ? "it" : "them"} first if a message continues it.)`;
   // What it failed on, when that is all it has to report (it wrote nothing itself).
   let cause = status === "failed" && !got.own ? got.error || how.note || "" : "";
   let cls = how.end_reason === "restart" ? "restart" : classOf(got.error);
@@ -1045,21 +1057,28 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   return get(id);
 }
 
-// A message to an agent: steers a running one (after its current turn, or at
-// once with interrupt), or continues a finished one with its context.
-export async function send(id: string, message: string, interrupt = false): Promise<AgentRecord> {
+// A message to an agent, kept in its session's queue or stored as its prompt
+// before the sender is answered (Engine.message): a working agent reads it at
+// its next step (or at once with interrupt), a finished one goes on with its
+// context. `waits`: it is in the queue, not read yet. `key`: the sender's own
+// name for this message; the same key again sends nothing (`duplicate`).
+export type MessageSent = { agent: AgentRecord; waits: boolean; duplicate?: boolean };
+export async function send(id: string, message: string, interrupt = false, key?: string): Promise<MessageSent> {
   // Another message is making this finished agent ready (its slot held, its
   // worktree made again): this one waits for that, then steers the agent it
   // started, instead of asking for a second slot.
   const ahead = restarting.get(id);
   if (ahead) {
     await ahead;
-    return send(id, message, interrupt);
+    return send(id, message, interrupt, key);
   }
   let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
   const { engine, store } = D();
-  if (!store.session(a.session_id)) throw new Error("the agent's session is gone");
+  const child = store.session(a.session_id);
+  if (!child) throw new Error("the agent's session is gone");
+  // An archived session runs no turn: the message would wait there unread.
+  if (child.archived) throw new Error("the agent's session is archived, so it cannot read a message; restore the session first");
   // A finished agent that goes on takes a slot again. It is reserved before
   // anything yields (its place on another machine, its worktree made again),
   // with no await between the check and the reservation: a spawn in that time
@@ -1086,33 +1105,54 @@ export async function send(id: string, message: string, interrupt = false): Prom
     const parent = store.session(a.parent_id);
     if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title, undefined, parent.id)).wt);
     const text = `Message from the session that started you:\n${message}`;
+    const meta = { kind: "steer", agent_id: id };
     // Its turn ended and its report is being settled: it is finished, not
     // running. Steering it now would start a turn its record says is done.
     const ending = settling.get(id);
     if (ending) {
       free();
       await ending;
-      return send(id, message, interrupt);
+      return send(id, message, interrupt, key);
     }
     a = get(id); // placement may have yielded while this agent finished
     if (!a) throw new Error(`no agent ${id}`);
+    const sent = (r: Sent): MessageSent => ({ agent: get(id)!, waits: !!r.queued, ...(r.duplicate ? { duplicate: true } : {}) });
     if (!isEnded(a)) {
-      if (interrupt && engine.isRunning(a.session_id)) engine.interrupt(a.session_id, "parent");
-      deliver(a.session_id, text, { kind: "steer", agent_id: id });
-      return update(id, { status: "running" })!;
+      if (interrupt && engine.isRunning(a.session_id)) {
+        // The turn is stopped first, and the stop is not the agent's end: the
+        // message is its next turn (onTurnEnd leaves it alone meanwhile).
+        redirecting.add(id);
+        try {
+          await engine.interrupt(a.session_id, "parent");
+          const r = engine.message(a.session_id, text, meta, key);
+          if (!r.duplicate) update(id, { status: "running" });
+          return sent(r);
+        } finally {
+          redirecting.delete(id);
+        }
+      }
+      const r = engine.message(a.session_id, text, meta, key);
+      if (!r.duplicate) update(id, { status: "running" });
+      return sent(r);
     }
     if (!release) needSlot(a.parent_id); // it ended while its place was made ready
-    cutCalls.delete(id); // new work, in the background: nothing holds its report
-    const last = store.events(a.session_id).at(-1)?.seq ?? 0;
-    update(id, { status: "running", ended: null, first_seq: last, handback: false, background: true, stopped_by: null, end_reason: null });
-    release?.(); // the running row now occupies the slot
-    sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
-    deliver(a.session_id, text, { kind: "steer", agent_id: id });
-    return get(id)!;
+    // The message and the record that says the agent runs again are one write.
+    return store.atomic(a.session_id, () => {
+      // The same message again (its sender's key was seen): the agent stays as it is.
+      if (key && store.db.query("SELECT 1 FROM input_keys WHERE session_id = ? AND key = ?").get(a!.session_id, key)) return { agent: a!, waits: false, duplicate: true };
+      cutCalls.delete(id); // new work, in the background: nothing holds its report
+      const last = store.events(a!.session_id).at(-1)?.seq ?? 0;
+      update(id, { status: "running", ended: null, first_seq: last, handback: false, background: true, stopped_by: null, end_reason: null });
+      release?.(); // the running row now occupies the slot
+      sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
+      return sent(engine.message(a!.session_id, text, meta, key));
+    });
   } finally {
     free();
   }
 }
+// Agents whose running turn a message is stopping to take its place.
+const redirecting = new Set<string>();
 const restarting = new Map<string, Promise<void>>(); // finished agents a message is making ready
 
 // Returns as soon as one of the agents has a final status (with every other

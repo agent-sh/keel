@@ -372,7 +372,10 @@ export const automationRoutes: RouteModule = (deps) => {
         if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent", 404);
         const b = await body(req);
         if (!String(b.message ?? "").trim()) return bad("message cannot be empty");
-        return json({ agent: await agents.send(a.id, String(b.message), !!b.interrupt) });
+        // `client_id`: the page's name for this send; the same one again sends nothing.
+        const key = typeof b.client_id === "string" && b.client_id.trim() ? `page:${b.client_id.trim().slice(0, 80)}` : undefined;
+        const r = await agents.send(a.id, String(b.message), !!b.interrupt, key);
+        return json({ agent: r.agent, waits: r.waits, ...(r.duplicate ? { replayed: true } : {}) });
       }),
     },
     "/api/sessions/:id/background": {

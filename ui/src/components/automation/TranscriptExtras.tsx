@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Network, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Mail, Network, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
 import { useMemo } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -293,6 +293,12 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {agent ? (
             <>
+              {/* What its parent sent and it has not read yet: kept in its queue until its next step. */}
+              {!!agent.messages_waiting && (
+                <span className="flex shrink-0 items-center gap-1 rounded bg-sunken px-1.5 py-px text-micro text-muted" data-testid="agent-call-waiting" title="Sent to this agent and kept in its queue: it reads them after its current step">
+                  <Mail className="size-3" />{agent.messages_waiting === 1 ? "1 message waiting" : `${agent.messages_waiting} messages waiting`}
+                </span>
+              )}
               {/* An agent that waits on the owner says so, in their colour: it is not just running. */}
               {asking ? <span className="grid size-3.5 shrink-0 place-items-center"><Mark w="need" className="size-2" /></span> : <AgentStatus status={agent.status} />}
               {asking

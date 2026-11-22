@@ -29,6 +29,8 @@ const engine = {
     const event = store.append(id, "user", { text, ...o?.meta });
     return stopAfterSend ? {} : { event };
   },
+  // A parent's message to its agent: stored as the agent's prompt (the engine keeps one for a working agent in its queue).
+  message: (id: string, text: string, meta: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...meta }) }),
   interrupt: async () => {},
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),
   idle: async () => {},

@@ -51,6 +51,8 @@ const engine = {
   isRunning: (id: string) => busy.has(id),
   isHeld: (id: string) => held.has(id),
   send: (id: string, text: string, o: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...o?.meta }) }),
+  // A parent's message to its agent: stored as the agent's prompt (the engine keeps one for a working agent in its queue).
+  message: (id: string, text: string, meta: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...meta }) }),
   interrupt: async (id: string, by?: string) => { interrupted.push({ id, by }); busy.delete(id); agents.onTurnEnd(id, "interrupted"); },
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),
   idle: async () => {},
@@ -782,7 +784,7 @@ test("a message that restarts a finished agent holds its slot while its worktree
   const [sent, spawned] = await Promise.allSettled([again, rival]);
   expect(spawned).toMatchObject({ status: "rejected" });
   expect(String((spawned as PromiseRejectedResult).reason)).toContain("AGENT_LIMIT");
-  expect(sent).toMatchObject({ status: "fulfilled", value: { id: a.id, status: "running" } });
+  expect(sent).toMatchObject({ status: "fulfilled", value: { agent: { id: a.id, status: "running" } } });
   expect(agents.list(p.id).filter((x) => !agents.isEnded(x)).map((x) => x.id)).toEqual([a.id]);
   // The slot is the running agent's now, not held twice: at a limit of two there is room for one more.
   agents.setLimit(p.id, 2);

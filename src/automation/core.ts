@@ -186,8 +186,15 @@ export function flush(sessionId: string) {
       current.sort((a, b) => Number(a.meta.kind === "failures") - Number(b.meta.kind === "failures"));
       const kinds = [...new Set(current.map((p) => p.meta.kind))];
       const meta = current.length === 1 ? current[0]!.meta : { kind: kinds.length === 1 ? kinds[0] : "wake", parts: current.map((p) => p.meta) };
-      const r = D().engine.send(sessionId, current.map((p) => p.text).join("\n\n"), { meta });
-      if (r.event) for (const p of current) p.onSent?.(r.event);
+      // The prompt and what sending it settles (a wake no longer owed, a
+      // report handed over, a run started) are one write: a daemon killed
+      // here has stored both or neither, so the next one sends nothing twice.
+      // A part whose settling fails stays owed and is told again; the prompt stands.
+      D().store.atomic(sessionId, () => {
+        const r = D().engine.send(sessionId, current.map((p) => p.text).join("\n\n"), { meta });
+        if (!r.event) return;
+        for (const p of current) try { p.onSent?.(r.event); } catch (e) { capture(e, { at: "deliver", session: sessionId, settling: p.meta.kind }); }
+      });
     }
   } catch (e) {
     capture(e, { at: "deliver", session: sessionId });

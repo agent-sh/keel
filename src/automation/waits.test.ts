@@ -176,13 +176,31 @@ test("a wake settled while the session was busy is sent after a restart, once", 
   expect(wakes(w.id)[0]).toContain("READY");
 });
 
-test("a wake stored before the daemon stopped is not sent again", async () => {
+// The wake's prompt and its acknowledgement are one write: a daemon that
+// stops between them has stored neither, and the next one sends the wake.
+test("a daemon that stops while a wake is stored has stored nothing, and the next one sends it once", async () => {
   const p = log("gap-ack.log");
   const w = wait(p);
   appendFileSync(p, "READY\n");
-  faults.afterAppend = true; // stored in the transcript, never acknowledged
+  faults.afterAppend = true; // the write is cut after the prompt, before the wake is acknowledged
   try { await waits.tick(); } finally { faults.afterAppend = false; }
+  expect(status(w.id)).toBe("fired");
+  expect(wakes(w.id)).toHaveLength(0);
+  restart();
+  restart();
   expect(wakes(w.id)).toHaveLength(1);
+  expect(wakes(w.id)[0]).toContain("READY");
+});
+
+// A store from before the two were one write can hold the prompt with the wake still owed.
+test("a wake stored before the daemon stopped is not sent again", async () => {
+  const p = log("gap-old.log");
+  const w = wait(p);
+  appendFileSync(p, "READY\n");
+  busy.add(s.id);
+  await waits.tick();
+  expect(wakes(w.id)).toHaveLength(0);
+  store.append(s.id, "user", { text: `<wait_fired id="${w.id}" kind="log" outcome="fired">\nREADY\n</wait_fired>`, kind: "wait", wait_id: w.id, outcome: "fired" });
   restart();
   restart();
   expect(wakes(w.id)).toHaveLength(1);
