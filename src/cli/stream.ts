@@ -400,7 +400,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
     }
   };
   const deny = async (k: Card, reason: string): Promise<"done" | "closed" | Error> => {
-    const r = await answerCard(k, k.card === "approval" ? { choice: "deny", reason } : k.card === "question" ? { answers: {} } : k.card === "plan" ? { approve: false, feedback: reason } : { deny: true, reason });
+    const r = await answerCard(k, k.card === "approval" ? { choice: "deny", reason, via: "script" } : k.card === "question" ? { answers: {} } : k.card === "plan" ? { approve: false, feedback: reason } : { deny: true, reason });
     if (r !== "done") return r;
     denials.push({ tool_name: k.tool ?? null, tool_use_id: k.call_id ?? null, tool_input: k.input ?? null });
     say({ type: "system", subtype: "permission_denied", session_id: k.session_id, request_id: k.id, tool_name: k.tool ?? null, tool_use_id: k.call_id ?? null, ...(k.summary ? { summary: k.summary } : {}), reason });
@@ -428,7 +428,9 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
         const r = !m.allow || changed || plan
           ? await deny(k, changed ? CHANGED : plan ? PLAN_SCRIPT : m.message || "The script refused this request.")
           // One call, once: a standing rule is the owner's to give.
-          : await answerCard(k, k.card === "approval" ? { choice: "once" } : k.card === "question" ? { answers: m.answers ?? {} } : { value: m.value });
+          // (The script was handed all the daemon kept of the call's input, and the call runs
+          // as it was shown or not at all: that is the script's word that it had the whole text.)
+          : await answerCard(k, k.card === "approval" ? { choice: "once", seen: "whole", via: "script" } : k.card === "question" ? { answers: m.answers ?? {} } : { value: m.value });
         // Not taken: the request stays open for another answer, and is refused when standard input closes.
         if (r instanceof Error) { say({ type: "system", subtype: "input_error", request_id: m.request_id, error: `the answer was not taken (${r.message}): the request is still open, answer it again` }); continue; }
         pending.delete(m.request_id);

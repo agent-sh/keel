@@ -1160,9 +1160,28 @@ describe("client commands against a running daemon", () => {
     };
     const type = (l: string) => { p.stdin.write(l + "\n"); p.stdin.flush(); };
     try {
-      await until("?? approval: Bash");
+      // The card is printed whole when it opens: its id, what it is, every line of its text.
+      await until("?? approval ");
+      await until("   (/approve or /deny)");
+      expect(seen).toMatch(/\?\? approval [0-9a-f]{8}: Bash\n   \| touch scripted-write\.txt\n   \(\/approve or \/deny\)/);
       type("/deny not now");
       await until("-- turn ended");
+
+      // A request that is read first: /approve alone answers nothing, /approve with its id allows it.
+      const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+      const cards = async () => (await (await fetch(`${url}/api/sessions/${sid}/approvals?all`)).json()).approvals as any[];
+      const LONG = Array.from({ length: 12 }, (_, i) => `echo row ${i + 1} >> attach-long.txt`).join("\n");
+      type(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: LONG } }])}`);
+      await until("   | echo row 12 >> attach-long.txt");
+      const long = (await cards()).find((a) => a.state === "pending");
+      await until(`   (read it, then /approve ${long.id.slice(0, 8)}; or /deny)`);
+      type("/approve");
+      await Bun.sleep(2500);
+      expect((await cards()).find((a) => a.id === long.id).state).toBe("pending");
+      type(`/approve ${long.id.slice(0, 8)}`);
+      await until("-- turn ended", 2);
+      expect((await cards()).find((a) => a.id === long.id)).toMatchObject({ state: "allowed", by: { client: "cli", seen: "whole" } });
+      expect(readFileSync(join(WS, "attach-long.txt"), "utf8").trim().split("\n").length).toBe(12);
 
       const q = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber", description: "warm" }], multiSelect: false }] } };
       type(`script:calls ${JSON.stringify([q, q])}`);
@@ -1173,10 +1192,10 @@ describe("client commands against a running daemon", () => {
       type("/answer 2");
       // The same turn goes on: its next step asks again, and that card is a new one.
       await until("?? question (Color)", 2);
-      expect(count("-- turn ended")).toBe(1);
+      expect(count("-- turn ended")).toBe(2);
       type("/answer plain grey");
       await until("Done with 2 calls.");
-      await until("-- turn ended", 2);
+      await until("-- turn ended", 3);
       expect(count("?? question")).toBe(2);
       const { events } = await (await fetch(`${json(readFileSync(join(state, "daemon.lock"), "utf8")).url}/api/sessions/${sid}/events`)).json() as any;
       const results = events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).map((r: any) => JSON.stringify(r.content));
@@ -1185,12 +1204,112 @@ describe("client commands against a running daemon", () => {
 
       type("/detach");
       expect(await p.exited).toBe(0);
-      expect(await new Response(p.stderr).text()).toContain("-- detached; the session goes on");
+      const err = await new Response(p.stderr).text();
+      expect(err).toContain("-- detached; the session goes on");
+      expect(err).toContain("-- Open the request to read it first: it is 12 lines long. It is printed above: /approve");
       expect((await k(["show", sid])).out).toContain("Done with 2 calls.");
     } finally {
       p.kill();
     }
   }, 90_000);
+
+  // The read-first rule on the command line: the request is shown before anything asks or
+  // answers, --yes alone covers only what one line shows whole, and several are never answered by guess.
+  test("approve: shows before it asks, --yes for one line only, --yes --seen for a request that was read", async () => {
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const LONG = Array.from({ length: 41 }, (_, i) => `echo step ${i + 1} >> approve-long.txt`).join("\n");
+    const waits = async (calls: unknown[], word = "script:calls") => {
+      const r = await k(["run", "--wait", "--json", "--permission-mode", "ask", `${word} ${JSON.stringify(calls)}`]);
+      expect(r.code).toBe(2);
+      return json(r.out).session_id as string;
+    };
+    const cardsOf = async (sid: string) => (await (await fetch(`${url}/api/sessions/${sid}/approvals?all`)).json()).approvals as any[];
+
+    // A 41-line command waits. With no terminal and no word, what is open is listed and nothing is answered.
+    const long = await waits([{ name: "Bash", input: { command: LONG } }]);
+    const bare = await k(["approve", long]);
+    expect([bare.code, bare.err]).toEqual([2, expect.stringContaining("nothing was answered")]);
+    expect(bare.out).toContain("Bash, 41 lines: echo step 1 >> approve-long.txt ...  [read it first]");
+    // --yes alone does not cover it: the whole request is shown, the reason said, the card left open.
+    const yes = await k(["approve", long, "--yes"]);
+    expect([yes.code, yes.err]).toEqual([2, expect.stringContaining("--yes does not cover this request (it is 41 lines long). Read it, then pass --yes --seen")]);
+    expect(yes.out).toContain("   | echo step 1 >> approve-long.txt\n");
+    expect(yes.out).toContain("   | echo step 41 >> approve-long.txt\n");
+    expect((await cardsOf(long))[0]).toMatchObject({ state: "pending" });
+    expect(existsSync(join(WS, "approve-long.txt"))).toBe(false);
+    expect((await k(["approve", long, "--seen"])).err).toContain("--seen goes with --yes");
+    // --yes --seen: the caller says it read all of it.
+    const seen = await k(["approve", long, "--yes", "--seen"]);
+    expect([seen.code, seen.out]).toEqual([0, expect.stringContaining("allowed (once): Bash echo step 1")]);
+    expect(seen.out.indexOf("| echo step 41")).toBeLessThan(seen.out.indexOf("allowed (once)"));
+    expect((await cardsOf(long))[0]).toMatchObject({ state: "allowed", choice: "once", by: { client: "cli", seen: "whole" } });
+
+    // One line: --yes is enough, and it does not claim more than it did.
+    const short = await waits([{ name: "Bash", input: { command: "echo yes > approve-short.txt" } }]);
+    const quick = await k(["approve", short, "--yes"]);
+    expect([quick.code, quick.out]).toEqual([0, expect.stringContaining("allowed (once): Bash echo yes > approve-short.txt")]);
+    expect((await cardsOf(short))[0].by).toEqual({ client: "cli" });
+
+    // A hidden character is written out, and the card says so; a deny is taken at once.
+    const marked = await waits([{ name: "Bash", input: { command: "echo txt.r \u202e> approve-marked.txt" } }]);
+    const held = await k(["approve", marked, "--yes"]);
+    expect(held.code).toBe(2);
+    expect(held.out).toContain("   | echo txt.r <U+202E>> approve-marked.txt");
+    expect(held.out).toContain("characters that do not show as written");
+    expect(held.out).not.toContain("\u202e");
+    expect((await k(["approve", marked, "--deny"])).code).toBe(0);
+    expect((await cardsOf(marked))[0]).toMatchObject({ state: "denied", by: { client: "cli" } });
+
+    // Several wait: none is picked by guess. They are listed, and one is named.
+    const two = await waits([{ name: "Bash", input: { command: "echo a > approve-a.txt" } }, { name: "Bash", input: { command: "echo b > approve-b.txt" } }], "script:batch");
+    const [first, second] = await cardsOf(two);
+    for (const flags of [["--yes"], ["--deny"], []]) {
+      const r = await k(["approve", two, ...flags]);
+      expect([flags, r.code]).toEqual([flags, 2]);
+      expect(r.out).toContain(` 1. ${first.id}  Bash: echo a > approve-a.txt`);
+      expect(r.out).toContain(` 2. ${second.id}  Bash: echo b > approve-b.txt`);
+      expect(r.err).toContain("name one with --approval ID");
+    }
+    expect((await cardsOf(two)).map((a) => a.state)).toEqual(["pending", "pending"]);
+    expect((await k(["approve", two, "--approval", second.id.slice(0, 8), "--yes"])).code).toBe(0);
+    expect((await cardsOf(two)).map((a) => a.state)).toEqual(["pending", "allowed"]);
+    expect((await k(["approve", two, "--deny", "--answer", "not this one"])).code).toBe(0);
+    expect((await cardsOf(two))[0]).toMatchObject({ state: "denied", reason: "not this one" });
+  }, 120_000);
+
+  // On a terminal: the whole request first (through the pager when it is taller than the window), then the question.
+  test("approve on a terminal: the request, then y/N; anything but y leaves it open", async () => {
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const LONG = Array.from({ length: 41 }, (_, i) => `echo line ${i + 1} >> approve-tty.txt`).join("\n");
+    const r = await k(["run", "--wait", "--json", "--permission-mode", "ask", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: LONG } }])}`]);
+    const sid = json(r.out).session_id as string;
+    const paged = join(SCRATCH, "pager.out");
+    // The command on a terminal of 24 rows; `type` is typed once the question stands.
+    const onTerminal = async (type: string) => {
+      let out = "", typed = false;
+      const p = Bun.spawn([BIN, "approve", sid], {
+        cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state, PAGER: `tee ${paged}`, TERM: "xterm" },
+        terminal: { cols: 100, rows: 24, data: (t, d) => { out += new TextDecoder().decode(d); if (!typed && out.includes("[y/N]")) { typed = true; t.write(type); } } },
+      });
+      const code = await p.exited;
+      return { code, out };
+    };
+    const state0 = async () => (await (await fetch(`${url}/api/sessions/${sid}/approvals?all`)).json()).approvals[0];
+
+    // Enter alone is no: nothing is answered.
+    const no = await onTerminal("\r");
+    expect([no.code, (await state0()).state]).toEqual([2, "pending"]);
+    expect(no.out).toContain("left open: nothing was answered");
+    // The whole text went through the pager, and stood on the terminal before the question.
+    expect(readFileSync(paged, "utf8")).toContain("   | echo line 41 >> approve-tty.txt");
+    expect(no.out.indexOf("echo line 41 >> approve-tty.txt")).toBeGreaterThan(-1);
+    expect(no.out.indexOf("echo line 41 >> approve-tty.txt")).toBeLessThan(no.out.indexOf("Allow once? [y/N]"));
+    expect(no.out).toContain("(41 lines, shown in the pager)");
+    // y allows it, and says the text was shown.
+    const yes = await onTerminal("y\r");
+    expect(yes.code).toBe(0);
+    expect(await state0()).toMatchObject({ state: "allowed", by: { client: "cli", seen: "whole" } });
+  }, 120_000);
 });
 
 // A daemon of its own for a group of tests, and plain calls to its API.

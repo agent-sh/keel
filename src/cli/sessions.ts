@@ -10,6 +10,9 @@ import { stateLine, WATCH_LABEL, type SessionState } from "../core/watch.ts";
 import { questions as askedOf, type UiQuestion } from "../../ui/src/lib/tools.ts";
 import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
+import { ask, cardRow, cardShown, formOf, interactive, shortId, showCard, whyHeld } from "./cards.ts";
+import { holdSaid, type CardForm } from "../safety/card.ts";
+import { spelled } from "../safety/chars.ts";
 import { exitOf, heldNote, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watch, worktreeArg } from "./run.ts";
 
 const home = homedir();
@@ -332,21 +335,30 @@ const send = command("send", SEND_USAGE, {
 // ---- keel approve
 
 const APPROVE_USAGE = `keel approve ID [options]
-  Answers the oldest open approval card or question of a session (its subagents' included).
+  Shows an open approval card of a session (its subagents' included) whole, then asks.
+  With several open and none named, it lists them and asks which. A question is answered with --answer.
 
       --list              list the open cards and questions, answer none
-      --approval AID      the card to answer (default: the oldest)
+      --approval AID      the card to answer (an id or its start)
       --choice C          once, session, always or deny (default once)
-      --deny              refuse (same as --choice deny)
-      --answer TEXT       the answer to a question, or why a card is refused`;
+      --deny              refuse (same as --choice deny): taken at once, no question
+      --answer TEXT       the answer to a question, or why a card is refused
+  -y, --yes               do not ask. Alone it allows only a request one line shows whole
+                          (160 printable ASCII characters, low risk, nothing cut or marked)
+      --seen              with --yes: you have read the whole request (for a script of your
+                          own). Allows a long, cut, marked or high-risk request too
+
+  Without a terminal and without --yes or --deny it lists what is open and exits 2.`;
 
 const approve = command("approve", APPROVE_USAGE, {
   list: { type: "boolean" }, approval: { type: "string" }, choice: { type: "string" }, deny: { type: "boolean" }, answer: { type: "string" },
+  yes: { type: "boolean", short: "y" }, seen: { type: "boolean" },
 }, async (v, pos, c) => {
   if (!pos[0]) return usageError("approve", "name the session", APPROVE_USAGE);
+  if (v.seen && !v.yes) return usageError("approve", "--seen goes with --yes", APPROVE_USAGE);
   const s = await c.resolve(pos[0]);
   const st = await c.get<any>(`/api/cli/state/${s.id}`);
-  const questions = [];
+  const questions: any[] = [];
   for (const q of st.questions) {
     const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);
     const use = events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks : [])).find((b: any) => b.type === "tool_use" && b.id === q.call_id);
@@ -354,23 +366,66 @@ const approve = command("approve", APPROVE_USAGE, {
     const asked = q.asked ? [{ id: "", question: `MCP server ${q.asked.from} asks: ${q.asked.message}`, options: [] }, ...q.asked.questions.map((x: any) => ({ id: x.id, question: x.question, options: (x.options ?? []).map((o: any) => o.label) }))] : undefined;
     questions.push({ ...q, questions: asked ?? (use?.input?.questions ?? []).map((x: any, i: number) => ({ id: x.id ?? String(i), question: x.question, options: (x.options ?? []).map((o: any) => o.label) })) });
   }
-  if (v.list) {
-    if (v.json) return (printJson({ approvals: st.approvals, questions }), EXIT.ok);
-    if (!st.approvals.length && !questions.length) return (console.log("nothing is open"), EXIT.ok);
-    for (const a of st.approvals) console.log(`${a.id}  ${a.risk === "high" ? "high risk  " : ""}${clean(a.tool)}: ${line(a.summary)}${a.session_id !== s.id ? `  (subagent ${a.session_id})` : ""}`);
+  // Each card as the daemon gives it to every client: its whole text, its marks, why it is read first.
+  // (A card that closed between the two reads is not open any more: it is left out.)
+  const forms = new Map<string, CardForm>();
+  for (const a of st.approvals) { const f = await formOf(c, a).catch(() => undefined); if (f?.state === "pending") forms.set(a.id, f); }
+  const open: any[] = st.approvals.filter((a: any) => forms.has(a.id));
+  const sub = (a: any) => (a.session_id !== s.id ? `  (subagent ${a.session_id})` : "");
+  const listed = () => {
+    for (const a of open) console.log(cardRow(forms.get(a.id)!, sub(a)));
     for (const q of questions) for (const x of q.questions) console.log(`question ${q.call_id}: ${line(x.question)}${x.options.length ? `  [${x.options.map(line).join(" | ")}]` : ""}`);
-    return EXIT.ok;
+  };
+  if (v.list) {
+    if (v.json) return (printJson({ approvals: open.map((a) => ({ ...a, card: forms.get(a.id) })), questions }), EXIT.ok);
+    if (!open.length && !questions.length) return (console.log("nothing is open"), EXIT.ok);
+    return (listed(), EXIT.ok);
   }
   const choice = v.deny ? "deny" : v.choice ?? "once";
   if (!["once", "session", "always", "deny"].includes(choice)) return usageError("approve", "--choice is once, session, always or deny", APPROVE_USAGE);
-  const card = v.approval ? st.approvals.find((a: any) => a.id === v.approval || a.id.startsWith(v.approval)) : st.approvals[0];
-  if (card) {
-    const r = await c.post<any>(`/api/sessions/${card.session_id}/approvals/${card.id}`, { choice, reason: v.answer });
-    if (v.json) console.log(JSON.stringify({ ok: true, approval: r.approval ?? card.id, choice }));
-    else console.log(`${choice === "deny" ? "refused" : `allowed (${choice})`}: ${clean(card.tool)} ${line(card.summary)}`);
-    return EXIT.ok;
+  // A question is put only where its request can be shown first: on a terminal, with text for output.
+  const asks = interactive() && !v.json;
+  if (open.length || v.approval) {
+    // Which card. Never the oldest by itself when several wait: the one named, the one chosen at the terminal, or none.
+    let card = v.approval ? open.find((a) => a.id === v.approval || a.id.startsWith(v.approval)) : open.length === 1 ? open[0] : undefined;
+    if (v.approval && !card) throw new ApiError(`no open card ${v.approval}`, 404);
+    if (!card) {
+      console.error(`${open.length} requests wait in ${s.id}:`);
+      if (v.json) printJson({ approvals: open.map((a) => ({ ...a, card: forms.get(a.id) })), questions });
+      else open.forEach((a, i) => console.log(`${String(i + 1).padStart(2)}. ${cardRow(forms.get(a.id)!, sub(a))}`));
+      if (v.yes || !asks) return (console.error("keel approve: name one with --approval ID"), EXIT.owner);
+      const n = Number(await ask(`Which one? [1-${open.length}, Enter leaves them] `));
+      card = Number.isInteger(n) && n >= 1 && n <= open.length ? open[n - 1] : undefined;
+      if (!card) return (console.error("nothing was answered"), EXIT.owner);
+    }
+    const form = forms.get(card.id)!;
+    const post = (body: Record<string, unknown>) => c.post<any>(`/api/sessions/${card.session_id}/approvals/${card.id}`, { ...body, via: "cli" });
+    const done = (r: any) => {
+      if (v.json) console.log(JSON.stringify({ ok: true, approval: r.approval ?? card.id, choice }));
+      else console.log(`${choice === "deny" ? "refused" : `allowed (${choice})`}: ${clean(card.tool)} ${line(spelled(card.summary))}`);
+      return EXIT.ok;
+    };
+    // A refusal is taken at once, from anywhere.
+    if (choice === "deny") return done(await post({ choice, reason: v.answer }));
+    // No one to ask and no word to go on: what is open is listed, and nothing is answered.
+    if (!v.yes && !asks) {
+      if (v.json) printJson({ approvals: open.map((a) => ({ ...a, card: forms.get(a.id) })), questions });
+      else listed();
+      return (console.error(`keel approve: nothing was answered. On a terminal this shows the request and asks; from a script pass ${form.hold.length ? "--yes --seen once the request was read" : "--yes"}, or --deny.`), EXIT.owner);
+    }
+    // An allow: the request is shown before anything asks or answers.
+    if (!v.json) showCard(form, sub(card));
+    if (v.yes) {
+      // --yes alone covers what one line shows whole. For any other request the
+      // caller says it read all of it: --seen, for a script the owner wrote.
+      if (form.hold.length && !v.seen) return (console.error(`keel approve: --yes does not cover this request (${whyHeld(form)}). Read it, then pass --yes --seen, or answer it on a terminal.`), EXIT.owner);
+      return done(await post({ choice, ...(v.seen ? { seen: "whole" } : {}) }));
+    }
+    const said = (await ask(`${choice === "once" ? "Allow once" : choice === "session" ? "Allow for this session" : "Always allow"}? [y/N] `)).toLowerCase();
+    if (said !== "y" && said !== "yes") return (console.error("left open: nothing was answered (keel approve --deny refuses it)"), EXIT.owner);
+    // Shown whole on this terminal, then allowed by the owner's own word.
+    return done(await post({ choice, seen: "whole" }));
   }
-  if (v.approval) throw new ApiError(`no open card ${v.approval}`, 404);
   const q = questions[0];
   if (!q) return (console.error(`keel approve: nothing is open in ${s.id}`), EXIT.error);
   if (v.answer === undefined && !v.deny) return usageError("approve", `a question is open: ${q.questions.map((x: any) => line(x.question)).join(" / ")}; pass --answer TEXT (or --deny)`, APPROVE_USAGE);
@@ -392,9 +447,12 @@ const approve = command("approve", APPROVE_USAGE, {
 
 const ATTACH_USAGE = `keel attach ID [--thoughts]
   Follows a session in this terminal. A typed line is a prompt; commands:
-  /steer TEXT, /queue TEXT, /approve [once|session|always], /deny [REASON],
+  /steer TEXT, /queue TEXT, /approve [ID] [once|session|always], /deny [ID] [REASON],
   /answer N|TEXT (a question's choice by its number, several as 1,3, or an answer of your own),
   /stop, /detach.
+  An approval card is printed whole when it opens. /approve answers the one open card this
+  terminal has printed; a request that is long, cut, marked or high risk is allowed by its
+  id (/approve ID), and so is one of several. /deny is taken at once.
   Leaving (/detach, Ctrl-D or Ctrl-C) does not stop the session.`;
 
 type Answer = { picked: string[]; other?: string };
@@ -432,7 +490,8 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
   for (const e of events.slice(-20)) for (const l of textLines(e, v)) console.log(l);
   const s = await c.resolve(sessionId);
   console.error(`-- attached to ${sessionId} (${line(s.title) || "untitled"}); /detach leaves`);
-  let seenCards = new Set<string>();
+  // The open approval cards this terminal has printed whole, by id: an allow is only ever for one of these.
+  let seenCards = new Map<string, CardForm>();
   // The open question cards, each shown once: its questions, and the answers given so far.
   const asked = new Map<string, Promise<{ session_id: string; call_id: string; question?: string; qs: UiQuestion[]; answers: Record<string, Answer> }>>();
   // The cards whose questions this terminal has printed.
@@ -443,10 +502,15 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
     if (!st) return null;
     for (const a of st.approvals) {
       if (seenCards.has(a.id)) continue;
-      seenCards.add(a.id);
-      console.log(`?? approval: ${clean(a.tool)}: ${line(a.summary)}   (/approve or /deny)`);
+      // The whole request, as the daemon gives it to every client: an answer here is for text this terminal showed.
+      const f = await formOf(c, a).catch(() => undefined);
+      if (!f || f.state !== "pending") continue;
+      const s = cardShown(f, a.session_id !== sessionId ? `  (subagent ${a.session_id})` : "");
+      for (const l of [...s.head, ...s.text]) console.log(l);
+      console.log(f.hold.length ? `   (read it, then /approve ${shortId(a.id)}; or /deny)` : "   (/approve or /deny)");
+      seenCards.set(a.id, f);
     }
-    seenCards = new Set([...seenCards].filter((id) => st.approvals.some((a: any) => a.id === id)));
+    seenCards = new Map([...seenCards].filter(([id]) => st.approvals.some((a: any) => a.id === id)));
     for (const q of st.questions) {
       const key = cardKey(q);
       if (asked.has(key)) continue;
@@ -486,7 +550,6 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
       await f.pause(1500);
     }
   })();
-  const card = async () => (await c.get<any>(`/api/cli/state/${sessionId}`)).approvals[0];
   for await (const raw of console) {
     const text = String(raw).trim();
     if (!text) continue;
@@ -497,9 +560,22 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
       else if (cmd === "/stop") await c.post(`/api/sessions/${sessionId}/interrupt`);
       else if (cmd === "/steer" || cmd === "/queue") await c.post(`/api/sessions/${sessionId}/messages`, { text: arg, mode: cmd.slice(1) });
       else if (cmd === "/approve" || cmd === "/deny") {
-        const a = await card();
-        if (!a) console.error("nothing is open");
-        else await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, cmd === "/deny" ? { choice: "deny", reason: arg || undefined } : { choice: ["session", "always"].includes(arg) ? arg : "once" });
+        // The cards this terminal had printed before the line was typed, then what is open now
+        // (a card that opened since is printed by this look, and is not what the line was for).
+        const read = new Map(seenCards);
+        const st = await sync();
+        const open: any[] = st?.approvals ?? [];
+        // A first word that starts the id of an open card names it.
+        const named = rest[0] && rest[0].length >= 4 ? open.filter((a) => a.id.startsWith(rest[0]!)) : [];
+        const a = named.length === 1 ? named[0] : open.length === 1 ? open[0] : undefined;
+        const words = named.length === 1 ? rest.slice(1).join(" ") : arg;
+        if (!open.length) console.error("nothing is open");
+        else if (!a) console.error(`-- ${open.length} requests wait: name one, ${cmd} ID (${open.map((x) => shortId(x.id)).join(", ")})`);
+        else if (cmd === "/deny") await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, { choice: "deny", reason: words || undefined, via: "cli" });
+        else if (!read.has(a.id)) console.error("-- this request is new here, shown above: nothing was answered. Read it, then /approve");
+        else if (read.get(a.id)!.hold.length && named.length !== 1) console.error(`-- ${holdSaid(read.get(a.id)!)} It is printed above: /approve ${shortId(a.id)} allows it`);
+        // (Printed whole on this terminal before the line was typed: that is what `seen` says.)
+        else await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, { choice: ["session", "always"].includes(words) ? words : "once", seen: "whole", via: "cli" });
       } else if (cmd === "/answer") {
         // The oldest open question. One this terminal had not printed before
         // this line was typed (it opened since the last look, as the one the

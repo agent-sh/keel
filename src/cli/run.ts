@@ -239,7 +239,7 @@ export async function watch(w: Watch): Promise<Watched> {
           const key = k.asked ? `${k.id}:${k.asked.id}` : k.id;
           if (answered.has(key)) continue;
           answered.add(key);
-          if (k.card === "approval") await w.c.post(`/api/sessions/${k.session_id}/approvals/${k.id}`, { choice: "deny", reason: "No one can answer here: the run was started with --on-ask deny." }).catch(() => {});
+          if (k.card === "approval") await w.c.post(`/api/sessions/${k.session_id}/approvals/${k.id}`, { choice: "deny", reason: "No one can answer here: the run was started with --on-ask deny.", via: "cli" }).catch(() => {});
           // A question an MCP server asked is declined; the model's own takes an empty answer.
           else await w.c.post(`/api/sessions/${k.session_id}/questions/${k.call_id}`, k.asked ? { decline: true, question: k.asked.id } : { answers: {} }).catch(() => {});
           r.refused++;
