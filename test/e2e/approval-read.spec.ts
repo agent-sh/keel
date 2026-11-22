@@ -688,3 +688,32 @@ test("a tall card keeps its answers and the count in view, and no answer takes t
     await drop(request, [s.id]);
   }
 });
+
+// Reading a long text to its end does not throw the reader back to its start. On a narrow page
+// the count has a line of its own in the card's foot, so the card changes height when the last
+// line was seen; with the keyboard on the list (a high-risk request: its answer never takes
+// it by itself) the region stays where the text was read.
+test("the region stays where a long text was read when the card's own words change", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const s = await asking(request, "Read: forty-one lines on a narrow page", [bash(LONG)]);
+  try {
+    await waits(request, s.id);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${s.id}`);
+    const card = page.getByTestId("approval").first();
+    await expect(card).toHaveAttribute("data-risk", "high");
+    await expect(card.getByTestId("approval-open-first")).toHaveText("Enter opens the whole command.");
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("approval-summary")).toContainText("git push --force origin main");
+    await expect(card.getByTestId("approval-left")).toBeVisible();
+    for (let i = 0; i < 160 && (await card.getAttribute("data-must-open")); i++) await wheel(page, 40, 1);
+    await expect(card).not.toHaveAttribute("data-must-open", "true");
+    await expect(card.getByTestId("approval-left")).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(await focus(page)).toBe("approvals");
+    expect(await page.getByTestId("composer-tray").first().evaluate((el) => el.scrollTop)).toBeGreaterThan(200);
+    expect(await states(request, s.id)).toBe("pending");
+  } finally {
+    await drop(request, [s.id]);
+  }
+});

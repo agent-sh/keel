@@ -39,8 +39,9 @@ const EMPTY: Approval[] = [];
 // - `unseen`: the rows of its text, as it wraps now, that have not been in view (`n`, of `total`),
 //   and how many of those the owner has to bring into view (`out`: lib/approvals.ts, sawLines).
 //   A card is answered when none is left. `long`: the text is over three times the region's height.
+//   `tall`: the card is taller than the region (it cannot be seen whole, so it is scrolled through).
 // - `acts`: each "allow all" action, by tool: what it covers and whether it can be pressed.
-type Unseen = { n: number; out: number; begun: boolean; total: number; long: boolean };
+type Unseen = { n: number; out: number; begun: boolean; total: number; long: boolean; tall: boolean };
 type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; key: string };
 const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), key: "" };
 // The text a card shows of a request (its summary and, for an edit, what the edit writes:
@@ -146,7 +147,7 @@ function rowsInView(pre: HTMLElement, c: Clip): { total: number; line: number; v
 function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) {
   const [view, setView] = useState(NO_VIEW);
   const st = useRef({
-    cards, seen: new Map<string, Reading>(), lines: new Map<string, Lines>(), acts: new Map<string, Action>(), hot: new Set<string>(), spent: new Set<string>(), view: NO_VIEW,
+    cards, seen: new Map<string, Reading>(), lines: new Map<string, Lines>(), tall: new Set<string>(), acts: new Map<string, Action>(), hot: new Set<string>(), spent: new Set<string>(), view: NO_VIEW,
     sig: "",          // the region's frame at the last reading
     top: 0,           // how far it was scrolled then, and at the last timed reading
     timedTop: 0,
@@ -191,6 +192,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
         // too short to give the foot a third of itself. What the foot lies over is not text in view.
         const foot = el.querySelector<HTMLElement>(":scope > .k-ask-foot"), box = el.getBoundingClientRect(), under = foot?.getBoundingClientRect(), words = sum?.getBoundingClientRect();
         const room = f.shown.bottom - f.shown.top;
+        if (box.height > room) s.tall.add(id); else s.tall.delete(id);
         const tall = !!under && under.height > 0 && box.height > room && under.height * 3 <= room && box.bottom > f.shown.bottom + 1 && box.top < f.shown.bottom;
         el.toggleAttribute("data-foot", tall && (el.hasAttribute("data-foot") || (!!words && words.bottom > f.shown.bottom + 1 && words.top < f.shown.bottom)));
         const text = sum ? clipUnder(sum, foot, f.text) : f.text;
@@ -214,7 +216,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     }
     const read = new Set<string>(), live = new Set<string>(), grant = new Set<string>(), ripe = new Set<string>(), cut = new Set<string>(), unseen = new Map<string, Unseen>();
     const room = f ? f.shown.bottom - f.shown.top : 0;
-    for (const [id, l] of s.lines) unseen.set(id, { ...unseenLines(l), total: l.total, long: room > 0 && l.total * l.line > 3 * room });
+    for (const [id, l] of s.lines) unseen.set(id, { ...unseenLines(l), total: l.total, long: room > 0 && l.total * l.line > 3 * room, tall: s.tall.has(id) });
     for (const [id, r] of seen) {
       const old = now - r.born >= SETTLE_MS;
       if (settled(r.sum, now)) read.add(id);
@@ -230,7 +232,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     const alone = new Set([...cut, ...s.cards.filter((c) => shownOf(c).flagged).map((c) => c.id)]);
     for (const g of batches(s.cards, read, alone)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
     s.acts = acts;
-    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun, u.total, u.long]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
+    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun, u.total, u.long, u.tall]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
     if (key !== s.view.key) setView((s.view = { read, live, grant, ripe, cut, unseen, acts, key }));
     return s.view;
   }, [list]);
@@ -715,8 +717,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The lines the owner has yet to bring into view: said where the text is in view or has been, or
   // once a press was refused for them (a card whose text is all out of view says nothing by
   // itself, and so does not change as it comes into view).
+  // Only where the text has to be scrolled through: it is longer than its box, or its card is
+  // taller than the region. A short card that merely stands at the region's fold says nothing,
+  // and keeps its height as it comes into view.
   const [told, setTold] = useState(false);
-  const left = unseen && (unseen.begun || told) ? unseen.out : 0;
+  const left = unseen && (told || (unseen.begun && (cut || unseen.tall))) ? unseen.out : 0;
   // What is counted is what is seen: the text's lines where none of them wraps, and rows (the
   // lines as the card draws them) where one does, so one long line is not called twenty.
   const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";

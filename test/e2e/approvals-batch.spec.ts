@@ -779,6 +779,9 @@ test("a row the owner scrolled to acts as the scroll ends, a list that changed m
       return els.filter((el) => { const r = el.querySelector('[data-testid="allow-once"]')!.getBoundingClientRect(); return r.top >= t.top && r.bottom <= t.bottom; }).map((el) => (el as HTMLElement).dataset.approvalId!);
     });
     const before = await whole();
+    // A short row that stands at the region's fold says nothing of lines not seen: it keeps its
+    // height as it comes into view, and the list under the owner's scroll does not change.
+    await expect(card.getByTestId("approval-left")).toHaveCount(0);
     const box = (await tray.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.wheel(0, 320);
