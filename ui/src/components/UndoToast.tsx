@@ -42,7 +42,7 @@ export function UndoToast() {
       <span className="min-w-0 flex-1 truncate" dir="auto" data-testid="undo-words" title={u.words}>{u.words}</span>
       <button type="button" data-testid="undo" onClick={() => runUndo()}
         className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-2 font-medium text-accent-ink outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
-        <Undo2 className="size-3.5" aria-hidden="true" />Undo<Kbd keys="mod+z" />
+        <Undo2 className="size-3.5" aria-hidden="true" />Undo<Kbd keys="mod+z" className="max-sm:hidden" />
       </button>
     </div>
   );
