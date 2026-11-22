@@ -680,7 +680,8 @@ What the model is told:
   the words of its line match, whatever the line's number: the ones the file
   has more of are new and listed, the ones it has fewer of are a count
   (`1 fixed, no errors left.`). A file that was already broken is not blamed
-  on the edit.
+  on the edit, and an error on a line the edit rewrote that is still on it
+  reads `1 error still on the changed line`, not as a new one.
 - Errors only, unless the mode is "errors and warnings". At most ten are
   listed, errors first, each as `file:line:col`, its code and its message.
   The block is at most 1,500 bytes and fits inside the result's cap; a
@@ -760,7 +761,9 @@ When a server starts, and where it runs:
   configuration files change. After a command, every document it has open is
   given again from disk, the files the repository says changed are named to
   it, and a commit restarts nothing. Outside a repository nothing says what a
-  command changed, so the server starts again.
+  command changed, so the server starts again. The repository is asked
+  through the daemon's own git, where its config is not in force: no monitor,
+  hook or filter it names runs.
 - A server that floods, stops reading, stops answering or exits is ended and
   started again at a later edit, after a pause that grows from one second to
   ten minutes. No server starts while the machine has less than

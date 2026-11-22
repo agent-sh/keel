@@ -423,6 +423,9 @@ export class LspManager {
     for (const [id, paths] of call.down) if (!st.down.has(id)) { st.down.add(id); servers.add(id); unchecked.push(...paths.map((p) => this.rel(s, p))); }
     const edited = new Set(call.asked.map((a) => a.path));
     const asked: Asked[] = [...call.asked];
+    // A server still starting is given the wait's time to be ready first: what it can be asked is known only then.
+    const starting = [...new Set(call.asked.map((a) => a.client))].filter((c) => c.readyMs === null && !c.ended);
+    if (starting.length) await Promise.race([Promise.all(starting.map((c) => c.ready.catch(() => {}))), Bun.sleep(waitMs)]);
     for (const a of call.asked) st.down.delete(a.entry.def.id);
     // Files this session was told about before, in the same servers: an edit here can break them.
     for (const e of new Set(call.asked.map((a) => a.entry))) {
@@ -452,10 +455,7 @@ export class LspManager {
         if (closed) this.arrived(s.id, job.a, base, after);
       }).catch(() => { job.after = null; }));
     }
-    const all = Promise.all(waits);
-    const starting = [...new Set(jobs.map((j) => j.a.client))].filter((c) => c.readyMs === null && !c.ended);
-    if (starting.length) await Promise.race([all, Promise.all(starting.map((c) => c.ready.catch(() => {}))), Bun.sleep(waitMs)]);
-    await Promise.race([all, Bun.sleep(waitMs)]);
+    await Promise.race([Promise.all(waits), Bun.sleep(waitMs)]);
     closed = true;
     const files: FileDiff[] = [];
     const pending: string[] = [];
