@@ -1,8 +1,8 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
 import {
-  Brain, Check, ChevronRight, Circle, CircleDot, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
-  ListChecks, MessageCircleQuestion, NotebookPen, Plug, RotateCcw, Search, Sparkles, SquareTerminal, Square, Webhook, Wrench, X,
+  Brain, Check, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, Clock, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
+  ListChecks, MessageCircleQuestion, NotebookPen, Plug, RotateCcw, Search, Sparkles, SquareTerminal, Square, TriangleAlert, Webhook, Wrench, X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
@@ -12,8 +12,8 @@ import { api } from "../lib/store.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
 import {
-  patchFiles, planItems, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind,
-  type PlanItem, type ToolKind,
+  patchFiles, planItems, resultImages, resultText, shellBody, splitDiagnostics, splitMemory, splitNested, shellStatus, shortPath, toolKind,
+  type PlanItem, type ResultDiagnostics, type ToolKind,
 } from "../lib/tools.ts";
 import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
 import { cn } from "../lib/utils.ts";
@@ -92,6 +92,34 @@ function HookRow({ hook, asked, name, cwd, alone }: { hook: HookMark; asked: any
   );
 }
 
+// What a language server found after the edit, as the model was told it:
+// always in view under the call, the new ones listed, a fix as one line.
+function DiagnosticsRow({ d }: { d: ResultDiagnostics }) {
+  const errors = d.lines.some((l) => l.severity === "error");
+  const Icon = d.pending && !d.lines.length ? Clock : errors ? CircleAlert : d.lines.length ? TriangleAlert : CircleCheck;
+  return (
+    <div className="flex items-start gap-2 border-t border-line px-3 py-2 text-caption" data-testid="tool-diagnostics" data-state={errors ? "errors" : d.lines.length ? "warnings" : d.pending ? "pending" : "fixed"}>
+      <Icon className={cn("mt-0.5 size-3.5 shrink-0", errors ? "text-danger" : d.lines.length ? "text-warn" : d.pending ? "text-faint" : "text-ok")} />
+      <div className="min-w-0 flex-1">
+        <p className="text-muted">
+          <span className="font-medium text-fg">{d.server || "Diagnostics"}</span>
+          {d.late && <span className="text-faint"> · from an earlier edit</span>}
+          <span data-testid="tool-diagnostics-head"> · {d.head}</span>
+        </p>
+        {d.lines.length > 0 && (
+          <ul className="mt-1 flex flex-col gap-0.5 font-mono text-micro leading-relaxed">
+            {d.lines.map((l, i) => (
+              <li key={i} className="break-words" data-testid="tool-diagnostic">
+                <span className="text-faint">{l.where}</span> <span className={l.severity === "error" ? "text-danger" : "text-warn"}>{l.text}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // A result that was cut names the file with all of it ("saved to <path>").
 // Whether the storage retention has removed that file since: asked once per
 // result that names one, so the row says what became of it.
@@ -128,7 +156,7 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd }: Props) {
 
 function GenericCall({ use, result, live, sessionId, cwd, kind, input, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
   const Icon = ICONS[kind];
-  const { text: out, nested, memory } = useMemo(() => { const m = splitMemory(resultText(result)); return { ...splitNested(m.text), memory: m.memory }; }, [result]);
+  const { text: out, nested, memory, diagnostics } = useMemo(() => { const m = splitMemory(resultText(result)); const d = splitDiagnostics(m.text); return { ...splitNested(d.text), memory: m.memory, diagnostics: d.diagnostics }; }, [result]);
   const images = resultImages(result);
   const spillGone = useSpillRemoved(sessionId, out);
   const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));
@@ -183,6 +211,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, hook, ask
         </div>
       )}
       {hook && <HookRow hook={hook} asked={asked} name={use.name} cwd={cwd} />}
+      {diagnostics.map((d, i) => <DiagnosticsRow key={i} d={d} />)}
       <Collapsible.Panel className="k-tool-panel overflow-hidden border-t border-line">
         {pathOf(input) && kind !== "shell" && (
           <Copyable text={pathOf(input)!} label="Copy the path" testid="copy-path" className="k-tool-path">

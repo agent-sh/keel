@@ -149,7 +149,7 @@ settingsSections.add(
 // Sections grouped by what they are about; a section another lane adds falls in by id, else under More.
 const GROUP: Record<string, string> = {
   general: "Working", models: "Working", providers: "Working", keyboard: "Working", voice: "Working",
-  mcp: "Toolkit", skills: "Toolkit", commands: "Toolkit", agents: "Toolkit", plugins: "Toolkit", hooks: "Toolkit", instructions: "Toolkit",
+  mcp: "Toolkit", lsp: "Toolkit", skills: "Toolkit", commands: "Toolkit", agents: "Toolkit", plugins: "Toolkit", hooks: "Toolkit", instructions: "Toolkit",
   safety: "Safety", alerts: "Safety",
   machines: "Machine", resources: "Machine", storage: "Machine", daemon: "Machine", phone: "Machine", usage: "Machine", logs: "Machine",
   integrations: "Reach", "acp-agents": "Reach", elsewhere: "Reach", export: "Reach", port: "Reach",
@@ -158,7 +158,7 @@ const GROUP: Record<string, string> = {
 const ORDER = ["Working", "Toolkit", "Safety", "Machine", "Reach", "More", "Keel"];
 const groupOf = (id?: string) => (id ? GROUP[id] ?? "More" : "");
 // Sections of figures and lists use the width; forms keep a reading measure.
-const WIDE = new Set(["usage", "observability", "experiments", "resources", "storage", "machines", "models", "mcp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
+const WIDE = new Set(["usage", "observability", "experiments", "resources", "storage", "machines", "models", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
 
 // A wide page keeps the grouped rail beside the section. A narrow one (by the
 // page's own width, so the session list and the text size count) names the

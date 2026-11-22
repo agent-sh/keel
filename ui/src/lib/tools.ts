@@ -76,6 +76,28 @@ export function splitMemory(text: string): { text: string; memory: ResultMemory[
   return { text: memory.length ? rest.trimEnd() : text, memory };
 }
 
+// The diagnostics an edit caused, as a language server reported them
+// (src/lsp/diff.ts wrote the block into the result): shown apart on the card,
+// so the owner sees what the model was told. The model's input keeps it.
+export type ResultDiagnostics = { server: string; head: string; lines: { where?: string; severity?: "error" | "warning"; text: string }[]; late: boolean; pending: boolean };
+export function splitDiagnostics(text: string): { text: string; diagnostics: ResultDiagnostics[] } {
+  const diagnostics: ResultDiagnostics[] = [];
+  const rest = text.replace(/\n*<diagnostics server="([^"]*)">\n([\s\S]*?)\n<\/diagnostics>/g, (_m, server: string, body: string) => {
+    const rows = body.split("\n");
+    const listed = (l: string) => /^(\S.*?:\d+:\d+) (error|warning) (.*)$/.exec(l);
+    const head = rows.filter((l) => !listed(l)).join(" ");
+    diagnostics.push({
+      server,
+      head: head.replace(/^From an earlier edit \([^)]*\): /, ""),
+      lines: rows.flatMap((l) => { const m = listed(l); return m ? [{ where: m[1]!, severity: m[2] as "error" | "warning", text: m[3]! }] : []; }),
+      late: head.startsWith("From an earlier edit"),
+      pending: /(^| )Not checked yet: /.test(head),
+    });
+    return "";
+  });
+  return { text: diagnostics.length ? rest.trimEnd() : text, diagnostics };
+}
+
 export const resultImages = (r?: ToolResultBlock) =>
   !r || typeof r.content === "string" ? [] : r.content.filter((c): c is { type: "image"; media_type: string; data: string } => c.type === "image");
 

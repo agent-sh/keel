@@ -652,6 +652,101 @@ finished agent are refused while the session is full. A turn the owner
 starts on an agent's own page is not refused. The daemon that owns
 the parent counts its agents even when their tools run on another machine.
 
+## Diagnostics after an edit
+
+After a model edits a file, the edit's own result carries the type errors and
+other compiler diagnostics that edit caused, from the language server of the
+file's project. No build runs, and an edit that caused none adds nothing.
+
+```
+<diagnostics server="typescript">
+1 new error.
+src/math.ts:2:3 error TS2322 Type 'string' is not assignable to type 'number'.
+</diagnostics>
+```
+
+What the model is told:
+
+- Only what the edit changed. The file's diagnostics are asked before the
+  edit and after it, and compared without line numbers: the ones it has more
+  of are new and listed, the ones it has fewer of are a count (`1 fixed, no
+  errors left.`). A file that was already broken is not blamed on the edit.
+- Errors only, unless the mode is "errors and warnings". At most ten are
+  listed, errors first, each as `file:line:col`, its code and its message;
+  the rest is a count.
+- Files the session edited before are asked again too, for a server that
+  answers requests: an edit that breaks a caller it wrote earlier says so.
+- The block is part of the tool result, written once. Nothing is sent as a
+  separate message, so the provider's cache prefix is as it was.
+
+The wait is bounded (`wait_ms`, 1500). A server that has not answered by then
+is not waited for: the result names the file as not checked yet, and what the
+server finds goes with the result of the session's next edit, or of its next
+read of that file.
+
+Servers are found, never installed. Each is an entry of data: the extensions
+it reads, the files that mark a project root, and the commands that may start
+it, looked for in the workspace's own modules and on `PATH`.
+
+| Server | Files | Found when | Starts by itself |
+| --- | --- | --- | --- |
+| TypeScript | `.ts .tsx .mts .cts .js .jsx .mjs .cjs` | the workspace has TypeScript 7 (its compiler is its own server), `tsgo`, or `typescript-language-server` | yes |
+| Ruff | `.py .pyi` | `ruff` is on `PATH` or in `.venv/bin` | yes |
+| Pyright | `.py .pyi` | `basedpyright-langserver` or `pyright-langserver` | no |
+| Go | `.go` | `gopls` | no |
+| Rust | `.rs` | `rust-analyzer` | no |
+| C and C++ | `.c .h .cc .cpp ...` | `clangd`, and a `compile_commands.json`, `compile_flags.txt` or `.clangd` | no |
+
+A server that does not start by itself runs code of the workspace, or was not
+measured to answer in milliseconds: turn it on in Settings, Language servers,
+or in the settings file. The same entry adds a server or changes one:
+
+```json
+{ "diagnostics": {
+    "mode": "errors",
+    "workspaces": { "/path/to/repo": "off" },
+    "servers": {
+      "rust-analyzer": { "enabled": true },
+      "zls": { "command": ["zls"], "extensions": { ".zig": "zig" } }
+    } } }
+```
+
+`mode` is `off`, `errors` or `warnings` (errors and warnings); `workspaces`
+gives a folder its own.
+
+Where a server runs:
+
+- Inside the sandbox of the session whose edit started it: the same
+  bubblewrap profile as that session's commands, the network off unless the
+  session has it. A session without a sandbox gets a server without one. When
+  the session is sandboxed and the machine cannot sandbox, no server starts.
+- One per language, project root, session folder and sandbox profile.
+  Sessions of one folder with the same profile share it; a session in a
+  linked worktree gets a server rooted there.
+- Only in a repository whose files you trust: on first sight where new files
+  are trusted on first sight, else after you trust its language servers in
+  Settings.
+- It starts at the first edit of a file it serves, ends after `idle_minutes`
+  (5) without an edit, and starts again when its configuration files change
+  or the checkout moves to another commit. Files a command changed are named
+  to it before the next edit is compared.
+- A server that floods, stops answering or exits is ended and started again
+  at a later edit, after a pause that grows from one second to ten minutes.
+  No server starts while the machine has less than `min_free_mb` (2048) of
+  memory available.
+- Its processes are in the Resources panel as kind `lsp`, booked to the
+  session that started it. It ends with the daemon; one a killed daemon left
+  is ended by the next start.
+
+Each wait is a span of its turn (kind `wait`, name `diagnostics`): the
+server, the milliseconds, whether it timed out, the errors, warnings and fixes
+it found, and the tokens the block added. Settings, Language servers shows
+the totals since the daemon started.
+
+Not covered: a session whose tools run on another machine (its files are
+there, and no server is started for it), and diagnostics in files the session
+has not edited.
+
 ## Refresh the frontend without restarting
 
 Build the page from the daemon's source revision, with only the UI changes
