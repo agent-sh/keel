@@ -29,6 +29,10 @@ export const toolRoutes: RouteModule = (deps) => {
   jobEnded.tell = (job, text, sent) => {
     setTimeout(() => {
       try {
+        // An agent that has ended (it reported, or it was a goal's check or a review that answered at its
+        // turn's end) is not started again for a command it left running: nobody reads that turn.
+        const agent = deps.store.db.query<{ status: string }, [string]>("SELECT status FROM agents WHERE session_id = ?").get(job.sessionId);
+        if (agent && agent.status !== "running" && agent.status !== "waiting") return sent();
         const held = deps.engine.isHeld(job.sessionId);
         // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
         const end = deps.store.db.query<{ kind: string; reason: string | null }, [string]>("SELECT kind, data ->> '$.reason' AS reason FROM events WHERE id = (SELECT head FROM sessions WHERE id = ?)").get(job.sessionId);

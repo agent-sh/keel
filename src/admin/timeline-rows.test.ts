@@ -286,3 +286,11 @@ test("a turn whose requests were sent again says how many it made and how many f
   expect(plain.text).toBe("Owner prompt, 2 steps");
   expect(plain.turn!.failed_requests).toBeUndefined();
 });
+
+test("a turn the end of a waited-on command started says so, not \"Harness note\"", () => {
+  const woke = turnRow({ start, opener: { kind: "harness", job: "b1x2" }, end: { reason: "end_turn" }, steps: 1, tools: 0, failed_tools: 0 });
+  expect(woke.text).toBe("Command ended, 1 step");
+  expect(originOf({ kind: "harness", job: "b1x2" })).toMatchObject({ key: "command", words: "the end of a command it waited on" });
+  // Any other harness input is as it was.
+  expect(originOf({ kind: "harness", agent_id: "a1" }).key).toBe("harness");
+});

@@ -89,6 +89,7 @@ const WHO: Record<string, string> = {
   subagent: "an agent report", loop: "a loop run", goal: "a goal check", task: "its parent's task", parent: "its parent",
   peer: "another session", task_start: "a task from another session", verify_goal: "a goal verification", review: "a review request",
   review_fix: "review findings", diagnostic: "a diagnostic", helper_digest: "the helper's digest", failures: "a failure notice",
+  command: "the end of a command it waited on",
 };
 // The same, as the words a turn's row starts with: the column scans by them.
 const LEAD: Record<string, string> = {
@@ -97,12 +98,14 @@ const LEAD: Record<string, string> = {
   subagent: "Agent report", loop: "Loop run", goal: "Goal check", task: "Parent's task", parent: "Parent's message",
   peer: "Message from another session", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
   review_fix: "Review findings", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
+  command: "Command ended",
 };
-export type Opener = { about?: unknown; origin?: unknown; kind?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown } | null | undefined;
+export type Opener = { about?: unknown; origin?: unknown; kind?: unknown; job?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown } | null | undefined;
 export const whoWords = (key: string) => WHO[key] ?? "something else";
 export function originOf(o: Opener): { key: string; words: string; lead: string; queued: boolean } {
   const origin = str(o?.origin), kind = str(o?.kind);
-  const key = origin === "restart" ? "restart" : kind && WHO[kind] ? kind : origin === "harness" && !kind ? "continue" : origin && WHO[origin] ? origin : kind || origin ? "other" : "owner";
+  // The end of a command its turn had been waiting on (a harness input that names the job, src/tools/jobs.ts).
+  const key = origin === "restart" ? "restart" : kind === "harness" && str(o?.job) ? "command" : kind && WHO[kind] ? kind : origin === "harness" && !kind ? "continue" : origin && WHO[origin] ? origin : kind || origin ? "other" : "owner";
   return { key, words: WHO[key] ?? "something else", lead: LEAD[key] ?? "Other input", queued: origin === "queued" && key !== "queued" };
 }
 

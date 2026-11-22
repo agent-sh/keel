@@ -1043,7 +1043,9 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // A message of its parent waits and no stop holds it: its turn starts by
   // itself (the next daemon starts it when this one is on its way down).
   if (!stopping.has(a.id) && !engine.isHeld(sessionId) && waitingFor(sessionId)) return;
-  const waitingOn = stopping.has(a.id) ? "" : waitsOn(sessionId);
+  // (A silent agent hands nothing back: its goal or its review has its answer at the turn's end, so it is
+  // not kept waiting on a command that runs on.)
+  const waitingOn = stopping.has(a.id) ? "" : isSilent(a.id) ? waits.describeActive(sessionId) : waitsOn(sessionId);
   if (waitingOn) {
     update(a.id, { status: "waiting", result: collectResult(a) });
     wake(a.id);
