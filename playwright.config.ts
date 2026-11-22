@@ -1,4 +1,5 @@
-import { resolve, relative } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, resolve, relative } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 // One e2e per feature, driving the real daemon and a real model (Haiku, the
@@ -25,13 +26,40 @@ if (given && !relative(resolve(given), shared).startsWith("..")) {
   throw new Error(`--output ${given} holds other runs' output folders, which Playwright empties when a run starts; use a folder of this run's own (the default is ${outputDir}).`);
 }
 
+// Spec files named on the command line run in the order they are named. Playwright by
+// itself runs files by name whatever order they are given in, so a spec that passes only
+// after another (it reads what the other left behind) is never seen failing. With the
+// files named in another order than by name, each file is a project of its own and the
+// projects run in the order named: `playwright test b.spec.ts a.spec.ts` runs b first
+// (scripts/flake.ts names them shuffled). The workers read the order from the environment
+// of the run, since their own command line names no file.
+const ORDER = "KEEL_E2E_FILE_ORDER";
+const namedFiles = (): string[] => {
+  const files: string[] = [];
+  for (const a of argv.slice(2)) {
+    if (a.startsWith("-")) continue;
+    const file = resolve(a.replace(/(:\d+)+$/, ""));
+    if (/\.spec\.ts$/.test(file) && existsSync(file) && !files.includes(file)) files.push(file);
+  }
+  return files;
+};
+const ordered: string[] = process.env[ORDER] ? JSON.parse(process.env[ORDER]!) : (() => {
+  const files = namedFiles();
+  const byName = [...files].sort();
+  return files.length > 1 && files.some((f, i) => f !== byName[i]) ? files : [];
+})();
+if (ordered.length) process.env[ORDER] = JSON.stringify(ordered);
+
 export default defineConfig({
   testDir: "test/e2e",
+  ...(ordered.length ? { projects: ordered.map((file, i) => ({ name: `${String(i + 1).padStart(3, "0")} ${basename(file, ".spec.ts")}`, testMatch: file })) } : {}),
   outputDir,
   timeout: 180_000,
   fullyParallel: false,
   workers: 1,
-  reporter: [["list"]],
+  // The list names each test as it ends; the summary after it counts what passed, failed and
+  // was skipped, the skipped ones by the reason their probe gave (test/e2e/summary.ts).
+  reporter: [["list"], ["./test/e2e/summary.ts"]],
   use: {
     baseURL: url,
     viewport: { width: 1920, height: 1040 },
