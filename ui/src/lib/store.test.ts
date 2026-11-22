@@ -372,3 +372,39 @@ test("a session that outgrew what the page holds keeps its newest part", () => {
   const twin = { ...first, id: "t-twin", seq: 1.5 };
   expect(trimmed([list[0]!, twin, ...list.slice(1)], list.at(-1)!.id).includes(twin)).toBe(true);
 });
+
+// The session list is read by HTTP and can land after frames the socket
+// already brought: it was read before them. The answer says what it reflects
+// (`rev`), and a row a newer frame told of stands as that frame left it.
+test("a session list that lands after newer frames puts no old row back", async () => {
+  const had = Object.keys(getState().sessions);
+  // The page holds four sessions, as the daemon listed them at rev 5000.
+  let p = actions.loadSessions();
+  await settle();
+  expect(await answer("/api/sessions", { sessions: ["l-renamed", "l-deleted", "l-archived", "l-older"].map((id) => row(id, "")), rev: 5000 })).toBe(true);
+  await p;
+  // A list is asked for again and read at rev 5001; before its answer lands, the socket brings what came after.
+  p = actions.loadSessions();
+  await settle();
+  await frame({ t: "session", session: row("l-older", "", { title: "an older word" }), rev: 5001 });
+  await frame({ t: "session", session: row("l-renamed", "", { title: "renamed after the list was read" }), rev: 5002 });
+  await frame({ t: "session", session: row("l-deleted", ""), deleted: true, rev: 5003 });
+  await frame({ t: "session", session: row("l-archived", "", { archived: true }), rev: 5004 });
+  await frame({ t: "session", session: row("l-made", ""), rev: 5005 });
+  expect(await answer("/api/sessions", { sessions: ["l-renamed", "l-deleted", "l-archived"].map((id) => row(id, "")).concat(row("l-older", "", { title: "the list is the newer word" })), rev: 5001 })).toBe(true);
+  await p;
+  const now = getState().sessions;
+  expect(now["l-renamed"]!.title).toBe("renamed after the list was read");
+  expect(now["l-deleted"]).toBeUndefined();
+  expect(now["l-archived"]!.archived).toBe(true);
+  expect(now["l-made"]).toBeDefined();
+  // A frame the list already reflects (the same rev) does not outrank it.
+  expect(now["l-older"]!.title).toBe("the list is the newer word");
+  // A list that is the newer word drops what it leaves out and takes every row as it has it.
+  p = actions.loadSessions();
+  await settle();
+  expect(await answer("/api/sessions", { sessions: [row("l-renamed", "", { title: "renamed again" })], rev: 6000 })).toBe(true);
+  await p;
+  expect(Object.keys(getState().sessions).filter((id) => !had.includes(id))).toEqual(["l-renamed"]);
+  expect(getState().sessions["l-renamed"]!.title).toBe("renamed again");
+});

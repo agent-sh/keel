@@ -200,7 +200,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const q = new URL(req.url).searchParams;
           const fs = [...listFilters.values()];
           // `level`: how far the list had moved when it was read (the socket's hello says the same of its open).
-          return json({ sessions: store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q))), level: bus.sessionsLevel() });
+          // `rev`: the last frame the list reflects, so a page keeps what a newer frame told it of a row.
+          return json({ sessions: store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q))), level: bus.sessionsLevel(), rev: bus.rev() });
         }),
         POST: wrap(async (req) => {
           const body = (await req.json().catch(() => ({}))) as any;

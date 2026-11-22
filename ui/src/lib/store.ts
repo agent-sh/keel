@@ -167,11 +167,21 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
 
 export const actions = {
   async loadSessions() {
-    const { sessions, level } = await api<{ sessions: Session[]; level?: number }>("/api/sessions");
+    const { sessions, level, rev } = await api<{ sessions: Session[]; level?: number; rev?: number }>("/api/sessions");
     listLevel = level;
+    // The list is as it was at `rev`. It can land after frames the socket
+    // already brought (it was read before them): a row a newer frame told of
+    // stands as that frame left it. Taken whole, such an answer put an old
+    // title back, brought back a deleted or archived row and dropped a new one.
     // Sessions of other machines (the fleet module keeps them) stay.
-    const remote = Object.entries(state.sessions).filter(([id]) => splitId(id));
-    set({ sessions: Object.fromEntries([...remote, ...sessions.map((s) => [s.id, s] as const)]), loaded: { ...state.loaded, sessions: true } });
+    const listed = new Set(sessions.map((s) => s.id));
+    const next: Record<string, Session> = {};
+    for (const [id, s] of Object.entries(state.sessions)) if (splitId(id) || (!listed.has(id) && !newer(`${id}:session`, rev, true))) next[id] = s;
+    for (const s of sessions) {
+      if (newer(`${s.id}:session`, rev, true)) next[s.id] = s;
+      else if (state.sessions[s.id]) next[s.id] = state.sessions[s.id]!;
+    }
+    set({ sessions: next, loaded: { ...state.loaded, sessions: true } });
   },
   // The whole model listing. It can hold hundreds of entries, so a page
   // reads it when something lists models (the picker, the palette, a
