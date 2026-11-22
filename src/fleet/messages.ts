@@ -58,13 +58,15 @@ export class Messages {
     private onHeld: (m: Message, s: Session) => void,
   ) {}
 
+  // The messages this daemon holds as their receiver or their outbox: a sending session's copy of
+  // one it sent to another machine (`sent_to`) is that session's record only (message-state.ts lists it).
   list(opts: { session_id?: string; state?: string } = {}): Message[] {
-    const where: string[] = [];
+    const where: string[] = ["sent_to IS NULL"];
     const args: string[] = [];
     if (opts.session_id) { where.push("to_session = ?"); args.push(opts.session_id); }
     if (opts.state) { where.push("state = ?"); args.push(opts.state); }
     return this.store.db
-      .query<Row, string[]>(`SELECT * FROM fleet_messages ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_ms DESC LIMIT 200`)
+      .query<Row, string[]>(`SELECT * FROM fleet_messages WHERE ${where.join(" AND ")} ORDER BY created_ms DESC LIMIT 200`)
       .all(...args)
       .map(toMessage);
   }
@@ -162,7 +164,7 @@ export class Messages {
   }
 
   private trimHeld() {
-    const held = this.store.db.query<{ id: string }, []>("SELECT id FROM fleet_messages WHERE state = 'held' ORDER BY created_ms DESC").all();
+    const held = this.store.db.query<{ id: string }, []>("SELECT id FROM fleet_messages WHERE state = 'held' AND sent_to IS NULL ORDER BY created_ms DESC").all();
     for (const h of held.slice(MAX_HELD)) this.setState(h.id, "dropped", "more than 100 messages waited for the owner; the oldest went");
   }
 
@@ -182,7 +184,7 @@ export class Messages {
   // The owner decides a held message.
   decide(id: string, decision: "deliver" | "drop"): Message {
     const m = this.get(id);
-    if (!m) throw new HttpError(404, "no such message");
+    if (!m || this.copyOf(id)) throw new HttpError(404, "no such message");
     if (m.state !== "held") throw new HttpError(409, "the message is not waiting for you");
     if (decision === "drop") { this.setState(id, "dropped", "dropped by the owner"); return this.get(id)!; }
     const s = this.store.session(m.to_session);
@@ -236,8 +238,20 @@ export class Messages {
     if (!hit.length && /^[0-9a-f]{12}$/.test(to)) hit = all.filter((a) => a.session.id.endsWith(to));
     if (!hit.length) hit = all.filter((a) => a.session.title.toLowerCase().includes(to.toLowerCase()));
     if (hit.length > 1) throw new HttpError(400, `"${to}" names ${hit.length} sessions: ${hit.slice(0, 5).map((h) => `${h.to} (${h.session.title})`).join(", ")}. Use the address.`);
-    if (!hit[0]) throw new HttpError(404, `no session ${to}; keel__sessions_list shows the addresses`);
+    if (!hit[0]) throw this.missing(to);
     return { machine: hit[0].machine_id, machine_name: hit[0].machine, session: hit[0].session };
+  }
+
+  // Why `to` names no session a message can go to: an archived session is named as one (it takes no
+  // messages until it is unarchived), anything else is no session.
+  private missing(to: string): HttpError {
+    const archived = this.store.sessions({ archived: true });
+    let hit = archived.filter((s) => s.id === to);
+    if (!hit.length && /^[0-9a-f]{12}$/.test(to)) hit = archived.filter((s) => s.id.endsWith(to));
+    if (!hit.length && to.trim()) hit = archived.filter((s) => s.title.toLowerCase().includes(to.toLowerCase()));
+    const s = hit.length === 1 ? hit[0]! : undefined;
+    if (s) return new HttpError(409, `that session is archived: ${s.title ? `"${clean(s.title, 80)}" (${s.id})` : s.id} takes no messages until it is unarchived`);
+    return new HttpError(404, `no session ${to}; keel__sessions_list shows the addresses`);
   }
 
   // A send, with where it went and the receiver's message id (none for an outbox).
@@ -268,7 +282,7 @@ export class Messages {
     // However it matched (a short id as well as a title): two sessions are never one address.
     if (hit.length > 1) throw new HttpError(400, `"${to}" names ${hit.length} sessions: ${hit.slice(0, 5).map((h) => `${h.to} (${h.session.title})`).join(", ")}. Use the address.`);
     const a = hit[0];
-    if (!a) throw new HttpError(404, `no session ${to}; keel__sessions_list shows the addresses`);
+    if (!a) throw this.missing(to);
     if (!a.local) return this.sendRemote(a.machine_id, a.machine, a.session.id, text, wake, sender);
     const m = this.receive(a.session, text, sender, wake, true);
     const title = a.session.title || a.session.id;
@@ -305,7 +319,28 @@ export class Messages {
     }
     const reason = typeof r.reason === "string" ? r.reason : "it waits for the owner there";
     const said = r.state === "held" ? `Held on ${name} for the owner: ${reason}.` : r.state === "queued" ? `Queued for ${target} (id ${r.id}).` : `Delivered to ${target}.`;
+    this.keepSent(r.id, r.state, machineId, name, sid, text, wake, from, r.state === "held" ? clean(reason, 200) : undefined);
     return { text: said, machine: machineId, session: sid, message_id: r.id, state: r.state };
+  }
+
+  // The sending session's record of a message another machine took: in its list of messages with the
+  // state that machine gave in its receipt, under the receiver's id. (Kept apart from what this daemon
+  // received: `sent_to` names the machine, and nothing here delivers, holds or drops it.)
+  private keepSent(id: string, state: "delivered" | "queued" | "held", machineId: string, name: string, sid: string, text: string, wake: boolean, from: Sender, reason?: string) {
+    try {
+      const m = this.fleet.row(machineId);
+      const title = this.fleet.remoteSessions(machineId).sessions.find((x) => x.id === sid)?.title;
+      const now = Date.now();
+      this.store.db
+        .query("INSERT OR IGNORE INTO fleet_messages (id, created_ms, state, state_ms, to_session, to_daemon, text, wake, sender, reason, to_title, sent_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, now, state, now, sid, m?.link_daemon_id ?? machineId, text, wake ? 1 : 0, JSON.stringify(from), reason ?? null, title ? clean(title, 120) : null, clean(name, 120) || machineId);
+      this.bus.emit({ t: "feature", name: "fleet_message", session_id: from.session_id, data: { id, state } });
+    } catch {} // the send itself went: a record it could not keep here is not a failed send
+  }
+
+  // A sending session's copy of a message to another machine (keepSent).
+  private copyOf(id: string): boolean {
+    return !!this.store.db.query("SELECT 1 FROM fleet_messages WHERE id = ? AND sent_to IS NOT NULL").get(id);
   }
 
   // Where a message stands for a sender that waits for it to be handled: held

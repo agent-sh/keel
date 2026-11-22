@@ -60,6 +60,9 @@ export function migrate(store: Store) {
   if (!store.columnExists("sessions", "machine")) store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
   // What the receiving daemon called the session of a refused outbox message.
   if (!store.columnExists("fleet_messages", "to_title")) store.migrate("ALTER TABLE fleet_messages ADD COLUMN to_title TEXT");
+  // The machine a session's own message went to: the sender's copy of it (messages.ts keepSent).
+  if (!store.columnExists("fleet_messages", "state_ms")) store.migrate("ALTER TABLE fleet_messages ADD COLUMN state_ms INTEGER");
+  if (!store.columnExists("fleet_messages", "sent_to")) store.migrate("ALTER TABLE fleet_messages ADD COLUMN sent_to TEXT");
   if (!store.columnExists("fleet_machines", "offline_since")) store.migrate("ALTER TABLE fleet_machines ADD COLUMN offline_since INTEGER");
 }
 

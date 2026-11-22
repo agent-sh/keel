@@ -54,6 +54,12 @@ test("fleet messages: across machines, and held for the owner", async ({ page, r
     await sends.nth(1).click();
     await expect(sends.nth(1)).toContainText("Held for the owner");
     await shoot(page, "fleet-msg-01-sender");
+    // The sender's own list has both, the one to the other machine with where it went and the state its daemon gave.
+    const list = (await (await request.get(`/api/sessions/${sender.id}/peer-messages`)).json()).messages;
+    expect(list.filter((m: any) => m.direction === "sent").map((m: any) => [m.other.session_id, m.other.machine ?? null, m.state]).sort())
+      .toEqual([[receiver.id, peer.name, "delivered"], [wide.id, null, "held"]].sort());
+    const lines = await (await request.get(`/api/sessions/${sender.id}/peer-messages?format=text`)).text();
+    expect(lines).toContain(`sent to "Receiver on devbox" on ${peer.name}: delivered`);
 
     // Held here: the owner sees why and delivers it.
     await page.goto(`/s/${wide.id}`);
@@ -76,6 +82,21 @@ test("fleet messages: across machines, and held for the owner", async ({ page, r
 
     const errors = (await (await request.get("/api/errors")).json()).errors;
     expect(errors.slice(0, errors.length - errorsBefore).filter((e: any) => e.source !== "provider")).toEqual([]);
+    // An archived session is called archived, not "no session".
+    const shelf = (await (await request.post("/api/sessions", { data: { title: "Archived receiver", model: HAIKU } })).json()).session;
+    await request.patch(`/api/sessions/${shelf.id}`, { data: { archived: true } });
+    await page.goto(`/s/${sender.id}`);
+    await page.getByTestId("composer").fill(ask(
+      `Make exactly one keel__session_send call to "${shelf.id}" with the text "anyone there?", then reply "done".`,
+      `script:calls ${JSON.stringify([{ name: "keel__session_send", input: { to: shelf.id, text: "anyone there?" } }])}`,
+    ));
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 120_000 });
+    await expect(sends).toHaveCount(3);
+    await sends.nth(2).click();
+    await expect(sends.nth(2)).toContainText("that session is archived");
+    await expect(sends.nth(2)).not.toContainText("no session");
+    await request.delete(`/api/sessions/${shelf.id}`);
   } finally {
     await request.delete(`/api/sessions/${wide.id}`);
     await request.delete(`/api/sessions/${sender.id}`);

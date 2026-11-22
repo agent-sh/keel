@@ -38,11 +38,20 @@ export function migrateMessageState(store: Store) {
   store.migrate("CREATE INDEX IF NOT EXISTS fleet_messages_from ON fleet_messages(json_extract(sender, '$.session_id'), created_ms DESC)");
 }
 
+const columns = new WeakMap<Database, Set<string>>();
+const columnOf = (db: Database, name: string) => {
+  let have = columns.get(db);
+  if (!have?.has(name)) columns.set(db, (have = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('fleet_messages')").all().map((c) => c.name))));
+  return have.has(name);
+};
+
 // What a session sent and received, newest first.
 export function peerMessages(db: Database, sessionId: string, limit = 50): PeerMessageRow[] {
-  type Row = { id: string; created_ms: number; state: PeerState; state_ms: number | null; to_session: string; to_daemon: string | null; to_title: string | null; text: string; sender: string; reason: string | null; title: string | null };
+  type Row = { id: string; created_ms: number; state: PeerState; state_ms: number | null; to_session: string; to_daemon: string | null; to_title: string | null; text: string; sender: string; reason: string | null; title: string | null; sent_to: string | null };
+  // (A store from before a session's copy of a message to another machine was kept has no such column.)
+  const sentTo = columnOf(db, "sent_to") ? "m.sent_to" : "NULL";
   const rows = db.query<Row, [string, string, number]>(
-    `SELECT m.id, m.created_ms, m.state, m.state_ms, m.to_session, m.to_daemon, m.to_title, substr(m.text, 1, ${TEXT + 1}) AS text, m.sender, m.reason, s.title
+    `SELECT m.id, m.created_ms, m.state, m.state_ms, m.to_session, m.to_daemon, m.to_title, substr(m.text, 1, ${TEXT + 1}) AS text, m.sender, m.reason, s.title, ${sentTo} AS sent_to
      FROM fleet_messages m LEFT JOIN sessions s ON s.id = m.to_session
      WHERE m.to_session = ?1 OR json_extract(m.sender, '$.session_id') = ?2 ORDER BY m.created_ms DESC, m.id DESC LIMIT ?3`).all(sessionId, sessionId, Math.min(Math.max(limit, 1), 200));
   return rows.map((r) => {
@@ -51,7 +60,7 @@ export function peerMessages(db: Database, sessionId: string, limit = 50): PeerM
     const sent = from.session_id === sessionId && !(r.to_session === sessionId && !r.to_daemon);
     return {
       id: r.id, direction: sent ? "sent" as const : "received" as const,
-      other: sent ? { session_id: r.to_session, title: r.title ?? r.to_title ?? undefined, ...(r.to_daemon ? { daemon_id: r.to_daemon } : {}) } : { session_id: from.session_id, title: from.title, machine: from.machine, daemon_id: from.daemon_id },
+      other: sent ? { session_id: r.to_session, title: (r.sent_to ? r.to_title : r.title ?? r.to_title) ?? undefined, ...(r.sent_to ? { machine: r.sent_to } : {}), ...(r.to_daemon ? { daemon_id: r.to_daemon } : {}) } : { session_id: from.session_id, title: from.title, machine: from.machine, daemon_id: from.daemon_id },
       text: r.text.slice(0, TEXT), cut: r.text.length > TEXT, created_ms: r.created_ms, state: r.state, state_ms: r.state_ms, ...(r.reason ? { reason: r.reason } : {}),
     };
   });
@@ -60,7 +69,7 @@ export function peerMessages(db: Database, sessionId: string, limit = 50): PeerM
 // The rows as text, a line each: for a terminal or a model's timeline.
 export function peerMessageLines(rows: PeerMessageRow[], fmt: (ts: number) => string): string[] {
   return rows.map((r) => {
-    const who = r.other.title ? `"${r.other.title.replace(/\s+/g, " ").slice(0, 48)}"` : r.other.session_id.slice(-12);
+    const who = `${r.other.title ? `"${r.other.title.replace(/\s+/g, " ").slice(0, 48)}"` : r.other.session_id.slice(-12)}${r.direction === "sent" && r.other.machine ? ` on ${r.other.machine}` : ""}`;
     const state = `${PEER_STATE_WORDS[r.state] ?? r.state}${r.state_ms && r.state !== "queued" ? ` at ${fmt(r.state_ms)}` : ""}${r.reason ? ` (${r.reason})` : ""}`;
     return `${fmt(r.created_ms)}  ${r.direction === "sent" ? "sent to" : "received from"} ${who}: ${state}. ${r.text.replace(/\s+/g, " ").slice(0, 120)}${r.cut || r.text.length > 120 ? "…" : ""}`;
   });
