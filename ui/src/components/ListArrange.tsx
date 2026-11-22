@@ -7,7 +7,7 @@
 // order itself is lib/list-order.ts.
 import { Menu } from "@base-ui/react/menu";
 import { Check, Search, SlidersHorizontal, X } from "lucide-react";
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { DEFAULT, keep, readArrange, type Arrange } from "../lib/list-order.ts";
 import type { Watch } from "../lib/watch.ts";
@@ -34,7 +34,9 @@ if (localStorage.getItem(KEY) === null && !kept.note) localStorage.setItem(KEY, 
 export const setArrange = (patch: Partial<Arrange>) => write({ ...kept, arrange: { ...arrange, ...patch } });
 const sub = (f: () => void) => (subs.add(f), () => subs.delete(f));
 export const useArrange = () => useSyncExternalStore(sub, () => arrange);
-const useNote = () => useSyncExternalStore(sub, () => kept.note);
+// The note that the default order changed: shown under the counts line and in the menu until it was read.
+export const useNote = () => useSyncExternalStore(sub, () => kept.note);
+export const readNote = () => { if (kept.note) write({ ...kept, note: false }); };
 
 // Every word of the filter is in the title or the folder path.
 export const matches = (s: Session, q: string) => {
@@ -57,9 +59,16 @@ const LINES: { v: Arrange["lines"]; label: string }[] = [
 ];
 const label = "k-label px-2.5 pt-1.5 pb-1";
 
-export function ListFind({ q, setQ }: { q: string; setQ: (q: string) => void }) {
+export function ListFind({ q, setQ, narrow }: { q: string; setQ: (q: string) => void; narrow?: boolean }) {
   const a = useArrange();
   const note = useNote();
+  // The menu opens by its button, and from the note under the counts line.
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const show = () => setOpen(true);
+    addEventListener("keel:arrange", show);
+    return () => removeEventListener("keel:arrange", show);
+  }, []);
   const changed = a.group !== DEFAULT.group || a.sort !== DEFAULT.sort || a.hideDone !== DEFAULT.hideDone || a.lines !== DEFAULT.lines;
   const radio = (on: boolean) => <span className="grid w-3.5 shrink-0 place-items-center">{on && <Check className="size-3.5 text-accent" />}</span>;
   return (
@@ -69,14 +78,14 @@ export function ListFind({ q, setQ }: { q: string; setQ: (q: string) => void }) 
         value={q}
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Escape" && q) { e.stopPropagation(); setQ(""); } }}
-        placeholder="Filter sessions"
+        placeholder={narrow ? "Filter" : "Filter sessions"}
         aria-label="Filter sessions by title or folder"
         data-testid="list-filter"
         spellCheck={false}
       />
       {q && <button type="button" className="k-find-btn" aria-label="Clear the filter" onClick={() => setQ("")}><X /></button>}
       {/* The note about the changed default is read once: it is gone when the menu that showed it closes. */}
-      <Menu.Root onOpenChange={(open) => { if (!open && note) write({ ...kept, note: false }); }}>
+      <Menu.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) readNote(); }}>
         <Menu.Trigger className={cn("k-find-btn", changed && "k-find-on")} data-testid="list-arrange" aria-label="Arrange the list" title="Group, sort and show">
           <SlidersHorizontal />
         </Menu.Trigger>

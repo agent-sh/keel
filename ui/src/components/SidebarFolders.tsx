@@ -4,10 +4,10 @@
 // dragged onto another's head goes before it, or into it from the lower half
 // of a top folder's head. Double-click a name to rename it.
 import { ChevronRight, Folder, FolderPlus, Plus, Trash2 } from "lucide-react";
-import { useState, type DragEvent } from "react";
+import { useRef, useState, useSyncExternalStore, type DragEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { folders, tree, useFolders, type SessionFolder } from "../lib/folders.ts";
-import { actedOn, useActed } from "../lib/list-hold.ts";
+import { actedOn, listActed, useActed } from "../lib/list-hold.ts";
 import { useWatches, type Watch } from "../lib/watch.ts";
 import { Mark } from "./Mark.tsx";
 import { composing } from "../lib/keys.ts";
@@ -15,9 +15,17 @@ import { reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { DRAG } from "./Panes.tsx";
-import { Group } from "./Sidebar.tsx";
+import { Group, useListHeld } from "./Sidebar.tsx";
 
 const FOLDER = "application/x-keel-folder";
+
+// What this page does to the folders itself (fold, rename, move, make, delete) shows as soon as
+// it has landed, also in a list held still under the hand; what another device does to them
+// waits for the hand to leave, like the rows.
+let landed = 0;
+const landSubs = new Set<() => void>();
+const mine = <T,>(act: Promise<T>): Promise<T> => act.finally(() => { landed++; landSubs.forEach((f) => f()); });
+const useLanded = () => useSyncExternalStore((f) => (landSubs.add(f), () => landSubs.delete(f)), () => landed);
 // Quiet until the head is hovered or holds the keyboard; shown from the start where nothing hovers.
 const headAct = "grid size-6 shrink-0 place-items-center rounded-sm text-faint opacity-0 hover:bg-hover hover:text-fg group-hover/head:opacity-100 group-focus-within/head:opacity-100 focus-visible:opacity-100 touch:size-7 touch:opacity-100";
 
@@ -34,7 +42,7 @@ function Head({ f, n, nested, canNest, calls }: { f: SessionFolder; n: number; n
   };
   const done = () => {
     setEditing(false);
-    if (name.trim() && name.trim() !== f.name) folders.rename(f.id, name.trim()).catch(reportError);
+    if (name.trim() && name.trim() !== f.name) mine(folders.rename(f.id, name.trim())).catch(reportError);
     else setName(f.name);
   };
   return (
@@ -51,13 +59,13 @@ function Head({ f, n, nested, canNest, calls }: { f: SessionFolder; n: number; n
         setOver("");
         if (!z) return;
         e.preventDefault();
-        if (z === "session") return void folders.file(e.dataTransfer.getData(DRAG), f.id).catch(reportError);
+        if (z === "session") { const sid = e.dataTransfer.getData(DRAG); listActed(sid); return void folders.file(sid, f.id).catch(reportError); }
         const id = e.dataTransfer.getData(FOLDER);
-        if (id && id !== f.id) folders.place(id, f, z === "into").catch(reportError);
+        if (id && id !== f.id) mine(folders.place(id, f, z === "into")).catch(reportError);
       }}
     >
       {over === "before" && <span aria-hidden="true" className="absolute inset-x-1 -top-px h-0.5 rounded-full bg-accent" />}
-      <button type="button" className="grid size-4 place-items-center" aria-label={f.collapsed ? `Open ${f.name}` : `Fold ${f.name}`} aria-expanded={!f.collapsed} data-testid="folder-toggle" onClick={() => folders.collapse(f.id, !f.collapsed).catch(reportError)}>
+      <button type="button" className="grid size-4 place-items-center" aria-label={f.collapsed ? `Open ${f.name}` : `Fold ${f.name}`} aria-expanded={!f.collapsed} data-testid="folder-toggle" onClick={() => mine(folders.collapse(f.id, !f.collapsed)).catch(reportError)}>
         <ChevronRight className={cn("transition-transform", !f.collapsed && "rotate-90")} />
       </button>
       <Folder />
@@ -78,14 +86,14 @@ function Head({ f, n, nested, canNest, calls }: { f: SessionFolder; n: number; n
       <span className="tabular-nums text-faint">{n || ""}</span>
       {calls && <Mark w={calls} className="k-head-calls" />}
       <span className="ml-auto flex items-center">
-        {!nested && <button type="button" className={headAct} aria-label={`New folder in ${f.name}`} title="New folder inside" onClick={() => folders.create("New folder", f.id).catch(reportError)}><FolderPlus /></button>}
+        {!nested && <button type="button" className={headAct} aria-label={`New folder in ${f.name}`} title="New folder inside" onClick={() => mine(folders.create("New folder", f.id)).catch(reportError)}><FolderPlus /></button>}
         <button
           type="button"
           className={headAct}
           aria-label={`Delete ${f.name}`}
           title="Delete the folder (its sessions stay)"
           data-testid="folder-delete"
-          onClick={async () => { if (await confirmAction({ title: `Delete the folder ${f.name}?`, body: "Its sessions stay in the list, unfiled; its folders move up a level.", action: "Delete folder", danger: true })) folders.remove(f.id).catch(reportError); }}
+          onClick={async () => { if (await confirmAction({ title: `Delete the folder ${f.name}?`, body: "Its sessions stay in the list, unfiled; its folders move up a level.", action: "Delete folder", danger: true })) mine(folders.remove(f.id)).catch(reportError); }}
         ><Trash2 /></button>
       </span>
     </h2>
@@ -93,7 +101,14 @@ function Head({ f, n, nested, canNest, calls }: { f: SessionFolder; n: number; n
 }
 
 export function FolderGroups({ list, cmp, current, every }: { list: Session[]; cmp: (a: Session, b: Session) => number; current: string | null; every: boolean }) {
-  const all = useFolders((s) => s.folders);
+  // The folders as the list was drawn from them when the hand arrived: a fold, a name or a
+  // place changed on another device moves no row under the hand.
+  const live = useFolders((s) => s.folders);
+  const held = useListHeld();
+  const own = useLanded();
+  const snap = useRef({ own, all: live });
+  if (!held || snap.current.own !== own) snap.current = { own, all: live };
+  const all = snap.current.all;
   const by = new Map<string, Session[]>();
   for (const s of list) {
     const k = s.settings.folder_id && all.some((f) => f.id === s.settings.folder_id) ? s.settings.folder_id : "";
@@ -139,7 +154,7 @@ export function FolderGroups({ list, cmp, current, every }: { list: Session[]; c
           <Group list={loose} current={current} every={every} where />
         </section>
       )}
-      <button type="button" className="k-more flex items-center gap-1.5" data-testid="folder-create" onClick={() => folders.create(`Folder ${all.length + 1}`).catch(reportError)}><Plus className="size-3.5" />New folder</button>
+      <button type="button" className="k-more flex items-center gap-1.5" data-testid="folder-create" onClick={() => mine(folders.create(`Folder ${all.length + 1}`)).catch(reportError)}><Plus className="size-3.5" />New folder</button>
     </>
   );
 }
@@ -154,7 +169,7 @@ function UnfiledHead({ n }: { n: number }) {
       data-folder="none"
       onDragOver={(e) => { if (e.dataTransfer.types.includes(DRAG)) { e.preventDefault(); setOver(true); } }}
       onDragLeave={() => setOver(false)}
-      onDrop={(e) => { setOver(false); const id = e.dataTransfer.getData(DRAG); if (id) { e.preventDefault(); folders.file(id, null).catch(reportError); } }}
+      onDrop={(e) => { setOver(false); const id = e.dataTransfer.getData(DRAG); if (id) { e.preventDefault(); listActed(id); folders.file(id, null).catch(reportError); } }}
     >
       <span className="truncate">Unfiled</span>
       <span className="tabular-nums text-faint">{n}</span>

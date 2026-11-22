@@ -7,6 +7,11 @@
 // nothing: the owner is typing in a pane, not aiming at a row. A session the
 // owner acted on (archived from its row, pinned, jumped to from the line
 // above the list) is drawn as it is now, held or not.
+//
+// What does move, moves around the hand: the row the pointer is on (else the
+// row the keyboard was last on) stays where it is on the screen while the
+// rows around it take their places, when the list lets go and for as long as
+// the pointer lies in it (useAnchor).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FocusEvent } from "react";
 import { after } from "./list-order.ts";
 import { getState } from "./store.ts";
@@ -19,10 +24,15 @@ export const IDLE_MS = 5000;
 // How long the row a count went to stays marked.
 const JUMP_MS = 1600;
 
+// How long after the owner's own act on the hand's row the row is let go where the act puts it.
+const OWN_MS = 1500;
+let ownMove = -Infinity;
 const own = new Set<string>();
 let rev = 0;
 const subs = new Set<() => void>();
 export function listActed(id: string) {
+  // The row the hand is on goes where the owner sent it (pinned, moved among the pinned): it is not held where it stood.
+  if (anchor?.id === id) ownMove = performance.now();
   own.add(id);
   rev++;
   subs.forEach((f) => f());
@@ -44,6 +54,7 @@ export function useHand() {
   const [held, setHeld] = useState(false);
   const at = useRef({
     pointer: false, focus: false, rows: null as HTMLElement | null,
+    kept: 0, // menus of the list's rows that are open over it
     moved: 0, // when the pointer last moved, pressed or scrolled in the list
     idle: undefined as ReturnType<typeof setTimeout> | undefined,
     timer: undefined as ReturnType<typeof setTimeout> | undefined,
@@ -54,7 +65,7 @@ export function useHand() {
     // A focused row taken out of the page sends no blur: the keyboard is on the rows only while it is in them.
     if (a.focus && !(a.rows?.isConnected && a.rows.contains(document.activeElement))) a.focus = false;
     clearTimeout(a.timer);
-    if (a.pointer || a.focus) setHeld(true);
+    if (a.pointer || a.focus || a.kept > 0) setHeld(true);
     else a.timer = setTimeout(() => setHeld(false), LEAVE_MS);
   }, []);
   // The pointer is a hand while it moves: at rest for IDLE_MS it holds nothing until it moves again.
@@ -91,10 +102,110 @@ export function useHand() {
     onBlur: (e: FocusEvent<HTMLElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) set({ focus: false }); },
   });
   // The list was drawn anew in another form (folded, unfolded): the hand is where the next event says.
-  const reset = useCallback(() => { at.current.focus = false; rest(); }, [rest]);
-  return { held, on: on.current, reset };
+  const reset = useCallback(() => { at.current.focus = false; at.current.kept = 0; rest(); }, [rest]);
+  // A menu of a row is open (the hand is in it, over the list): the list is held for as long.
+  const keep = useCallback((open: boolean) => { at.current.kept = Math.max(0, at.current.kept + (open ? 1 : -1)); set({}); }, [set]);
+  // `touch`: the hand did something that is the list's (a press on the line at its foot): held as by a move of the pointer in it.
+  return { held, on: on.current, reset, keep, touch: stir };
 }
 export type Hand = ReturnType<typeof useHand>;
+
+// The row the hand is on, and where it stands on the screen. While there is one, every change
+// of the list (rows that settle, arrive, leave, fold, sort) is followed by the list's own
+// scroll, so that this row stays where it is: the rows around it move, it does not. Where the
+// list cannot scroll that far (the row would have to stand above the first row's place, or the
+// list is shorter than its box) the list is padded for as long as the hand is there. The order
+// keeps the row's place among its neighbours too (`around` in lib/list-order.ts, read by the
+// lists through `anchorRow`), so the scroll has little to make up.
+const ROW = '[data-testid="session-row"]';
+let anchor: { id: string; top: number } | null = null;
+let within = false; // the pointer is over the list, moving or not
+let anchored: HTMLElement | null = null; // the list the anchor is in
+let padTop = 0, padBottom = 0; // what the list is padded by, to stand where it cannot scroll to
+export const anchorRow = (): string | null => anchor?.id ?? null;
+const ROW_IN = (nav: HTMLElement, id: string) => nav.querySelector<HTMLElement>(`${ROW}[data-session="${CSS.escape(id)}"]`);
+const pad = (nav: HTMLElement, top: number, bottom: number) => {
+  padTop = top; padBottom = bottom;
+  nav.style.paddingTop = top > 0.01 ? `${top}px` : "";
+  nav.style.paddingBottom = bottom > 0.5 ? `calc(0.75rem + ${bottom}px)` : "";
+};
+// The hand has been away through the settle: the list is its own again.
+export function dropAnchor() {
+  if (within || (anchored && anchored.contains(document.activeElement))) return;
+  anchor = null;
+  if (anchored) pad(anchored, 0, 0);
+}
+// The owner arranged the list anew (its tab, its filter, its order): it is drawn as they asked,
+// and the row the hand is on is taken where it stands now.
+export function reanchor() {
+  if (!anchored) return;
+  pad(anchored, 0, 0);
+  const row = anchor ? ROW_IN(anchored, anchor.id) : null;
+  anchor = row && anchor ? { id: anchor.id, top: row.getBoundingClientRect().top } : null;
+}
+export function useAnchor(list: { current: HTMLElement | null }) {
+  useEffect(() => {
+    const nav = list.current;
+    if (!nav) return;
+    anchored = nav;
+    let self = 0; // the scroll events this makes itself
+    let aimed = 0;
+    const rowAt = (id: string) => ROW_IN(nav, id);
+    const take = (row: HTMLElement | null | undefined) => { const id = row?.getAttribute("data-session"); if (row && id) anchor = { id, top: row.getBoundingClientRect().top }; };
+    const aim = (e: PointerEvent) => {
+      within = true;
+      const row = (e.target as Element | null)?.closest?.<HTMLElement>(ROW);
+      if (row) return take(row);
+      // Between rows (a folder's head, a gap): the row nearest the pointer, looked for a few times a second at most.
+      if (performance.now() - aimed < 150) return;
+      aimed = performance.now();
+      let best: HTMLElement | null = null, d = Infinity;
+      for (const r of nav.querySelectorAll<HTMLElement>(ROW)) { const b = r.getBoundingClientRect(); const far = Math.abs((b.top + b.bottom) / 2 - e.clientY); if (far < d) { d = far; best = r; } }
+      take(best);
+    };
+    const leave = () => { within = false; };
+    const focus = (e: Event) => { if (!within) take((e.target as Element | null)?.closest?.<HTMLElement>(ROW)); };
+    const again = () => { if (self > 0) { self--; return; } if (anchor) take(rowAt(anchor.id)); };
+    const settle = () => {
+      if (!anchor) return;
+      const row = rowAt(anchor.id);
+      if (!row) { anchor = null; return pad(nav, 0, 0); }
+      if (performance.now() - ownMove < OWN_MS) return take(row);
+      const box = nav.getBoundingClientRect();
+      // Where the row is in the list's content (its padding aside), and where it has to be in the list's box.
+      const at = row.getBoundingClientRect().top - box.top + nav.scrollTop - padTop;
+      const want = anchor.top - box.top;
+      const k = at - want;
+      // The list scrolls by whole pixels: what is left of a part of one is made up above the rows.
+      const scroll = k < 0 ? 0 : Math.ceil(k - 0.01), top = scroll - k;
+      const content = nav.scrollHeight - padTop - padBottom;
+      const bottom = Math.max(0, scroll + nav.clientHeight - content - top);
+      if (Math.abs(top - padTop) < 0.05 && Math.abs(bottom - padBottom) < 0.5 && scroll === Math.round(nav.scrollTop)) return;
+      pad(nav, top, bottom);
+      const was = nav.scrollTop;
+      nav.scrollTop = scroll;
+      if (nav.scrollTop !== was) self++;
+    };
+    const seen = new MutationObserver(settle);
+    seen.observe(nav, { childList: true, subtree: true, characterData: true });
+    nav.addEventListener("pointermove", aim, { passive: true });
+    nav.addEventListener("pointerenter", aim, { passive: true });
+    nav.addEventListener("pointerleave", leave);
+    nav.addEventListener("focusin", focus);
+    nav.addEventListener("scroll", again, { passive: true });
+    addEventListener("resize", again);
+    return () => {
+      seen.disconnect();
+      nav.removeEventListener("pointermove", aim);
+      nav.removeEventListener("pointerenter", aim);
+      nav.removeEventListener("pointerleave", leave);
+      nav.removeEventListener("focusin", focus);
+      nav.removeEventListener("scroll", again);
+      removeEventListener("resize", again);
+      if (anchored === nav) { anchored = null; anchor = null; within = false; padTop = padBottom = 0; }
+    };
+  }, [list]);
+}
 
 // Whom each count on the line above the list names (Sidebar.tsx keeps them, also
 // while the list is folded); a press on a count, or the key, goes to the next of them.
@@ -105,11 +216,30 @@ const last: Partial<Record<Kind, string>> = {};
 const countSubs = new Set<() => void>();
 export const nameCounts = (n: Counts) => { named = n; countSubs.forEach((f) => f()); };
 export const useCounts = () => useSyncExternalStore((f) => (countSubs.add(f), () => countSubs.delete(f)), () => named);
+// The rows that stand for a session that needs the owner under a look (its pane shows another
+// session for now): marked, since what they need is on no screen.
+let underLooks = "";
+const underSubs = new Set<() => void>();
+export const nameUnder = (ids: string[]) => { const next = [...ids].sort().join(" "); if (next !== underLooks) { underLooks = next; underSubs.forEach((f) => f()); } };
+export const useUnderLook = (id: string) => useSyncExternalStore((f) => (underSubs.add(f), () => underSubs.delete(f)), () => underLooks.split(" ").includes(id));
+
 // The list's own way to draw a row it does not draw now (its tab, its filter words and tag), while it is drawn.
 let reveal: ((id: string) => void) | null = null;
 export const onReveal = (f: ((id: string) => void) | null) => { reveal = f; };
 
 const rowOf = (id: string) => document.querySelector<HTMLElement>(`[data-testid="session-list"] [data-testid="session-row"][data-session="${CSS.escape(id)}"]`);
+
+// The keyboard goes back to a session's row once the list has drawn it in its new place (a row
+// pinned or moved from the keyboard is drawn anew there): looked for on a few frames.
+export function focusRow(id: string) {
+  let tries = 0;
+  const look = () => {
+    const row = rowOf(id);
+    if (row) return row.focus();
+    if (++tries < 12) requestAnimationFrame(look);
+  };
+  requestAnimationFrame(look);
+}
 
 // To a session's row: scrolled to the middle of the list, the keyboard on it
 // (Enter opens it), and marked for a moment, so it is found among rows that

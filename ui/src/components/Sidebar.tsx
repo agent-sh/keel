@@ -3,21 +3,26 @@
 // and the archive. A row keeps its place and its height: it is one line (two
 // by the owner's choice), what its session needs is said by its mark, and
 // counted on the line above the list, where a press goes to the next one's
-// row. Under the pointer or the keyboard nothing moves at all
-// (lib/list-order.ts, lib/list-hold.ts). With little room beside the panes a
-// row is the mark and the title alone. Folded (Ctrl B, or no room for a title) it is a column of marks,
+// row. Under the pointer or the keyboard nothing moves at all, and what moves
+// when the hand rests or has left moves around the row it was on
+// (lib/list-order.ts, lib/list-hold.ts). A row is pinned from the row itself
+// (its actions, its menu), and the pinned stand in the order the owner gave
+// them. With little room beside the panes a row is the mark and the title alone. Folded (Ctrl B, or no room for a title) it is a column of marks,
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, Bug, Columns2, Folder, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
 import { createContext, Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
 import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
-import { actedOn, forgetActed, jumpNext, listActed, nameCounts, onReveal, useActed, useCounts, useHand, type Hand, type Kind } from "../lib/list-hold.ts";
-import { folders, held as heldList, tally } from "../lib/list-order.ts";
+import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, useActed, useAnchor, useCounts, useHand, useUnderLook, type Hand, type Kind } from "../lib/list-hold.ts";
+import { around, folders, held as heldList, pinnedOrder, tally } from "../lib/list-order.ts";
+import { focusAsk } from "../lib/asks.ts";
+import { announce } from "../lib/announce.ts";
+import { useNeedUnderLooks } from "../lib/looks.ts";
 import { useQueued } from "../lib/queued.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { opened, openFocus } from "../lib/self-focus.ts";
@@ -27,16 +32,17 @@ import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useSessionState, useSessionStates, watchLabel, type SessionState, type Watch } from "../lib/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
-import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
+import { finished, ListFind, matches, order, readNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
 import { failWord, folderOf, Mark, modelOf, stateClock, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
-import { dragSession, PaneCount } from "./Panes.tsx";
+import { DRAG, dragSession, PaneCount } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { Grip } from "./Grip.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { Logo } from "./Logo.tsx";
-import { archive } from "../lib/sessops.ts";
+import { archive, movePin, pin, pinnedNow, placePin } from "../lib/sessops.ts";
+import { RowMenu, type RowMenuAt } from "./RowMenu.tsx";
 import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
@@ -48,14 +54,17 @@ const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 // What the list is drawn from, for every group in it: the states its order and
 // its folds read (held still under the hand), the sessions that left while it
 // was held, and whether the list is the narrow one.
-const ListCtx = createContext<{ watches: Record<string, Watch>; gone: Set<string>; narrow: boolean; lines: "one" | "two" }>({ watches: {}, gone: new Set(), narrow: false, lines: "one" });
+// `key`: what the owner chose for the list (its tab, filter and arrangement): a list they changed is drawn in its own order.
+// `fluid`: the order moves rows as their sessions work (by recent activity, by state).
+const ListCtx = createContext<{ watches: Record<string, Watch>; gone: Set<string>; narrow: boolean; lines: "one" | "two"; key: string; fluid: boolean }>({ watches: {}, gone: new Set(), narrow: false, lines: "one", key: "", fluid: false });
 
 // The card beside an entry: shown at once for a mark (it has no words of its
 // own), after a pause for a list row (its title is already there), and at
 // once for either on keyboard focus.
 // `row`: the entry is a list row, which already shows the title, the state and the folder
 // (a row of one line shows the title only: its card is the whole one).
-type Card = { s: Session; y: number; left: number; row: boolean };
+// `cut`: the row shows less than the whole title.
+type Card = { s: Session; y: number; left: number; row: boolean; cut: boolean };
 const CardCtx = createContext<(s: Session, wait: number, row?: boolean) => Record<string, (e: { currentTarget: HTMLElement }) => void>>(() => ({}));
 function useCard() {
   const [card, setCard] = useState<Card | null>(null);
@@ -66,7 +75,9 @@ function useCard() {
       const r = e.currentTarget.getBoundingClientRect();
       const edge = e.currentTarget.closest(".k-rail")?.getBoundingClientRect().right ?? r.right;
       clearTimeout(timer.current);
-      const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8, row });
+      const title = e.currentTarget.querySelector(".k-row-title");
+      const cut = !!title && title.scrollWidth > title.clientWidth + 1;
+      const set = () => setCard({ s, y: r.top + r.height / 2, left: edge + 8, row, cut });
       if (ms) timer.current = setTimeout(set, ms); else set();
     };
     return { onPointerEnter: show(wait), onPointerLeave: hide, onFocus: show(0), onBlur: hide, onClick: hide, onDragStart: hide };
@@ -97,7 +108,10 @@ function stepRows(e: KeyboardEvent<HTMLElement>) {
 }
 
 // Whether the hand is on the list (lib/list-hold.ts): the rail says, the lists in it read.
-const HandCtx = createContext<Pick<Hand, "held"> & Partial<Pick<Hand, "on">>>({ held: false });
+const HandCtx = createContext<Pick<Hand, "held"> & Partial<Pick<Hand, "on" | "keep" | "touch">>>({ held: false });
+
+// Whether the list is held still under the hand, for the groups drawn by other files.
+export const useListHeld = () => useContext(HandCtx).held;
 
 // The sessions and the states a list is ordered from: as they are, or, while
 // the hand is on the list, as they were when it arrived (lib/list-order.ts).
@@ -133,12 +147,15 @@ export function openBeside(id: string) {
 }
 
 // The row of a session a pane already shows was pressed: the keyboard goes to
-// that pane's message box, by the rule for a box that takes it by itself
-// (lib/self-focus.ts). A pane where a card waits keeps the cards' own rule.
+// that pane. Where a card waits on the owner there, to the card, by the cards'
+// own rule (lib/asks.ts: a region of it, never an answer, and no key answers
+// until it has settled). Else to the pane's message box, by the rule for a
+// box that takes the keyboard by itself (lib/self-focus.ts).
 function intoBox(id: string) {
   const pane = document.querySelector(`.k-station[data-station="${CSS.escape(id)}"]`);
-  const cards = pane?.querySelector<HTMLElement>('[data-testid="composer-asks"]');
-  if (!pane || (cards && cards.childElementCount > 0 && cards.offsetHeight > 0)) return;
+  if (!pane) return;
+  const cards = pane.querySelector<HTMLElement>('[data-testid="composer-asks"]');
+  if (cards && cards.childElementCount > 0 && cards.offsetHeight > 0) return focusAsk(id);
   opened();
   openFocus(pane.querySelector<HTMLElement>('[data-testid="composer"]'));
 }
@@ -154,7 +171,7 @@ function neighbour(row: HTMLElement | null): HTMLElement | undefined {
 // when this page holds its events (it opened the session), else the model it runs on.
 function RestLine({ s }: { s: Session }) {
   const line = useStore((x) => lastLine(branchOf(x.events[s.id], s.head), s.workspace));
-  return <span className="k-row-why k-row-last" data-testid="row-last" title={line || undefined}>{line || modelOf(s.model)}</span>;
+  return <span className="k-row-why k-row-last" data-testid="row-last">{line || modelOf(s.model)}</span>;
 }
 
 // `given`: the session as the list ordered it (held still under the hand); the row shows it as it is now.
@@ -179,11 +196,29 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
   const shown = useStations((x) => x.shown.includes(s.id));
   const panes = useStations((x) => x.count);
   const [placing, setPlacing] = useState(false);
+  const [menu, setMenu] = useState<RowMenuAt | null>(null);
   const row = useRef<HTMLDivElement>(null);
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
+  const pinned = !!s.settings.pinned_ms && !restore;
+  // It, or an agent of it, needs the owner while its pane shows another session for now (a look lies over it).
+  const under = useUnderLook(s.id);
+  // A menu of the row is the hand on the list: the list is held while one is open.
+  const keep = useContext(HandCtx).keep;
+  const over = placing || !!menu;
+  useEffect(() => { if (!over) return; keep?.(true); return () => keep?.(false); }, [over, keep]);
+  // A pinned row moves among the pinned (Alt Up, Alt Down, its menu); the keyboard stays on it.
+  const move = (by: -1 | 1) => {
+    movePin(s.id, by).then((moved) => {
+      if (!moved) return;
+      announce(`${s.title || "New session"} moved ${by < 0 ? "up" : "down"}`);
+      focusRow(s.id);
+    }, reportError);
+  };
+  // Pinned or unpinned from the keyboard, the keyboard stays with the row, in the group it went to.
+  const togglePin = (keys = false) => pin(s.id, !pinned).then(() => { if (keys) focusRow(s.id); }, reportError);
   const left = !gone ? null : deleted || (!live && !given.archived) ? "deleted" : given.archived ? "restored" : "archived";
-  // The card beside the row is away while the menu of panes is open over it.
-  useEffect(() => { if (placing && row.current) card.onClick?.({ currentTarget: row.current }); }, [placing]);
+  // The card beside the row is away while a menu of the row is open over it.
+  useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
   const open = (beside: boolean) => {
     if (left === "deleted") return;
     if (beside) return openBeside(s.id);
@@ -202,15 +237,27 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
       data-unread={unread || undefined}
       data-offline={offline || undefined}
       data-gone={gone || undefined}
+      data-pinned={pinned || undefined}
+      data-under={under || undefined}
       aria-disabled={left === "deleted" || undefined}
       aria-current={active ? "page" : undefined}
-      {...(placing ? {} : card)}
+      aria-haspopup="menu"
+      {...(over ? {} : card)}
       draggable
       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
       onClick={(e) => { card.onClick?.(e); open(e.ctrlKey || e.metaKey); }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); openBeside(s.id); } }}
+      onContextMenu={(e) => {
+        // The row's own menu (Shift keeps the browser's, as elsewhere). From the keyboard it opens at the row.
+        if (e.shiftKey || left || phone()) return;
+        e.preventDefault();
+        const b = e.currentTarget.getBoundingClientRect();
+        setMenu(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { x: b.left + 24, y: b.bottom });
+      }}
       onKeyDown={(e) => {
-        if (e.key !== "Enter" || e.target !== e.currentTarget) return;
+        if (e.target !== e.currentTarget) return;
+        if (e.altKey && pinned && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); e.stopPropagation(); return move(e.key === "ArrowUp" ? -1 : 1); }
+        if (e.key !== "Enter") return;
         // Shift Enter: the menu of panes, to place the session in one of them.
         if (e.shiftKey && panes > 1 && !restore && !phone()) { e.preventDefault(); return setPlacing(true); }
         open(e.ctrlKey || e.metaKey);
@@ -223,13 +270,13 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
           and are on the card beside the row where it does not; in a row of two they are the second
           line, as wide as the row. A session at rest says no word the mark already says. */}
       <span className="k-row-main">
-        <span className="k-row-title" title={s.title || undefined}>{s.title || "New session"}</span>
+        <span className="k-row-title">{s.title || "New session"}</span>
         <span className="k-row-sub">
           {SPELLED.includes(w)
             ? <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
             : lines === "two" && <RestLine s={s} />}
           {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-          {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
+          {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{whyText(st, now)}</span>}
           {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
           {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
         </span>
@@ -238,6 +285,8 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
       <span className="k-row-end">
         {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
         <SessionBadges sessionId={s.id} />
+        {/* What it needs is under a look: its pane shows another session for now. */}
+        {under && <span className="k-row-under" data-testid="row-under" role="img" aria-label="Needs you, under a look" title="Needs you while its pane shows another session for now"><Layers2 aria-hidden="true" /></span>}
         {/* A message of theirs that waits in the session's queue. */}
         {queued > 0 && !left && <span className="k-row-queued" data-testid="row-queued" role="img" aria-label={`${queued} queued`} title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}><MessageSquareMore aria-hidden="true" />{queued}</span>}
         {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
@@ -249,6 +298,11 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
           : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
+        {!left && !restore && !phone() && (
+          <button type="button" tabIndex={-1} title={pinned ? "Unpin" : "Pin to the top of the list"} aria-label={pinned ? "Unpin" : "Pin"} aria-pressed={pinned} data-testid="row-pin" onClick={(e) => { e.stopPropagation(); togglePin(e.detail === 0); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
+            {pinned ? <PinOff /> : <Pin />}
+          </button>
+        )}
         {!left && !restore && !shown && !phone() && (
           <button type="button" tabIndex={-1} title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
             <Columns2 />
@@ -280,6 +334,19 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
         </button>
         )}
       </span>
+      {menu && (
+        <RowMenu
+          at={menu}
+          onClose={() => { setMenu(null); requestAnimationFrame(() => { if (document.activeElement === document.body) row.current?.focus(); }); }}
+          pinned={pinned}
+          archived={restore}
+          beside={!restore && !shown}
+          onPin={() => togglePin(true)}
+          onMove={pinnedNow().length > 1 ? move : undefined}
+          onBeside={() => openBeside(s.id)}
+          onArchive={() => { listActed(s.id); archive(s, !restore).catch(reportError); }}
+        />
+      )}
     </div>
   );
 }
@@ -304,7 +371,7 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   const [more, setAll] = useState(false);
   const all = more || !!every;
   const root = useStore((x) => rootSessionId(x.sessions, current));
-  const { watches, gone } = useContext(ListCtx);
+  const { watches, gone, key, fluid } = useContext(ListCtx);
   const kept = useRef(new Set<string>());
   useActed();
   const held = useContext(HandCtx).held;
@@ -312,7 +379,16 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   const unreadHeld = useRef(unreadNow);
   if (!held) unreadHeld.current = unreadNow;
   const unread = unreadHeld.current;
-  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || kept.current.has(s.id) || actedOn(s.id) || (unread[s.id] ?? 0) > 0 || !AT_REST.includes(watches[s.id] ?? "idle"));
+  const fits = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || kept.current.has(s.id) || actedOn(s.id) || (unread[s.id] ?? 0) > 0 || !AT_REST.includes(watches[s.id] ?? "idle"));
+  // In an order that moves rows as their sessions work, the row the hand is on keeps its place
+  // among these, whatever the order makes of it meanwhile: the others sort around it. (Not what
+  // the owner moved themselves, and not across a list they arranged anew. In an order where rows
+  // keep their places every row is where the order puts it, and the list's scroll alone keeps the
+  // hand's row where it is: lib/list-hold.ts.)
+  const drawn = useRef({ key, ids: [] as string[] });
+  const on = anchorRow();
+  const shown = fluid && drawn.current.key === key && on && !actedOn(on) ? around(fits, drawn.current.ids, on, (s) => s.id) : fits;
+  drawn.current = { key, ids: shown.map((s) => s.id) };
   for (const s of shown) kept.current.add(s.id);
   return (
     <div className="flex flex-col gap-px">
@@ -328,6 +404,63 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
       {list.length > shown.length && <button type="button" onClick={() => setAll(true)} className="k-more">{list.length - shown.length} more</button>}
       {more && list.length > SHOWN && <button type="button" onClick={() => { kept.current.clear(); setAll(false); }} className="k-more">Show fewer</button>}
     </div>
+  );
+}
+
+// Sessions arrived while the list was held and wait below what it shows: said at the list's foot,
+// and a press goes to them. The pointer on the line is a hand on the list: they do not take their
+// places from under it.
+function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } }) {
+  const { keep, touch } = useContext(HandCtx);
+  const on = useRef(false);
+  const hold = (next: boolean) => { if (on.current !== next) { on.current = next; keep?.(next); } };
+  useEffect(() => () => hold(false), []);
+  return (
+    <button type="button" className="k-late-line" data-testid="late-line" title="They take their places when your hand has left the list"
+      onPointerEnter={() => hold(true)} onPointerLeave={() => hold(false)}
+      onClick={() => { touch?.(); to.current?.scrollIntoView({ block: "end" }); }}>
+      <ArrowDown aria-hidden="true" /><span className="min-w-0 truncate">{n} just arrived, below</span>
+    </button>
+  );
+}
+
+// The pinned group, in the order of its pins. A session dragged over it is dropped where the line
+// shows: a pinned one moves there, another is pinned there (lib/sessops.ts: the order is stored
+// with the pins, the same on every device). Alt Up and Alt Down on a pinned row move it too.
+function PinnedGroup({ list, current, every }: { list: Session[]; current: string | null; every: boolean }) {
+  const box = useRef<HTMLElement>(null);
+  const [line, setLine] = useState<number | null>(null);
+  // Where a drop at this height would put the session: before the row whose middle is under it.
+  const aim = (y: number) => {
+    const rows = [...(box.current?.querySelectorAll<HTMLElement>('[data-testid="session-row"]') ?? [])].map((r) => r.getBoundingClientRect());
+    const at = rows.findIndex((b) => y < (b.top + b.bottom) / 2);
+    const top = box.current!.getBoundingClientRect().top;
+    return { at: at < 0 ? rows.length : at, y: (at < 0 ? rows.at(-1)?.bottom ?? top : rows[at]!.top) - top };
+  };
+  return (
+    <section
+      ref={box}
+      className="k-group k-pinned"
+      data-testid="pinned-group"
+      onDragOver={(e) => { if (!e.dataTransfer.types.includes(DRAG)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; setLine(aim(e.clientY).y); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setLine(null); }}
+      onDrop={(e) => {
+        setLine(null);
+        const id = e.dataTransfer.getData(DRAG);
+        if (!id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const from = list.findIndex((s) => s.id === id);
+        const to = aim(e.clientY).at;
+        // (Among the rows without the one that is dragged: a row dropped on its own place stays.)
+        if (from >= 0 && (to === from || to === from + 1)) return;
+        placePin(id, from >= 0 && to > from ? to - 1 : to).catch(reportError);
+      }}
+    >
+      <h2 className="k-group-head"><Pin /><span className="truncate">Pinned</span></h2>
+      <Group list={list} current={current} every={every} where />
+      {line !== null && <span className="k-drop-line" style={{ top: line }} aria-hidden="true" />}
+    </section>
   );
 }
 
@@ -474,7 +607,7 @@ function Marks({ current }: { current: string | null }) {
 
 // The card beside an entry: what the session is, where, and what it last did.
 const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
-function RailCard({ s: given, y, left, row }: { s: Session; y: number; left: number; row?: boolean }) {
+function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left: number; row?: boolean; cut?: boolean }) {
   const s = useStore((x) => x.sessions[given.id]) ?? given;
   const st = useSessionState(s);
   const w = st.watch;
@@ -487,7 +620,6 @@ function RailCard({ s: given, y, left, row }: { s: Session; y: number; left: num
   // Beside a list row the card adds what the row has no room for and repeats nothing of it:
   // the reason in full, what the session last did, its model, the whole path, the exact time.
   if (row) {
-    const cut = (s.title || "").length > 48;
     return (
       <div className="k-rail-card" data-kind="row" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
         {cut && <p className="k-rail-card-title">{s.title}</p>}
@@ -589,14 +721,25 @@ function Summary() {
     document.fonts?.addEventListener("loadingdone", fit);
     return () => { ro.disconnect(); document.fonts?.removeEventListener("loadingdone", fit); };
   }, [figures]);
+  // One stop for Tab: the arrows move between the counts, Home and End reach the ends.
+  const [stop, setStop] = useState<Kind | null>(null);
+  const at = shown.some((c) => c.kind === stop) ? stop : shown[0]?.kind;
+  const step = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return;
+    const chips = [...e.currentTarget.querySelectorAll<HTMLElement>(".k-sum-chip:not([hidden])")];
+    const i = chips.indexOf(document.activeElement as HTMLElement);
+    if (i < 0) return;
+    e.preventDefault();
+    (e.key === "Home" ? chips[0] : e.key === "End" ? chips.at(-1) : chips[i + (e.key === "ArrowRight" ? 1 : -1)])?.focus();
+  };
   return (
-    <div ref={line} className="k-sum" data-testid="list-summary" role="group" aria-label="What the sessions need">
+    <div ref={line} className="k-sum" data-testid="list-summary" role="toolbar" aria-label="What the sessions need" onKeyDown={step}>
       {!calls && <span className="k-sum-calm" data-testid="sum-calm">Nothing needs you</span>}
       {shown.map((c) => {
         const ids = counts[c.kind];
         const names = ids.slice(0, 6).map((id) => sessions[id]?.title || "New session").join("; ");
         return (
-          <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} onClick={() => jumpNext(c.kind)}
+          <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} tabIndex={c.kind === at ? 0 : -1} onFocus={() => setStop(c.kind)} onClick={() => jumpNext(c.kind)}
             aria-label={`${ids.length} ${c.word(ids.length)}. Go to the next`} title={`${c.says}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
             {c.watch ? <Mark w={c.watch} /> : c.kind === "offline" ? <ServerOff aria-hidden="true" /> : <span className="k-sum-dot" aria-hidden="true" />}
             <b className="k-sum-n">{ids.length}</b>
@@ -616,11 +759,18 @@ function CountsKeeper() {
   const unread = useAuto((x) => x.unread.sessions);
   // The machines that do not answer, as one word: it changes when one of them does.
   const down = useFleet((x) => [...new Set(top.map((s) => s.machine).filter((m): m is string => !!m))].filter((m) => machineReach(m, x).state === "offline").sort().join(" "));
+  // A session that needs them while its pane shows another for now (a look lies over it) is on no
+  // screen: it is counted with what needs them, by the row that stands for it (its own, or its
+  // root's when it is an agent's), whatever that row's own state says.
+  const under = useNeedUnderLooks().map((id) => rootSessionId(sessions, id) ?? id).join(" ");
   const counts = useMemo(() => {
     const off = new Set(down.split(" ").filter(Boolean));
-    return { ...tally(top, states as Record<string, SessionState>, unread), offline: top.filter((s) => s.machine && off.has(s.machine)).map((s) => s.id) };
-  }, [top, states, unread, down]);
+    const t = tally(top, states as Record<string, SessionState>, unread);
+    const more = under.split(" ").filter((id) => id && !t.need.includes(id) && top.some((s) => s.id === id));
+    return { ...t, need: [...t.need, ...more], offline: top.filter((s) => s.machine && off.has(s.machine)).map((s) => s.id) };
+  }, [top, states, unread, down, under]);
   useEffect(() => nameCounts(counts), [counts]);
+  useEffect(() => nameUnder(under.split(" ").filter(Boolean)), [under]);
   return null;
 }
 
@@ -629,6 +779,9 @@ function Index({ current }: { current: string | null }) {
   const hand = useContext(HandCtx), held = hand.held;
   const narrow = useRail().narrow;
   const nav = useRef<HTMLElement>(null);
+  // What moves in the list moves around the row the hand is on (lib/list-hold.ts).
+  useAnchor(nav);
+  const note = useNote();
   useFleet((s) => s.machines.length); // machine names in the group heads
   const [tab, setTab] = useState<"active" | "archived">(() => { const t = openOn; openOn = "active"; return t; });
   const panel = useId();
@@ -666,7 +819,11 @@ function Index({ current }: { current: string | null }) {
   const liveWatches = useMemo(() => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, st.watch])) as Record<string, Watch>, [states]);
   // Under the hand the list is drawn from what it held when the hand arrived: no row moves.
   // (The session on screen is theirs: one they just made or opened from this page takes its place at once.)
-  const from = useHeld(held, `${tab}|${tag ?? ""}|${q}|${arr.group}|${arr.sort}|${arr.hideDone}`, base_, liveWatches, current);
+  const listKey = `${tab}|${tag ?? ""}|${q}|${arr.group}|${arr.sort}|${arr.hideDone}`;
+  const from = useHeld(held, listKey, base_, liveWatches, current);
+  // A list the owner arranged anew is drawn as they asked, not around where a row stood before.
+  const scale = useUI((x) => x.scale);
+  useLayoutEffect(reanchor, [listKey, arr.lines, narrow, scale]);
   const watches = from.watches;
   const fits = (s: Session) => (!tag || (s.settings.tags ?? []).includes(tag)) && (!q || matches(s, q));
   const listed = from.list.filter(fits);
@@ -676,7 +833,7 @@ function Index({ current }: { current: string | null }) {
   const acts = useActed();
   useEffect(() => {
     if (held) return;
-    const t = setTimeout(forgetActed, 2000);
+    const t = setTimeout(() => { forgetActed(); dropAnchor(); }, 2000);
     return () => clearTimeout(t);
   }, [held, acts]);
   // The agents' line under a row is as high as it was when the hand arrived (a press on it is theirs: Group lets it go).
@@ -688,13 +845,31 @@ function Index({ current }: { current: string | null }) {
   // A count pressed above the list goes to a row: one this list does not draw (the archive is open, the
   // filter leaves it out) is drawn first. Folds open by themselves for a session the owner went to.
   useEffect(() => { onReveal(() => { setTab("active"); setQ(""); setTags({}); }); return () => onReveal(null); }, []);
-  const pinned = listed.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!);
+  const pinned = pinnedOrder(listed);
   // Keep the open branch in the list even when its root finishes.
   const root = rootSessionId(sessions, current);
   const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root && !actedOn(s.id)));
   const hidden = listed.length - pinned.length - rest.length;
   const cmp = order<Session>(arr, watches);
-  const grouped = arr.group === "folder" ? folders(rest, arr, watches) : [];
+  // Where the order moves rows as their sessions work, the folder of the row the hand is on keeps
+  // its place among the folders, as the row does in it (see Group).
+  const fluid = arr.sort === "recent" || arr.sort === "state";
+  const drawnGroups = useRef({ key: listKey, keys: [] as string[] });
+  const on = anchorRow();
+  const sorted = arr.group === "folder" ? folders(rest, arr, watches) : [];
+  const grouped = fluid && drawnGroups.current.key === listKey && on && !actedOn(on) ? around(sorted, drawnGroups.current.keys, sorted.find((g) => g.list.some((s) => s.id === on))?.key, (g) => g.key) : sorted;
+  drawnGroups.current = { key: listKey, keys: grouped.map((g) => g.key) };
+  // The arrivals' group at the list's end: whether it is on screen (else a line at the list's foot says they wait).
+  const lateBox = useRef<HTMLElement>(null);
+  const [lateSeen, setLateSeen] = useState(true);
+  const waits = late.length > 0;
+  useEffect(() => {
+    const el = lateBox.current;
+    if (!waits || !el || !nav.current) return setLateSeen(true);
+    const io = new IntersectionObserver(([e]) => setLateSeen(!!e?.isIntersecting), { root: nav.current });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [waits]);
   // By project or by their folders, the archive is one list (a project's archived sessions are on its page).
   const flat = arr.group === "flat" || ((arr.group === "project" || arr.group === "mine") && tab !== "active") ? [...rest].sort(cmp) : [];
   // Same-named folders read apart (beta/api, alpha/api); a machine's folders are named among its own.
@@ -708,8 +883,8 @@ function Index({ current }: { current: string | null }) {
   const sections = useMemo(() => machineRuns(rest), [rest]);
   return (
     <>
-      <Seg kind="tabs" panel={panel} fill className="mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
-      <ListFind q={q} setQ={setQ} />
+      <Seg kind="tabs" panel={panel} fill className="k-list-tabs mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
+      <ListFind q={q} setQ={setQ} narrow={narrow} />
       {tags.length > 0 && !narrow && (
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (
@@ -723,13 +898,18 @@ function Index({ current }: { current: string | null }) {
       {/* The tabs' panel: it takes no box of its own, the list keeps its place in the rail. */}
       <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="contents">
       <Summary />
-      <ListCtx.Provider value={{ watches, gone: from.gone, narrow, lines: narrow ? "one" : arr.lines }}>
+      {/* Said once to whom the order changed under, where they will see it: gone when dismissed or when the Arrange menu was opened. */}
+      {note && !narrow && (
+        <p className="k-list-note" data-testid="list-note">
+          <span className="min-w-0 flex-1 truncate">Sessions now keep their place.</span>
+          <button type="button" className="k-link shrink-0 text-accent-ink underline-offset-2 hover:underline" data-testid="list-note-arrange" onClick={() => dispatchEvent(new Event("keel:arrange"))}>Arrange</button>
+          <button type="button" className="k-find-btn" data-testid="list-note-dismiss" aria-label="Dismiss" title="Dismiss" onClick={readNote}><X /></button>
+        </p>
+      )}
+      <ListCtx.Provider value={{ watches, gone: from.gone, narrow, lines: narrow ? "one" : arr.lines, key: listKey, fluid }}>
       <nav ref={nav} className="k-index" data-testid="session-list" data-lines={narrow ? "one" : arr.lines} data-held={held || undefined} aria-label="Sessions" onKeyDown={stepRows} {...hand.on}>
         {pinned.length > 0 && (
-          <section className="k-group" data-testid="pinned-group">
-            <h2 className="k-group-head"><Pin /><span className="truncate">Pinned</span></h2>
-            <Group list={pinned} current={current} every={!!q} where />
-          </section>
+          <PinnedGroup list={pinned} current={current} every={!!q} />
         )}
         {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && late.length === 0 && (
           q
@@ -768,13 +948,16 @@ function Index({ current }: { current: string | null }) {
         {hidden > 0 && (grouped.length > 0 || flat.length > 0) && (
           <button type="button" className="k-more" data-testid="hidden-done" onClick={() => setArrange({ hideDone: false })}>{hidden} finished hidden</button>
         )}
-        {late.length > 0 && (
-          <section className="k-group" data-testid="late-group">
-            <h2 className="k-group-head"><Plus /><span className="truncate">Just arrived</span></h2>
-            <Group list={late} current={current} every where />
+        {/* What came while the list was held: at its end, the first of them (the rest behind "N more"), until the hand has left. */}
+        {waits && (
+          <section ref={lateBox} className="k-group" data-testid="late-group">
+            <h2 className="k-group-head"><Plus /><span className="truncate">Just arrived</span><span className="tabular-nums text-faint">{late.length}</span></h2>
+            <Group list={late} current={current} where />
           </section>
         )}
       </nav>
+      {/* They are below what the list shows: said at its foot, and a press goes to them. */}
+      {waits && !lateSeen && <LateLine n={late.length} to={lateBox} />}
       </ListCtx.Provider>
       </div>
     </>
@@ -875,7 +1058,7 @@ export function Sidebar({ open }: { open: boolean }) {
           </div>
         </HandCtx.Provider>
       </CardCtx.Provider>
-      {card && <RailCard s={card.s} y={card.y} left={card.left} row={card.row} />}
+      {card && <RailCard s={card.s} y={card.y} left={card.left} row={card.row} cut={card.cut} />}
       <div className="k-rail-foot">
         {!open && (
           <button type="button" className="k-act" data-testid="tab-archived" aria-label="Archived sessions" title="Archived sessions" onClick={() => { openOn = "archived"; toggleList(true); }}>

@@ -4,7 +4,8 @@
 import type { Session } from "../../../src/core/types.ts";
 import { confirmAction } from "../components/Confirm.tsx";
 import { listActed } from "./list-hold.ts";
-import { actions, api } from "./store.ts";
+import { pinMark, pinMove, pinnedOrder } from "./list-order.ts";
+import { actions, api, getState } from "./store.ts";
 
 export type Marks = { session_id: string; pinned: boolean; accept_messages: boolean; peer_turns: number; unread: boolean };
 
@@ -20,6 +21,26 @@ export const isPinned = (s: Session | undefined) => !!s?.settings.pinned_ms;
 export async function pin(id: string, on: boolean) {
   listActed(id); // the owner's own act: the list shows it at once, held or not
   await actions.patch(id, { pinned: on } as any);
+}
+
+// The list's pinned sessions, in their order.
+export const pinnedNow = (): Session[] => pinnedOrder(Object.values(getState().sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper));
+// A session put at a place among the pinned (a drop there): it takes a mark between its new
+// neighbours' (lib/list-order.ts). The order is the pins' own marks, so it is the same on every
+// device, and a session that was not pinned is pinned by it.
+export async function placePin(id: string, at: number): Promise<void> {
+  const rest = pinnedNow().filter((s) => s.id !== id);
+  const i = Math.max(0, Math.min(rest.length, at));
+  listActed(id);
+  await actions.patch(id, { settings: { pinned_ms: pinMark(rest[i - 1]?.settings.pinned_ms, rest[i]?.settings.pinned_ms, Date.now()) } } as any);
+}
+// A pinned session moved by places among the pinned (Alt Up and Alt Down on its row). Says whether it moved.
+export async function movePin(id: string, by: number): Promise<boolean> {
+  const all = pinnedNow();
+  const from = all.findIndex((s) => s.id === id);
+  if (pinMove(all, id, from + by, Date.now()) === null) return false;
+  await placePin(id, from + by);
+  return true;
 }
 
 export const setTags = (id: string, tags: string[]) => actions.patch(id, { tags } as any);
