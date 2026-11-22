@@ -13,6 +13,8 @@ import type { Providers } from "../providers/registry.ts";
 import { jobsOf, leftText, jobLive, stopJobs } from "../tools/jobs.ts";
 import { admit, initAccess } from "./admission.ts";
 import { Live } from "./live.ts";
+import { readsOf } from "./reads.ts";
+import { lastCall } from "./routes/calls-read.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch } from "./switch.ts";
@@ -401,27 +403,20 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
 
       // The newest call of one of the named tools on the session's branch whose
       // result was not an error, older than `before` (a seq): what a reader that
-      // holds only the branch's end needs of the rest (the plan in force). One
-      // walk back from there, which ends at the call.
+      // holds only the branch's end needs of the rest (the plan in force). The
+      // search index names the replies that hold such a call, and only they and
+      // the results after them are read, a long read on the read thread: the
+      // branch's bodies are not walked on the loop (routes/calls-read.ts).
       "/api/sessions/:id/last-call": {
-        GET: wrap((req) => {
+        GET: wrap(async (req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           const q = new URL(req.url).searchParams;
-          const names = new Set((q.get("names") ?? "").split(",").filter(Boolean));
-          const line = store.lineage(s.id);
-          // A result is stored after its call: going back, the results come first.
-          const ok = new Set<string>();
-          for (let i = (q.has("before") ? firstAt(line, Number(q.get("before"))) : line.length) - 1; i >= 0; i--) {
-            const e = line[i]!;
-            if (e.kind === "tool_result") { for (const r of e.data.results) if (!r.is_error) ok.add(r.tool_use_id); continue; }
-            if (e.kind !== "assistant") continue;
-            for (let k = e.data.blocks.length - 1; k >= 0; k--) {
-              const b = e.data.blocks[k];
-              if (b.type === "tool_use" && names.has(b.name) && ok.has(b.id)) return json({ call: { name: b.name, input: b.input, seq: e.seq } });
-            }
-          }
-          return json({ call: null });
+          const names = [...new Set((q.get("names") ?? "").split(",").filter(Boolean))];
+          const before = q.has("before") && Number.isFinite(Number(q.get("before"))) ? Number(q.get("before")) : null;
+          const reads = readsOf(store);
+          const call = await lastCall({ db: store.db, named: (a) => reads.run("calls.named", a), answered: (a) => reads.run("calls.answered", a), line: () => store.lineage(s.id) }, s.id, names, before);
+          return json({ call });
         }),
       },
 

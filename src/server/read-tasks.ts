@@ -7,6 +7,7 @@ import { reportOf, sideOf, tokensOf, type Limits } from "../admin/telemetry-repo
 import type { Filter } from "../admin/telemetry.ts";
 import { marksOf, type MarkArgs } from "../safety/marks.ts";
 import { searchContent, type ContentQuery } from "./routes/search-content.ts";
+import { callAnswered, callsNamed, type AnsweredAsk, type NamedAsk } from "./routes/calls-read.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -21,6 +22,9 @@ export const tasks = {
   "search.content": (db: Database, a: ContentQuery) => searchContent(db, a),
   // What the transcript marks on the calls of a page's events: every command of them is parsed here.
   "calls.marks": (db: Database, a: MarkArgs) => marksOf(db, a),
+  // The replies of a session that hold a call by one of some names, and whether a call was answered (the last-call route).
+  "calls.named": (db: Database, a: NamedAsk) => callsNamed(db, a),
+  "calls.answered": (db: Database, a: AnsweredAsk) => callAnswered(db, a),
 };
 
 export type Tasks = typeof tasks;
