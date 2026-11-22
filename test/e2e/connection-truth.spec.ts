@@ -463,7 +463,8 @@ test("connection truth: a daemon that was down for twenty seconds to two minutes
   await page.addInitScript(WATCH);
   try {
     await page.goto(d.url);
-    await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon");
+    // (A daemon of the spec's own, just started: its first page reads from a cold store.)
+    await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon", { timeout: 30_000 });
     await page.waitForTimeout(3000);
     const table: string[] = [];
     for (const down of [20, 60, 75, 120]) {
@@ -560,7 +561,7 @@ test("connection truth: a session on another machine is followed like one here, 
     // One row for it in the inbox (other specs' read rows may stand beside it), and it names the machine.
     const item = page.getByTestId("inbox-item").filter({ hasText: `Far work ${tag}` });
     await expect(item).toHaveCount(1);
-    await expect(item).toContainText("Finished");
+    await expect(item).toContainText("Done");
     await expect(item).toContainText(`Far work ${tag} on ${name}`);
     await expect(item).toHaveAttribute("data-unread", "true");
     await shoot(page, "connection-truth-03-far-finish");
@@ -584,6 +585,10 @@ test("connection truth: a session on another machine is followed like one here, 
     await expect(home.getByTestId("home-asof")).toHaveCount(0);
     const needed = await needs();
     expect(needed).toBeGreaterThanOrEqual(1);
+    // The list's line and the tab's title count it too: the same number everywhere.
+    const listed = async () => ((await page.getByTestId("sum-need").count()) ? Number((await page.getByTestId("sum-need").locator(".k-sum-n").innerText()).match(/\d+/)![0]) : 0);
+    const titled = async () => Number((await page.title()).match(/^\((\d+)\) /)?.[1] ?? 0);
+    expect([await listed(), await titled()]).toEqual([needed, needed]);
     const s0 = Date.now();
     far.proc.kill("SIGKILL");
     await exited(far.proc);
@@ -595,15 +600,21 @@ test("connection truth: a session on another machine is followed like one here, 
     const box = (await count.boundingBox())!;
     expect(box.y + box.height).toBeLessThanOrEqual(900);
     expect([await top(page, "session-list"), await rowAt()]).toEqual([listAt, was]);
-    // Its sessions' states say as of when, once, and the row's time says offline with since when in its tip.
-    await expect(row(page, id).getByTestId("row-asof")).toHaveText(/^as of \d\d:\d\d$/);
-    await expect(row(page, id).getByTestId("row-time")).toHaveText("offline");
-    await expect(row(page, id).getByTestId("row-time")).toHaveAttribute("title", /does not answer since \d\d:\d\d/);
-    expect(await row(page, id).evaluate((el) => (el as HTMLElement).innerText.match(/offline/g)?.length)).toBe(1);
+    // Its sessions' rows say Offline, once, with as of when it last told (the list's own words for it).
+    const lastTold = row(page, id).locator('[data-testid="row-why"][data-why="offline"]');
+    await expect(lastTold).toHaveText(/^as of \d\d:\d\d$/);
+    await expect(row(page, id).getByTestId("row-time")).toHaveText("Offline");
+    await expect(row(page, id).getByTestId("row-time")).toHaveAttribute("title", /does not answer: this is the last it told/);
+    expect(await row(page, id).evaluate((el) => (el as HTMLElement).innerText.match(/offline/gi)?.length)).toBe(1);
     // The home view does not count a session whose machine does not answer: its row stays, paled,
     // its mark still, saying as of when instead of how long ago.
     await expect.poll(needs).toBe(needed - 1);
-    await expect(home.getByTestId("home-asof")).toHaveText(/^offline, as of \d\d:\d\d$/);
+    await expect(home.getByTestId("home-asof")).toHaveText(/^Offline, as of \d\d:\d\d$/);
+    // Nothing can be answered there: the row's button only opens it, and does not lead.
+    await expect(home.getByTestId("home-review")).toHaveText("Open");
+    await expect(home.getByTestId("home-review")).toHaveAttribute("data-quiet", "true");
+    // The list's line and the tab's title leave it out as well: it is counted as offline, once.
+    await expect.poll(async () => [await listed(), await titled()]).toEqual([needed - 1, needed - 1]);
     expect(await home.locator(".k-home-row-mark").evaluate((el) => [getComputedStyle(el).opacity, getComputedStyle(el.querySelector(".k-mark")!).animationPlayState])).toEqual(["0.45", "paused"]);
     await shoot(page, "connection-truth-04-far-offline-1440");
     // One alert says it, once it has stayed out a little while: a notice of its own kind, in plain words.
@@ -623,12 +634,13 @@ test("connection truth: a session on another machine is followed like one here, 
     await expect.poll(async () => (await (await request.get(`/api/fleet/machines/${machine}`)).json()).state, { timeout: 60_000 }).toMatch(/ready|busy/);
     const heardAt = Date.now();
     await expect(count).toBeVisible();
-    await expect(row(page, id).getByTestId("row-asof")).toHaveCount(1);
+    await expect(lastTold).toHaveCount(1);
     await expect(count).toHaveCount(0, { timeout: 60_000 });
     const held = Date.now() - heardAt;
     expect(held).toBeGreaterThan(20_000);
-    await expect(row(page, id).getByTestId("row-asof")).toHaveCount(0);
-    await expect(row(page, id).getByTestId("row-time")).not.toHaveText("offline");
+    await expect(lastTold).toHaveCount(0);
+    await expect(row(page, id).getByTestId("row-time")).not.toHaveText("Offline");
+    await expect.poll(async () => [await needs(), await listed(), await titled()]).toEqual([needed, needed, needed]);
     await expect(page.getByTestId("stale-marks")).toHaveCount(0);
     expect([await top(page, "session-list"), await rowAt()]).toEqual([listAt, was]);
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -644,7 +656,7 @@ test("connection truth: a session on another machine is followed like one here, 
 
     // ---- read here is read there: opening the session reads its alerts on both daemons.
     await page.getByTestId("inbox-button").click();
-    await page.getByTestId("inbox-item").filter({ hasText: `Far work ${tag}` }).filter({ hasText: "Finished" }).first().click();
+    await page.getByTestId("inbox-item").filter({ hasText: `Far work ${tag}` }).filter({ hasText: "Done" }).first().click();
     await expect(page).toHaveURL(new RegExp(`/s/${id}`));
     await expect(row(page, id)).not.toHaveAttribute("data-unread", "true", { timeout: 10_000 });
     await expect.poll(async () => ((await (await request.get(`${far.url}/api/alerts?limit=50`)).json()).alerts as { kind: string; read: boolean }[]).filter((a) => a.kind === "finished").map((a) => a.read), { timeout: 10_000 }).toEqual([true]);
