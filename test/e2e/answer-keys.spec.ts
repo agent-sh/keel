@@ -729,3 +729,52 @@ test("an approval taller than the room above the message box gets the keyboard o
   expect((await approvals(request, cut))[0]).toMatchObject({ state: "pending" });
   await drop(request, id, cut);
 });
+
+// The sequence and a card that is not read: a step onto a long command rests on the list of
+// requests, where Enter opens the text and answers nothing; once every line of it has been in
+// view the card's Allow takes the keyboard, and the next Enter allows. Each key is one the
+// owner meant, and nothing is answered for a text that was not on screen.
+test("a step of the sequence onto a long command rests on the list: Enter opens it, read, Enter allows", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("sequence-long");
+  const quiet = await create(request, "Nothing waits here", ws);
+  const short = await asksToRun(request, "A short command", ws, "short");
+  // Twelve lines: more than the card's box shows, and all in view once it is opened.
+  const twelve = `${Array.from({ length: 11 }, (_, i) => `echo step ${i + 1}`).join("\n")}\necho last > twelve.txt`;
+  const long = await create(request, "Twelve lines", ws);
+  await request.put(`/api/sessions/${long}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${long}/messages`, { data: { text: calls([{ name: "Bash", input: { command: twelve } }]) } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${long}/approvals`)).json()).approvals.length, { timeout: 30_000 }).toBe(1);
+
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  for (const id of [short, long]) await expect(row(page, id)).toHaveAttribute("data-watch", "need");
+  let count = 0;
+  const press = async (key: string) => { count++; await page.keyboard.press(key); };
+  await press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${short}$`));
+  const first = cardIn(page, short, "approval");
+  await expect(first.getByTestId("allow-once")).toBeFocused();
+  await expect(first.getByTestId("approval")).toHaveAttribute("data-live", "true");
+  await press("Enter");
+  // The next one is the long command: the keyboard is on its list, not on an answer.
+  await expect(page).toHaveURL(new RegExp(`/s/${long}$`));
+  const list = cardIn(page, long, "approval");
+  const card = list.getByTestId("approval");
+  await expect(list).toBeFocused();
+  await expect(card).toHaveAttribute("data-must-open", "true");
+  await expect(card.getByTestId("approval-open-first")).toHaveText("Enter opens the whole command.");
+  await expect(list).toHaveAttribute("data-keys", "ready");
+  await shoot(page, "answer-keys-15-sequence-long");
+  await press("Enter");
+  await expect(card.getByTestId("approval-summary")).toContainText("echo last > twelve.txt");
+  expect((await approvals(request, long))[0]).toMatchObject({ state: "pending" });
+  // Read, its Allow has the keyboard; the fourth key allows.
+  await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+  await expect(card).toHaveAttribute("data-live", "true");
+  await press("Enter");
+  await expect.poll(async () => (await approvals(request, long))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  expect(count).toBe(4);
+  await drop(request, quiet, short, long);
+});

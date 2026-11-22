@@ -177,7 +177,7 @@ test("home: a cut command is reviewed on its card, never allowed from its row", 
     expect(await pending(request, multi.id)).toHaveLength(1);
 
     // By keyboard: Enter on Review, Enter again 400 ms later, then Enter held down. On the way in
-    // the card has the keyboard on its list, not on an answer, and nothing is allowed. The whole
+    // the keyboard is on the card or its list, not on an answer, and nothing is allowed. The whole
     // command is on the card: once it has stood there for the settle time its answer takes the
     // keyboard, as on any way to the card, and not before.
     await page.goto("/");
@@ -186,7 +186,8 @@ test("home: a cut command is reviewed on its card, never allowed from its row", 
     await page.keyboard.press("Enter");
     const arrived = Date.now();
     await expect(page.getByTestId("approval").first()).toContainText("drop_table.py");
-    await expect(page.getByTestId("approvals")).toBeFocused();
+    // (On the card itself: it answers nothing there.)
+    await expect.poll(() => page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.testid ?? "")).toMatch(/^approvals?$/);
     await page.waitForTimeout(400);
     await page.keyboard.press("Enter");
     await page.waitForTimeout(300);

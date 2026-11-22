@@ -664,6 +664,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const left = unseen && (unseen.begun || told) ? unseen.out : 0;
   const leftText = `${left} line${left === 1 ? "" : "s"} not seen yet`;
   const shut = mustBeOpened(a, whole, cut, unseen);
+  const shutNow = useRef(shut);
+  shutNow.current = shut;
   const mustOpen = !unseen || unseen.n > 0 || shut;
   // All of a short text with marked characters is on the card: what its first control does is show the marks.
   const marks = marked ? spellHidden(a.summary).filter((p) => p.hidden).length : 0;
@@ -708,10 +710,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     asked.current = true;
     chosen.current = arrival.to === "allow";
     if (arrival.to === "deny") { setReason((r) => r + arrival.typed); setDenying(true); }
-    // (A card that is not all read is read on the list first, whatever the arrival asked for.
-    // One that asked for the answer gets it there once the card is read.)
     else if (arrival.to === "card") takeKeys(list.current, true, false);
-    else if (unread.current) takeKeys(list.current, true);
+    // (A card whose text must be opened is read on the list first, where Enter opens it; any other
+    // takes the keyboard itself, and its Allow takes it from there once the card is read.)
+    else if (shutNow.current) takeKeys(list.current, true);
     else takeKeys(root.current, true);
     return true;
   };
@@ -766,29 +768,38 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   useEffect(() => {
     if (whole && marked) root.current?.querySelector('[data-testid="hidden-char"]')?.scrollIntoView({ block: "nearest" });
   }, [whole]);
-  // The control that opened or folded the text goes away as it does: the keyboard it held goes to
-  // the list of requests (lib/asks.ts: as the owner's own move, so the card's Allow may take it
-  // once the text is read), and after a fold to the control that opens the text again.
-  const reopen = useRef(false);
+  // The control that opens the text and the one that folds it are two (the first leads the
+  // answers, the second stands under the text), and each goes away as it is used: the keyboard
+  // it held goes to the other, so Enter opens and Enter folds again. Folded, the text is measured
+  // again a render later: the keyboard waits on the list of requests until the opener is back.
+  const hand = useRef<"" | "fold" | "lead">("");
   const lead = useRef<HTMLButtonElement>(null);
+  const fold = useRef<HTMLButtonElement>(null);
   const setOpen = (on: boolean, from: HTMLElement) => {
     const had = from === document.activeElement;
     onWhole(on);
     if (!had) return;
-    reopen.current = !on;
-    takeKeys(list.current, true);
+    hand.current = on ? "fold" : "lead";
+    if (!on) toList();
   };
+  useLayoutEffect(() => {
+    if (hand.current !== "fold" || !whole) return;
+    hand.current = "";
+    fold.current?.focus({ preventScroll: true });
+  }, [whole]);
   useEffect(() => {
-    if (!reopen.current || !shut) return;
-    reopen.current = false;
+    if (hand.current !== "lead" || !shut) return;
+    hand.current = "";
     if (document.activeElement === list.current) lead.current?.focus({ preventScroll: true });
   }, [shut]);
   // The keyboard never rests on an answer of a card that is not all read, nor on the card
-  // itself (its text was found cut after the keyboard came): it is read on the list.
+  // itself when its text must be opened (it was found cut after the keyboard came): it is read
+  // on the list, where Enter opens it.
   useEffect(() => {
     const at = document.activeElement as HTMLElement | null;
-    if (mustOpen && at && (at === root.current || (root.current?.contains(at) && (at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always")))) toList();
-  }, [mustOpen]);
+    if (!at || !root.current?.contains(at)) return;
+    if ((shut && at === root.current) || (mustOpen && (at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always"))) toList();
+  }, [mustOpen, shut]);
   const held = useHandBack(root, list);
   // Leaving the reason (Esc, Back) puts the keyboard where the card's own rule would: on
   // Allow once for a card that is whole and read, so Enter answers again, and on the list
@@ -934,6 +945,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             <button
               type="button"
               data-testid="approval-expand"
+              ref={fold}
               aria-expanded
               aria-controls={`${ids}-summary`}
               onClick={(e) => setOpen(false, e.currentTarget)}

@@ -320,7 +320,8 @@ test("a card that must be opened leads with opening it, and Enter on the list do
     await expect(open).toHaveText("Show the whole command");
     expect(await card.getByTestId("approval-actions").locator("button").first().getAttribute("data-testid")).toBe("approval-expand");
     expect((await open.boundingBox())!.height).toBeGreaterThanOrEqual(30);
-    await expect(card.getByTestId("approval-open-first")).toHaveText("Open the whole command first.");
+    // (In its other words while the list has the keyboard, where Enter does it.)
+    await expect(card.getByTestId("approval-open-first")).toHaveText(/^(Open the whole command first|Enter opens the whole command)\.$/);
     await expect(card.getByTestId("allow-once")).toBeDisabled();
     await shoot(page, "approval-read-07-lead");
     // The keyboard is on the list of requests: Enter opens the text, and says so.
