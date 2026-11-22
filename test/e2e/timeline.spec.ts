@@ -103,12 +103,13 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await call(`${base}/interrupt`, { by: "owner" });
     await ended(++n);
     // A crash while a tool runs: the next daemon closes the turn and continues it.
-    await send(script([{ name: "Bash", input: { command: "sleep 30; echo slept" } }]));
+    await send(script([{ name: "Bash", input: { command: "sleep 9; echo slept" } }]));
     await expect.poll(async () => (await timeline()).now!.lines[0]?.text, { timeout: 30_000 }).toBe("Running a turn started by the owner: step 1, running Bash");
     d.proc.kill("SIGKILL");
     await exited(d.proc);
     d = await daemon(state);
-    await expect.poll(async () => (await ends()).map((e) => e.data.reason).slice(-2), { timeout: 90_000 }).toEqual(["restart", "end_turn"]);
+    // The command outlived the daemon and its turn was waiting on it: when it ends, a turn starts with its end.
+    await expect.poll(async () => (await ends()).map((e) => e.data.reason).slice(-3), { timeout: 90_000 }).toEqual(["restart", "end_turn", "end_turn"]);
 
     // --- the route
     const all = await timeline("?limit=200");
@@ -127,6 +128,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
       "Owner prompt, stopped by the owner after 1 step",
       "Owner prompt, cut when the daemon went down after 1 step",
       "Resumed after a daemon restart, 1 step",
+      "Command ended, 1 step",
     ]);
     // One call ran and failed; the other named a tool the session does not have, which is a failed call too.
     expect(turns[1]).toMatchObject({ bad: "2 failed tools", tone: "plain", turn: { origin: "queued", outcome: "ok", steps: 2, tools: 2, failed_tools: 2 } });
@@ -177,7 +179,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(failures.next).toBeNull();
     // A refresh asks only for what is newer than what it holds: nothing older is read or returned.
     expect((await timeline(`?since=${all.as_of + 1000}`)).rows).toEqual([]);
-    expect((await timeline(`?since=${turns[9]!.ts}`)).rows.map((r) => r.id)).toEqual([turns[9]!.id]);
+    expect((await timeline(`?since=${turns[9]!.ts}`)).rows.map((r) => r.id)).toEqual([turns[10]!.id, turns[9]!.id]);
     expect((await fetch(`${d.url}${base}/timeline?only=nothing`)).status).toBe(400);
     expect((await fetch(`${d.url}/api/sessions/none/timeline`)).status).toBe(404);
     // Content-free: the title and the agent's title, never a prompt, a command or a note.
@@ -236,10 +238,11 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const rows = panel.getByTestId("timeline-row");
     const line = (r: TimelineRow) => panel.locator(`[data-testid="timeline-row"][data-id="${r.id}"]`);
     await expect(rows).toHaveCount(all.rows.length);
-    // While the command the cut turn started still runs, the session waits on it; after it, nothing is going on.
-    await expect(panel.getByTestId("timeline-state")).toHaveText(/^(Waiting|Idle)$/);
-    await expect(panel.getByTestId("timeline-now-line").first()).toHaveText(/Waits on a background command|Nothing is running or waited on\. The last turn finished\./);
-    await expect(rows.first()).toContainText("Resumed after a daemon restart, 1 step");
+    // The command the cut turn started has ended and its turn with it: nothing is going on.
+    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle");
+    await expect(panel.getByTestId("timeline-now-line").first()).toContainText("Nothing is running or waited on. The last turn finished.");
+    await expect(rows.first()).toContainText("Command ended, 1 step");
+    await expect(rows.nth(1)).toContainText("Resumed after a daemon restart, 1 step");
     // A turn the owner started leads with what they asked; what it took is the line under it.
     await expect(panel.getByTestId("timeline-about").filter({ hasText: "script:slow timeline-prompt-marker" })).toHaveCount(1);
     await expect(panel.getByTestId("timeline-bad")).toHaveText("2 failed tools");
@@ -330,7 +333,6 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(pending).toHaveLength(1);
     await call(`${base}/approvals/${pending[0].id}`, { choice: "deny" });
     // The answer moves it on, and what was open is now a row each.
-    // (Idle once the command the cut turn left running has ended too: it sleeps for 30 s.)
     await expect(panel.getByTestId("timeline-state")).toHaveText("Idle", { timeout: 60_000 });
     await expect(rows.first()).toContainText(/Approval for Bash denied after/);
     await expect(rows.nth(1)).toContainText("Approval asked for Bash");

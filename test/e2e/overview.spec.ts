@@ -140,7 +140,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     const few = await (await fetch(`${d.url}/api/overview?since=1h&format=text&max=3`)).text();
     expect(few).toContain("Needs you (2):");
     // The ones left out are not all at rest: the line says what they are and what they did.
-    expect(few.trimEnd().split("\n").at(-2)).toMatch(/^17 more sessions not listed: 9 done, 2 working, 4 more \(\d+ turns, \$\d+\.\d+\)\.$/);
+    expect(few.trimEnd().split("\n").at(-2)).toMatch(/^17 more sessions not listed: 9 done, 2 working, 4 more \(\d+ turns, \$\d+\.\d+\), the busiest: "[^"]+"\.$/);
 
     // The page says the same of every session: the word on its row is the report's.
     await page.setViewportSize({ width: 1920, height: 1040 });

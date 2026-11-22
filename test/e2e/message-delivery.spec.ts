@@ -171,6 +171,9 @@ test("a message waiting for a working agent survives a kill of the daemon", asyn
     expect(joins(ev, note, after(ev, cut, (e) => e.kind === "user" && String(e.data.text).includes("Kept through the kill")))).toBe(true);
     expect((await r.commands(child))[1]).toContain(b);
     r.release(b);
+    // Its first command was cut by the kill and runs on: the agent has not finished while it does, and reports once it has ended.
+    await expect.poll(async () => (await agent()).status, { timeout: 60_000 }).toBe("waiting");
+    r.release(a);
     await expect.poll(async () => (await agent()).status, { timeout: 60_000 }).toBe("completed");
     expect(await r.prompts(child, "Kept through the kill")).toHaveLength(1);
     // A second kill with nothing waiting delivers nothing again.

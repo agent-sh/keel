@@ -395,10 +395,10 @@ test("an owner session continues through restarts until its turn stops moving", 
     await expect.poll(holds, { timeout: 30_000 }).toBe(5);
     // Written until the last call reads it: a command a crash cut still reads
     // the pipe too, and a write can reach it before the last one opens it.
-    const last = page.getByTestId("assistant-text").last();
+    // (Each of those commands, when it ends, starts a turn of its own: the reply to the fifth call is not always the last.)
     await expect.poll(async () => {
       spawnSync("sh", ["-c", `echo go > ${gate}`], { timeout: 2_000 });
-      return last.textContent();
+      return (await page.getByTestId("assistant-text").allTextContents()).join("\n");
     }, { timeout: 30_000 }).toContain("Done with 5 calls. Last result: released");
   } finally {
     d.proc.kill("SIGKILL");
