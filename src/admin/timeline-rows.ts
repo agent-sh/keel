@@ -292,7 +292,7 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
     const ms = w?.created !== undefined ? a.ts - w.created : undefined;
     const took = ms !== undefined && ms >= 0 ? ` after ${dur(ms)}` : "";
     switch (a.sub) {
-      case "fired": return row("wait", `Wait on ${on} fired${took}`, { ms }, r);
+      case "fired": return row("wait", `Wait on ${on} fired${took}${typeof d.late === "string" ? `, ${d.late}` : ""}`, { ms }, r);
       case "timeout": return row("wait", `Wait on ${on} timed out${took}`, { ms, tone: "failed" }, r);
       case "cancelled": return row("wait", `Wait on ${on} was cancelled${took}`, { ms }, r);
       default: return row("wait", `Wait on ${on} ended${took}`, { ms }, r);

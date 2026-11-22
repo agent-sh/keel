@@ -16,6 +16,7 @@ import { contains, realOf } from "../core/paths.ts";
 import { readStat } from "../core/pid.ts";
 import { readText } from "../core/proc.ts";
 import { RESTART_RAN } from "../core/stops.ts";
+import { lastDown, whileDown } from "../core/late.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
 
 export type Job = {
@@ -312,9 +313,12 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     const line = (t: string) => t.replace(/[\x00-\x1f\x7f]+/g, " ");
     const what = job.description ? `"${line(job.description)}"` : `\`${line(job.command.slice(0, 80))}\``;
     const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? "ended; its exit code was not recorded (it ended under another daemon, or was killed)" : `exited with code ${code}`);
+    // One that ended while no daemon watched it is told now, at this start: it says when it really ended.
+    const down = at !== undefined ? whileDown(at, lastDown()) : undefined;
+    const when = down ? ` It ended ${down}.` : "";
     const note = () => {
       const list = notices.get(job.sessionId) ?? [];
-      list.push({ text: `Background command ${what} (ID ${job.id}) ${how}. Output: ${job.log}`, job: job.id, log: job.log });
+      list.push({ text: `Background command ${what} (ID ${job.id}) ${how}.${when} Output: ${job.log}`, job: job.id, log: job.log });
       notices.set(job.sessionId, list);
     };
     // A command a cut call was waiting on: its end is what that turn waited for, so it starts one.
@@ -322,7 +326,7 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     if (job.wake && jobEnded.tell) {
       // Named by words of its own that cannot read as a tag or a line of the harness inside this input.
       const named = what.replace(/[<>\[\]]/g, "'").replace(/(?<=.)`(?=.)/g, "'");
-      const text = `[harness] The command you were running when the daemon restarted has ended, after ${span(job.ended - job.started)}: ${named} (ID ${job.id}) ${how}. Its output is in ${job.log}.`;
+      const text = `[harness] The command you were running when the daemon restarted has ended, after ${span(job.ended - job.started)}: ${named} (ID ${job.id}) ${how}.${when} Its output is in ${job.log}.`;
       job.owes = true;
       jobEnded.tell(job, text, { sent: () => { job.owes = false; patchMeta(job.log, { reported: true }); }, note: () => { job.owes = false; note(); } });
       return;
@@ -926,7 +930,8 @@ export function cutCommand(sessionId: string, callId: string, o: { since?: numbe
   }
   if (j.stopReason) return `${RESTART_RAN} The command ${j.stopReason} after ${span(j.ended - j.started)}, before it finished. ${upTo} ${again}`;
   if (j.exitCode == null) return `${RESTART_RAN} The command ended meanwhile${j.signal ? ` (killed by ${j.signal})` : ""}; its exit code was not recorded. Its output is in ${j.log}: read it before running the command again.`;
-  return `${RESTART_RAN} The command was not interrupted: it exited with code ${j.exitCode} after ${span(j.ended - j.started)}. Its output is in ${j.log}. Do not run it again for its result.`;
+  const down = whileDown(j.ended, lastDown());
+  return `${RESTART_RAN} The command was not interrupted: it exited with code ${j.exitCode} after ${span(j.ended - j.started)}${down ? `; it ended ${down}` : ""}. Its output is in ${j.log}. Do not run it again for its result.`;
 }
 // How long a call a restart cut waits to see its command gone before it says so.
 const CONFIRM_MS = 60;

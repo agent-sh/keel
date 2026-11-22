@@ -297,6 +297,34 @@ test("a call a restart cut is told what became of its command: it runs on, it en
   }
 });
 
+// A command that ended while no daemon ran is told at the next start with when it really ended. It read
+// "exited with code 4 after 0 s" at the restart's time, as if it had just ended.
+test("a command that ended while the daemon was down says it ended then, while the daemon was down", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-"));
+  const dir = join(root, "spill/s30/jobs");
+  const G = globalThis as { __keelLife?: unknown };
+  const had = G.__keelLife;
+  const down = Date.now();
+  const code = `
+    import { startJob } from ${JSON.stringify(join(import.meta.dir, "jobs.ts"))};
+    startJob({ sessionId: "s30", cwd: ${JSON.stringify(root)}, logDir: ${JSON.stringify(dir)}, stops: true, command: "sleep 0.2; exit 4", callId: "ended" });
+    process.exit(0);`;
+  expect(await Bun.spawn(["bun", "-e", code], { stdout: "ignore", stderr: "inherit" }).exited).toBe(0);
+  await Bun.sleep(700);
+  // This process plays the daemon that started after a downtime that held the command's end.
+  G.__keelLife = { before: { down_ms: down, pid: 1, started_ms: down - 60_000, how: "killed" }, started_ms: Date.now() };
+  try {
+    adoptJobs(join(root, "spill"));
+    const hhmm = (ts: number) => new Date(ts).toTimeString().slice(0, 5);
+    const said = cutCommand("s30", "ended")!;
+    expect(said).toMatch(/it exited with code 4 after \d+ s; it ended at \d\d:\d\d, while the daemon was down\. Its output is in /);
+    expect([hhmm(down), hhmm(Date.now())]).toContain(said.match(/ended at (\d\d:\d\d)/)![1]!);
+  } finally {
+    if (had === undefined) delete G.__keelLife; else G.__keelLife = had;
+    for (const j of jobsOf("s30")) await stopJob(j);
+  }
+});
+
 test("a stop the last daemon began and did not see through is finished by the next one", async () => {
   const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-"));
   const dir = join(root, "spill/s10/jobs");

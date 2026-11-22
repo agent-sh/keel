@@ -6,6 +6,7 @@ import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { readStat } from "../core/pid.ts";
 import { pumpText, readText } from "../core/proc.ts";
+import { lastDown, lateWords, LATE_MS, span } from "../core/late.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -285,9 +286,28 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   return get(rec.id)!;
 }
 
+// A wait told later than its time, in words for its outcome and for the rows that list it: a timer that
+// fired after its wake time, a deadline that passed, a condition first seen at a start after the daemon
+// was down (it may have held for all of that time). Nothing when it was on time.
+export function lateOf(w: Pick<WaitRecord, "kind" | "spec" | "created" | "deadline">, status: WaitRecord["status"], now: number, down = lastDown()): { late?: string; note?: string } {
+  const due = status === "fired" && w.kind === "timer" ? (w.spec as Extract<WaitSpec, { kind: "timer" }>).at_ms : status === "timeout" ? w.deadline : undefined;
+  if (due !== undefined) {
+    const late = lateWords(due, now, down);
+    if (!late) return {};
+    return { late, note: `It ${status === "fired" ? "fired" : "timed out"} ${late}.` };
+  }
+  // A condition the first probes of this start found: it may have held since the daemon went down.
+  if (status === "fired" && down && w.created < down.from && now - down.to < LATE_MS && down.to - down.from >= LATE_MS) {
+    return { late: `seen at the daemon's start, after ${span(down.to - down.from)} down`, note: `It was seen at the daemon's start: the daemon was down for ${span(down.to - down.from)} before it, so this may have held since then.` };
+  }
+  return {};
+}
+
 function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true, boot = false): boolean {
   const w = get(id);
   if (!w || w.status !== "active") return false;
+  const lateness = lateOf(w, status, Date.now());
+  if (lateness.note) outcome = `${outcome} ${lateness.note}`;
   const st = live.get(id);
   if (st?.proc) {
     try { process.kill(-st.proc.pid, "SIGTERM"); } catch {}
@@ -300,7 +320,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, kept(outcome), Date.now(), wake ? 1 : 0, id).changes) return false;
   const rec = get(id)!;
   emit("wait", rec);
-  activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id });
+  activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}${lateness.late ? ` ${lateness.late}` : ""}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id, ...(lateness.late ? { late: lateness.late } : {}) });
   if (status === "timeout") failures.seen(w.session_id, "wait", w.kind, outcome);
   if (wake) sendWake(rec, boot);
   return true;

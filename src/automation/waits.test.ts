@@ -447,3 +447,18 @@ test("a monitor's batches for a busy session survive a restart, once, and only t
   restart();
   expect(inputs()).toHaveLength(1);
 }, 60_000);
+
+// A wait told after a downtime says so in its outcome (the model's wake) and its rows (the owner's).
+test("a timer due while the daemon was down fires late and says so; a file seen at the start may have held since", async () => {
+  const { lateOf } = await import("./waits.ts");
+  const t0 = Date.UTC(2026, 10, 22, 18, 12);
+  const down = { from: t0 + 11 * 60_000, to: t0 + 54 * 60_000 };
+  const timer = { kind: "timer" as const, spec: { kind: "timer" as const, at_ms: t0 + 40 * 60_000 }, created: t0, deadline: t0 + 41 * 60_000 };
+  const fired = lateOf(timer, "fired", down.to + 1000, down);
+  expect(fired.late).toMatch(/^14 min late: the daemon was down from \d\d:\d\d to \d\d:\d\d$/);
+  expect(fired.note).toBe(`It fired ${fired.late}.`);
+  expect(lateOf(timer, "fired", t0 + 40 * 60_000 + 1000, down)).toEqual({});
+  const file = { kind: "file" as const, spec: { kind: "file" as const, path: "/x" }, created: t0, deadline: t0 + 3600_000 };
+  expect(lateOf(file, "fired", down.to + 2000, down).note).toBe("It was seen at the daemon's start: the daemon was down for 43 min before it, so this may have held since then.");
+  expect(lateOf(file, "fired", down.to + 5 * 60_000, down)).toEqual({});
+});
