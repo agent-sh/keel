@@ -76,7 +76,9 @@ test("permission gate", async ({ page, request }) => {
   await expect(turns()).toHaveCount(3, { timeout: 120_000 });
   await expect(card).toHaveCount(0);
   expect(existsSync(join(ws, "gamma.txt"))).toBe(false);
-  await expect(page.getByTestId("tool-call").last()).toContainText("failed");
+  // The call's row says it was refused, by which mode and why: not that it failed.
+  await expect(page.getByTestId("tool-call").last()).toHaveAttribute("data-state", "refused");
+  await expect(page.getByTestId("tool-call").last()).toContainText(/refused touch gamma\.txt.*Read only.*only read-only commands run/);
 
   // 6. Deny with a reason: the model sees it.
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask" } });
