@@ -180,13 +180,14 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
   const signal = asks ? (init?.signal ? AbortSignal.any([init.signal, cut]) : cut) : init?.signal;
   const send = (extra?: Record<string, string>) => fetch(apiPath(path), { ...init, signal, headers: { "content-type": "application/json", ...init?.headers, ...extra } })
     // Given up with the link: a dropped request, as the network would have made it.
-    .catch((e) => { throw asks && cut.aborted && !init?.signal?.aborted ? new TypeError(`Failed to fetch ${path}: Keel stopped answering`) : e; });
+    // (`cut`: given up because the link dropped: the reconnect reads it again, so it is no failure to track.)
+    .catch((e) => { throw asks && cut.aborted && !init?.signal?.aborted ? Object.assign(new TypeError(`Failed to fetch ${path}: Keel stopped answering`), { cut: true }) : e; });
   // A body cut short (the daemon restarting mid-answer) is a dropped request,
   // as fetch reports one; an answer that is not JSON is a fault of its own.
   // Neither becomes an empty object a caller then reads fields of.
   const read = async (r: Response): Promise<any> => {
     const text = await r.text().catch(() => null);
-    if (text === null) throw new TypeError(`Failed to fetch ${path}: the answer was cut short`);
+    if (text === null) throw Object.assign(new TypeError(`Failed to fetch ${path}: the answer was cut short`), asks && cut.aborted && !init?.signal?.aborted ? { cut: true } : {});
     if (!text) return {};
     try { return JSON.parse(text); } catch {
       if (r.ok) throw Object.assign(new Error(`${path} answered with something other than JSON`), { status: r.status });
@@ -1304,6 +1305,8 @@ export function reportError(err: unknown, context?: unknown) {
   // taken, since not every caller has a place to say so.
   if ((err as { body?: { draining?: boolean } } | null)?.body?.draining) return void dispatchEvent(new CustomEvent("keel:turned-away"));
   if (showArchivedRefusal(err)) return;
+  // A read the page gave up when its link dropped: the reconnect reads it again (a deleted session's then answers 404).
+  if ((err as { cut?: boolean } | null)?.cut) return;
   const e = err instanceof Error ? err : new Error(String(err));
   const url = location.pathname;
   const post = () =>
