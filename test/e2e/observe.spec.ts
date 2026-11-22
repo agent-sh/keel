@@ -294,6 +294,8 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   const spansOf = async (trace: string) => (await (await request.get(`/api/debug/traces/${trace}`)).json()).spans as any[];
   const openRow = async () => {
     await page.getByTestId("errors-button").click();
+    // A failure a retry healed is under Recovered; it is under Open when the kind also failed for good on this daemon.
+    if ((await overloaded()).recovered_ts) await page.getByTestId("errors-panel").getByRole("tab", { name: /Recovered/ }).click();
     const row = page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: "529 overloaded" }).first();
     await row.locator("summary").click();
     return row;

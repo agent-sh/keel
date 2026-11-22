@@ -7,6 +7,7 @@ import { Popover } from "@base-ui/react/popover";
 import { ChevronsUpDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cacheShare, promptTokens, SAME, type SlowRequest, type TurnFacts, type TurnPick } from "../../../src/admin/turn-compare.ts";
+import { composing } from "../lib/keys.ts";
 import { openTrace, traceOfTurn } from "../lib/observe.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
@@ -153,6 +154,7 @@ function TurnPicker({ label, turns, total, value, onPick }: { label: string; tur
               value={q}
               onChange={(e) => { setQ(e.target.value); setAt(0); }}
               onKeyDown={(e) => {
+                if (composing(e)) return; // the arrows and Enter are the input method's while a word is composed
                 if (e.key === "ArrowDown") { e.preventDefault(); setAt((i) => Math.min(shown.length - 1, i + 1)); }
                 else if (e.key === "ArrowUp") { e.preventDefault(); setAt((i) => Math.max(0, i - 1)); }
                 else if (e.key === "Enter") { e.preventDefault(); choose(shown[at]); }

@@ -112,6 +112,8 @@ test("no secret reaches the log file or standard output, in any field a line car
     const file = readdirSync(join(dir, "logs")).map((f) => readFileSync(join(dir, "logs", f), "utf8")).join("");
     const kept = parseLines(file);
     expect(printed).toHaveLength(lines);
+    // (A value the vault of this process already knows, from a test before this one, is its placeholder: hidden all the same.)
+    const hidden = (l: string) => l.replace(/\[secret:[0-9a-f]{8}\]/g, "<redacted>");
     // One text for both sinks.
     expect(kept.map((l) => l.text)).toEqual(printed);
     for (const [kind, , mark] of SECRET_KINDS) {
@@ -119,8 +121,8 @@ test("no secret reaches the log file or standard output, in any field a line car
       expect(`${kind}: ${file.includes(mark)}`).toBe(`${kind}: false`);
     }
     // The lines are still what they say: the words around the value stay.
-    expect(printed[0]).toBe('[agent] started: "Deploy <redacted>" (general, in the background, on box <redacted>)');
-    expect(printed.filter((l) => l.includes("<redacted>")).length).toBe(lines);
+    expect(hidden(printed[0]!)).toBe('[agent] started: "Deploy <redacted>" (general, in the background, on box <redacted>)');
+    expect(printed.filter((l) => hidden(l).includes("<redacted>")).length).toBe(lines);
   } finally {
     for (const m of methods) (console as any)[m] = saved[m];
     if (had) G.__keelLogs = had; else delete G.__keelLogs;
