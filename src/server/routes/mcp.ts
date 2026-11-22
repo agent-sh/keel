@@ -54,7 +54,8 @@ export const mcpRoutes: RouteModule = (deps) => {
   }
   // An mcp_tool hook: a tool of a server that is connected or connects in time, called as the hook file's owner asked.
   hookMcp.call = async (server, tool, input, ms) => {
-    const client = await m.ensure(server, Math.min(ms, 30_000));
+    // A plugin's hook names its own server as plugin:<id>:<server>, whatever name that server has now.
+    const client = await m.ensure(m.pluginServer(server) ?? server, Math.min(ms, 30_000));
     const r = await client.callTool(tool, input, AbortSignal.timeout(ms), ms);
     return { text: (r.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join("\n").trim(), error: r.isError || undefined };
   };

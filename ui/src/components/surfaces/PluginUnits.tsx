@@ -20,11 +20,15 @@ type PlanView = {
   kind: "plugin"; token: string; input: string; id: string; name: string; version: string; description?: string; author?: string; root: string;
   skills: string[]; commands: string[]; agents: string[]; hooks: { event: string; matcher?: string; what: string }[]; mcp: { name: string; label: string; what: string }[];
   runs: string[]; consent: string | null; not_taken: { part: string; why: string }[]; notes: string[]; problems: string[];
+  fetched: string[]; bytes: number;
   update?: { id: string; from: string; changes: string[]; runs_changed: boolean; same: boolean };
 };
 type MarketView = { kind: "marketplace"; token: string; input: string; name: string; owner?: string; description?: string; plugins: { name: string; description?: string; version?: string; from: string; unsupported?: string }[] };
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+// Where a plugin comes from, as the owner reads it: a local repository by its folder.
+export const sourceLabel = (s: string) => (s.startsWith("file://") ? `${tilde(s.slice(7))} (git)` : tilde(s));
+const size = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`);
 export const unitMark = (u: UnitView): Mark => (!u.enabled ? "off" : u.mcp.some((m) => m.state === "error") ? "fail" : u.mcp.some((m) => m.state === "connecting") ? "work" : "on");
 export const unitBrings = (u: { skills: unknown[]; commands: unknown[]; agents: unknown[]; hooks: unknown[]; mcp: unknown[] }) =>
   [[u.skills.length, "skill"], [u.commands.length, "command"], [u.agents.length, "agent"], [u.hooks.length, "hook"], [u.mcp.length, "MCP server"]].filter(([n]) => n).map(([n, w]) => plural(n as number, w as string)).join(", ") || "nothing Keel runs";
@@ -88,7 +92,7 @@ function PlanBody({ plan, onDone, onCancel }: { plan: PlanView; onDone: (u: Unit
       {plan.runs.length > 0 && (
         <section className="k-runs" data-testid="plan-runs" data-asks={asks || undefined}>
           <h4>{asks ? "It runs these on this machine, as you" : "It runs what you agreed to before"}</h4>
-          <p>{asks ? "Each line starts a program with your files and shell: a hook at its event, a server while the plugin is on. Nothing of it runs before you say yes." : "These lines are the ones you said yes to: no new yes is needed."} <code className="font-mono">{"${CLAUDE_PLUGIN_ROOT}"}</code> is <code className="font-mono">{tilde(plan.root)}</code>.</p>
+          <p>{asks ? "Each line starts a program with your files and shell: a hook at its event, a server while the plugin is on. Nothing of it runs before you say yes." : "These lines are the ones you said yes to: no new yes is needed."} Its folder will be <code className="font-mono">{tilde(plan.root)}</code>.</p>
           <ol>{plan.runs.map((r) => <li key={r} data-testid="plan-run">{r}</li>)}</ol>
         </section>
       )}
@@ -109,9 +113,11 @@ const planHead = (p: PlanView, extra: [string, ReactNode][] = []) => (
   <ReaderHead
     title={p.id}
     desc={p.description ?? "A plugin, read and not yet installed."}
-    path={p.input}
-    facts={[["Version", p.update ? `${p.update.from} to ${p.version}` : p.version], ...(p.author ? [["Author", p.author] as [string, string]] : []), ["Brings", unitBrings(p)], ...extra]}
-  />
+    path={sourceLabel(p.input)}
+    facts={[["Version", p.update ? `${p.update.from} to ${p.version}` : p.version], ...(p.author ? [["Author", p.author] as [string, string]] : []), ["Brings", unitBrings(p)], ["Size", size(p.bytes)], ...extra]}
+  >
+    <ul className="k-plain-list mt-2.5" data-testid="plan-fetched">{p.fetched.map((f) => <li key={f}>{f.replace(/(folder |from )(\/\S+)/, (_m, w, path) => `${w}${tilde(path)}`)}</li>)}</ul>
+  </ReaderHead>
 );
 
 const discard = (token: string) => void api("/api/plugins/discard", { method: "POST", body: JSON.stringify({ token }) }).catch(() => {});
@@ -209,7 +215,7 @@ export function UnitReader({ u, folder, onChange }: { u: UnitView; folder: strin
         facts={[
           ["State", u.enabled ? "on" : "off: nothing of it runs or is offered"],
           ["Version", u.version],
-          ["Source", <span title={u.source}>{tail(u.source, 56)}{u.entry ? ` · ${u.entry}` : ""}</span>],
+          ["Source", <span title={u.source}>{tail(sourceLabel(u.source), 56)}{u.entry ? ` · ${u.entry}` : ""}</span>],
           ...(u.commit ? [["Commit", u.commit.slice(0, 12)] as [string, string]] : []),
           ["Installed", new Date(u.installed).toLocaleDateString(undefined, { dateStyle: "medium" })],
           ...(u.offered_by ? [["Offered by", tilde(u.offered_by)] as [string, string]] : []),

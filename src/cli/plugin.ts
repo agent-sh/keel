@@ -79,16 +79,17 @@ A marketplace is a list of plugins: name one of them with --plugin. A plugin's
 hooks and MCP servers run on this machine: install prints each command and
 asks before any of them runs (--yes answers for you, after you read them).`;
 
-type PlanView = { kind: "plugin"; token: string; id: string; name: string; version: string; description?: string; input: string; root: string; skills: string[]; commands: string[]; agents: string[]; mcp: { name: string; label: string }[]; runs: string[]; consent: string | null; not_taken: { part: string; why: string }[]; notes: string[]; problems: string[]; update?: { from: string; changes: string[]; runs_changed: boolean; same: boolean } };
+type PlanView = { kind: "plugin"; token: string; id: string; name: string; version: string; description?: string; input: string; root: string; fetched: string[]; bytes: number; skills: string[]; commands: string[]; agents: string[]; mcp: { name: string; label: string }[]; runs: string[]; consent: string | null; not_taken: { part: string; why: string }[]; notes: string[]; problems: string[]; update?: { from: string; changes: string[]; runs_changed: boolean; same: boolean } };
 type MarketView = { kind: "marketplace"; token: string; name: string; plugins: { name: string; description?: string; version?: string; unsupported?: string }[] };
 
 function printPlan(p: PlanView) {
   console.log(`${shown(p.id)} ${shown(p.version)}  from ${shown(p.input)}`);
   if (p.description) console.log(`  ${clean(p.description)}`);
+  console.log(`  ${p.fetched.map(shown).join("; ")} (${p.bytes} bytes)`);
   const gives = [["skills", p.skills], ["commands", p.commands], ["agents", p.agents], ["MCP servers", p.mcp.map((m) => (m.label === m.name ? m.name : `${m.name} as ${m.label}`))]] as const;
   for (const [what, names] of gives) if (names.length) console.log(`  ${what}: ${names.map(shown).join(", ")}`);
   if (p.runs.length) {
-    console.log("  runs on this machine (${CLAUDE_PLUGIN_ROOT} is " + shown(p.root) + "):");
+    console.log("  runs on this machine (" + shown(p.root) + " is its folder):");
     for (const r of p.runs) console.log(`    ${shown(r)}`);
   } else console.log("  runs nothing on this machine");
   for (const n of p.not_taken) console.log(`  not taken: ${shown(n.part)} (${clean(n.why)})`);

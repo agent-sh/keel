@@ -5,7 +5,7 @@
 // repository and fetches no submodule.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
-import { cp, readdir, readFile, rm } from "node:fs/promises";
+import { cp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { git } from "../core/git.ts";
@@ -57,29 +57,68 @@ export async function copyFolder(from: string, to: string): Promise<string[]> {
       return true;
     },
   });
-  return left;
+  return [...left, ...(await dropLinksOut(to))];
+}
+
+// Every link in `root` whose real place is outside it, or nowhere, taken out
+// (a clone keeps a repository's links as they are, and a copied link written
+// with an absolute path still points at the folder it was copied from): the
+// names of what was taken out.
+export async function dropLinksOut(root: string): Promise<string[]> {
+  const top = realpathSync(root);
+  const out: string[] = [];
+  const walk = async (d: string) => {
+    for (const e of await readdir(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isSymbolicLink()) {
+        let real: string | null = null;
+        try { real = realpathSync(p); } catch {}
+        if (!real || !contains(top, real)) { out.push(relative(root, p)); await rm(p, { force: true }); }
+      } else if (e.isDirectory()) await walk(p);
+    }
+  };
+  await walk(root);
+  return out;
+}
+
+// The bytes of a folder, counted up to `most`: a folder larger is not read on.
+export async function folderSize(dir: string, most: number): Promise<number> {
+  let n = 0;
+  const walk = async (d: string) => {
+    for (const e of await readdir(d, { withFileTypes: true })) {
+      if (n > most) return;
+      const p = join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== ".git" || d !== dir) await walk(p); }
+      else if (e.isFile()) n += (await stat(p)).size;
+    }
+  };
+  await walk(dir);
+  return n;
 }
 
 // git through src/core/git.ts: no hook, no prompt for a password, no submodule.
-async function run(dir: string, args: string[], o: { mode: "plain" | "own"; gitDir?: string; workTree?: string }) {
+async function run(dir: string, args: string[], o: { mode: "plain" | "own"; gitDir?: string; workTree?: string; signal?: AbortSignal }) {
   const r = await git(dir, args, { ...o, timeout: CLONE_MS });
+  if (o.signal?.aborted) throw Object.assign(new Error("stopped: the request that asked for it went away"), { status: 499 });
   if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${(r.err.trim() || r.out.trim() || `exit ${r.code}`).split("\n").slice(-3).join(" ")}`);
   return r.out.trim();
 }
 // A clone that has not ended in this long is stopped: the request that asked for it waits on it.
 const CLONE_MS = 10 * 60_000;
 
-// The repository at `url` (at `ref`) in `to`, without its .git: the commit it is at.
-export async function cloneInto(url: string, ref: string | undefined, to: string): Promise<string> {
+// The repository at `url` (at `ref`) in `to`, without its .git and without
+// a link that leads out of it: the commit it is at and the links taken out.
+// `signal` ends the clone (the request that asked for it went away).
+export async function cloneInto(url: string, ref: string | undefined, to: string, signal?: AbortSignal): Promise<{ commit: string; left: string[] }> {
   const parent = dirname(to);
-  const own = { mode: "own" as const, gitDir: join(to, ".git"), workTree: to };
+  const own = { mode: "own" as const, gitDir: join(to, ".git"), workTree: to, signal };
   if (ref && SHA.test(ref)) {
-    await run(parent, ["clone", "--quiet", "--no-checkout", "--", url, to], { mode: "plain" });
+    await run(parent, ["clone", "--quiet", "--no-checkout", "--", url, to], { mode: "plain", signal });
     await run(to, ["checkout", "--quiet", "--detach", ref], own);
-  } else await run(parent, ["clone", "--quiet", "--depth", "1", "--no-tags", "--single-branch", ...(ref ? ["--branch", ref] : []), "--", url, to], { mode: "plain" });
+  } else await run(parent, ["clone", "--quiet", "--depth", "1", "--no-tags", "--single-branch", ...(ref ? ["--branch", ref] : []), "--", url, to], { mode: "plain", signal });
   const commit = await run(to, ["rev-parse", "HEAD"], own);
   await rm(join(to, ".git"), { recursive: true, force: true });
-  return commit;
+  return { commit, left: await dropLinksOut(to) };
 }
 
 // A folder's content as one digest: the version of a plugin from a folder that names none.

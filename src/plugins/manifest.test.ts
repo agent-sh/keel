@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { changes, consentKey, entrySource, fill, nameProblem, parseMarketplace, readPlugin, resolveNames, runLine, runsOf } from "./manifest.ts";
-import { parseSource } from "./fetch.ts";
+import { changes, consentKey, entrySource, fill, nameProblem, parseMarketplace, readPlugin, resolveNames, runLine, runsOf, versionProblem } from "./manifest.ts";
+import { dropLinksOut, parseSource } from "./fetch.ts";
+import { existsSync, symlinkSync } from "node:fs";
 
 const tree = (files: Record<string, string>) => {
   const root = mkdtempSync(join(tmpdir(), "keel-plugin-"));
@@ -99,4 +100,52 @@ test("a source: a folder, a git URL with a ref, owner/repo", () => {
   expect(parseSource("file:///srv/r.git", "/")).toEqual({ git: "file:///srv/r.git" });
   expect(parseSource("owner/repo", "/")).toEqual({ git: "https://github.com/owner/repo.git" });
   expect("error" in parseSource("./nowhere-at-all", dir)).toBe(true);
+});
+
+test("every part of a server or a hook that decides what runs or what it gets is its own consent line", () => {
+  const server = { url: "https://api.example/mcp", headers: { "X-Key": "${API_KEY}" }, headers_helper: "sh ./h.sh", headers_env: { Authorization: "TOK" }, bearer_env: "BEARER" };
+  const local = { command: "node", args: ["s.js"], cwd: "/srv", env: { NODE_OPTIONS: "--require x" }, env_vars: ["SECRET"] };
+  const hooks = { Stop: [{ hooks: [{ type: "http", url: "https://sink.example/h", headers: { A: "$TOKEN" }, allowedEnvVars: ["TOKEN"] }] }] };
+  const lines = runsOf(hooks, { remote: server, local }).map(runLine);
+  expect(lines).toEqual([
+    "hook on Stop: sends each event to https://sink.example/h",
+    "hook on Stop: with the header A: $TOKEN",
+    "hook on Stop: with TOKEN from Keel's environment",
+    "MCP server remote: connects to https://api.example/mcp",
+    "MCP server remote: sends the header X-Key: ${API_KEY}",
+    "MCP server remote: sends the header Authorization from TOK in Keel's environment",
+    "MCP server remote: sends BEARER from Keel's environment as its bearer token",
+    "MCP server remote: runs sh ./h.sh at each connect",
+    "MCP server local: node s.js",
+    "MCP server local: starts in /srv",
+    "MCP server local: sets NODE_OPTIONS=--require x",
+    "MCP server local: gets SECRET from Keel's environment",
+  ]);
+  // An update that changes only a variable or the helper changes what was agreed to.
+  const before = { version: "1", skills: [], commands: [], agents: [], mcp: ["local"], runs: lines, notTaken: [] };
+  const env2 = runsOf(hooks, { remote: server, local: { ...local, env: { NODE_OPTIONS: "--require y" } } }).map(runLine);
+  expect(changes(before, { ...before, runs: env2 }).runsChanged).toBe(true);
+  const helper2 = runsOf(hooks, { remote: { ...server, headers_helper: "sh ./other.sh" }, local }).map(runLine);
+  expect(changes(before, { ...before, runs: helper2 }).runsChanged).toBe(true);
+});
+
+test("a version and a name never name a folder that is not the plugin's own", () => {
+  for (const v of [".", "..", "a/../../b", ".hidden", ""]) expect(versionProblem(v)).not.toBeNull();
+  expect(versionProblem("1.2.0-rc.1+abc")).toBeNull();
+  expect(nameProblem(".staging")).not.toBeNull();
+  const root = tree({ ".claude-plugin/plugin.json": JSON.stringify({ name: "v", version: ".." }) });
+  expect(readPlugin(root).problems.some((m) => m.includes("not a version"))).toBe(true);
+});
+
+test("a fetched tree keeps no link that leads out of it", async () => {
+  const outside = tree({ "secret.txt": "s" });
+  const root = tree({ "skills/ok/SKILL.md": "---\nname: ok\n---\n", "skills/ok/notes.md": "n" });
+  mkdirSync(join(root, "skills/leak"), { recursive: true });
+  symlinkSync(join(outside, "secret.txt"), join(root, "skills/leak/SKILL.md"));
+  symlinkSync(outside, join(root, "out"));
+  symlinkSync("notes.md", join(root, "skills/ok/inner.md"));
+  symlinkSync(join(root, "gone"), join(root, "dangling"));
+  expect((await dropLinksOut(root)).sort()).toEqual(["dangling", "out", "skills/leak/SKILL.md"]);
+  expect(existsSync(join(root, "skills/ok/inner.md"))).toBe(true);
+  expect(existsSync(join(outside, "secret.txt"))).toBe(true);
 });

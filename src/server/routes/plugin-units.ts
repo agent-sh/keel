@@ -5,7 +5,7 @@
 // passkey too.
 import type { McpManager } from "../../mcp/manager.ts";
 import { Installer, type Plan } from "../../plugins/installer.ts";
-import { runsOf } from "../../plugins/manifest.ts";
+import { fillLine, runsOf } from "../../plugins/manifest.ts";
 import { installedUnits, pluginsHome, registryPath, unitOf, type Unit } from "../../plugins/registry.ts";
 import type { RouteModule } from "../app.ts";
 import { presence } from "./permissions.ts";
@@ -48,7 +48,7 @@ export const pluginUnitRoutes: RouteModule = (deps) => {
         const s = live.get(m.label) ?? servers.find((x) => x.name.startsWith(`${u.id}-${m.name}`));
         return { name: m.name, label: s?.name ?? m.label, what: runsOf({}, { [m.label]: m.config })[0]?.what ?? "", state: u.enabled ? s?.state ?? "missing" : "disabled", tools: s?.tool_names ?? [], error: s?.error ?? null };
       }),
-      not_taken: u.notTaken, notes: u.notes, runs: u.consent.lines,
+      not_taken: u.notTaken, notes: u.notes, runs: u.consent.lines.map((l) => fillLine(l, { root: u.dir, data: u.data })),
     };
   };
   const listing = (cwd: string) => ({ plugins: installedUnits().map(view), offers: installer.offers(cwd), home: pluginsHome(), registry: registryPath() });
@@ -65,7 +65,7 @@ export const pluginUnitRoutes: RouteModule = (deps) => {
         const b = await body(req);
         const input = String(b.input ?? "").trim();
         if (!input) return bad("give a folder, a git URL or owner/repo");
-        return json(await installer.prepare({ input, ...(b.entry ? { entry: String(b.entry) } : {}), cwd: cwdOf(req, b), ...(b.offered_by ? { offeredBy: String(b.offered_by) } : {}) }));
+        return json(await installer.prepare({ input, ...(b.entry ? { entry: String(b.entry) } : {}), cwd: cwdOf(req, b), ...(b.offered_by ? { offeredBy: String(b.offered_by) } : {}), signal: req.signal }));
       }),
     },
     // { token, consent }: `consent` is the key of the lines the owner said yes to.
@@ -96,7 +96,7 @@ export const pluginUnitRoutes: RouteModule = (deps) => {
         const guard = needs(req);
         if (guard) return guard;
         const b = await body(req);
-        const p = await installer.update(req.params.id, cwdOf(req, b));
+        const p = await installer.update(req.params.id, cwdOf(req, b), req.signal);
         if (p.kind === "plugin" && (p as Plan).update?.same) installer.discard(p.token);
         return json(p);
       }),

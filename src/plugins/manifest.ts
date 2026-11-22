@@ -42,7 +42,11 @@ export type Marketplace = { name: string; owner?: string; description?: string; 
 // path separators, control or bidirectional-formatting characters.
 const NAME_BAD = /[\s@:/\\\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 export const nameProblem = (n: unknown): string | null =>
-  typeof n !== "string" || !n ? "a plugin needs a name" : n.length > 64 ? `the name ${n.slice(0, 64)}... is longer than 64 characters` : NAME_BAD.test(n) || n === "." || n === ".." ? `${JSON.stringify(n)} is not a plugin name: no spaces, @, :, slashes or control characters` : null;
+  typeof n !== "string" || !n ? "a plugin needs a name" : n.length > 64 ? `the name ${n.slice(0, 64)}... is longer than 64 characters` : NAME_BAD.test(n) || n.startsWith(".") ? `${JSON.stringify(n)} is not a plugin name: no spaces, @, :, slashes or control characters, and no dot first` : null;
+
+// A version names a folder of the plugin's copies: never one that is no folder of its own.
+export const versionProblem = (v: string): string | null =>
+  !v || v.length > 80 || v.startsWith(".") || /[\/\\\u0000-\u001f]/.test(v) ? `${JSON.stringify(v.slice(0, 80))} is not a version Keel can keep: no dot first, no slashes or control characters, at most 80 characters` : null;
 
 const readJson = (p: string): { value?: any; error?: string } => {
   try { return { value: JSON.parse(readFileSync(p, "utf8")) }; } catch (e) { return { error: (e as Error).message }; }
@@ -110,6 +114,9 @@ export function readPlugin(root: string, entry?: MarketEntry): Plugin {
   const name = str(m.name) ?? entry?.name ?? basename(root);
   const bad = nameProblem(name);
   if (bad) problems.push(bad);
+  const ver = str(m.version) ?? entry?.version;
+  const vbad = ver === undefined ? null : versionProblem(ver);
+  if (vbad) problems.push(vbad);
 
   // A component path: "./" and inside the plugin (skills may be ".").
   const at = (p: unknown, what: string, dot = false): string | null => {
@@ -253,23 +260,48 @@ export function entrySource(e: MarketEntry, marketRoot: string, pluginRoot?: str
 }
 
 // What a plugin runs on the machine, one line each, as the owner is asked
-// about it: each hook's command (or the address it posts to, or the tool it
-// calls) and each MCP server's command or address.
+// about it. Every part of a hook or a server that decides what runs or what
+// it is given is its own line, as written: a hook's command and arguments,
+// the address an http hook posts to with each header and each variable it
+// may read; a server's command and arguments, its folder, each variable it
+// is set or passed, its address, each header (a ${VAR} shown as the
+// variable's name, never its value) and a headers helper, a command of its
+// own run at each connect. The same lines are the same consent.
 export type Run = { kind: "hook"; event: string; matcher?: string; what: string } | { kind: "mcp"; name: string; what: string };
 const words = (c: string, a?: unknown) => [c, ...(Array.isArray(a) ? a.map(String) : [])].join(" ");
+const entries = (v: unknown): [string, string][] => (v && typeof v === "object" && !Array.isArray(v) ? Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, typeof x === "string" ? x : JSON.stringify(x)]) : []);
+const names = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
+export function serverRuns(c: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  if (typeof c.command === "string") out.push(words(c.command, c.args));
+  else if (typeof c.url === "string") out.push(`connects to ${c.url}${c.transport === "sse" ? " (HTTP with SSE)" : ""}`);
+  if (typeof c.cwd === "string") out.push(`starts in ${c.cwd}`);
+  for (const [k, v] of entries(c.env)) out.push(`sets ${k}=${v}`);
+  for (const n of names(c.env_vars)) out.push(`gets ${n} from Keel's environment`);
+  for (const [k, v] of entries(c.headers)) out.push(`sends the header ${k}: ${v}`);
+  for (const [k, n] of entries(c.headers_env)) out.push(`sends the header ${k} from ${n} in Keel's environment`);
+  if (typeof c.bearer_env === "string") out.push(`sends ${c.bearer_env} from Keel's environment as its bearer token`);
+  if (typeof c.headers_helper === "string") out.push(`runs ${c.headers_helper} at each connect`);
+  if (c.oauth && typeof c.oauth === "object") out.push(`signs in with OAuth: ${JSON.stringify(c.oauth)}`);
+  return out;
+}
+export function hookRuns(h: any): string[] {
+  if (h?.type === "command") return [words(String(h.command ?? ""), h.args)];
+  if (h?.type === "http") return [`sends each event to ${h.url}`, ...entries(h.headers).map(([k, v]) => `with the header ${k}: ${v}`), ...names(h.allowedEnvVars).map((n) => `with ${n} from Keel's environment`)];
+  if (h?.type === "mcp_tool") return [`calls the tool ${h.tool} of the MCP server ${h.server}${h.input !== undefined ? ` with ${JSON.stringify(h.input)}` : ""}`];
+  return [];
+}
 export function runsOf(hooks: HookGroups, mcp: Record<string, Record<string, unknown>>): Run[] {
   const out: Run[] = [];
   for (const [event, groups] of Object.entries(hooks)) for (const g of groups) for (const h of g.hooks ?? []) {
-    const what = h?.type === "command" ? words(String(h.command ?? ""), h.args) : h?.type === "http" ? `sends each event to ${h.url}` : h?.type === "mcp_tool" ? `calls the tool ${h.tool} of the MCP server ${h.server}` : "";
-    if (what) out.push({ kind: "hook", event, ...(g.matcher ? { matcher: g.matcher } : {}), what });
+    for (const what of hookRuns(h)) out.push({ kind: "hook", event, ...(g.matcher ? { matcher: g.matcher } : {}), what });
   }
-  for (const [name, c] of Object.entries(mcp)) {
-    const what = typeof c.command === "string" ? words(c.command, c.args) : typeof c.url === "string" ? `connects to ${c.url}` : "";
-    if (what) out.push({ kind: "mcp", name, what });
-  }
+  for (const [name, c] of Object.entries(mcp)) for (const what of serverRuns(c)) out.push({ kind: "mcp", name, what });
   return out;
 }
 export const runLine = (r: Run) => (r.kind === "hook" ? `hook on ${r.event}${r.matcher ? ` (${r.matcher})` : ""}: ${r.what}` : `MCP server ${r.name}: ${r.what}`);
+// A line as the owner reads it: the plugin's folders filled in (the key is of the lines as written).
+export const fillLine = (line: string, vars: { root: string; data: string }) => fill(line, vars) as string;
 // What the owner agreed to: the lines, in order. The same lines are the same consent.
 export const consentKey = (lines: string[]) => createHash("sha256").update(lines.join("\n")).digest("hex");
 

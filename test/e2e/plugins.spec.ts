@@ -47,7 +47,7 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
     "commands/stamp.md": "---\ndescription: Stamp a word\n---\nReply with STAMP-$ARGUMENTS.\n",
     "agents/checker.md": "---\nname: checker\ndescription: Checks the work of the plugin e2e.\n---\nYou check things.\n",
     "hooks/hooks.json": hooks("PINEAPPLE"),
-    ".mcp.json": JSON.stringify({ mcpServers: { echo: { command: "bun", args: ["${CLAUDE_PLUGIN_ROOT}/server.ts"] } } }),
+    ".mcp.json": JSON.stringify({ mcpServers: { echo: { command: "bun", args: ["${CLAUDE_PLUGIN_ROOT}/server.ts"], env: { E2E_MODE: "plain" } } } }),
     "output-styles/terse.md": "---\nname: terse\n---\nBe terse.\n",
   });
   copyFileSync(ECHO, join(repo, "server.ts"));
@@ -86,13 +86,16 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
   await page.getByTestId("install-read").click();
   const plan = page.getByTestId("plugin-plan");
   await expect(plan).toHaveAttribute("data-id", "e2e-kit");
-  await expect(plan.getByTestId("plan-run")).toHaveCount(2);
+  await expect(plan.getByTestId("plan-run")).toHaveCount(3);
   await expect(plan.getByTestId("plan-runs")).toContainText("hook on UserPromptSubmit: printf 'plugin-hook-said-PINEAPPLE'");
-  await expect(plan.getByTestId("plan-runs")).toContainText("MCP server e2e-kit-echo: bun ${CLAUDE_PLUGIN_ROOT}/server.ts");
+  // Each line as it will run: the plugin's folder filled in, and every variable it sets its own line.
+  await expect(plan.getByTestId("plan-runs")).toContainText(/MCP server e2e-kit-echo: bun \S+\/plugins\/e2e-kit\/versions\/1\.0\.0\/server\.ts/);
+  await expect(plan.getByTestId("plan-runs")).toContainText("MCP server e2e-kit-echo: sets E2E_MODE=plain");
+  await expect(page.getByTestId("plan-fetched")).toContainText("cloned from file://");
   await expect(plan.getByTestId("plan-not-taken")).toContainText("output-styles/");
   await expect(plan.getByTestId("plan-notes")).toContainText("The skill greet is also yours");
   await expect(plan.getByTestId("plan-notes")).toContainText("this plugin's is e2e-kit-echo, and yours is left as it is");
-  await expect(plan.getByTestId("plan-install")).toContainText("Install and let it run these 2");
+  await expect(plan.getByTestId("plan-install")).toContainText("Install and let it run these 3");
   expect((await servers()).some((s) => s.plugin)).toBe(false);
   expect((await skills()).some((n) => n.startsWith("e2e-kit:"))).toBe(false);
   await shoot(page, "plugins-01-consent");

@@ -437,6 +437,13 @@ export class McpManager {
     return out;
   }
 
+  // The server a plugin's own reference names (plugin:<id>:<server>), by the name it has now.
+  pluginServer(ref: string): string | undefined {
+    const m = /^plugin:([^:]+):(.+)$/.exec(ref);
+    if (!m) return undefined;
+    return [...this.entries.values()].find((e) => e.plugin === m[1] && e.given === m[2])?.name;
+  }
+
   // The plugin a server came with, if it did.
   pluginOf(name: string): string | undefined {
     return this.entries.get(name)?.plugin;
