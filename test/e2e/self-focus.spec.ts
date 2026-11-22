@@ -299,7 +299,9 @@ test("the palette closed with no pick gives the keyboard back to where it was", 
     await expect(box).toBeFocused();
 
     // A menu opened and closed earlier is not where the palette sends the keyboard back to.
+    // (The menu is on screen before the Escape that closes it: a key sent as the click lands is ahead of the menu.)
     await page.getByTestId("session-menu").first().click();
+    await expect(page.getByTestId("menu-delete")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("session-menu").first()).toBeFocused();
     await box.click();
