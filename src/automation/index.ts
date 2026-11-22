@@ -20,7 +20,7 @@ import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
 import * as snooze from "./snooze.ts";
 import * as undelivered from "./undelivered.ts";
-import { afterCallOff, afterTurn, capture, clip, D, flush, hasPending, setDeps } from "./core.ts";
+import { afterCallOff, afterTurn, capture, clip, D, flush, hasPending, setDeps, stopperOf } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop, messageHooks, waitAckHooks } from "./tools.ts";
@@ -33,6 +33,7 @@ import { forwardedStanding, isLocal } from "../safety/presence.ts";
 import { spelled } from "../safety/chars.ts";
 import { fromSaid, type AnsweredBy } from "../safety/card.ts";
 import * as perm from "../server/routes/permissions.ts";
+import { stopSays } from "../core/stoppers.ts";
 
 // Subagents, waits, loops and alerts: tables, tools, turn hooks, the scheduler
 // and the HTTP routes, joined to the daemon from this one module.
@@ -141,7 +142,7 @@ function init(deps: Deps) {
         // for their reports (they start its next turn, whose end tells).
         const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || liveAgents(s.id) > 0;
         const child = !!deps.store.session(s.id)?.parent_id;
-        if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`, undefined, turn);
+        if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${reason === "interrupted" ? stopSays(stopperOf(s.id)) : TURN_WORDS[reason] ?? `ended (${reason})`}`, undefined, turn);
         // A question this turn asked whose card went with it (the turn was stopped) waits on nobody. (A turn parked for a restart keeps its card.)
         if (reason !== "restart") alerts.settleAsks(s.id);
         activity.ofTurn(s.id, turn, () => alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more }));

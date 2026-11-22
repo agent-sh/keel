@@ -639,11 +639,11 @@ test("a continuation lined up behind a turn the owner stops is dropped, and the 
   await g.check;
   expect(hasPending(g.id)).toBe(true);
   // The owner stops the turn: its end pauses the goal, and what was lined up does not start a turn.
-  store.append(g.id, "turn_end", { reason: "interrupted", usage: usage(2) });
+  store.append(g.id, "turn_end", { reason: "interrupted", stopped_by: "owner", usage: usage(2) });
   running = false;
   await goals.afterTurn(g.id, "interrupted");
   flush(g.id);
-  expect(goals.get(g.id)).toMatchObject({ status: "paused", status_reason: "the turn was stopped" });
+  expect(goals.get(g.id)).toMatchObject({ status: "paused", status_reason: "the owner stopped the turn" });
   expect(said(g.id, "continue")).toHaveLength(0);
   expect(hasPending(g.id)).toBe(false);
   // Resumed: the prompt says what the verifier found.
@@ -753,9 +753,9 @@ test("a resume whose prompt was lost in a drain is sent at the next start, the s
   const s = session();
   await goals.set(s.id, { objective: "ship it" });
   store.append(s.id, "turn_start", {});
-  store.append(s.id, "turn_end", { reason: "interrupted", usage: usage(5) });
+  store.append(s.id, "turn_end", { reason: "interrupted", stopped_by: "owner", usage: usage(5) });
   await goals.afterTurn(s.id, "interrupted");
-  expect(goals.get(s.id)).toMatchObject({ status: "paused", status_reason: "the turn was stopped" });
+  expect(goals.get(s.id)).toMatchObject({ status: "paused", status_reason: "the owner stopped the turn" });
   draining = true;
   await goals.patch(s.id, { status: "pursuing" }); // its prompt waits in a daemon that is going down
   expect(said(s.id, "resume")).toHaveLength(0);

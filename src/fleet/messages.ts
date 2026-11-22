@@ -10,6 +10,7 @@ import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError, linkFetch } from "./link.ts";
+import { heldSays, ownerStop } from "../core/stoppers.ts";
 
 export const MAX_TEXT = 1_000_000;
 export const PEER_PREFIX = '<external_input source="peer_session"';
@@ -272,7 +273,9 @@ export class Messages {
     const m = this.receive(a.session, text, sender, wake, true);
     const title = a.session.title || a.session.id;
     // Why it waits, so a queued message is not taken for a delivered one.
-    const why = this.engine.isHeld(a.session.id) ? "the owner stopped that session, and it reads the message when they resume it"
+    // (Who made the hold says it in its own words: the owner's Stop, a move of the session.)
+    const heldBy = this.engine.isHeld(a.session.id) ? this.engine.heldBy?.(a.session.id) ?? null : undefined;
+    const why = heldBy !== undefined ? `${heldSays(heldBy).replace("this session", "that session")}, and it reads the message when ${ownerStop(heldBy ?? "owner") ? "they resume it" : "it is resumed"}`
       : this.engine.isRunning(a.session.id) ? "that session is working and reads it after its current turn" : "it is in that session's queue";
     const said = m.state === "held" ? `Held for the owner before it reaches ${title}: ${m.reason}.` : m.state === "queued" ? `Queued for ${title} (id ${m.id}): ${why}.` : `Delivered to ${title}.`;
     return { text: said, machine: "local", session: a.session.id, message_id: m.id, state: m.state };

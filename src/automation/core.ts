@@ -1,4 +1,5 @@
 import type { StoredEvent } from "../core/types.ts";
+import { heldSays } from "../core/stoppers.ts";
 import { bytesPerToken, utf8Bytes } from "../engine/compact.ts";
 import type { Deps } from "../server/app.ts";
 
@@ -144,7 +145,9 @@ export function flush(sessionId: string) {
   if (!list?.length) return;
   // A daemon on its way down starts no turn: what is owed is sent by the next one. Nor does a
   // session on its way out (asked here, where the turn would start, whatever was true at delivery).
-  if (D().engine.isRunning(sessionId) || D().engine.isDraining?.() || D().engine.isClosing?.(sessionId)) return;
+  // Nor does a session where the owner's own message is about to be the next turn (a prompt they
+  // edited or sent now): what waits here goes after that turn, never in its place.
+  if (D().engine.isRunning(sessionId) || D().engine.isDraining?.() || D().engine.isClosing?.(sessionId) || D().engine.startsNext?.(sessionId)) return;
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
   if (!s || s.archived) return void riding.delete(sessionId);
@@ -230,12 +233,24 @@ export function afterTurn(sessionId: string, then?: () => void) {
   });
 }
 
+// Who stopped the session's last turn, when it ended as stopped: the word its end keeps (src/core/stoppers.ts).
+// Nothing for a turn that ended otherwise, or one stopped before every stop was named.
+export function stopperOf(sessionId: string): string | undefined {
+  const end = D().store.lineage(sessionId).findLast((e) => e.kind === "turn_end");
+  return end?.data.reason === "interrupted" && typeof end.data.stopped_by === "string" ? end.data.stopped_by : undefined;
+}
+
+// Why the session's queue is held, in words for its model: who made the hold (a stop names itself,
+// src/core/stoppers.ts). Nothing when it is not held.
+export const heldWhy = (sessionId: string): string | undefined => (D().engine.isHeld(sessionId) ? heldSays(D().engine.heldBy(sessionId)) : undefined);
+
 // Said after a report or a failure notice while other agents of the session
 // still run (models set timers to wait for the rest). In a session held after
 // the owner's Stop a report starts no turn, so it is not said to wake it.
-export const stillRunning = (left: number, held: boolean) =>
+// `held`: why its queue is held (heldWhy), when it is.
+export const stillRunning = (left: number, held: string | undefined) =>
   `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${held
-    ? `the owner stopped this session, so ${left === 1 ? "its report does" : "their reports do"} not wake you: ${left === 1 ? "it comes" : "they come"} with your next input.`
+    ? `${held}, so ${left === 1 ? "its report does" : "their reports do"} not wake you: ${left === 1 ? "it comes" : "they come"} with your next input.`
     : `${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.`}`;
 
 // Text a model or a webhook wrote is put inside a frame it cannot close.

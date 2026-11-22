@@ -1,11 +1,12 @@
 import type { StoredEvent } from "../core/types.ts";
 import * as activity from "./activity.ts";
-import { D, alertHook, capture, deliver, emit, hasPending } from "./core.ts";
+import { D, alertHook, capture, deliver, emit, hasPending, stopperOf } from "./core.ts";
 import { check, extractJson } from "./schema.ts";
 import { liveAgents } from "./state.ts";
 import { reattach, verify, type Outcome } from "./verify.ts";
 import * as agents from "./agents.ts";
 import * as waits from "./waits.ts";
+import { holds, ownerStop, replaced, stopSays } from "../core/stoppers.ts";
 
 // Goals and the shared task list.
 //
@@ -406,7 +407,17 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
   }
   if (reason === "restart") return void save(g!);
   if (reason === "error" || reason === "max_tokens") return void done({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
-  if (reason === "interrupted") return void done({ ...g!, status: "paused", status_reason: "the turn was stopped" });
+  if (reason === "interrupted") {
+    // Only the owner's own Stop pauses the goal as theirs. A stop that keeps the queue waiting for its own
+    // time does too, and says which (a move of the session, an archive: no turn may start under it).
+    const by = stopperOf(sessionId);
+    if (ownerStop(by)) return void done({ ...g!, status: "paused", status_reason: "the owner stopped the turn" });
+    if (holds(by)) return void done({ ...g!, status: "paused", status_reason: `the turn was ${stopSays(by)}` });
+    // The owner's own message took the turn's place (a prompt edited or sent now): the goal stays on,
+    // and the end of that turn is the one checked.
+    if (replaced(by) || D().engine.startsNext?.(sessionId) || D().engine.isRunning(sessionId)) return void save(g!);
+    // Stopped by anything else: the goal stays on, and this end is checked like any other.
+  }
   // A check of this goal already under way decides: this turn is counted, not judged twice.
   if (opts.judge === false || judging.has(key)) return void save(g!);
   save(g!);

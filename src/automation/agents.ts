@@ -5,8 +5,9 @@ import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { didLine } from "./report-did.ts";
 import { awaited } from "../tools/jobs.ts";
+import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, stillRunning, takeRiding, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, hasPending, heldWhy, inert, isPending, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
@@ -32,13 +33,20 @@ import { spawnContext } from "../admin/trace.ts";
 export type AgentStatus = "running" | "waiting" | "completed" | "incomplete" | "failed" | "stopped";
 // Who or what stopped an agent: kept with the record and its report, so the
 // parent and the owner can tell an owner's stop from the parent's own.
-export type StopBy = "owner" | "parent" | "parent_turn" | "time_limit" | "parent_archived";
+// (The last five are a stop of its own turn by something else than the owner or its parent, in the
+// words of src/core/stoppers.ts; `unknown`: a stop nobody named.)
+export type StopBy = "owner" | "parent" | "parent_turn" | "time_limit" | "parent_archived" | "hook" | "supervisor" | "api" | "handoff" | "unknown";
 export const STOP_TEXT: Record<StopBy, string> = {
   owner: "the owner stopped it",
   parent: "its parent agent stopped it",
   parent_turn: "it stopped with its parent's turn",
   time_limit: "its time limit passed",
   parent_archived: "its parent session was archived",
+  hook: "a hook stopped its turn",
+  supervisor: "the supervisor stopped its turn",
+  api: "its turn was stopped through the API",
+  handoff: "its turn was stopped to move its session",
+  unknown: "its turn was stopped",
 };
 const END_TEXT: Record<string, string> = {
   refusal: "the model declined to go on",
@@ -911,7 +919,7 @@ function handback(a: AgentRecord, grouped = false) {
 function tail(parentId: string): { text: string; timers: string[] } {
   const mine = list(parentId);
   const left = mine.filter((o) => !isEnded(o) && o.type !== "reviewer").length;
-  if (left) return { text: stillRunning(left, D().engine.isHeld(parentId)), timers: [] };
+  if (left) return { text: stillRunning(left, heldWhy(parentId)), timers: [] };
   const during = (t: number) => mine.some((o) => o.created <= t && (o.ended ?? Date.now()) >= t);
   const timers = waits.list(parentId, 0).filter((w) => w.status === "active" && w.kind === "timer" && during(w.created)).map((w) => w.id);
   return { text: timers.length ? `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.` : "", timers };
@@ -1057,7 +1065,8 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // continues the turn or ends the agent (onCutTurn, onCutTurnHeld).
   if (reason === "restart" && !stopping.has(a.id)) return;
   const { engine } = D();
-  if (engine.isRunning(sessionId) || hasPending(sessionId) || redirecting.has(a.id)) return;
+  // (A turn of the owner's own message is about to start in its place: a prompt edited or sent now on its page.)
+  if (engine.isRunning(sessionId) || engine.startsNext?.(sessionId) || hasPending(sessionId) || redirecting.has(a.id)) return;
   // A message of its parent waits and no stop holds it: its turn starts by
   // itself (the next daemon starts it when this one is on its way down).
   if (!stopping.has(a.id) && !engine.isHeld(sessionId) && waitingFor(sessionId)) return;
@@ -1072,8 +1081,10 @@ export function onTurnEnd(sessionId: string, reason: string) {
     if (a.background && !isSilent(a.id)) tellPark(a, !toldOfPark(a) && !engine.isHeld(a.parent_id));
     return;
   }
-  // A turn of the child stopped from its own page is the owner's stop.
-  const by = stopping.get(a.id) ?? (reason === "interrupted" ? "owner" : undefined);
+  // A turn of the child stopped from its own page is the owner's stop; one stopped by anything else
+  // says what stopped it, and one nobody named is stopped without a name.
+  const turnBy = reason === "interrupted" ? stopperOf(sessionId) : undefined;
+  const by = stopping.get(a.id) ?? (reason === "interrupted" ? (ownerStop(turnBy) ? "owner" : turnBy && turnBy in STOP_TEXT ? (turnBy as StopBy) : "unknown") : undefined);
   stopping.delete(a.id);
   const status: AgentStatus = by ? "stopped" : reason === "error" ? "failed" : INCOMPLETE.has(reason) ? "incomplete" : "completed";
   settling.set(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
@@ -1180,7 +1191,8 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   stopping.set(id, by);
   dropPending(a.session_id);
   // The child's own turn records the same actor as its record and report.
-  if (engine.isRunning(a.session_id)) engine.interrupt(a.session_id, by);
+  // (Its queue waits with it: a message of its parent continues it, and one the owner stopped waits for the owner.)
+  if (engine.isRunning(a.session_id)) void engine.interrupt(a.session_id, by);
   else {
     // The owner's stop holds its queue also when no turn runs in it (it waits
     // on a timer): a message of its parent after that starts nothing either.

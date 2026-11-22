@@ -1,10 +1,11 @@
 import { zonedStamp } from "../core/clock.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { StoredEvent } from "../core/types.ts";
-import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw } from "./core.ts";
+import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw, stopperOf } from "./core.ts";
 import { checkZone, localZone, nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
+import { stopSays } from "../core/stoppers.ts";
 
 // Loops: a prompt that runs again in its session on an interval, a calendar
 // schedule, its own pace (the model names the next delay), or a webhook. The
@@ -47,7 +48,7 @@ export type RunRecord = {
   ended_ms?: number | null;
   ok?: boolean | null; // true only for a run that finished (outcome ok)
   // ok: finished; failed: an error; incomplete: declined, or out of steps or
-  // output; stopped: the owner stopped the turn.
+  // output; stopped: its turn was stopped (`detail` says by whom, in the words of src/core/stoppers.ts).
   outcome?: "ok" | "failed" | "incomplete" | "stopped" | null;
   detail?: string | null;
   first_seq?: number | null;
@@ -478,7 +479,8 @@ const outcomeOf = (reason: string): NonNullable<RunRecord["outcome"]> =>
 // (onCutTurnHeld).
 export function onTurnEnd(sessionId: string, reason: string) {
   if (reason === "restart") return;
-  closeRuns(sessionId, outcomeOf(reason), reason);
+  // A stopped turn says who stopped it: the owner, or something that is not the owner.
+  closeRuns(sessionId, outcomeOf(reason), reason, reason === "interrupted" ? stopSays(stopperOf(sessionId)) : undefined);
 }
 
 // The engine did not continue the cut turn: its runs did not finish, for the
