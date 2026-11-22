@@ -65,7 +65,8 @@ test("an http hook that fails blocks only when it says so", async () => {
   // Text that is not JSON, a 500, a redirect, an answer past the bound (not read whole) and a server that is not there: failed hooks, and the call goes ahead.
   for (const u of [url("/text"), url("/broken"), url("/away"), url("/huge"), "http://127.0.0.1:1/nothing-listens"]) {
     file([{ type: "http", url: u }]);
-    expect(await pre()).toEqual({ context: [], ran: 1 });
+    // The failure is named for the call it ran for (said under it on the page).
+    expect(await pre()).toEqual({ context: [], ran: 1, failed: [expect.stringMatching(/^Hook failed on PreToolUse \(/)] });
     file([{ type: "http", url: u, onFailure: "block" }]);
     expect((await pre()).block).toStartWith("a hook failed");
   }
@@ -87,9 +88,9 @@ test("an mcp_tool hook calls the server's tool with the event's values", async (
   expect((await pre()).block).toBe("the scanner refused it");
   // An error answer, or a server that cannot be reached, fails the hook and not the call.
   file([{ type: "mcp_tool", server: "scanner", tool: "broken" }]);
-  expect(await pre()).toEqual({ context: [], ran: 1 });
+  expect(await pre()).toEqual({ context: [], ran: 1, failed: ["Hook failed on PreToolUse (exit 1: it broke): scanner__broken"] });
   hookMcp.call = async () => { throw new Error("no MCP server named scanner"); };
-  expect(await pre()).toEqual({ context: [], ran: 1 });
+  expect(await pre()).toMatchObject({ context: [], ran: 1, failed: [expect.stringMatching(/^Hook failed on PreToolUse /)] });
   expect(fillInput("${a.b}", { a: { b: [1, 2] } })).toEqual([1, 2]);
 });
 

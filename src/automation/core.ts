@@ -271,10 +271,10 @@ function onWhat(kinds: string[]): string {
 }
 // What each parked agent of a session waits on: its first wait, else a command it left running, else a wake.
 export function parkedOn(parentId: string): string[] {
-  const rows = D().store.db.query<{ session_id: string; on: string | null }, [string]>(
-    "SELECT a.session_id, (SELECT w.kind FROM waits w WHERE w.session_id = a.session_id AND w.status = 'active' ORDER BY w.created LIMIT 1) AS on FROM agents a WHERE a.parent_id = ? AND a.status = 'waiting' AND a.type != 'reviewer'").all(parentId);
+  const rows = D().store.db.query<{ session_id: string; wkind: string | null }, [string]>(
+    "SELECT a.session_id, (SELECT w.kind FROM waits w WHERE w.session_id = a.session_id AND w.status = 'active' ORDER BY w.created LIMIT 1) AS wkind FROM agents a WHERE a.parent_id = ? AND a.status = 'waiting' AND a.type != 'reviewer'").all(parentId);
   const commands = new Set(liveJobs().filter((j) => j.background && running(j)).map((j) => j.sessionId));
-  return rows.map((r) => r.on ?? (commands.has(r.session_id) ? "command" : "wake"));
+  return rows.map((r) => r.wkind ?? (commands.has(r.session_id) ? "command" : "wake"));
 }
 
 // Text a model or a webhook wrote is put inside a frame it cannot close.
