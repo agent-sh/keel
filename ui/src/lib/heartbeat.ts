@@ -96,47 +96,73 @@ export function look(b: Beat, now: number, every = BEAT_MS, grace = GRACE_MS, rt
 // for good. A browser makes one socket handshake at a time to a host, so a
 // second try only waits behind the first. So the one try is given long (nine
 // seconds, then twenty-seven), which a slow link needs, and requests ask
-// beside it: a second, two and four seconds into the try and every four
-// seconds after, each given nine seconds, so one sent after the network is
-// back is answered on a slow link too. The first answer says the network is
-// back and how slow it is, and a new try is made on its word, with its bound
-// from what was measured. A link that comes back is found within four
-// seconds and its round trip, after an absence of any length; one that is
-// slow costs three or four requests that could not help, not one a second.
+// beside it, spaced by how long the absence has lasted, not by the try: one
+// a second for the first twenty seconds, where most returns are, then a
+// twentieth of the absence apart, up to ten seconds. Each is given five of
+// those gaps, between five and nine seconds: one sent after the network is
+// back is then answered over a link with two seconds each way too (three
+// seconds would not be), and no more than five are out at once, under the
+// six connections a browser makes to a host. A return is found within a
+// second in the first twenty and within ten after an absence of any length;
+// a long one usually ends with something the page acts on at once anyway (it
+// is seen again, the browser says the network changed).
 //
-// A try made on an answer is the daemon's to take: it is not given up for
-// another answer and nothing asks beside it, for nine seconds at least. (A
-// try was once replaced on every answer. A browser that has seen many
-// sockets fail holds each new one back for seconds, so every try was given
-// up a second into that wait and none ever opened: the page stayed
-// "Reconnecting" beside a daemon that answered.)
+// The first answer says the network is back and how slow it is, and a new
+// try is made on its word, with its bound from what was measured. Not in
+// place of a try that may be about to be greeted: one younger than one and a
+// half of the answer's own round trip is left alone. A try made on an answer
+// is the daemon's to take: an answer gives it up only after six seconds,
+// which is more than a browser holds a socket back. (A try was once replaced
+// on every answer. A browser that has seen many sockets fail holds each new
+// one for one to five seconds before it starts, so every try was given up a
+// second into that wait and none ever opened.) The asking goes on beside it:
+// one that died is replaced by the next answer after those six seconds.
 //
 // The daemon's machine answers and the daemon does not (it is down, starting
 // or being replaced: a try ends at once, or a request is refused). Then
 // requests ask alone, one each gap (a sixtieth of the absence, between half a
-// second and eight; a hidden page eight), and a socket is made only when one
-// is answered. Sockets that fail are what a browser counts before it holds
-// new ones back; requests it does not count, so the try made when the daemon
-// is back opens at once. A request that gets no answer at all says the
-// network went quiet: the try is made again and the asking goes on beside it.
+// second and eight), and a socket is made only when the daemon answers one.
+// Sockets that fail are what a browser counts before it holds new ones back;
+// requests it does not count, so the try made when the daemon is back opens
+// at once. A request that gets no answer at all says the network went quiet:
+// the try is made again and the asking goes on beside it. Something else that
+// answers there (a front that says 502 while the daemon is down, another
+// program on its port) is not the daemon either: the answer is the daemon's
+// only when it says so ({ok, pid}). No socket is made on such an answer; one
+// is tried once a minute all the same, in case what stands there answers a
+// request made without the page's credentials differently from its socket.
+//
+// A hidden page asks once a minute, and gives a try that long: being shown
+// again reconnects at once.
 //
 // Chrome's count: services/network/websocket_throttler.cc
 // (WebSocketPerProcessThrottler::CalculateDelay: with sixteen times more
 // failed than opened sockets in its window every new one waits one to five seconds).
-// What a request that asks beside a try is given.
-export const ASK_MS = 9_000;
-// How long the try has been out with no word before the first asks beside it; the next
-// comes as long after that as the try had been out, up to this often.
-export const ASK_AFTER_MS = 1_000;
-export const ASK_EVERY_MS = 4_000;
+// The gap between two requests beside a try: a second for this long, then this part of the absence, up to this.
+export const ASK_FAST_MS = 20_000;
+export const ASK_PART = 20;
+export const ASK_MAX_MS = 10_000;
+// What such a request is given: this many gaps, within these bounds.
+export const ASK_GAPS = 5;
+export const ASK_LIFE_MS = [5_000, 9_000] as const;
 // What a request that asks alone is given before the network is taken to say nothing.
 export const ALONE_MS = 3_000;
+// A try made on an answer is not given up for another answer before this.
+export const SURE_MS = 6_000;
+// A try is left to be greeted while it is younger than this many of the answer's round trips.
+export const YOUNG = 1.5;
 // What a try is given: the first of an absence, then each one after.
 export const SOCKET_MS = [9_000, 27_000] as const;
 export const SOCKET_MAX_MS = 60_000;
 export const RETRY_MIN_MS = 500;
 export const RETRY_MAX_MS = 8_000;
-export const retryGap = (downFor: number, hidden = false) => (hidden ? RETRY_MAX_MS : Math.min(RETRY_MAX_MS, Math.max(RETRY_MIN_MS, Math.round(downFor / 60))));
+// A hidden page's gap, and how often a socket is tried where something that is not the daemon answers.
+export const HIDDEN_MS = 60_000;
+export const OTHER_MS = 60_000;
+// The gap between two requests that ask alone (the daemon's machine answers, the daemon does not).
+export const retryGap = (downFor: number, hidden = false) => (hidden ? HIDDEN_MS : Math.min(RETRY_MAX_MS, Math.max(RETRY_MIN_MS, Math.round(downFor / 60))));
+// The gap between two requests beside a try (the network says nothing).
+export const askGap = (downFor: number, hidden = false) => (hidden ? HIDDEN_MS : downFor < ASK_FAST_MS ? 1_000 : Math.min(ASK_MAX_MS, Math.round(downFor / ASK_PART)));
 // A try's bound. `answered`: how long the request that found the daemon took (a socket's handshake is two such trips and its greeting).
 export const socketBound = (round: number, answered?: number) =>
   Math.min(SOCKET_MAX_MS, Math.max(SOCKET_MS[Math.min(round, SOCKET_MS.length - 1)]!, answered === undefined ? 0 : 4 * answered + 1_000));
@@ -147,41 +173,52 @@ export type Out = { born: number | null; open: boolean; life: number };
 // The way back in one absence. `socket.sure`: the try was made on an answer.
 // `ask`: the last request made (earlier ones may still be out: each has its own time).
 // `refused`: the daemon's machine answers and the daemon does not, so requests ask alone.
-export type Way = { socket: Out & { sure?: boolean }; ask: Out; refused: boolean };
+// `other`: the last answer there was not the daemon's.
+export type Way = { socket: Out & { sure?: boolean }; ask: Out; refused: boolean; other?: boolean };
 export const noWay = (): Way => ({ socket: { born: null, open: false, life: 0 }, ask: { born: null, open: false, life: 0 }, refused: false });
 // What to make now, and when to look again. `quiet`: the request that asked alone got no answer in its time.
 export type Step = { socket: boolean; ask: boolean; wait: number; quiet?: boolean };
-export function step(w: Way, now: number, gap: number, hidden = false): Step {
+// `downFor`: how long the absence has lasted.
+export function step(w: Way, now: number, downFor: number, hidden = false): Step {
   const s = w.socket, p = w.ask;
-  const within = (wait: number) => Math.max(50, Math.min(wait, RETRY_MAX_MS));
+  const within = (wait: number) => Math.max(50, Math.min(wait, hidden ? HIDDEN_MS : RETRY_MAX_MS));
   if (w.refused) {
+    const gap = retryGap(downFor, hidden);
     if (p.open && p.born !== null) {
       // Not refused and not answered: the network says nothing now, and a try is made.
       if (now - p.born >= p.life) return { socket: true, ask: false, wait: within(gap), quiet: true };
       return { socket: false, ask: false, wait: within(p.born + p.life - now) };
     }
+    // What answers there is not the daemon: a try all the same, once a minute.
+    if (w.other && (s.born === null || now - s.born >= OTHER_MS)) return { socket: true, ask: false, wait: within(gap) };
     const from = Math.max(s.born ?? now, p.born ?? 0) + gap;
     return now >= from ? { socket: false, ask: true, wait: within(Math.min(gap, ALONE_MS)) } : { socket: false, ask: false, wait: within(from - now) };
   }
+  const gap = askGap(downFor, hidden);
+  const life = hidden ? Math.max(s.life, HIDDEN_MS) : s.life;
   const age = s.born === null ? 0 : now - s.born;
-  const socket = s.born === null || (s.open ? age >= Math.max(s.life, gap) : age >= gap);
-  let wait = socket ? gap : s.open ? Math.max(s.life, gap) - age : gap - age;
-  let ask = false;
-  // Requests ask only beside a try that is still out and was not made on an answer.
-  if (!socket && s.open && !s.sure) {
-    const born = s.born!;
-    const last = p.born !== null && p.born >= born ? p.born : null;
-    // A hidden page asks every eight seconds.
-    const from = hidden ? (last ?? born) + RETRY_MAX_MS : last === null ? born + ASK_AFTER_MS : last + Math.min(ASK_EVERY_MS, Math.max(ASK_AFTER_MS, last - born));
-    if (now >= from) ask = true;
-    else wait = Math.min(wait, from - now);
-  }
+  const socket = s.born === null || (s.open ? age >= life : age >= RETRY_MIN_MS);
+  let wait = socket ? gap : s.open ? life - age : RETRY_MIN_MS - age;
+  // Requests ask beside the try, by the absence's age: a new try does not start them over.
+  const from = (p.born ?? now - downFor) + gap;
+  const ask = now >= from;
+  wait = Math.min(wait, ask ? gap : from - now);
   return { socket, ask, wait: within(wait) };
 }
 // What a request made now is given.
-export const askLife = (w: Way) => (w.refused ? ALONE_MS : ASK_MS);
-// A request was answered: whether a new try is made on its word. Not beside a try that was itself made on one.
-export const answerMakesTry = (w: Way) => !(w.socket.open && w.socket.sure);
+export function askLife(w: Way, downFor: number, hidden = false): number {
+  if (w.refused) return ALONE_MS;
+  return Math.min(ASK_LIFE_MS[1], Math.max(ASK_LIFE_MS[0], ASK_GAPS * askGap(downFor, hidden)));
+}
+// The daemon answered a request that took `took`: whether a new try is made on its word.
+export function answerMakesTry(w: Way, now: number, took: number): boolean {
+  const s = w.socket;
+  if (!s.open || s.born === null) return true;
+  const age = now - s.born;
+  // It may be about to be greeted: a socket needs about as long as the request did, and started no later.
+  if (age < YOUNG * took) return false;
+  return !s.sure || age >= SURE_MS;
+}
 
 // What a ping and its answer weigh on the wire, as WebSocket frames (the
 // payload, 6 bytes of header and mask up, 2 bytes of header down).

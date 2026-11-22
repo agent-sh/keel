@@ -180,7 +180,18 @@ test("after a socket that closed inside its replay the transcripts are read whol
   // A socket that never opened (the daemon is down) is no such case: the next catch-up is the light one.
   sock.onclose!();
   Socket.all.at(-1)!.onclose!(); // the try made at once is refused
-  timers.pop()!(); // the next round of tries
+  // Requests ask alone from there, a gap later: no socket is made until the daemon answers one.
+  const tried = Socket.all.length, real = Date.now;
+  Date.now = () => real() + 1000;
+  try { timers.pop()!(); } finally { Date.now = real; }
+  expect(Socket.all.length).toBe(tried);
+  // Something else on the port is not the daemon; its own answer makes the try, which is greeted.
+  expect(await answer("/api/health?link", { hello: "another program" })).toBe(true);
+  expect(Socket.all.length).toBe(tried);
+  Date.now = () => real() + 2000;
+  try { timers.pop()!(); } finally { Date.now = real; }
+  expect(await answer("/api/health?link", { ok: true, pid: 1 })).toBe(true);
+  expect(Socket.all.length).toBe(tried + 1);
   sock = Socket.all.at(-1)!;
   greet();
   await settle();

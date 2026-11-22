@@ -10,7 +10,7 @@ import { seedComposer } from "./ui.ts";
 import { servedUi } from "./hotui.ts";
 import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
-import { answerMakesTry, askLife, ASKS, BEAT_MS, GRACE_MS, HIDDEN_RESYNC_MS, look, PING, retryGap, rttOf, SLEPT_MS, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips } from "./heartbeat.ts";
+import { answerMakesTry, askGap, askLife, ASKS, BEAT_MS, GRACE_MS, HIDDEN_RESYNC_MS, look, PING, rttOf, SLEPT_MS, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips } from "./heartbeat.ts";
 
 export type ProvidersReport = {
   keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
@@ -843,7 +843,7 @@ let asked: number[] = [];
 // `sure`: the try was made on an answer.
 // `asks`: the requests still out, each with the way to give it up.
 type Try = { born: number | null; open: boolean; life: number };
-const noTries = () => ({ socket: { born: null, open: false, life: 0, round: 0 } as Try & { ws?: WebSocket; round: number; sure?: boolean }, ask: { born: null, open: false, life: 0 } as Try, asks: new Set<() => void>(), refused: false });
+const noTries = () => ({ socket: { born: null, open: false, life: 0, round: 0 } as Try & { ws?: WebSocket; round: number; sure?: boolean }, ask: { born: null, open: false, life: 0 } as Try, asks: new Set<() => void>(), refused: false, other: false });
 let trying = noTries();
 const dropAsks = () => { for (const stop of trying.asks) stop(); trying.asks.clear(); trying.ask = { ...trying.ask, open: false }; };
 let probed = 0;
@@ -915,10 +915,10 @@ function dropTries() {
 function downTick() {
   clearTimeout(downTimer);
   if (state.connected) return;
-  const now = Date.now(), away = hidden(), gap = retryGap(now - downFrom, away);
+  const now = Date.now(), away = hidden(), downFor = now - downFrom;
   // The socket that went silent may speak again (a tunnel that stalled gives it back whole).
-  if (isOpen(socket) && now - probed >= Math.max(gap, 1000)) { probed = now; ask(socket); }
-  const next = step(trying, now, gap, away);
+  if (isOpen(socket) && now - probed >= askGap(downFor, away)) { probed = now; ask(socket); }
+  const next = step(trying, now, downFor, away);
   // The request that asked alone got no answer at all: the network says nothing now.
   if (next.quiet) trying.refused = false;
   if (next.socket) {
@@ -926,15 +926,14 @@ function downTick() {
     const round = trying.socket.born !== null && trying.socket.open ? trying.socket.round + 1 : trying.socket.round;
     attempt(round, socketBound(round));
   }
-  if (next.ask) askByRequest(askLife(trying));
-  downTimer = setTimeout(downTick, step(trying, Date.now(), gap, away).wait);
+  if (next.ask) askByRequest(askLife(trying, downFor, away));
+  downTimer = setTimeout(downTick, step(trying, Date.now(), Date.now() - downFrom, away).wait);
 }
 const lookSoon = () => { clearTimeout(downTimer); downTimer = setTimeout(downTick, 50); };
 // A new socket is tried, in place of the one that was. `sure`: on the word of a request the daemon just answered.
+// (The requests that are out go on: they ask by the absence's age, not the try's.)
 function attempt(round: number, life: number, sure = false) {
   if (trying.socket.ws) abandon(trying.socket.ws);
-  // What asked beside the last try, or alone, asked before it.
-  dropAsks();
   trying.refused = false;
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   const born = Date.now();
@@ -944,15 +943,24 @@ function attempt(round: number, life: number, sure = false) {
   // says nothing (something on the way took the handshake) waits out its time
   // like one that never opened.
   ws.onmessage = (m) => { adopt(ws, Date.now() - born); onMessage(ws, m); };
-  // Ended without a word (refused, or cut before it spoke): the daemon's machine answers and the
-  // daemon does not. Requests ask alone from here, and the next try is made when one is answered.
-  ws.onclose = () => {
-    if (trying.socket.ws !== ws) return;
-    trying.socket = { ...trying.socket, ws: undefined, open: false };
-    trying.refused = true;
-    if (!state.connected) lookSoon();
-  };
+  // Ended without a word (refused, or cut before it spoke): something there answers and the
+  // daemon does not. Requests ask alone from here, and the next try is made when it answers one.
+  ws.onclose = () => { if (trying.socket.ws === ws && !state.connected) alone(); };
 }
+// The daemon's machine answers and the daemon does not: no try is left out (it would hear the
+// same, or was made into a network that is gone, and a browser makes one handshake at a time),
+// and the requests that asked beside it are given up, so the next one asks alone after the gap
+// and not after the time the last of them was given.
+function alone(other = false) {
+  if (trying.socket.ws) abandon(trying.socket.ws);
+  trying.socket = { ...trying.socket, ws: undefined, open: false };
+  dropAsks();
+  trying.refused = true;
+  trying.other = other;
+  lookSoon();
+}
+// What the daemon answers a request that asks whether it is there (src/server/app.ts, /api/health?link).
+const daemonSays = (j: unknown) => !!j && typeof j === "object" && (j as { ok?: unknown }).ok === true && typeof (j as { pid?: unknown }).pid === "number";
 // A small request that asks whether the daemon answers at all, given `life`.
 function askByRequest(life: number) {
   const cut = new AbortController();
@@ -967,32 +975,32 @@ function askByRequest(life: number) {
   // Without credentials (the route needs none): the browser keeps such requests apart from the
   // page's own, and the daemon closes each one's connection, so every one is a new connection.
   // One that went into a connection kept from before the loss would wait there for nothing.
-  fetch("/api/health?link", { cache: "no-store", credentials: "omit", signal: cut.signal }).then((r) => {
-    if (!live()) return;
-    mine.open = false;
-    stop();
-    if (r.ok) return answered(Date.now() - sent);
-    // Something there answers, and not as the daemon does (what stands before it, while it is
-    // down): a try says which, when none is out.
-    if (!trying.socket.open) { attempt(0, socketBound(0)); lookSoon(); }
-  }, () => {
-    if (!live()) return;
-    mine.open = false;
-    stop();
-    // Refused: the daemon's machine answers and the daemon does not. The try that is out will
-    // hear the same, or was made into a network that is gone: requests ask alone from here.
-    if (trying.socket.ws) abandon(trying.socket.ws);
-    trying.socket = { ...trying.socket, ws: undefined, open: false };
-    dropAsks();
-    trying.refused = true;
-    lookSoon();
-  });
+  fetch("/api/health?link", { cache: "no-store", credentials: "omit", signal: cut.signal })
+    // The daemon's own answer, or something else's (a front that stands before it, another program on its port).
+    .then((r) => (r.ok ? r.json().then(daemonSays, () => false) : false))
+    .then((daemon) => {
+      if (!live()) return;
+      mine.open = false;
+      stop();
+      if (daemon) return answered(Date.now() - sent);
+      // Not the daemon: no socket is made on that word (it would fail, and a browser counts those).
+      alone(true);
+    }, () => {
+      if (!live()) return;
+      mine.open = false;
+      stop();
+      // Refused: the daemon's machine answers and the daemon does not.
+      alone();
+    });
 }
 // The daemon answered a request: the network is back, this slow. The try that is out may be dead
 // for good (it was made into the silence): a new one is made on this answer, with its bound from
-// what was measured. Once: a try made on an answer is not given up for the next one.
+// what was measured. Not in place of a try that may be about to be greeted, and not, for six
+// seconds, of one that was itself made on an answer (heartbeat.ts).
 function answered(took: number) {
-  if (state.connected || !answerMakesTry(trying)) return;
+  if (state.connected) return;
+  trying.other = false;
+  if (!answerMakesTry(trying, Date.now(), took)) return;
   attempt(0, socketBound(0, took), true);
   lookSoon();
 }
