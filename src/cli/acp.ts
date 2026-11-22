@@ -10,7 +10,8 @@ export function daemonApi(base: string): DaemonApi {
   const call = async (method: string, path: string, body?: unknown) => {
     const r = await fetch(base + path, { method, headers: { "content-type": "application/json", ...authHeaders() }, body: body === undefined ? undefined : JSON.stringify(body) });
     const b = (await r.json().catch(() => ({}))) as any;
-    if (!r.ok) throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { code: r.status === 404 ? -32002 : -32603 });
+    // (`held`: an approval's answer was not taken and its card still waits.)
+    if (!r.ok) throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { code: r.status === 404 ? -32002 : -32603, ...(r.status === 409 && Array.isArray(b.hold) ? { held: true } : {}) });
     return b;
   };
   return {

@@ -147,6 +147,38 @@ test("a prompt's live reply: missed text sent, the turn's end said as it was", a
   expect(failed.answer.error.message).toBe("fixture provider unavailable");
 });
 
+test("a card's request carries the whole text when the form cannot be read, and an answer the daemon holds is said", async () => {
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const f = fixture([s], {});
+  void call(f.bridge, f.out, "session/prompt", { sessionId: "s", prompt: [{ type: "text", text: "go" }] });
+  await Bun.sleep(0);
+  const command = Array.from({ length: 12 }, (_, i) => `echo row ${i + 1}`).join("\n");
+  const card = (id: string) => ({ id, session_id: "s", call_id: `c-${id}`, tool: "Bash", kind: "shell", state: "pending", summary: command, input: { command }, risk: "low", suggest: [] });
+  const asked = async (id: string) => {
+    f.frame({ t: "feature", name: "approval", data: card(id) });
+    await Bun.sleep(5);
+    return f.out.findLast((m) => m.method === "session/request_permission")!;
+  };
+  // The fixture's daemon has no such route: the form is made from the card the stream carried.
+  const first = await asked("a1");
+  expect(f.calls).toContain("GET /api/sessions/s/approvals/a1");
+  expect(first.params.toolCall.title).toBe("Bash: echo row 1 ... (12 lines: the whole request is below)");
+  expect(first.params.toolCall.content.at(-1).content.text).toContain("echo row 12");
+  await f.bridge.handle({ jsonrpc: "2.0", id: first.id, result: { outcome: { outcome: "selected", optionId: "once" } } });
+  await Bun.sleep(5);
+  expect(f.d.sent.at(-1)).toEqual({ method: "POST", path: "/api/sessions/s/approvals/a1", body: { choice: "once", reason: undefined, via: "acp", seen: "whole" } });
+
+  // The daemon holds the answer (409 with `hold`): the editor is told, and the call is not shown as running.
+  f.d.post = (_m, path) => { if (path.endsWith("/approvals/a2")) throw Object.assign(new Error("Open the request to read it first: it is 12 lines long."), { held: true }); };
+  const second = await asked("a2");
+  const before = f.updates("s").length;
+  await f.bridge.handle({ jsonrpc: "2.0", id: second.id, result: { outcome: { outcome: "selected", optionId: "once" } } });
+  await Bun.sleep(5);
+  const after = f.updates("s").slice(before);
+  expect(after.filter((u: any) => u.sessionUpdate === "tool_call_update").map((u: any) => u.status)).toEqual(["in_progress", "pending"]);
+  expect(after.find((u: any) => u.sessionUpdate === "agent_message_chunk").content.text).toBe("Keel did not take that answer: Open the request to read it first: it is 12 lines long. The request still waits: answer it in the workbench.\n\n");
+});
+
 test("overlapping prompts each end once, at the end of the turn that took them", async () => {
   const f = fixture([{ id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 }], {});
   const stored: ((r: any) => void)[] = [];

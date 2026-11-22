@@ -13,7 +13,8 @@ import { contextTokens } from "../engine/compact.ts";
 import { questions } from "../../ui/src/lib/tools.ts";
 import { lineage } from "../core/tree.ts";
 import type { StoredEvent } from "../core/types.ts";
-import { cardLines, type CardForm } from "../safety/card.ts";
+import { cardForm, cardLines, type CardForm } from "../safety/card.ts";
+import type { Approval } from "../safety/gate.ts";
 import { spelled } from "../safety/chars.ts";
 
 export const PROTOCOL_VERSION = 1;
@@ -711,10 +712,11 @@ export class AcpBridge {
   // stays answerable in the workbench too; whichever answers first wins.
   private async ask(a: Json) {
     const name = this.tools.get(a.call_id) ?? a.tool;
-    // The card as the daemon gives it to every client. Without it (a daemon
-    // from before the form) the request is the summary, and no allow says the
-    // text was shown: the daemon then takes one only for a short request.
-    const form: CardForm | undefined = await this.daemon.get(`/api/sessions/${a.session_id}/approvals/${a.id}`).then((r) => r?.card, () => undefined);
+    // The card as the daemon gives it to every client. When that read fails
+    // (the daemon is busy, or is one from before the form), the form is made
+    // here from the card the stream carried: the same function, without the
+    // machine's name. The request then still carries the whole text.
+    const form: CardForm = await this.daemon.get(`/api/sessions/${a.session_id}/approvals/${a.id}`).then((r) => r?.card as CardForm | undefined, () => undefined) ?? cardForm(a as Approval);
     const msg = await this.request("session/request_permission", permissionRequest(a, name, form), a.id);
     if (msg.answered) return; // the workbench answered first
     this.asking.delete(a.id);
@@ -722,8 +724,17 @@ export class AcpBridge {
     const picked = outcome?.outcome === "selected" ? outcome.optionId : "deny";
     const choice = ["once", "always", "deny"].includes(picked) ? picked : "deny";
     if (choice !== "deny") this.notify(a.session_id, { sessionUpdate: "tool_call_update", toolCallId: a.call_id, status: "in_progress" });
+    // (`seen`: the request carried the whole text. What the editor drew of it is not known here.)
     await this.daemon
-      .send("POST", `/api/sessions/${a.session_id}/approvals/${a.id}`, { choice, reason: outcome?.outcome === "cancelled" ? "the editor cancelled the request" : undefined, via: "acp", ...(form && choice !== "deny" ? { seen: "whole" } : {}) })
-      .catch((e) => this.log(`approval ${a.id}: ${(e as Error).message}`)); // answered in the workbench first
+      .send("POST", `/api/sessions/${a.session_id}/approvals/${a.id}`, { choice, reason: outcome?.outcome === "cancelled" ? "the editor cancelled the request" : undefined, via: "acp", ...(choice !== "deny" ? { seen: "whole" } : {}) })
+      .catch((e) => {
+        this.log(`approval ${a.id}: ${(e as Error).message}`);
+        // Held: the answer was not taken and the card still waits. The editor is told, and where to answer it.
+        if ((e as { held?: boolean }).held) {
+          this.notify(a.session_id, { sessionUpdate: "tool_call_update", toolCallId: a.call_id, status: "pending" });
+          this.notify(a.session_id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Keel did not take that answer: ${(e as Error).message} The request still waits: answer it in the workbench.\n\n` } });
+        }
+        // (Any other refusal: it was answered in the workbench first.)
+      });
   }
 }
