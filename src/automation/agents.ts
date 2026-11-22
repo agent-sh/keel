@@ -1108,6 +1108,10 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   const did = row.output_schema && status === "completed" ? "" : didLine(got.events);
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
+  // The report is checked against its parent's history and sent into it: a
+  // parent that is not in memory (nobody read it while its agents worked, or
+  // the daemon restarted) is brought in first, off the loop.
+  await D().store.warm(a.parent_id, false).catch(() => {});
   result += work;
   if (work && !/\(The agent changed no files; its worktree[^)]* was removed\.\)\s*$/.test(work)) cause = "";
   const silent = !!defOf(a.id)?.silent;
@@ -1274,7 +1278,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
       // The same message again (its sender's key was seen): the agent stays as it is.
       if (key && engine.hasInput(a!.session_id, key)) return sent(engine.message(a!.session_id, text, meta, opts));
       cutCalls.delete(id); // new work, in the background: nothing holds its report
-      const last = store.events(a!.session_id).at(-1)?.seq ?? 0;
+      const last = store.lastSeq(a!.session_id);
       // (Each task has a report of its own: two started with no event between them do not share its id.)
       update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null });
       release?.(); // the running row now occupies the slot

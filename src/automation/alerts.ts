@@ -583,7 +583,7 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   const s = store.session(sessionId);
   if (!s || s.archived) return;
   const title = s.title || "Session";
-  const all = store.events(sessionId, Math.max(0, (store.events(sessionId).at(-1)?.seq ?? 0) - 200));
+  const all = store.events(sessionId, Math.max(0, store.lastSeq(sessionId) - 200));
   const start = all.findLastIndex((e) => e.kind === "turn_start");
   const evs = start >= 0 ? all.slice(start) : all;
   if (reason === "error") {

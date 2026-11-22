@@ -89,6 +89,8 @@ test("a long turn is followed to its end without parsing the session", () => {
     for (let i = 0; i < 1100; i++) t.add("assistant", { blocks: [] });
     const end = t.add("turn_end", { reason: "max_steps" });
     t.add("user", { text: "after" });
+    // (As after a start: the session is not in memory. One made in this process holds what was appended to it.)
+    (t.store as any).forget(t.s.id);
     const receipt = turnReceipt(t.store, t.tracer, start.id)!;
     expect(receipt.inputs).toEqual([{ event_id: first.id, origin: "owner", queue_id: null }]);
     expect(receipt.end).toMatchObject({ event_id: end.id, reason: "max_steps" });

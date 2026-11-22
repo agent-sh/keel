@@ -362,6 +362,7 @@ test("idle compaction prepares while warm and applies when the cache went cold",
   store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
   // The last cached reply was 55 minutes ago: the hour is nearly over, the summary is due.
   store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [Date.now() - 55 * 60_000, s.id]);
+  (store as any).forget(s.id); // (changed in the table behind the store: read again from there)
   const asked: any[] = [];
   let answered!: () => void;
   const summarized = new Promise<void>((r) => (answered = r));
@@ -451,6 +452,7 @@ test("an idle preparation made obsolete while it is written is stopped and store
     const first = store.append(s.id, "user", { text: "read the big file" });
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
     store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [Date.now() - 55 * 60_000, s.id]);
+    (store as any).forget(s.id); // (changed in the table behind the store: read again from there)
     arrived = Promise.withResolvers<void>();
     (engine as any).scheduleIdle(s.id, await (engine as any).step(store.session(s.id), "p:m"));
     await arrived.promise;

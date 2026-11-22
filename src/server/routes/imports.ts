@@ -68,7 +68,7 @@ export const importRoutes: RouteModule = (deps) => {
 
   // What an update appended to a copy goes to the pages that show it: the
   // copy's last event before the update, then every event after it.
-  const lastSeq = (id?: string) => (id ? store.events(id).at(-1)?.seq ?? 0 : 0);
+  const lastSeq = (id?: string) => (id ? store.lastSeq(id) : 0);
   const emitGained = (id: string, after: number) => {
     for (const e of store.events(id, after)) bus.emit({ t: "event", event: e });
   };

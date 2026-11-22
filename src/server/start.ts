@@ -145,6 +145,23 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
       // Every cut turn is decided: one that nobody settled went on by other means when its session has a newer turn.
       .then(() => restarts?.finish((id, cut) => wentOn(store, engine, id, cut.turn_event)))
       .catch((e) => errors.capture("server", e, { at: "restart record" }));
+  }
+  // From here the loop serves: a session read whole on it holds everyone, and is counted as that
+  // (Store.coldReads). What the start read before this, the recovery's first reads included, held nobody.
+  store.serving = true;
+  if (!opts.client) {
+    // The sessions used in the last hour have their rows brought into memory, off the loop and one
+    // after another: after a start nothing is, and the first reader that cannot wait (a report sent
+    // into a session, a hook at a turn's end) would read its session whole where the loop waits.
+    void during("the start's pass bringing the rows of sessions used in the last hour into memory", (async () => {
+      const recent = store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE archived = 0 AND updated >= ? ORDER BY updated DESC LIMIT 200").all(Date.now() - 3_600_000);
+      for (const { id } of recent) {
+        const kept = store.keptEvents();
+        if (kept.bytes > kept.budget / 2) break;
+        await store.warm(id, false);
+        await new Promise((r) => setImmediate(r));
+      }
+    })()).catch((e) => errors.capture("server", e, { at: "warming recent sessions" }));
     // It reads the context of every session used in the last hour, an await a session.
     void providers.models().then(() => during("the start's pass over the sessions used in the last hour (idle compaction)", engine.resumeIdle())).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
   }

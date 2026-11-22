@@ -396,7 +396,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   setFlags(id: string, patch: Partial<Flags>): Flags | { error: string } {
     const now = this.flags(id);
     // Fixed once the first message is sent: what the model saw stays what it saw.
-    if (patch.use_memory !== undefined && patch.use_memory !== now.use_memory && this.store.events(id).some((e) => e.kind === "user"))
+    if (patch.use_memory !== undefined && patch.use_memory !== now.use_memory && this.store.hasKind(id, "user"))
       return { error: "memory use is fixed once the first message is sent" };
     const next = { ...now, ...patch };
     this.store.db

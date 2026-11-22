@@ -317,7 +317,7 @@ export class Resumes {
       const messages = r.read.events.slice(prior.items).filter((e) => e.kind === "user" || e.kind === "assistant").length;
       return { action: "opened" as const, session: this.d.store.session(prior.session_id)!, imported_events: 0, read: r.read, gap: { messages, transcript: `${m.name}:${f.path}` } };
     }
-    const seq = prior ? (this.d.store.events(prior.session_id).at(-1)?.seq ?? 0) : 0;
+    const seq = prior ? this.d.store.lastSeq(prior.session_id) : 0;
     let out;
     try {
       out = await this.imports.import(f, { mode: o.mode ?? (prior ? "update" : undefined), model, workspace, title: o.title, from: { machine: m.id, read: r.read } });

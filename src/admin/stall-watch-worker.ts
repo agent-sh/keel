@@ -29,7 +29,7 @@ const DENSE = 300;
 // What is read while the loop is well, so a pause of the whole process can be told from a wait for a processor: this often.
 const BASE_MS = 10_000;
 
-type Started = { beat: SharedArrayBuffer; stmt?: SharedArrayBuffer; dirs: Dirs; arch: Arch };
+type Started = { beat: SharedArrayBuffer; stmt?: SharedArrayBuffer; ask?: SharedArrayBuffer; dirs: Dirs; arch: Arch };
 type Asked = { ask: number; window_ms: number; ms: number };
 type Episode = { ep: number; t0: number; t1: number; around: Around; throttled0?: number };
 
@@ -37,6 +37,9 @@ let beat: Int32Array | undefined;
 // The statement the store's connection is in (src/core/statement-label.ts): its label's number, and the labels by number.
 let stmt: Int32Array | undefined;
 const labels: string[] = [];
+// Who asked for the read the loop is in, when the store says (src/core/asker.ts): the same way.
+let ask: Int32Array | undefined;
+const askers: string[] = [];
 let dirs: Dirs = { state: "", config: "" };
 let arch: Arch = "x64";
 // On Linux a process's first thread has the process's own id.
@@ -123,6 +126,8 @@ function sample(t: number, ep: number): Sample {
   if (!s) throw new Error("the main thread's stat or schedstat under /proc cannot be read");
   const id = stmt ? Atomics.load(stmt, 0) : 0;
   if (id) s.stmt = labels[id] ?? "a statement of the store";
+  const who = ask ? Atomics.load(ask, 0) : 0;
+  if (id && who) s.stmt += `, asked by ${askers[who] ?? "a path with no name"}`;
   return s;
 }
 
@@ -232,12 +237,14 @@ const guard = (f: () => void) => {
 let timer: ReturnType<typeof setInterval> | undefined;
 
 self.onmessage = (ev: MessageEvent) => {
-  const m = ev.data as { start: Started } | { label: [number, string] } | Asked;
+  const m = ev.data as { start: Started } | { label: [number, string] } | { asker: [number, string] } | Asked;
   if ("label" in m) { labels[m.label[0]] = m.label[1]; return; }
+  if ("asker" in m) { askers[m.asker[0]] = m.asker[1]; return; }
   if ("start" in m) {
     guard(() => {
       beat = new Int32Array(m.start.beat);
       if (m.start.stmt) stmt = new Int32Array(m.start.stmt);
+      if (m.start.ask) ask = new Int32Array(m.start.ask);
       dirs = m.start.dirs;
       arch = m.start.arch;
       unit = unitDir();

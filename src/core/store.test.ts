@@ -5,7 +5,7 @@ import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { IDLE_KEPT_MS, Store } from "./store.ts";
+import { BARE_KEPT_MS, IDLE_KEPT_MS, Store } from "./store.ts";
 
 // These tests write a database of their own to disk; under a disk stall of a
 // shared machine a write waits seconds, and the 5 s default was passed in
@@ -87,6 +87,8 @@ test("a step of a working session reads nothing again, however many other sessio
   // Twelve sessions with a history, each in a turn.
   const ids = Array.from({ length: 12 }, () => long(store, 200).id);
   for (const id of ids) store.updateSession(id, { phase: "working" });
+  // (As after a start: nothing of them is in memory. A session made in this process holds what was appended to it.)
+  for (const id of ids) (store as any).forget(id);
   for (const id of ids) store.lineage(id);
   const parse = spyOn(JSON, "parse");
   const { reads, stop } = tableReads(store);
@@ -156,12 +158,13 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   expect([runs(w), runs(a)]).toEqual([0, 0]);
   expect(bodies(a)).toEqual(want);
   expect(runs(a)).toBe(5);
-  // The working session's bodies do not fit beside the idle one's: the idle session goes, whole.
+  // The working session's bodies do not fit beside the idle one's: the idle session's bodies go (as many as it takes), and its events stay.
   expect(bodies(w)).toEqual(want);
-  expect(held()).toEqual([w]);
-  expect(runs(w)).toBe(5);
+  expect(held()).toEqual([a, w]);
+  expect([runs(a) < 5, runs(w)]).toEqual([true, 5]);
   within();
-  // Two working sessions that do not fit together: both stay, and the bodies read longest ago go.
+  // Two working sessions that do not fit together: the idle session goes whole before a working one loses a body.
+  // Both working ones stay, and the bodies read longest ago go.
   expect(bodies(v)).toEqual(want);
   expect(held()).toEqual([w, v]);
   expect(runs(v)).toBeGreaterThanOrEqual(4);
@@ -186,21 +189,39 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   within();
   // An event handed out before its session was dropped still reads its body, from the table.
   const old = store.lineage(c);
-  expect(held()).toEqual([v, w, c]);
-  store.updateSession(c, { phase: "working" });
-  for (const k of ((store as any).kept as Map<string, { at: number }>).values()) k.at -= IDLE_KEPT_MS;
-  store.updateSession(c, { phase: "idle" });
-  // Unread for the idle time: an idle session goes, the working ones stay.
+  expect(old.slice(-64).map((e) => (e.data as { i: number }).i)).toEqual(want.slice(-64));
+  expect([held(), runs(c)]).toEqual([[v, w, c], 1]);
+  const age = (ms: number) => { for (const k of ((store as any).kept as Map<string, { at: number }>).values()) k.at -= ms; };
+  // Unread for the idle time: an idle session gives its bodies back and keeps its events; the working ones keep both.
+  const had = { v: runs(v), w: runs(w) };
+  age(IDLE_KEPT_MS);
   (store as any).sweep();
-  expect(held()).toEqual([v, w]);
+  expect([held(), runs(c), runs(v), runs(w)]).toEqual([[v, w, c], 0, had.v, had.w]);
+  // Read by anyone meanwhile, a session stays: a session others keep reading is never read in again.
+  age(BARE_KEPT_MS - IDLE_KEPT_MS - 1000);
+  expect(store.lineage(c).length).toBe(320);
+  age(2000);
+  (store as any).sweep();
+  // (The working ones stay too: a turn reads its session next, however long it sat in one call.)
+  expect(held()).toEqual([v, w, c]);
+  store.updateSession(v, { phase: "idle" });
+  store.updateSession(w, { phase: "idle" });
+  (store as any).sweep();
+  expect(held()).toEqual([c]);
+  // Unread by anyone for the long time: it goes whole, and what was handed out of it reads from the table.
+  age(BARE_KEPT_MS);
+  (store as any).sweep();
+  expect(held()).toEqual([]);
   expect(old.map((e) => (e.data as { i: number }).i)).toEqual(want);
-  expect(held()).toEqual([v, w]);
+  expect(held()).toEqual([]);
+  store.lineage(v);
+  store.lineage(w);
   // A deleted session is not kept, and what was handed out of it says its events are gone.
   const gone = store.lineage(v);
   store.deleteSession(v);
   store.deleteSession(w);
   expect(() => gone[0]!.data).toThrow(/not stored/);
-  expect(store.keptEvents()).toEqual({ sessions: 0, bytes: 0, budget: 1.2e6 });
+  expect(store.keptEvents()).toMatchObject({ sessions: 0, bytes: 0, budget: 1.2e6 });
   expect((store as any).sweeper).toBeUndefined();
 });
 

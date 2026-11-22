@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
 import type { Bus } from "../core/bus.ts";
+import { asAsker } from "../core/asker.ts";
 import { errorScope, type ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
@@ -930,7 +931,7 @@ export class Engine {
   }
 
   private start(id: string) {
-    errorScope.run({ session: id }, () => this.startTurn(id));
+    errorScope.run({ session: id }, () => asAsker("a turn", () => this.startTurn(id)));
   }
 
   // A turn that failed because the provider asked for a long wait continues
@@ -2661,6 +2662,15 @@ export class Engine {
   // card waits do not grow the context.
   // True when the branch ends in a cut turn and now has its restart message.
   private acceptRestart(id: string): boolean {
+    // Asked at every input (a prompt, a report, a wake), and the answer is
+    // no for all but a session a restart cut: the branch's last event says
+    // so, and it is read by itself when the session is not in memory. An
+    // agent's report into a long session nobody has open would otherwise
+    // read the whole of it here, where the loop waits.
+    if (!this.store.isKept(id)) {
+      const last = this.store.headEvent(id);
+      if (last?.kind !== "turn_end" || last.data.reason !== "restart") return false;
+    }
     const line = this.lineage(id);
     const end = line.at(-1);
     if (end?.kind !== "turn_end" || end.data.reason !== "restart") return false;

@@ -593,10 +593,10 @@ const freePort = () => {
 // and started again. Every start's output is kept, and each wait is on what
 // the daemon itself does (its process, its lock, what it says of its drain),
 // so a start that fails says why at once and a slow one is waited for.
-async function restartable(state: string) {
+async function restartable(state: string, more: Record<string, string> = {}) {
   const port = freePort();
   const url = `http://127.0.0.1:${port}`;
-  const env = { ...ENV, KEEL_DRAIN_MS: "300", KEEL_RESUME_AT_ONCE: "1" };
+  const env = { ...ENV, KEEL_DRAIN_MS: "300", KEEL_RESUME_AT_ONCE: "1", ...more };
   const logs = `${state}-logs`;
   mkdirSync(logs, { recursive: true });
   let log = "", starts = 0, drained: unknown;
@@ -1482,4 +1482,64 @@ describe("a backup made and restored by the binary", () => {
       }
     } finally { d.kill("SIGTERM"); await d.exited; }
   }, 90_000);
+});
+
+// A session that is not in memory is brought in off the loop before anyone
+// reads it. Read whole where the loop waits, a session of tens of thousands
+// of events held every other session for seconds on a busy disk (a
+// coordinator its agents report to, with nobody at its page: given back
+// after its idle time, or cold after a restart). The daemon counts each
+// whole-session read made on the loop, with who asked: under what a daemon
+// does all day, the count stays at zero.
+describe("a session out of memory is never read whole on the loop", () => {
+  test("agents report into a coordinator nobody reads, views and pages read it, the daemon restarts: no such read", async () => {
+    // (A session's rows are given back after a second and a half unread here, not an hour.)
+    const d = await restartable(join(SCRATCH, "state-cold-reads"), { KEEL_EVENTS_IDLE_MS: "50" });
+    const cold = async () => (await d.api("/api/resources")).daemon.kept_events.cold_reads as { n: number; rows: number; by: { who: string; n: number; rows: number }[] };
+    const put = (path: string, body: unknown) => fetch(d.url + path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const idle = async (id: string) => {
+      for (let i = 0; i < 600; i++) { const st = await d.api(`/api/cli/state/${id}`); if (!st.running && (st.queue === 0 || st.held)) return; await Bun.sleep(50); }
+      throw new Error(`${id} did not come to rest`);
+    };
+    const calls = (...c: [string, unknown][]) => `script:calls ${JSON.stringify(c.map(([name, input]) => ({ name, input })))}`;
+    const agents = (seconds: number, n: number) => calls(...Array.from({ length: n }, (_, k) => ["spawn_agent", { message: `Part ${k + 1}\n${calls(["Bash", { command: `sleep ${seconds}` }])}`, isolation: "none" }] as [string, unknown]));
+    try {
+      await put("/api/permissions/settings", { default_mode: "full-auto" });
+      const coordinator = (await d.api("/api/sessions", { title: "Coordinator" })).session.id as string;
+      const other = (await d.api("/api/sessions", { title: "Another session" })).session.id as string;
+      for (const id of [coordinator, other]) { await d.api(`/api/sessions/${id}/messages`, { text: "script:render please" }); await idle(id); }
+      // What a page and the owner's other views ask, each of a session that may be out of memory.
+      const views = async () => {
+        const paths = [`/api/sessions/${coordinator}?page=30`, `/api/sessions/${coordinator}/agents`, `/api/sessions/${coordinator}/turns`, `/api/sessions/${coordinator}/checkpoints`,
+          `/api/sessions/${coordinator}/last-call`, `/api/sessions/${coordinator}/permissions`, `/api/sessions/${coordinator}/branches`, `/api/sessions/${other}`, `/api/sessions/${other}/turns`,
+          "/api/state", "/api/activity", "/api/activity/sessions", "/api/overview", "/api/alerts", "/api/waits", "/api/agents", "/api/stuck", "/api/search?q=render", "/api/sessions"];
+        for (const p of paths) await fetch(d.url + p).then((r) => r.arrayBuffer());
+      };
+      // Agents work past the time their coordinator's rows are kept; nothing reads it meanwhile. Each report finds it out of memory.
+      await d.api(`/api/sessions/${coordinator}/messages`, { text: agents(3, 3) });
+      await Bun.sleep(6_000);
+      await idle(coordinator);
+      expect((await d.api(`/api/sessions/${coordinator}`)).events.filter((e: any) => e.kind === "user" && /Part \d/.test(JSON.stringify(e.data))).length).toBeGreaterThanOrEqual(1);
+      // Given back again, then read by every view.
+      await Bun.sleep(2_500);
+      await views();
+      const first = await cold();
+      // A restart with agents at work: everything is out of memory, their cut turns go on, and their reports come in.
+      await d.api(`/api/sessions/${coordinator}/messages`, { text: agents(4, 2) });
+      await Bun.sleep(1_000);
+      await d.graceful();
+      await Bun.sleep(7_000);
+      await idle(coordinator);
+      await views();
+      // And a prompt of the owner's to a session nothing has read since the start.
+      await Bun.sleep(2_500);
+      await d.api(`/api/sessions/${other}/messages`, { text: "script:render please" });
+      await idle(other);
+      // (Both daemons' counts, each with who asked: one line says where a read came from.)
+      const brief = (c: Awaited<ReturnType<typeof cold>>) => ({ n: c.n, rows: c.rows, by: c.by.map((b) => `${b.n} of ${b.rows} rows: ${b.who}`) });
+      expect({ before_the_restart: brief(first), after_it: brief(await cold()) }).toEqual({ before_the_restart: { n: 0, rows: 0, by: [] }, after_it: { n: 0, rows: 0, by: [] } });
+    } finally {
+      await d.stop();
+    }
+  }, 120_000);
 });

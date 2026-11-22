@@ -30,6 +30,7 @@
 // write lock then says which query it was.
 // Bun's profiler (node:inspector) samples the thread that starts it, and a
 // held loop cannot start one.
+import { askerCell, askerLabels } from "../core/asker.ts";
 import { realOf } from "../core/paths.ts";
 import { type Arch, type Cause, type Dirs, STOPPED, unknown } from "./stall-cause.ts";
 import { dropBeat, shareBeat } from "./stall.ts";
@@ -108,9 +109,12 @@ export class StallWatch {
     this.worker = w;
     shareBeat((this.cells = new Int32Array(cells)));
     // A descriptor's link under /proc is a real path: the folders are compared as where their links land.
-    w.postMessage({ start: { beat: cells, stmt: statementCell.buffer, dirs: { state: realOf(this.dirs.state), config: realOf(this.dirs.config) }, arch: process.arch as Arch } });
+    w.postMessage({ start: { beat: cells, stmt: statementCell.buffer, ask: askerCell.buffer, dirs: { state: realOf(this.dirs.state), config: realOf(this.dirs.config) }, arch: process.arch as Arch } });
     // The labels of the store's statements, as they are made: a sample says which statement the loop was in.
-    this.unlabel = onLabels((id, text) => { try { w.postMessage({ label: [id, text] }); } catch {} });
+    const unlabel = onLabels((id, text) => { try { w.postMessage({ label: [id, text] }); } catch {} });
+    // And of who asked for a read that holds the loop (src/core/asker.ts): the sample says that too.
+    const unask = askerLabels((id, text) => { try { w.postMessage({ asker: [id, text] }); } catch {} });
+    this.unlabel = () => { unlabel(); unask(); };
     process.on("SIGCONT", this.onCont);
   }
 

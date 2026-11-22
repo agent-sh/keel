@@ -47,7 +47,7 @@ export const integrationRoutes: RouteModule = (deps) => {
     fields: ["use_memory", "feed_memory"],
     check(s, b) {
       for (const k of ["use_memory", "feed_memory"]) if (b[k] !== undefined && typeof b[k] !== "boolean") throw Object.assign(new Error(`${k} is true or false`), { status: 400 });
-      if (b.use_memory !== undefined && b.use_memory !== tacit.flags(s.id).use_memory && store.events(s.id).some((e) => e.kind === "user"))
+      if (b.use_memory !== undefined && b.use_memory !== tacit.flags(s.id).use_memory && store.hasKind(s.id, "user"))
         throw Object.assign(new Error("memory use is fixed once the first message is sent"), { status: 409 });
     },
     apply(s, b) {

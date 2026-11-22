@@ -5,6 +5,7 @@ import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEven
 import { addUsage, emptyUsage } from "./types.ts";
 import { totalmem } from "node:os";
 import { forgetSession } from "./session-map.ts";
+import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
 import { holdStore, storePath } from "./store-files.ts";
 
@@ -166,9 +167,25 @@ export function eventsBudget(): number {
   const limit = Number((process as { constrainedMemory?: () => number }).constrainedMemory?.()) || Infinity;
   return Math.min(512e6, Math.max(64e6, Math.min(totalmem(), limit) / 32));
 }
-// A session no turn runs in gives its events back after this long unread:
-// the next read brings them back, once.
-export const IDLE_KEPT_MS = 120_000;
+// What a session keeps in memory, and for how long.
+// - The bodies it read: an idle session gives them back after IDLE_KEPT_MS
+//   unread (a working one after fifteen times that: a turn inside one long
+//   tool call reads them again when the call ends). They are most of what a
+//   session costs: BODY_COST times the stored text.
+// - Its events without their bodies (the rows every reader walks: a
+//   branch, a count, the last event): for as long as anything reads the
+//   session, and BARE_KEPT_MS after its last read. They cost BARE_COST an
+//   event (15 MB for a session of 60,000), and bringing them back is a read
+//   of the whole session's index, on the loop when the reader cannot wait.
+//   A session others keep reading (a coordinator its agents report to every
+//   few seconds, with nobody at its page) is therefore never given back
+//   and read again; one that nobody has read for an hour is.
+// Both are within the budget (eventsBudget): when it is passed, bodies go
+// before rows, and idle sessions before working ones (trim).
+// KEEL_EVENTS_IDLE_MS sets the first, and the second stays thirty times it
+// (a test of what is read when a session comes back sets it short).
+export const IDLE_KEPT_MS = Number(process.env.KEEL_EVENTS_IDLE_MS) > 0 ? Number(process.env.KEEL_EVENTS_IDLE_MS) : 120_000;
+export const BARE_KEPT_MS = 30 * IDLE_KEPT_MS;
 
 // Dropping at least this much (as charged) is worth asking the collector for.
 const GIVE_BACK_BYTES = 8e6;
@@ -176,7 +193,10 @@ const GIVE_BACK_BYTES = 8e6;
 const collect = (whole: boolean) => (globalThis as { Bun?: { gc(whole: boolean): void } }).Bun?.gc(whole);
 
 const pause = () => new Promise<void>((r) => setImmediate(r));
+// KEEL_TRACE_COLD=1: each whole-session read made on the loop is a line of the log, with who asked; =stack: and its call stack.
+const TRACE_COLD = process.env.KEEL_TRACE_COLD;
 
+export type ColdReads = { n: number; rows: number; ms: number; by: { who: string; n: number; rows: number; ms: number }[] };
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
 function rowToSession(r: SessionRow): Session {
@@ -288,6 +308,21 @@ export class Store {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS errors_fp ON errors(fingerprint)");
+    // A session's events without their bodies are read from an index that
+    // holds exactly those columns. Without it the read walks the table's
+    // rows, where each event's body lies before its time: every page of the
+    // session is read to bring back five small columns (134 MB for a session
+    // of 50,000 events, against 7 MB from the index; 3.9 s against 0.16 s
+    // with the file's pages not in memory). It costs about 130 bytes an event
+    // on disk and one more page written with an append. A store from before
+    // it has it built once, at this start, in one pass over the events.
+    if (!this.db.query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'events_bare'").get()) {
+      const n = this.db.query<{ n: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS n FROM events").get()!.n;
+      const t0 = performance.now();
+      if (n > 50_000) console.log(`[store] building the index of the events' rows, once (about ${n} events)`);
+      this.db.exec("CREATE INDEX IF NOT EXISTS events_bare ON events(session_id, seq, id, parent, kind, ts)");
+      if (n > 50_000) console.log(`[store] the index is built (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
+    }
     // Sessions left "working" by a crash or restart: no turn runs in them now.
     // The mark itself is the list. It stays until the engine has closed the
     // session's cut turn (Engine.closeCut, then bootSettled), so a daemon
@@ -335,6 +370,8 @@ export class Store {
     this.db
       .query("INSERT INTO sessions (id, title, model, workspace, created, updated, settings) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(id, this.redact(null, "title", s.title ?? ""), s.model, s.workspace, now, now, JSON.stringify(s.settings ?? {}));
+    // (It has no event: that is kept, so its first reader reads nothing.)
+    this.keep(id, []);
     return this.session(id)!;
   }
 
@@ -493,6 +530,15 @@ export class Store {
     this.kept.delete(session_id);
     if (!this.kept.size) this.rest();
   }
+  // The bodies a kept session read are given back; its events stay.
+  private dropBodies(k: Kept) {
+    for (let i = 0; i < k.runs.length; i++) {
+      const run = k.runs[i];
+      if (!run) continue;
+      this.owed += run.bytes;
+      this.drop(k, i);
+    }
+  }
 
   private charge(k: Kept, bytes: number) {
     k.bytes += bytes;
@@ -566,22 +612,29 @@ export class Store {
   }
 
   // Back within the budget, with a tenth to spare so the next reads do not
-  // each come back here. Idle sessions go first, the longest unread first;
-  // then bodies, the run read longest ago first, whoever it belongs to; and
-  // only when events without bodies alone pass the budget, working sessions.
-  // The session and the run in hand stay.
+  // each come back here. What goes, in this order: the bodies idle sessions
+  // read, the run read longest ago first; idle sessions whole, the longest
+  // unread first; the bodies working sessions read; and only when events
+  // without bodies alone pass the budget, working sessions. The session and
+  // the run in hand stay.
   private trim(keep?: Kept, keepRun = -1) {
     if (this.keptBytes <= this.budget) return;
     const target = this.budget * 0.9;
     const working = this.working();
+    const runsOf = (which: (id: string) => boolean) => {
+      const runs: { k: Kept; i: number; used: number }[] = [];
+      for (const [id, k] of this.kept) if (which(id)) k.runs.forEach((r, i) => { if (r && !(k === keep && i === keepRun)) runs.push({ k, i, used: r.used }); });
+      return runs.sort((a, b) => a.used - b.used);
+    };
+    for (const r of runsOf((id) => !working.has(id))) {
+      if (this.keptBytes <= target) return;
+      this.drop(r.k, r.i);
+    }
     for (const [id, k] of [...this.kept]) {
       if (this.keptBytes <= target) return;
       if (k !== keep && !working.has(id)) this.forget(id);
     }
-    const runs: { k: Kept; i: number; used: number }[] = [];
-    for (const k of this.kept.values()) k.runs.forEach((r, i) => { if (r && !(k === keep && i === keepRun)) runs.push({ k, i, used: r.used }); });
-    runs.sort((a, b) => a.used - b.used);
-    for (const r of runs) {
+    for (const r of runsOf((id) => working.has(id))) {
       if (this.keptBytes <= target) return;
       this.drop(r.k, r.i);
     }
@@ -591,10 +644,10 @@ export class Store {
     }
   }
 
-  // Idle sessions unread for IDLE_KEPT_MS give their events back, and so does
-  // a working one unread for fifteen times that (a turn inside one long tool
-  // call reads them again when the call ends). The check runs only while
-  // something is kept, and never holds the process open.
+  // What was not read for long goes (see IDLE_KEPT_MS): the bodies of an
+  // idle session unread for IDLE_KEPT_MS and of a working one unread for
+  // fifteen times that; the whole of an idle session unread for BARE_KEPT_MS. The
+  // check runs only while something is kept, and never holds the process open.
   private sweep() {
     const now = Date.now();
     const stale = [...this.kept].filter(([, k]) => now - k.at >= IDLE_KEPT_MS);
@@ -607,19 +660,28 @@ export class Store {
       for (const id of [...this.kept.keys()]) this.forget(id);
       return;
     }
-    for (const [id, k] of stale) if (!working.has(id) || now - k.at >= 15 * IDLE_KEPT_MS) this.forget(id);
-    // Sessions still at work: the collector is only asked to collect when it
-    // sees fit. The whole collection comes when the last one goes (rest).
-    if (this.kept.size && this.owed >= GIVE_BACK_BYTES) collect(false);
+    for (const [id, k] of stale) {
+      // (A session a turn runs in keeps its events however long its turn sits in one call: the turn reads them next, and cannot wait.)
+      if (now - k.at >= BARE_KEPT_MS && !working.has(id)) this.forget(id);
+      else if (!working.has(id) || now - k.at >= 15 * IDLE_KEPT_MS) this.dropBodies(k);
+    }
+    // No body is held any more: see rest. Else the collector is only asked to collect when it sees fit.
+    if (this.kept.size && this.owed >= GIVE_BACK_BYTES) {
+      let bodies = false;
+      for (const k of this.kept.values()) if (k.runs.some(Boolean)) { bodies = true; break; }
+      if (bodies) collect(false);
+      else { this.owed = 0; collect(true); }
+    }
   }
 
-  // Nothing is kept any more. What was given back since the last whole
-  // collection is mostly old to the collector, which looks at old objects only
-  // when the heap grows, and a daemon at rest does not grow: seen after ten
-  // minutes of twelve sessions, 80 to 100 MB stayed for as long as the daemon
-  // was watched. So it is asked to look. No session has been read for two
-  // minutes by then (or the last one kept was deleted): a whole collection
-  // holds the loop some tens of milliseconds while nobody waits on it.
+  // No body is kept any more (every session's were given back, or nothing
+  // is kept at all). What was given back since the last whole collection is
+  // mostly old to the collector, which looks at old objects only when the
+  // heap grows, and a daemon at rest does not grow: seen after ten minutes
+  // of twelve sessions, 80 to 100 MB stayed for as long as the daemon was
+  // watched. So it is asked to look. No session has been read for two
+  // minutes by then: a whole collection holds the loop some tens of
+  // milliseconds while nobody waits on it.
   private rest() {
     clearInterval(this.sweeper);
     this.sweeper = undefined;
@@ -630,8 +692,9 @@ export class Store {
 
   // How many sessions are kept and what they are charged, in bytes of memory,
   // against the budget (the resources report shows it).
-  keptEvents(): { sessions: number; bytes: number; budget: number } {
-    return { sessions: this.kept.size, bytes: this.keptBytes, budget: this.budget };
+  // `cold_reads`: the whole-session reads that were made on the loop (held), by who asked.
+  keptEvents(): { sessions: number; bytes: number; budget: number; cold_reads: ReturnType<Store["coldReads"]> } {
+    return { sessions: this.kept.size, bytes: this.keptBytes, budget: this.budget, cold_reads: this.coldReads() };
   }
 
   // A session's events as kept, from their rows without bodies.
@@ -656,14 +719,45 @@ export class Store {
   }
 
   // The session's events, all branches, as kept: not a copy.
+  // One that is not in memory is read here, whole and in one piece, on the
+  // loop: tens of thousands of rows for a long session, from the disk when
+  // its pages are not in the operating system's memory. A reader that can
+  // wait brings the session in first (`warm`), and one that cannot asks for
+  // less (`lastSeq`, `hasEvents`, a part by its cursor). Each read that still
+  // lands here is counted with who asked (`coldReads`), and the stall
+  // watcher is told who while it runs (src/core/asker.ts).
   private held(session_id: string): Kept {
     const k = this.kept.get(session_id);
     if (k) {
       this.touch(session_id, k);
       return k;
     }
-    return this.keep(session_id, this.db.query<Bare, [string]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq").all(session_id));
+    const who = asker();
+    const t0 = performance.now();
+    const rows = asking(who, () => this.db.query<Bare, [string]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq").all(session_id));
+    const ms = performance.now() - t0;
+    // (Before the daemon answers, a read holds nobody: those are counted apart.)
+    const c = this.serving ? this.cold : this.coldStart;
+    c.n++; c.rows += rows.length; c.ms += ms;
+    const by = c.by.get(who) ?? { n: 0, rows: 0, ms: 0 };
+    by.n++; by.rows += rows.length; by.ms += ms;
+    c.by.set(who, by);
+    if (TRACE_COLD) console.log(`[store] a session of ${rows.length} events was read whole on the loop in ${ms.toFixed(1)} ms, asked by ${who}${TRACE_COLD === "stack" ? `\n${new Error("its callers").stack}` : ""}`);
+    return this.keep(session_id, rows);
   }
+  // The whole-session reads made on the loop since the start (held): how many, of how many events,
+  // how long in all, and the same by who asked (a label of the code path: src/core/asker.ts).
+  // `start`: the same for the reads made before the daemon answered (its modules' recovery at a start).
+  private cold = { n: 0, rows: 0, ms: 0, by: new Map<string, { n: number; rows: number; ms: number }>() };
+  private coldStart = { n: 0, rows: 0, ms: 0, by: new Map<string, { n: number; rows: number; ms: number }>() };
+  // Set once the daemon answers: from here a read that holds the loop holds everyone.
+  serving = false;
+  coldReads(): ColdReads & { start: ColdReads } {
+    const of = (c: Store["cold"]): ColdReads => ({ n: c.n, rows: c.rows, ms: Math.round(c.ms), by: [...c.by].map(([who, v]) => ({ who, n: v.n, rows: v.rows, ms: Math.round(v.ms) })).sort((a, b) => b.ms - a.ms) });
+    return { ...of(this.cold), start: of(this.coldStart) };
+  }
+  // Whether the session's events are in memory (a reader that can wait brings them in first: warm).
+  isKept(session_id: string): boolean { return this.kept.has(session_id); }
 
   // The session's newest seq, on any branch (0: it has no event). What a
   // reader that holds a part of the session resumes from.
@@ -703,8 +797,11 @@ export class Store {
       // then reads comes from the operating system's memory and waits for no
       // disk. Whether that read is worth a wait is the read thread's to say
       // (Reads.readAhead: not when it is busy, not where it cannot run).
+      // For the events alone that is the index of their rows, and no body.
       if (this.offLoop) {
-        await this.offLoop("SELECT COUNT(*) AS n, SUM(LENGTH(data)) AS bytes, MAX(ts) AS ts FROM events WHERE session_id = ?", [session_id]).catch(() => {});
+        await this.offLoop(bodies
+          ? "SELECT COUNT(*) AS n, SUM(LENGTH(data)) AS bytes, MAX(ts) AS ts FROM events WHERE session_id = ?"
+          : "SELECT COUNT(*) AS n, MAX(ts) AS ts, MAX(LENGTH(id) + LENGTH(COALESCE(parent, '')) + LENGTH(kind)) AS w FROM events INDEXED BY events_bare WHERE session_id = ?", [session_id]).catch(() => {});
         k = this.kept.get(session_id);
       }
     }
@@ -779,6 +876,22 @@ export class Store {
         .map((r) => deepFreeze(rowToEvent(r)));
     }
     return this.held(session_id).all.slice();
+  }
+
+  // The last event of the branch the session shows, read by itself: for a
+  // reader that needs to know how the session stands (its last turn ended,
+  // and how) and not what was said in it.
+  headEvent(session_id: string): StoredEvent | undefined {
+    const r = this.db.query<EventRow, [string]>("SELECT e.* FROM sessions s JOIN events e ON e.id = s.head WHERE s.id = ?").get(session_id);
+    return r ? rowToEvent(r) : undefined;
+  }
+
+  // Whether the session has an event of that kind, on any branch: asked of
+  // the index when the session is not in memory, and nothing is brought in.
+  hasKind(session_id: string, kind: EventKind): boolean {
+    const k = this.kept.get(session_id);
+    if (k) return k.all.some((e) => e.kind === kind);
+    return !!this.db.query("SELECT 1 FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = ? LIMIT 1").get(session_id, kind);
   }
 
   // Whether the session has any event: one index lookup, and nothing of the

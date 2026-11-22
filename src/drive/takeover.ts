@@ -295,7 +295,7 @@ export class TakeOver {
   }
 
   private lastSeq(sessionId: string) {
-    return this.d.store.events(sessionId).at(-1)?.seq ?? 0;
+    return this.d.store.lastSeq(sessionId);
   }
   // What an update appended reaches the open pages.
   private emitSince(sessionId: string, seq: number) {

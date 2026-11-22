@@ -1,4 +1,5 @@
 import { existsSync, rmSync, statSync } from "node:fs";
+import { asAsker } from "../core/asker.ts";
 import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -85,6 +86,13 @@ function withModules(core: Record<string, any>, modules: RouteModule[], deps: De
 // The UI's pages; the client routes the rest.
 const PAGES = ["/", "/s/:id", "/p/:id", "/settings", "/settings/:section"];
 
+// The route a request matched, as it is registered: each value of its path is its parameter's name.
+function routeOf(req: Request & { params?: Record<string, string> }): string {
+  const values = new Map(Object.entries(req.params ?? {}).map(([k, v]) => [v, k] as const));
+  const parts = new URL(req.url).pathname.split("/").map((p) => { let d = p; try { d = decodeURIComponent(p); } catch {} return values.has(d) ? `:${values.get(d)}` : p; });
+  return `${req.method} ${parts.join("/")}`;
+}
+
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 // Bun's default idle timeout, and the point where a handler counts as slow.
 const IDLE_S = 10;
@@ -125,7 +133,19 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       try {
         const refused = await admit(req, srv);
         if (refused) return refused;
-        const res = await timed(label, () => h(req, srv));
+        // A request that names a session reads it, most of them whole and in
+        // one piece (its branch, its events). One that is not in memory is
+        // brought in first, off the loop and a part at a time (store.warm),
+        // so no handler reads tens of thousands of rows where the loop
+        // waits for it. Not for a read that asks for no event (`events=0`,
+        // a cursor): those read a row or a part, and bring nothing in.
+        const sid = req.params?.id;
+        if (typeof sid === "string" && !store.isKept(sid)) {
+          const url = new URL(req.url);
+          if (url.pathname.startsWith("/api/sessions/") && url.searchParams.get("events") !== "0" && !url.searchParams.has("after") && store.session(sid)) await store.warm(sid, false);
+        }
+        // Who asks, for a read that holds the loop all the same: the route as it is registered, its values left out (src/core/asker.ts).
+        const res = await asAsker(routeOf(req), () => timed(label, () => h(req, srv)));
         return await timed(label, () => compressJson(req, res));
       } catch (e) {
         const st = (e as any)?.status;

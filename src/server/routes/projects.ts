@@ -185,7 +185,7 @@ export const projectRoutes: RouteModule = ({ store, bus, engine, providers }) =>
       // another folder then follows that folder.
       const byFolder = s.machine ? undefined : projectByFolder(all(), [s.workspace, repoRoot(s.id)]);
       store.mergeSettings(s.id, { project: b.project === null || (p && byFolder?.id === p.id) ? null : b.project });
-      const fresh = !store.events(s.id).length;
+      const fresh = !store.hasEvents(s.id);
       if (fresh && p?.defaults.mode && gate) gate.setPerm(s.id, { mode: p.defaults.mode as any });
     },
   });

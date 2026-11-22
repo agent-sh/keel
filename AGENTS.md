@@ -65,11 +65,17 @@ under `~/.cache/keel-work/bun/research/`.
   ledger, a ranked search or a sum over every event runs on the read thread
   (`src/server/reads.ts`: a read-only connection of its own, tasks in
   `src/server/read-tasks.ts`). A session's events are kept without their
-  bodies while a turn runs in it; a body is read with its run of events when a
-  reader asks for it, and the whole is held to a memory budget and given back
-  two minutes after the session idles (`src/core/store.ts`). A route that
-  answers with a whole session brings it in first, a part at a time
-  (`store.warm`).
+  bodies for as long as anything reads the session (an hour after its last
+  read), from an index that holds only those columns; a body is read with
+  its run of events when a reader asks for it and given back two minutes
+  after the session idles; the whole is held to a memory budget
+  (`src/core/store.ts`). A session that is not in memory is brought in off
+  the loop before it is read (`store.warm`): every request that names a
+  session does, and so does whatever sends into one (an agent's report). A
+  reader that cannot wait asks for a fact, not the session (`lastSeq`,
+  `hasKind`, `headEvent`). A whole-session read that still lands on the loop
+  is counted with who asked (`coldReads`, in `/api/resources`), named in the
+  stall row, and fails the command line e2e.
 - The loop waits for the disk as little as SQLite allows. The write-ahead log
   is synced and checkpointed on a thread (`src/core/checkpoint.ts`): the log
   is 16 to 64 MB under load, and the daemon's connection still checkpoints in

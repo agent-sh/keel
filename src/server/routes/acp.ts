@@ -49,7 +49,7 @@ export const acpRoutes: RouteModule = (deps) => {
     fields: ["model"],
     check(s, body) {
       if (!body.model || body.model === s.model || (!isAcpModel(body.model) && !isAcpModel(s.model))) return;
-      if (deps.store.events(s.id).some((e) => e.kind === "turn_start"))
+      if (deps.store.hasKind(s.id, "turn_start"))
         throw Object.assign(new Error("this session has a conversation: an ACP agent keeps its own history, so start a new session to talk to another agent or model"), { status: 409 });
     },
     apply() {},
