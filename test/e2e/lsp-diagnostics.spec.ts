@@ -38,6 +38,9 @@ test("an edit's type error reaches the model and the tool card, and its fix", as
   writeFileSync(join(ws, "src/math.ts"), "export function add(a: number, b: number): number {\n  return a + b;\n}\n");
   execFileSync("git", ["init", "-q"], { cwd: ws });
 
+  // Off unless the owner turns it on (the fixture puts the setting back).
+  expect((await (await request.get(`/api/lsp?cwd=${encodeURIComponent(ws)}`)).json()).mode).toBe("off");
+  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors" } } })).ok()).toBe(true);
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   const sandboxed = (await (await request.get("/api/permissions/settings")).json()).sandbox.available as boolean;
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", ...(sandboxed ? { sandbox: "workspace-write", network: false } : { sandbox: "off" }) } });
@@ -113,6 +116,8 @@ test("an edit's type error reaches the model and the tool card, and its fix", as
   await expect(page.getByTestId("lsp-running")).toHaveAttribute("data-state", "running");
   if (sandboxed) await expect(page.getByTestId("lsp-sandbox")).toHaveText("workspace-write, no network");
   await expect(page.getByTestId("lsp-stats")).toContainText("1 error, 0 warnings, 1 fixed");
+  await expect(page.getByTestId("lsp-totals")).toContainText("1 alive");
+  await expect(page.getByTestId("lsp-rss")).toContainText(/MB|GB/);
   await page.getByText("The command as it runs").click();
   if (sandboxed) await expect(page.getByTestId("lsp-argv")).toContainText("--unshare-net");
   await shoot(page, "lsp-03-settings");
@@ -140,7 +145,7 @@ test("a slow, a flooding and a crashing server: the edit is never held", async (
   const standin = resolve("test/e2e/fixtures/lsp-standin.ts");
   const server = (mode: string, ext: string) => ({ command: ["bun", standin, mode, "1500"], extensions: { [ext]: "plaintext" } });
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
-  expect((await request.patch("/api/settings", { data: { diagnostics: { wait_ms: 400, servers: { "standin-slow": server("slow", ".slow"), "standin-flood": server("flood", ".flood"), "standin-crash": server("crash", ".crash") } } } })).ok()).toBe(true);
+  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors", wait_ms: 400, servers: { "standin-slow": server("slow", ".slow"), "standin-flood": server("flood", ".flood"), "standin-crash": server("crash", ".crash") } } } })).ok()).toBe(true);
   try {
     const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
@@ -150,24 +155,36 @@ test("a slow, a flooding and a crashing server: the edit is never held", async (
     const t0 = Date.now();
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([
       write("a.slow", "fine\nthis line is an ERROR\n"),
-      { name: "Bash", input: { command: "sleep 2.5; echo waited" } },
+      write("b.slow", "fine\n"),
+      { name: "Bash", input: { command: "sleep 4; echo waited" } },
       { name: "Read", input: { file_path: join(ws, "a.slow") } },
+      { name: "Read", input: { file_path: join(ws, "b.slow") } },
     ]) } });
     await turnsDone(request, session.id, 1);
     const slow = await results(request, session.id);
     expect(slow[0]).toContain('<diagnostics server="standin-slow">\nNot checked yet: a.slow (the language server has not answered).');
-    expect(slow[1]).not.toContain("<diagnostics"); // a command's result carries no file's diagnostics
-    expect(slow[2]).toContain("From an earlier edit (the language server answered after its result was written): 1 new error.\na.slow:2:17 error STAND1 the line says ERROR");
-    expect(Date.now() - t0).toBeLessThan(15_000);
+    expect(slow[0]).toContain("Its answer comes with a later tool result; nothing needs to be read or run for it.");
+    expect(slow[2]).not.toContain("<diagnostics"); // a command's result carries no file's diagnostics
+    expect(slow[3]).toContain("From an earlier edit (the language server answered after its result was written): 1 new error.\na.slow:2:17 error STAND1 the line says ERROR");
+    // A late answer with nothing new says so: "not checked yet" and "checked, clean" are told apart.
+    expect(slow[4]).toContain("From an earlier edit (the language server answered after its result was written): b.slow checked: no new errors.");
+    expect(Date.now() - t0).toBeLessThan(20_000);
+    // The block is a card's row on an edit only; a read shows its result as it is.
+    await page.goto(`/s/${session.id}`);
+    await expect(page.locator('[data-testid="tool-call"][data-tool="Write"]').first().getByTestId("tool-diagnostics")).toHaveAttribute("data-state", "pending");
+    await expect(page.locator('[data-testid="tool-call"][data-tool="Read"]').first().getByTestId("tool-diagnostics")).toHaveCount(0);
 
     // Flood and crash: nothing is added, the edit is not held, each failure is in the errors table once.
     const t1 = Date.now();
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([write("a.flood", "an ERROR\n"), write("a.crash", "an ERROR\n"), write("b.crash", "an ERROR\n")]) } });
     await turnsDone(request, session.id, 2);
     expect(Date.now() - t1).toBeLessThan(10_000);
-    const rest = (await results(request, session.id)).slice(3);
+    const rest = (await results(request, session.id)).slice(5);
     expect(rest).toHaveLength(3);
     for (const r of rest) expect(r).not.toContain("1 new error");
+    // A server that ended under the question: the file is said to be unchecked, never passed over in silence.
+    expect(rest[1]).toContain("Not checked: a.crash (the language server gave no answer for it).");
+    expect(rest[2]).toContain("Not checked: b.crash"); // found paused: said once
     const failures = async () => ((await (await request.get("/api/errors")).json()).errors as any[]).slice(0, -errorsBefore || undefined).map((e) => String(e.message)).filter((m) => m.startsWith("language server standin-"));
     await expect.poll(async () => (await failures()).some((m) => /standin-flood failed: it flooded: \d+ messages/.test(m)), { timeout: 20_000 }).toBe(true);
     expect((await failures()).filter((m) => m.includes("standin-crash"))).toHaveLength(1); // the second file found it paused, and did not start it again
@@ -189,4 +206,60 @@ test("a slow, a flooding and a crashing server: the edit is never held", async (
     await request.patch("/api/settings", { data: { diagnostics: { servers: { "standin-slow": null, "standin-flood": null, "standin-crash": null } } } });
     expect(existsSync(ws)).toBe(true);
   }
+});
+
+// An edit starts no program of the workspace by itself where the session asks
+// before commands: the server waits for the owner's trust, given in so many
+// words, and reading the page gives none.
+test("a workspace's own server waits for trust in a session that asks before commands", async ({ page, request }) => {
+  test.skip(!scripted, "the edits are handed to the scripted model exactly");
+  const modules = resolve("node_modules");
+  test.skip(Number(JSON.parse(readFileSync(join(modules, "typescript/package.json"), "utf8")).version.split(".")[0]) < 7, "needs the workspace's TypeScript 7");
+  const ws = join(base(), `lsp-trust-${Date.now()}`);
+  mkdirSync(join(ws, "src"), { recursive: true });
+  symlinkSync(modules, join(ws, "node_modules"));
+  writeFileSync(join(ws, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: "esnext", target: "esnext", moduleResolution: "bundler", types: [] }, include: ["src"] }));
+  writeFileSync(join(ws, "src/a.ts"), "export const n: number = 1;\n");
+  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors" } } })).ok()).toBe(true);
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  // Edits run by themselves, commands ask, no sandbox: what a fresh clone gets in Auto edits.
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "auto-edits", sandbox: "off" } });
+  const file = join(ws, "src/a.ts");
+  const lspView = async () => (await (await request.get(`/api/lsp?cwd=${encodeURIComponent(ws)}`)).json());
+  const tsOf = (v: any) => v.servers.find((s: any) => s.id === "typescript");
+
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([
+    { name: "Read", input: { file_path: file } },
+    { name: "Edit", input: { file_path: file, old_string: "= 1;", new_string: '= "one";' } },
+  ]) } });
+  await turnsDone(request, session.id, 1);
+  expect((await results(request, session.id))[1]).not.toContain("<diagnostics");
+  let v = await lspView();
+  expect(v.trust).toEqual({ root: ws, trusted: false }); // no repository, first sight, a page read: none of them is trust
+  expect(tsOf(v).found).toMatchObject({ from: "workspace", loads: false });
+  expect(tsOf(v).running).toHaveLength(1);
+  expect(tsOf(v).running[0]).toMatchObject({ state: "untrusted" });
+  expect(tsOf(v).running[0].pid).toBeUndefined();
+  expect(tsOf(v).running[0].error).toContain("its program is a file of this folder");
+
+  await page.goto("/settings/lsp");
+  await expect(page.getByTestId("toolkit-folder")).toContainText(ws.split("/").pop()!);
+  await expect(page.getByTestId("lsp-trust-note")).toHaveAttribute("data-trusted", "false");
+  await shoot(page, "lsp-05-waits-for-trust");
+  await page.getByTestId("lsp-trust").click();
+  await expect(page.getByTestId("lsp-trust-note")).toHaveAttribute("data-trusted", "true");
+
+  // Trusted in so many words: the next edit is checked.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([
+    { name: "Edit", input: { file_path: file, old_string: '= "one";', new_string: "= 1;" } },
+    { name: "Edit", input: { file_path: file, old_string: "= 1;", new_string: '= "two";' } },
+  ]) } });
+  await turnsDone(request, session.id, 2);
+  expect((await results(request, session.id))[3]).toContain("1 new error.\nsrc/a.ts:1:14 error TS2322");
+  v = await lspView();
+  expect(tsOf(v).running[0]).toMatchObject({ state: "running", sandbox: "off" });
+  // Taken back: the server ends, and the next edit starts none.
+  await request.post("/api/lsp/trust", { data: { cwd: ws, trusted: false } });
+  await expect.poll(async () => tsOf(await lspView()).running.some((r: any) => r.pid)).toBe(false);
+  await request.delete(`/api/sessions/${session.id}`);
 });

@@ -82,19 +82,23 @@ export function splitMemory(text: string): { text: string; memory: ResultMemory[
 export type ResultDiagnostics = { server: string; head: string; lines: { where?: string; severity?: "error" | "warning"; text: string }[]; late: boolean; pending: boolean };
 export function splitDiagnostics(text: string): { text: string; diagnostics: ResultDiagnostics[] } {
   const diagnostics: ResultDiagnostics[] = [];
-  const rest = text.replace(/\n*<diagnostics server="([^"]*)">\n([\s\S]*?)\n<\/diagnostics>/g, (_m, server: string, body: string) => {
-    const rows = body.split("\n");
+  // Only blocks that end the result: the harness appends them there, and a
+  // file's own text that happens to hold such a block is a file's text.
+  const END = /\n*<diagnostics server="([^"]*)">\n([\s\S]*?)\n<\/diagnostics>\s*$/;
+  let rest = text;
+  for (let m = END.exec(rest); m && diagnostics.length < 4; m = END.exec(rest)) {
+    const rows = m[2]!.split("\n");
     const listed = (l: string) => /^(\S.*?:\d+:\d+) (error|warning) (.*)$/.exec(l);
     const head = rows.filter((l) => !listed(l)).join(" ");
-    diagnostics.push({
-      server,
+    diagnostics.unshift({
+      server: m[1]!,
       head: head.replace(/^From an earlier edit \([^)]*\): /, ""),
-      lines: rows.flatMap((l) => { const m = listed(l); return m ? [{ where: m[1]!, severity: m[2] as "error" | "warning", text: m[3]! }] : []; }),
+      lines: rows.flatMap((l) => { const x = listed(l); return x ? [{ where: x[1]!, severity: x[2] as "error" | "warning", text: x[3]! }] : []; }),
       late: head.startsWith("From an earlier edit"),
-      pending: /(^| )Not checked yet: /.test(head),
+      pending: /(^| )Not checked( yet)?: /.test(head),
     });
-    return "";
-  });
+    rest = rest.slice(0, m.index);
+  }
   return { text: diagnostics.length ? rest.trimEnd() : text, diagnostics };
 }
 

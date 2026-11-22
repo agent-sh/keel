@@ -52,7 +52,9 @@ export type CallClass =
   // rules read a command as bash does, so none of it is then taken for a read.
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
-  | { kind: "edit"; paths: string[] }
+  // `program`: the edit writes words that name a program something runs
+  // later, into the file that says so (NAMES_PROGRAM): what it names.
+  | { kind: "edit"; paths: string[]; program?: { path: string; what: string } }
   // `grant` names the standing answer that covers it when the tool's name is
   // too wide (keel__spawn_on_machine:<machine>: one machine, not all of them).
   // `paths`: the strings of its input that are a path by themselves (pathsNamed).
@@ -120,7 +122,10 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       // tool takes (no space after the colon, an indented one) is a file here too.
       if (patch) paths.push(...patchTargetPaths(patch));
       if (!paths.length) return { kind: "refused", why: `${tool.name} names no file to change.` };
-      return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p))) };
+      const parts = [input?.content, input?.new_string, input?.new_source, patch, ...(Array.isArray(input?.edits) ? input.edits.map((e: any) => e?.new_string) : [])].filter((x): x is string => typeof x === "string" && x.length > 0);
+      const full = paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p)));
+      const program = parts.length ? namesProgram(full, parts.join("\n").slice(0, 200_000)) : null;
+      return { kind: "edit", paths: full, ...(program ? { program } : {}) };
     }
     default:
       return { kind: "other" };
@@ -143,7 +148,20 @@ export function shellText(input: any): string | null {
   return null;
 }
 
-export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.keel\/hooks\/|\.claude\/hooks\/|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/)/;
+export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.keel\/hooks\/|\.claude\/hooks\/|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/|node_modules\/(?:\.bin|@typescript|typescript|typescript-language-server|pyright|basedpyright)\/|\.venv\/bin\/)/;
+
+// Files whose words can name a program a language server loads or runs
+// (src/lsp/servers.ts): a plugin in a TypeScript project file, the
+// interpreter in a Python one. An edit that writes such an entry is the
+// owner's call like an edit of a hook; any other edit of the file is not.
+const NAMES_PROGRAM: { file: RegExp; words: RegExp; what: string }[] = [
+  { file: /(?:^|\/)(?:tsconfig(?:\.[\w.-]+)?|jsconfig)\.json$/, words: /["']?plugins["']?\s*:/, what: "a plugins entry, which names code a TypeScript language server loads" },
+  { file: /(?:^|\/)(?:pyrightconfig\.json|pyproject\.toml)$/, words: /\b(?:pythonPath|venvPath|venv)\b["']?\s*[:=]/, what: "the interpreter or environment a Python language server runs" },
+];
+function namesProgram(paths: string[], writes: string): { path: string; what: string } | null {
+  for (const path of paths) { const hit = NAMES_PROGRAM.find((n) => n.file.test(path) && n.words.test(writes)); if (hit) return { path, what: hit.what }; }
+  return null;
+}
 
 // Files of the home folder that run, or let someone in, later: the shells'
 // start files, the remote-login folder, git's own configuration (it names
@@ -264,6 +282,7 @@ export function decide(c: CallClass, f: Facts): Decision {
     // start file, the login keys): the owner's call, one at a time. No grant,
     // reviewer or hook answers it.
     for (const p of c.paths) { const why = ownerOnlyEdit(p, f); if (why) return onlyOwner(why); }
+    if (c.program) return onlyOwner(`it writes ${c.program.what}, into ${relative(f.workspace, c.program.path)}`);
     const editRules = f.rules.filter((r) => r.kind === "edit");
     const covered = (p: string) => editRules.some((r) => contains(r.pattern, p));
     // The repository's own metadata is not an in-scope edit.

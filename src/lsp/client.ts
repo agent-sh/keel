@@ -20,13 +20,14 @@ export type ClientLimits = {
   busyMs: number;         // an answer given while the server says it is still loading is asked again once it is done, waited for this long at most
   openDocs: number;       // documents kept open; the oldest is closed past it
   stopMs: number;         // from `shutdown` to the kill
+  backlogBytes: number;   // bytes written that the server has not taken: over this, it has stopped reading and is ended
 };
 // The flood limits are far above what a healthy server sends while it loads a
 // large project (a few hundred log and progress lines a second at most).
 export const LIMITS: ClientLimits = {
   initializeMs: 30_000, requestMs: 30_000, hangs: 3,
   windowMs: 10_000, windowMessages: 20_000, windowBytes: 64 * 1024 * 1024,
-  settleMs: 150, busyMs: 60_000, openDocs: 64, stopMs: 1500,
+  settleMs: 150, busyMs: 60_000, openDocs: 64, stopMs: 1500, backlogBytes: 16 * 1024 * 1024,
 };
 
 export type ClientOpts = {
@@ -48,9 +49,12 @@ export type ClientOpts = {
   onPush?: (path: string, version: number | undefined, diags: Diag[]) => void;
 };
 
-type Doc = { uri: string; version: number; text: string; used: number };
+// `mark`: the file's size and change time when its text was read, so a later look at the disk knows whether to read it again.
+type Doc = { uri: string; version: number; text: string; used: number; mark: string };
 type Pushed = { version?: number; diags: Diag[]; seq: number; at: number };
-type Waiter = { uri: string; version: number; afterSeq: number; done: (d: Diag[] | null) => void; timer?: ReturnType<typeof setTimeout> };
+type Waiter = { uri: string; version: number; afterSeq: number; done: (d: Diag[] | null) => void; timer?: ReturnType<typeof setTimeout>; give?: ReturnType<typeof setTimeout>; last?: Diag[] };
+// Background work a server can name at once; more than this is not tracked.
+const PROGRESS_MAX = 256;
 
 const uriOf = (path: string) => pathToFileURL(path).href;
 const pathOf = (uri: string) => { try { return fileURLToPath(uri); } catch { return uri; } };
@@ -90,7 +94,10 @@ export class LspClient {
   private hung = 0;
   private stderr = "";
   private initialized = false;
-  private stopping: string | null = null;
+  private stopWhy: string | null = null;
+  // Whether the server's pushes name the version they are for (learned from its first push).
+  private versioned = false;
+  private backlog = 0;
 
   constructor(private o: ClientOpts) {
     this.name = o.name;
@@ -100,7 +107,7 @@ export class LspClient {
     this.pid = this.proc.pid;
     void this.read();
     void this.drain();
-    void this.proc.exited.then((code) => this.end(this.stopping ?? `it exited${typeof code === "number" ? ` with code ${code}` : ""}${this.stderrTail() ? `: ${this.stderrTail().split("\n").filter(Boolean).at(-1)}` : ""}`));
+    void this.proc.exited.then((code) => this.end(this.stopWhy ?? `it exited${typeof code === "number" ? ` with code ${code}` : ""}${this.stderrTail() ? `: ${this.stderrTail().split("\n").filter(Boolean).at(-1)}` : ""}`));
     this.ready = this.initialize();
     this.ready.catch(() => {});
     this.chain = this.ready.then(() => {}, () => {});
@@ -112,6 +119,8 @@ export class LspClient {
   // Whether the server says it is still loading or checking.
   get busy(): boolean { return this.progress.size > 0 || !this.quiescent; }
   get openDocs(): number { return this.docs.size; }
+  // Told to stop, and on its way out.
+  get stopping(): boolean { return this.stopWhy !== null; }
 
   private idlers = new Set<() => void>();
   private calm() {
@@ -158,8 +167,17 @@ export class LspClient {
   private send(m: RpcMessage) {
     if (this.ended) return;
     try {
-      this.proc.stdin.write(encode(m));
-      this.proc.stdin.flush();
+      const bytes = encode(m);
+      this.proc.stdin.write(bytes);
+      // A flush that cannot finish means the server is not reading: what waits
+      // for it is counted, and a server that leaves too much unread is ended
+      // (the daemon would hold every later document for it otherwise).
+      const flushed = this.proc.stdin.flush() as number | Promise<number>;
+      if (typeof flushed !== "number") {
+        this.backlog += bytes.length;
+        void flushed.then(() => { this.backlog = 0; }, () => {});
+        if (this.backlog > this.limits.backlogBytes) this.end(`it stopped reading its input (${this.backlog} bytes not taken)`);
+      }
     } catch (e) {
       this.end(`its input closed: ${(e as Error).message}`);
     }
@@ -260,18 +278,20 @@ export class LspClient {
     }
     switch (m.method) {
       case "textDocument/publishDiagnostics": {
-        if (typeof p?.uri !== "string") return;
+        // Only for a document this client has open: a server that publishes
+        // for every file of a project (or for names it made up) fills nothing here.
+        if (typeof p?.uri !== "string" || !this.docs.has(p.uri)) return;
         const rec: Pushed = { version: typeof p.version === "number" ? p.version : undefined, diags: fromLsp(p.diagnostics), seq: ++this.seq, at: Date.now() };
+        if (rec.version !== undefined) this.versioned = true;
         this.pushed.set(p.uri, rec);
-        if (this.pushed.size > 2000) this.pushed.delete(this.pushed.keys().next().value!);
-        for (const w of this.waiters) if (w.uri === p.uri) this.offer(w, rec);
+        for (const w of [...this.waiters]) if (w.uri === p.uri) this.offer(w, rec);
         try { this.o.onPush?.(pathOf(p.uri), rec.version, rec.diags); } catch {}
         return;
       }
       case "$/progress": {
         const token = String(p?.token ?? "");
-        if (p?.value?.kind === "begin") this.progress.add(token);
-        else if (p?.value?.kind === "end") { this.progress.delete(token); this.calm(); }
+        if (p?.value?.kind === "begin") { if (this.progress.size < PROGRESS_MAX) this.progress.add(token.slice(0, 200)); }
+        else if (p?.value?.kind === "end") { this.progress.delete(token.slice(0, 200)); this.calm(); }
         return;
       }
       case "experimental/serverStatus":
@@ -284,29 +304,41 @@ export class LspClient {
   // (or, from a server that names no version, came after the change), and
   // then once more pushes for it have had a moment to follow.
   private offer(w: Waiter, rec: Pushed) {
+    if (rec.version !== undefined && rec.version > w.version) {
+      // The server has moved on to a later text: what it said for this one is all there will be.
+      return this.settle(w, w.last ?? null);
+    }
     if (rec.version !== undefined ? rec.version !== w.version : rec.seq <= w.afterSeq) return;
+    w.last = rec.diags;
     clearTimeout(w.timer);
     w.timer = setTimeout(() => {
       // A server still loading or checking has more to say about this version.
-      void this.idle().then(() => {
-        if (!this.waiters.delete(w)) return;
-        w.done(this.ended ? null : this.pushed.get(w.uri)?.diags ?? rec.diags);
-      });
+      void this.idle().then(() => this.settle(w, this.ended ? null : w.last ?? null));
     }, this.limits.settleMs);
+  }
+
+  private settle(w: Waiter, d: Diag[] | null) {
+    if (!this.waiters.delete(w)) return;
+    clearTimeout(w.timer);
+    clearTimeout(w.give);
+    if (d !== null) this.hung = 0;
+    w.done(d);
   }
 
   // The document as it is on disk now becomes the document the server
   // analyses. Returns its version: the diagnostics asked for with it are for
   // this text. Sent in order with everything else, after the server is ready.
-  sync(path: string, text: string, languageId: string): number {
+  sync(path: string, text: string, languageId: string, mark = ""): number {
     const uri = uriOf(path);
     const doc = this.docs.get(uri);
-    if (doc && doc.text === text) { doc.used = Date.now(); return doc.version; }
+    if (doc && doc.text === text) { doc.used = Date.now(); doc.mark = mark; return doc.version; }
     const version = (doc?.version ?? 0) + 1;
-    this.docs.set(uri, { uri, version, text, used: Date.now() });
+    this.docs.set(uri, { uri, version, text, used: Date.now(), mark });
     const first = !doc;
-    // Who waits on the version before this one waits on a text that is gone.
-    for (const w of this.waiters) if (w.uri === uri && w.version !== version) { clearTimeout(w.timer); this.waiters.delete(w); w.done(null); }
+    // A server whose pushes name no version cannot say which text a push is
+    // for: who waits on the text before this one gets what was pushed so far.
+    // One that names versions answers for each in order, so the wait stays.
+    if (!this.versioned) for (const w of [...this.waiters]) if (w.uri === uri && w.version !== version) this.settle(w, w.last ?? null);
     this.post(() => {
       if (this.watches) this.notify("workspace/didChangeWatchedFiles", { changes: [{ uri, type: first ? 1 : 2 }] });
       if (first) this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version, text } });
@@ -333,10 +365,14 @@ export class LspClient {
     const uri = uriOf(path);
     if (!this.docs.delete(uri)) return;
     this.lastPull.delete(uri);
+    this.pushed.delete(uri);
+    for (const w of [...this.waiters]) if (w.uri === uri) this.settle(w, null);
     this.post(() => this.notify("textDocument/didClose", { textDocument: { uri } }));
   }
 
   has(path: string): boolean { return this.docs.has(uriOf(path)); }
+  // The documents this client holds, each with the mark it was given.
+  open(): { path: string; mark: string }[] { return [...this.docs.values()].map((d) => ({ path: pathOf(d.uri), mark: d.mark })); }
   versionOf(path: string): number | undefined { return this.docs.get(uriOf(path))?.version; }
 
   private post(f: () => void) {
@@ -351,14 +387,22 @@ export class LspClient {
     return new Promise((done) => {
       const afterSeq = this.seq;
       this.post(() => {
-        if (this.docs.get(uri)?.version !== version) return done(null);
+        // Sent in order with the document's changes: the question follows the
+        // text it is about on the wire, also when the document has moved on in
+        // this client since (an edit is often faster than a server's start).
         if (this.pull) return void this.pullOnce(uri, version, 0).then(async (d) => {
           // An answer given while the server was still loading the project may miss what it has not read yet.
-          if (d === null || !this.busy) return done(d);
+          if (d === null || !this.busy || this.docs.get(uri)?.version !== version) return done(d);
           await this.idle();
-          done(this.ended || this.docs.get(uri)?.version !== version ? null : await this.pullOnce(uri, version, 0));
+          done(this.ended ? null : this.docs.get(uri)?.version !== version ? d : await this.pullOnce(uri, version, 0));
         });
         const w: Waiter = { uri, version, afterSeq, done };
+        // A push that never comes is a server that stopped answering.
+        w.give = setTimeout(() => {
+          if (!this.waiters.has(w)) return;
+          this.settle(w, w.last ?? null);
+          if (!w.last && ++this.hung >= this.limits.hangs) this.end(`it stopped answering (${this.hung} documents in a row with no diagnostics pushed)`);
+        }, this.limits.requestMs);
         this.waiters.add(w);
         const have = this.pushed.get(uri);
         if (have) this.offer(w, have);
@@ -396,9 +440,16 @@ export class LspClient {
     this.ended = why;
     for (const w of this.waiting.values()) { clearTimeout(w.timer); w.done({ error: { code: -1, message: `the server ended: ${why}` } }); }
     this.waiting.clear();
-    for (const w of this.waiters) { clearTimeout(w.timer); w.done(null); }
+    for (const w of this.waiters) { clearTimeout(w.timer); clearTimeout(w.give); w.done(null); }
     this.waiters.clear();
     this.calm();
+    // Nothing of an ended server is kept: its documents, what it pushed, what was half read.
+    this.docs.clear();
+    this.pushed.clear();
+    this.lastPull.clear();
+    this.progress.clear();
+    this.framer = new Framer();
+    this.stderr = this.stderr.slice(-1000);
     try { this.proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { this.proc.kill("SIGKILL"); } catch {} }, this.limits.stopMs).unref?.();
     this.o.onEnd?.(why, this.initialized);
@@ -407,7 +458,7 @@ export class LspClient {
   // The protocol's way out, then the signal for a server that does not take it.
   async stop(why = "stopped"): Promise<void> {
     if (this.ended) return;
-    this.stopping = why;
+    this.stopWhy = why;
     if (this.initialized) {
       const bye = this.request("shutdown", undefined, this.limits.stopMs);
       await Promise.race([bye, Bun.sleep(this.limits.stopMs)]);

@@ -13,13 +13,14 @@ import { registerSettings, settings } from "../../admin/settings.ts";
 import { registerHooks, type ToolCall } from "../../engine/hooks.ts";
 import { bytesPerToken, utf8Bytes } from "../../engine/compact.ts";
 import type { Session, ToolResultBlock } from "../../core/types.ts";
-import { type DiagLevel, renderDiagnostics } from "../../lsp/diff.ts";
-import { LspManager, type Perm } from "../../lsp/manager.ts";
+import { BLOCK_MAX, type DiagLevel, renderDiagnostics } from "../../lsp/diff.ts";
+import { LspManager, MAX_MEMORY_MB, MAX_SERVERS, type Perm } from "../../lsp/manager.ts";
 import { checkOverrides } from "../../lsp/servers.ts";
 import { classifyCall } from "../../safety/gate.ts";
-import { confine, sandboxStatus } from "../../safety/sandbox.ts";
+import { confine, inScope, sandboxStatus } from "../../safety/sandbox.ts";
 import { rootOf } from "../../safety/trust.ts";
 import { toolEnv } from "../../tools/jobs.ts";
+import { OUTPUT_CAP } from "../../tools/spill.ts";
 import type { RouteModule } from "../app.ts";
 import { tracer } from "./observe.ts";
 import { gate, presence } from "./permissions.ts";
@@ -32,6 +33,11 @@ const bad = (error: string, status = 400) => json({ error }, status);
 // `wait_ms`: how long an edit's result waits for the server (measured: the
 // TypeScript 7 server answers a change in a 2,600 line file within 300 ms on
 // a busy machine; five times that covers a slower server and a cold start).
+// The mode is off unless the owner turns it on: a server costs 0.6 to 1.2 GB
+// on a medium TypeScript repository, and what it gives is not measured on the
+// owner's own work yet.
+// `max_servers`, `max_memory_mb`: the servers alive at once and the memory
+// they hold together, across the daemon; the least recently used ends first.
 // `idle_minutes`: a server nobody edited through for this long ends (the
 // TypeScript 7 server is back within a second, and holds 0.5 to 1 GB on a
 // repository of 1,900 files meanwhile). `min_free_mb`: no server starts
@@ -42,7 +48,7 @@ type Mode = (typeof MODES)[number];
 export const WAIT_MS = 1500;
 registerSettings(
   "diagnostics",
-  { mode: "errors", workspaces: {}, servers: {}, wait_ms: WAIT_MS, idle_minutes: 5, min_free_mb: 2048 },
+  { mode: "off", workspaces: {}, servers: {}, wait_ms: WAIT_MS, idle_minutes: 5, min_free_mb: 2048, max_servers: MAX_SERVERS, max_memory_mb: MAX_MEMORY_MB },
   (v) => {
     if (!MODES.includes(v.mode)) return "mode is off, errors or warnings";
     if (!v.workspaces || typeof v.workspaces !== "object" || Array.isArray(v.workspaces)) return "workspaces maps a folder to a mode";
@@ -50,13 +56,15 @@ registerSettings(
     if (!(Number.isInteger(v.wait_ms) && v.wait_ms >= 100 && v.wait_ms <= 30_000)) return "wait_ms is a whole number of milliseconds from 100 to 30000";
     if (!(typeof v.idle_minutes === "number" && v.idle_minutes >= 1 && v.idle_minutes <= 24 * 60)) return "idle_minutes is from 1 to 1440";
     if (!(Number.isInteger(v.min_free_mb) && v.min_free_mb >= 0)) return "min_free_mb is a whole number of megabytes, 0 for no limit";
+    if (!(Number.isInteger(v.max_servers) && v.max_servers >= 1 && v.max_servers <= 64)) return "max_servers is a whole number from 1 to 64";
+    if (!(Number.isInteger(v.max_memory_mb) && v.max_memory_mb >= 256)) return "max_memory_mb is a whole number of megabytes, at least 256";
     return checkOverrides(v.servers);
   },
 );
 
 // The mode in force in a folder: its own, its repository's, else the owner's.
 export function modeFor(workspace: string): Mode {
-  const d = settings().diagnostics ?? { mode: "errors", workspaces: {} };
+  const d = settings().diagnostics ?? { mode: "off", workspaces: {} };
   const root = rootOf(workspace);
   return (d.workspaces?.[workspace] ?? (root ? d.workspaces?.[root] : undefined) ?? d.mode) as Mode;
 }
@@ -92,17 +100,19 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
     overrides: () => settings().diagnostics?.servers ?? {},
     get idleMs() { return (settings().diagnostics?.idle_minutes ?? 5) * 60_000; },
     minFreeMb: () => settings().diagnostics?.min_free_mb ?? 0,
-    trusted: (root) => {
-      const t = trustRef?.serversAllowed(root);
-      return !t || t.trusted ? true : "this repository is not trusted yet: its language servers start once you trust it (Settings, Language servers)";
-    },
+    maxServers: () => settings().diagnostics?.max_servers ?? MAX_SERVERS,
+    maxMemoryMb: () => settings().diagnostics?.max_memory_mb ?? MAX_MEMORY_MB,
+    trusted: (dir) => trustRef?.serversTrusted(dir).trusted ?? false,
     // Where the session's own commands run: inside its sandbox when that is
-    // on. A sandbox this machine cannot give is no reason to run a server outside one.
-    confine: (argv, perm, ws) => {
-      if (perm.sandbox === "off") return { argv };
+    // on. A sandbox this machine cannot give is no reason to run a server
+    // outside one. Confined or not, it runs in a scope of its own with a
+    // memory limit and the scope's lower weights, not in the daemon's unit.
+    confine: (argv, perm, ws, memoryMb) => {
+      const limit = ["-p", `MemoryMax=${memoryMb}M`];
+      if (perm.sandbox === "off") return { argv: inScope(argv, limit) };
       const st = sandboxStatus();
       if (!st.available) return { refuse: `the session's commands run in a sandbox (${perm.sandbox}) and this machine cannot give one (${st.reason}), so no language server is started outside it` };
-      return { argv: confine(argv, perm, ws) };
+      return { argv: inScope(confine(argv, perm, ws), limit) };
     },
     env: (sessionId) => toolEnv(sessionId),
     wanted: (ws) => modeFor(ws) !== "off",
@@ -119,7 +129,8 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
 
   const permOf = (s: Session): Perm => {
     const p = gate?.perm(s.id);
-    return { sandbox: p?.sandbox ?? "off", network: p?.network ?? true };
+    // No gate: nothing says the session runs commands by itself.
+    return { mode: p?.mode ?? "ask", sandbox: p?.sandbox ?? "off", network: p?.network ?? true };
   };
   // A session whose tools run on another machine has its files there: no server here reads them.
   const here = (s: Session, call: ToolCall) => !s.machine && !call.ctx.dispatch;
@@ -153,34 +164,38 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
         const mode = modeFor(s.workspace);
         if (mode === "off" || !here(s, call)) return void m.drop(call.id);
         const level: DiagLevel = mode === "warnings" ? "warnings" : "errors";
+        // The result stays under its cap with the block in it: what it has left is the block's room.
+        const size = typeof result.content === "string" ? utf8Bytes(result.content) : result.content.reduce((n, b) => n + (b.type === "text" ? utf8Bytes(b.text) : 0), 0);
+        let room = (call.tool.resultCap ?? OUTPUT_CAP) - size - 2;
+        const add = (text: string) => { if (text) { append(result, text); room -= utf8Bytes(text) + 2; } };
         const cls = classifyCall(call);
         if (cls.kind !== "edit") {
           m.drop(call.id);
           // A command may have changed files a server holds a copy of.
           if (cls.kind !== "read" && cls.kind !== "control") m.markStale(s.workspace);
-          // A late answer goes with the next call on its file.
-          if (!m.hasLate(s.id)) return;
+          // A late answer goes with the next call on its file, when that result has room for it.
+          if (!m.hasLate(s.id) || room < BLOCK_MAX) return;
           const late = m.takeLate(s, namedPaths(call));
-          const r = renderDiagnostics(late.files, { server: late.servers.join(", "), level, late: true });
-          if (late.files.length) record(s, call, Date.now(), { servers: late.servers, ms: 0, timed_out: false, cold: false, late: true, answered: late.files.length }, r);
-          if (r.text) append(result, r.text);
-          return;
+          if (!late.files.length && !late.clean.length) return;
+          const r = renderDiagnostics(late.files, { server: late.servers.join(", "), level, late: true, clean: late.clean, room });
+          record(s, call, Date.now(), { servers: late.servers, ms: 0, timed_out: false, cold: false, late: true, answered: late.files.length + late.clean.length }, r);
+          return add(r.text);
         }
         // An edit that failed changed nothing.
         if (result.is_error) return void m.drop(call.id);
         const t0 = Date.now();
         const out = await m.after(s, call.id, settings().diagnostics?.wait_ms ?? WAIT_MS);
         // What an earlier edit's late answer found comes first: it is older.
-        const late = m.hasLate(s.id) ? m.takeLate(s) : { files: [], servers: [] };
-        if (late.files.length) {
-          const r = renderDiagnostics(late.files, { server: late.servers.join(", "), level, late: true });
-          record(s, call, t0, { servers: late.servers, ms: 0, timed_out: false, cold: false, late: true, answered: late.files.length }, r);
-          if (r.text) append(result, r.text);
+        const late = m.hasLate(s.id) && room >= 2 * BLOCK_MAX ? m.takeLate(s) : { files: [], clean: [], servers: [] };
+        if (late.files.length || late.clean.length) {
+          const r = renderDiagnostics(late.files, { server: late.servers.join(", "), level, late: true, clean: late.clean, room });
+          record(s, call, t0, { servers: late.servers, ms: 0, timed_out: false, cold: false, late: true, answered: late.files.length + late.clean.length }, r);
+          add(r.text);
         }
         if (!out) return;
-        const r = renderDiagnostics(out.files, { server: out.servers.join(", "), level, pending: out.pending });
+        const r = renderDiagnostics(out.files, { server: out.servers.join(", "), level, pending: out.pending, unchecked: out.unchecked, room });
         record(s, call, t0, { servers: out.servers, ms: out.ms, timed_out: out.pending.length > 0, cold: out.cold, late: false, answered: out.answered }, r);
-        if (r.text) append(result, r.text);
+        add(r.text);
       } catch (e) {
         m.drop(call.id);
         errors.capture("server", e, { at: "diagnostics after an edit", session: s.id, tool: call.tool.name });
@@ -193,13 +208,14 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
     const cwd = resolve(raw || workspace);
     return existsSync(cwd) && statSync(cwd).isDirectory() ? cwd : null;
   };
+  // Reading the page changes nothing: no trust is written by asking.
   const view = (cwd: string) => {
     const d = settings().diagnostics;
-    const trust = trustRef?.serversAllowed(cwd) ?? { root: rootOf(cwd), trusted: true };
+    const trust = trustRef?.serversTrusted(cwd) ?? { root: rootOf(cwd) ?? cwd, trusted: false };
     return {
-      cwd, mode: d.mode, workspace_mode: d.workspaces?.[cwd] ?? (trust.root ? d.workspaces?.[trust.root] : undefined) ?? null, in_force: modeFor(cwd),
-      wait_ms: d.wait_ms, idle_minutes: d.idle_minutes, trust: { ...trust, new_files: trustRef?.newFiles() ?? "auto" },
-      sandbox: sandboxStatus().available, servers: m.list(cwd), stats: { ...stats },
+      cwd, mode: d.mode, workspace_mode: d.workspaces?.[cwd] ?? d.workspaces?.[trust.root] ?? null, in_force: modeFor(cwd),
+      wait_ms: d.wait_ms, idle_minutes: d.idle_minutes, trust,
+      sandbox: sandboxStatus().available, servers: m.list(cwd), totals: m.totals(), stats: { ...stats },
     };
   };
 
@@ -226,7 +242,8 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
         if (!cwd) return bad("cwd is not a directory");
         if (!trustRef) return bad("trust is not available on this daemon", 503);
         const t = trustRef.trustServers(cwd, b.trusted !== false);
-        if (t.root) for (const s of m.list(cwd)) await m.restart(s.id, t.root);
+        // What ran or waited under the old answer starts over under the new one.
+        for (const s of m.list(cwd)) for (const r of s.running) await m.restart(s.id, r.root);
         bus.emit({ t: "feature", name: "lsp", data: { what: "trust", root: t.root } });
         return json(view(cwd));
       },

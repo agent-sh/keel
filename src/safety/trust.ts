@@ -215,26 +215,21 @@ export class Trust {
     return this.pin(path)?.content ?? null;
   }
 
-  // Whether a repository may have its language servers started. A server
-  // reads the repository's configuration and may run its code (a build
-  // script, a plugin), so it starts only in a repository the owner trusts:
-  // on first sight where new files are trusted on first sight, else once the
-  // owner says so. A folder outside any repository is the owner's own.
-  serversAllowed(dir: string): { root: string | null; trusted: boolean; auto?: boolean } {
-    const root = rootOf(dir);
-    if (!root) return { root: null, trusted: true };
-    const r = this.store.db.query<{ auto: number }, [string]>("SELECT auto FROM trust_servers WHERE root = ?").get(root);
-    if (r) return { root, trusted: true, auto: !!r.auto };
-    if (this.newFiles() !== "auto") return { root, trusted: false };
-    this.store.db.query("INSERT OR IGNORE INTO trust_servers (root, auto, trusted) VALUES (?, 1, ?)").run(root, Date.now());
-    return { root, trusted: true, auto: true };
+  // Whether the owner trusted a folder's language servers in so many words.
+  // A server whose program is a file of the folder, or that loads its code,
+  // runs that folder's code as the owner; so this is never given on first
+  // sight, a folder that is no repository is not trusted for being none, and
+  // asking changes nothing. Kept by the repository root, else by the folder.
+  serversTrusted(dir: string): { root: string; trusted: boolean } {
+    const root = rootOf(dir) ?? dir;
+    const r = this.store.db.query<{ auto: number }, [string]>("SELECT auto FROM trust_servers WHERE root = ? AND auto = 0").get(root);
+    return { root, trusted: !!r };
   }
-  trustServers(dir: string, on = true): { root: string | null; trusted: boolean } {
-    const root = rootOf(dir);
-    if (!root) return { root: null, trusted: true };
+  trustServers(dir: string, on = true): { root: string; trusted: boolean } {
+    const root = rootOf(dir) ?? dir;
     if (on) this.store.db.query("INSERT INTO trust_servers (root, auto, trusted) VALUES (?, 0, ?) ON CONFLICT(root) DO UPDATE SET auto = 0, trusted = excluded.trusted").run(root, Date.now());
     else this.store.db.query("DELETE FROM trust_servers WHERE root = ?").run(root);
-    return this.serversAllowed(dir);
+    return this.serversTrusted(dir);
   }
 
   roots(): string[] {

@@ -7,13 +7,16 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join } from "node:path";
-import { contains } from "../core/paths.ts";
+import { contains, realOf } from "../core/paths.ts";
 
-// One way to start the server. `bin`: a program name, looked for in each
-// `node_modules/.bin` from the root up, then in `dirs`, then on PATH. `path`:
-// a glob under each `node_modules` from the root up (a package's own binary).
-// `package`/`min`: only when that package of the workspace is at least that version.
-export type Candidate = { bin?: string; path?: string; args?: string[]; package?: string; min?: string; dirs?: string[] };
+// One way to start the server. `bin`: a program name, looked for in the
+// `node_modules/.bin` of the project root and of the folders between it and
+// the session's folder, then in `dirs`, then on PATH. `path`: a glob under
+// the same `node_modules` (a package's own binary). `package`/`min`: only
+// when that package there is at least that version. `loads`: the program
+// loads code the project names (a plugin, a build script, an interpreter).
+// `optIn`: used only once the owner turned the server on by name.
+export type Candidate = { bin?: string; path?: string; args?: string[]; package?: string; min?: string; dirs?: string[]; loads?: boolean; optIn?: boolean };
 
 export type ServerDef = {
   id: string;
@@ -49,7 +52,8 @@ export const BUILTIN: ServerDef[] = [
       // TypeScript 7: the compiler is its own language server.
       { path: "@typescript/typescript-*/lib/tsc", args: ["--lsp", "--stdio"], package: "typescript", min: "7.0.0" },
       { bin: "tsgo", args: ["--lsp", "--stdio"] },
-      { bin: "typescript-language-server", args: ["--stdio"] },
+      // TypeScript 6 and older: the server loads the project's tsserver and the plugins tsconfig names.
+      { bin: "typescript-language-server", args: ["--stdio"], loads: true, optIn: true },
     ],
     // The TypeScript 7 server is a Go program whose memory grows with every
     // edit until its collector runs: collecting at half the default growth
@@ -70,7 +74,7 @@ export const BUILTIN: ServerDef[] = [
   {
     id: "pyright", label: "Pyright (Python types)", extensions: { ".py": "python", ".pyi": "python" },
     roots: ["pyrightconfig.json", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"],
-    command: [{ bin: "basedpyright-langserver", args: ["--stdio"], dirs: [".venv/bin"] }, { bin: "pyright-langserver", args: ["--stdio"], dirs: [".venv/bin"] }],
+    command: [{ bin: "basedpyright-langserver", args: ["--stdio"], dirs: [".venv/bin"], loads: true }, { bin: "pyright-langserver", args: ["--stdio"], dirs: [".venv/bin"], loads: true }],
     auto: false,
     restartOn: ["pyrightconfig.json", "pyproject.toml"],
     runs: "The Python interpreter the project names (its virtual environment's), to ask it for its import paths.",
@@ -78,7 +82,7 @@ export const BUILTIN: ServerDef[] = [
   {
     id: "gopls", label: "Go", extensions: { ".go": "go" },
     roots: ["go.work", "go.mod"],
-    command: [{ bin: "gopls", dirs: ["~/go/bin"] }],
+    command: [{ bin: "gopls", dirs: ["~/go/bin"], loads: true }],
     initialization: { pullDiagnostics: true },
     auto: false,
     restartOn: ["go.work", "go.mod"],
@@ -87,7 +91,7 @@ export const BUILTIN: ServerDef[] = [
   {
     id: "rust-analyzer", label: "Rust", extensions: { ".rs": "rust" },
     roots: ["Cargo.toml"],
-    command: [{ bin: "rust-analyzer", dirs: ["~/.cargo/bin"] }],
+    command: [{ bin: "rust-analyzer", dirs: ["~/.cargo/bin"], loads: true }],
     auto: false,
     restartOn: ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain"],
     runs: "Build scripts and procedural macros of the project and of its dependencies, and cargo check on every save (type errors come from it); .cargo/config and rust-toolchain.toml can name the compiler it runs.",
@@ -123,18 +127,25 @@ export function checkOverrides(v: unknown): string | undefined {
   return undefined;
 }
 
-// The definitions in force: the built-in ones with the owner's changes, then the owner's own.
-export function definitions(overrides: Record<string, ServerOverride> = {}): (ServerDef & { enabled: boolean; own: boolean })[] {
-  const merged = (base: ServerDef, o: ServerOverride | undefined, own: boolean) => ({
+// The definitions in force: the built-in ones with the owner's changes, then
+// the owner's own. `explicit`: the owner turned it on by name. A command the
+// owner wrote is looked for on PATH only (`fixed`), never in the workspace:
+// a name in a settings file must not be answered by a file of a repository.
+export type Def = ServerDef & { enabled: boolean; own: boolean; explicit: boolean; fixed: boolean };
+export function definitions(overrides: Record<string, ServerOverride> = {}): Def[] {
+  const merged = (base: ServerDef, o: ServerOverride | undefined, own: boolean): Def => ({
     ...base,
     ...(o?.label ? { label: o.label } : {}),
     ...(o?.extensions ? { extensions: o.extensions } : {}),
     ...(o?.roots ? { roots: o.roots, restartOn: o.roots } : {}),
-    ...(o?.command ? { command: [{ bin: o.command[0]!, args: o.command.slice(1) }] } : {}),
+    // What the owner's program loads is not known: it is taken to load the project's code.
+    ...(o?.command ? { command: [{ bin: o.command[0]!, args: o.command.slice(1), loads: true }] } : {}),
     ...(o?.env ? { env: { ...base.env, ...o.env } } : {}),
     ...(o?.initialization !== undefined ? { initialization: o.initialization } : {}),
     ...(o?.settings !== undefined ? { settings: o.settings } : {}),
     enabled: o?.enabled ?? base.auto,
+    explicit: o?.enabled === true || own,
+    fixed: !!o?.command,
     own,
   });
   const out = BUILTIN.map((b) => merged(b, overrides[b.id], false));
@@ -178,41 +189,81 @@ const versionAtLeast = (have: string, min: string) => {
 
 const isFile = (p: string) => { try { return statSync(p).isFile(); } catch { return false; } };
 const home = (p: string) => (p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(1)) : p);
+// A package's version, from a manifest of ordinary size (a file of the workspace is never read whole unseen).
+function versionOf(pkg: string): string {
+  try {
+    if (statSync(pkg).size > 1024 * 1024) return "";
+    return String(JSON.parse(readFileSync(pkg, "utf8")).version ?? "");
+  } catch { return ""; }
+}
 
-export type Found = { argv: string[]; from: "workspace" | "path" };
-// The command that starts a server for a root, or why there is none. `path`:
-// the PATH the session's commands get.
-export function findCommand(d: ServerDef, root: string, path = process.env.PATH ?? ""): Found | { missing: string } {
-  const up = ancestors(root, "/").slice(0, 12);
+// `workspace`: the program is a file of the session's folder or of the
+// project (its modules, its virtual environment), where it really lands.
+// `loads`: it loads code the project names.
+export type Found = { argv: string[]; from: "workspace" | "path"; loads: boolean };
+// The command that starts a server for a root, or why there is none. `folder`:
+// the session's folder (the workspace's modules are looked for from the root
+// up to it, no higher). `path`: the PATH the session's commands get.
+export function findCommand(d: Def | (ServerDef & Partial<Pick<Def, "explicit" | "fixed">>), root: string, folder: string, path = process.env.PATH ?? ""): Found | { missing: string } {
+  const up = contains(folder, root) ? ancestors(root, folder) : [root];
+  const mine = [realOf(root), realOf(folder)];
+  const origin = (p: string): "workspace" | "path" => { const r = realOf(p); return mine.some((m) => contains(m, r)) || contains(root, p) || contains(folder, p) ? "workspace" : "path"; };
+  const hit = (p: string, c: Candidate): Found => ({ argv: [p, ...(c.args ?? [])], from: origin(p), loads: !!c.loads });
   const tried: string[] = [];
   for (const c of d.command) {
+    if (c.optIn && !d.explicit) { tried.push(`${c.bin ?? c.path} (only once you turn this server on)`); continue; }
+    const bin = c.bin;
+    if (d.fixed) {
+      // The owner's own command: a whole path as written, or a name on PATH.
+      const p = bin && isAbsolute(bin) ? (isFile(bin) ? bin : null) : bin && !bin.includes("/") ? Bun.which(bin, { PATH: path }) : null;
+      if (p) return hit(p, c);
+      tried.push(bin && bin.includes("/") && !isAbsolute(bin) ? `${bin} (a command is a name on PATH or a whole path)` : bin ?? "");
+      continue;
+    }
     if (c.package) {
-      const pkg = up.map((dir) => join(dir, "node_modules", c.package!, "package.json")).find(isFile);
-      let version = "";
-      try { version = pkg ? String(JSON.parse(readFileSync(pkg, "utf8")).version ?? "") : ""; } catch {}
+      const version = up.map((dir) => versionOf(join(dir, "node_modules", c.package!, "package.json"))).find(Boolean) ?? "";
       if (!version || (c.min && !versionAtLeast(version, c.min))) { tried.push(`${c.package}${c.min ? ` ${c.min} or newer` : ""} in the workspace's modules${version ? ` (it has ${version})` : ""}`); continue; }
     }
     if (c.path) {
+      let got: string | undefined;
       for (const dir of up) {
         const base = join(dir, "node_modules");
         if (!existsSync(base)) continue;
-        const hit = [...new Bun.Glob(c.path).scanSync({ cwd: base, onlyFiles: true, followSymlinks: true })].sort()[0];
-        if (hit) return { argv: [join(base, hit), ...(c.args ?? [])], from: "workspace" };
+        const rel = [...new Bun.Glob(c.path).scanSync({ cwd: base, onlyFiles: true, followSymlinks: true })].sort()[0];
+        if (rel) { got = join(base, rel); break; }
       }
+      if (got) return hit(got, c);
       tried.push(c.path);
       continue;
     }
-    const bin = c.bin!;
-    if (isAbsolute(bin)) { if (isFile(bin)) return { argv: [bin, ...(c.args ?? [])], from: "path" }; tried.push(bin); continue; }
+    if (!bin) continue;
     const local = up.map((dir) => join(dir, "node_modules", ".bin", bin)).find((p) => existsSync(p));
-    if (local) return { argv: [local, ...(c.args ?? [])], from: "workspace" };
+    if (local) return hit(local, c);
     const inDir = (c.dirs ?? []).map((dir) => (dir.startsWith("~") || isAbsolute(dir) ? join(home(dir), bin) : join(root, dir, bin))).find(isFile);
-    if (inDir) return { argv: [inDir, ...(c.args ?? [])], from: inDir.startsWith(root + "/") ? "workspace" : "path" };
+    if (inDir) return hit(inDir, c);
     const onPath = Bun.which(bin, { PATH: path });
-    if (onPath) return { argv: [onPath, ...(c.args ?? [])], from: "path" };
+    if (onPath) return hit(onPath, c);
     tried.push(bin);
   }
   return { missing: `not found: ${tried.join(", ")}` };
+}
+
+// Whether a server may start for a session, and how. A program that is a
+// file of the workspace, or that loads the workspace's code, is the
+// workspace's program: started by an edit, it would run with no command ever
+// allowed. It starts where the session's own commands already run unasked
+// (confined in the modes that run sandboxed commands by themselves;
+// unconfined only in Full auto with the sandbox off, the owner's choice), or
+// in a repository whose language servers the owner trusted in so many words.
+// A program of the machine that runs nothing of the workspace starts in any mode.
+export type StartFacts = { mode: string; sandbox: "off" | "workspace-write" | "read-only"; trusted: boolean; from: "workspace" | "path"; loads: boolean };
+export function startRule(f: StartFacts): { start: "confined" | "unconfined" } | { wait: string } {
+  const how = f.sandbox === "off" ? "unconfined" as const : "confined" as const;
+  if (f.from === "path" && !f.loads) return { start: how };
+  if (f.trusted) return { start: how };
+  const what = f.from === "workspace" ? "its program is a file of this folder" : "it loads code this folder names";
+  if (f.sandbox !== "off") return ["auto-edits", "auto", "full-auto"].includes(f.mode) ? { start: "confined" } : { wait: `${what}, and this session asks before it runs a command: it starts once you trust this folder's language servers` };
+  return f.mode === "full-auto" ? { start: "unconfined" } : { wait: `${what}, and this session's commands run outside a sandbox only when you allow each: it starts once you trust this folder's language servers, or in a sandboxed session` };
 }
 
 // What tells a server's configuration apart from the one it started with.

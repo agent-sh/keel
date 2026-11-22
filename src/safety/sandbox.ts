@@ -73,6 +73,17 @@ export function splitScope(argv: string[]): { props: string[]; argv: string[] } 
   return end < 0 ? { props: [], argv } : { props: argv.slice(h.length, end), argv: argv.slice(end + 1) };
 }
 
+// A program in a scope of its own, with the scope's weights and more
+// properties (a memory limit), whether `argv` is confined or not: a long-lived
+// program the daemon starts for a session (a language server) is held to its
+// own limits there, never counted in the daemon's own unit. Where there is no
+// systemd user manager the argv is returned as it is.
+export function inScope(argv: string[], props: string[]): string[] {
+  if (!sandboxStatus().scope) return argv;
+  const inner = splitScope(argv);
+  return [...scopeHead(), ...(inner.props.length ? inner.props : scopeProps()), ...props, "--", ...inner.argv];
+}
+
 // ---- the repository's files that run code outside the sandbox later ----
 //
 // git runs what a repository's files name: its hooks, and its config

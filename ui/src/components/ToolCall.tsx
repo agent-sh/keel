@@ -92,6 +92,9 @@ function HookRow({ hook, asked, name, cwd, alone }: { hook: HookMark; asked: any
   );
 }
 
+// The cards of calls that change files: only they show a diagnostics row.
+const EDITS = new Set<ToolKind>(["edit", "write", "patch", "notebook"]);
+
 // What a language server found after the edit, as the model was told it:
 // always in view under the call, the new ones listed, a fix as one line.
 function DiagnosticsRow({ d }: { d: ResultDiagnostics }) {
@@ -156,7 +159,7 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd }: Props) {
 
 function GenericCall({ use, result, live, sessionId, cwd, kind, input, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
   const Icon = ICONS[kind];
-  const { text: out, nested, memory, diagnostics } = useMemo(() => { const m = splitMemory(resultText(result)); const d = splitDiagnostics(m.text); return { ...splitNested(d.text), memory: m.memory, diagnostics: d.diagnostics }; }, [result]);
+  const { text: out, nested, memory, diagnostics } = useMemo(() => { const m = splitMemory(resultText(result)); const d = EDITS.has(kind) ? splitDiagnostics(m.text) : { text: m.text, diagnostics: [] }; return { ...splitNested(d.text), memory: m.memory, diagnostics: d.diagnostics }; }, [result, kind]);
   const images = resultImages(result);
   const spillGone = useSpillRemoved(sessionId, out);
   const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));

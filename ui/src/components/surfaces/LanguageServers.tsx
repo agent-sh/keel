@@ -9,22 +9,24 @@ import { api, failed, onFeature, reportError } from "../../lib/store.ts";
 import { Blank, FolderLine, Ledger, ReaderHead, Seg, tail, tilde, Toggle, useFolder, type Group, type Mark } from "./kit.tsx";
 
 type Mode = "off" | "errors" | "warnings";
-type Running = { root: string; state: string; error?: string; pid?: number; since?: number; ready_ms?: number | null; server?: string; pull?: boolean; docs?: number; sessions: number; sandbox: string; busy?: boolean; retry_in_ms?: number; argv: string[] };
-type Server = { id: string; label: string; extensions: string[]; enabled: boolean; auto: boolean; own: boolean; runs: string; found: { command: string[]; from: "workspace" | "path"; root: string } | null; missing?: string; elsewhere: number; running: Running[] };
+type Running = { root: string; state: string; error?: string; pid?: number; since?: number; ready_ms?: number | null; server?: string; pull?: boolean; docs?: number; rss_mb?: number; sessions: number; sandbox: string; busy?: boolean; retry_in_ms?: number; argv: string[] };
+type Server = { id: string; label: string; extensions: string[]; enabled: boolean; auto: boolean; own: boolean; runs: string; found: { command: string[]; from: "workspace" | "path"; loads: boolean; root: string } | null; missing?: string; elsewhere: number; running: Running[] };
 type View = {
   cwd: string; mode: Mode; workspace_mode: Mode | null; in_force: Mode; wait_ms: number; idle_minutes: number; sandbox: boolean;
-  trust: { root: string | null; trusted: boolean; auto?: boolean; new_files: "auto" | "ask" };
+  trust: { root: string; trusted: boolean };
+  totals: { alive: number; rss_mb: number; max_servers: number; max_memory_mb: number; server_memory_mb: number };
   servers: Server[];
   stats: { edits: number; answered: number; timed_out: number; with_new: number; late: number; errors: number; warnings: number; fixed: number; tokens: number; wait_ms: number };
 };
 
 const MODES: [Mode, string][] = [["off", "Off"], ["errors", "Errors"], ["warnings", "Errors and warnings"]];
-const STATE: Record<string, string> = { starting: "starting", running: "running", failed: "failed", missing: "not found", refused: "not started", untrusted: "waits for your trust", stopped: "stopped" };
+const STATE: Record<string, string> = { starting: "starting", running: "running", failed: "failed", missing: "not found", refused: "not started", untrusted: "not started in this session", stopped: "stopped" };
+const gb = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
 
 const live = (s: Server) => s.running.filter((r) => r.pid);
 function markOf(s: Server): { mark: Mark; label: string } {
   if (s.running.some((r) => r.state === "failed" || r.state === "refused")) return { mark: "fail", label: "failed" };
-  if (s.running.some((r) => r.state === "untrusted")) return { mark: "need", label: "waits for your trust" };
+  if (s.running.some((r) => r.state === "untrusted")) return { mark: "need", label: "not started in a session that asks before commands" };
   if (live(s).length) return { mark: "work", label: "running" };
   if (!s.enabled) return { mark: "off", label: "off" };
   return s.found ? { mark: "on", label: "starts at the first edit" } : { mark: "off", label: "not found" };
@@ -71,28 +73,33 @@ export default function LanguageServers() {
     <div data-testid="lsp-settings">
       <FolderLine tally={[
         { n: v.servers.reduce((n, x) => n + live(x).length, 0), label: "running here" },
-        { n: on.length, label: "on" },
+        { n: v.totals.alive, label: `alive of ${v.totals.max_servers}` },
         ...(v.servers.some((x) => x.running.some((r) => r.state === "failed")) ? [{ n: v.servers.filter((x) => x.running.some((r) => r.state === "failed")).length, label: "failed", tone: "fail" as const }] : []),
       ]} />
       <div className="k-lsp-modes">
         <div>
           <div className="k-label">After an edit, the model is told</div>
           <div className="mt-2" data-testid="lsp-mode"><Seg label="What the model is told after an edit" value={v.mode} options={MODES} onChange={(mode) => patch({ mode })} /></div>
-          <p className="k-lsp-hint">Only what the edit caused: the new ones, and how many it fixed. Nothing is added to an edit that changed neither.</p>
+          <p className="k-lsp-hint">Off unless you turn it on. On, the model reads what an edit caused (the new ones, and how many it fixed) in that edit's result, and each folder being edited keeps a language server running: about 0.6 to 1.2 GB for a TypeScript project of two thousand files.</p>
+          <p className="k-lsp-hint" data-testid="lsp-totals">Now: {v.totals.alive} alive, holding {gb(v.totals.rss_mb)}. At most {v.totals.max_servers} are alive and hold {gb(v.totals.max_memory_mb)} together ({gb(v.totals.server_memory_mb)} each); the one used least recently ends first and starts again at the next edit in its folder.</p>
         </div>
         <div>
-          <div className="k-label" title={v.trust.root ?? v.cwd}>In {tail(v.trust.root ?? v.cwd, 56)}</div>
+          <div className="k-label" title={v.trust.root}>In {tail(v.trust.root, 56)}</div>
           <div className="mt-2" data-testid="lsp-folder-mode">
             <Seg label="What the model is told in this folder" value={v.workspace_mode ?? "same"} options={[["same", "As everywhere"], ...MODES]}
-              onChange={(m) => patch({ workspaces: { [v.trust.root ?? v.cwd]: m === "same" ? null : m } })} />
+              onChange={(m) => patch({ workspaces: { [v.trust.root]: m === "same" ? null : m } })} />
           </div>
           <p className="k-lsp-hint">{v.in_force === "off" ? "No server starts for this folder." : `A server starts at the first edit of a file it serves, waits at most ${(v.wait_ms / 1000).toFixed(1)} s for its answer, and ends after ${v.idle_minutes} idle minutes.`}</p>
         </div>
       </div>
-      {!v.trust.trusted && (
-        <div className="k-issue mb-3 flex items-center gap-3" data-tone="need" data-testid="lsp-untrusted">
-          <span className="min-w-0 flex-1">A language server reads this repository's configuration and may run its code. You review new repositories before they are trusted, so none starts here until you say so.</span>
-          <button type="button" className="k-btn" data-ink data-testid="lsp-trust" onClick={() => post("/api/lsp/trust", { cwd: v.cwd, trusted: true })}><ShieldCheck /> Trust its language servers</button>
+      {v.in_force !== "off" && (
+        <div className="k-issue mb-3 flex items-center gap-3" data-tone={v.trust.trusted ? "quiet" : "need"} data-testid="lsp-trust-note" data-trusted={String(v.trust.trusted)}>
+          <span className="min-w-0 flex-1">
+            {v.trust.trusted
+              ? "You trusted this folder's language servers: they start in every session here, confined as that session's commands are."
+              : "A server that is a file of this folder, or that loads its code, is this folder's program. It starts by itself only where a session already runs commands without asking: inside the sandbox in Auto edits, Auto and Full auto, and outside one only in Full auto with the sandbox off. In a session that asks, it starts once you trust this folder's language servers."}
+          </span>
+          <button type="button" className="k-btn" {...(v.trust.trusted ? { "data-quiet": true } : { "data-ink": true })} data-testid="lsp-trust" onClick={() => post("/api/lsp/trust", { cwd: v.cwd, trusted: !v.trust.trusted })}><ShieldCheck /> {v.trust.trusted ? "Take the trust back" : "Trust its language servers"}</button>
         </div>
       )}
       {err && <div className="k-issue mb-3" data-testid="lsp-error">{err}</div>}
@@ -106,7 +113,7 @@ export default function LanguageServers() {
               right={<Toggle on={s.enabled} label={`${s.label} on`} testid="lsp-enabled" onChange={(enabled) => patch({ servers: { [s.id]: { enabled } } })} />}
               facts={[
                 ["Files", s.extensions.join(" ")],
-                ["Program", s.found ? (s.found.from === "workspace" ? "the folder's own" : "on this machine") : s.missing ?? "not found"],
+                ["Program", s.found ? `${s.found.from === "workspace" ? "a file of this folder" : "on this machine"}${s.found.loads ? ", loads this folder's code" : ""}` : s.missing ?? "not found"],
                 ...(s.found ? [["Project root", tilde(s.found.root)] as [string, string]] : []),
                 ["Default", s.own ? "yours" : s.auto ? "on" : "off until you turn it on"],
               ]}
@@ -127,6 +134,7 @@ export default function LanguageServers() {
                     <div><dt>Root</dt><dd>{tilde(r.root)}</dd></div>
                     <div><dt>Sandbox</dt><dd data-testid="lsp-sandbox">{r.sandbox === "off" ? "none: as the session's commands" : r.sandbox}</dd></div>
                     {r.pid && <div><dt>Process</dt><dd>{r.pid}{r.ready_ms != null ? `, ready in ${r.ready_ms} ms` : ""}</dd></div>}
+                    {r.rss_mb != null && <div><dt>Memory</dt><dd data-testid="lsp-rss">{gb(r.rss_mb)}</dd></div>}
                     {r.pid && <div><dt>Diagnostics</dt><dd>{r.pull ? "asked for each edit" : "pushed by the server"}</dd></div>}
                     <div><dt>Sessions</dt><dd>{r.sessions}</dd></div>
                     {r.retry_in_ms != null && <div><dt>Next start</dt><dd>in {Math.ceil(r.retry_in_ms / 1000)} s</dd></div>}

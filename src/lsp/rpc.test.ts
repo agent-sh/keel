@@ -48,3 +48,18 @@ test("a large body arriving in small pieces is held without being copied each ti
   expect(got).toBe(1);
   expect(performance.now() - t0).toBeLessThan(1000);
 });
+
+test("many small messages in one chunk, and one message in many chunks, are read in linear time", () => {
+  const one = encode({ method: "window/logMessage", params: { type: 3, message: "x".repeat(100) } });
+  const n = 60_000;
+  const wire = new Uint8Array(one.length * n);
+  for (let i = 0; i < n; i++) wire.set(one, i * one.length);
+  const t0 = performance.now();
+  expect(new Framer().push(wire)).toHaveLength(n);
+  // The same bytes a few at a time: every push finds the next message without reading the rest again.
+  const f = new Framer();
+  let got = 0;
+  for (let i = 0; i < wire.length; i += 997) got += f.push(wire.subarray(i, i + 997)).length;
+  expect(got).toBe(n);
+  expect(performance.now() - t0).toBeLessThan(3000);
+});
