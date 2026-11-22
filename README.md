@@ -152,11 +152,11 @@ to capitals. State words are in sentence case.
 | --- | --- | --- |
 | Something waits on you | Needs you | an approval, a question, a plan, a secret, an answer, a turn to resume, a message not sent |
 | A turn runs, an agent works, or a command it left in the background still runs | Working | the step, "2 agents" ("3 of 5 agents" when the rest wait), "command in background" |
-| Nothing runs and something it set up starts the next turn | Waiting | for a timer, a file, a log line, an HTTP check, a process, a monitor, a pull request's checks, another session, an agent, the provider |
+| Nothing runs and something it set up starts the next turn, or its turn waits for a provider that cannot be reached | Waiting | for a timer, a file, a log line, an HTTP check, a process, a monitor, a pull request's checks, another session, an agent, the provider |
 | A restart cut the turn and Keel goes on with it | Waiting | to resume |
 | A message you sent that its session has not taken yet | Queued | held until its current step ends, until its turn ends, or until it is resumed |
 | Its last turn ended | Done | |
-| Its last turn failed | Failed | one class: rate limit, overloaded, server error, stream dropped, context full, sign-in, billing, image refused, invalid request, output limit |
+| Its last turn failed | Failed | one class: rate limit, overloaded, server error, stream dropped, provider unreachable, context full, sign-in, billing, image refused, invalid request, output limit |
 | The model refused the turn | Declined | |
 | You or its parent stopped it, its step budget ran out, or a restart cut a turn that is not resumed | Stopped | at the step budget, by a restart |
 | No turn yet | Not started | |
