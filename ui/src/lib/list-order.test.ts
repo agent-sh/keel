@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Watch } from "../../../src/core/watch.ts";
-import { after, DEFAULT, folders, held, keep, order, readArrange, tally } from "./list-order.ts";
+import { after, around, DEFAULT, folders, held, keep, order, pinMark, pinMove, pinnedOrder, readArrange, tally } from "./list-order.ts";
 
 const s = (id: string, created: number, more: Partial<{ title: string; updated: number; workspace: string; machine: string }> = {}) =>
   ({ id, title: more.title ?? id, created, updated: more.updated ?? created, workspace: more.workspace ?? "/w/app", machine: more.machine });
@@ -62,8 +62,9 @@ test("the counts name the longest wait first, and unread only what no other coun
 test("an arrangement kept before the default changed moves to it once, and says so", () => {
   // Kept by the version before: sorted by recent activity, whether chosen or not.
   expect(readArrange(JSON.stringify({ group: "flat", sort: "recent", hideDone: true }), true)).toEqual({ arrange: { group: "flat", sort: "created", hideDone: true, lines: "one" }, note: true });
-  // Another order was their choice: kept, and told that rows keep their place now.
-  expect(readArrange(JSON.stringify({ group: "folder", sort: "state", hideDone: false }), true)).toEqual({ arrange: { group: "folder", sort: "state", hideDone: false, lines: "one" }, note: true });
+  // Another order was their choice: kept, and nothing changed for them, so nothing is said.
+  expect(readArrange(JSON.stringify({ group: "folder", sort: "state", hideDone: false }), true)).toEqual({ arrange: { group: "folder", sort: "state", hideDone: false, lines: "one" }, note: false });
+  expect(readArrange(JSON.stringify({ group: "flat", sort: "name", hideDone: false }), true).note).toBe(false);
   // Two lines a row is a choice that is kept.
   expect(readArrange(keep({ arrange: { ...DEFAULT, lines: "two" }, note: false }), true).arrange.lines).toBe("two");
   // Nothing kept: the default; a browser that ran Keel before is told, a first visit is not.
@@ -74,4 +75,33 @@ test("an arrangement kept before the default changed moves to it once, and says 
   expect(readArrange(chosen, true)).toEqual({ arrange: { ...DEFAULT, sort: "recent" }, note: false });
   expect(readArrange(keep({ arrange: DEFAULT, note: true }), true).note).toBe(true);
   expect(readArrange("not json", false).arrange).toEqual(DEFAULT);
+});
+
+test("what settles, settles around the row the hand is on", () => {
+  const key = (x: string) => x;
+  // c moved to the top of the order (its session took a turn): it stays third, the others around it.
+  expect(around(["c", "a", "b", "d"], ["a", "b", "c", "d"], "c", key)).toEqual(["a", "b", "c", "d"]);
+  // Others moved: they take their places, c keeps its own.
+  expect(around(["d", "b", "c", "a"], ["a", "b", "c", "d"], "c", key)).toEqual(["d", "b", "c", "a"]);
+  expect(around(["d", "c", "b", "a"], ["a", "b", "c", "d"], "c", key)).toEqual(["d", "b", "c", "a"]);
+  // A list that got shorter: as near its place as there is.
+  expect(around(["c", "a"], ["a", "b", "x", "c"], "c", key)).toEqual(["a", "c"]);
+  // No hand, or a row that was not there: the order as it is.
+  expect(around(["b", "a"], ["a", "b"], null, key)).toEqual(["b", "a"]);
+  expect(around(["b", "a"], ["a"], "b", key)).toEqual(["b", "a"]);
+});
+
+test("a pinned row moved among the pinned takes a mark between its new neighbours", () => {
+  const p = (id: string, pinned_ms?: number) => ({ id, settings: { pinned_ms } });
+  const list = pinnedOrder([p("c", 300), p("x"), p("a", 100), p("b", 200)]);
+  expect(list.map((s) => s.id)).toEqual(["a", "b", "c"]);
+  const moved = (id: string, to: number) => { const m = pinMove(list, id, to, 5000); return m === null ? null : pinnedOrder(list.map((s) => (s.id === id ? p(id, m) : s))).map((s) => s.id).join(""); };
+  expect(moved("c", 0)).toBe("cab");
+  expect(moved("c", 1)).toBe("acb");
+  expect(moved("a", 2)).toBe("bca");
+  expect(moved("a", 1)).toBe("bac");
+  expect(moved("b", 1)).toBeNull();
+  expect(moved("a", -3)).toBeNull();
+  expect(pinMark(undefined, undefined, 7)).toBe(7);
+  expect(pinMark(100, undefined, 7)).toBe(1100);
 });

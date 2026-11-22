@@ -47,7 +47,9 @@ export function readArrange(raw: string | null, used: boolean): Kept {
       hideDone: o.hideDone === true,
       lines: pick(o.lines, ["one", "two"] as const, DEFAULT.lines),
     },
-    note: now ? o.note === true : used,
+    // Told once to whom the order changed under: they had the old default (recent activity). One who
+    // chose by state keeps it, and by name rows already kept their place.
+    note: now ? o.note === true : used && (raw === null || o.sort === undefined || o.sort === "recent"),
   };
 }
 
@@ -123,6 +125,38 @@ export function tally(sessions: { id: string; created: number }[], states: Recor
     // Unread that says something new: what needs them or failed is counted there already.
     unread: sessions.filter((s) => (unread[s.id] ?? 0) > 0 && !["need", "fail", "declined"].includes(states[s.id]?.watch ?? "idle")).sort(first).map((s) => s.id),
   };
+}
+
+// What settles, settles around the row the hand is on: `id` keeps the place it had among `prev`
+// (the keys of the list as it was last drawn), and the others take theirs around it. So a row
+// the pointer rests on does not leave it because its own session, or one beside it, moved in the order.
+export function around<T>(next: T[], prev: string[], id: string | null | undefined, key: (x: T) => string): T[] {
+  if (!id) return next;
+  const was = prev.indexOf(id), now = next.findIndex((x) => key(x) === id);
+  if (was < 0 || now < 0 || was === now) return next;
+  const out = next.filter((_, i) => i !== now);
+  out.splice(Math.min(was, out.length), 0, next[now]!);
+  return out;
+}
+
+// The pinned group is in the order of its pins' marks (`pinned_ms`, the time a session was pinned).
+// A row put between two others takes a mark between theirs; put first or last, one before or after.
+export function pinMark(before: number | undefined, after: number | undefined, now: number): number {
+  if (before !== undefined && after !== undefined) return (before + after) / 2;
+  if (before !== undefined) return Math.max(now, before + 1000);
+  if (after !== undefined) return after - 1000;
+  return now;
+}
+// The pinned sessions in their order (two pinned in one millisecond: by id).
+export const pinnedOrder = <T extends { id: string; settings: { pinned_ms?: number } }>(list: T[]): T[] =>
+  list.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms! || a.id.localeCompare(b.id));
+// The mark that moves `id` by `by` places (-1: up, 1: down) among the pinned, or to index `to`; null when it is there already.
+export function pinMove<T extends { id: string; settings: { pinned_ms?: number } }>(pinned: T[], id: string, to: number, now: number): number | null {
+  const from = pinned.findIndex((s) => s.id === id);
+  const at = Math.max(0, Math.min(pinned.length - 1, to));
+  if (from < 0 || at === from) return null;
+  const rest = pinned.filter((s) => s.id !== id);
+  return pinMark(rest[at - 1]?.settings.pinned_ms, rest[at]?.settings.pinned_ms, now);
 }
 
 // The one after `last` in `ids`, around the end; the first when `last` is not among them.
