@@ -1,11 +1,13 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, scriptBash, shoot } from "./shots.ts";
 
 // Feature: while a turn works, Enter steers (the text joins the turn after the
 // running tool), Ctrl Shift Enter queues for after it; Stop cuts the running tool at once
-// and holds the queue; a queued prompt can be sent now.
+// and holds the queue; a queued prompt can be sent now. (A real model runs
+// the commands and says the words from prompts in words; the stand-in from
+// its script. Where a steer lands, what Stop cuts and what the queue does are
+// the product's.)
 test("steer, queue, stop and send now", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it has to take a steer into a running turn and answer queued prompts");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const r = await request.post("/api/sessions", { data: { model: HAIKU } });
   const { session } = await r.json();
@@ -14,14 +16,14 @@ test("steer, queue, stop and send now", async ({ page, request }) => {
   await page.goto(`/s/${session.id}`);
 
   const composer = page.getByTestId("composer");
-  await composer.fill("Run `sleep 6; echo first-done` with Bash, then reply in one short sentence.");
+  await composer.fill(ask("Run `sleep 6; echo first-done` with Bash, then reply in one short sentence.", scriptBash("sleep 6; echo first-done")));
   await composer.press("Enter");
   await expect(page.getByTestId("tool-call").first()).toBeVisible({ timeout: 60_000 });
 
   // Steer while the tool runs, and queue a follow-up.
   await composer.fill("Also tell me what 2+2 is, in the same reply.");
   await composer.press("Enter");
-  await composer.fill("Now reply with only the word queued-ok.");
+  await composer.fill(ask("Now reply with only the word queued-ok.", "script:say queued-ok"));
   await composer.press("Control+Shift+Enter");
   await expect(page.getByTestId("queue-item")).toHaveCount(2);
   await shoot(page, "turn-01-steer-and-queue");
@@ -35,11 +37,11 @@ test("steer, queue, stop and send now", async ({ page, request }) => {
   await shoot(page, "turn-02-steered-then-queued");
 
   // Stop during a long tool: it returns at once, the queue is held.
-  await composer.fill("Run `sleep 60` with Bash.");
+  await composer.fill(ask("Run `sleep 60` with Bash.", scriptBash("sleep 60")));
   await composer.press("Enter");
   await expect(page.getByTestId("tool-call")).toHaveCount(2, { timeout: 60_000 });
   await page.waitForTimeout(2_000); // the call is stored and its command runs
-  await composer.fill("Reply with only the word after-stop.");
+  await composer.fill(ask("Reply with only the word after-stop.", "script:say after-stop"));
   await composer.press("Control+Shift+Enter");
   const t0 = Date.now();
   await page.getByTestId("stop").click();

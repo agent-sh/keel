@@ -8,8 +8,11 @@ import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 // available yet". /permissions sets a mode by name or opens the menu, /review
 // asks the model to review the folder's uncommitted changes, /init has it
 // write an AGENTS.md, /agents shows every session, /export opens the export sheet.
+// What a command does is checked on any model: the mode it sets, the prompt
+// it sends, the turn that runs, the sheet it opens. What the model then
+// writes (the review's finding, the AGENTS.md) is checked on a real model
+// only: the stand-in answers every prompt of the product's with one line.
 test("slash commands", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: the commands' prompts need answers a model writes");
   test.setTimeout(300_000);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `slash-${Date.now()}`);
@@ -42,12 +45,13 @@ test("slash commands", async ({ page, request }) => {
   await run("/review");
   await expect(page.getByTestId("user-message").last()).toContainText("Review the uncommitted changes");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 150_000 });
-  await expect(page.getByTestId("assistant-text").last()).toContainText(/subtract|minus|-|add/i);
+  if (!SCRIPTED) await expect(page.getByTestId("assistant-text").last()).toContainText(/subtract|minus|-|add/i);
   await shoot(page, "slash-03-review");
 
   await run("/init");
+  await expect(page.getByTestId("user-message").last()).toContainText("AGENTS.md");
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 150_000 });
-  expect(existsSync(join(ws, "AGENTS.md"))).toBe(true);
+  if (!SCRIPTED) expect(existsSync(join(ws, "AGENTS.md"))).toBe(true);
 
   await run("/export");
   await expect(page.getByTestId("export-dialog")).toBeVisible();
