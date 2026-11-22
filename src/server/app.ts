@@ -290,7 +290,14 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             const jobs = jobsOf(s.id).filter(jobLive);
             if (jobs.length && body.stop_shells !== true) return json({ error: `the session still runs ${jobs.length} background command${jobs.length > 1 ? "s" : ""}: ${jobs.map((j) => j.command.slice(0, 80)).join("; ")}. Archive with stop_shells to stop them.`, jobs: jobs.map((j) => ({ id: j.id, command: j.command })) }, 409);
             await engine.interrupt(s.id);
-            const left = await stopJobs(jobs, "was stopped: its session was archived");
+            // While its commands are stopped nothing that comes due starts a turn in it (a command's end, a
+            // report), and it is archived in the same step the stop ends in.
+            const left = await engine.whileClosing([s.id], async () => {
+              const left = await stopJobs(jobs, "was stopped: its session was archived");
+              while (engine.isRunning(s.id)) await engine.interrupt(s.id);
+              if (!left.length) store.updateSession(s.id, { archived: true });
+              return left;
+            });
             if (left.length) return json({ error: `the session was not archived: ${left.length > 1 ? "these commands" : "this command"} would not stop: ${leftText(left)}`, jobs: left.map((j) => ({ id: j.id, command: j.command, pids: j.left })) }, 409);
           }
           const core = body.title !== undefined || body.model !== undefined || body.archived !== undefined || body.settings !== undefined;
@@ -310,17 +317,22 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // that would not stop keeps the whole family.
           const family = [...store.descendants(s.id).reverse(), s.id];
           for (const id of family) await engine.interrupt(id);
-          const left = await stopJobs(family.flatMap((id) => jobsOf(id).filter(jobLive)), "was stopped: its session was deleted");
-          if (left.length) return json({ error: `the session was not deleted: ${left.length > 1 ? "these commands" : "this command"} would not stop: ${leftText(left)}`, jobs: left.map((j) => ({ id: j.id, command: j.command, session_id: j.sessionId, pids: j.left })) }, 409);
-          for (const id of family) {
-            const x = store.session(id);
-            if (!x) continue;
-            rmSync(join(store.stateDir, "spill", id), { recursive: true, force: true });
-            store.deleteSession(id);
-            dropSendsOf.run(id);
-            bus.emit({ t: "session", session: { ...x, archived: true, phase: "idle" }, deleted: true });
-          }
-          return json({ ok: true });
+          // While their commands are stopped nothing that comes due starts a turn in one of them, and
+          // each is removed with no turn of its own running (one the owner started meanwhile is stopped).
+          return engine.whileClosing(family, async () => {
+            const left = await stopJobs(family.flatMap((id) => jobsOf(id).filter(jobLive)), "was stopped: its session was deleted");
+            if (left.length) return json({ error: `the session was not deleted: ${left.length > 1 ? "these commands" : "this command"} would not stop: ${leftText(left)}`, jobs: left.map((j) => ({ id: j.id, command: j.command, session_id: j.sessionId, pids: j.left })) }, 409);
+            for (const id of family) {
+              while (engine.isRunning(id)) await engine.interrupt(id);
+              const x = store.session(id);
+              if (!x) continue;
+              rmSync(join(store.stateDir, "spill", id), { recursive: true, force: true });
+              store.deleteSession(id);
+              dropSendsOf.run(id);
+              bus.emit({ t: "session", session: { ...x, archived: true, phase: "idle" }, deleted: true });
+            }
+            return json({ ok: true });
+          });
         }),
       },
 

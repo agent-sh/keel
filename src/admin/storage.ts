@@ -249,7 +249,12 @@ export class Storage {
     const s = this.store.session(id);
     if (!s) return;
     await this.engine.interrupt(id);
-    await Promise.all(jobsOf(id).filter(jobLive).map((j) => stopJob(j, "was stopped: its session was deleted")));
+    // Nothing that comes due while its commands are stopped starts a turn in it, and it goes with no turn running.
+    await this.engine.whileClosing([id], async () => {
+      await Promise.all(jobsOf(id).filter(jobLive).map((j) => stopJob(j, "was stopped: its session was deleted")));
+      while (this.engine.isRunning(id)) await this.engine.interrupt(id);
+    });
+    if (!this.store.session(id)) return;
     rmSync(join(this.dir, "spill", id), { recursive: true, force: true });
     this.store.deleteSession(id);
     this.bus.emit({ t: "session", session: { ...s, archived: true, phase: "idle" } });

@@ -558,6 +558,23 @@ export class Engine {
     return this.draining;
   }
 
+  // Sessions the owner is archiving or deleting right now. Their commands are stopped first, which
+  // takes seconds, and what comes due meanwhile (a command's end, a report, a wait) starts no turn
+  // in a session that is about to be gone: whoever delivers it keeps it back (src/automation/core.ts)
+  // and is told when the session stays after all (the closingOver hook).
+  private closing = new Set<string>();
+  isClosing(id: string) {
+    return this.closing.has(id);
+  }
+  async whileClosing<T>(ids: string[], work: () => Promise<T>): Promise<T> {
+    const mine = ids.filter((id) => !this.closing.has(id));
+    for (const id of mine) this.closing.add(id);
+    try { return await work(); } finally {
+      for (const id of mine) this.closing.delete(id);
+      for (const id of mine) for (const h of allHooks()) try { h.closingOver?.(id); } catch (e) { this.errors.capture("server", e, { hook: "closingOver", session: id }); }
+    }
+  }
+
   // The session's frozen system prompt is made again at its next turn (it moved
   // to another directory or machine; the cache prefix is rebuilt once).
   forgetSystem(id: string) {
@@ -1006,6 +1023,9 @@ export class Engine {
     const done = this.loop(id, abort.signal)
       .catch((e) => {
         if (abort.signal.aborted) return;
+        // Its session was deleted under it: there is nothing to write the failure to, and it is no
+        // failure of anyone's (the turn's writes are refused once the row is gone).
+        if (!this.store.session(id)) return;
         // A refusal a hook meant (`expected`) is said in the transcript, not tracked as a failure.
         const rec = (e as any)?.expected ? undefined : this.errors.capture("provider", e, { session: id });
         // `kind` and `status`: what failed, for the page's words and actions (a ProviderError's own, or its cause's).
@@ -1025,6 +1045,9 @@ export class Engine {
         // Each round without a model step waits twice as long as the one before.
         if (waits && round < CONTINUE_MAX) this.continueAt(id, Date.now() + Math.max(0, (e as RetryTooLong).retryAt - Date.now()) * 2 ** round, ev.id, round);
       })
+      // What saying so fails on (the session went between the check and the write) is kept as one
+      // error, never as a rejection nobody handles.
+      .catch((e) => { if (this.store.session(id)) this.errors.capture("server", e, { at: "a failed turn's error", session: id }); })
       .finally(() => {
         // The turn is over: what it left running no longer fails in it.
         if (scope) scope.turn = undefined;
@@ -2157,7 +2180,8 @@ export class Engine {
       const ratio = learnRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), u.input + u.cache_read + u.cache_write);
       if (ratio) this.keepRatio(st.info.id, ratio);
     } catch (e) {
-      this.errors.capture("server", e, { at: "learning the token ratio", model: st.info.id, session: id });
+      // (Nothing to learn from a session deleted under its request.)
+      if (this.store.session(id)) this.errors.capture("server", e, { at: "learning the token ratio", model: st.info.id, session: id });
     }
   }
 

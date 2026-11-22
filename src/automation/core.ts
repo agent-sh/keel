@@ -81,6 +81,8 @@ export function deliver(sessionId: string, text: string, meta: Record<string, un
   const list = lists.get(sessionId) ?? [];
   list.push({ text, meta, onSent: opts.onSent, refresh: opts.refresh });
   lists.set(sessionId, list);
+  // A session the owner is archiving or deleting right now: kept back, and sent only if it stays (closingOver).
+  if (D().engine.isClosing?.(sessionId)) return true;
   if (D().engine.isRunning(sessionId) || opts.hold || opts.ride) return true; // flushed by the turn-end hook, or with the next input
   if (opts.coalesceMs) {
     if (!timers.has(sessionId)) timers.set(sessionId, setTimeout(() => { timers.delete(sessionId); flush(sessionId); }, opts.coalesceMs));
@@ -137,8 +139,9 @@ function inputRoom(model: string): number {
 export function flush(sessionId: string) {
   const list = pending.get(sessionId);
   if (!list?.length) return;
-  // A daemon on its way down starts no turn: what is owed is sent by the next one.
-  if (D().engine.isRunning(sessionId) || D().engine.isDraining?.()) return;
+  // A daemon on its way down starts no turn: what is owed is sent by the next one. Nor does a
+  // session on its way out (asked here, where the turn would start, whatever was true at delivery).
+  if (D().engine.isRunning(sessionId) || D().engine.isDraining?.() || D().engine.isClosing?.(sessionId)) return;
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
   if (!s || s.archived) return void riding.delete(sessionId);

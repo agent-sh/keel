@@ -149,6 +149,9 @@ export type TurnHooks = {
   // knows the sender tells it (src/automation/undelivered.ts).
   // `session`: the receiver, when it is gone from the store by now.
   inputDropped?: (rows: QueueItem[], why: "deleted" | "archived" | "removed", session?: Session) => void;
+  // A session the owner was archiving or deleting stays after all (a command of it would not
+  // stop): what was kept back for it while it was on its way out goes now.
+  closingOver?: (sessionId: string) => void;
   // The daemon stops and parks this session's turn (before its signal aborts).
   turnParking?: (sessionId: string) => void;
   // Work that is not a turn and that a stop should not cut (a session moving

@@ -16,7 +16,7 @@ import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
 import * as snooze from "./snooze.ts";
 import * as undelivered from "./undelivered.ts";
-import { afterCallOff, afterTurn, capture, clip, D, hasPending, setDeps } from "./core.ts";
+import { afterCallOff, afterTurn, capture, clip, D, flush, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop, messageHooks, waitAckHooks } from "./tools.ts";
@@ -115,6 +115,8 @@ function init(deps: Deps) {
       if (answered) snooze.end(deps.store.session(sessionId)?.parent_id ?? sessionId, "the owner answered");
     },
     inputDropped: (rows, why, session) => undelivered.inputDropped(rows, why, session),
+    // It stays: what was kept back goes (flush drops it for one that is gone or archived).
+    closingOver: (id) => flush(id),
     turnStart: (s) => agents.onTurnStart(s.id),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
