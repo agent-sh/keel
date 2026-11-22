@@ -34,7 +34,8 @@ test("a finished parent stays in the sidebar while viewing its agent", async ({ 
     await child.press("Enter");
     await expect(page.getByTestId("task-notice")).toBeVisible();
     const childUrl = page.url();
-    await expect(row).toHaveAttribute("data-watch", "work");
+    // Its own turn ended and its one agent is parked on a file: nothing of it runs, so it waits.
+    await expect(row).toHaveAttribute("data-watch", "wait");
 
     // The agent and then its parent finish over the live socket. The parent
     // must not unmount the branch the owner is reading.

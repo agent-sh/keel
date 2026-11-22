@@ -362,7 +362,8 @@ test("fleet start: a picked machine that went offline never becomes a local star
     await expect(page.getByTestId("machine-blocked")).toContainText(`${name} is offline`);
     await expect(page.getByTestId("machine-picker")).toHaveAttribute("data-blocked", "true");
     await expect(page.getByTestId("machine-picker")).not.toContainText("offline");
-    await expect(page.getByText(`Keel works on ${name}, in its granted directory.`)).toBeVisible();
+    // Where the session would work is still said, in the start box's heading.
+    await expect(page.getByTestId("home-start").getByRole("heading", { name: "Start a session" })).toContainText(`on ${name}, in its granted directory`);
     await expect(page.getByTestId("machine-blocked")).toContainText("nothing starts on this machine instead");
     await expect(page.getByTestId("machine-picker")).toContainText(name);
     await expect(page.getByTestId("composer")).toHaveValue(draft);
