@@ -112,8 +112,9 @@ test("a small window keeps the message box on screen under a full stack", async 
     const box = pane.getByTestId("composer");
     await expect(pane.getByTestId("approval")).toHaveCount(3);
     await expect(pane.getByTestId("saved-draft")).toHaveCount(2);
-    // The oldest request took the focus (the box is empty): the control Enter would press is
-    // in the part of the region that shows, not above or below it.
+    // The keyboard came to the list of requests (the box is empty). At this text size the oldest
+    // request is taller than the region that shows it: it takes no answer for lines that were never
+    // in view, so the keyboard stays on the list, and the card says how much is left to read.
     const tray = pane.getByTestId("composer-tray");
     const focusShown = () => page.evaluate(() => {
       const a = document.activeElement as HTMLElement | null;
@@ -122,8 +123,21 @@ test("a small window keeps the message box on screen under a full stack", async 
       const r = a.getBoundingClientRect();
       return { testid: a.dataset.testid, shown: r.top >= view.top - 0.5 && r.bottom <= view.bottom + 0.5 && r.height > 0 };
     });
-    await expect(pane.getByTestId("approval").first().getByTestId("allow-once")).toBeFocused();
+    const oldest = pane.getByTestId("approval").first();
+    await expect(pane.getByTestId("approvals")).toBeFocused();
     expect(await tray.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+    expect(await oldest.evaluate((el) => el.getBoundingClientRect().height > el.closest('[data-testid="composer-tray"]')!.getBoundingClientRect().height)).toBe(true);
+    await expect(oldest).toHaveAttribute("data-must-open", "true");
+    await expect(oldest.getByTestId("approval-left")).toHaveText(/^\d+ (?:lines?|rows?) not seen yet/);
+    // Read through by the owner (the region scrolls under the pointer until the card's last row has
+    // been in view), its Allow once takes the keyboard, and the region brings it into view: the
+    // control Enter would press is in the part of the region that shows, not above or below it.
+    const at = (await tray.boundingBox())!;
+    await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
+    const frame = () => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+    for (let i = 0; i < 80 && (await oldest.getAttribute("data-must-open")) === "true"; i++) { await page.mouse.wheel(0, 12); await frame(); }
+    await expect(oldest).not.toHaveAttribute("data-must-open", "true");
+    await expect(oldest.getByTestId("allow-once")).toBeFocused();
     await expect.poll(focusShown).toEqual({ testid: "allow-once", shown: true });
     // The next request by Tab, and the last one's Allow: each is shown when it has the focus.
     await pane.getByTestId("approval").last().getByTestId("allow-once").focus();
@@ -356,8 +370,12 @@ test.describe("a crowded toolbar", () => {
       await page.keyboard.press("Enter");
       await expect(menu).toBeVisible();
       await expect(menu.getByTestId("permission-mode")).toBeInViewport({ ratio: 1 });
+      // The mode in use is whole in view as the menu opens, with its description: at this text size the
+      // list is longer than its room and scrolls.
       const modes = page.getByTestId("mode-ask");
+      await expect(modes).toHaveAttribute("aria-checked", "true");
       await expect(modes).toBeInViewport({ ratio: 1 });
+      await expect(modes.getByTestId("mode-description")).toBeInViewport({ ratio: 1 });
       // The modes open beside their row, below it or above it when there is no room below, never over it.
       const [list, row] = [(await modes.boundingBox())!, (await menu.getByTestId("permission-menu").boundingBox())!];
       expect(list.y >= row.y || list.y + list.height <= row.y + 1).toBe(true);
