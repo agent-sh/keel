@@ -26,7 +26,9 @@ type Stats = {
   cache_hit_ratio: number | null; priced_cost_usd: number; unpriced_calls: number; cost_usd: number | null;
   tool_calls: number; tool_errors: number; tool_error_rate: number;
 };
+// `as_of_ms`: when the daemon read its ledger for these numbers; `refreshing`: it is reading it again now.
 type Report = {
+  as_of_ms?: number; refreshing?: boolean;
   since_ms: number; until_ms: number; bucket_ms: number; total: Stats;
   series: (Stats & { t_ms: number; last_ms?: number })[];
   by_model: (Stats & { model: string })[];
@@ -218,15 +220,17 @@ function useReport(range: Range, also?: (since: number, n: number) => void): Rep
     let live = true;
     let sent = 0;
     let got = 0;
+    let again: ReturnType<typeof setTimeout> | undefined;
     const load = () => {
       const n = ++sent;
       const since = Date.now() - RANGES[range];
-      api<Report>(`/api/telemetry?since_ms=${since}`).then((t) => { if (live && n > got) { got = n; setR(t); } }).catch(reportError);
+      // A report answered from what the daemon keeps while it reads its ledger again: asked for once more in a moment.
+      api<Report>(`/api/telemetry?since_ms=${since}`).then((t) => { if (live && n > got) { got = n; setR(t); if (t.refreshing) again = setTimeout(load, 2500); } }).catch(reportError);
       extra.current?.(since, n);
     };
     load();
     const iv = setInterval(load, 30_000);
-    return () => { live = false; clearInterval(iv); };
+    return () => { live = false; clearInterval(iv); clearTimeout(again); };
   }, [range]);
   return r;
 }
@@ -297,6 +301,8 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
 
   return (
     <div className="flex flex-col gap-6" data-testid="usage-overview">
+      {/* On a long ledger the daemon answers from the numbers it read last and reads again behind the answer: their age is said until the new ones come. */}
+      {r.refreshing && r.as_of_ms && <div className="px-4 text-caption text-faint" data-testid="usage-as-of" title={when(r.as_of_ms)}>Numbers from {ago(r.as_of_ms) === "now" ? "a moment" : ago(r.as_of_ms)} ago. The ledger is being read again.</div>}
 
       {/* The answer: what was spent, what drove it, and what it was spent on. The page's one figure in the display size. */}
       <section className="grid gap-x-12 gap-y-6 px-4 md:grid-cols-2" data-testid="usage-answer">

@@ -21,8 +21,9 @@ export let telemetry: Telemetry | undefined;
 type Bad = { error: string; status: number };
 const PERIODS = { hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 };
 
-export const telemetryRoutes: RouteModule = ({ store, bus }) => {
+export const telemetryRoutes: RouteModule = ({ store, bus, errors }) => {
   const t = (telemetry = new Telemetry(store, bus));
+  t.failed = (e, at) => void errors.capture("server", e, { at });
   // The filters every report takes; `prefix` reads one side of a comparison.
   // `period` (hour, day, week, month) is the last hour, 24 hours, 7 days or 30 days up
   // to now; it does not mix with explicit bounds, and another word is refused.
@@ -51,7 +52,8 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
     return bad(f) ? json({ error: f.error }, f.status) : json(await run(f, q));
   };
   return {
-    "/api/telemetry": { GET: route((f) => t.report(f)) },
+    // `as_of_ms`: when the ledger was read for the answer; `refreshing`: a long ledger is being read again behind it. `refresh=1` reads now.
+    "/api/telemetry": { GET: route((f, q) => t.report(f, q.has("refresh"))) },
     // GET /api/telemetry/tokens: the zones of the prompts, in total, over time, by purpose; per turn with session_id.
     "/api/telemetry/tokens": { GET: route((f) => t.tokens(f)) },
     // GET /api/telemetry/compactions?limit=: each compaction, newest first, with the sums.

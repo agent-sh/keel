@@ -284,3 +284,76 @@ test("a failed call's reason is kept as the cause line, scrubbed like any error 
   // It read "Exit code 1", then "see the log" with the key as printed.
   expect(store.db.query<{ error: string }, []>("SELECT error FROM telemetry_tools").all().map((r) => r.error)).toEqual(["error: Authorization: Bearer [secret:test] was rejected (exit code 1)"]);
 }));
+
+// The report on a ledger that takes long to read is answered from what is kept, and the kept numbers are the full
+// read's. The ledger here is small; the times that make a read "long" are set to nothing for the test.
+test("a report is answered from the kept one while the ledger is read again, and its numbers are the full read's", () => withStore(async (store) => {
+  const { reportOf } = await import("./telemetry-report.ts");
+  const s = store.createSession({ model: "p:m", workspace: "/" });
+  const t = new Telemetry(store, new Bus());
+  const ins = store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const tool = store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error) VALUES (?, ?, ?, ?, ?)");
+  const now = Date.now();
+  let n = 0;
+  const fill = (rows: number) => store.db.transaction(() => {
+    for (let i = 0; i < rows; i++, n++) {
+      const ts = now - 6 * 86_400_000 + n * 20_000;
+      ins.run(s.id, ts, n % 3 ? "p:m" : "q:other", 400 + (n * 37) % 9000, 80 + (n * 13) % 700, 100 + (n % 50), 20 + (n % 90), 30_000 + n, n % 400, n % 7 ? 0.01 + (n % 10) / 1000 : null, n % 41 ? "ok" : "error");
+      tool.run(s.id, ts + 5, ["Bash", "Read", "Edit"][n % 3]!, 10 + (n % 300), n % 29 ? 0 : 1);
+    }
+  })();
+  fill(6_000);
+  const q = () => ({ since: Date.now() - 7 * 86_400_000 });
+  // The full read: what the report is without anything kept.
+  const full = () => JSON.parse(JSON.stringify(reportOf(store.db, q(), { daily_usd: null, monthly_usd: null })));
+  const sums = (r: any) => ({ total: r.total, by_model: r.by_model, tools: r.tools, series: r.series.length });
+  const settled = async () => { for (let i = 0; i < 200 && (t as any).reading.size; i++) await Bun.sleep(5); };
+  const env = { fresh: process.env.KEEL_REPORT_FRESH_MS, slow: process.env.KEEL_REPORT_SLOW_MS };
+  process.env.KEEL_REPORT_FRESH_MS = "0";
+  process.env.KEEL_REPORT_SLOW_MS = "0";
+  try {
+    // The first ask reads the ledger and waits for it.
+    const first = await t.report(q());
+    expect(first.refreshing).toBeUndefined();
+    expect(first.total.calls).toBe(6_000);
+    expect(sums(first)).toEqual(sums(full()));
+    const before = sums(first);
+    // Rows are written. The next ask is answered at once with the kept numbers and says how old they are and that the ledger is read again.
+    fill(500);
+    const stale = await t.report(q());
+    expect(stale.refreshing).toBe(true);
+    expect(stale.as_of_ms).toBe(first.as_of_ms);
+    expect(sums(stale)).toEqual(before);
+    // Once that read is done the answer is the full read's again.
+    await settled();
+    const next = await t.report(q());
+    expect(next.total.calls).toBe(6_500);
+    expect(sums(next)).toEqual(sums(full()));
+    expect(next.as_of_ms).toBeGreaterThan(first.as_of_ms);
+    await settled();
+    // `refresh` waits for a read of now.
+    fill(100);
+    const asked = await t.report(q(), true);
+    expect(asked.refreshing).toBeUndefined();
+    expect(sums(asked)).toEqual(sums(full()));
+    // The next daemon on this store answers its first ask from the report kept with the store, and reads behind it.
+    fill(50);
+    const later = new Telemetry(store, new Bus());
+    const kept = await later.report(q());
+    expect(kept.refreshing).toBe(true);
+    // (A report is written to the store at most once in five minutes: the one kept there is the first.)
+    expect(kept.total.calls).toBe(6_000);
+    for (let i = 0; i < 200 && (later as any).reading.size; i++) await Bun.sleep(5);
+    expect(sums(await later.report(q()))).toEqual(sums(full()));
+    for (let i = 0; i < 200 && (later as any).reading.size; i++) await Bun.sleep(5);
+    // A session's report is another question: read for itself, not answered from the report of all.
+    expect((await later.report({ ...q(), session: s.id })).refreshing).toBeUndefined();
+  } finally {
+    if (env.fresh === undefined) delete process.env.KEEL_REPORT_FRESH_MS; else process.env.KEEL_REPORT_FRESH_MS = env.fresh;
+    if (env.slow === undefined) delete process.env.KEEL_REPORT_SLOW_MS; else process.env.KEEL_REPORT_SLOW_MS = env.slow;
+  }
+  // A ledger that is read in a moment is read at every ask: the numbers are never old.
+  fill(10);
+  const quick = await t.report(q());
+  expect([quick.refreshing, quick.total.calls]).toEqual([undefined, 6_660]);
+}));

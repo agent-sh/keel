@@ -83,6 +83,7 @@ async function du(paths: string[]): Promise<Map<string, number>> {
 }
 
 export type StorageReport = Awaited<ReturnType<Storage["measure"]>>;
+type ScanRow = { id: string; title: string; archived: number; updated: number; parent_id: string | null; bytes: number; attach: number };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 
 // The day's check (Storage.checkNow): how often it is made, how often it is looked at, and how
@@ -115,10 +116,35 @@ export class Storage {
   // attachments: every event's length) is read once, and again when asked
   // for with `refresh` or after sessions were deleted; on a large store
   // that read takes seconds.
+  // The read of every event is kept with the store, so the first report of
+  // a start does not wait for it either (5 s on a store of 300,000 events):
+  // it is made from the sessions as they were read last (`scanned_ms` says
+  // when) and everything on disk as it is now, and the events are read
+  // again behind it, once a start.
   report(refresh = false): Promise<StorageReport> {
+    if (!this.last && !refresh && !this.rescanned && !this.measuring) {
+      this.rescanned = true;
+      const kept = this.keptScan();
+      if (kept) {
+        return (this.measuring = this.measure(kept).then((r) => (this.last = r)).finally(() => {
+          this.measuring = undefined;
+          // Behind the answer: when it is done the next report has this start's numbers.
+          void this.measure().then((r) => { this.last = r; }).catch((e) => this.errors.capture("server", e, { at: "storage report" }));
+        }));
+      }
+    }
     if (this.last && !refresh && !this.diskStale && Date.now() - this.last.measured_ms < REPORT_MAX_AGE_MS) return Promise.resolve(this.last);
     const prev = refresh ? undefined : this.last;
     return (this.measuring ??= (prev ? this.measureDisk(prev) : this.measure()).then((r) => ((this.diskStale = false), (this.last = r))).finally(() => (this.measuring = undefined)));
+  }
+  private rescanned = false;
+
+  private keptScan(): { scanned_ms: number; rows: ScanRow[] } | undefined {
+    try {
+      const row = this.store.db.query<{ value: string }, []>("SELECT value FROM admin_meta WHERE key = 'storage_scan'").get();
+      const k = row ? (JSON.parse(row.value) as { scanned_ms: number; rows: ScanRow[] }) : undefined;
+      return k && typeof k.scanned_ms === "number" && Array.isArray(k.rows) ? k : undefined;
+    } catch { return undefined; }
   }
 
   // The sizes on disk of a report, measured again; the rest of it as it was.
@@ -129,13 +155,23 @@ export class Storage {
     return { ...prev, measured_ms: Date.now(), database_bytes: dbBytes, total_bytes: top.total, other_bytes: Math.max(0, top.total - dbBytes - Object.values(dirs).reduce((n, b) => n + b, 0)), ...dirs };
   }
 
-  private async measure() {
+  // `kept`: the sessions as an earlier read of every event found them, in place of that read.
+  private async measure(kept?: { scanned_ms: number; rows: ScanRow[] }) {
     // Every event of the store is read for its size: off the loop (src/server/reads.ts).
-    const rows = await readsOf(this.store).sql<{ id: string; title: string; archived: number; updated: number; parent_id: string | null; bytes: number; attach: number }>(`
+    const rows = kept?.rows ?? await readsOf(this.store).sql<ScanRow>(`
       SELECT s.id, s.title, s.archived, s.updated, s.parent_id,
         COALESCE((SELECT SUM(length(e.data)) FROM events e WHERE e.session_id = s.id), 0) AS bytes,
         COALESCE((SELECT SUM(length(json_extract(i.value, '$.data'))) FROM events e, json_each(e.data, '$.images') i WHERE e.session_id = s.id AND e.kind = 'user'), 0) AS attach
       FROM sessions s`);
+    const scanned = kept?.scanned_ms ?? Date.now();
+    // Kept with the store (before the folder is measured, so the report still adds up to what is on disk):
+    // what the first report of the next start is made from.
+    if (!kept) {
+      try {
+        this.store.migrate("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+        this.store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES ('storage_scan', ?)").run(JSON.stringify({ scanned_ms: scanned, rows }));
+      } catch (e) { this.errors.capture("server", e, { at: "storage report kept" }); }
+    }
     const spillDirs = rows.map((r) => join(this.dir, "spill", r.id));
     const cps = this.checkpointRows();
     const shadowDirs = [...new Set(cps.map((c) => c.shadow))];
@@ -173,6 +209,8 @@ export class Storage {
     const dirs = Object.fromEntries(Object.entries(DIRS).map(([k, d]) => [k, sizes.get(join(this.dir, d)) ?? 0])) as Record<keyof typeof DIRS, number>;
     return {
       measured_ms: Date.now(),
+      // When every event was read for the sessions' sizes (the sizes on disk are measured more often: measured_ms).
+      scanned_ms: scanned,
       state_dir: this.dir,
       database_bytes: dbBytes,
       // What du says of the whole folder. `other_bytes`: what no kind above

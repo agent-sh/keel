@@ -111,6 +111,25 @@ registerSettings(
   (v) => ([v.daily_usd, v.monthly_usd].some((x) => x !== null && !(typeof x === "number" && x > 0)) ? "a limit is an amount of dollars above 0, or null" : undefined),
 );
 
+type Report = ReturnType<typeof import("./telemetry-report.ts").reportOf>;
+// A kept report is answered as it is for this long; older, it is answered and read again behind the answer.
+// A read of the ledger that took less than `slow` is waited for at every ask: a kept report stands in only
+// for a read that takes long. (KEEL_REPORT_FRESH_MS and KEEL_REPORT_SLOW_MS set others: a test of this on a small ledger.)
+const reportTimes = () => {
+  const of = (name: string, by: number) => (process.env[name] !== undefined && process.env[name] !== "" && Number(process.env[name]) >= 0 ? Number(process.env[name]) : by);
+  return { fresh: of("KEEL_REPORT_FRESH_MS", 5_000), slow: of("KEEL_REPORT_SLOW_MS", 300) };
+};
+const REPORT_SAVE_MS = 5 * 60_000;
+const REPORTS_KEPT = 12;
+// The question a report answers. A report that looks back from now (no `until`) is one question however the
+// moment of asking moves: how far back, to the minute.
+export function reportKey(q: Filter, now = Date.now()): string {
+  // (`period=week` names its end as the moment it was asked: that is "from now" too.)
+  const toNow = q.until === undefined || Math.abs(now - q.until) < 2000;
+  const back = toNow && q.since !== undefined ? `back ${Math.round((now - q.since) / 60_000)} min` : `${q.since ?? ""}..${q.until ?? ""}`;
+  return [q.session ?? "", q.model ?? "", q.bucket ?? "", back].join("|");
+}
+
 export class Telemetry {
   // In flight, by the request object the engine passes to every measuring hook.
   private pending = new Map<ProviderRequest, Pending>();
@@ -453,9 +472,65 @@ export class Telemetry {
   }
 
   // The report of the model requests and tool runs, read off the loop (a
-  // ledger of hundreds of thousands of rows takes seconds to read and sum).
-  report(q: Filter) {
-    return readsOf(this.store).run("telemetry.report", { q, limits: this.limits() });
+  // ledger of hundreds of thousands of rows takes seconds to read and sum:
+  // 4 s for 333,000), so nobody waits for that read twice. A report is kept
+  // by the question it answers (the session, the model, and how far back it
+  // looks); one that was read before is answered from what is kept, at
+  // once, with when it was read (`as_of_ms`), and when that is older than a
+  // few seconds the ledger is read again behind it (`refreshing`): the next
+  // ask has the new numbers. The reports without a session are kept with
+  // the store too, so the first ask after a start is answered the same way.
+  // `fresh`: the ledger is read now and the answer waits for it.
+  async report(q: Filter, fresh = false): Promise<Report & { as_of_ms: number; refreshing?: true }> {
+    const key = reportKey(q);
+    const kept = this.reports.get(key) ?? this.keptReport(key);
+    const read = (): Promise<Report> => {
+      const at = Date.now();
+      const p = readsOf(this.store).run("telemetry.report", { q, limits: this.limits() }).then((report) => {
+        this.reports.delete(key);
+        this.reports.set(key, { report, at, took: Date.now() - at });
+        while (this.reports.size > REPORTS_KEPT) this.reports.delete(this.reports.keys().next().value!);
+        // Only a report that took long is worth keeping with the store.
+        if (!q.session && Date.now() - at >= reportTimes().slow) this.saveReport(key, report, at, Date.now() - at);
+        return report;
+      }).finally(() => this.reading.delete(key));
+      this.reading.set(key, p);
+      return p;
+    };
+    // A ledger that is read in a moment is read for every ask: its numbers are never old.
+    const times = reportTimes();
+    if (!kept || fresh || kept.took < times.slow) return { ...(await (this.reading.get(key) ?? read())), as_of_ms: this.reports.get(key)?.at ?? Date.now() };
+    if (Date.now() - kept.at < times.fresh) return { ...kept.report, as_of_ms: kept.at };
+    if (!this.reading.has(key)) read().catch((e) => this.failed(e, "telemetry report"));
+    return { ...kept.report, as_of_ms: kept.at, refreshing: true };
+  }
+  // A failure of a read behind an answer, or of keeping a report: the daemon's error tracker (set by the routes).
+  failed: (e: unknown, at: string) => void = (e, at) => console.warn(`[daemon] ${at}: ${(e as Error)?.message ?? e}`);
+  private reports = new Map<string, { report: Report; at: number; took: number }>();
+  private reading = new Map<string, Promise<Report>>();
+  private savedAt = new Map<string, number>();
+
+  // A report kept with the store by an earlier daemon (or an earlier ask of this one).
+  private keptReport(key: string): { report: Report; at: number; took: number } | undefined {
+    try {
+      const row = this.store.db.query<{ value: string }, [string]>("SELECT value FROM admin_meta WHERE key = ?").get(`telemetry_report ${key}`);
+      if (!row) return undefined;
+      const kept = JSON.parse(row.value) as { report: Report; at: number; took: number };
+      this.reports.set(key, kept);
+      return kept;
+    } catch { return undefined; }
+  }
+
+  // Kept with the store at most once in five minutes a question: it is what a start answers from, not a ledger of its own.
+  private saveReport(key: string, report: Report, at: number, took: number) {
+    if (at - (this.savedAt.get(key) ?? 0) < REPORT_SAVE_MS) return;
+    this.savedAt.set(key, at);
+    try {
+      this.store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES (?, ?)").run(`telemetry_report ${key}`, JSON.stringify({ report, at, took }));
+      // Only the questions asked lately stay.
+      const keys = this.store.db.query<{ key: string }, []>("SELECT key FROM admin_meta WHERE key LIKE 'telemetry_report %'").all().map((r) => r.key);
+      for (const k of keys) if (!this.reports.has(k.slice("telemetry_report ".length))) this.store.db.query("DELETE FROM admin_meta WHERE key = ?").run(k);
+    } catch (e) { this.failed(e, "telemetry report kept"); }
   }
 
   // Where the prompt tokens went (see tokensOf), read off the loop.

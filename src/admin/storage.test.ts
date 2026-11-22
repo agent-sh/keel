@@ -1116,3 +1116,54 @@ test("the day's check reads every kept backup again in turn, and finds one that 
     rmSync(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("the first storage report of a start is answered from the report kept with the store, and its numbers are the full read's", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-storage-report-"));
+  try {
+    const store = new Store(join(root, "state"));
+    // (The column the agents module adds: the report tells a session of an agent from the owner's.)
+    if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+    const ids: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const s = store.createSession({ model: "p:m", workspace: root, title: `Session ${i}` });
+      ids.push(s.id);
+      store.db.transaction(() => { for (let k = 0; k < 50; k++) store.append(s.id, "user", { text: "x".repeat(200 + i * 10 + k) }); })();
+    }
+    // What a read of every event says, the way the report asks it.
+    const scan = () => Object.fromEntries(store.db.query<{ id: string; bytes: number }, []>("SELECT s.id, COALESCE((SELECT SUM(length(e.data)) FROM events e WHERE e.session_id = s.id), 0) AS bytes FROM sessions s").all().map((r) => [r.id, r.bytes]));
+    const sizes = (r: { by_session: { id: string; transcript_bytes: number }[] }) => Object.fromEntries(r.by_session.map((x) => [x.id, x.transcript_bytes]));
+    const total = (m: Record<string, number>) => Object.values(m).reduce((a, b) => a + b, 0);
+    const errors = { capture: () => {} } as any;
+    const first = new Storage(store, {} as any, new Bus(), errors);
+    const whole = await first.report();
+    expect(sizes(whole)).toEqual(scan());
+    expect(whole.sessions.transcript_bytes).toBe(total(scan()));
+    // The events were read for this report: a moment before its sizes on disk were measured.
+    expect(whole.measured_ms - whole.scanned_ms).toBeLessThan(5_000);
+    expect(whole.scanned_ms).toBeLessThanOrEqual(whole.measured_ms);
+    // More is written, and the daemon starts again: its first report does not wait for a read of every event.
+    // It carries the sessions as they were read last, and says when that was.
+    store.append(ids[0]!, "user", { text: "y".repeat(5000) });
+    const reads: string[] = [];
+    const sql = store.db.query.bind(store.db), prepare = store.db.prepare.bind(store.db);
+    const counted = (make: (...a: any[]) => unknown) => (text: string, ...rest: unknown[]) => { if (/FROM events e WHERE e\.session_id = s\.id\), 0\) AS bytes,/.test(text)) reads.push("events"); return make(text, ...rest); };
+    store.db.query = counted(sql) as typeof store.db.query;
+    store.db.prepare = counted(prepare) as typeof store.db.prepare;
+    const next = new Storage(store, {} as any, new Bus(), errors);
+    const kept = await next.report();
+    expect(sizes(kept)).toEqual(sizes(whole));
+    expect(kept.scanned_ms).toBe(whole.scanned_ms);
+    expect(kept.measured_ms).toBeGreaterThanOrEqual(whole.measured_ms);
+    // The events are read again behind that answer, once: the report after it has this start's numbers, the full read's.
+    for (let i = 0; i < 400 && sizes(await next.report())[ids[0]!] === sizes(whole)[ids[0]!]; i++) await Bun.sleep(10);
+    const fresh = await next.report();
+    expect(sizes(fresh)).toEqual(scan());
+    expect(fresh.sessions.transcript_bytes).toBe(total(scan()));
+    expect(fresh.scanned_ms).toBeGreaterThan(whole.scanned_ms);
+    expect(reads.length).toBe(1);
+    store.db.query = sql as typeof store.db.query;
+    store.db.prepare = prepare as typeof store.db.prepare;
+    // What is kept is the read of the events alone: the sizes on disk are measured for every report, so the report adds up to the folder as it is.
+    expect(Object.keys(JSON.parse(store.db.query<{ value: string }, []>("SELECT value FROM admin_meta WHERE key = 'storage_scan'").get()!.value)).sort()).toEqual(["rows", "scanned_ms"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

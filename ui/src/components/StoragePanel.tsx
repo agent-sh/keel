@@ -12,7 +12,7 @@ import { fmtBytes } from "./ResourcesPanel.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type Report = {
-  measured_ms: number; state_dir: string; total_bytes: number; database_bytes: number; attachments_bytes: number;
+  measured_ms: number; scanned_ms?: number; state_dir: string; total_bytes: number; database_bytes: number; attachments_bytes: number;
   sessions: { count: number; transcript_bytes: number }; archived_sessions: { count: number; transcript_bytes: number }; subagent_sessions: { count: number; transcript_bytes: number };
   spilled_output_bytes: number; checkpoints_bytes: number; worktrees_bytes: number; reports_bytes: number; backups_bytes: number; plugins_bytes: number;
   memory_transcripts_bytes: number; uploads_bytes: number; artifacts_bytes: number; logs_bytes: number; other_bytes: number;
@@ -191,6 +191,8 @@ export function StoragePanel() {
             <div className="truncate font-mono text-caption text-faint" title={r.state_dir}>{r.state_dir}</div>
           </div>
           <span className="text-caption text-faint" title={when(r.measured_ms)}>measured {ago(r.measured_ms) === "now" ? "just now" : `${ago(r.measured_ms)} ago`}</span>
+          {/* The sessions' sizes come from a read of every event, made once a start and kept: when that read is older than the sizes on disk, it says so. */}
+          {r.scanned_ms !== undefined && r.measured_ms - r.scanned_ms > 120_000 && <span className="text-caption text-faint" title={when(r.scanned_ms)} data-testid="storage-scanned">sessions read {ago(r.scanned_ms)} ago</span>}
           <button type="button" className={cn(btn, "ml-auto")} disabled={busy} onClick={() => load(true)}>{busy ? "Measuring" : "Measure again"}</button>
         </div>
         <Bars rows={[

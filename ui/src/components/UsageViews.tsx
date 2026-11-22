@@ -28,10 +28,12 @@ function useReport<T>(path: string | null, deps: unknown[]): T | null {
   useEffect(() => {
     if (!path) return;
     let live = true;
-    const load = () => api<T>(path).then((x) => live && setR(x)).catch(reportError);
+    let again: ReturnType<typeof setTimeout> | undefined;
+    // A report the daemon answered from what it keeps while it reads its ledger again is asked for once more in a moment.
+    const load = (): Promise<unknown> => api<T>(path).then((x) => { if (!live) return; setR(x); if ((x as { refreshing?: boolean }).refreshing) again = setTimeout(load, 2500); }).catch(reportError);
     load();
     const iv = setInterval(load, 30_000);
-    return () => { live = false; clearInterval(iv); };
+    return () => { live = false; clearInterval(iv); clearTimeout(again); };
   }, deps);
   return r;
 }
