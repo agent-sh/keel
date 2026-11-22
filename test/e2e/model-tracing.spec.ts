@@ -63,7 +63,7 @@ test("a failure notice names the tool that tells why, and a session reads its ag
     // Told, where it matters: the notice of the failure names the tool and the agent's id. It is one
     // more line of an input in the history; the system prompt holds no block of its own for it.
     const notice = ((await view(id)).events as StoredEvent[]).filter((e) => e.kind === "user").map((e) => String(e.data.text)).find((t) => t.includes("[harness] Failures in this session's work"))!;
-    expect(notice).toContain(`1 agent failed (quota), with no report of its own: ${agent.id}`);
+    expect(notice).toContain(`1 agent failed (quota), with no report of its own\n    ${agent.id} `);
     expect(notice.trimEnd().split("\n").at(-1)).toBe(`keel__session_timeline with session: ${agent.id} tells what that agent did and where it failed.`);
     const mine = await prompt(id);
     expect((mine.blocks as { name: string }[]).map((b) => b.name)).not.toContain("Tracing");

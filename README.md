@@ -41,9 +41,10 @@ files, approvals asked and settled, and what failed. Rows are newest first,
 following page (`before`). `only` is `failures`, `turns` or `agents`. `since`
 is a span back from now (`90s`, `30m`, `1h`, `2d`), epoch milliseconds or an
 ISO time: nothing older is read or returned. `as_of` is when the page was
-read. `now` says what the session is doing: the running turn's step and tool,
-what waits on the owner, the waits and agents still out, what is queued. What
-`now` says (the running turn, a card still open) is not a row too.
+read. `now` says what the session is doing: the running turn's step and tool
+and the calls that failed in it so far, what waits on the owner, the waits and
+agents still out, what is queued. What `now` says (the running turn, a card
+still open) is not a row too.
 
 What the rows mean:
 
@@ -137,10 +138,15 @@ for the text form, `since=` for a window you name, at most seven days back),
 
 ## A model traces a failure by itself
 
-The notice a session gets when an agent it started fails ends with one line
-that names the tool and the agent: `keel__session_timeline with session: ID
-tells what that agent did and where it failed.` It is part of an input in the
-history, so no session's system prompt or cached prefix changes for it.
+The notice a session gets when an agent it started fails has one entry per
+cause. Under it, each agent that failed since the last notice has a line with
+its own count and its own latest failure as it read (three agents, the last to
+fail first; the rest by ID). A count over more than that says whose it is and
+over what time. The notice ends with one line that names the tool and one of
+those agents, the last to fail whose session is still there:
+`keel__session_timeline with session: ID tells what that agent did and where
+it failed.` It is part of an input in the history, so no session's system
+prompt or cached prefix changes for it.
 
 - `keel__session_timeline` takes `session`: an agent the session started, by
   its ID, a prefix of it or its session ID. `open` (`error=ID` or `turn=ID`,

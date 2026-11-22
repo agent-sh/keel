@@ -5,14 +5,15 @@ import type { TurnHooks } from "../engine/hooks.ts";
 import { errorText } from "../engine/retry.ts";
 import { D, capture, clip, deliver, isPending, rider, stillRunning, type Pending } from "./core.ts";
 import { cutTurn } from "./waits.ts";
-import { acked, add, classOf, cleared, fingerprintOf, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Told } from "./failure-groups.ts";
+import { acked, add, classOf, cleared, fingerprintOf, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
 
 // A session's own account of what went wrong in its scope, kept so nobody has
 // to ask: every failure of its turns, of its agents and their tools, and of
 // its waits and loops lands in one table, grouped by cause (failure-groups.ts).
 // What the session's model has not been given yet goes to it as one harness
 // input, built from the table with no model call: N failures of one cause are
-// one entry with a count. An agent that failed with no words of its own is told
+// one entry with a count, and under it who failed, each agent with its own
+// count and its own latest failure. An agent that failed with no words of its own is told
 // here instead of in a report of its own. A failure outside the session's turn
 // that stands in for a report starts a turn, like the report would have; the
 // rest goes with the next harness input and never starts one. Only what a
@@ -173,6 +174,29 @@ export function agentFailed(a: { id: string; parent_id: string; session_id: stri
 // that the last agent is in). Not kept over a restart.
 const notes = new Map<string, string>();
 
+// What a notice says of an agent beyond what its cause keeps, read when the
+// notice is made: whether its session is still there (a deleted one has no
+// timeline to point at) and the machine its tools run on when not this one.
+function knownOf(sessionId: string): Known {
+  const { store } = D();
+  type AgentRow = { id: string; session_id: string; machine: string | null };
+  let rows: Map<string, AgentRow> | undefined; // read once, and only when a notice names an agent
+  return (id) => {
+    rows ??= new Map(store.db.query<AgentRow, [string]>("SELECT id, session_id, machine FROM agents WHERE parent_id = ?").all(sessionId).map((a) => [a.id, a]));
+    const a = rows.get(id);
+    if (!a || !store.session(a.session_id)) return { gone: true };
+    return a.machine ? { where: machineName(a.machine) } : undefined;
+  };
+}
+// The fleet's name for a machine (its table is the fleet's: absent in a store the fleet never opened).
+function machineName(id: string): string {
+  try {
+    return D().store.db.query<{ name: string }, [string]>("SELECT name FROM fleet_machines WHERE id = ?").get(id)?.name ?? id;
+  } catch {
+    return id;
+  }
+}
+
 const AGENTS_LEFT = "SELECT COUNT(*) AS n FROM agents WHERE parent_id = ? AND status IN ('running', 'waiting') AND type != 'reviewer'";
 
 // The notice for what the session is owed now, read from the table when it is
@@ -183,7 +207,7 @@ const AGENTS_LEFT = "SELECT COUNT(*) AS n FROM agents WHERE parent_id = ? AND st
 function notice(sessionId: string, parts: Record<string, unknown>[] = []): Pending | undefined {
   const { store } = D();
   const reports = parts.filter((p) => p.kind === "subagent");
-  const r = render(owedOf(sessionId), Date.now(), new Set(reports.map((p) => String(p.agent_id))));
+  const r = render(owedOf(sessionId), Date.now(), new Set(reports.map((p) => String(p.agent_id))), knownOf(sessionId));
   if (!r) return undefined;
   if (r.text === null) return void settle(sessionId, r.told); // all of it is in the reports going now
   let tail = "";

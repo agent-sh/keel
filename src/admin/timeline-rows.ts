@@ -363,7 +363,8 @@ export function failureRow(g: FailureIn, link?: Pick<ErrorRecord, "id" | "turn_e
 export type NowInput = {
   ts: number;
   // `output`: when the reply being streamed last gave output (absent between requests).
-  turn?: { id: string; ts: number; opener?: Opener; steps: number; status: TurnStatus; output?: number } | null;
+  // `failed_tools`: the calls of this turn that failed up to now.
+  turn?: { id: string; ts: number; opener?: Opener; steps: number; status: TurnStatus; output?: number; failed_tools?: number } | null;
   starting?: boolean; // a turn is being set up: nothing of it is stored yet
   approvals: { id: string; call_id?: string; tool?: string; risk?: string; created?: number; child_session?: string; child_title?: string }[];
   questions: { call_id: string; child_session?: string; child_title?: string }[];
@@ -416,7 +417,9 @@ export function nowLines(n: NowInput): TimelineNow {
     const head = who.key === "restart" ? "Running a turn resumed after a daemon restart" : `Running a turn started by ${who.words}`;
     // A call of this session's own turn whose card is open has not started: the turn waits on the answer.
     const asking = n.turn.status.kind === "tool" && n.approvals.some((a) => !a.child_session);
-    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${asking ? "waiting for approval" : DOING(n.turn.status, n.ts, n.turn.output)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });
+    // What failed in it up to now is said here: a running turn is not a row, so nothing else would say it.
+    const bad = n.turn.failed_tools ? plural(n.turn.failed_tools, "failed tool") : undefined;
+    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${bad ? `${bad} so far, ` : ""}${asking ? "waiting for approval" : DOING(n.turn.status, n.ts, n.turn.output)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id, ...(bad ? { bad } : {}) });
   } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
     // A parked agent says what it waits for; a timer's wake time makes the line say when it is due.

@@ -528,7 +528,8 @@ export class Timeline {
     if (lastStart) {
       const f = this.after(sessionId, lastStart);
       if (!f.end && running === lastStart.id) {
-        turn = { id: lastStart.id, ts: lastStart.ts, opener: this.opener(sessionId, lastStart.parent), steps: this.steps(sessionId, lastStart), status: live.statusOf?.(sessionId) ?? { kind: "idle" }, output: live.outputOf?.(sessionId) };
+        const failed = this.table("telemetry_tools") ? db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM telemetry_tools WHERE turn_event = ? AND is_error = 1").get(lastStart.id)!.n : 0;
+        turn = { id: lastStart.id, ts: lastStart.ts, opener: this.opener(sessionId, lastStart.parent), steps: this.steps(sessionId, lastStart), status: live.statusOf?.(sessionId) ?? { kind: "idle" }, output: live.outputOf?.(sessionId), failed_tools: failed };
       } else if (f.end) {
         const end = JSON.parse(f.end.data ?? "{}");
         const reason = String(end.reason ?? "error");

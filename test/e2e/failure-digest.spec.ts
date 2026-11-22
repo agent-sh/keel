@@ -4,8 +4,9 @@ import { shoot } from "./shots.ts";
 // Feature: a session is told what went wrong around it without asking. Agents
 // that failed on one cause, with no words of their own, reach their parent as
 // one entry of one notice (each listed by id), not as a report each; a tool
-// failure an agent repeated is one line with its count while that agent still
-// works; the same grouped record is readable over HTTP; a failure a wait
+// failure an agent repeated is one entry while that agent still works, with
+// that agent's own count and its own latest failure, whoever else ran into the
+// same cause; the same grouped record is readable over HTTP; a failure a wait
 // already returned is not told again.
 const STAND_IN = "scripted:stand-in";
 const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
@@ -51,9 +52,10 @@ test("agents that failed on one cause reach their parent as one grouped notice",
 
     // One notice, one entry for the five, the error said once, every agent by id.
     expect(text.match(/<failures>/g)).toHaveLength(1);
-    expect(text).toContain("5 agents failed on one cause (quota), with no report of their own:");
+    expect(text).toContain("5 agents failed on one cause (quota), with no report of their own\n");
     expect(text.match(/your credit balance is too low/g)).toHaveLength(1);
-    for (const a of lanes) expect(text.split(a.id).length - 1).toBe(1);
+    const said = text.slice(0, text.indexOf("\n</failures>"));
+    for (const a of lanes) expect(said.split(a.id).length - 1).toBe(1);
     // The five have no report of their own; the two that worked do.
     expect(text).not.toContain('status="failed"');
     expect(text.match(/<subagent_result /g)).toHaveLength(2);
@@ -64,7 +66,7 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     const first = String(inputs[0].data.text);
     expect(first).toContain('title="Fine helper"');
     expect(first.indexOf("<failures>")).toBeGreaterThan(first.indexOf("</subagent_result>"));
-    expect(first).toMatch(/Read failed 3 times on one cause, in agent \w+ "Probe"/);
+    expect(first).toMatch(/Read failed 3 times on one cause in 1 agent\n    \w+ "Probe", 3 times: File does not exist: \/nonexistent\/keel-failure-digest\.txt\n/);
     expect(first.match(/still running/g) ?? []).toHaveLength(1);
     // Probe's own report came when it finished, with no second notice.
     expect(String(inputs[1].data.text)).toContain('title="Probe"');
@@ -89,6 +91,57 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     await expect(page.getByTestId("agent-report")).toHaveCount(2);
     await card.scrollIntoViewIfNeeded();
     await shoot(page, "failure-digest-01-notice");
+  } finally {
+    await request.delete(`/api/sessions/${id}`);
+  }
+});
+
+// One cause (a file that is not there) in the session's own call and in three agents, each on
+// another path. Only the agent that repeated it is named, with its own path and count; the
+// count over all of them says whose it is; its timeline says what failed while it still works.
+test("an agent that repeated a shared cause is told with its own failure, not the first one of the cause", async ({ page, request }) => {
+  const miss = (path: string) => ({ name: "Read", input: { file_path: path } });
+  const pause = (seconds: number, word: string) => ({ name: "Bash", input: { command: `sleep ${seconds}; echo ${word}` } });
+  const lane = (title: string, calls: unknown[]) => spawn(`${title}\nscript:calls ${JSON.stringify(calls)}`);
+  const id = await start(request, "Failure digest, shared cause", [
+    miss("/nonexistent/digest/own/earlier.txt"),
+    lane("Early lane", [miss("/nonexistent/digest/early/one.txt")]),
+    pause(2, "one"),
+    lane("Twice lane", [miss("/nonexistent/digest/twice/b1.txt"), miss("/nonexistent/digest/twice/b2.txt"), pause(12, "twice")]),
+    lane("Loop lane", [miss("/nonexistent/digest/loop/c.txt"), miss("/nonexistent/digest/loop/c.txt"), miss("/nonexistent/digest/loop/c.txt"), pause(12, "loop")]),
+    pause(4, "two"),
+  ]);
+  try {
+    const noticeOf = async () => ((await (await request.get(`/api/sessions/${id}`)).json()).events as any[]).filter((e) => e.kind === "user" && e.data.kind).map((e) => String(e.data.text)).find((t) => t.includes("<failures>"));
+    await expect.poll(noticeOf, { timeout: 60_000 }).toBeTruthy();
+    const notice = (await noticeOf())!;
+    const agents = (await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as any[];
+    const loop = agents.find((a) => a.title.startsWith("Loop"));
+    const entries = notice.slice(notice.indexOf("<failures>\n") + 11, notice.indexOf("\n</failures>")).split("\n");
+    expect(entries).toEqual([
+      "- Read failed 3 times on one cause in 1 agent; 7 by this session and all its agents in the last minute",
+      `    ${loop.id} "Loop lane", 3 times: File does not exist: /nonexistent/digest/loop/c.txt`,
+    ]);
+    expect(notice).toContain(`\nkeel__session_timeline with session: ${loop.id} tells what that agent did and where it failed.`);
+    // The agent still works: its running turn says what failed in it.
+    const timeline = await (await request.get(`/api/sessions/${loop.session_id}/timeline?only=failures&since=40m&format=text`)).text();
+    expect(timeline).toMatch(/Running a turn started by its parent's task: step \d+, 3 failed tools so far, running Bash/);
+
+    const events = await settled(request, id, 3);
+    expect(events.filter((e) => e.kind === "user" && e.data.kind).map((e) => String(e.data.text)).join("\n").match(/<failures>/g)).toHaveLength(1);
+    // The record: one cause, each of the four with its own count and its own latest failure.
+    const group = ((await (await request.get(`/api/errors?session=${id}`)).json()).failures as any[]).find((g) => g.kind === "tool" && g.cls === "Read");
+    expect([group.count, group.owed, group.sample.split("\n")[0]]).toEqual([7, 0, "File does not exist: /nonexistent/digest/own/earlier.txt"]);
+    expect(group.refs.map((r: any) => [r.label ?? r.id, r.n, r.eg])).toEqual([
+      ["self", 1, "File does not exist: /nonexistent/digest/own/earlier.txt"], ["Early lane", 1, "File does not exist: /nonexistent/digest/early/one.txt"],
+      ["Twice lane", 2, "File does not exist: /nonexistent/digest/twice/b2.txt"], ["Loop lane", 3, "File does not exist: /nonexistent/digest/loop/c.txt"],
+    ]);
+
+    await page.goto(`/s/${id}`);
+    const card = page.getByTestId("failure-notice");
+    await expect(page.getByTestId("failure-entries")).toContainText(`${loop.id} "Loop lane", 3 times: File does not exist: /nonexistent/digest/loop/c.txt`);
+    await card.scrollIntoViewIfNeeded();
+    await shoot(page, "failure-digest-02-own-failure");
   } finally {
     await request.delete(`/api/sessions/${id}`);
   }

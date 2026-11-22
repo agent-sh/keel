@@ -19,10 +19,16 @@ const store = new Store(join(dir, "state"));
 const busy = new Set<string>();
 const held = new Set<string>();
 const sends: { id: string; text: string }[] = [];
+// A daemon stopped right after an input was stored: the engine stored it and nothing after the send ran.
+let stopAfterSend = false;
 const engine = {
   isRunning: (id: string) => busy.has(id),
   isHeld: (id: string) => held.has(id),
-  send: (id: string, text: string, o: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...o?.meta }) }),
+  send: (id: string, text: string, o: any) => {
+    sends.push({ id, text });
+    const event = store.append(id, "user", { text, ...o?.meta });
+    return stopAfterSend ? {} : { event };
+  },
   interrupt: async () => {},
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),
   idle: async () => {},
@@ -54,6 +60,10 @@ const misses = (sessionId: string, n: number) => {
   for (let i = 0; i < n; i++)
     failures.hooks.toolRan!(s, { id: `c${i}`, tool: { name: "Read" } } as any, { type: "tool_result", tool_use_id: `c${i}`, content: `File does not exist: /work/f${i}.txt`, is_error: true }, { ms: 1, outcome: "error" });
 };
+const miss = (sessionId: string, path: string) =>
+  failures.hooks.toolRan!(store.session(sessionId)!, { id: "c", tool: { name: "Read" } } as any, { type: "tool_result", tool_use_id: "c", content: `File does not exist: ${path}`, is_error: true }, { ms: 1, outcome: "error" });
+// The lines of a notice's entries, and its last line.
+const entries = (text: string) => text.slice(text.indexOf("<failures>\n") + 11, text.indexOf("\n</failures>")).split("\n");
 const owedRows = (sessionId: string) => store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM session_failures WHERE session_id = ? AND owed > 0").get(sessionId)!.n;
 
 // P1: past the twenty ids a cause can name, an agent keeps its own report.
@@ -71,7 +81,12 @@ test("the twenty-first agent to fail on one cause before the notice goes keeps i
   expect(got[0]).toContain("20 agents failed on one cause (quota)");
   expect(got[0]).not.toContain("not listed");
   // Every one of the twenty-one is named once: twenty in the entry, one in its report.
-  for (const a of all) expect(got[0]!.split(a.id).length - 1).toBe(1);
+  const said = got[0]!.slice(0, got[0]!.indexOf("\n</failures>"));
+  for (const a of all) expect(said.split(a.id).length - 1).toBe(1);
+  // Three have a line of their own, the rest are listed by id; the timeline to read is one of theirs.
+  expect(entries(got[0]!)).toHaveLength(5);
+  expect(entries(got[0]!)[4]).toStartWith("    and 17 more agents: ");
+  expect(got[0]!.split("\n").at(-1)).toBe(`keel__session_timeline with session: ${all[19]!.id} (or another agent id above) tells what that agent did and where it failed.`);
   expect(got[0]!.match(/<subagent_result [^>]*status="failed"/g)).toHaveLength(1);
   expect(got[0]).toContain(`<subagent_result agent_id="${all[20]!.id}"`);
 });
@@ -170,7 +185,7 @@ test("a wait that returns an agent's later report does not clear its earlier fai
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own: ${a.id} "Lane"`);
+  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own\n    ${a.id} "Lane": ${QUOTA}`);
   expect(got[0]).not.toContain("<subagent_result"); // the wait holds task 2's report
 });
 
@@ -188,7 +203,7 @@ test("a wait that returns a second failure, on another cause, leaves the first o
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own: ${a.id} "Lane"`);
+  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own\n    ${a.id} "Lane": ${QUOTA}`);
   expect(got[0]).not.toContain("overloaded");
   expect(owedRows(p.id)).toBe(0);
 });
@@ -217,6 +232,79 @@ test("an input with a report and a notice says once how many agents still run, a
   expect(got[0]!.indexOf("<failures>")).toBeGreaterThan(got[0]!.indexOf("</subagent_result>"));
 });
 
+// One cause (a file that is not there) across the session's own calls and three
+// agents, each on another path at another time. The notice names the agent
+// that repeated it with that agent's own path and count; the others' paths,
+// the session's own among them, are in no line of it.
+test("a cause shared by the session and its agents is told per agent, each with its own failure, once across a restart", async () => {
+  store.migrate("CREATE TABLE IF NOT EXISTS fleet_machines (id TEXT PRIMARY KEY, name TEXT NOT NULL)"); // the fleet's, in the daemon
+  store.db.query("INSERT OR REPLACE INTO fleet_machines (id, name) VALUES ('m-1', 'Build box')").run();
+  const p = parentOf("Shared cause");
+  busy.add(p.id);
+  miss(p.id, "/own/earlier.txt"); // the session's own miss comes first: it is the cause's first failure
+  const early = await spawn(p.id, "Early lane");
+  const twice = await spawn(p.id, "Twice lane");
+  const loop = await spawn(p.id, "Loop lane");
+  const far = await spawn(p.id, "Far lane");
+  store.db.query("UPDATE agents SET machine = 'm-1' WHERE id = ?").run(far.id);
+  miss(early.session_id, "/early/one.txt");
+  miss(twice.session_id, "/twice/b1.txt");
+  miss(twice.session_id, "/twice/b2.txt");
+  for (let i = 0; i < 3; i++) miss(loop.session_id, "/loop/c.txt");
+  done(early, "early is done");
+  await settled();
+  busy.delete(p.id);
+  flush(p.id);
+  let got = to(p.id);
+  expect(got).toHaveLength(1);
+  expect(entries(got[0]!)).toEqual([
+    "- Read failed 3 times on one cause in 1 agent; 7 by this session and all its agents in the last minute",
+    `    ${loop.id} "Loop lane", 3 times: File does not exist: /loop/c.txt`,
+  ]);
+  expect(got[0]).toContain(`\nkeel__session_timeline with session: ${loop.id} tells what that agent did and where it failed.`);
+  for (const other of ["/own/earlier.txt", "/early/one.txt", "/twice/", twice.id, far.id]) expect(got[0]!.slice(got[0]!.indexOf("<failures>"))).not.toContain(other);
+  // The record: one cause, every occurrence counted, each ref with its own latest failure.
+  const [g] = failures.groupsOf(store, p.id).filter((x) => x.kind === "tool");
+  expect([g!.count, g!.owed, g!.told, g!.sample]).toEqual([7, 0, 7, "File does not exist: /own/earlier.txt"]);
+  expect(g!.refs.map((r) => [r.id, r.n, r.eg])).toEqual([
+    ["self", 1, "File does not exist: /own/earlier.txt"], [early.id, 1, "File does not exist: /early/one.txt"],
+    [twice.id, 2, "File does not exist: /twice/b2.txt"], [loop.id, 3, "File does not exist: /loop/c.txt"],
+  ]);
+
+  // Two more repeat it: one whose session is then deleted, one on another machine. The daemon
+  // stops right after the notice is stored, before what it told is written down.
+  busy.add(p.id);
+  miss(twice.session_id, "/twice/b3.txt");
+  for (let i = 0; i < 3; i++) miss(far.session_id, "/srv/far/d.txt");
+  store.deleteSession(twice.session_id);
+  done(loop, "loop is done");
+  await settled();
+  busy.delete(p.id);
+  stopAfterSend = true;
+  try { flush(p.id); } finally { stopAfterSend = false; }
+  got = to(p.id);
+  expect(got).toHaveLength(2);
+  expect(entries(got[1]!)).toEqual([
+    "- Read failed 6 times on one cause in 2 agents; 11 by this session and all its agents in the last minute",
+    `    ${far.id} "Far lane" on Build box, 3 times: File does not exist: /srv/far/d.txt`,
+    `    ${twice.id} "Twice lane" (its session was deleted), 3 times: File does not exist: /twice/b3.txt`,
+  ]);
+  // The timeline that can be read is the far agent's: the deleted one has none.
+  expect(got[1]).toContain(`\nkeel__session_timeline with session: ${far.id} tells what that agent did and where it failed.`);
+  expect(got[1]).not.toContain(loop.id + ' "'); // told already, with nothing new: not named again
+  expect(owedRows(p.id)).toBe(1); // the stop fell before the settling
+  // The next daemon settles what the stored notice told and sends nothing again; the counts are kept.
+  failures.recover();
+  await Bun.sleep(350);
+  flush(p.id);
+  expect(to(p.id)).toHaveLength(2);
+  expect(owedRows(p.id)).toBe(0);
+  expect(failures.groupsOf(store, p.id).filter((x) => x.kind === "tool").map((x) => [x.count, x.told])).toEqual([[11, 11]]);
+  // One more miss of the far agent is a single miss again, not a repeat.
+  miss(far.session_id, "/srv/far/e.txt");
+  expect(owedRows(p.id)).toBe(0);
+});
+
 test("a prune that fails after the failure is written does not bring the report back", async () => {
   const p = parentOf("Prune");
   busy.add(p.id);
@@ -233,7 +321,7 @@ test("a prune that fails after the failure is written does not bring the report 
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain(`1 agent failed (server), with no report of its own: ${a.id} "Lane"`);
+  expect(got[0]).toContain(`1 agent failed (server), with no report of its own\n    ${a.id} "Lane": `);
   expect(got[0]).not.toContain("<subagent_result");
 });
 
