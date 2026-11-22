@@ -5,7 +5,7 @@ import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BARE_KEPT_MS, IDLE_KEPT_MS, Store } from "./store.ts";
+import { BARE_COST, BARE_KEPT_MS, IDLE_KEPT_MS, Store } from "./store.ts";
 
 // These tests write a database of their own to disk; under a disk stall of a
 // shared machine a write waits seconds, and the 5 s default was passed in
@@ -139,9 +139,9 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   const [a, w, v, c] = [make(), make(), make(), make()];
   seed.updateSession(w, { phase: "working" });
   seed.updateSession(v, { phase: "working" });
-  // Each session's bodies are charged about 0.8 MB (320 kB of stored text at two and a half times), its events alone about 120 kB.
+  // Each session's bodies are charged about 0.8 MB (320 kB of stored text at two and a half times), its events alone about 130 kB.
   const kept = process.env.KEEL_EVENTS_MEMORY_MB;
-  process.env.KEEL_EVENTS_MEMORY_MB = "1.2";
+  process.env.KEEL_EVENTS_MEMORY_MB = "1.35";
   let store: Store;
   try { store = new Store(dir); } finally { if (kept === undefined) delete process.env.KEEL_EVENTS_MEMORY_MB; else process.env.KEEL_EVENTS_MEMORY_MB = kept; }
   const held = () => [...((store as any).kept as Map<string, unknown>).keys()];
@@ -154,7 +154,7 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   store.lineage(w);
   store.lineage(a);
   expect(held()).toEqual([w, a]);
-  expect(store.keptEvents().bytes).toBe(2 * 320 * 368);
+  expect(store.keptEvents().bytes).toBe(2 * 320 * BARE_COST);
   expect([runs(w), runs(a)]).toEqual([0, 0]);
   expect(bodies(a)).toEqual(want);
   expect(runs(a)).toBe(5);
@@ -221,7 +221,7 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   store.deleteSession(v);
   store.deleteSession(w);
   expect(() => gone[0]!.data).toThrow(/not stored/);
-  expect(store.keptEvents()).toMatchObject({ sessions: 0, bytes: 0, budget: 1.2e6 });
+  expect(store.keptEvents()).toMatchObject({ sessions: 0, bytes: 0, budget: 1.35e6 });
   expect((store as any).sweeper).toBeUndefined();
 });
 
@@ -584,4 +584,38 @@ test("a walk back from the head and a look over one kind give the session's own 
   expect([...again.back(far.id)].map((e) => e.id)).toEqual(farLine);
   expect(again.isKept(far.id)).toBe(true);
   expect(again.coldReads().n).toBe(1);
+});
+
+test("under memory pressure the store gives back the kept events beyond a share of its budget, idle sessions first", () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const text = "x".repeat(1000);
+  const make = (phase?: "working") => {
+    const s = seed.createSession({ model: "m", workspace: "/" });
+    seed.db.transaction(() => { for (let i = 0; i < 320; i++) seed.append(s.id, "user", { text, i }); })();
+    if (phase) seed.updateSession(s.id, { phase });
+    return s.id;
+  };
+  const [idle, working] = [make(), make("working")];
+  const kept = process.env.KEEL_EVENTS_MEMORY_MB;
+  process.env.KEEL_EVENTS_MEMORY_MB = "4";
+  let store: Store;
+  try { store = new Store(dir); } finally { if (kept === undefined) delete process.env.KEEL_EVENTS_MEMORY_MB; else process.env.KEEL_EVENTS_MEMORY_MB = kept; }
+  // Both sessions with every body: about 1.9 MB charged, within the budget of 4.
+  for (const id of [idle, working]) for (const e of store.lineage(id)) void e.data;
+  const before = store.keptEvents();
+  expect(before.bytes).toBeGreaterThan(1.8e6);
+  expect(before.bytes).toBeLessThan(before.budget);
+  // Pressure: a quarter of the budget is all that may stay. The idle session's bodies and rows go, then bodies of the working one.
+  const gave = store.giveBack(0.25);
+  const after = store.keptEvents();
+  expect(gave).toBe(before.bytes - after.bytes);
+  expect(after.bytes).toBeLessThanOrEqual(0.25 * after.budget);
+  expect(after.budget).toBe(before.budget);
+  expect([...((store as any).kept as Map<string, unknown>).keys()]).toEqual([working]);
+  // What went is read again from the table when asked for.
+  expect(store.lineage(idle).map((e) => (e.data as { i: number }).i).length).toBe(320);
+  // Nothing beyond the share: nothing to give.
+  expect(store.giveBack(1)).toBe(0);
+  store.shrink();
 });

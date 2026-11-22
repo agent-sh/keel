@@ -2,6 +2,7 @@
 // work away while the engine lets running turns finish and parks the rest,
 // and a restart that starts the same binary again. Continuing parked and
 // crash-cut turns is the engine's (Engine.recover, from main.ts).
+import { heapSize } from "bun:jsc";
 import { checkpointerOf, type StoreDisk } from "../core/checkpoint.ts";
 import type { Store } from "../core/store.ts";
 import type { Deps } from "../server/app.ts";
@@ -9,6 +10,7 @@ import { flushAll } from "../automation/core.ts";
 import { buildInfo } from "../core/build.ts";
 import { handLock } from "../core/daemon-lock.ts";
 import { relaunchArgv } from "../core/relaunch.ts";
+import { Rest } from "../core/rest.ts";
 import { startTimes } from "../core/start-trace.ts";
 import { addAdmission } from "../server/admission.ts";
 import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
@@ -124,6 +126,8 @@ export class Daemon {
   // The stalls of this process, the newest first (the Daemon panel lists them).
   private stalls: StallRow[] = [];
   private sight?: StallWatch;
+  // What was last given back to the system, and why (the resources report shows it).
+  rest?: Rest;
 
   constructor(private deps: Deps) {
     // While draining, nothing that would start work is taken.
@@ -194,8 +198,21 @@ export class Daemon {
     beats.drivenBy(() => monitor.wake());
     // The sign of life: a second apart when the daemon works, the tick's longest rest apart when it is idle, and the sign says which.
     beats.join("sign of life", () => beatLife(monitor.working() ? 1000 : IDLE_MAX_MS), { every: 1000 });
-    // The collector is asked once a second for as long as the daemon works (the runtime's own timer for it is off: src/core/relaunch.ts).
-    beats.join("collector", () => { if (monitor.working()) Bun.gc(false); }, { every: 1000 });
+    // The collector is asked for as long as the daemon works, as the runtime's own timer for it did (that
+    // timer is off: src/core/relaunch.ts): at each tick after which the heap's size changed, ten times a
+    // second at the most. Asked once a second only, the heap grew between two asks until a collection the
+    // loop had to wait for (stalls of over a second under twelve working sessions).
+    let heapWas = 0;
+    beats.join("collector", () => {
+      if (!monitor.working()) return;
+      const size = heapSize();
+      if (size === heapWas) return;
+      heapWas = size;
+      Bun.gc(false);
+    }, { every: 100 });
+    // Memory given back: once no turn has run for a minute, and when its unit's bound is passed (src/core/rest.ts).
+    const rest = (this.rest = new Rest({ store: this.deps.store, say: (line) => this.deps.errors.capture("server", Object.assign(new Error(line), { stack: undefined }), { at: "memory pressure" }, { group: "memory pressure" }) }));
+    beats.join("memory", (now) => rest.tick(watch.running(), now), { every: 1000, due: () => rest.due() });
     // A stall that began when the loop was idle, seen by the watcher alone.
     sight.onHeld = (ms) => void monitor.unsaid(ms);
     return monitor;

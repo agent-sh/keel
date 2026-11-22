@@ -2,10 +2,12 @@
 // What the daemon and the processes it started cost the machine: memory, CPU,
 // threads and open files per process, by kind and by session, the disk of
 // the state directory, and `history` minutes of samples (default 60, at most
-// a day). `refresh` samples first. `daemon.kept_events`: the sessions whose
+// a day). `refresh` samples first. `daemon.given_back`: when memory was last given back to the system, why (the daemon
+// came to rest, or its unit's bound was passed) and its resident memory before and after. `daemon.kept_events`: the sessions whose
 // events the daemon holds in memory, what they are charged and the budget.
 // `daemon.checkpoint`: the checkpoint thread's counts (passes, starts of the
 // log, how long it held the write lock, the most frames the log held).
+import { restOf } from "../../core/rest.ts";
 import { Resources } from "../../admin/resources.ts";
 import { checkpointerOf } from "../../core/checkpoint.ts";
 import type { RouteModule } from "../app.ts";
@@ -29,7 +31,7 @@ export const resourceRoutes: RouteModule = ({ store, bus }) => {
         // What the daemon holds of its sessions' events: how many sessions, the memory they are charged, and the budget.
         // And what its checkpoint thread did with the store's log (src/core/checkpoint.ts): absent when none works.
         const checkpoint = checkpointerOf(store)?.counts;
-        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), ...(checkpoint ? { checkpoint } : {}) } });
+        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, ...(checkpoint ? { checkpoint } : {}) } });
       },
     },
   };

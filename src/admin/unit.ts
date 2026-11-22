@@ -19,6 +19,41 @@
 // owner asks for takes a drain, a backup and a start each and cannot.
 // StartLimitIntervalSec and StartLimitBurst in [Unit] need systemd 230;
 // RestartSec has taken a unit since before that.
+//
+// Memory. The unit bounds what the daemon and the processes it keeps in its
+// own control group may take: the daemon itself, and the MCP servers,
+// language servers and provider plugins it starts (the commands a session
+// runs are not in it: each runs in a scope of its own beside the unit, so a
+// build is never counted here, and never killed by this bound). Before, a
+// daemon that ran away took the machine with it, and with swap forbidden by
+// the owner's drop-in nothing could be paged out.
+// - MemoryHigh: an eighth of the machine's memory, at least 2 GB, at most
+//   8 GB. Above it the kernel takes memory back from the group and slows
+//   its allocations; it kills nothing. The daemon reads the kernel's count
+//   of those moments and gives its kept events back when it rises
+//   (src/core/rest.ts). The daemon alone stays under 900 MB on a heavy day;
+//   the floor leaves the rest of 2 GB to the servers it keeps, and a share
+//   of the machine above that because their number is the owner's.
+// - MemoryMax: a quarter of the machine's memory, at least 4 GB, at most
+//   16 GB: twice the throttle. Reaching it means something ran away for
+//   good; the kernel then kills a process of the group.
+// - OOMPolicy=continue: that kill ends the one process (the largest, a
+//   runaway server as a rule), and the unit goes on. By default systemd
+//   would stop the whole unit, the daemon with it. Should the daemon be the
+//   one killed, Restart=on-failure starts it again.
+// MemoryHigh and MemoryMax need systemd 231 and the unified control group
+// hierarchy with the memory controller given to the user manager (every
+// current distribution); elsewhere they are read and do nothing.
+// OOMPolicy needs systemd 243.
+import { totalmem } from "node:os";
+
+const GB = 2 ** 30;
+export function memoryBounds(totalBytes: number): { high: number; max: number } {
+  const within = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+  // Whole megabytes, as the unit writes them.
+  const mbOf = (bytes: number) => Math.floor(bytes / 2 ** 20) * 2 ** 20;
+  return { high: mbOf(within(totalBytes / 8, 2 * GB, 8 * GB)), max: mbOf(within(totalBytes / 4, 4 * GB, 16 * GB)) };
+}
 const template = `[Unit]
 Description=Keel coding agent daemon (Bun)
 After=network-online.target
@@ -44,6 +79,11 @@ Restart=on-failure
 RestartSec=100ms
 KillSignal=SIGTERM
 TimeoutStopSec=660
+# What the daemon and the servers it keeps may take: throttled above the
+# first, a process of the unit killed at the second, and the unit goes on.
+MemoryHigh=@HIGH@M
+MemoryMax=@MAX@M
+OOMPolicy=continue
 # Only the daemon is signalled: background commands outlive a restart and the
 # new daemon takes them up again.
 KillMode=process
@@ -73,11 +113,12 @@ export function unitWord(s: string, executable = false): string {
 // The unit for a daemon started as `command` (the binary, or bun and the
 // script) on `bind`, with the workspace and state folder it is to use when
 // they are given. Without them the daemon uses its defaults, as before.
-export function unitFor(o: { command: string[]; bind: string; workspace?: string; stateDir?: string }): string {
+export function unitFor(o: { command: string[]; bind: string; workspace?: string; stateDir?: string; totalMemory?: number }): string {
+  const bounds = memoryBounds(o.totalMemory ?? totalmem());
   const words = [...o.command, "serve", "--bind", o.bind];
   if (o.workspace) words.push("--workspace", o.workspace);
   if (o.stateDir) words.push("--state-dir", o.stateDir);
-  return template.replace("@EXEC@", () => words.map((w, i) => unitWord(w, i === 0)).join(" "));
+  return template.replace("@EXEC@", () => words.map((w, i) => unitWord(w, i === 0)).join(" ")).replace("@HIGH@", String(bounds.high / 2 ** 20)).replace("@MAX@", String(bounds.max / 2 ** 20));
 }
 
 // The lines of a unit this file owns: an installed unit gets this build's
@@ -89,6 +130,9 @@ const OWNED: { section: string; key: string; name?: string }[] = [
   { section: "Unit", key: "StartLimitBurst" },
   { section: "Service", key: "RestartSec" },
   { section: "Service", key: "Environment", name: "BUN_GC_TIMER_DISABLE" },
+  { section: "Service", key: "MemoryHigh" },
+  { section: "Service", key: "MemoryMax" },
+  { section: "Service", key: "OOMPolicy" },
 ];
 
 type Line = { section: string; text: string };

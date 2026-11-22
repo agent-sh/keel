@@ -8,6 +8,7 @@ import { basename, join } from "node:path";
 import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEvent, Usage } from "./types.ts";
 import { addUsage, emptyUsage } from "./types.ts";
 import { totalmem } from "node:os";
+import { memoryLimits } from "./cgroup.ts";
 import { forgetSession } from "./session-map.ts";
 import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
@@ -194,25 +195,43 @@ type Kept = {
   body: (this: StoredEvent) => unknown;
 };
 
-// What a kept event costs in memory, measured on generated sessions of 30,000
-// events with every body read: resident memory grew by 2.4 to 2.5 times the
-// characters of the stored JSON (the parsed objects, their strings, and what
-// a parse leaves behind). An event without its body takes 370 bytes of
-// resident memory (280 of them on the heap), measured over ten such sessions
-// brought in one after another.
+// What a kept event costs in resident memory, so that what the store charges
+// is what the process holds. Measured with every body read, on generated
+// sessions: resident memory grew by 1.5 times the characters of the stored
+// JSON where bodies are long strings and by 2.4 to 2.5 times where they are
+// many small objects (the parsed objects, their strings, and what a parse
+// leaves behind): the higher is charged. An event without its body takes
+// 285 bytes of heap and, with what the allocator keeps around it, 320 to
+// 560 resident (2,600 sessions of 155,000 events: 87 MB): 400 is charged
+// (it was 256, a third under).
 const BODY_COST = 2.5;
-const BARE_COST = 368;
+export const BARE_COST = 400;
 
-// How much memory kept events may take: a thirty-second of the memory this
-// process may use (the machine's, or its control group's limit when that is
-// lower), between 64 MB and 512 MB; KEEL_EVENTS_MEMORY_MB sets another. The
-// bound is on memory, not on a count of sessions, because sessions differ a
-// thousand times in size.
+// How much resident memory kept events may take. The bound is on memory,
+// not on a count of sessions, because sessions differ a thousand times in
+// size. It is the smallest of:
+// - a thirty-second of the machine's memory;
+// - an eighth of where the daemon's unit throttles it (MemoryHigh), when a
+//   unit sets that: the unit's bound is on the daemon and the children it
+//   keeps (src/admin/unit.ts), and the events are one part of the daemon;
+// - a sixteenth of where the unit kills (MemoryMax, or a container's limit);
+// and within 64 MB and 512 MB. A smaller ceiling was tried (384 MB) for a
+// day of twelve working sessions and a coordinator: the daemon's resident
+// memory did not fall (it is two to three times the heap under that work,
+// and the heap is mostly what the turns allocate and drop, not what is kept
+// here), and sessions were given back and read again more often.
+// KEEL_EVENTS_MEMORY_MB sets another.
+export const EVENTS_MIN = 64e6, EVENTS_MAX = 512e6;
+export function eventsBudgetOf(o: { total: number; high?: number; max?: number; set?: number }): number {
+  if (o.set !== undefined && Number.isFinite(o.set) && o.set > 0) return o.set * 1e6;
+  const share = Math.min(o.total / 32, (o.high ?? Infinity) / 8, (o.max ?? Infinity) / 16);
+  return Math.min(EVENTS_MAX, Math.max(EVENTS_MIN, share));
+}
 export function eventsBudget(): number {
-  const set = Number(process.env.KEEL_EVENTS_MEMORY_MB);
-  if (Number.isFinite(set) && set > 0) return set * 1e6;
-  const limit = Number((process as { constrainedMemory?: () => number }).constrainedMemory?.()) || Infinity;
-  return Math.min(512e6, Math.max(64e6, Math.min(totalmem(), limit) / 32));
+  const limits = memoryLimits();
+  const constrained = Number((process as { constrainedMemory?: () => number }).constrainedMemory?.()) || undefined;
+  const max = Math.min(limits.max ?? Infinity, constrained ?? Infinity);
+  return eventsBudgetOf({ total: totalmem(), high: limits.high, max: Number.isFinite(max) ? max : undefined, set: process.env.KEEL_EVENTS_MEMORY_MB ? Number(process.env.KEEL_EVENTS_MEMORY_MB) : undefined });
 }
 // What a session keeps in memory, and for how long.
 // - The bodies it read: an idle session gives them back after IDLE_KEPT_MS
@@ -1114,6 +1133,22 @@ export class Store {
     if (this.owed < GIVE_BACK_BYTES) return;
     this.owed = 0;
     collect(true);
+  }
+
+  // Under memory pressure (src/core/rest.ts): the kept events beyond `share`
+  // of the budget go now, in the order trim gives them back (the bodies idle
+  // sessions read first, working sessions last). Returns the bytes given back.
+  giveBack(share: number): number {
+    const before = this.keptBytes;
+    const budget = this.budget;
+    this.budget = budget * share;
+    try { this.trim(); } finally { this.budget = budget; }
+    return before - this.keptBytes;
+  }
+
+  // What the connection holds for speed alone (its page cache) is freed; the next reads fill it again.
+  shrink() {
+    this.db.exec("PRAGMA shrink_memory");
   }
 
   // How many sessions are kept and what they are charged, in bytes of memory,
