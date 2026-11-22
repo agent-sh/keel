@@ -30,6 +30,17 @@ if (sub && isCommand(sub)) {
 }
 
 const args = Bun.argv.slice(2);
+// A daemon a service manager runs is started again as soon as it exits (the unit's RestartSec is a tenth of
+// a second, and its starts are not bounded: src/admin/unit.ts). One that could not start (a taken port, a
+// state folder another daemon holds, a bad argument) would be started several times a second for as long as
+// the unit is enabled: it waits before it exits, so the unit starts it again every two seconds or so, at no
+// cost meanwhile. Only a start that failed: an exit after the daemon listened, or one with nothing wrong, does not wait.
+const FAILED_START_WAIT_MS = 2000;
+const starting = globalThis as { __keelListening?: boolean; __keelFailedStartWait?: boolean };
+if (process.env.KEEL_SUPERVISED && !starting.__keelFailedStartWait) {
+  starting.__keelFailedStartWait = true;
+  process.on("exit", (code) => { if (code && !starting.__keelListening) Bun.sleepSync(FAILED_START_WAIT_MS); });
+}
 if (args[0] && args[0] !== "serve" && !args[0].startsWith("-")) process.exit((await import("./cli/help.ts")).unknownCommand(args[0]));
 let parsed;
 try {
@@ -91,6 +102,7 @@ if (!g.__keelSignals) {
     });
   }
 }
+starting.__keelListening = true;
 console.log(`keel listening on ${d.url} (state ${d.stateDir})`);
 if (!g.__keelStartSaid) {
   g.__keelStartSaid = true;

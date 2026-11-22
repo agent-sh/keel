@@ -10,23 +10,27 @@
 // The restart. `keel restart` drains and exits 75, and the unit starts the
 // daemon again after RestartSec. That wait is time nothing answers, so it is
 // 100 ms: long enough for the old process to be gone from its port, short
-// against the daemon's own start. With a wait that short a daemon that
-// cannot start (a taken port, a broken binary, a state folder it cannot
-// read) would be started ten times a second for ever, so the starts are
-// bounded: 8 in 30 seconds, then the unit is failed and stays down until
-// `systemctl --user reset-failed keel-bun.service` and a start. A start that
-// fails within about 3.6 s of its launch reaches that bound; a restart the
-// owner asks for takes a drain, a backup and a start each and cannot.
-// StartLimitIntervalSec and StartLimitBurst in [Unit] need systemd 230;
-// RestartSec has taken a unit since before that.
+// against the daemon's own start.
+// The starts are not bounded (StartLimitIntervalSec=0). systemd's own bound
+// is five starts in ten seconds, and any bound short enough to stop a daemon
+// that cannot start is also reached by restarts asked for one after the
+// other (each takes well under a second): the unit then goes failed and the
+// daemon stays down until someone resets it. A daemon that cannot start (a
+// taken port, a state folder another daemon holds, a bad argument) is kept
+// from being started several times a second another way: under a service
+// manager it waits two seconds before it exits (src/main.ts), the wait the
+// unit made between starts before, kept for the failed start alone.
+// StartLimitIntervalSec in [Unit] needs systemd 230; RestartSec has taken a
+// unit since before that.
 //
 // Memory. The unit bounds what the daemon and the processes it keeps in its
 // own control group may take: the daemon itself, and the MCP servers,
 // language servers and provider plugins it starts (the commands a session
 // runs are not in it: each runs in a scope of its own beside the unit, so a
-// build is never counted here, and never killed by this bound). Before, a
-// daemon that ran away took the machine with it, and with swap forbidden by
-// the owner's drop-in nothing could be paged out.
+// build is never counted here, and never killed by this bound). Without a
+// bound a daemon that ran away took the machine with it, and where a
+// drop-in forbids the unit swap (MemorySwapMax=0) none of it can be paged
+// out.
 // - MemoryHigh: an eighth of the machine's memory, at least 2 GB, at most
 //   8 GB. Above it the kernel takes memory back from the group and slows
 //   its allocations; it kills nothing. The daemon reads the kernel's count
@@ -58,10 +62,9 @@ const template = `[Unit]
 Description=Keel coding agent daemon (Bun)
 After=network-online.target
 Wants=network-online.target
-# A daemon that cannot start stops being started: 8 starts in 30 s, then the
-# unit is failed (systemctl --user reset-failed keel-bun.service, then start).
-StartLimitIntervalSec=30
-StartLimitBurst=8
+# Starts are not bounded: restarts asked for one after the other must not
+# leave the unit failed. A daemon that cannot start waits before it exits.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -127,7 +130,6 @@ export function unitFor(o: { command: string[]; bind: string; workspace?: string
 // the variable it sets.
 const OWNED: { section: string; key: string; name?: string }[] = [
   { section: "Unit", key: "StartLimitIntervalSec" },
-  { section: "Unit", key: "StartLimitBurst" },
   { section: "Service", key: "RestartSec" },
   { section: "Service", key: "Environment", name: "BUN_GC_TIMER_DISABLE" },
   { section: "Service", key: "MemoryHigh" },
@@ -144,8 +146,9 @@ const linesOf = (unit: string): Line[] => {
     return { section, text };
   });
 };
+// A line that sets the key, however it is spaced (systemd takes `Key = value`).
 const sets = (l: Line, o: { section: string; key: string; name?: string }) =>
-  l.section === o.section && (o.name ? new RegExp(`^${o.key}="?${o.name}=`).test(l.text) : l.text.startsWith(`${o.key}=`));
+  l.section === o.section && new RegExp(o.name ? `^\\s*${o.key}\\s*=\\s*"?${o.name}=` : `^\\s*${o.key}\\s*=`).test(l.text);
 
 // An installed unit with this build's values of the owned lines. `generated`:
 // a unit this build writes (unitFor). Returns the new text and what changed,

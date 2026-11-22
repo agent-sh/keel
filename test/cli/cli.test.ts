@@ -214,7 +214,7 @@ describe("keel service install", () => {
     mkdirSync(join(home, "systemd/user"), { recursive: true });
     const old = (await run(["service", "install", "--print", "--exec", exec, "--bind", "127.0.0.1:47950"])).out
       .replace(/^RestartSec=.*$/m, "RestartSec=2")
-      .replace(/^# A daemon that cannot start[^]*?StartLimitBurst=.*\n/m, "")
+      .replace(/^# Starts are not bounded[^]*?StartLimitIntervalSec=.*\n/m, "")
       .replace("[Service]\n", "[Service]\nEnvironmentFile=-%h/.config/keel/extra.env\nWorkingDirectory=%h\n")
       .replace("Description=Keel coding agent daemon (Bun)", "Description=Keel, the owner's sessions");
     expect(old).not.toMatch(/StartLimit/);
@@ -230,13 +230,13 @@ describe("keel service install", () => {
     const updated = await run(["service", "update"]);
     expect(updated.code).toBe(0);
     expect(updated.out).toContain("RestartSec=2 is now RestartSec=100ms");
-    expect(updated.out).toContain("added StartLimitBurst=8");
+    expect(updated.out).toContain("added StartLimitIntervalSec=0");
     expect(updated.out).toContain("systemctl --user daemon-reload");
     const now = readFileSync(path, "utf8");
     expect(now).toBe(shown.out);
     // This build's lines are in, the owner's lines are as they were, and so is the command it starts.
     expect(now).toMatch(/^RestartSec=100ms$/m);
-    expect(now).toMatch(/^StartLimitIntervalSec=30$/m);
+    expect(now).toMatch(/^StartLimitIntervalSec=0$/m);
     for (const kept of ["Description=Keel, the owner's sessions", "EnvironmentFile=-%h/.config/keel/extra.env", "WorkingDirectory=%h", old.split("\n").find((l) => l.startsWith("ExecStart="))!]) expect(now.split("\n")).toContain(kept);
     // The unit as it was is beside it, and the drop-in was not touched.
     expect(readFileSync(`${path}.prev`, "utf8")).toBe(old);
@@ -288,6 +288,18 @@ describe("keel serve on a port taken after its check", () => {
       expect([code, err.trim()]).toEqual([1, `keel serve: 127.0.0.1:${port} could not be bound: port ${port} is in use (it was taken after it was checked). Stop what holds it, or pick another --bind.`]);
       expect(await new Response(p.stdout).text()).not.toContain("keel listening");
       expect(existsSync(join(state, "daemon.lock"))).toBe(false);
+      // Under a service manager, which starts it again a tenth of a second after it exits, the same failed start
+      // waits two seconds before it exits: a daemon that cannot start is not started several times a second.
+      const t0 = performance.now();
+      const run = Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", WS], { cwd: WS, env: { ...ENV, KEEL_SUPERVISED: "systemd" }, stdout: "ignore", stderr: "pipe" });
+      expect(await Promise.race([run.exited, Bun.sleep(20_000).then(() => "still running")])).toBe(1);
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(2000);
+      expect((await new Response(run.stderr).text()).trim()).toContain("could not be bound");
+      // A bad argument too (it is the unit's own line that is wrong, and the unit would start it for ever).
+      const t1 = performance.now();
+      const bad = Bun.spawn([BIN, "serve", "--bind", "nowhere"], { cwd: WS, env: { ...ENV, KEEL_SUPERVISED: "systemd" }, stdout: "ignore", stderr: "ignore" });
+      expect(await bad.exited).toBe(3);
+      expect(performance.now() - t1).toBeGreaterThanOrEqual(2000);
       // The folder is free: a daemon starts on it at once.
       const d = Bun.spawn([BIN, "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", WS], { cwd: WS, env: { ...ENV, KEEL_DRAIN_MS: "300" }, stdout: "pipe", stderr: "ignore" });
       let out = "";
