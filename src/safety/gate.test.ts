@@ -659,10 +659,38 @@ test("a deleted session's grants are deleted with it", async () => {
   store.deleteSession(child.id);
   expect(g.rules().filter((r) => r.session_id === child.id)).toHaveLength(0);
   // A row left by a delete from before the trigger: gone at the start that makes it.
-  store.db.query("DROP TRIGGER perm_rules_gone").run();
+  store.db.query("DROP TRIGGER perm_gone").run();
   store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created) VALUES ('left', 'shell', 'touch *', '/', 'session', 'gone-session', 0)").run();
   new Gate(store, new Bus());
   expect(g.rules().map((r) => r.id)).not.toContain("left");
+});
+
+// A deleted session's settings go with it as its grants do, and the Undo of a revoke made before the delete
+// does not make its grant again. A store with the first trigger (grants only) gets the one that covers both.
+test("a deleted session's settings go with it, and an undo of its revoked grant makes nothing", async () => {
+  const { store, g, make, call, opened } = treeGate();
+  const root = make("root"), child = make("child", root);
+  for (const s of [root, child]) g.setPerm(s.id, { mode: "ask", sandbox: "off", network: true });
+  const asking = g.check(child, call(child, "touch a.txt"));
+  const card = await opened(child);
+  expect(g.resolve(card.id, child.id, { choice: "session", rules: [{ kind: "shell", pattern: "touch *" }] })).toEqual({ ok: true });
+  await asking;
+  const grant = g.rules().find((r) => r.session_id === child.id)!;
+  expect(g.revoke(grant.id)).toBe(true);
+  const settings = () => store.db.query<{ session_id: string }, []>("SELECT session_id FROM perm_sessions").all().map((r) => r.session_id).sort();
+  expect(settings()).toEqual([root.id, child.id].sort());
+  store.deleteSession(child.id);
+  expect(settings()).toEqual([root.id]);
+  expect(g.restore(grant.id)).toBe("gone");
+  expect(g.rules().filter((r) => r.session_id === child.id)).toEqual([]);
+  // A store of the first trigger, with settings a delete left: they go at the start that makes the new one.
+  store.db.query("DROP TRIGGER perm_gone").run();
+  store.db.query("CREATE TRIGGER perm_rules_gone AFTER DELETE ON sessions BEGIN DELETE FROM perm_rules WHERE session_id = old.id; END").run();
+  store.db.query("INSERT INTO perm_sessions (session_id, mode) VALUES ('gone-session', 'ask')").run();
+  new Gate(store, new Bus());
+  expect(settings()).toEqual([root.id]);
+  const triggers = store.db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'perm%'").all().map((r) => r.name);
+  expect(triggers).toEqual(["perm_gone"]);
 });
 
 // A store whose start stopped between the two columns of an agent's tie (follows added, want not) takes the

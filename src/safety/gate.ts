@@ -422,12 +422,13 @@ export class Gate {
     store.migrate("CREATE TABLE IF NOT EXISTS session_roots (session_id TEXT NOT NULL, workspace TEXT NOT NULL, real TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (session_id, workspace))");
     // (Pinned when the session is made; one made before this was here, at its first sight.)
     store.onCreated((s) => void this.rootMoved(s));
-    // A session's grants go with it, however it is deleted (a grant for this session covers its tree only while
-    // the session is there to make it one; rules() reads every row). Those a delete before this left go once,
-    // when the trigger is made.
-    if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'perm_rules_gone'").get()) {
-      store.migrate("CREATE TRIGGER perm_rules_gone AFTER DELETE ON sessions BEGIN DELETE FROM perm_rules WHERE session_id = old.id; END");
+    // A session's grants and settings go with it, however it is deleted (a grant for this session covers its
+    // tree only while the session is there to make it one; rules() reads every row). Those a delete before this
+    // left go once, when the trigger is made. (perm_rules_gone was its first form, for the grants only.)
+    if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'perm_gone'").get()) {
+      store.migrate("DROP TRIGGER IF EXISTS perm_rules_gone; CREATE TRIGGER perm_gone AFTER DELETE ON sessions BEGIN DELETE FROM perm_rules WHERE session_id = old.id; DELETE FROM perm_sessions WHERE session_id = old.id; END");
       store.db.query("DELETE FROM perm_rules WHERE session_id IS NOT NULL AND session_id NOT IN (SELECT id FROM sessions)").run();
+      store.db.query("DELETE FROM perm_sessions WHERE session_id NOT IN (SELECT id FROM sessions)").run();
     }
     bus.on((f) => {
       if (f.t !== "session" || !f.deleted) return;
@@ -1059,10 +1060,12 @@ export class Gate {
 
   // Revoked in this daemon: each can be put back once, exactly as it was (the Undo of a revoke).
   private revoked = new Map<string, Rule>();
-  restore(id: string): Rule | null {
+  // Undo of a revoke. A grant for a session that has since been deleted is not made again: "gone".
+  restore(id: string): Rule | "gone" | null {
     const r = this.revoked.get(id);
     if (!r) return null;
     this.revoked.delete(id);
+    if (r.session_id && !this.store.db.query("SELECT 1 FROM sessions WHERE id = ?").get(r.session_id)) return "gone";
     this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(r.id, r.kind, r.pattern, r.scope, r.lifetime, r.session_id ?? null, r.created, r.bind ?? null);
     this.invalidateReview();

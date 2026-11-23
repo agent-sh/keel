@@ -67,8 +67,8 @@ test("a grant for this session on an agent's card covers the root", async ({ pag
     await theirs.getByTestId("allow-always").click();
     await expect(page.getByTestId("grant-pattern")).toHaveValue("touch *");
     await shoot(page, "agent-permissions-03-grant");
-    // (The button says what the grant covers: the session and its agents.)
-    await page.getByTestId("grant-session").getByText("This session and its agents").click();
+    // (The button says what the grant covers: on an agent's card, the whole tree it is in.)
+    await page.getByTestId("grant-session").getByText("The whole agent tree").click();
     await expect(theirs).toHaveCount(0);
     await expect.poll(() => existsSync(join(ws, "alpha.txt")), { timeout: 30_000 }).toBe(true);
     // The root's own touch runs without a card: a card would hold it, and the file would never be made.

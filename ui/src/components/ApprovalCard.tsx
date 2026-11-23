@@ -4,7 +4,7 @@ import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, Shi
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, keyPressable, KEY_MS, nextAction, paintedReader, pressable, readOnSteps, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
-import { arrivalOf, arriving } from "../lib/automation.ts";
+import { arrivalOf, arriving, useAuto } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
 import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
@@ -12,7 +12,7 @@ import { dropRepeats, keyedTo, keyRefused, keyTried, keysArrived, mayTake, noteA
 import { composing } from "../lib/keys.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
-import { failed, reportError } from "../lib/store.ts";
+import { failed, reportError, useStore } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
 import { cn } from "../lib/utils.ts";
 import { BlockedCards } from "./BlockedCards.tsx";
@@ -1467,6 +1467,10 @@ function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }
   const [rules, setRules] = useState<Suggest[]>(a.suggest);
   const [open, setOpen] = useState(false);
   useEffect(() => { if (unread) setOpen(false); }, [unread]);
+  // A grant for the session of an agent's card covers its whole tree: the session at the top, the agents
+  // beside this one and below it. The button says so there.
+  const ofSession = useStore((s) => !!s.sessions[a.session_id]?.parent_id);
+  const ofAgent = useAuto((s) => ofSession || Object.values(s.agents).some((x) => x.session_id === a.session_id));
   const pressed = usePress(armed, (ok) => ok);
   const nudge = useNudge();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -1525,7 +1529,7 @@ function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }
                 onClick={() => { setOpen(false); onGrant(rules, true); }}
                 className="k-btn k-btn-lg"
               >
-                This session and its agents
+                {ofAgent ? "The whole agent tree" : "This session and its agents"}
               </button>
             </div>
           </Popover.Popup>

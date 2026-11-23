@@ -372,6 +372,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         const guard = needs(req, "grant");
         if (guard) return guard;
         const r = g.restore(req.params.gid);
+        if (r === "gone") return bad("the session of that grant was deleted, so it is not made again", 409);
         return r ? json({ grant: r }) : bad("no revoke of that grant to undo in this daemon", 400);
       },
     },
