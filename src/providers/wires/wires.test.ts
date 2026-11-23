@@ -252,7 +252,7 @@ test("freeform tools are Responses custom tools, except on xAI", () => {
   ];
   const b = responsesBody({ ...req, messages: history, tools }, ctx, "codex");
   expect(b.tools).toEqual([{ type: "custom", name: "exec", description: "run js", format: { type: "grammar", syntax: "lark", definition: "start: /.+/" } }]);
-  expect(b.input.slice(1)).toEqual([
+  expect(b.input.slice(2)).toEqual([
     { type: "custom_tool_call", call_id: "c1", name: "exec", input: "text(1)" },
     { type: "custom_tool_call_output", call_id: "c1", output: "Script completed" },
   ]);
@@ -286,7 +286,7 @@ test("deferred tools on the Responses wire: client tool_search, namespaces, roun
   ];
   const b = responsesBody({ ...req, messages: history, tools }, ctx, "codex");
   expect(b.tools.map((t: any) => [t.type, t.name ?? null, t.execution ?? null])).toEqual([["function", "exec_command", null], ["tool_search", null, "client"]]);
-  expect(b.input.slice(1)).toEqual([
+  expect(b.input.slice(2)).toEqual([
     { type: "tool_search_call", call_id: "s1", execution: "client", status: "completed", arguments: { query: "echo" } },
     {
       type: "tool_search_output", call_id: "s1", execution: "client", status: "completed", tools: [

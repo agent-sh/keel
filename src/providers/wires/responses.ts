@@ -2,6 +2,16 @@
 // Stateless (`store: false`): the whole history goes every time, reasoning
 // travels as the encrypted items the model returned, and one
 // `prompt_cache_key` per session keeps the steps on one cache shard.
+//
+// Where the system prompt goes. OpenAI's own backends (the API and the
+// ChatGPT backend) get it as the first developer message of `input`: from
+// GPT-6.2 on, top-level `instructions` are appended after the input and billed
+// at the uncached rate on every request, and OpenAI's advice is to put
+// reusable instructions in a developer message at the start of input ("Using
+// GPT-6.2" and the prompt caching guide, developers.openai.com, 2026-11-17).
+// Every model takes that shape and caches it, so it goes for every model and
+// the prefix has one form. xAI and other servers that speak the protocol keep
+// `instructions`: they documented no such change.
 import type { AssistantBlock } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { ProviderError } from "../http.ts";
@@ -9,7 +19,12 @@ import { project, type WireRules } from "../project.ts";
 import type { ProviderRequest } from "../types.ts";
 import { effortFor, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
-export type ResponsesDialect = "openai" | "codex" | "xai";
+// openai: OpenAI's API. codex: the ChatGPT backend. xai: xAI's API. compat: a
+// configured server that speaks the protocol (OpenAI's request shape, the
+// system prompt as `instructions`).
+export type ResponsesDialect = "openai" | "codex" | "xai" | "compat";
+// The dialects whose system prompt goes as the leading developer message.
+const SYSTEM_IN_INPUT = new Set<ResponsesDialect>(["openai", "codex"]);
 
 // xAI reserves these function names for its own server tools.
 const XAI_RESERVED = new Set(["web_search", "tool_search", "x_search", "code_execution"]);
@@ -157,9 +172,14 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
       parameters: dialect === "xai" ? xaiSchema(t.input_schema) : t.input_schema,
       strict: false,
     });
+  const system = systemPrefix ? `${systemPrefix}\n\n${req.system}` : req.system;
+  // The same bytes on every step: a WebSocket continuation finds it in the
+  // input the server holds and sends only the new items.
+  const inInput = SYSTEM_IN_INPUT.has(dialect);
+  if (inInput && system) input.unshift({ type: "message", role: "developer", content: [{ type: "input_text", text: system }] });
   const body: Record<string, any> = {
     model: req.model,
-    instructions: systemPrefix ? `${systemPrefix}\n\n${req.system}` : req.system,
+    ...(inInput ? {} : { instructions: system }),
     input,
     tool_choice: "auto",
     parallel_tool_calls: true,

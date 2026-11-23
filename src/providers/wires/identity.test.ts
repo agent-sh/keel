@@ -271,8 +271,15 @@ function bodyOf(wire: string, req: any, rules: Rules): any {
   if (JSON.stringify(req.messages) !== before) throw new Error(`the ${wire} wire changed the messages it was given`);
   return body;
 }
-const hashOf = (body: any, session: string): string => {
+// The system prompt is left out wherever a wire puts it: its own field, or the
+// leading developer message of a Responses input.
+const historyOf = (body: any) => {
   const { tools: _tools, system: _system, instructions: _instructions, systemInstruction: _si, ...rest } = body;
+  if (Array.isArray(rest.input) && rest.input[0]?.role === "developer") rest.input = rest.input.slice(1);
+  return rest;
+};
+const hashOf = (body: any, session: string): string => {
+  const rest = historyOf(body);
   return Bun.hash(JSON.stringify(rest).replaceAll(ROOT, "<root>").replaceAll(session, "<session>")).toString(36);
 };
 
@@ -315,7 +322,7 @@ test("each wire's request for a history it takes as stored is the bytes it was b
     anthropic: anthropicProblems, "responses-codex": (b) => responsesProblems(b, "codex"), "responses-openai": (b) => responsesProblems(b, "openai"), "responses-xai": (b) => responsesProblems(b, "xai"),
     chat: chatProblems, "chat-plain": chatProblems, gemini: geminiProblems, "gemini-plain": geminiProblems,
   };
-  const text = (body: any) => { const { tools: _t, system: _s, instructions: _i, systemInstruction: _g, ...rest } = body; return JSON.stringify(rest); };
+  const text = (body: any) => JSON.stringify(historyOf(body));
   const stored = bodies({});
   const failed: string[] = [];
   bodies(undefined).forEach((b, i) => {

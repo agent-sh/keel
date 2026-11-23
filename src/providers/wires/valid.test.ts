@@ -154,8 +154,8 @@ test("a tool grouped under a namespace the Responses backend keeps for itself go
     ];
     const b = responsesBody({ ...base, messages, tools }, ctx(), "codex");
     expect(responsesProblems(b, "codex")).toEqual([]);
-    expect(b.input[2].tools).toEqual([{ type: "function", name: `${ns}__find`, description: `${ns}__find`, strict: false, defer_loading: true, parameters: { type: "object" } }]);
-    expect(b.input[3]).toEqual({ type: "function_call", call_id: "c1", name: `${ns}__find`, arguments: "{}" });
+    expect(b.input[3].tools).toEqual([{ type: "function", name: `${ns}__find`, description: `${ns}__find`, strict: false, defer_loading: true, parameters: { type: "object" } }]);
+    expect(b.input[4]).toEqual({ type: "function_call", call_id: "c1", name: `${ns}__find`, arguments: "{}" });
   }
   expect([...RESERVED_NAMESPACES]).toContain("web");
 });
