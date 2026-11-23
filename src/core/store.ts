@@ -17,6 +17,7 @@ import { fileFacts, openedLog, restLog, sealLog } from "./log-pages.ts";
 import { holdStore, logBytes, storePath } from "./store-files.ts";
 import { Side } from "./side.ts";
 import { keyBlocks } from "./message-facts.ts";
+import { cacheStatements } from "./statement-cache.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
 
 // Every transaction of this connection begins as a writer (BEGIN IMMEDIATE).
@@ -727,6 +728,8 @@ export class Store {
     // (The database file as the process before left it, looked at before anything here opens it: log-pages.ts.)
     const found = fileFacts(storePath(stateDir));
     this.db = new Database(storePath(stateDir), { create: true, strict: true });
+    // (Every statement compiled once: bun:sqlite's own cache keeps twenty, statement-cache.ts. Before the wrappers below.)
+    cacheStatements(this.db);
     this.db.exec(SCHEMA);
     // The first write of this process, made here where it is the only writer: what the log holds from
     // the process before is read first, and should this write start the log again its end is written

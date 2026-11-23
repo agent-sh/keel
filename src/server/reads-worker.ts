@@ -3,6 +3,7 @@
 // they return. SQLite's write-ahead log lets it read while the daemon writes.
 import { Database } from "bun:sqlite";
 import { tasks, type TaskName } from "./read-tasks.ts";
+import { cacheStatements } from "../core/statement-cache.ts";
 
 declare var self: Worker;
 
@@ -12,6 +13,7 @@ self.onmessage = (ev: MessageEvent) => {
   const m = ev.data as { open: string } | { id: number; name: TaskName; args: unknown };
   if ("open" in m) {
     db = new Database(m.open, { readonly: true });
+    cacheStatements(db);
     db.exec("PRAGMA busy_timeout = 5000");
     return;
   }
