@@ -23,7 +23,7 @@ import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
-import { APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
+import { AGENT_BUDGET_SPENT, APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
@@ -1936,6 +1936,9 @@ export class Engine {
     // The code of the error that ended the turn (context_over_window, summary_truncated), kept on its turn_end.
     let failed: string | undefined;
     let steps = 0;
+    // A budget a hook keeps for the session (an agent's) is spent: this step is its last, a report in
+    // words with no call run, and the turn ends "budget" after it.
+    let closing = false;
     // What the turn's end says it took: the replies the model gave, its tool
     // results, those of calls that ran and failed (what telemetry and the
     // trace count too), and those of calls a gate denied. A call the turn's
@@ -2038,6 +2041,16 @@ export class Engine {
         if (budget > 0 && steps >= budget) {
           this.append(id, "note", { kind: "max_steps", text: `Stopped after ${steps} model steps: the step budget of this session. Resume to go on.` });
           reason = "max_steps";
+          break;
+        }
+        // A budget of the session's own (an agent's steps, minutes or dollars) that is spent: one
+        // more step, in words, then the turn ends. Asked before each step, so a turn a wake starts
+        // after the budget ran out gets only that step.
+        if (!closing) for (const h of allHooks()) {
+          const said = h.budget?.(session);
+          if (!said) continue;
+          closing = true;
+          this.append(id, "user", { text: said, origin: "harness" });
           break;
         }
         steps++;
@@ -2161,17 +2174,19 @@ export class Engine {
         ctx.room = Math.max(0, st.info.context - (u.input + u.cache_read + u.cache_write + u.output));
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
-          const spent = budget > 0 && steps >= budget;
+          const spent = closing || (budget > 0 && steps >= budget);
           // A step that runs past the cache's lifetime keeps it by its plan.
           const planned = uses.length && !spent ? this.cachePlans.tool(id, st, events, messages, this.toolShape(id, uses), sentAt, u) : undefined;
           try {
-          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
+          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? AGENT_BUDGET_SPENT : BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
           } finally { planned?.(); }
           if (cut) await settleNow(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
         }
+        // The budget's report is written: the turn ends here, whatever the reply asked for.
+        if (closing && res.stop !== "pause_turn") { reason = "budget"; break; }
         if (res.stop === "max_tokens") {
           if (++cuts > MAX_CONTINUATIONS) { reason = "max_tokens"; break; }
           this.append(id, "user", { text: `[harness] Your last reply was cut off at the output limit (${st.info.output} tokens). Continue exactly where it stopped.`, origin: "harness" });

@@ -275,6 +275,7 @@ export function stateWord(st: State): string {
   if (st.watch === "fail" && said.what) return `failed (${said.what})`;
   if (st.watch === "declined") return "declined by the model";
   if (st.watch === "stop" && st.why === "max_steps") return "stopped at the step budget";
+  if (st.watch === "stop" && st.why === "budget") return "stopped at its budget";
   if (st.watch === "stop" && st.by) return stopSays(st.by);
   return watchWord(st.watch, st.agents);
 }

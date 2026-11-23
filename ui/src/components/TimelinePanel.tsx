@@ -534,7 +534,7 @@ function Detail({ row, sessionId }: { row: TimelineRow; sessionId: string }) {
 
 // How a turn ended, in the words the conversation's own footer uses for it (one word per state, from the vocabulary).
 const ENDED: Record<string, string> = {
-  end_turn: STATE_WORD.done, error: STATE_WORD.fail, interrupted: STATE_WORD.stop, restart: CUT_BY_RESTART, max_steps: stateWords({ watch: "stop", why: "max_steps" }).phrase, max_tokens: `${STATE_WORD.fail}: ${FAIL_WORD.max_tokens}`,
+  end_turn: STATE_WORD.done, error: STATE_WORD.fail, interrupted: STATE_WORD.stop, restart: CUT_BY_RESTART, max_steps: stateWords({ watch: "stop", why: "max_steps" }).phrase, budget: stateWords({ watch: "stop", why: "budget" }).phrase, max_tokens: `${STATE_WORD.fail}: ${FAIL_WORD.max_tokens}`,
   refusal: STATE_WORD.declined, stop_sequence: STATE_WORD.done, tool_use: "Ended at a tool call", pause_turn: "Paused", model_context_window_exceeded: "The context was too long", other: "Ended",
 };
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

@@ -125,6 +125,10 @@ export type TurnHooks = {
   // After a step's tool results are stored, before the next model call (a
   // tool that asked for a fresh context gets its checkpoint here).
   stepDone?: (s: Session) => void | Promise<void>;
+  // Before each model step: the words of the harness's last request when a budget the hook keeps
+  // for the session is spent (an agent's steps, minutes or dollars). That step's calls are not run
+  // and the turn ends "budget" after it. Nothing: the step goes on as usual.
+  budget?: (s: Session) => string | undefined;
   // A turn is starting in the session, whatever started it (a prompt, a queued
   // one, a report, a continuation after a restart).
   turnStart?: (s: Session) => void;

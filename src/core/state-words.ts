@@ -122,7 +122,7 @@ export function stateWords(st: Stated): Said {
   if (w === "wait") { const on = st.why === "wait" ? st.on : st.why; return out(on ? `for ${waitsFor(on)}` : "", " "); }
   if (w === "resume") return out("to resume", " ");
   if (w === "fail") return out(failWord(st.cls));
-  if (w === "stop") return out(st.why === "max_steps" ? "at the step budget" : "", " ");
+  if (w === "stop") return out(st.why === "max_steps" ? "at the step budget" : st.why === "budget" ? "at its budget" : "", " ");
   return out("");
 }
 
@@ -200,7 +200,7 @@ export function agentState(a: AgentLike, told?: SessionState): SessionState {
   if (a.status === "incomplete") {
     if (a.end_reason === "refusal") return { ...base, watch: "declined", why: "refusal" };
     if (a.end_reason === "max_tokens") return { ...base, watch: "fail", why: "max_tokens", cls: "max_tokens" };
-    return { ...base, watch: "stop", ...(a.end_reason === "max_steps" ? { why: "max_steps" } : {}) };
+    return { ...base, watch: "stop", ...(a.end_reason === "max_steps" || a.end_reason === "budget" ? { why: a.end_reason } : {}) };
   }
   return { ...base, watch: "stop" };
 }
@@ -214,6 +214,7 @@ const STOPPED_BY: Record<string, string> = {
 };
 const PARTIAL: Record<string, string> = {
   refusal: "The model declined; the report is partial", max_tokens: "Output limit reached; the report is partial", max_steps: "Step budget spent; the report is partial",
+  budget: "Out of its budget; the report is partial, and a message continues it",
 };
 export const agentWhy = (a: AgentLike) =>
   a.status === "stopped" ? (a.stopped_by ? STOPPED_BY[a.stopped_by] : undefined) : a.status === "incomplete" ? (a.end_reason ? PARTIAL[a.end_reason] : undefined) : undefined;

@@ -56,7 +56,9 @@ export const stopKind = (content: unknown): "stopped" | "cut" | undefined =>
 // spent. Neither ran nor failed: the page and an agent's report say "not run" and why.
 export const CUT_CALL = "Not run: this call was cut at the output limit, so its input may be incomplete. Send it again whole if it is still needed.";
 export const BUDGET_SPENT = "Not run: the step budget of this turn is spent.";
-const NOT_RUN: Record<string, string> = { [CUT_CALL]: "cut at the output limit", [BUDGET_SPENT]: "the step budget was spent" };
+// A call of the step an agent's spent budget leaves for its report.
+export const AGENT_BUDGET_SPENT = "Not run: the agent's budget is spent; this step is for its report.";
+const NOT_RUN: Record<string, string> = { [CUT_CALL]: "cut at the output limit", [BUDGET_SPENT]: "the step budget was spent", [AGENT_BUDGET_SPENT]: "the agent's budget was spent" };
 // Why the call was not run, in a few words, or nothing when it is not such a call.
 export const notRun = (content: unknown): string | undefined => (typeof content === "string" ? NOT_RUN[content] : undefined);
 

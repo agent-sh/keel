@@ -8,7 +8,7 @@ import { traceIdOf, turnSpanId, type SpanStatus, type Tracer } from "./trace.ts"
 
 const origins = new Set(["owner", "queued", "steer", "harness", "restart", "voice", "hook", "momentum",
   "wait", "subagent", "loop", "goal", "task", "parent", "peer", "failures", "wake", "channel"]);
-const reasons = new Set(["end_turn", "error", "interrupted", "restart", "max_steps", "max_tokens",
+const reasons = new Set(["end_turn", "error", "interrupted", "restart", "max_steps", "budget", "max_tokens",
   "refusal", "stop_sequence", "tool_use", "pause_turn", "model_context_window_exceeded"]);
 const label = (value: unknown, allowed: Set<string>) => typeof value === "string" && allowed.has(value) ? value : "other";
 const id = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) ? value : null;

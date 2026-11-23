@@ -50,6 +50,22 @@ const MACHINE_PROPS = {
   machine: { type: "string", description: "Run the agent's tools on this machine of the fleet (a name from keel__machines_list). Omit to run where you run. Send it files with keel__send_files." },
   cwd: { type: "string", description: "With machine: the directory there, inside its granted directory (default: the granted directory)" },
 };
+// A budget for the agent's task: when one limit is reached it gets one step with no tool run to
+// write its report, and ends incomplete (ended="budget"); a message continues it.
+const BUDGET_PROP = {
+  budget: {
+    type: "object",
+    description: "Optional limits for the agent's task: when one is reached it writes its report in one more step, with no tool run, and ends incomplete; a message continues it with the budget counted again.",
+    properties: {
+      steps: { type: "integer", minimum: 1, description: "Model steps" },
+      minutes: { type: "number", exclusiveMinimum: 0, description: "Minutes of wall time" },
+      usd: { type: "number", exclusiveMinimum: 0, description: "Dollars of model spend, its own agents' included; refused on a model with no listed price" },
+    },
+  },
+};
+const RESUME_BUDGET = {
+  budget: { ...BUDGET_PROP.budget, description: "Optional new limits for the agent's task (steps, minutes, usd), counted from this message. A finished agent's budget counts again from this message either way." },
+};
 async function onMachine(input: any, prompt: unknown) {
   const m = typeof input?.machine === "string" ? input.machine.trim() : "";
   if (!m) return null;
@@ -84,6 +100,7 @@ const Agent: Tool = {
       run_in_background: { type: "boolean", description: "Return at once; the report arrives later as a message" },
       isolation: { type: "string", enum: ["worktree", "none"], description: "worktree (the default for agents that edit, in a git repository): its own checkout and branch; none: it edits your checkout" },
       output_schema: { type: "object", description: "A JSON schema the report must match; the report is then that JSON value" },
+      ...BUDGET_PROP,
       ...MACHINE_PROPS,
     },
     required: ["description", "prompt"],
@@ -91,7 +108,7 @@ const Agent: Tool = {
   target: (input) => onMachine(input, input.prompt),
   run: (input, ctx) => guard(async () => {
     const fork = String(input.subagent_type ?? "").toLowerCase() === "fork";
-    const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
+    const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
     const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
     if (input.run_in_background && agents.queuedForSlot(a)) return ok(agents.queuedLine(a) + agents.notCarried(a.id));
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.${agents.notCarried(a.id)}`);
@@ -161,12 +178,13 @@ const SendMessage: Tool = {
       to: { type: "string", description: "The agent id or description" },
       message: { type: "string", description: "The message" },
       summary: { type: "string", description: "A 5-10 word preview of the message" },
+      ...RESUME_BUDGET,
     },
     required: ["to", "message"],
   },
   run: (input, ctx) => guard(async () => {
     const to = agents.resolveInTree(ctx.sessionId, String(input.to ?? input.agent_id));
-    const r = await agents.send(to.id, String(input.message), false, callKey(ctx), ctx.sessionId);
+    const r = await agents.send(to.id, String(input.message), false, callKey(ctx), ctx.sessionId, input.budget);
     const mine = to.parent_id === ctx.sessionId;
     return ok(`${r.held ? "Stored for" : "Sent to"} ${r.agent.id}. ${whenRead(r)}${r.held ? "" : mine ? " Its report arrives as a message." : " Its report goes to the agent that started it, not to you."}`);
   }),
@@ -208,13 +226,14 @@ const spawn_agent: Tool = {
       model: { type: "string", description: "Model override for the new agent. Omit unless an explicit override is needed." },
       isolation: { type: "string", enum: ["worktree", "none"], description: "worktree (default for agents that edit, in a git repository) or none (edit this checkout)." },
       output_schema: { type: "object", description: "JSON schema the agent's final answer must match." },
+      ...BUDGET_PROP,
       ...MACHINE_PROPS,
     },
     required: ["message"],
   },
   target: (input) => onMachine(input, input.message ?? input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
     const left = agents.notCarried(a.id).trim();
     return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}) }));
   }),
@@ -231,11 +250,12 @@ const send_input: Tool = {
       target: { type: "string", description: "Agent id to message (from spawn_agent)." },
       message: { type: "string", description: "Message to send to the agent." },
       interrupt: { type: "boolean", description: "True interrupts the current task and handles this message immediately." },
+      ...RESUME_BUDGET,
     },
     required: ["target", "message"],
   },
   run: (input, ctx) => guard(async () => {
-    const r = await agents.send(agents.resolveInTree(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt, callKey(ctx), ctx.sessionId);
+    const r = await agents.send(agents.resolveInTree(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt, callKey(ctx), ctx.sessionId, input.budget);
     return ok(JSON.stringify({ submission_id: `${r.agent.id}-${Date.now()}`, delivery: whenRead(r) }));
   }),
 };

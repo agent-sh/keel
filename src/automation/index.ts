@@ -142,6 +142,8 @@ function init(deps: Deps) {
     // It stays: what was kept back goes (flush drops it for one that is gone or archived).
     closingOver: (id) => flush(id),
     turnStart: (s) => agents.onTurnStart(s.id),
+    // An agent whose budget is spent writes its report in one more step (src/automation/budget.ts).
+    budget: (s) => (s.parent_id ? agents.budgetSpent(s.id) : undefined),
     cutTurn: (s, cut) => agents.onCutTurn(s.id, cut),
     cutTurnHeld: (s, why) => { agents.onCutTurnHeld(s.id, why); loops.onCutTurnHeld(s.id, why); },
     turnEnd: (s, reason) => {

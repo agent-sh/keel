@@ -171,7 +171,7 @@ export function parseHeld(v: string | null): number[] | null {
 // How a turn that did not finish ended, as the workbench says it.
 const OUTCOME: Record<string, string> = {
   interrupted: "Stopped before the reply finished", restart: "Cut by a daemon restart", max_tokens: "Cut at the output limit",
-  max_steps: "Stopped at the step budget", refusal: "Declined",
+  max_steps: "Stopped at the step budget", budget: "Stopped at the agent's budget", refusal: "Declined",
 };
 const NORMAL_STOP = new Set(["end_turn", "tool_use", "stop_sequence", undefined, null]);
 

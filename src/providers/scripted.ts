@@ -371,6 +371,8 @@ export class ScriptedProvider implements Provider {
           return reply(`Went on in a fresh context. ${head.split("\n\n[")[0]!.trim().split("\n").at(-1)}`);
         }
         const done = msgs.slice(at + 1).filter((m) => m.role === "assistant").length;
+        // An agent's budget is spent: it writes its report in words, as a model told so does.
+        if (lastText.includes("[harness] Your budget for this task is spent")) return reply(`Report at the budget: ${done} of ${calls.length} steps taken.`);
         const next = calls[done];
         if (next) {
           // `after_ms` on a call: the model takes that long before it makes it, as a real one does (at most 10 s).

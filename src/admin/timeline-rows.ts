@@ -123,7 +123,7 @@ export function outcomeOf(reason: string, stoppedBy?: string | null): string {
   if (NORMAL.has(reason)) return "ok";
   if (reason === "interrupted") return ownerStop(stoppedBy) ? "stopped_by_owner" : stopper(stoppedBy).parent ? "stopped_by_parent" : "stopped";
   if (reason === "restart") return "cut";
-  if (reason === "max_steps" || reason === "max_tokens") return "budget";
+  if (reason === "max_steps" || reason === "max_tokens" || reason === "budget") return "budget";
   if (reason === "refusal") return "refusal";
   return "error";
 }
@@ -272,7 +272,7 @@ const STOPPED: Record<string, string> = {
   owner: "the owner stopped it", parent: "its parent stopped it", ancestor: "an agent above it was stopped", parent_turn: "it stopped with its parent's turn",
   time_limit: "its time limit passed", parent_archived: "its parent session was archived",
 };
-const AGENT_END: Record<string, string> = { refusal: "the model declined", max_tokens: "it hit the output limit", max_steps: "it ran out of its step budget" };
+const AGENT_END: Record<string, string> = { refusal: "the model declined", max_tokens: "it hit the output limit", max_steps: "it ran out of its step budget", budget: "it ran out of its budget" };
 const CHOICE: Record<string, string> = { once: " once", session: " for the session", always: " from now on" };
 const toolOf = (text: string) => { const t = text.split(":")[0] ?? ""; return /^[\w.-]{1,80}$/.test(t) ? t : "a tool"; };
 

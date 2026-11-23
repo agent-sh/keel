@@ -50,6 +50,7 @@ const ENDING: Record<string, string> = {
   restart: "Cut short by a daemon restart.",
   error: "The turn failed before completion.",
   max_steps: "Stopped at the session's step budget.",
+  budget: "Stopped at the agent's budget.",
   max_tokens: "Cut at the output limit.",
 };
 

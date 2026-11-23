@@ -70,7 +70,7 @@ export function outcomeOf(reason: string, stoppedBy?: string | null): string {
   // the owner's that took the turn's place, a hook, a stop nobody named).
   if (reason === "interrupted") return ownerStop(stoppedBy) ? "stopped_by_owner" : stopper(stoppedBy).parent ? "stopped_by_parent" : "stopped";
   if (reason === "restart") return "cut";
-  if (reason === "max_steps" || reason === "max_tokens") return "budget";
+  if (reason === "max_steps" || reason === "max_tokens" || reason === "budget") return "budget";
   if (reason === "refusal") return "refusal";
   return "error";
 }

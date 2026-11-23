@@ -32,6 +32,7 @@ import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 import { agentMemory, memoryOff, SCOPES, type MemoryScope } from "./agent-memory.ts";
 import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
+import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. The child gets the same system
@@ -72,6 +73,7 @@ const END_TEXT: Record<string, string> = {
   refusal: "the model declined to go on",
   max_tokens: "its reply hit the output limit",
   max_steps: "it ran out of its step budget",
+  budget: "it ran out of its budget",
 };
 export type AgentRecord = {
   id: string;
@@ -97,6 +99,8 @@ export type AgentRecord = {
   messages_waiting?: number; // its parent's messages still in its queue: it reads them at its next step, or when it goes on
   tasks: number; // how many times it was given new work after it ended (a message continued it, a turn started in its session)
   slot_wait?: boolean; // it waits, its wake came, and it waits in line for a slot of its parent
+  budget?: Budget | null; // steps, minutes or dollars for one task (src/automation/budget.ts)
+  task_at?: number | null; // when its current task began: what its budget counts from
 };
 
 export type AgentDef = {
@@ -122,6 +126,7 @@ export type AgentDef = {
   memory?: MemoryScope;   // its own memory folder (src/automation/agent-memory.ts)
   ownServers?: string[];  // servers its file defines itself (inline): run for it once the owner approved each (src/mcp/project.ts)
   notTaken?: string[];    // what its definition asks for that Keel does not run, each with why: told to its parent at the start
+  budget?: Budget; // the budget its agents get unless the call gives one (frontmatter: budget_steps, budget_minutes, budget_usd)
 };
 
 // A value that is not a whole number of at least 1 would mean no limit (NaN) or no agents (0).
@@ -181,7 +186,7 @@ CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);
 CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('running', 'waiting');`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
 }
@@ -194,13 +199,13 @@ const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir
 // `restarts`: a column from when a restart count decided an agent's end; unused.
 // `park_told`: the task (its first_seq) whose park the parent has been told of.
 // `task`: its first prompt, kept until it is in its session (sendTask).
-type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null };
+type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget"> & { budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null };
 const toRec = (r: Row): AgentRecord => {
   const { def, output_schema, schema_tries, restarts, park_told, task, parked, ...rest } = r;
   void def; void schema_tries; void restarts; void park_told; void task; void parked;
   // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
   const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
-  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}) };
+  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}) };
 };
 // The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
 const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
@@ -233,7 +238,7 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>, quiet = fal
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
     sets.push(`${k} = ?`);
-    vals.push(typeof v === "boolean" ? (v ? 1 : 0) : v);
+    vals.push(typeof v === "boolean" ? (v ? 1 : 0) : k === "budget" ? (v ? JSON.stringify(v) : null) : v);
   }
   if (sets.length) D().store.db.query(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
   const rec = get(id);
@@ -383,6 +388,7 @@ function readFiles(files: string[], source: string, plugin = false): AgentDef[] 
         permissionMode: plugin ? undefined : modeName(fm.meta.permission_mode ?? fm.meta.permissionMode),
         isolation: fm.meta.isolation === "worktree" ? "worktree" : fm.meta.isolation === "none" ? "none" : undefined,
         ...claudeFields(fm.meta, plugin),
+        budget: budgetOfMeta(fm.meta),
       });
     } catch (e) {
       capture(e, { at: "agent definition", path: p });
@@ -646,6 +652,7 @@ export type SpawnInput = {
   isolation?: "worktree" | "none"; output_schema?: unknown;
   machine?: string; cwd?: string; // another machine of the fleet, and a directory there
   call_id?: string; // the tool_use id of the spawning call
+  budget?: unknown; // steps, minutes or dollars for its task (parseBudget); over its definition's
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -731,6 +738,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     const bad = validSchema(input.output_schema);
     if (bad) throw new Error(bad);
   }
+  parseBudget(input.budget); // refused before anything is made
   const root = rootSession(parentId);
   for (;;) {
     if (signal?.aborted) throw new Error("cancelled");
@@ -766,6 +774,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     : await pickModel(parent, input.model ?? def.model);
   const { info } = await D().providers.resolve(model);
   if (signal?.aborted) throw new Error("cancelled");
+  await checkUsd(mergeBudget(def.budget, parseBudget(input.budget)), model, info);
   const effort = def.effort && info.efforts?.includes(def.effort) ? def.effort : undefined;
   const title = (input.title || input.prompt.split("\n")[0]!).slice(0, 80);
   const id = Bun.randomUUIDv7().slice(-12);
@@ -850,10 +859,11 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // the agent with all of it (recover), not on a bare "continue". It is kept
   // as history is: a secret in it is its placeholder.
   // task_at: where the parent's own words start, so the page shows them verbatim.
+  const budget = mergeBudget(def.budget, parseBudget(input.budget));
   store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
-    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null);
+    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null);
   release(); // the persisted running row now occupies the slot
   // The repositories it may change, as they are before its first step: what it makes there is told at its end.
   if (!placed) await leftovers.before(store, id, [child.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: id }));
@@ -872,7 +882,7 @@ function lineUp(a: AgentRecord) {
   lineOf(a.parent_id).join({ key: `wake:${a.id}`, at: parkedAt(a), go: () => {
     const now = get(a.id);
     if (!now || now.status !== "waiting" || !queuedTask(now.id)) return;
-    update(a.id, { status: "running" });
+    update(a.id, { status: "running", task_at: Date.now() });
     activity.record("agent", "started", a.parent_id, `Started agent "${a.title}" (${a.type} on ${a.model}) when a slot freed${leftLine(a.id)}`, { agent_id: a.id, child_session: a.session_id });
     begin(a.id, { background: true }, a.model).catch((e) => capture(e, { at: "queued agent start", agent: a.id }));
   } });
@@ -1023,7 +1033,8 @@ function collect(a: AgentRecord, end?: string): { text: string; own: boolean; er
   const earlier = rounds.slice(0, -1).filter((r, i) => !rounds.slice(i + 1).some((x) => x.text.includes(r.text)));
   const said = (r: { text: string; note?: boolean }) => `${r.note ? NO_FINAL : ""}${r.text}`;
   let tail = "";
-  if (end && END_TEXT[end]) tail += `${last ? "\n\n" : ""}It did not finish: ${END_TEXT[end]}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
+  const ended = end === "budget" ? `${budgetEnd(a)}. A message to it continues it, with its budget counted again from then` : end ? END_TEXT[end] : undefined;
+  if (ended) tail += `${last ? "\n\n" : ""}It did not finish: ${ended}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
   if (err) tail += `${last || tail ? "\n\n" : ""}Error: ${err}`;
   const text = fitReport(last ? said(last) : "", earlier.map(said), tail, RESULT_CAP - REPORT_ROOM);
   return { text: text || "(the agent ended without a report)", own: rounds.length > 0, error: err, events: evs };
@@ -1345,7 +1356,74 @@ function tellPark(a: AgentRecord, wake: boolean) {
 }
 
 const stopping = new Map<string, StopBy>();
-const INCOMPLETE = new Set(["refusal", "max_tokens", "max_steps"]);
+const INCOMPLETE = new Set(["refusal", "max_tokens", "max_steps", "budget"]);
+
+// --- budgets -------------------------------------------------------------------
+
+// The ledger's table is made once and never dropped: once seen, it is not looked up again.
+const ledgered = new WeakSet<object>();
+const hasTelemetry = () => {
+  const { store } = D();
+  if (ledgered.has(store)) return true;
+  const yes = store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_calls'").get() !== null;
+  if (yes) ledgered.add(store);
+  return yes;
+};
+// The reads of what a task used. Both plan on the ledger's session index (telemetry_calls_session,
+// on session_id and ts) and read only the task's own rows: the tree's sessions come first (CROSS
+// JOIN keeps that order), so no read walks the rows of every session since the task began.
+// `unpriced`: rows of a model with no listed price (a plan, a local model), which add no dollars.
+export const STEPS_SQL = "SELECT COUNT(*) AS n FROM telemetry_calls WHERE session_id = ? AND ts >= ? AND COALESCE(purpose, 'turn') = 'turn' AND outcome = 'ok'";
+export const TREE_SPEND_SQL = "WITH RECURSIVE t(s) AS (SELECT ?1 UNION SELECT g.session_id FROM agents g JOIN t ON g.parent_id = t.s) SELECT COALESCE(SUM(c.cost), 0) AS c, COALESCE(SUM(c.cost IS NULL AND c.outcome = 'ok'), 0) AS unpriced FROM t CROSS JOIN telemetry_calls c ON c.session_id = t.s WHERE c.ts >= ?2";
+// What the agent's current task used, from the telemetry ledger: the model steps of its own
+// session, and the dollars of its session and every agent below it; and the time since it began.
+export function usedOf(a: Pick<AgentRecord, "session_id" | "created" | "task_at">, now = Date.now()): Used & { unpriced: number } {
+  const from = a.task_at ?? a.created;
+  const ms = Math.max(0, now - from);
+  if (!hasTelemetry()) return { steps: 0, ms, usd: 0, unpriced: 0 };
+  const db = D().store.db;
+  const steps = db.query<{ n: number }, [string, number]>(STEPS_SQL).get(a.session_id, from)!.n;
+  const spend = db.query<{ c: number; unpriced: number }, [string, number]>(TREE_SPEND_SQL).get(a.session_id, from)!;
+  return { steps, ms, usd: spend.c, unpriced: spend.unpriced };
+}
+// The limit an ended agent ran out of, in words: its own, or the one of an agent above it.
+function budgetEnd(a: AgentRecord): string {
+  for (const x of [a, ...ancestorsOf(a)]) {
+    if (!x.budget) continue;
+    const k = spentOn(x.budget, usedOf(x));
+    if (k) return endedWords(x.budget, k, x === a ? undefined : x.title);
+  }
+  return endedWords(a.budget ?? undefined, undefined);
+}
+// The agents above an agent, the nearest first (at most the depth limit's worth).
+function ancestorsOf(a: AgentRecord): AgentRecord[] {
+  const out: AgentRecord[] = [];
+  for (let up = byChild(a.parent_id); up && out.length < 16; up = byChild(up.parent_id)) out.push(up);
+  return out;
+}
+// Asked before each model step of any session (the engine's budget hook): the harness's words for
+// the last step of an agent whose budget is spent, or whose ancestor's is (an agent's dollars count
+// its whole tree, and the time and steps of an agent above it bound what its agents may still do).
+export function budgetSpent(sessionId: string): string | undefined {
+  const a = byChild(sessionId);
+  if (!a || isEnded(a)) return undefined;
+  for (const x of [a, ...ancestorsOf(a)]) {
+    if (!x.budget || isEnded(x)) continue;
+    const u = usedOf(x);
+    const k: Limit | undefined = spentOn(x.budget, u);
+    if (k) return closingText(x.budget, u, k, x === a ? undefined : x.title);
+  }
+  return undefined;
+}
+// A dollar limit is counted only from listed prices: on a model with none (a plan, a local model)
+// it would never be reached, so it is refused, with what to give instead.
+export const usdRefusal = (budget: Budget | undefined, model: string, price: unknown): string | undefined =>
+  budget?.usd !== undefined && !price ? `budget.usd cannot be counted on ${model}: its provider lists no price for it (a plan or a local model), so no spend is recorded. Give steps or minutes instead.` : undefined;
+async function checkUsd(budget: Budget | undefined, model: string, info?: { price?: unknown }) {
+  if (budget?.usd === undefined) return;
+  const why = usdRefusal(budget, model, info ? info.price : (await D().providers.resolve(model)).info.price);
+  if (why) throw Object.assign(new Error(why), { status: 400 });
+}
 
 // Turn-end of any session: settle the agent whose session it is, unless more
 // work is already lined up for it (a queued message, a wait).
@@ -1365,10 +1443,11 @@ export function onTurnEnd(sessionId: string, reason: string) {
   if (!stopping.has(a.id) && !engine.isHeld(sessionId) && waitingFor(sessionId)) return;
   // Its own agents still work: it has not finished, and their reports start
   // its next turn. (A blocking call on it goes on waiting; a stop ends it.)
-  if (!stopping.has(a.id) && reason !== "interrupted" && ownAtWork(sessionId)) return;
+  // (Out of its budget it has finished all the same: its own agents stop with it, below.)
+  if (!stopping.has(a.id) && reason !== "interrupted" && reason !== "budget" && ownAtWork(sessionId)) return;
   // (A silent agent hands nothing back: its goal or its review has its answer at the turn's end, so it is
   // not kept waiting on a command that runs on.)
-  const waitingOn = stopping.has(a.id) ? "" : isSilent(a.id) ? waits.describeActive(sessionId) : waitsOn(sessionId);
+  const waitingOn = stopping.has(a.id) || reason === "budget" ? "" : isSilent(a.id) ? waits.describeActive(sessionId) : waitsOn(sessionId);
   if (waitingOn) {
     // When it parked: its place in line for a slot when its wake comes.
     D().store.db.query("UPDATE agents SET parked = ? WHERE id = ?").run(Date.now(), a.id);
@@ -1385,6 +1464,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
   const by = stopping.get(a.id) ?? (reason === "interrupted" ? (ownerStop(turnBy) ? "owner" : turnBy && turnBy in STOP_TEXT ? (turnBy as StopBy) : "unknown") : undefined);
   stopping.delete(a.id);
   if (by) stopBelow(a, by);
+  else if (reason === "budget") stopBelow(a, "ancestor");
   const status: AgentStatus = by ? "stopped" : reason === "error" ? "failed" : INCOMPLETE.has(reason) ? "incomplete" : "completed";
   settling.set(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
 }
@@ -1547,17 +1627,21 @@ export type MessageSent = { agent: AgentRecord; waits: boolean; held?: boolean; 
 // `from`: the sending session, when it is not the agent's parent: another
 // agent of the same tree. Its message says who sent it, and it releases no
 // hold: only the sender whose own stop made a hold releases it.
-export async function send(id: string, message: string, interrupt = false, key?: string, from?: string): Promise<MessageSent> {
+// `budget`: a new budget for the agent's task (a finished agent's next task counts again from the
+// message either way). Refused before anything is sent when it cannot be one.
+export async function send(id: string, message: string, interrupt = false, key?: string, from?: string, budgetIn?: unknown): Promise<MessageSent> {
+  const budget = parseBudget(budgetIn);
   // Another message is making this finished agent ready (its slot held, its
   // worktree made again): this one waits for that, then steers the agent it
   // started, instead of asking for a second slot.
   const ahead = restarting.get(id);
   if (ahead) {
     await ahead;
-    return send(id, message, interrupt, key, from);
+    return send(id, message, interrupt, key, from, budget);
   }
   let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
+  if (budget) await checkUsd(budget, a.model);
   const { engine, store } = D();
   const child = store.session(a.session_id);
   if (!child) throw new Error("the agent's session is gone");
@@ -1607,7 +1691,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
     if (ending) {
       free();
       await ending;
-      return send(id, message, interrupt, key);
+      return send(id, message, interrupt, key, from, budget);
     }
     a = get(id); // placement may have yielded while this agent finished
     if (!a) throw new Error(`no agent ${id}`);
@@ -1636,7 +1720,8 @@ export async function send(id: string, message: string, interrupt = false, key?:
       // One that waits holds no slot: the message that would start it takes one, as a finished agent's does.
       if (a.status === "waiting" && !engine.isRunning(a.session_id) && !(key && engine.hasInput(a.session_id, key))) needSlot(a.parent_id);
       const r = engine.message(a.session_id, text, meta, opts);
-      if (!r.duplicate && !r.held) update(id, { status: "running" });
+      // (A new budget counts from this message, as a finished agent's next task does.)
+      if (!r.duplicate && !r.held) update(id, { status: "running", ...(budget ? { budget, task_at: Date.now() } : {}) });
       return sent(r);
     }
     if (!release) needSlot(a.parent_id); // it ended while its place was made ready
@@ -1647,7 +1732,8 @@ export async function send(id: string, message: string, interrupt = false, key?:
       cutCalls.delete(id); // new work, in the background: nothing holds its report
       const last = store.lastSeq(a!.session_id);
       // (Each task has a report of its own: two started with no event between them do not share its id.)
-      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null });
+      // (Its budget counts again from this task, the one the message gives if it gives one.)
+      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), ...(budget ? { budget } : {}) });
       release?.(); // the running row now occupies the slot
       // The stop that ended it was the sending side's: its hold goes before anything starts.
       if (!peer) engine.releaseHold(a!.session_id, OWN_HOLDS);
@@ -1789,7 +1875,7 @@ export function onTurnStart(sessionId: string) {
   if (!parent || parent.archived) return; // no one to report to: it stays the owner's own turn
   const evs = D().store.events(sessionId);
   const prompt = evs.findLast((e) => e.kind === "user");
-  update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), tasks: a.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null });
+  update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), tasks: a.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now() });
 }
 
 // The one decision on an agent's turn that a daemon restart cut, asked by the

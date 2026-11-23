@@ -490,7 +490,7 @@ export function scheduleNext(sessionId: string, input: { delay_seconds?: number;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(Number.isFinite(n) ? n : lo, lo), hi);
 
-const INCOMPLETE: Record<string, string> = { refusal: "the model declined", max_steps: "it ran out of its step budget", max_tokens: "its reply hit the output limit" };
+const INCOMPLETE: Record<string, string> = { refusal: "the model declined", max_steps: "it ran out of its step budget", budget: "it ran out of its budget", max_tokens: "its reply hit the output limit" };
 const outcomeOf = (reason: string): NonNullable<RunRecord["outcome"]> =>
   reason === "error" ? "failed" : reason === "interrupted" ? "stopped" : INCOMPLETE[reason] ? "incomplete" : "ok";
 
