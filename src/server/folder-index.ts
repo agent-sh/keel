@@ -71,10 +71,15 @@ export async function indexFolders(roots: Root[], used: string[] = [], cap = MAX
   return { folders: [...out.values()], partial };
 }
 
-// One index at a time, reused while fresh, keyed by its roots.
+// What an index is of: its roots and the set of used folders, each sorted. The order of the used
+// folders (newest first) moves whenever a session works somewhere else, and is not what is walked.
+export const indexKey = (roots: Root[], used: string[]): string =>
+  JSON.stringify([[...new Set(roots.map((r) => `${r.depth}\u0000${r.path}`))].sort(), [...new Set(used)].sort()]);
+
+// One index at a time, reused while fresh, keyed by what it walks.
 let last: { key: string; at: number; job: Promise<{ folders: FolderHit[]; partial: boolean }> } | null = null;
 export function folderIndex(roots: Root[], used: string[]): Promise<{ folders: FolderHit[]; partial: boolean }> {
-  const key = JSON.stringify([roots, used]);
+  const key = indexKey(roots, used);
   if (last && last.key === key && Date.now() - last.at < INDEX_MS) return last.job;
   const job = indexFolders(roots, used);
   last = { key, at: Date.now(), job };
