@@ -10,6 +10,7 @@
 // the model when it ends). A PTY dies with the daemon that holds its terminal.
 import type { Subprocess } from "bun";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import * as fsp from "node:fs/promises";
 import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
@@ -56,6 +57,9 @@ export type Job = {
   owes?: boolean;        // it ended and the input that says so is not stored yet
   swept?: number;        // processes of it that outlived its terminal and were ended at this start
   looked?: number;       // when what a stop left was last looked for
+  // Since when a process of it holds a socket that serves with the job idle, the processor time it had
+  // used then (ms), and the latest sample that saw it (serving, sampleServing).
+  serve?: { from: number; cpu: number; at: number };
   by?: "owner";          // the owner ran it from the terminal pane
   // Where the shell reports the commands it runs (a check's run, src/checks), and what it reported.
   traceFile?: string;
@@ -418,46 +422,114 @@ const endTold = (j: Job) => j.background && !j.wake && !j.front && j.by !== "own
 
 // The background commands of a session started at `since` or later whose end it is still to be told
 // of: they run, or the input that tells their end is on its way. An agent whose turn ends with one
-// waits on it (src/automation/agents.ts). Not one being stopped, and not one that serves: a process of
-// it listens on a socket (a dev server, a database left up for the work), which is the state the
-// command was started to reach, not a run with a result to come.
+// waits on it (src/automation/agents.ts). Not one being stopped, and not one that serves (serving).
 export const unfinished = (sessionId: string, since: number) =>
   [...jobs.values()].filter((j) => j.sessionId === sessionId && endTold(j) && j.started >= since && (j.owes || (running(j) && !j.stopping && !serving(j))));
 
-// The inodes of the sockets in the LISTEN state in a /proc/net/tcp or tcp6 table (the fourth
-// column is the state, 0A is LISTEN; the tenth is the inode).
-export function listeningInodes(table: string): Set<string> {
+// Whether a background command of a session started at `since` or later is being stopped: its end,
+// stopped, is still to come.
+export const beingStopped = (sessionId: string, since: number) =>
+  [...jobs.values()].some((j) => j.sessionId === sessionId && endTold(j) && j.started >= since && j.stopping && running(j));
+
+// A job serves when a process of it has held a socket that serves (a TCP or unix socket that listens,
+// a UDP socket bound to a port) for SERVE_HOLD_MS while the job used under SERVE_IDLE of a processor:
+// the state a dev server or a database left up for the work was started to reach, with no result to
+// come. A test run holds its own server while it works, so a listener alone is not enough: the run
+// keeps a processor busy, and a server waits for requests. The hold is the reviewer's "a few
+// seconds", long enough that a run whose server is up at the instant a turn ends is seen working.
+// Decided from samples (sampleServing), never read here: the read is off the loop.
+export const SERVE_HOLD_MS = 5_000;
+export const SERVE_IDLE = 0.1;
+export const serving = (j: Job, now = Date.now()) => running(j) && !!j.serve && j.serve.at - j.serve.from >= SERVE_HOLD_MS && now - j.serve.at < 3 * SERVE_HOLD_MS;
+// Whether a job has a listener now, held long enough or not (its end may still be a result to read).
+export const listens = (j: Job) => running(j) && !!j.serve;
+
+// The next state of a job's serve mark from one sample: a listening run starts again when the job
+// had no listener or kept a processor busy over the run (ms of processor time against ms of clock).
+export function nextServe(prev: Job["serve"], s: { at: number; listens: boolean; cpu: number }): Job["serve"] {
+  if (!s.listens) return undefined;
+  if (!prev || s.at <= prev.from) return { from: s.at, cpu: s.cpu, at: s.at };
+  if ((s.cpu - prev.cpu) / (s.at - prev.from) > SERVE_IDLE) return { from: s.at, cpu: s.cpu, at: s.at };
+  return { ...prev, at: s.at };
+}
+
+// The inodes of the sockets that serve in a /proc/net table: tcp and tcp6 in the LISTEN state (the
+// fourth column, 0A; the tenth is the inode), udp and udp6 bound to a local port and connected to
+// none (state 07; a client's socket is connected), unix ones that accept (the flag 00010000 in the
+// fourth column; the seventh is the inode).
+export function servingInodes(kind: "tcp" | "udp" | "unix", table: string): Set<string> {
   const out = new Set<string>();
   for (const line of table.split("\n").slice(1)) {
     const f = line.trim().split(/\s+/);
-    if (f.length > 9 && f[3] === "0A" && f[9] !== "0") out.add(f[9]!);
+    if (kind === "unix") {
+      if (f.length > 6 && (parseInt(f[3]!, 16) & 0x10000) && f[6] !== "0") out.add(f[6]!);
+    } else if (f.length > 9 && f[9] !== "0") {
+      if (kind === "tcp" ? f[3] === "0A" : f[3] === "07" && !f[1]!.endsWith(":0000") && /^0+:0000$/.test(f[2]!)) out.add(f[9]!);
+    }
   }
   return out;
 }
 
-// Whether a process of a job holds a TCP socket that listens. Read from each process's open files and
-// the TCP tables of its own network namespace (a sandboxed job may have one of its own), once per namespace.
-export function serving(j: Job): boolean {
-  const tables = new Map<string, Set<string>>();
-  for (const m of members(j)) {
+// One sample of jobs at a time, every read with the asynchronous calls (on the runtime's own threads,
+// not the loop): each job's processes, the sockets they hold, the tables of their network namespaces,
+// and the processor time they used (the cgroup's count, else each process's own and its reaped children's).
+let sampling: Promise<void> | undefined;
+export function sampleServing(list: Job[]): Promise<void> {
+  const go = async () => {
+    const tables = new Map<string, Promise<Set<string>>>();
+    await Promise.all(list.filter(running).map(async (j) => {
+      const at = Date.now();
+      const s = await sample(j, tables).catch(() => undefined);
+      if (s && running(j)) j.serve = nextServe(j.serve, { at, ...s });
+    }));
+  };
+  const run = (sampling ?? Promise.resolve()).then(go, go);
+  sampling = run.finally(() => { if (sampling === run) sampling = undefined; });
+  return run;
+}
+async function sample(j: Job, tables: Map<string, Promise<Set<string>>>): Promise<{ listens: boolean; cpu: number }> {
+  const pids = await pidsOf(j);
+  let listens = false, cpu = 0;
+  if (j.cgroup) try { cpu = Number((await fsp.readFile(`${j.cgroup}/cpu.stat`, "utf8")).match(/^usage_usec (\d+)/m)?.[1] ?? 0) / 1000; } catch {}
+  await Promise.all(pids.map(async (pid) => {
+    if (!j.cgroup) try {
+      const f = (await fsp.readFile(`/proc/${pid}/stat`, "utf8")).split(") ").pop()!.split(" ");
+      // utime, stime, cutime, cstime: clock ticks, 100 a second on Linux.
+      cpu += (Number(f[11]) + Number(f[12]) + Number(f[13]) + Number(f[14])) * 10;
+    } catch {}
+    if (listens) return;
     let fds: string[];
-    try { fds = readdirSync(`/proc/${m.pid}/fd`); } catch { continue; }
-    const socks: string[] = [];
-    for (const fd of fds) {
-      try { const l = readlinkSync(`/proc/${m.pid}/fd/${fd}`); if (l.startsWith("socket:[")) socks.push(l.slice(8, -1)); } catch {}
-    }
-    if (!socks.length) continue;
-    let ns = "";
-    try { ns = readlinkSync(`/proc/${m.pid}/ns/net`); } catch {}
-    let listen = tables.get(ns);
-    if (!listen) {
-      listen = new Set<string>();
-      for (const t of ["tcp", "tcp6"]) try { for (const i of listeningInodes(readFileSync(`/proc/${m.pid}/net/${t}`, "utf8"))) listen.add(i); } catch {}
-      tables.set(ns, listen);
-    }
-    if (socks.some((i) => listen!.has(i))) return true;
+    try { fds = await fsp.readdir(`/proc/${pid}/fd`); } catch { return; }
+    const socks = (await Promise.all(fds.map((fd) => fsp.readlink(`/proc/${pid}/fd/${fd}`).catch(() => "")))).filter((l) => l.startsWith("socket:[")).map((l) => l.slice(8, -1));
+    if (!socks.length) return;
+    const ns = await fsp.readlink(`/proc/${pid}/ns/net`).catch(() => "");
+    let t = tables.get(ns);
+    if (!t) tables.set(ns, (t = (async () => {
+      const all = new Set<string>();
+      for (const [name, kind] of [["tcp", "tcp"], ["tcp6", "tcp"], ["udp", "udp"], ["udp6", "udp"], ["unix", "unix"]] as const) {
+        try { for (const i of servingInodes(kind, await fsp.readFile(`/proc/${pid}/net/${name}`, "utf8"))) all.add(i); } catch {}
+      }
+      return all;
+    })()));
+    const serve = await t;
+    if (socks.some((i) => serve.has(i))) listens = true;
+  }));
+  return { listens, cpu };
+}
+// A job's processes, read with the asynchronous calls: its cgroup's, else those of its group and session.
+async function pidsOf(j: Job): Promise<number[]> {
+  if (j.cgroup) {
+    try { return (await fsp.readFile(`${j.cgroup}/cgroup.procs`, "utf8")).split("\n").filter(Boolean).map(Number); } catch { return []; }
   }
-  return false;
+  const names = (await fsp.readdir("/proc").catch(() => [] as string[])).filter((n) => /^\d+$/.test(n));
+  const out: number[] = [];
+  await Promise.all(names.map(async (n) => {
+    try {
+      const f = (await fsp.readFile(`/proc/${n}/stat`, "utf8")).split(") ").pop()!.split(" ");
+      if (f[0] !== "Z" && f[0] !== "X" && (Number(f[2]) === j.pid || Number(f[3]) === j.pid)) out.push(Number(n));
+    } catch {}
+  }));
+  return out;
 }
 
 // After a restart: take back the jobs a previous daemon started under

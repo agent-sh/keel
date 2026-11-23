@@ -20,7 +20,7 @@ const run_shell_command: Tool = {
   name: "run_shell_command",
   // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts); a background
   // command's end starts a turn of its idle session, and an agent waits on one it started.
-  urgent: "command-end-wakes",
+  urgent: "command-end-wakes-serve-held",
   readOnly: false,
   kind: "shell",
   cwdOf: (ctx, input) => input?.dir_path ? abs(input.dir_path, ctx) : shellCwd(ctx),
@@ -29,7 +29,9 @@ const run_shell_command: Tool = {
   description:
     "Executes a given shell command as `bash -c <command>`. Set is_background for servers and watchers; " +
     "a command still running after 5 minutes moves to the background, and its end wakes you with a notice " +
-    "(where your tools run on another machine it does not: wait for it there with a command). " +
+    "(where your tools run on another machine it does not: wait for it there with a command). As an agent, your report " +
+    "waits for a background command's end unless it serves: listens on a port or a socket and sits idle " +
+    "(a container's published port is not seen, so start a container with -d). " +
     "The result gives Output, Exit Code and Background PIDs.",
   input_schema: obj({
     command: { type: "string", description: "Exact bash command to execute as `bash -c <command>`" },

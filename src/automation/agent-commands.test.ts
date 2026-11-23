@@ -86,8 +86,10 @@ test("an agent that leaves a server listening reports; one with a run to come wa
   const srv = bg(a.session_id, SERVER, "dev server");
   expect(await until(() => /port \d+/.test(readFileSync(srv.log, "utf8")))).toBe(true);
   end(a, "end_turn", "The dev server is up. Done.");
-  expect(await until(() => agents.get(a.id)!.status === "completed", 3000)).toBe(true);
+  expect(await until(() => agents.get(a.id)!.status === "completed", 15_000)).toBe(true);
   expect(await until(() => to(p.id).some((t) => t.includes("The dev server is up. Done.")), 3000)).toBe(true);
+  // Seen as a server, it was never a park: the parent was told nothing else.
+  expect(to(p.id).filter((t) => t.includes("is waiting for"))).toEqual([]);
 
   // A run with a result to come: the agent waits on it, and its parent is woken for that once in the task.
   const q = parentOf("run");
@@ -146,4 +148,84 @@ test("command ends a moment apart start one turn of an idle session", async () =
   expect(to(s.id).at(-1)).toContain('"first"');
   expect(to(s.id).at(-1)).toContain('"second"');
   expect(failures).toEqual([]);
+});
+
+// Servers of other kinds, a server that comes up after the turn ended, and a run whose own server is up.
+const UNIX = (path: string) => `${process.execPath} -e 'Bun.serve({ unix: ${JSON.stringify(path)}, fetch: () => new Response("up") }); console.log("up"); setInterval(() => {}, 1000)'`;
+const UDP = `${process.execPath} -e 'await Bun.udpSocket({ port: 0, hostname: "127.0.0.1" }); console.log("up"); setInterval(() => {}, 1000)'`;
+
+test("a server on a unix socket or a UDP port, or one that binds after the turn ended, ends its agent's wait", async () => {
+  const cases = [
+    { title: "unix", command: UNIX(join(dir, "dev.sock")) },
+    { title: "udp", command: UDP },
+    { title: "late", command: `sleep 2; ${SERVER}` },
+  ];
+  const as = await Promise.all(cases.map(async (c) => {
+    const p = parentOf(c.title);
+    const a = await spawn(p.id);
+    bg(a.session_id, c.command, `${c.title} server`);
+    end(a, "end_turn", `The ${c.title} server is up. Done.`);
+    return { p, a };
+  }));
+  for (const { p, a } of as) {
+    expect(await until(() => agents.get(a.id)!.status === "completed", 20_000)).toBe(true);
+    expect(await until(() => to(p.id).some((t) => t.includes("server is up. Done.")), 3000)).toBe(true);
+  }
+});
+
+test("a run whose own server is up when the turn ends is waited on, and its end reaches the agent", async () => {
+  const p = parentOf("tests with a server");
+  const a = await spawn(p.id);
+  const j = bg(a.session_id, `${SERVER} & sleep 3; kill %1; echo tests-passed`, "tests");
+  expect(await until(() => /port \d+/.test(readFileSync(j.log, "utf8")))).toBe(true);
+  end(a, "end_turn", "Tests started.");
+  const before = to(a.session_id).length;
+  expect(await until(() => to(a.session_id).length > before, 10_000)).toBe(true);
+  expect(agents.get(a.id)!.status).toBe("waiting");
+  expect(j.exitCode).toBe(0);
+  expect(to(a.session_id).at(-1)).toContain(j.id);
+  // Its parent was told of no server's end and no report: the agent reads the result first.
+  expect(to(p.id).some((t) => t.includes("Tests started."))).toBe(false);
+});
+
+test("a run that keeps a processor busy beside its server is not taken for a server", async () => {
+  const p = parentOf("busy run");
+  const a = await spawn(p.id);
+  const busyLoop = `nice -n 15 ${process.execPath} -e 'const t = Date.now() + 14000; while (Date.now() < t) {}'`;
+  const j = bg(a.session_id, `${SERVER} & ${busyLoop}; kill %1`, "integration run");
+  expect(await until(() => /port \d+/.test(readFileSync(j.log, "utf8")))).toBe(true);
+  end(a, "end_turn", "Running.");
+  await Bun.sleep(jobs.SERVE_HOLD_MS + 2 * agents.PARK_LOOK_MS);
+  expect(jobs.running(j)).toBe(true);
+  expect(agents.get(a.id)!.status).toBe("waiting");
+  await jobs.stopJob(j, "was stopped by the test");
+});
+
+test("the sockets that serve are read from the /proc/net tables", () => {
+  const tcp = [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 111 1 0",
+    "   1: 0100007F:A1B2 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 222 1 0",
+  ].join("\n");
+  expect([...jobs.servingInodes("tcp", tcp)]).toEqual(["111"]);
+  const udp = [
+    "   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops",
+    "  10: 0100007F:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 333 2 0 0",
+    "  11: 0100007F:C350 0100007F:0035 01 00000000:00000000 00:00000000 00000000  1000        0 444 2 0 0",
+  ].join("\n");
+  expect([...jobs.servingInodes("udp", udp)]).toEqual(["333"]);
+  const unix = [
+    "Num       RefCount Protocol Flags    Type St Inode Path",
+    "0000000000000000: 00000002 00000000 00010000 0001 01 555 /run/dev.sock",
+    "0000000000000000: 00000003 00000000 00000000 0001 03 666 /run/dev.sock",
+  ].join("\n");
+  expect([...jobs.servingInodes("unix", unix)]).toEqual(["555"]);
+});
+
+test("a listener serves once it held with the job idle; a busy run starts the hold again", () => {
+  let s = jobs.nextServe(undefined, { at: 0, listens: true, cpu: 0 });
+  s = jobs.nextServe(s, { at: jobs.SERVE_HOLD_MS, listens: true, cpu: 50 });
+  expect(s).toEqual({ from: 0, cpu: 0, at: jobs.SERVE_HOLD_MS });
+  expect(jobs.nextServe(s, { at: jobs.SERVE_HOLD_MS + 1000, listens: true, cpu: jobs.SERVE_HOLD_MS })).toEqual({ from: jobs.SERVE_HOLD_MS + 1000, cpu: jobs.SERVE_HOLD_MS, at: jobs.SERVE_HOLD_MS + 1000 });
+  expect(jobs.nextServe(s, { at: jobs.SERVE_HOLD_MS + 1000, listens: false, cpu: 0 })).toBeUndefined();
 });

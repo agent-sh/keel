@@ -6,7 +6,7 @@ import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { didLine } from "./report-did.ts";
 import { proofFor } from "../checks/proof.ts";
-import { awaited, unfinished } from "../tools/jobs.ts";
+import { awaited, beingStopped, listens, sampleServing, unfinished } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
@@ -1453,6 +1453,48 @@ function tellPark(a: AgentRecord, wake: boolean) {
   });
 }
 
+// Agents parked on a background command of their own: the reason their turn ended, and whether
+// their parent was told of the park. Such a park has no deadline, and a command left serving (a dev
+// server) has no end to come, so it is looked at when it is made and every PARK_LOOK_MS while it
+// stands: a command that has come to serve (src/tools/jobs.ts serving) ends the wait, and the agent's
+// report is its last answer. The parent is told of the park once a look finds none of its commands
+// with a listener (a server on its way to be seen as one, or a run whose own server is up, is
+// looked at again first). The looks read off the loop (sampleServing) and stop with the last park.
+const onCommand = new Map<string, { reason: string; told: boolean }>();
+export const PARK_LOOK_MS = 2_000;
+let parkLook: ReturnType<typeof setTimeout> | undefined;
+function parkOnCommand(a: AgentRecord, reason: string) {
+  onCommand.set(a.id, { reason, told: false });
+  void lookAtParks([a.id]);
+}
+const lookAgain = () => {
+  if (parkLook || !onCommand.size) return;
+  parkLook = setTimeout(() => { parkLook = undefined; void lookAtParks(); }, PARK_LOOK_MS);
+  parkLook.unref?.();
+};
+// (Still parked: waiting, no turn at work.)
+const stillParked = (id: string) => { const a = get(id); return a && a.status === "waiting" && !D().engine.isRunning(a.session_id) ? a : undefined; };
+async function lookAtParks(ids = [...onCommand.keys()]) {
+  try {
+    const parked = ids.flatMap((id) => { const a = stillParked(id); if (!a) onCommand.delete(id); return a ? [a] : []; });
+    await sampleServing(parked.flatMap((a) => unfinished(a.session_id, taskStart(a))));
+    for (const p of parked) {
+      const at = onCommand.get(p.id), a = stillParked(p.id);
+      if (!at || !a) { onCommand.delete(p.id); continue; }
+      const own = unfinished(a.session_id, taskStart(a));
+      // Nothing left to wait on (its commands serve): its turn's end is settled again, and it reports.
+      // (A command being stopped is not served: its end, stopped, gives the agent its turn.)
+      if (!waitsOn(a) && !beingStopped(a.session_id, taskStart(a))) { onCommand.delete(a.id); onTurnEnd(a.session_id, at.reason); continue; }
+      if (!own.length) onCommand.delete(a.id); // its waits are left, each with a deadline
+      if (!at.told && !own.some(listens)) {
+        at.told = true;
+        if (a.background) tellPark(a, true);
+      }
+    }
+  } catch (e) { capture(e, { at: "agent park look" }); }
+  lookAgain();
+}
+
 const stopping = new Map<string, StopBy>();
 const INCOMPLETE = new Set(["refusal", "max_tokens", "max_steps", "budget"]);
 
@@ -1557,7 +1599,9 @@ export function onTurnEnd(sessionId: string, reason: string) {
     wake(a.id);
     // A blocking spawn returns the park in its tool result. Reviewers and
     // other silent agents stay quiet. Recovery does not replay this notice.
-    if (a.background && !isSilent(a.id)) tellPark(a, true);
+    // A park on a command of its own is looked at first (lookAtParks): one that serves ends the wait.
+    if (reason !== "interrupted" && !isSilent(a.id) && unfinished(sessionId, taskStart(a)).length) parkOnCommand(a, reason);
+    else if (a.background && !isSilent(a.id)) tellPark(a, true);
     return;
   }
   // A turn of the child stopped from its own page is the owner's stop; one stopped by anything else

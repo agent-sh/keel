@@ -23,7 +23,7 @@ const Bash: Tool = {
   name: "Bash",
   // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts); a background
   // command's end starts a turn of its idle session, and an agent waits on one it started.
-  urgent: "command-end-wakes",
+  urgent: "command-end-wakes-serve-held",
   readOnly: false,
   kind: "shell",
   cwdOf: shellCwd,
@@ -35,7 +35,8 @@ const Bash: Tool = {
     "max 600000; a command still running at its timeout moves to the background instead of being killed. " +
     "Set run_in_background for servers, watchers and long jobs: you get a task ID and a log file to Read, " +
     "and its end wakes you with a notice, so do not sleep, poll or wait for it: do other work or end your turn " +
-    "(as an agent, your report waits for its end, unless it is a server listening on a port). Where your tools " +
+    "(as an agent, your report waits for its end, unless it serves: listens on a port or a socket and sits idle; " +
+    "a container's published port is not seen, so start a container with -d). Where your tools " +
     "run on another machine, its end does not reach you: wait for it there with a command. " +
     "Stop one with TaskStop once you no longer need it. " +
     "Quote paths with spaces. Prefer the Read, Edit and Write tools for files.",
