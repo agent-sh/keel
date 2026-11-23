@@ -100,6 +100,25 @@
   --series-2: #eb6834;
   --series-3: #1baf7a;
 
+  /* Where the hours went (src/admin/hours-rows.ts): one color a class, in
+     families. Working is the chart series, waiting on others the steel blue
+     of Waiting in three strengths, the owner violet, failures red, Keel's own
+     work grey. Made of the tokens above, so each theme gets its own. */
+  --hour-model: var(--series-1);
+  --hour-tools: var(--series-3);
+  --hour-compaction: var(--brass);
+  --hour-agents: var(--st-wait);
+  --hour-review: color-mix(in oklch, var(--st-wait) 62%, var(--bg));
+  --hour-wait: color-mix(in oklch, var(--st-wait) 36%, var(--bg));
+  --hour-slot: var(--series-2);
+  --hour-owner: var(--st-need);
+  --hour-provider: color-mix(in oklch, var(--st-fail) 55%, var(--bg));
+  --hour-restart: var(--st-fail);
+  --hour-keel: var(--st-idle);
+  --hour-unknown: var(--line-strong);
+  /* A class's time no record covers (read from what started the next turn) is drawn hatched over its color. */
+  --hour-hatch: color-mix(in oklch, var(--bg) 58%, transparent);
+
   /* Motion lengths (the curve and their jobs are with the theme below). */
   --dur-quick: 120ms;
   --dur-move: 180ms;
@@ -307,6 +326,7 @@
   font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
 }
 /* 3. A session's call sign on the folded rail. */
+.k-hour-inferred { background-image: repeating-linear-gradient(135deg, transparent 0 0.1875rem, var(--hour-hatch) 0.1875rem 0.3125rem); }
 .k-tick-code, .k-dock-code { font-family: var(--font-inst); font-stretch: 75%; }
 /* 4. The name of a surface: the product, a page, a panel, a dialog. */
 .k-face-title, .text-display, .text-title, .k-page h1, .k-brand-name, .k-surface-title, .k-settings-jump-label, .k-reader-title h3 {

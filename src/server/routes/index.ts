@@ -60,6 +60,7 @@ import { acpRoutes } from "./acp.ts";
 import { helperRoutes } from "./helper.ts";
 import { experimentRoutes } from "./experiments.ts";
 import { timelineRoutes } from "./timeline.ts";
+import { hoursRoutes } from "./hours.ts";
 import { overviewRoutes } from "./overview.ts";
 import { stateRoutes } from "./state.ts";
 import { shellRoutes } from "./shell.ts";
@@ -130,6 +131,7 @@ const modules: Record<string, RouteModule> = {
   telemetryRoutes, // its tool timing starts after every gate
   experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry
+  hoursRoutes, // where a tree's hours went: reads the spans, turns, agents and waits the others record
   overviewRoutes, // every session's state, failure and spend as one answer
   stateRoutes, // last: it reads every module's cards and records to tell each session's state
   shellRoutes, // after state: it reads the board the state routes make

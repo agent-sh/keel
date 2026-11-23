@@ -7,6 +7,7 @@
 // conversation.
 import { CUT_BY_RESTART, FAIL_WORD, STATE_WORD, stateLabel, stateWords } from "../../../src/core/state-words.ts";
 import { PeerMessages } from "./PeerMessages.tsx";
+import { Hours } from "./Hours.tsx";
 import {
   Anchor, ArrowLeftRight, Bot, ClipboardCopy, CornerDownRight, DatabaseZap, FileClock, Flag, FoldVertical, Gauge, Hand, ListChecks, ListEnd, MessageCircleQuestionMark, MessagesSquare, Power, Repeat,
   Route, Timer, TriangleAlert, X, type LucideIcon,
@@ -333,6 +334,8 @@ function Panel({ session }: { session: Session }) {
       <Now now={now} session={id} onTurn={(t) => { setApart(null); setAsked(t); }} />
       {/* What this session sent other sessions and received from them, each with its one state. */}
       <PeerMessages sessionId={id} />
+      {/* Where its time went, and its tree's: the bottleneck in a line, opened by class. */}
+      <Hours sessionId={id} />
       <div className="flex shrink-0 items-center gap-3 border-b border-line px-3 py-2">
         <Seg label="Show" value={only} onChange={setOnly} options={FILTERS.map(([v, label]) => ({ value: v, label, testid: `timeline-only-${v || "all"}` }))} />
       </div>
