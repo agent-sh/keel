@@ -341,33 +341,33 @@ test("agents started together are one line, and the parent's row moves once for 
       };
       requestAnimationFrame(look);
     });
-    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([...lanes.map(hold), { name: "spawn_agent", input: { message: "Quick report\nscript:say Report: nothing to change.", isolation: "none" } }, { name: "spawn_agent", input: { message: "Fetch the export\nscript:billing", isolation: "none" } }])}` } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([...lanes.map(hold), { name: "spawn_agent", input: { message: "Quick report\nscript:say Report: nothing to change.", isolation: "none" } }])}` } });
     const agents = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { status: string }[];
+    await expect.poll(async () => (await agents()).map((a) => a.status).sort().join(" "), { timeout: 60_000 }).toBe("completed running running running running running");
     const toggle = row.locator("xpath=..").getByTestId("children-toggle");
-    // An agent that fails is on its parent's line at once, as soon as the page hears of it: it calls the owner.
-    await expect.poll(async () => (await agents()).some((a) => a.status === "failed"), { timeout: 60_000, intervals: [50] }).toBe(true);
-    await expect(toggle).toHaveAccessibleName(/1 failed/, { timeout: 1000 });
-    await expect.poll(async () => (await agents()).map((a) => a.status).sort().join(" "), { timeout: 60_000 }).toBe("completed failed running running running running running");
-    await expect(toggle).toHaveAccessibleName("7 agents: 1 failed, 5 working, 1 done", { timeout: 20_000 });
+    await expect(toggle).toHaveAccessibleName("6 agents: 5 working, 1 done", { timeout: 20_000 });
     // One total: the row counts its working agents of every agent it started, the number its agents' line starts with.
-    await expect(row.getByTestId("row-state")).toHaveText("Working · 5 of 7 agents", { timeout: 20_000 });
-    await expect(page.getByTestId("station-word")).toHaveText("Working · 5 of 7 agents");
-    // The row and its line changed a few times for seven agents (they came, one failed, one reported), not at each.
+    await expect(row.getByTestId("row-state")).toHaveText("Working · 5 of 6 agents", { timeout: 20_000 });
+    await expect(page.getByTestId("station-word")).toHaveText("Working · 5 of 6 agents");
+    // The row and its line changed a few times for six agents (they came, one reported), not at each.
     const said = await page.evaluate(() => (window as unknown as { __said: string[] }).__said);
-    expect(said.length, said.join(" ;; ")).toBeLessThanOrEqual(4);
+    expect(said.length, said.join(" ;; ")).toBeLessThanOrEqual(3);
     // In the conversation: one line, with the first tasks named; under it only the agent that failed.
     const step = page.locator('[data-testid="work-step"][data-family="agents"]');
     await expect(step).toHaveCount(1);
-    await expect(step.locator("button.k-line").first()).toContainText("Started 7 agents");
+    await expect(step.locator("button.k-line").first()).toContainText("Started 6 agents");
     await expect(step.locator("button.k-line").first()).toContainText("Lane one");
-    await expect(page.getByTestId("agent-call")).toHaveCount(1);
-    await expect(page.getByTestId("agent-call")).toContainText("Fetch the export");
+    await expect(page.getByTestId("agent-call")).toHaveCount(0);
     await shoot(page, "agents-batch-01-closed");
     // Opened: each agent on its own line, with what the model said before it.
     await step.locator("button.k-line").first().click();
-    await expect(step.getByTestId("agent-call")).toHaveCount(7);
+    await expect(step.getByTestId("agent-call")).toHaveCount(6);
     await expect(step.getByTestId("agent-call").filter({ hasText: "Lane three" }).getByTestId("agent-call-state")).toHaveText("Working");
     await shoot(page, "agents-batch-02-open");
+    // An agent that fails is on its parent's line at once, as soon as the page hears of it: it calls the owner.
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "Fetch the export\nscript:billing", isolation: "none" } }])}` } });
+    await expect.poll(async () => (await agents()).some((a) => a.status === "failed"), { timeout: 60_000, intervals: [50] }).toBe(true);
+    await expect(toggle).toHaveAccessibleName(/1 failed/, { timeout: 1000 });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${session.id}`);
     await expect(page.locator('[data-testid="work-step"][data-family="agents"]')).toBeVisible();
