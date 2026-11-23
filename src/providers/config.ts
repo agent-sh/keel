@@ -15,6 +15,10 @@
 //   billing = "per_token"                # "subscription" (a coding plan) or "free" (a local server)
 //   effort_field = "reasoning"           # "reasoning_effort" (default) or "reasoning"
 //   replay_reasoning = true              # send thinking back as reasoning_content
+//   system_prompt = "developer"          # openai_responses: the system prompt as the first developer message of
+//                                        #   the input ("instructions", the default: the top-level field). For OpenAI
+//                                        #   itself, Azure OpenAI or a proxy in front of them: GPT-6.2 and later bill
+//                                        #   repeated instructions uncached and cache a leading developer message.
 //   models = ["a", "b"]                  # offered only when the endpoint has no listing
 //   headers = { "x-title" = "Keel", "x-team-key" = "{env:TEAM_KEY}" }   # {env:NAME} and {keyring:NAME} are filled in
 //   extra_body = { cache_control = { type = "ephemeral" } }
@@ -73,6 +77,7 @@ export type EndpointConfig = {
   billing?: "per_token" | "subscription" | "free";
   effort_field?: "reasoning_effort" | "reasoning";
   replay_reasoning?: boolean;
+  system_prompt?: "developer" | "instructions";
   models?: string[];
   headers?: Record<string, string>;
   extra_body?: Record<string, unknown>;
@@ -260,6 +265,7 @@ export function checkEndpoint(e: EndpointConfig): string[] {
     out.push("The base URL is not an address: write it in full, for example http://127.0.0.1:8000/v1.");
   }
   if (e.wire && !WIRES.includes(e.wire)) out.push(`The wire "${e.wire}" is not one of ${WIRES.join(", ")}.`);
+  if (e.system_prompt !== undefined && e.system_prompt !== "developer" && e.system_prompt !== "instructions") out.push(`The system prompt goes as "developer" or "instructions", not "${e.system_prompt}".`);
   if (e.key_env && !ENV_NAME.test(e.key_env)) out.push(`"${e.key_env}" is not an environment variable name.`);
   if (e.key_cred && !CRED_NAME.test(e.key_cred)) out.push(`"${e.key_cred}" is not a keyring entry name: letters, digits, ., - and _.`);
   if (e.key_env && LOOKS_SECRET.test(e.key_env)) out.push("The key variable field holds what looks like a key: write the variable's name, or save the key to the keyring.");

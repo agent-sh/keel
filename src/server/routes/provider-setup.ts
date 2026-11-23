@@ -12,7 +12,7 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string | string[], status = 400) => json({ error: Array.isArray(error) ? error.join(" ") : error, problems: Array.isArray(error) ? error : [error] }, status);
 
 // The fields an endpoint takes from a request body (nothing else is written).
-const FIELDS = ["label", "wire", "base_url", "key_env", "key_cred", "auth", "billing", "effort_field", "replay_reasoning", "models", "headers", "extra_body", "session_header", "catalog", "listing", "price", "model", "enabled", "stream_idle_timeout_ms"] as const;
+const FIELDS = ["label", "wire", "base_url", "key_env", "key_cred", "auth", "billing", "effort_field", "replay_reasoning", "system_prompt", "models", "headers", "extra_body", "session_header", "catalog", "listing", "price", "model", "enabled", "stream_idle_timeout_ms"] as const;
 function pick(id: string, b: any): EndpointConfig {
   const out: any = { id };
   for (const k of FIELDS) {

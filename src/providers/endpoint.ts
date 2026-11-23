@@ -316,7 +316,7 @@ export class EndpointProvider implements Provider {
     }
     if (this.wire === "openai_responses") {
       const r = Object.keys(extra).length ? { ...req, extraBody: { ...extra, ...req.extraBody } } : req;
-      return runEvents(responsesWire("compat"), r, ctx, onDelta, httpEvents({ ...common, url: `${this.base}/responses` }, r));
+      return runEvents(responsesWire("compat", undefined, this.cfg.system_prompt), r, ctx, onDelta, httpEvents({ ...common, url: `${this.base}/responses` }, r));
     }
     // OpenRouter caches Claude prompts only with an explicit mark.
     if (this.cfg.effort_field === "reasoning" && /anthropic\/|claude/.test(req.model) && !extra.cache_control) extra.cache_control = { type: "ephemeral" };

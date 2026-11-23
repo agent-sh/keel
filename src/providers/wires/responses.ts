@@ -11,7 +11,11 @@
 // GPT-6.2" and the prompt caching guide, developers.openai.com, 2026-11-17).
 // Every model takes that shape and caches it, so it goes for every model and
 // the prefix has one form. xAI and other servers that speak the protocol keep
-// `instructions`: they documented no such change.
+// `instructions` unless the route's configuration says otherwise
+// (`system_prompt`): the Open Responses specification defines the developer
+// role, but servers differ on it today (some refuse it, some drop the message
+// without a word: openresponses/openresponses issue 75, open on 2026-11-23),
+// so a server not known to take it is not sent one.
 import type { AssistantBlock } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { ProviderError } from "../http.ts";
@@ -25,6 +29,9 @@ import { effortFor, parseArgs, parseJson, type WireCodec, type WireCtx, type Wir
 export type ResponsesDialect = "openai" | "codex" | "xai" | "compat";
 // The dialects whose system prompt goes as the leading developer message.
 const SYSTEM_IN_INPUT = new Set<ResponsesDialect>(["openai", "codex"]);
+// Where a route's configuration puts the system prompt: the first developer
+// message of the input, or top-level `instructions`. Absent: the dialect's.
+export type SystemPlace = "developer" | "instructions";
 
 // xAI reserves these function names for its own server tools.
 const XAI_RESERVED = new Set(["web_search", "tool_search", "x_search", "code_execution"]);
@@ -119,7 +126,7 @@ function loaded(req: ProviderRequest, names: string[]): any[] {
   return out;
 }
 
-export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: ResponsesDialect, systemPrefix?: string) {
+export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: ResponsesDialect, systemPrefix?: string, place?: SystemPlace) {
   const input: any[] = [];
   const custom = customOf(req, dialect);
   const customCalls = new Set<string>();
@@ -175,7 +182,7 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
   const system = systemPrefix ? `${systemPrefix}\n\n${req.system}` : req.system;
   // The same bytes on every step: a WebSocket continuation finds it in the
   // input the server holds and sends only the new items.
-  const inInput = SYSTEM_IN_INPUT.has(dialect);
+  const inInput = place ? place === "developer" : SYSTEM_IN_INPUT.has(dialect);
   if (inInput && system) input.unshift({ type: "message", role: "developer", content: [{ type: "input_text", text: system }] });
   const body: Record<string, any> = {
     model: req.model,
@@ -195,9 +202,9 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
   return body;
 }
 
-export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string): WireCodec {
+export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string, place?: SystemPlace): WireCodec {
   return {
-    body: (req, ctx) => responsesBody(req, ctx, dialect, systemPrefix),
+    body: (req, ctx) => responsesBody(req, ctx, dialect, systemPrefix, place),
     parser(req, ctx, onDelta): WireParser {
       const items: any[] = [];
       const names = new Map<number, string>();

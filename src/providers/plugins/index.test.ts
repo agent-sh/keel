@@ -97,3 +97,35 @@ test("a plugin that refuses the host is captured once and not started again", as
     rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);
+
+// A plugin's openai_responses route is a server that speaks the protocol, not
+// known to be OpenAI's: its system prompt goes as `instructions`, unless its
+// plugins.toml entry says `system_prompt = "developer"`.
+test("a plugin's Responses route keeps instructions unless its entry puts the system prompt in the input", async () => {
+  const { codecFor } = await import("./index.ts");
+  const { readPlugins } = await import("./config.ts");
+  const decl = { id: "p", label: "P", wire: "openai_responses", system_prefix: "Prefix." };
+  const req = { model: "m", system: "sys", messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }], tools: [], signal: new AbortController().signal } as any;
+  const ctx = { origin: "plug/p:m", sessionKey: "k", efforts: [] };
+  const plain = codecFor(decl, true).body(req, ctx);
+  expect(plain.instructions).toBe("Prefix.\n\nsys");
+  expect(plain.input.map((it: any) => it.role)).toEqual(["user"]);
+  const dev = codecFor(decl, true, "developer").body(req, ctx);
+  expect("instructions" in dev).toBe(false);
+  expect(dev.input[0]).toEqual({ type: "message", role: "developer", content: [{ type: "input_text", text: "Prefix.\n\nsys" }] });
+
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "/var/tmp", "keel-plugins-"));
+  process.env.KEEL_CONFIG_DIR = dir;
+  try {
+    const write = (v: string) => writeFileSync(join(dir, "plugins.toml"), `[plugins.stub]\ncommand = "${stub}"\n[plugins.stub.providers.p]\nsystem_prompt = "${v}"\n`);
+    write("developer");
+    const ok = readPlugins().entries[0]!;
+    expect(ok.problem).toBeUndefined();
+    expect(ok.providers.p!.system_prompt).toBe("developer");
+    write("first");
+    expect(readPlugins().entries[0]!.problem).toContain("system_prompt");
+  } finally {
+    process.env.KEEL_CONFIG_DIR = CONFIG_BEFORE;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

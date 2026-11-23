@@ -8,6 +8,7 @@
 import { expect, test } from "bun:test";
 import type { Message } from "../../core/types.ts";
 import { runEvents, httpEvents } from "../drive.ts";
+import { EndpointProvider } from "../endpoint.ts";
 import { ResponsesSockets } from "../responses-ws.ts";
 import type { ProviderRequest } from "../types.ts";
 import { responsesBody, responsesWire, type ResponsesDialect } from "./responses.ts";
@@ -127,4 +128,21 @@ test("xai and a configured server keep the system prompt in instructions", () =>
     expect("instructions" in b).toBe(false);
     expect(b.input.map((it: any) => it.role)).toEqual(["developer", "user"]);
   }
+});
+
+// A configured endpoint on the Responses wire (OpenAI itself, Azure OpenAI, a
+// proxy in front of them, or any server of the protocol) keeps instructions,
+// and sends the leading developer message when its config says so.
+test("a configured endpoint puts the system prompt where its config says", async () => {
+  const s = standIn();
+  try {
+    const req = (signal = new AbortController().signal) => ({ model: "gpt-6.2-sol", system: SYSTEM, messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }], tools: TOOLS, sessionKey: "s1", signal }) as unknown as ProviderRequest;
+    for (const [system_prompt, inInput] of [[undefined, false], ["instructions", false], ["developer", true]] as const) {
+      const ep = new EndpointProvider({ id: "ep", wire: "openai_responses", base_url: `${s.url}/v1`, auth: "none", ...(system_prompt ? { system_prompt } : {}) });
+      await ep.stream(req(), () => {});
+      const b = s.bodies.at(-1);
+      expect(b.instructions).toBe(inInput ? undefined : SYSTEM);
+      expect(b.input[0].role).toBe(inInput ? "developer" : "user");
+    }
+  } finally { s.stop(); }
 });

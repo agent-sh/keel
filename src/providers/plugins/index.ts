@@ -6,20 +6,23 @@ import type { WireCodec } from "../wires/common.ts";
 import { anthropicBody, anthropicWire } from "../wires/anthropic.ts";
 import { chatWire } from "../wires/chat.ts";
 import { geminiWire } from "../wires/gemini.ts";
-import { responsesWire } from "../wires/responses.ts";
+import { responsesWire, type SystemPlace } from "../wires/responses.ts";
 import { readPlugins } from "./config.ts";
 import { PluginProcess, type PluginModel, type PluginProviderDecl } from "./host.ts";
 import type { WindowReading } from "../limits.ts";
 
 const FAMILIES = new Set(["claude", "gpt", "gemini"]);
 
-export function codecFor(d: PluginProviderDecl, thinks: boolean): WireCodec {
+// A plugin's openai_responses route is a server that speaks the protocol,
+// not known to be OpenAI's: compat, the system prompt where its plugins.toml
+// entry puts it (the v1 declaration has no field for it).
+export function codecFor(d: PluginProviderDecl, thinks: boolean, place?: SystemPlace): WireCodec {
   const prefix = d.system_prefix;
   switch (d.wire) {
     case "anthropic_messages":
       return { ...anthropicWire, body: (req, ctx) => ({ ...anthropicBody(req, ctx, prefix), stream: true }) };
     case "openai_responses":
-      return responsesWire("openai", prefix);
+      return responsesWire("compat", prefix, place);
     case "chat_completions":
       return chatWire({}, prefix);
     default:
@@ -103,7 +106,7 @@ export class PluginProvider implements Provider {
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {
     const m = this.model(req.model);
     const thinks = m?.capabilities?.reasoning ? m.capabilities.reasoning.kind !== "none" : true;
-    const codec = codecFor(this.decl, thinks);
+    const codec = codecFor(this.decl, thinks, this.proc.entry.providers[this.decl.id]?.system_prompt);
     const ctx = ctxFor(this.id, req, req.efforts ?? []);
     const headers: Record<string, string> = { "content-type": "application/json", accept: this.decl.stream_format === "json_array" ? "application/json" : "text/event-stream" };
     if (this.wire === "anthropic_messages") headers["anthropic-version"] = "2023-06-01";

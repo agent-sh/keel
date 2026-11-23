@@ -1,7 +1,9 @@
 // plugins.toml (protocol v1): `[plugins.<id>]` with command, args, enabled,
 // env, max_concurrent, settings and `[plugins.<id>.providers.<pid>]`. A
 // provider's `catalog` names the models.dev section that describes its route
-// (speed tiers, capabilities), as an endpoint's does.
+// (speed tiers, capabilities), as an endpoint's does, and `system_prompt`
+// where an openai_responses route puts the system prompt ("developer" or
+// "instructions", the default), as an endpoint's does.
 // keel-bun reads <config>/plugins.toml; without one it reads the Rust Keel's
 // ~/.config/keel/plugins.toml (read only), so existing plugins work unchanged.
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -17,14 +19,14 @@ export type PluginEntry = {
   env: string[];
   max_concurrent?: number;
   settings: Record<string, unknown>;
-  providers: Record<string, { enabled?: boolean; label?: string; catalog?: string; settings?: Record<string, unknown> }>;
+  providers: Record<string, { enabled?: boolean; label?: string; catalog?: string; system_prompt?: "developer" | "instructions"; settings?: Record<string, unknown> }>;
   problem?: string; // a bad entry: the plugin is not started and this says why
   fingerprint: string;
 };
 
 const ID = /^[a-z][a-z0-9_-]{0,47}$/;
 const PLUGIN_KEYS = new Set(["command", "args", "enabled", "env", "max_concurrent", "settings", "providers"]);
-const PROVIDER_KEYS = new Set(["enabled", "label", "catalog", "settings"]);
+const PROVIDER_KEYS = new Set(["enabled", "label", "catalog", "system_prompt", "settings"]);
 
 export function pluginsFile(): string | null {
   const own = join(configDir(), "plugins.toml");
@@ -49,6 +51,7 @@ export function readPlugins(): { file: string | null; entries: PluginEntry[]; er
     for (const k of Object.keys(raw ?? {})) if (!PLUGIN_KEYS.has(k)) problems.push(`unknown key \`${k}\``);
     for (const [pid, p] of Object.entries<any>(raw?.providers ?? {})) {
       for (const k of Object.keys(p ?? {})) if (!PROVIDER_KEYS.has(k)) problems.push(`unknown key \`providers.${pid}.${k}\``);
+      if (p?.system_prompt !== undefined && p.system_prompt !== "developer" && p.system_prompt !== "instructions") problems.push(`\`providers.${pid}.system_prompt\` is not "developer" or "instructions"`);
     }
     if (typeof raw?.command !== "string" || !raw.command) problems.push("`command` is missing");
     if (raw?.enabled !== undefined && typeof raw.enabled !== "boolean") problems.push("`enabled` is not true or false");

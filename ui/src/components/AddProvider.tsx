@@ -207,7 +207,7 @@ function AddProvider({ edit }: { edit?: string }) {
     if (edit) api<any>(`/api/providers/endpoints/${encodeURIComponent(edit)}`).then((r) => {
       const { source: _s, ...c } = r.config;
       setForm(fromConfig(c));
-      setKept({ model: c.model, extra_body: c.extra_body, effort_field: c.effort_field, replay_reasoning: c.replay_reasoning, session_header: c.session_header, listing: c.listing, price: c.price, stream_idle_timeout_ms: c.stream_idle_timeout_ms });
+      setKept({ model: c.model, extra_body: c.extra_body, effort_field: c.effort_field, replay_reasoning: c.replay_reasoning, system_prompt: c.system_prompt, session_header: c.session_header, listing: c.listing, price: c.price, stream_idle_timeout_ms: c.stream_idle_timeout_ms });
     }).catch((e) => setError(failed(e, { at: "reading an endpoint" })));
   }, [edit]);
 

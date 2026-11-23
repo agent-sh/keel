@@ -369,8 +369,11 @@ export class Providers {
       ...(Object.keys(known_from).length ? { known_from } : {}),
       // The listing's own offers win; else the route's catalog section's.
       speeds: m.speeds ?? own?.speeds,
-      // A fact of the model, so another route's entry of it holds too.
-      interleaved: (own ?? c)?.interleaved,
+      // A fact of the route: the catalog names it per provider (one model has
+      // reasoning_content on one route, reasoning_details or nothing on
+      // another). A route with a section takes only its own entry; one
+      // without a section takes the entry the lookup found.
+      interleaved: section ? own?.interleaved : c?.interleaved,
     };
   }
 

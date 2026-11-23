@@ -287,3 +287,19 @@ test("the field a model reads its earlier reasoning from reaches the driver's re
     expect(seen.interleaved).toBe(want);
   }
 });
+
+// The field is the route's: a route whose catalog section has no entry of
+// the model does not take another provider's entry of it.
+test("a route with a catalog section takes the reasoning field from its own section only", async () => {
+  for (const [ownEntry, want] of [[undefined, undefined], [{ id: "thinker", name: "Thinker" }, undefined], [{ id: "thinker", name: "Thinker", interleaved: "reasoning_details" }, "reasoning_details"]] as const) {
+    const f = fake("openai");
+    const r = make(dir(), [f.p]);
+    (r.catalog as any).byId.set("thinker", { id: "thinker", name: "Thinker", interleaved: "reasoning_content" });
+    if (ownEntry) (r.catalog as any).byProvider.set("openai", new Map([["thinker", ownEntry]]));
+    const a = r.refresh("openai");
+    await Bun.sleep(0);
+    f.calls[0]!.resolve([{ model: "thinker" }]);
+    await a;
+    expect(r.current().find((m) => m.model === "thinker")!.interleaved).toBe(want);
+  }
+});
