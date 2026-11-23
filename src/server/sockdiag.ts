@@ -74,10 +74,20 @@ export function uidIn(reply: Uint8Array, length: number, n: number, localPort: n
   return v.getUint32(80, true);
 }
 
+// The socket's inode in the same reply (after its uid): what names it among a process's open files.
+export function inodeIn(reply: Uint8Array, length: number, n: number, localPort: number, remotePort: number): number | null {
+  if (uidIn(reply, length, n, localPort, remotePort) === null) return null;
+  return new DataView(reply.buffer, reply.byteOffset, length).getUint32(84, true);
+}
+
 const reply = new Uint8Array(512);
 
 // The uid that owns the TCP socket with these two ends, or null when the kernel was not asked or named none.
-export function socketUid(local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }): number | null {
+export const socketUid = (local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }): number | null => ask(local, remote, uidIn);
+// The inode of that socket, the same way.
+export const socketInode = (local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }): number | null => ask(local, remote, inodeIn);
+
+function ask(local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }, read: typeof uidIn): number | null {
   if (failed >= GIVE_UP || local.bytes.length !== remote.bytes.length || (local.bytes.length !== 4 && local.bytes.length !== 16)) return null;
   const c = open();
   if (!c) return null;
@@ -93,7 +103,7 @@ export function socketUid(local: { bytes: number[]; port: number }, remote: { by
       if (got < HEADER) throw new Error("recv");
       if (new DataView(reply.buffer).getUint32(8, true) !== n) continue;
       failed = 0;
-      return uidIn(reply, got, n, local.port, remote.port);
+      return read(reply, got, n, local.port, remote.port);
     }
     throw new Error("no reply");
   } catch {

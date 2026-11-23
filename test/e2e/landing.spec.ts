@@ -1,0 +1,131 @@
+import { expect, test } from "./isolate.ts";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { HAIKU, ask, openPanel, scriptBash, shoot } from "./shots.ts";
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+
+// Feature: the landing queue. A coordinator starts two agents that commit on
+// branches of their own, and queues both with keel__landing_queue. Keel builds
+// each on main plus the entries ahead of it in a worktree of its own and runs
+// the repository's named check there: the first passes, the second fails only
+// on top of the first and leaves the queue, told to the coordinator under that
+// agent. main fast-forwards to the commit the check passed on, is pushed to
+// origin, and the repository's after-land step runs once; the coordinator is
+// told what landed. Another session may not land those branches: not with the
+// tool, and not by calling the daemon's API from its shell. A third branch
+// conflicts with main once the first landed: the panel offers no Land for it,
+// and queued by the owner it leaves, its session told to rebase. The main
+// checkout ends clean on the landed commit, and the queue's worktrees are gone.
+test("a queue lands what passed on the exact tree, and a branch that fails or conflicts leaves told", async ({ page, request, baseURL }) => {
+  test.setTimeout(240_000);
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const top = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `landing-${Date.now()}`);
+  const repo = join(top, "repo");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "notes.md"), Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  // The check passes on either change alone and fails on both together.
+  writeFileSync(join(repo, "check.sh"), "echo checking; ! (grep -q ALPHA notes.md && grep -q BETA notes.md) || { echo 'ALPHA and BETA together'; exit 1; }\n");
+  mkdirSync(join(repo, ".keel"));
+  writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { notes: "sh check.sh" }, land: { checks: ["notes"], push: "origin", after: "printf '%s\\n' \"$KEEL_LANDED\" >> ../after.log" } }));
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "init");
+  git(top, "init", "-q", "--bare", "origin.git");
+  git(repo, "remote", "add", "origin", join(top, "origin.git"));
+  git(repo, "push", "-q", "origin", "main");
+  const base = git(repo, "rev-parse", "HEAD").trim();
+
+  const commit = (sed: string, msg: string) => `sed -i '${sed}' notes.md && git -c user.name=k -c user.email=k@k commit -qam '${msg}'`;
+  const idle = (id: string) => expect.poll(async () => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 90_000 }).toBe(true);
+  const send = async (id: string, text: string) => { await request.post(`/api/sessions/${id}/messages`, { data: { text } }); await idle(id); };
+  const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
+
+  // The coordinator's two agents, each committing on its own branch.
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+  const lane = (title: string, sed: string) => ({ name: "spawn_agent", input: { message: `${title}\n${scriptBash(commit(sed, title))}` } });
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start two agents.", `script:batch ${JSON.stringify([lane("Lane alpha", "s/^line 1$/line 1 ALPHA/"), lane("Lane beta", "s/^line 12$/line 12 BETA/")])}`) } });
+  const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
+  await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(2);
+  await idle(coord);
+  const branchOf = async (title: string) => (await agentsOf()).find((a) => a.title === title)!.branch as string;
+  const alpha = await branchOf("Lane alpha"), beta = await branchOf("Lane beta");
+  expect(git(repo, "log", "-1", "--format=%s", alpha).trim()).toBe("Lane alpha");
+
+  // A third, top-level session: it may not land the coordinator's agents' branches.
+  const g = await (await request.post("/api/worktrees", { data: { workspace: repo, model: HAIKU, title: "Lane gamma", text: ask("Commit.", scriptBash(commit("s/^line 1$/line 1 gamma/", "gamma"))) } })).json();
+  const gamma = { id: g.session.id as string, branch: g.worktree.branch as string };
+  await idle(gamma.id);
+  await send(gamma.id, calls([{ name: "keel__landing_queue", input: { action: "queue", branches: [alpha] } }]));
+  const lastResult = async (id: string) => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return JSON.stringify(d.events.filter((e: any) => e.kind === "tool_result").at(-1)?.data ?? {}); };
+  expect(await lastResult(gamma.id)).toContain("another session holds it");
+  // Its shell, outside a sandbox, reaches the daemon's API: the owner's route refuses it.
+  await request.put(`/api/sessions/${gamma.id}/permissions`, { data: { sandbox: "off" } });
+  const url = `${baseURL}/api/sessions/${gamma.id}/landing`;
+  await send(gamma.id, ask("Call the API.", scriptBash(`curl -s -o /dev/null -w 'status=%{http_code}' -X POST -H 'content-type: application/json' -d '{"branches":["${alpha}"]}' ${url}`)));
+  expect(await lastResult(gamma.id)).toContain("status=403");
+  const view = async (id: string) => (await request.get(`/api/sessions/${id}/landing`)).json();
+  expect((await view(coord)).entries).toEqual([]);
+
+  // The coordinator queues its agents' branches: alpha, then beta.
+  await send(coord, ask(`Queue ${alpha} and ${beta} to land with keel__landing_queue, then end your turn.`, calls([{ name: "keel__landing_queue", input: { action: "queue", branches: [alpha, beta] } }])));
+  const stateOf = async (branch: string) => (await view(coord)).entries.find((e: any) => e.branch === branch)?.state;
+  await expect.poll(() => stateOf(beta), { timeout: 90_000 }).toBe("left");
+  await expect.poll(() => stateOf(alpha), { timeout: 30_000 }).toBe("landed");
+  const entries = (await view(coord)).entries;
+  const a = entries.find((e: any) => e.branch === alpha);
+  const b = entries.find((e: any) => e.branch === beta);
+  // Alpha held main: it lands as itself, a fast-forward. main and origin are on it, and its tree passed the check.
+  const main = git(repo, "rev-parse", "main").trim();
+  expect(main).toBe(a.landed);
+  expect(main).toBe(git(repo, "rev-parse", alpha).trim());
+  expect(git(join(top, "origin.git"), "rev-parse", "main").trim()).toBe(main);
+  const runs = (await (await request.get(`/api/checks?tree=${git(repo, "rev-parse", "main^{tree}").trim()}`)).json()).runs;
+  expect(runs.some((r: any) => r.name === "notes" && (r.result === "pass" || r.result === "answered"))).toBe(true);
+  expect(b.why).toContain(`notes failed on it built on main at ${base.slice(0, 9)} with ${alpha} ahead of it`);
+  expect(b.why).toContain("ALPHA and BETA together");
+  // The after-land step ran once, for the one batch.
+  await expect.poll(() => existsSync(join(top, "after.log")) && readFileSync(join(top, "after.log"), "utf8"), { timeout: 30_000 }).toBe(`${main}\n`);
+
+  // The coordinator is told why beta left (a failure under that agent) and what landed.
+  const said = async (id: string, kind: string, words: string) => {
+    const d = await (await request.get(`/api/sessions/${id}`)).json();
+    return d.events.filter((e: any) => e.kind === "user" && JSON.stringify(e.data).includes(`"kind":"${kind}"`) && String(e.data.text).includes(words)).length;
+  };
+  await expect.poll(() => said(coord, "failures", `${beta} left the landing queue of main: notes failed`), { timeout: 60_000 }).toBe(1);
+  await expect.poll(() => said(coord, "landing", `Landed on main: ${alpha}`), { timeout: 60_000 }).toBe(1);
+  await idle(coord);
+
+  // The Branches panel shows the queue: what landed and what left, in both themes.
+  await page.goto(`/s/${coord}`);
+  await expect(page.getByTestId("landing-notice")).toBeVisible();
+  await openPanel(page, "branches");
+  const panel = page.getByTestId("branches-panel");
+  await expect(panel.locator(`[data-testid="landing-entry"][data-branch="${alpha}"]`)).toHaveAttribute("data-state", "landed");
+  await expect(panel.locator(`[data-testid="landing-entry"][data-branch="${beta}"]`)).toHaveAttribute("data-state", "left");
+  await expect(panel.getByTestId("landing-rules")).toContainText("checks notes · pushed to origin");
+  await shoot(page, "landing-01-landed-and-left");
+
+  // Gamma changes the line alpha changed: it conflicts with main now. The panel offers no Land for it;
+  // queued by the owner all the same, it leaves told to rebase.
+  await panel.getByTestId("overlap-refresh").click();
+  const gammaRow = panel.locator(`[data-testid="overlap-branch"][data-branch="${gamma.branch}"]`);
+  await expect(gammaRow.getByTestId("land-rebase-first")).toBeVisible();
+  await expect(gammaRow.getByTestId("land-queue")).toHaveCount(0);
+  expect((await request.post(`/api/sessions/${coord}/landing`, { data: { branches: [gamma.branch] } })).status()).toBe(200);
+  await expect(panel.locator(`[data-testid="landing-entry"][data-branch="${gamma.branch}"]`)).toHaveAttribute("data-state", "left", { timeout: 60_000 });
+  await expect(panel.locator(`[data-testid="landing-entry"][data-branch="${gamma.branch}"]`).getByTestId("landing-why")).toContainText("conflicts with main");
+  await page.mouse.move(0, 0);
+  await shoot(page, "landing-02-conflict");
+  await expect.poll(() => said(gamma.id, "failures", `${gamma.branch} left the landing queue of main: it conflicts with main at ${main.slice(0, 9)} in notes.md: rebase it onto main`), { timeout: 60_000 }).toBe(1);
+
+  // main did not move for the branches that left; the main checkout is clean on it; the queue's worktrees are gone.
+  expect(git(repo, "rev-parse", "main").trim()).toBe(main);
+  expect(git(repo, "rev-parse", "HEAD").trim()).toBe(main);
+  expect(git(repo, "status", "--porcelain")).toBe("");
+  expect(git(repo, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ") && l.includes("/landing/"))).toEqual([]);
+  expect(readFileSync(join(top, "after.log"), "utf8")).toBe(`${main}\n`);
+  expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
+});

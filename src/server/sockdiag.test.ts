@@ -4,7 +4,9 @@
 import { expect, test } from "bun:test";
 import { connect, createServer } from "node:net";
 import { endsOf, uidLookup } from "./admission.ts";
-import { request, socketUid, uidIn } from "./sockdiag.ts";
+import { readdirSync, readlinkSync } from "node:fs";
+import { holderOf } from "./caller.ts";
+import { request, socketInode, socketUid, uidIn } from "./sockdiag.ts";
 
 test("the request names both ends in network order, and only a connected socket's record with those ports is an answer", () => {
   const req = request({ bytes: [127, 0, 0, 1], port: 40001 }, { bytes: [127, 0, 0, 2], port: 8080 }, 7);
@@ -41,6 +43,13 @@ test.skipIf(process.platform !== "linux")("a live connection's owner is this acc
     const peer = { address: s.localAddress!, port: s.localPort! }, server = { address: host, port };
     const ask = (p: typeof peer, z: { address?: string; port: number }) => { const e = endsOf(p, z); return e ? socketUid(e[0], e[1]) : null; };
     expect({ host, uid: ask(peer, server) }).toEqual({ host, uid: me });
+    // Its inode is the one this process's open file links to: the caller of a request is found by it (caller.ts).
+    const e = endsOf(peer, server)!;
+    const inode = socketInode(e[0], e[1])!;
+    const mine = readdirSync("/proc/self/fd").map((f) => { try { return readlinkSync(`/proc/self/fd/${f}`); } catch { return ""; } });
+    expect(mine).toContain(`socket:[${inode}]`);
+    expect(holderOf(inode, [process.pid])).toBe(process.pid);
+    expect(holderOf(inode, [process.pid], () => ["socket:[1]", "pipe:[2]"])).toBeUndefined();
     // The same connection named with a mapped address, where it has one.
     if (host === "127.0.0.1") expect(ask({ address: `::ffff:${peer.address}`, port: peer.port }, { address: "::ffff:127.0.0.1", port })).toBe(me);
     // The listening socket's own end, the ends the other way round with another port, a port nobody has, a daemon on every address.

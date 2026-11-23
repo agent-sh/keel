@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Mail, Network, Radio, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, GitMerge, Mail, Network, Radio, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -255,6 +255,13 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     return (
       <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice" kind="loop">
         <p className="whitespace-pre-wrap text-ui text-muted">{text}</p>
+      </Shell>
+    );
+  }
+  if (kind === "landing") {
+    return (
+      <Shell icon={GitMerge} label="Landing queue" testid="landing-notice" defaultOpen>
+        <p className="whitespace-pre-wrap text-ui text-muted">{text.replace(/^\[harness\] Landing queue:\s*/, "")}</p>
       </Shell>
     );
   }

@@ -471,6 +471,11 @@ export class Overlaps {
     return { text: forecastNote(told, gone), short: `Overlap forecast: ${said}.`, pairs, settle };
   }
 
+  // The pairs of a repository as the last pass left them, conflicts and errors only (the landing queue orders and warns by them).
+  pairsOf(repo: string): { a: string; b: string; base: boolean; conflict: boolean; files: ConflictFile[] }[] {
+    return this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND (conflict = 1 OR error IS NOT NULL)").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, conflict: !!r.conflict, files: JSON.parse(r.files) }));
+  }
+
   // ---- what the page reads ----
 
   view(sessionId: string): View {

@@ -8,12 +8,16 @@ import { toMessages } from "../../engine/turn.ts";
 import { keepMark, lastMark, markOf, Overlaps, sameMark, type Mark } from "../../worktree/overlap-scan.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
+// The forecast of this daemon: the landing queue orders and warns by it (src/server/routes/landing.ts).
+export let overlaps: Overlaps | undefined;
+
 export const overlapRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
   const ov = new Overlaps(store, {
     changed: (ids) => { for (const id of ids) bus.emit({ t: "feature", name: "overlap", session_id: id, data: { changed: true } }); },
     failed: (e, at) => void errors.capture("server", e, { at }),
   });
+  overlaps = ov;
 
   // The last mark each session's calls left (kept in the store, read once a
   // session): a call after which its branch's tip, or the base's, is not what

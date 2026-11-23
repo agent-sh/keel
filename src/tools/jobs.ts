@@ -996,6 +996,17 @@ export function sessionRoots(): Map<string, number[]> {
   }
   return out;
 }
+// The processes of the commands sessions run (not the owner's terminal pane), each with its session:
+// by what the daemon holds each command by, as sessionRoots. Who called the daemon's own API from
+// one of them is read from this (src/server/caller.ts).
+export function sessionCommandPids(): Map<number, string> {
+  const out = new Map<number, string>();
+  for (const j of jobs.values()) {
+    if (j.by === "owner" || !jobLive(j)) continue;
+    for (const m of members(j)) out.set(m.pid, j.sessionId);
+  }
+  return out;
+}
 // Live jobs (see jobLive) of any session whose folder is in `dir` or holds it (where links
 // land): a job in a parent folder can write into it too.
 export const jobsIn = (dir: string) => { const d = realOf(dir); return [...jobs.values()].filter((j) => { const c = realOf(j.cwd); return (contains(d, c) || contains(c, d)) && jobLive(j); }); };

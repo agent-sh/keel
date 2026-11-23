@@ -81,6 +81,8 @@ export function bindLedger(s: Store) {
   s.db.query("DELETE FROM check_pending WHERE created < ?").run(Date.now() - 7 * 86400_000);
   s.db.query("DELETE FROM check_anyway WHERE created < ?").run(Date.now() - 86400_000);
 }
+// (A test that bound a store of its own lets go of it: the ledger is process-wide.)
+export const unbindLedger = () => { store = undefined; };
 export const setKeep = (n: number) => { keep = n; };
 export const bound = () => keep;
 const db = () => store?.db;

@@ -1,8 +1,9 @@
-import { GitBranch, GitMerge, RefreshCw } from "lucide-react";
+import { Check, CircleDashed, GitBranch, GitMerge, Loader2, RefreshCw, Undo2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Clash } from "../../../src/worktree/overlap.ts";
 import { openSession } from "../lib/automation.ts";
+import { isLive, queueBranches, removeEntry, useLanding, type LandingEntry, type LandingView } from "../lib/landing.ts";
 import { loadOverlap, otherOf, useOverlap, type Pair } from "../lib/overlap.ts";
 import { failed, useStore } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -70,13 +71,79 @@ export function OverlapList({ pairs, mine, compact }: { pairs: Pair[]; mine?: st
   );
 }
 
+const STATE: Record<LandingEntry["state"], { word: string; tone: string }> = {
+  queued: { word: "queued", tone: "text-muted" },
+  building: { word: "building", tone: "text-accent" },
+  checking: { word: "checking", tone: "text-accent" },
+  landed: { word: "landed", tone: "text-ok" },
+  left: { word: "left the queue", tone: "text-danger" },
+  removed: { word: "taken out", tone: "text-faint" },
+};
+function StateIcon({ e }: { e: LandingEntry }) {
+  const cls = cn("size-3.5 shrink-0", STATE[e.state].tone);
+  if (e.state === "building" || e.state === "checking") return <Loader2 className={cn(cls, "animate-spin")} />;
+  if (e.state === "landed") return <Check className={cls} />;
+  if (e.state === "left") return <X className={cls} />;
+  if (e.state === "removed") return <Undo2 className={cls} />;
+  return <CircleDashed className={cls} />;
+}
+
+// The landing queue of the repository: what it runs, what waits, what landed
+// and what left lately (src/landing/queue.ts), newest first.
+function LandingQueue({ session, q }: { session: Session; q: LandingView }) {
+  const [err, setErr] = useState("");
+  const live = q.entries.filter(isLive);
+  const done = q.entries.filter((e) => !isLive(e)).slice(0, 12);
+  const remove = (id: string) => removeEntry(session.id, id).catch((e) => setErr(failed(e, { at: "LandingQueue" })));
+  const row = (e: LandingEntry) => (
+    <li key={e.id} className="flex flex-col gap-0.5 rounded-lg px-1 py-1 hover:bg-hover" data-testid="landing-entry" data-branch={e.branch} data-state={e.state}>
+      <div className="flex min-w-0 items-center gap-2 text-caption">
+        <StateIcon e={e} />
+        <span className="min-w-0 truncate font-mono text-fg" title={e.branch}>{short(e.branch)}</span>
+        <span className={cn("shrink-0 text-micro", STATE[e.state].tone)} data-testid="landing-state">{STATE[e.state].word}</span>
+        {e.landed && <span className="shrink-0 font-mono text-micro text-faint">as {e.landed.slice(0, 9)}</span>}
+        <span className="flex-1" />
+        <span className="shrink-0 text-micro text-faint">{ago(e.updated)}</span>
+        {e.state === "queued" && (
+          <button type="button" onClick={() => remove(e.id)} data-testid="landing-remove" title="Take it out of the queue"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-3.5" /></button>
+        )}
+      </div>
+      {(e.step || e.why) && (() => {
+        const said = e.state === "left" || e.state === "removed" ? e.why : e.step ?? e.why;
+        return <p className="line-clamp-3 pl-5.5 text-micro text-muted" title={said ?? undefined} data-testid="landing-why">{said}</p>;
+      })()}
+    </li>
+  );
+  return (
+    <section className="flex flex-col gap-1.5" data-testid="landing-queue">
+      <div className="flex items-baseline gap-2 px-1">
+        <h3 className="k-label">Landing queue</h3>
+        {q.rules && <span className="min-w-0 truncate text-micro text-faint" data-testid="landing-rules">{q.rules.checks.length ? `checks ${q.rules.checks.join(", ")}` : "no checks"}{q.rules.push ? ` · pushed to ${q.rules.push}` : ""}{q.rules.after ? " · then its after-land step" : ""}{q.rules.method === "merge" ? " · merge commits" : " · fast-forward"}</span>}
+      </div>
+      {q.rules?.problems.map((p) => <p key={p} className="px-1 text-caption text-warn">{p}</p>)}
+      {!q.rules && <p className="k-empty px-1">The repository names no checks (.keel/checks.json): nothing would be known to pass, so nothing lands.</p>}
+      {err && <p className="px-1 text-caption text-danger">{err}</p>}
+      {live.length === 0 && done.length === 0 ? <p className="k-empty px-1" data-testid="landing-none">Nothing queued. Land a branch from the list above: it is built on {q.base ?? "the base"} with the entries ahead of it, checked there, and {q.base ?? "the base"} moves only to what passed.</p> : (
+        <ul className="flex flex-col" data-testid="landing-entries">{live.map(row)}{done.length > 0 && live.length > 0 && <li className="mx-1 my-1 border-t border-line" />}{done.map(row)}</ul>
+      )}
+    </section>
+  );
+}
+
 // The Branches panel: the live branches of the session's repository (worktrees
 // Keel made, branches sessions committed to), which pairs would conflict and
 // in which files, and what the last check cost.
 export function BranchesPanel({ session }: { session: Session }) {
   const v = useOverlap(session.id);
+  const q = useLanding(session.id);
   const titles = useStore((s) => s.sessions);
   const [busy, setBusy] = useState(false);
+  const queued = new Set((q?.entries ?? []).filter(isLive).map((e) => e.branch));
+  const land = (branch: string) => {
+    setErr("");
+    queueBranches(session.id, [branch]).then((r) => { if (r.refused.length) setErr(r.refused.map((x) => `${x.branch}: ${x.why}`).join("; ")); }).catch((e) => setErr(failed(e, { at: "BranchesPanel" })));
+  };
   const [err, setErr] = useState("");
   useEffect(() => { loadOverlap(session.id).catch((e) => setErr(failed(e, { at: "BranchesPanel" }))); }, [session.id]);
   const refresh = () => {
@@ -122,12 +189,20 @@ export function BranchesPanel({ session }: { session: Session }) {
                   {b.branch === v.mine && <span className="shrink-0 rounded-md bg-accent-soft px-1 text-micro text-accent-ink">this session</span>}
                   <button type="button" className="min-w-0 flex-1 truncate text-left text-muted hover:text-accent" onClick={() => openSession(b.session_id)}>{titles[b.session_id]?.title || b.title || "a session"}</button>
                   <span className={cn("shrink-0 text-micro", n ? "text-warn" : "text-faint")}>{!b.checked ? "nothing to land" : n ? `${n} conflict${n === 1 ? "" : "s"}` : "clean"}</span>
+                  {b.checked && q?.rules && (queued.has(b.branch)
+                    ? <span className="shrink-0 text-micro text-accent" data-testid="land-queued">in the queue</span>
+                    : v.pairs.some((p) => p.base && p.conflict && p.a === b.branch)
+                      ? <span className="shrink-0 text-micro text-faint" data-testid="land-rebase-first">rebase first</span>
+                      : <button type="button" onClick={() => land(b.branch)} data-testid="land-queue" aria-label={`Queue ${short(b.branch)} to land on ${v.base ?? "the base"}`}
+                        className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-micro text-muted hover:bg-hover hover:text-accent"><GitMerge className="size-3" /> Land</button>)}
                 </li>
               );
             })}
           </ul>
         )}
       </section>
+
+      {q && q.repo && <LandingQueue session={session} q={q} />}
 
       <section className="flex flex-col gap-1.5">
         <h3 className="k-label px-1">Would conflict with each other</h3>

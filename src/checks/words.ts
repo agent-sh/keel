@@ -12,7 +12,7 @@ export type Run = {
   tree: string;
   head: string | null;
   session_id: string | null;
-  by: "agent" | "owner";
+  by: "agent" | "owner" | "queue"; // queue: the landing queue (src/landing/queue.ts)
   result: Result;
   exit: number | null;
   pass: number | null;
@@ -92,7 +92,7 @@ export function baseWords(base: BaseState | undefined, name: string, now = Date.
 
 // The answer to a check that passed on this tree: it is not run again.
 export function answerText(r: Run, o: { session: string | undefined; now?: number }): string {
-  const who = r.by === "owner" ? "run by the owner" : r.session_id && r.session_id === o.session ? "in this session" : "in another session";
+  const who = r.by === "owner" ? "run by the owner" : r.by === "queue" ? "run by the landing queue" : r.session_id && r.session_id === o.session ? "in this session" : "in another session";
   const counts = countWords(r);
   return [
     `Not run: ${label(r)} passed on this tree at ${when(r.ended, o.now)}${counts ? ` (${counts})` : ""}, ${who}, and the files are the same now (uncommitted changes included).`,

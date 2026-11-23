@@ -63,6 +63,8 @@ export function route(f: Frame): Route {
       if (f.name === "checkpoints" && f.session_id) return one(f.session_id);
       // A branch of the session conflicts, or no longer does: its chip and its Branches panel read it.
       if (f.name === "overlap" && f.session_id) return one(f.session_id);
+      // The landing queue of the session's repository changed: its Branches panel reads it.
+      if (f.name === "landing" && f.session_id) return one(f.session_id);
       if (f.name === "artifacts") return { topics: [feedTopic("artifacts"), EVERY, ...(f.session_id ? [sessionTopic(f.session_id)] : [])] };
       if (f.name === "awake") return { topics: [feedTopic("awake"), EVERY] };
       // What the agents of one tree are doing now: to the views of the sessions that started them
