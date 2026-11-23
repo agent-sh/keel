@@ -49,6 +49,7 @@ import { agentTitle } from "./agent-title.ts";
 import { yamlWithin } from "../core/yaml-bound.ts";
 import { ifHolds } from "../integrations/hooks.ts";
 import { choiceOf as turnChoiceOf } from "../tools/skill-turn.ts";
+import { isApiGrant, listReach, type ApiGrant } from "./api-grant.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. The child gets the same system
@@ -121,6 +122,8 @@ export type AgentRecord = {
   start_force?: Way | null; // the owner's choice of where its follow-ups start (none: Keel decides)
   lost?: Lost[]; // the contexts its current task lost, each taken up by a successor (src/automation/successor.ts)
   reviews?: string[]; // the branches it reviews (its spawn named them, or its task did): the work board's reviewer of them
+  api?: ApiGrant | null; // its parent granted its commands the daemon's read-only lists at its start ("read"), or the owner took it back ("revoked") (src/automation/api-grant.ts)
+  api_off?: string; // why a grant it holds does not take effect: an agent above it lost its own
 };
 // Where a follow-up to the finished agent started: in its context, from a
 // summary, or fresh from a capsule of its work; why; and the context its first
@@ -214,7 +217,7 @@ CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('runni
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
   writeAsks.migrate(); // the questions an agent asked its parent about a write outside its scope
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"], ["reviews", "TEXT"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"], ["reviews", "TEXT"], ["api", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
   // A budget's read of the tree under a task walks the sessions' parents (TREE_SPEND_SQL).
@@ -231,9 +234,9 @@ const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir
 // `task`: its first prompt, kept until it is in its session (sendTask).
 // `start_from`: the last follow-up's start, as JSON (AgentStart).
 // `reviews`: the branches it reviews with their tips as it started, as JSON (reviewsAt), for the work board.
-type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews"> & { lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null; reviews?: string | null };
+type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews" | "api" | "api_off"> & { api: string | null; lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null; reviews?: string | null };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, ...rest } = r;
+  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, api, ...rest } = r;
   void def; void schema_tries; void restarts; void park_told; void task; void parked;
   // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
   const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
@@ -243,8 +246,15 @@ const toRec = (r: Row): AgentRecord => {
   try { lost = lostJson ? JSON.parse(lostJson) : undefined; } catch {}
   let reviews: string[] | undefined;
   try { reviews = reviewsRaw ? (JSON.parse(reviewsRaw) as { branch: string }[]).map((x) => x.branch) : undefined; } catch {}
-  return { ...rest, ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}) };
+  return { ...rest, ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...apiOf(r.session_id, api) };
 };
+// Its grant of the daemon's lists, and why it does not take effect when one above it lost its own.
+function apiOf(sessionId: string, api: string | null): Pick<AgentRecord, "api" | "api_off"> {
+  if (!isApiGrant(api)) return {};
+  if (api === "revoked") return { api };
+  const reach = listReach(D().store.db, sessionId);
+  return reach.reads ? { api } : { api, api_off: reach.why };
+}
 // The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
 const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
 
@@ -773,6 +783,7 @@ export type SpawnInput = {
   effort?: string; // over its definition's (a skill's with context: fork); not in any tool's schema
   disallowed?: string[]; // added to its definition's (a skill's disallowed-tools with context: fork); not in any tool's schema
   reviews?: unknown; // the branch (or branches) it reviews, for the work board (src/board/rules.ts reviewsInput)
+  api?: unknown; // "read": its commands may read the daemon's read-only lists, as its parent's do (src/automation/api-grant.ts)
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -860,6 +871,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   }
   parseBudget(input.budget); // refused before anything is made
   { const w = parseWrites(input.writes ?? [], parent.workspace, realOf(homedir())); if ("error" in w) throw new Error(w.error); }
+  { const bad = apiRefusal(parentId, input.api); if (bad) throw new Error(bad); }
   const root = rootSession(parentId);
   for (;;) {
     if (signal?.aborted) throw new Error("cancelled");
@@ -884,6 +896,16 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     finally { release(); }
   }
 }
+
+// A grant of the daemon's lists a spawn may not give: only one its parent's commands hold themselves
+// (a top-level session's, or an agent's its own parent granted), so an agent never widens what it has.
+export function apiRefusal(parentId: string, api: unknown): string | undefined {
+  if (api === undefined || api === null) return undefined;
+  if (api !== "read") return `api is "read" or left out, not ${JSON.stringify(api)}`;
+  const reach = listReach(D().store.db, parentId);
+  return reach.reads ? undefined : `api: "read" is given only by a session whose own commands read the daemon's lists (a top-level session, or an agent its parent granted them to), and this one's do not: ${reach.why}. Start the agent without it`;
+}
+const API_LINE = `Your commands may read the daemon's read-only lists through its HTTP API (GET of the sessions, a session's events, timeline, hours and agents, the errors, telemetry, resources, automation and the daemon's state): your parent granted it. Every write and every secret is refused to them. An agent you start gets it only if you pass api: "read" in its spawn. The owner may revoke it at any time; a refused read then says so.`;
 
 // `queued`: when it was asked for, for a background spawn that found every slot taken.
 async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, release: () => void, signal: AbortSignal | undefined, depth: number, max: number, queued?: number) {
@@ -983,6 +1005,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Change the repository only there (a scratch folder your task names is yours too) and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
     placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Change the repository only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
     scope.json ? writeAsks.taskLine(store.session(child.id) ?? child, scope.json) : "",
+    input.api === "read" ? API_LINE : "",
     schema ? `Your final message must be only one JSON value that matches this JSON schema, with no other text:\n${schema}` : "",
     `Task:\n${input.prompt}`,
   ].filter(Boolean).join("\n\n");
@@ -993,9 +1016,9 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // task_at: where the parent's own words start, so the page shows them verbatim.
   const budget = mergeBudget(def.budget, parseBudget(input.budget));
   store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes, reviews) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes, reviews, api) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
-    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json, reviews);
+    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json, reviews, input.api === "read" ? "read" : null);
   release(); // the persisted running row now occupies the slot
   // The repositories it may change, as they are before its first step: what it makes there is told at its end.
   if (!placed) await leftovers.before(store, id, [child.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: id }));
@@ -1675,6 +1698,9 @@ const lookAgain = () => {
 const stillParked = (id: string) => { const a = get(id); return a && a.status === "waiting" && !D().engine.isRunning(a.session_id) ? a : undefined; };
 async function lookAtParks(ids = [...onCommand.keys()]) {
   const looks = parkLooks;
+  // A store whose agents this module does not keep holds none of these parks (the daemon's store was
+  // closed and another opened in its place): nothing is left to look at.
+  if (!kept.has(D().store)) { onCommand.clear(); return; }
   try {
     const parked = ids.flatMap((id) => { const a = stillParked(id); if (!a) onCommand.delete(id); return a ? [a] : []; });
     await sampleServing(parked.flatMap((a) => unfinished(a.session_id, taskStart(a))));
@@ -2367,6 +2393,21 @@ async function startFor(a: AgentRecord, message: string, key?: string): Promise<
 }
 
 const without = ({ mark, ...rest }: Omit<AgentStart, "task"> & { mark?: unknown }) => (void mark, rest);
+
+// The owner takes back an agent's grant of the daemon's lists: its commands' next request is refused, and
+// so are those of the agents below it that it passed the grant to. Never given again by this.
+export function revokeApi(id: string): AgentRecord | undefined {
+  const a = get(id);
+  if (!a) return undefined;
+  if (a.api !== "read") return a;
+  D().store.db.query("UPDATE agents SET api = 'revoked' WHERE id = ?").run(id);
+  activity.record("agent", "api_revoked", a.parent_id, `The owner revoked agent "${a.title}"'s read of the daemon's lists`, { agent_id: a.id, child_session: a.session_id });
+  const now = get(id)!;
+  emit("agent", brief(now));
+  // The agents below it show their grant as off: each one's frame says so.
+  for (const r of tree(a.session_id)) if (r.agent.api === "read") emit("agent", brief(r.agent));
+  return now;
+}
 
 // The owner's choice of where this agent's follow-ups start (null: Keel decides).
 export function setStartForce(id: string, force: Way | null): AgentRecord | undefined {

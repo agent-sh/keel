@@ -110,6 +110,8 @@ export const auto = {
   stopAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/agents/${a.id}/stop`, { method: "POST" }),
   // The owner's choice of where this agent's follow-ups start ("auto": Keel decides by price).
   setAgentStart: (a: AgentRecord, force: "auto" | "carry" | "summary" | "capsule") => api(`/api/sessions/${a.parent_id}/agents/${a.id}/start`, { method: "PUT", body: JSON.stringify({ force }) }),
+  // The owner takes back the agent's read of the daemon's lists: its commands' next request is refused.
+  revokeAgentApi: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/agents/${a.id}/api`, { method: "DELETE" }),
   // From the agent's own session: the whole agent, as its parent's card stops it.
   stopAgentSession: (sessionId: string) => api(`/api/sessions/${sessionId}/as-agent/stop`, { method: "POST" }),
   cancelWait: (id: string) => api(`/api/waits/${id}`, { method: "DELETE" }),

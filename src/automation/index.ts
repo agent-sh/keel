@@ -558,6 +558,16 @@ export const automationRoutes: RouteModule = (deps) => {
         return json({ agent: now ? agents.brief(now) : null });
       }),
     },
+    // The owner takes back an agent's grant of the daemon's read-only lists (src/automation/api-grant.ts).
+    // A session's command never reaches this: every write is the owner's (src/server/peer-scope.ts).
+    "/api/sessions/:id/agents/:agent_id/api": {
+      DELETE: (req: any) => attempt(async () => {
+        const a = agents.get(req.params.agent_id);
+        if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent", 404);
+        const now = agents.revokeApi(a.id);
+        return json({ agent: now ? agents.brief(now) : null });
+      }),
+    },
     "/api/sessions/:id/background": {
       GET: (req: any) => (session(req.params.id) ? json(background(req.params.id)) : bad("no such session", 404)),
     },

@@ -20,6 +20,7 @@ import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
 import { addAdmission } from "./admission.ts";
 import { watchSessionCallers } from "./caller.ts";
+import { listReach } from "../automation/api-grant.ts";
 import { serve } from "./app.ts";
 import { readsOf } from "./reads.ts";
 import { routeModules } from "./routes/index.ts";
@@ -142,8 +143,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // What stops work or answers what waits is taken all the same (STORE_PASSES): a stop, a card's
   // answer, a job's stop, a drain or a restart. Those act in memory and owe their writes.
   // A request from a session's own command has that session's authority only (peer-scope.ts).
-  // (Asked when a session's command calls: the column is the agents module's, added after this line runs.)
-  watchSessionCallers((id) => { const r = store.db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?").get(id); return r ? r.parent_id || null : undefined; });
+  // (Asked when a session's command calls: the grants are the agents module's, its table made after this line runs.)
+  watchSessionCallers((id) => listReach(store.db, id));
   addAdmission((req, path) => {
     if (!checkpointer.refusing || req.method === "GET" || req.method === "HEAD" || STORE_PASSES.test(path)) return;
     return Response.json({ error: checkpointer.refusalSays ?? STORE_REFUSES, store_refusing: true }, { status: 503 });

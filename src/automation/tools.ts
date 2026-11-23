@@ -38,7 +38,7 @@ const guard = async (f: () => Promise<ToolOutput> | ToolOutput): Promise<ToolOut
 };
 
 function agentLine(a: agents.AgentRecord) {
-  return `${a.id} · ${a.status} · ${a.type} · ${a.title}`;
+  return `${a.id} · ${a.status} · ${a.type} · ${a.title}${a.api === "read" && !a.api_off ? " · reads the daemon's lists" : ""}`;
 }
 
 function waitResult(w: waits.WaitRecord, extra = "", again = false) {
@@ -70,6 +70,11 @@ const BUDGET_PROP = {
       usd: { type: "number", exclusiveMinimum: 0, description: "Dollars of model spend, its own agents' included; refused on a model with no listed price" },
     },
   },
+};
+// The daemon's read-only lists for the agent's commands (src/automation/api-grant.ts): given only by a
+// session whose own commands have them, never more than that.
+const API_PROP = {
+  api: { type: "string", enum: ["read"], description: "Optional: \"read\" lets the agent's commands GET the daemon's read-only lists through its HTTP API (sessions, their events, timeline and agents, errors, telemetry, resources), as yours can. Only a top-level session, or an agent granted it, can give it; its own agents get it only if it passes it. Writes and secrets stay refused." },
 };
 const WRITES_PROP = {
   writes: { type: "array", items: { type: "string" }, description: "Optional: the folders, files or globs the agent may write besides its own worktree and scratch (absolute, under ~, or relative to its folder). With it, a write elsewhere is refused and asks you once. An agent of a reviewer type (its type says review, verify or audit), and every agent a session with a scope of its own starts, has a scope even without it: its own folders, plus what this names within your own scope. With the sandbox on, the sandbox holds every write. With the sandbox off, only writes the command shows are held (a redirect, the files of a program that writes, the folder of a git command): what bash -c, python -c, a script, a path in a variable or a link made in the same command writes is not." },
@@ -118,6 +123,7 @@ const Agent: Tool = {
       output_schema: { type: "object", description: "A JSON schema the report must match; the report is then that JSON value" },
       ...WRITES_PROP,
       ...REVIEWS_PROP,
+      ...API_PROP,
       ...BUDGET_PROP,
       ...MACHINE_PROPS,
     },
@@ -126,7 +132,7 @@ const Agent: Tool = {
   target: (input) => onMachine(input, input.prompt),
   run: (input, ctx) => guard(async () => {
     const fork = String(input.subagent_type ?? "").toLowerCase() === "fork";
-    const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews }, ctx.signal);
+    const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api }, ctx.signal);
     const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
     if (input.run_in_background && agents.queuedForSlot(a)) return ok(agents.queuedLine(a) + agents.spawnNotes(a.id));
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.${agents.spawnNotes(a.id)}`);
@@ -252,6 +258,7 @@ const spawn_agent: Tool = {
       output_schema: { type: "object", description: "JSON schema the agent's final answer must match." },
       ...WRITES_PROP,
       ...REVIEWS_PROP,
+      ...API_PROP,
       ...BUDGET_PROP,
       ...MACHINE_PROPS,
     },
@@ -259,7 +266,7 @@ const spawn_agent: Tool = {
   },
   target: (input) => onMachine(input, input.message ?? input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, task_name: typeof input.task_name === "string" ? input.task_name : undefined, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, task_name: typeof input.task_name === "string" ? input.task_name : undefined, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes, reviews: input.reviews, api: input.api }, ctx.signal);
     const left = agents.notCarried(a.id).trim();
     return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}), ...(agents.scopeNote(a.id) ? { write_scope: agents.scopeNote(a.id) } : {}) }));
   }),

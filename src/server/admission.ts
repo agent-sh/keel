@@ -26,7 +26,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { socketFacts, socketUid, type SocketFacts } from "./sockdiag.ts";
-import { cgroupIds, peerAuthority, peerVerdict, type Authority } from "./peer-scope.ts";
+import { cgroupIds, peerAuthority, peerVerdict, type Authority, type ListReach } from "./peer-scope.ts";
 
 type Check = (req: Request, path: string) => Response | undefined;
 const checks: Check[] = [];
@@ -85,8 +85,9 @@ export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false
 export const callerSession = (req: Request) => peers.get(req)?.session ?? null;
 
 // Where sessions' commands run, as the jobs code holds them (src/server/caller.ts gives it at the start).
-// `topLevel`: whether a session has no parent in the daemon's session table (a session gone is not).
-export type ScopeSource = { cgroups(): Map<string, string>; loose(): boolean; holder(inode: number): string | null | Promise<string | null>; topLevel(session: string): boolean };
+// `lists`: whether a session's commands read the daemon's read-only lists (a top-level session's, an agent's
+// its parent granted them to), asked at each request so a revoke takes effect at the next one.
+export type ScopeSource = { cgroups(): Map<string, string>; loose(): boolean; holder(inode: number): string | null | Promise<string | null>; lists(session: string): ListReach };
 let scopes: ScopeSource | undefined;
 export const useSessionScopes = (s: ScopeSource | undefined) => void (scopes = s);
 // The daemon's own end of a loopback connection: the address it listens on, else the one the client reached it at.
@@ -368,7 +369,7 @@ export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined):
   const scope = peerScope({ address: ip.address, port: ip.port }, { hostname: srv.hostname, port: srv.port });
   const decide = (a: Authority) => {
     if (a.kind === "session") peers.set(req, { loopback, session: a.session });
-    const v = peerVerdict(a, { method: req.method, path, ownAuth: OWN_AUTH.test(path), open: SESSION_OPEN.test(path) }, (s) => !!scopes?.topLevel(s));
+    const v = peerVerdict(a, { method: req.method, path, ownAuth: OWN_AUTH.test(path), open: SESSION_OPEN.test(path) }, (s) => scopes?.lists(s) ?? { reads: false, why: "" });
     return "refuse" in v ? refuse(v.refuse) : "pass" in v ? undefined : account();
   };
   return scope instanceof Promise ? scope.then(decide) : decide(scope);

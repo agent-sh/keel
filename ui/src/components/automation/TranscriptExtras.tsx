@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, FolderLock, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, Eye, ExternalLink, Flag, FolderLock, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -393,6 +393,12 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
             {agent?.branch && <span className="k-line-chip k-line-branch" data-code="" data-testid="agent-call-branch" title={`${agent.branch}, in its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
             {(agent?.machine || input.machine) && <span className="k-line-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
             {agent?.structured && <span className="k-line-chip" data-code="" data-testid="agent-call-structured">json</span>}
+            {/* Its commands read the daemon's lists: its parent granted it (src/automation/api-grant.ts). */}
+            {agent?.api === "read" && (
+              <span className="k-line-chip" data-testid="agent-call-api" data-off={agent.api_off ? "" : undefined} title={agent.api_off ? `Granted the daemon's read-only lists, not in effect: ${agent.api_off}` : "Its commands may read the daemon's read-only lists through its API; writes and secrets stay refused"}>
+                <Eye className="size-3 shrink-0" />{agent.api_off ? "API read off" : "reads API"}
+              </span>
+            )}
             {(agent ? isLive(agent) && !asking : live) && <span className="k-line-run" aria-hidden="true" />}
           </span>
         </Collapsible.Trigger>
@@ -419,6 +425,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
         <AgentReport agent={agent} out={out} />
         {!!agent?.lost?.length && <LostContexts agent={agent} />}
+        {agent?.api && <ApiGrant agent={agent} />}
         {agent && <FollowUps agent={agent} />}
       </Collapsible.Panel>
     </Collapsible.Root>
@@ -445,6 +452,31 @@ function LostContexts({ agent }: { agent: AgentRecord }) {
         ))}
       </ol>
       <p className="pt-1 text-caption text-faint">Each was taken up by a fresh context from a capsule of its work, in the same worktree.</p>
+    </div>
+  );
+}
+
+// What its parent granted its commands of the daemon's API, and the owner's revoke: it takes effect at
+// their next request, for the agents it passed the grant to as well. A revoke is not undone here.
+function ApiGrant({ agent }: { agent: AgentRecord }) {
+  const [busy, setBusy] = useState(false);
+  const held = agent.api === "read";
+  return (
+    <div className="px-3 pb-2" data-testid="agent-api" data-grant={agent.api ?? undefined}>
+      <div className="k-label pt-1">API access</div>
+      <div className="flex flex-wrap items-center gap-3 pt-1">
+        <p className="min-w-0 flex-1 text-ui text-muted" data-testid="agent-api-said">
+          {!held ? "Its read of the daemon's lists was revoked by the owner: its commands read only its own session."
+            : agent.api_off ? `Granted the daemon's read-only lists, not in effect: ${agent.api_off}.`
+            : "Its commands may read the daemon's read-only lists (sessions, events, agents, errors, telemetry, resources). Writes and secrets stay refused."}
+        </p>
+        {held && (
+          <button type="button" className="k-btn shrink-0" data-testid="agent-api-revoke" disabled={busy} title="Its commands' next request to the daemon's lists is refused, and so are those of the agents it passed the grant to"
+            onClick={() => { setBusy(true); auto.revokeAgentApi(agent).catch(reportError).finally(() => setBusy(false)); }}>
+            Revoke
+          </button>
+        )}
+      </div>
     </div>
   );
 }

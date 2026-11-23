@@ -13,6 +13,7 @@
 import { readdirSync, readlinkSync } from "node:fs";
 import { sessionCallerPids, sessionCgroups, sessionCommandPids, sessionLooseProcesses } from "../tools/jobs.ts";
 import { callerSession, useSessionScopes } from "./admission.ts";
+import type { ListReach } from "./peer-scope.ts";
 
 // The process whose open files hold socket `inode`, among `pids`.
 export function holderOf(inode: number, pids: Iterable<number>, fdsOf: (pid: number) => string[] = fds): number | undefined {
@@ -40,11 +41,11 @@ function freshPids(): Promise<Map<number, string>> {
 }
 
 // The admission check learns where sessions' commands run from the jobs code, and from the
-// session table whether a session is top-level (`parentOf`: its parent's id, null for none, undefined
-// for a session the table does not hold).
-export function watchSessionCallers(parentOf: (session: string) => string | null | undefined) {
+// sessions' table whether a session's commands read the daemon's lists (`lists`: a top-level session's,
+// an agent's its parent granted them to, src/automation/api-grant.ts).
+export function watchSessionCallers(lists: (session: string) => ListReach) {
   useSessionScopes({
-    topLevel: (session) => parentOf(session) === null,
+    lists,
     cgroups: sessionCgroups,
     loose: sessionLooseProcesses,
     // Among the processes the daemon holds first, then among every process that is a session's

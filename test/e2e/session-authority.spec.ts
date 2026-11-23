@@ -2,11 +2,14 @@ import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, SCRIPTED, ask, shoot } from "./shots.ts";
+import { ROOT, daemon, exited, sessionsFolder } from "./own-daemon.ts";
 
 // A command a session runs is a process of the owner's account on loopback, but it is not the owner:
 // a request it makes to the daemon's API has its session's authority only. A top-level session's command
 // reads its own session and the daemon's read-only lists (the sessions, their events, timeline and hours,
-// the agents, errors, telemetry, resources, the daemon); an agent's command reads its own session only.
+// the agents, errors, telemetry, resources, the daemon); an agent's command reads its own session only,
+// unless its parent granted it the same lists at its start (api: "read"), a grant that holds across a
+// restart, passes to its own agents only when it names it again, and the owner revokes from its card.
 // Neither changes anything (not even its own mode or approvals) or reads a secret, the vault, the settings
 // or the access token, which it can read from disk outside the sandbox and which does not make it the
 // owner. The same requests from the owner's own process (this test's) pass the door. Inside the sandbox
@@ -181,6 +184,8 @@ test("an agent's command reads its own session only", async ({ page, request, ba
   expectClosed(out, [...reads(other.id), ...closed(id, other.id)]);
   expect(out).not.toContain(other.title);
   expect(statusOf(out, "list-sessions")![2]).not.toContain("read-only lists");
+  // It says what its parent would pass for it.
+  expect(statusOf(out, "list-sessions")![2]).toContain('granted it at its start (api: \\"read\\")');
   // The reset requests changed nothing.
   expect((await (await request.get(`/api/sessions/${other.id}/permissions`)).json()).perm.mode).not.toBe("full-auto");
   await shoot(page, "session-authority-02-agent");
@@ -200,4 +205,91 @@ test("a sandboxed command does not reach the daemon's API at all", async ({ page
   for (const r of list) expect({ route: r.name, status: statusOf(out, r.name)?.[1] }).toEqual({ route: r.name, status: "000" });
   expect(out).not.toContain(other.title);
   await shoot(page, "session-authority-03-sandboxed");
+});
+
+test("an agent its parent granted reads the daemon's lists, its own agent does not unless passed, the grant holds across a restart and the owner revokes it", async ({ page }) => {
+  test.setTimeout(300_000);
+  // A daemon of its own: the spec stops and starts it.
+  const state = join(ROOT, `authority-grant-${Date.now()}`);
+  let d = await daemon(state);
+  const api = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    fetch(d.url + path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then((r) => r.json() as any);
+  try {
+    const ws = join(sessionsFolder(state), "authority");
+    mkdirSync(ws, { recursive: true });
+    const { session: other } = await api("/api/sessions", { workspace: ws, model: "scripted:stand-in", title: `OTHER-SESSION-${Date.now()}` });
+    const { session } = await api("/api/sessions", { workspace: ws, model: "scripted:claude-stand-in", title: "Grants" });
+    const id = session.id as string;
+    await api(`/api/sessions/${id}/permissions`, { mode: "full-auto", sandbox: "off" }, "PUT");
+    writeFileSync(join(ws, "probe.sh"), probe(d.url, join(state, "api-token"), all(id, other.id), other.id));
+    const out = (name: string) => { try { return readFileSync(join(ws, name), "utf8"); } catch { return ""; } };
+    const bash = (command: string) => `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`;
+    // The granted agent probes, then starts an agent of its own without passing the grant, which probes too.
+    // (The child tries to pass on a grant it does not hold first.)
+    const widen = { name: "Agent", input: { description: "Widened", prompt: "script:say no", api: "read" } };
+    const child = { name: "Agent", input: { description: "Ungranted child", prompt: `script:calls ${JSON.stringify([widen, { name: "Bash", input: { command: "bash probe.sh > child.out 2>&1; tail -n 1 child.out" } }])}` } };
+    const granted = `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "bash probe.sh > granted.out 2>&1; tail -n 1 granted.out" } }, child])}`;
+    await api(`/api/sessions/${id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Agent", input: { description: "Granted probe", prompt: granted, api: "read" } }])}` });
+    await expect.poll(() => out("child.out").includes("probed"), { timeout: 120_000 }).toBe(true);
+
+    const g = out("granted.out");
+    for (const r of reads(other.id)) for (const n of [r.name, `${r.name}+t`]) expect({ route: n, status: statusOf(g, n)?.[1] }).toEqual({ route: n, status: "200" });
+    expect(g).toContain(other.title);
+    expectClosed(g, closed(id, other.id));
+    expect(statusOf(g, "read-token")![2]).toContain("the daemon's read-only lists (its parent granted them)");
+    expect(bodies(ws)).not.toContain(readFileSync(join(state, "api-token"), "utf8").trim());
+    // Its own agent, started without the grant: its own session only.
+    const c = out("child.out");
+    expect(statusOf(c, "own-session")?.[1]).toBe("200");
+    expectClosed(c, [...reads(other.id), ...closed(id, other.id)]);
+    expect(c).not.toContain(other.title);
+
+    const agent = (await api(`/api/sessions/${id}/agents`)).agents.find((a: any) => a.title === "Granted probe");
+    expect(agent.api).toBe("read");
+    const below = (await api(`/api/sessions/${agent.session_id}/agents`)).agents.find((a: any) => a.title === "Ungranted child");
+    expect(below.api ?? null).toBeNull();
+    // The agent's task told it what it holds.
+    const task = (await api(`/api/sessions/${agent.session_id}`)).events.find((e: any) => e.kind === "user").data.text as string;
+    expect(task).toContain("Your commands may read the daemon's read-only lists");
+    // It cannot widen what it has: its spawn that names the grant is refused, and no agent is made.
+    const refused = (await api(`/api/sessions/${below.session_id}`)).events.filter((e: any) => e.kind === "tool_result").map((e: any) => JSON.stringify(e.data)).join("\n");
+    expect(refused).toContain("is given only by a session whose own commands read the daemon's lists");
+    expect((await api(`/api/sessions/${below.session_id}/agents`)).agents).toEqual([]);
+
+    // A restart: the grant is the agent's record, kept on disk.
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    d = await daemon(state);
+    await expect.poll(async () => (await api(`/api/sessions/${id}/agents`)).agents?.find((a: any) => a.id === agent.id)?.api, { timeout: 30_000 }).toBe("read");
+
+    // The agent reads the list again and again in one command; the owner revokes from its card while it does,
+    // and the next request is refused.
+    await api(`/api/sessions/${id}/agents/${agent.id}/start`, { force: "carry" }, "PUT");
+    const poll = `for i in $(seq 600); do echo "$(curl -s -m 5 --noproxy '*' -o /dev/null -w '%{http_code}' ${d.url}/api/sessions)" >> poll.out; [ -e stop.flag ] && break; sleep 0.1; done; echo polled`;
+    await api(`/api/sessions/${id}/agents/${agent.id}/message`, { message: bash(poll) });
+    await expect.poll(() => out("poll.out").includes("200"), { timeout: 60_000 }).toBe(true);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${d.url}/s/${id}`);
+    const card = page.getByTestId("agent-call").filter({ hasText: "Granted probe" });
+    await expect(card.getByTestId("agent-call-api")).toHaveText("reads API");
+    await shoot(page, "session-authority-04-granted-line");
+    await card.getByTestId("agent-call-title").click();
+    await expect(card.getByTestId("agent-api")).toHaveAttribute("data-grant", "read");
+    await shoot(page, "session-authority-05-granted-card");
+    await card.getByTestId("agent-api-revoke").click();
+    await expect(card.getByTestId("agent-api")).toHaveAttribute("data-grant", "revoked");
+    await expect(card.getByTestId("agent-call-api")).toHaveCount(0);
+    await expect.poll(() => out("poll.out").includes("403"), { timeout: 30_000 }).toBe(true);
+    writeFileSync(join(ws, "stop.flag"), "");
+    // 200 until the revoke, 403 from the request after it on, in the same command.
+    const seen = out("poll.out").trim().split("\n");
+    const first = seen.indexOf("403");
+    expect(seen.slice(0, first).every((s) => s === "200")).toBe(true);
+    expect(seen.slice(first).every((s) => s === "403")).toBe(true);
+    expect((await api(`/api/sessions/${id}/agents`)).agents.find((a: any) => a.id === agent.id).api).toBe("revoked");
+    await shoot(page, "session-authority-06-revoked");
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+  }
 });

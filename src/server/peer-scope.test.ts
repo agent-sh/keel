@@ -2,7 +2,7 @@
 // The e2e (test/e2e/session-authority.spec.ts) shows a command refused; these are the cases it cannot
 // stage: a process that ended, a pid used again, a kernel that does not say.
 import { expect, test } from "bun:test";
-import { peerAuthority, peerVerdict, sessionMay, type Authority, type PeerFacts } from "./peer-scope.ts";
+import { peerAuthority, peerVerdict, sessionMay, type Authority, type ListReach, type PeerFacts } from "./peer-scope.ts";
 
 const scopes = new Map<bigint, string>([[101n, "s-a"], [102n, "s-b"]]);
 const of = (o: Partial<PeerFacts>): PeerFacts => ({ facts: { uid: 1000, inode: 55, cgroup: 9n }, linux: true, cgroups: scopes, loose: false, holder: () => null, ...o });
@@ -69,11 +69,20 @@ test("a top-level session's command reads the daemon's lists too, never a secret
 test("the door: a session by its standing, a socket of no maker refused, the token never deciding for one", () => {
   const req = (method: string, path: string, o: Partial<{ ownAuth: boolean; open: boolean }> = {}) => ({ method, path, ownAuth: false, open: false, ...o });
   const s: Authority = { kind: "session", session: "s-a", by: "cgroup" };
-  const tops = (id: string) => id === "s-a";
+  const tops = (id: string): ListReach => (id === "s-a" ? { reads: "top" } : { reads: false, why: "no grant" });
+  const none = (): ListReach => ({ reads: false, why: "its parent did not grant it" });
   expect(peerVerdict(s, req("GET", "/api/sessions"), tops)).toEqual({ pass: true });
-  expect(peerVerdict(s, req("GET", "/api/sessions"), () => false)).toMatchObject({ refuse: expect.stringContaining("authority only") });
+  expect(peerVerdict(s, req("GET", "/api/sessions"), none)).toMatchObject({ refuse: expect.stringContaining("authority only") });
   expect(peerVerdict(s, req("GET", "/api/remote-access"), tops)).toMatchObject({ refuse: expect.stringContaining("read-only lists") });
-  expect(peerVerdict(s, req("GET", "/portal/k/x", { open: true }), () => false)).toEqual({ pass: true });
+  expect(peerVerdict(s, req("GET", "/portal/k/x", { open: true }), none)).toEqual({ pass: true });
+  // An agent its parent granted the lists reads them as a top-level session's command does, and nothing more.
+  const granted = (): ListReach => ({ reads: "granted" });
+  expect(peerVerdict(s, req("GET", "/api/telemetry"), granted)).toEqual({ pass: true });
+  expect(peerVerdict(s, req("GET", "/api/secrets"), granted)).toMatchObject({ refuse: expect.stringContaining("its parent granted them") });
+  expect(peerVerdict(s, req("POST", "/api/sessions"), granted)).toMatchObject({ refuse: expect.any(String) });
+  // A read of the lists it was not granted says why; a write or a secret does not.
+  expect(peerVerdict(s, req("GET", "/api/sessions"), none)).toMatchObject({ refuse: expect.stringContaining("its parent did not grant it") });
+  expect(peerVerdict(s, req("GET", "/api/secrets"), none)).toMatchObject({ refuse: expect.not.stringContaining("grant") });
   // The kernel names no maker while sessions run: refused, whatever the request carries, except where a path authenticates itself.
   expect(peerVerdict({ kind: "unknown" }, req("GET", "/api/sessions"), tops)).toMatchObject({ refuse: expect.stringContaining("cannot be told") });
   expect(peerVerdict({ kind: "unknown" }, req("GET", "/api/health", { ownAuth: true }), tops)).toEqual({ account: true });
