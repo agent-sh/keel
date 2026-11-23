@@ -465,12 +465,13 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
 // The observers that say what is out of view watch what the list scrolls in (scrollerOf, in
 // lib/list-hold.ts), and look again when the screen crosses the phone's width or the text size changes.
 // What stands over the top of that box: on a phone the find stays there as the rows scroll under it
-// (bridge.css), so a row behind it is out of view. Its height and the room around it, as a root margin.
+// (bridge.css), so a row behind it is out of view. Its height and the room above it, as a root margin
+// (the band of the panel's color under it is paint, not cover: a row whose edge it touches is read whole).
 const coverOf = (root: HTMLElement) => {
   const find = root.querySelector<HTMLElement>(":scope > .k-find");
   if (!find || getComputedStyle(find).position !== "sticky") return "0px";
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-  return `${-Math.ceil(find.offsetHeight + 0.5 * rem)}px 0px 0px 0px`;
+  return `${-Math.ceil(find.offsetHeight + 0.25 * rem)}px 0px 0px 0px`;
 };
 
 function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }; machines: { machine: string; count: number }[] }) {
@@ -555,7 +556,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
-    const over = el.scrollHeight > el.clientHeight + 1;
+    const over = el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1;
     setFit((was) => {
       const k = `${outKey}|${room}`;
       const from = was.key === k ? was.n : most;
@@ -1201,6 +1202,24 @@ export function Sidebar({ open }: { open: boolean }) {
     el.style.overflow = "clip";
     return () => { el.style.height = ""; el.style.overflow = ""; };
   }, [hand.held]);
+  // A phone's drawer with little room for its rows: room for the find and three rows is the least it
+  // keeps, and below that its acts become a row of icons (bridge.css, data-short). It stays so until
+  // the drawer is taller than it was when it folded them.
+  const [short, setShort] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = aside.current;
+    if (!el || !open || !phone()) return setShort(null);
+    const look = () => {
+      const list = el.querySelector<HTMLElement>(".k-list-scroll");
+      if (!list || el.querySelector(".k-find:focus-within")) return;
+      const tap = parseFloat(getComputedStyle(el).getPropertyValue("--spacing-tap")) * (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
+      setShort((was) => (was !== null ? (el.clientHeight > was ? null : was) : list.clientHeight < 4 * tap ? el.clientHeight : null));
+    };
+    look();
+    const ro = new ResizeObserver(look);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, short]);
   // The one control that shows the list or folds it, in the same corner either way.
   const Toggle = open ? PanelLeftClose : PanelLeftOpen;
   const toggle = (
@@ -1219,7 +1238,7 @@ export function Sidebar({ open }: { open: boolean }) {
   );
 
   return (
-    <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-narrow={(open && rail.narrow) || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: rail.over ? listWidth() : rail.width } : undefined}>
+    <aside ref={aside} className="k-rail" data-open={open || undefined} data-over={rail.over || undefined} data-narrow={(open && rail.narrow) || undefined} data-short={short !== null || undefined} data-testid="sidebar" aria-label="Sessions" style={open && !phone() ? { width: rail.over ? listWidth() : rail.width } : undefined}>
       <div className="k-rail-brand">
         <span className="k-logo" data-live={link.live || undefined} title={link.word}><Logo /></span>
         <span className="k-brand-name">Keel</span>

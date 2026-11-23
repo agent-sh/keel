@@ -257,8 +257,25 @@
   .k-rail .k-list-scroll > .k-find { position: sticky; top: 0.25rem; z-index: 1; background: var(--panel); box-shadow: 0 -0.25rem 0 var(--panel), 0 0.25rem 0 var(--panel); }
   .k-list-scroll .k-row { scroll-margin-top: calc(var(--spacing-tap) + 1rem); }
   .k-list-foot { display: flex; flex-direction: column; flex-shrink: 0; }
-  /* The strip's room on a phone: three lines of names, less on a short screen (the keyboard up). */
-  .k-list-foot > .k-need-strip { max-height: min(6.5rem, 20dvh); }
+  /* The strip's room on a phone: one line of names, the rest behind "+N", so the rows keep the room
+     under the find at any text size. */
+  .k-list-foot > .k-need-strip { flex-wrap: nowrap; max-height: none; }
+  .k-list-foot > .k-need-strip > .k-need-name { flex-shrink: 0; }
+  .k-list-foot > .k-need-strip > .k-need-more { margin-left: auto; }
+  /* A drawer with little room for its rows (a large text size, a short screen): its acts are their
+     icons, side by side, as in the narrow list. While the find has the keyboard, the drawer is the
+     find, the rows and the names at their foot: its head and its foot step aside until it lets go. */
+  .k-rail[data-short] { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; }
+  .k-rail[data-short] > * { grid-column: 1 / -1; }
+  .k-rail[data-short] > .k-rail-brand { grid-area: 1 / 1; padding-right: 0; }
+  .k-rail[data-short] .k-brand-name { display: none; }
+  .k-rail[data-short] > .k-rail-acts { grid-area: 1 / 2; align-self: center; flex-direction: row; padding: 0 0.625rem 0 0.25rem; }
+  .k-rail[data-short] > .k-rail-body { grid-row: 3; min-height: 0; }
+  .k-rail[data-short] .k-rail-acts .k-act { flex: 1 1 0; justify-content: center; min-width: 2rem; padding: 0; }
+  .k-rail[data-short] .k-rail-acts :is(.k-act-label, .k-act-key) { display: none; }
+  .k-rail[data-short] .k-rail-acts .k-act-mark { position: absolute; right: 0.25rem; top: 0.25rem; width: 0.5rem; height: 0.5rem; padding: 0; border-radius: 50%; overflow: hidden; color: transparent; }
+  .k-rail:has(.k-find:focus-within) > .k-rail-brand, .k-rail:has(.k-find:focus-within) > .k-rail-acts,
+  .k-rail:has(.k-find:focus-within) > .k-rail-top, .k-rail:has(.k-find:focus-within) > .k-rail-foot { display: none; }
 }
 .k-group { margin-top: 0.75rem; }
 .k-group:first-child { margin-top: 0.25rem; }

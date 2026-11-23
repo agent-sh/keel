@@ -315,3 +315,58 @@ test("what needs you is named in a long list, and keeps its reason in a narrow o
     for (const id of made) await request.delete(`/api/sessions/${id}`);
   }
 });
+
+// Feature: on a phone at a large text size the drawer's parts never lie over one another: the find
+// takes a tap, the list keeps room for rows of its own (the acts fold to their icons when it must),
+// and what is out of its view is named on one row. With the keyboard up the drawer is the find, the
+// rows and those names.
+test("on a phone at a large text size, the find, the list and the names at its foot each keep their place", async ({ browser, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const made: string[] = [];
+  const turns = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length;
+  try {
+    for (let i = 0; i < 14; i++) {
+      const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `Large text ${String(i).padStart(2, "0")}${i % 3 === 0 ? " fails" : ""}`, workspace: WS } })).json();
+      made.push(session.id);
+      if (i % 3 === 0) await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:billing" } });
+    }
+    for (const id of made.filter((_, i) => i % 3 === 0)) await expect.poll(() => turns(id), { timeout: 30_000 }).toBe(1);
+    for (const [scale, height, keyboard] of [[1.5, 600, 0], [1.2, 600, 300]] as const) {
+      const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: { width: 390, height }, hasTouch: true, isMobile: true });
+      await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
+      const page = await ctx.newPage();
+      try {
+        await page.goto(`/s/${made[1]}`);
+        await page.getByRole("button", { name: "All sessions" }).first().tap();
+        const find = page.getByTestId("list-filter");
+        const strip = page.getByTestId("need-strip");
+        await expect(strip).toBeVisible();
+        if (keyboard) {
+          await find.tap();
+          await page.setViewportSize({ width: 390, height: height - keyboard });
+          await expect(find).toBeInViewport({ ratio: 1 });
+        }
+        // The find is where a tap lands, not under the strip or the rail's foot.
+        await expect.poll(() => find.evaluate((el) => { const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)); })).toBe(true);
+        // The list keeps room for rows of its own: two rows or more fit between the find and the list's foot.
+        const room = await page.evaluate(() => {
+          const find = document.querySelector('[data-testid="list-find"]')!.getBoundingClientRect();
+          const foot = document.querySelector('[data-testid="list-foot"]')!.getBoundingClientRect();
+          const row = document.querySelector('[data-testid="session-list"] [data-testid="session-row"]')!.getBoundingClientRect();
+          return (Math.min(foot.top, innerHeight) - find.bottom) / row.height;
+        });
+        expect(room).toBeGreaterThanOrEqual(2);
+        // What is out of view is named on one row, the rest counted, and the row is on the screen.
+        await expect(strip).toBeInViewport({ ratio: 1 });
+        const tops = await strip.locator(".k-need-name[data-session], [data-testid='need-strip-more']").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+        expect(tops.length).toBeGreaterThan(0);
+        expect(new Set(tops).size).toBe(1);
+        await shoot(page, `session-rows-large-text-${scale}-${height - keyboard}`);
+      } finally {
+        await ctx.close();
+      }
+    }
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});
