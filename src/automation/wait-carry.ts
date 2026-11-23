@@ -65,11 +65,33 @@ export function jobLine(j: JobFacts, now: number): string {
 }
 
 // Programs that wait by design: a job whose processes include one is waiting
-// on something else (another machine, a lock, a slot, a timer), not stalled.
+// on something else (another machine, a lock, a slot, a timer), not stuck.
 export const WAITERS = new Set(["ssh", "scp", "rsync", "sftp", "mosh-client", "waitfor", "sleep", "flock", "inotifywait", "tail", "wait", "read", "systemd-run", "gh", "curl", "wget", "git-remote-http", "git-remote-https"]);
 
-// A stall: the job still runs, nothing of it used the processor and nothing
-// was written for `after` ms, and none of its processes is a waiter.
+// Where the kernel holds a process that waits for something outside it (its
+// wchan): a timer (a sleep in any language), the network or another file
+// (poll, select, epoll, a socket's wait), a file lock (cargo's, flock's). Not
+// a pipe or a child: the job's own shell waits on its command that way, and a
+// reader of a stuck writer waits on the pipe. Not a futex: a deadlocked
+// program waits on one too.
+const WAIT_CHANNELS = /nanosleep|hrtimer|^do_sys_poll$|poll_schedule|^do_select$|^core_sys_select$|epoll|^ep_poll|^sk_wait|wait_for_connect|inet_csk_accept|unix_stream_|tcp_|udp_|skb_wait|sock_|locks_lock|flock|lock_inode_wait|inotify|fanotify/;
+
+// What was seen of one of a job's processes in /proc.
+export type ProcLook = { comm: string; state: string; wchan: string; childOutside: boolean };
+// Whether a process of a job is waiting on something rather than stuck: a
+// waiting program, a process in uninterruptible sleep (D: the disk, a network
+// file system), one held where the kernel parks a waiter, or one whose child
+// was moved out of the job's cgroup (systemd-run --scope, docker), whose work
+// is not seen in the cgroup's processor time.
+export function waitingProc(p: ProcLook): boolean {
+  if (WAITERS.has(p.comm)) return true;
+  if (p.state === "D") return true;
+  if (p.childOutside) return true;
+  return !!p.wchan && p.wchan !== "0" && WAIT_CHANNELS.test(p.wchan);
+}
+
+// No progress: the job still runs, nothing of it used the processor and
+// nothing was written for `after` ms, and none of its processes waits.
 export function stalled(o: { now: number; since: number; waiting: boolean; after: number }): boolean {
   return !o.waiting && o.now - o.since >= o.after;
 }

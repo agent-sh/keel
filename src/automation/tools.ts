@@ -355,7 +355,7 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
 
 const waitDesc =
   "Wait without spending tokens: the daemon checks a condition (a timer, a file appearing or containing text, a new log line matching a pattern, an HTTP status, a process ending, every check of a GitHub pull request finishing) and wakes this session with the result when it holds or the timeout passes. " +
-  "A file or log wait's wake carries what the file gained since the wait began (its end, as a tool's output is cut) and what is known of the job that writes it; that job's end without the condition, or a stall of it, wakes you before the deadline. " +
+  "A file or log wait's wake carries what the file gained since the wait began (its end, as a tool's output is cut) and what is known of the job that writes it; that job's end without the condition, or a long stretch of it with no output, no processor use and nothing of it waiting, wakes you before the deadline. " +
   "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents: their reports wake you by themselves.";
 
 // A pull request wait runs gh with the owner's login against a repository the

@@ -4,7 +4,7 @@
 // reading the match and storing the wake. What a restart does cannot be
 // reached from the page.
 import { expect, setSystemTime, test } from "bun:test";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -545,11 +545,63 @@ test.skipIf(!jobScope().slice)(`a wait on a job that stopped making progress say
     await Bun.sleep(1700);
     await waits.tick();
     expect(status(w.id)).toBe("ended");
-    expect(wakes(w.id)[0]).toMatch(new RegExp(`Stalled: job ${job.id} that writes ${out} still runs, but it wrote nothing and used no processor time for \\d+ s`));
+    expect(wakes(w.id)[0]).toMatch(new RegExp(`Job ${job.id} that writes ${out} still runs, but in \\d+ s it wrote nothing and used no processor time, and none of its \\d+ process(es)? was seen waiting`));
     expect(wakes(w.id)[0]).toContain(`Job ${job.id} (`);
   } finally {
     waits.stall.ms = was;
     try { process.kill(job.pid, "SIGCONT"); } catch {}
     await stopJob(job);
+  }
+});
+
+test("a waited path that is not a regular file is not opened, and one that leads where the session may not read is not carried", async () => {
+  // A FIFO with no writer: its open would hold the daemon's loop until one came.
+  const fifo = join(dir, "carry.fifo");
+  expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+  const seen = waits.create(s.id, waits.normalize({ kind: "file", path: fifo }, dir), { timeout_seconds: 60 });
+  const holds = waits.create(s.id, waits.normalize({ kind: "file", path: fifo, contains: "x" }, dir), { timeout_seconds: 60 });
+  const lines = waits.create(s.id, waits.normalize({ kind: "log", path: fifo, match: "x" }, dir), { timeout_seconds: 60 });
+  await waits.tick();
+  expect(status(seen.id)).toBe("fired");
+  expect(wakes(seen.id)[0]).toContain(`${fifo} is not a regular file: it is not carried.`);
+  expect([status(holds.id), status(lines.id)]).toEqual(["active", "active"]);
+  // A link made after the wait was set, to one of Keel's own files: neither matched nor carried.
+  const own = join(process.env.KEEL_STATE_DIR!, "wait-target.txt");
+  writeFileSync(own, "READY\nthe daemon's own words\n");
+  const link = join(dir, "carry-link.txt");
+  const viaLog = waits.create(s.id, waits.normalize({ kind: "log", path: link, match: "^READY$" }, dir), { timeout_seconds: 60 });
+  const viaFile = waits.create(s.id, waits.normalize({ kind: "file", path: link }, dir), { timeout_seconds: 60 });
+  symlinkSync(own, link);
+  await waits.tick();
+  expect(status(viaLog.id)).toBe("active");
+  expect(waits.get(viaLog.id)!.last_error).toContain("is not carried: it leads where this session may not read without the owner");
+  expect(status(viaFile.id)).toBe("fired");
+  expect(wakes(viaFile.id)[0]).toContain(`${link} is not carried: it leads where this session may not read without the owner.`);
+  expect(wakes(viaFile.id)[0]).not.toContain("the daemon's own words");
+  for (const w of [holds, lines, viaLog]) waits.cancel(w.id);
+});
+
+test.skipIf(!jobScope().slice)(`a job that ended before the wait is not its writer, and one started after the linked one ended is${jobScope().slice ? "" : ` (needs a job cgroup: ${jobScope().why})`}`, async () => {
+  const { startJob, stopJob, waitJob } = await import("../tools/jobs.ts");
+  const out = join(dir, "link-out.log");
+  const before = startJob({ sessionId: s.id, command: `echo early > ${out}`, cwd: dir, logDir: join(dir, "jobs") });
+  await waitJob(before, 5000);
+  const late = waits.create(s.id, waits.normalize({ kind: "file", path: out, contains: "PASSED" }, dir), { timeout_seconds: 600 });
+  expect(waits.carries(late)).not.toContain(`job ${before.id}`);
+  waits.cancel(late.id);
+  // The first writer ends, a second takes over: the wait follows the second, and does not end with the first.
+  const a = startJob({ sessionId: s.id, command: `echo a >> ${out}; sleep 0.3`, cwd: dir, logDir: join(dir, "jobs") });
+  const w = waits.create(s.id, waits.normalize({ kind: "file", path: out, contains: "PASSED" }, dir), { timeout_seconds: 600 });
+  expect(waits.carries(w)).toContain(`job ${a.id} that writes it`);
+  await waitJob(a, 5000);
+  const b = startJob({ sessionId: s.id, command: `sleep 30; echo PASSED >> ${out}`, cwd: dir, logDir: join(dir, "jobs") });
+  try {
+    await Bun.sleep(2100);
+    await waits.tick();
+    expect(status(w.id)).toBe("active");
+    expect(waits.carries(w)).toContain(`job ${b.id} that writes it`);
+  } finally {
+    waits.cancel(w.id);
+    await stopJob(b);
   }
 });

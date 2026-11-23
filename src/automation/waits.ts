@@ -1,4 +1,4 @@
-import { existsSync, openSync, readSync, closeSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { gitEnv } from "../core/git.ts";
 import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
@@ -13,7 +13,9 @@ import { waitsFor } from "../core/state-words.ts";
 import { homedir } from "node:os";
 import { conceal } from "../core/conceal.ts";
 import { findJob, jobLive, jobsOf, running, type Job } from "../tools/jobs.ts";
-import { CARRY_MAX, WAITERS, carryText, jobLine, stalled, writesPath } from "./wait-carry.ts";
+import { CARRY_MAX, carryText, jobLine, stalled, waitingProc, writesPath, type ProcLook } from "./wait-carry.ts";
+import * as perm from "../server/routes/permissions.ts";
+import { shownTo } from "../safety/sandbox-view.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -182,16 +184,26 @@ function stateOf(id: string): Record<string, any> {
 }
 
 // The Keel job that writes a file or log wait's file: its own log is the file, or its command sends
-// its output there. Kept with the wait once found; looked for again at each probe until then.
-function linkJob(w: WaitRecord): Job | undefined {
+// its output there, and it was running when the wait was set or started after (one that ended before
+// says nothing of what comes). A running one is kept with the wait; one that ended is not, so a job
+// started after it is found. When none is found, none is looked for again for a while.
+const NO_WRITER_MS = 30_000;
+const noWriter = new Map<string, number>();
+function linkJob(w: WaitRecord, now = Date.now()): Job | undefined {
   if (w.kind !== "file" && w.kind !== "log") return undefined;
   const st = stateOf(w.id);
-  if (st.job) return findJob(w.session_id, st.job);
+  const kept = st.job ? findJob(w.session_id, st.job) : undefined;
+  if (kept && running(kept)) return kept;
+  if (!kept && (noWriter.get(w.id) ?? 0) > now) return undefined;
   const path = (w.spec as { path: string }).path;
   const home = homedir();
-  const found = jobsOf(w.session_id).filter((j) => j.started <= Date.now() && (j.log === path || writesPath(j.command, j.cwd, home, path)) && (running(j) || (j.ended ?? 0) >= w.created - 10 * 60_000)).sort((a, b) => b.started - a.started)[0];
-  if (found) setState(w.id, "job", found.id);
-  return found;
+  const found = jobsOf(w.session_id).filter((j) => j.started <= now && (running(j) || (j.ended ?? 0) >= w.created) && (!kept || j.started > kept.started) && (j.log === path || writesPath(j.command, j.cwd, home, path))).sort((a, b) => b.started - a.started)[0];
+  if (found && running(found)) setState(w.id, "job", found.id);
+  if (!found && !kept) {
+    if (noWriter.size > 512) noWriter.clear();
+    noWriter.set(w.id, now + NO_WRITER_MS);
+  }
+  return found ?? kept;
 }
 
 // What Keel knows of a job, for its line in a wake.
@@ -201,6 +213,48 @@ function factsOf(j: Job, path: string) {
   return { id: j.id, command: j.command, started: j.started, running: running(j), live: jobLive(j), exit: j.exitCode, signal: j.signal, ended: j.ended, stopReason: j.stopReason, lastOutput };
 }
 
+// Whether the session may read a file without asking anyone: as its Read tool would (the
+// permission gate, with what its sandbox shows), else what its folder's sandbox shows. A wait's
+// probe and wake read as the daemon, so they read only that. Kept for a few seconds a path.
+const readVerdicts = new Map<string, { at: number; ok: boolean }>();
+function readable(sessionId: string, real: string): boolean {
+  const key = `${sessionId}\0${real}`;
+  const had = readVerdicts.get(key);
+  if (had && Date.now() - had.at < 10_000) return had.ok;
+  let ok = false;
+  try {
+    const s = D().store.session(sessionId);
+    if (s) ok = perm.gate ? perm.gate.readable(s, real) : shownTo(real, s.workspace).shown;
+  } catch (e) { capture(e, { at: "wait read check" }); }
+  if (readVerdicts.size > 512) readVerdicts.clear();
+  readVerdicts.set(key, { at: Date.now(), ok });
+  return ok;
+}
+
+// A waited file opened for reading where it really is, or why it is not read: not there, not a
+// regular file (a FIFO's open would wait for a writer, a device's read may never end), or not
+// readable by the session (a link that leads out of what it may read).
+type Opened = { fd: number; size: number; ident: string; real: string } | { not: "missing" | "special" | "hidden"; real?: string };
+function openWaited(path: string, sessionId: string): Opened {
+  let real: string;
+  try { real = realpathSync(path); } catch { return { not: "missing" }; }
+  if (!readable(sessionId, real)) return { not: "hidden", real };
+  let fd: number;
+  try { fd = openSync(real, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch (e: any) { return { not: e?.code === "ENOENT" ? "missing" : e?.code === "ELOOP" ? "hidden" : "special", real }; }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) { closeSync(fd); return { not: "special", real }; }
+    // (What was opened is where the check looked: a folder on the way was not swapped since.)
+    if (process.platform === "linux") {
+      let at: string | undefined;
+      try { at = readlinkSync(`/proc/self/fd/${fd}`); } catch {}
+      if (at !== undefined && at !== real) { closeSync(fd); return { not: "hidden", real }; }
+    }
+    return { fd, size: st.size, ident: `${st.dev}:${st.ino}`, real };
+  } catch { closeSync(fd); return { not: "special", real }; }
+}
+const notRead = (path: string, o: Exclude<Opened, { fd: number }>) => o.not === "missing" ? `${path} is not there.` : o.not === "special" ? `${path} is not a regular file: it is not carried.` : `${path} is not carried: it leads where this session may not read without the owner.`;
+
 // What a file or log wait's wake carries: the file's new content (src/automation/wait-carry.ts), and
 // what Keel knows of the job that writes it. Secrets in it are hidden as in a tool's output.
 function carried(w: WaitRecord): string {
@@ -208,20 +262,22 @@ function carried(w: WaitRecord): string {
   const path = (w.spec as { path: string }).path;
   const from = (stateOf(w.id).from ?? { offset: 0 }) as { offset: number; ident?: string };
   const parts: string[] = [];
-  try {
-    const f = identOf(path);
-    const fromStart = !from.ident || from.ident !== f.ident || f.size < from.offset;
-    const start = fromStart ? 0 : from.offset;
-    const unchanged = !fromStart && f.size === start;
-    // Bytes enough for the characters carried (four bytes a character at most), from the end.
-    const begin = unchanged ? Math.max(0, f.size - CARRY_MAX * 4) : Math.max(start, f.size - CARRY_MAX * 4);
-    const len = f.size - begin;
-    const buf = Buffer.alloc(len);
-    const fd = openSync(path, "r");
-    try { readSync(fd, buf, 0, len, begin); } finally { closeSync(fd); }
-    const binary = buf.includes(0);
-    parts.push(carryText({ path, text: binary ? "" : buf.toString("utf8"), from: start, size: f.size, fromStart, unchanged, binary, skipped: begin - (unchanged ? 0 : start) }));
-  } catch { parts.push(`${path} is not there.`); }
+  const f = openWaited(path, w.session_id);
+  if ("not" in f) parts.push(notRead(path, f));
+  else {
+    try {
+      const fromStart = !from.ident || from.ident !== f.ident || f.size < from.offset;
+      const start = fromStart ? 0 : from.offset;
+      const unchanged = !fromStart && f.size === start;
+      // Bytes enough for the characters carried (four bytes a character at most), from the end.
+      const begin = unchanged ? Math.max(0, f.size - CARRY_MAX * 4) : Math.max(start, f.size - CARRY_MAX * 4);
+      const len = f.size - begin;
+      const buf = Buffer.alloc(len);
+      readSync(f.fd, buf, 0, len, begin);
+      const binary = buf.includes(0);
+      parts.push(carryText({ path, text: binary ? "" : buf.toString("utf8"), from: start, size: f.size, fromStart, unchanged, binary, skipped: begin - (unchanged ? 0 : start) }));
+    } catch { parts.push(`${path} could not be read.`); } finally { closeSync(f.fd); }
+  }
   const j = linkJob(w);
   if (j) parts.push(jobLine(factsOf(j, path), Date.now()));
   return conceal(parts.join("\n"), w.session_id);
@@ -231,22 +287,32 @@ function carried(w: WaitRecord): string {
 export function carries(w: WaitRecord): string {
   if (w.kind !== "file" && w.kind !== "log") return "";
   const j = linkJob(w);
-  const job = j ? ` and what is known of job ${j.id} that writes it (running or its exit, its last output); that job's end without the condition, or a stall of it (no output and no processor use for ${Math.round(stall.ms / 60_000)} min), wakes you before the deadline` : "";
+  const job = j ? ` and what is known of job ${j.id} that writes it (running or its exit, its last output); that job's end without the condition, or ${Math.round(stall.ms / 60_000)} min of it with no output, no processor use and nothing of it waiting on a timer, the network, a lock or another process, wakes you before the deadline` : "";
   return ` Its wake carries what the file gains from now on (its last ${CARRY_MAX.toLocaleString("en-US")} characters, secrets hidden)${job}: no need to read it again.`;
 }
 
 // How long a job that writes a waited file may go with no output and no processor use before the
-// wait says it stalled. A job at work, or one waiting on another machine, keeps using a little
+// wait says so. A job at work, or one waiting on another machine, keeps using a little
 // processor time: sampled every 10 s, 93 live jobs went at most 20 s without any (ssh sessions,
 // test runs, scripts). Output alone says little (a tenth of the jobs that went on to pass were
 // silent for over 3 min at their end, as their output went elsewhere). Five minutes of both is
 // far past what a working job shows, and well before a wait's usual deadline (20 min).
 export const stall = { ms: 5 * 60_000 }; // (a test sets it shorter, and puts it back)
 
-// A wait whose job ended without its condition, or stalled: told now, not at the deadline. Only for a
-// job in a cgroup of its own, where every process it started is known.
+// What one of a job's processes is doing, read from /proc (src/automation/wait-carry.ts decides).
+function procLook(pid: string, inCgroup: Set<string>): ProcLook {
+  const read = (p: string) => { try { return readFileSync(p, "utf8"); } catch { return ""; } };
+  const stat = read(`/proc/${pid}/stat`);
+  const state = stat ? stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) : "";
+  const children: string[] = [];
+  try { for (const t of readdirSync(`/proc/${pid}/task`)) children.push(...read(`/proc/${pid}/task/${t}/children`).split(" ").filter(Boolean)); } catch {}
+  return { comm: read(`/proc/${pid}/comm`).trim(), state, wchan: read(`/proc/${pid}/wchan`).trim(), childOutside: children.some((c) => !inCgroup.has(c)) };
+}
+
+// A wait whose job ended without its condition, or went quiet: told now, not at the deadline. Only
+// for a job in a cgroup of its own, where every process it started is known.
 function judgeJob(w: WaitRecord, now: number): string | undefined {
-  const j = linkJob(w);
+  const j = linkJob(w, now);
   if (!j || j.contain !== "cgroup") return undefined;
   const path = (w.spec as { path: string }).path;
   const what = w.kind === "log" ? `no line of it matched ${(w.spec as { match: string }).match}` : (w.spec as { contains?: string }).contains ? `it does not contain "${(w.spec as { contains?: string }).contains}"` : "it is not there";
@@ -265,14 +331,14 @@ function judgeJob(w: WaitRecord, now: number): string | undefined {
   if (cpu < 0) return undefined;
   if (st.cpu !== cpu || st.grew !== grew || st.quietSince === undefined) { st.cpu = cpu; st.grew = grew; st.quietSince = now; return undefined; }
   if (now - st.quietSince < stall.ms) return undefined;
-  let waiting = false;
+  let looks: ProcLook[];
   try {
-    for (const pid of readFileSync(`${j.cgroup}/cgroup.procs`, "utf8").split("\n").filter(Boolean)) {
-      try { if (WAITERS.has(readFileSync(`/proc/${pid}/comm`, "utf8").trim())) { waiting = true; break; } } catch {}
-    }
+    const pids = readFileSync(`${j.cgroup}/cgroup.procs`, "utf8").split("\n").filter(Boolean);
+    const inCgroup = new Set(pids);
+    looks = pids.map((p) => procLook(p, inCgroup));
   } catch { return undefined; }
-  if (!stalled({ now, since: st.quietSince, waiting, after: stall.ms })) return undefined;
-  return `Stalled: job ${j.id} that writes ${path} still runs, but it wrote nothing and used no processor time for ${Math.round((now - st.quietSince) / 1000)} s, and none of its processes waits on something else; ${what}.`;
+  if (!stalled({ now, since: st.quietSince, waiting: looks.some(waitingProc), after: stall.ms })) return undefined;
+  return `Job ${j.id} that writes ${path} still runs, but in ${Math.round((now - st.quietSince) / 1000)} s it wrote nothing and used no processor time, and none of its ${looks.length} process${looks.length === 1 ? "" : "es"} was seen waiting on a timer, the network, a lock or another process; ${what}.`;
 }
 
 function resolvePath(p: string, cwd: string) {
@@ -553,22 +619,27 @@ function probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> 
     case "file": {
       if (!existsSync(s.path)) return undefined;
       if (!s.contains) return `${s.path} exists.`;
-      const text = readFileSync(s.path, "utf8");
+      // (Read as the session may: a regular file it may read, never a FIFO that holds the open.)
+      const f = openWaited(s.path, w.session_id);
+      if ("not" in f) { if (f.not !== "missing") setError(w.id, notRead(s.path, f)); return undefined; }
+      let text: string;
+      try { text = readFileSync(f.fd, "utf8"); } finally { closeSync(f.fd); }
       const i = text.indexOf(s.contains);
       return i >= 0 ? `${s.path} contains "${s.contains}".` : undefined;
     }
     case "log": {
       const st = live.get(w.id) ?? { offset: 0 };
       live.set(w.id, st);
-      let f: { size: number; ident: string };
-      try { f = identOf(s.path); } catch { return undefined; }
+      // (Read as the session may: a regular file it may read, where it really is.)
+      const f = openWaited(s.path, w.session_id);
+      if ("not" in f) { if (f.not !== "missing") setError(w.id, notRead(s.path, f)); return undefined; }
       // Another file at the path (rotated, renamed over it) is read from its
       // start; the same file shorter than the cursor was truncated.
       if ((st.ident && st.ident !== f.ident) || f.size < (st.offset ?? 0)) { st.offset = 0; st.skip = false; }
       const moved = st.ident !== f.ident;
       st.ident = f.ident;
-      if (f.size === st.offset) { if (moved) saveCursor(w.id, cursor(st)); return undefined; }
-      const fd = openSync(s.path, "r");
+      if (f.size === st.offset) { closeSync(f.fd); if (moved) saveCursor(w.id, cursor(st)); return undefined; }
+      const fd = f.fd;
       try {
         const len = Math.min(f.size - (st.offset ?? 0), LOG_READ);
         const buf = Buffer.alloc(len);

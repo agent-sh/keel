@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CARRY_MAX, carryText, jobLine, stalled, writesPath } from "./wait-carry.ts";
+import { CARRY_MAX, carryText, jobLine, stalled, waitingProc, writesPath } from "./wait-carry.ts";
 
 test("the job that writes a waited file: a redirection or tee into it, with ~, $HOME and the command's own variables put in", () => {
   const at = (cmd: string, path = "/h/w/logs/e2e.log") => writesPath(cmd, "/h/repo", "/h", path);
@@ -44,4 +44,14 @@ test("a stall: quiet past its time, and no process of it waits on something else
   expect(stalled({ now: 1000, since: 0, waiting: false, after: 1000 })).toBe(true);
   expect(stalled({ now: 999, since: 0, waiting: false, after: 1000 })).toBe(false);
   expect(stalled({ now: 5000, since: 0, waiting: true, after: 1000 })).toBe(false);
+});
+
+test("a job's process that waits on something is not stuck: a timer, the network, a lock, the disk, a child moved out of its cgroup", () => {
+  const p = (o: Partial<Parameters<typeof waitingProc>[0]>) => waitingProc({ comm: "python3", state: "S", wchan: "", childOutside: false, ...o });
+  for (const wchan of ["hrtimer_nanosleep", "do_nanosleep", "do_epoll_wait", "ep_poll", "do_sys_poll", "do_select", "inet_csk_accept", "sk_wait_data", "unix_stream_read_generic", "locks_lock_inode_wait"]) expect([wchan, p({ wchan })]).toEqual([wchan, true]);
+  expect(p({ state: "D" })).toBe(true);
+  expect(p({ comm: "bash", wchan: "do_wait", childOutside: true })).toBe(true);
+  expect(p({ comm: "ssh" })).toBe(true);
+  // A shell waiting on its own command, a reader of a stuck pipe, a deadlock, a stopped process: not waiting on anything outside.
+  for (const wchan of ["do_wait", "pipe_read", "futex_wait_queue", "do_signal_stop", "0", ""]) expect([wchan, p({ wchan })]).toEqual([wchan, false]);
 });
