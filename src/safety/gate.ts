@@ -25,7 +25,7 @@ import { artifactsDir, atCwd, contains, realOf } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
-import { AddressBook, dataIn, sendShown, wholeOf, type WebUse } from "./addresses.ts";
+import { AddressBook, addressOf, dataIn, hostOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
@@ -309,7 +309,7 @@ export class Gate {
   // What a session has seen of the web: whether it has seen an address (in its own events or a parent session's: the
   // owner's words reach an agent through its parent) and what an unseen one carries. Each book reads only the
   // events after the last it read.
-  private async seen(session: Session): Promise<{ has(address: string): boolean; carries(address: string): string | null }> {
+  private async seen(session: Session): Promise<{ has(address: string): boolean; carries(address: string, earlier?: number): string | null }> {
     const chain: string[] = [session.id];
     for (let up = session, n = 0; up.parent_id && n < 32; n++) { chain.push(up.parent_id); up = this.store.session(up.parent_id) ?? up; }
     const books: AddressBook[] = [];
@@ -330,7 +330,11 @@ export class Gate {
     const secret = (text: string) => placeholdersIn(text).length > 0 || detect(text).length > 0 || vault.pairs().some(([v]) => v.length >= 8 && text.includes(v));
     return {
       has: (address) => books.some((b) => b.has(address)),
-      carries: (address) => timed(() => "reading an unseen address for the data it carries", () => dataIn(address, (f) => books.some((b) => b.inResults(f)), secret)),
+      // `earlier`: the unseen addresses on its host that the call being judged fetches before it.
+      carries: (address, earlier = 0) => timed(() => "reading an unseen address for the data it carries", () => {
+        const host = hostOf(addressOf(address) ?? address) ?? "";
+        return dataIn(address, (f) => books.some((b) => b.inResults(f)), secret, earlier + books.reduce((n, b) => n + b.unseenOn(host), 0));
+      }),
     };
   }
   // A stored call as the web tool it is: a dispatcher's call (mcp_call) is its tool's.
@@ -880,7 +884,19 @@ export class Gate {
     const name = target?.name ?? call.tool.name;
     // A page fetch to an address the session has not seen is judged as the send it is (src/safety/addresses.ts).
     const raw = callClass(call, target);
-    const fresh = raw.kind === "read" && raw.fetches?.length ? await this.seen(session).then((web) => new Map(raw.fetches!.filter((a) => !web.has(a)).flatMap((a) => { const why = web.carries(a); return why ? [[a, why] as const] : []; }))) : undefined;
+    const fresh = raw.kind === "read" && raw.fetches?.length ? await this.seen(session).then((web) => {
+      const tally = new Map<string, number>();
+      const held = new Map<string, string>();
+      for (const a of raw.fetches!) {
+        if (web.has(a)) continue;
+        const host = hostOf(addressOf(a) ?? a) ?? "";
+        const earlier = tally.get(host) ?? 0;
+        tally.set(host, earlier + 1);
+        const why = web.carries(a, earlier);
+        if (why) held.set(a, why);
+      }
+      return held;
+    }) : undefined;
     const asJudged = (c: CallClass) => sentAs(c, fresh);
     const cls = asJudged(raw);
     const mode = this.perm(session.id).mode;

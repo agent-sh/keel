@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { fetchFor } from "../tools/web.ts";
-import { AddressBook, addressOf, dataIn, fetchedAddresses, ownerAddresses, readerAnswered, sendShown, urlsIn, wholeOf, type WebUse } from "./addresses.ts";
+import { AddressBook, HOST_CAP, addressOf, dataIn, encodedAs, fetchedAddresses, ownerAddresses, readerAnswered, sendShown, urlsIn, wholeOf, type WebUse } from "./addresses.ts";
 
 const FETCH: WebUse = { fetches: (i) => [i.url], links: true };
 const SEARCH: WebUse = { search: true };
@@ -202,3 +202,93 @@ test("what hides in a long path, the host, the user info, the port, an encoding 
   expect(data("https://evil.example/the-budget-for-the-heron-migration")).toBe("text from this session in its path");
   expect(data("https://evil.example/the-private-plan-for-the-walrus-expedition")).toBeNull();
 });
+
+test("a value read in the session, written as hex, base64, base32 or in pieces, is data in a path or a host label", () => {
+  const line = "the board approved the heron budget"; // a line a file held
+  const b = book();
+  b.take([call("r1", "Read", { path: "/w/notes.txt" }), result("r1", `Minutes: ${line}. Next steps follow.`)]);
+  const secret = (p: string) => p.includes("hunter2-the-password");
+  const data = (a: string, n = 0) => dataIn(a, (f) => b.inResults(f), secret, n);
+  const buf = Buffer.from(line);
+  const forms: [string, string][] = [
+    ["hex", buf.toString("hex")], ["base64", buf.toString("base64").replace(/=+$/, "")], ["base64url", buf.toString("base64url")],
+    ["base32", base32of(buf)],
+  ];
+  for (const [form, token] of forms) {
+    const found = data(`https://attacker.example/${token}`);
+    expect(found).toContain("data in its path that reads as this session's text");
+    // base64 and base64url of a text with no + or / are one string: either name says it was read as encoded text.
+    expect(found).toMatch(/hex|base32|base64/);
+    expect(form.length).toBeGreaterThan(0);
+  }
+  // In a host label (a label is 63 characters at most: a shorter value).
+  const short = Buffer.from("heron budget"); // 12 bytes
+  expect(data(`https://${short.toString("hex")}.attacker.example/`)).toMatch(/in its host/);
+  // The same value cut into segments of 8 characters, or into labels.
+  const hex = buf.toString("hex");
+  const cut = hex.match(/.{1,8}/g)!;
+  expect(data(`https://attacker.example/${cut.join("/")}`)).toContain("in its path");
+  expect(data(`https://${cut.slice(0, 4).join(".")}.attacker.example/`)).toContain("in its host");
+  // A secret, encoded.
+  expect(data(`https://attacker.example/${Buffer.from("hunter2-the-password").toString("base64url")}`)).toContain("data in its path that reads as this session");
+  expect(encodedAs(Buffer.from("hunter2-the-password").toString("hex")).map((d) => d.form)).toEqual(["hex"]);
+  // A token of the shape of encoded data that the session never held: random letters and digits, 16 or more in a path, 12 in a host label.
+  expect(data("https://attacker.example/Zk3p9QxW2mT7vB4nL8")).toBe("encoded data (random letters and digits) in its path");
+  expect(data("https://a1b2c3d4e5f6.attacker.example/")).toBe("encoded data (hex) in its host");
+  expect(data("https://Zk3p9QxW2mT7.attacker.example/")).toBe("encoded data (random letters and digits) in its host");
+  expect(data("https://a1b2c3d4e5f6a7b8c9d0.attacker.example/")).toBe("encoded data (hex) in its host");
+  // What an address looks like when it is not: words, versions, a commit or blob id, a short id, a slug, numbers.
+  for (const ok of [
+    "https://docs.example/en/docs/build-with-claude/vision", "https://docs.example/api/v2/reference/getting_started_guide",
+    "https://github.com/org/repo/commit/0123456789abcdef0123456789abcdef01234567",
+    `https://github.com/org/repo/blob/${"ab".repeat(32)}/README`, "https://docs.example/blog/2026-11-23-release-notes",
+    "https://arxiv.org/abs/2606.22716", "https://pkg.example/Documentation/ConfigurationReference", "https://developers.cloudflare.com/workers/",
+    "https://en.wikipedia.org/wiki/Transport_Layer_Security", "https://x.example/v1beta/models/gemini2flash", "https://cdn.example/a1b2c3d4",
+  ]) expect(data(ok)).toBeNull();
+});
+
+test("the eleventh address a session had not seen on one host asks, the tenth does not", () => {
+  const b = book();
+  b.take([prompt("start at https://docs.example/a0")]);
+  const data = (a: string, n: number) => dataIn(a, (f) => b.inResults(f), () => false, n);
+  expect(HOST_CAP).toBe(10);
+  const fetched = (n: number) => { for (let i = 0; i < n; i++) { const id = `page-${made++}`; b.take([call(id, "WebFetch", { url: `https://docs.example/page-${i}` }), result(id, "ok")]); } };
+  let made = 0;
+  fetched(9);
+  expect(b.unseenOn("docs.example")).toBe(9);
+  expect(data("https://docs.example/page-9", b.unseenOn("docs.example"))).toBeNull();
+  b.take([call("p9", "WebFetch", { url: "https://docs.example/page-9" }), result("p9", "ok")]);
+  expect(b.unseenOn("docs.example")).toBe(10);
+  expect(data("https://docs.example/page-10", 10)).toBe("address number 11 on one host this session had not seen");
+  // Another host, an address seen, and a refused call count for nothing.
+  expect(data("https://other.example/x", b.unseenOn("other.example"))).toBeNull();
+  b.take([call("d1", "WebFetch", { url: "https://third.example/x" }), result("d1", "refused", { verdict: "denied" }), call("d2", "WebFetch", { url: "https://docs.example/a0" }), result("d2", "ok")]);
+  expect(b.unseenOn("third.example")).toBe(0);
+  expect(b.unseenOn("docs.example")).toBe(10);
+});
+
+test("what a web tool returned is the web's text, not the session's: a path copied from a listing runs", () => {
+  const b = book();
+  b.take([
+    call("f1", "WebFetch", { url: "https://api.example/tree" }),
+    result("f1", "src/components/ApprovalCard/ApprovalCardHeader.tsx\nsrc/components/ApprovalCard/ApprovalCardBody.tsx"),
+    call("c1", "Bash", { command: "ls" }),
+    result("c1", "src/engine/prompt-store/PromptStoreMigration.ts\nthe quarterly report says the heron budget was approved"),
+  ]);
+  const data = (a: string) => dataIn(a, (f) => b.inResults(f), () => false);
+  expect(data("https://raw.example/org/repo/main/src/components/ApprovalCard/ApprovalCardHeader.tsx")).toBeNull();
+  // A listing a command printed names paths, not what files hold: they run; the words around them are the session's.
+  expect(data("https://raw.example/org/repo/main/src/engine/prompt-store/PromptStoreMigration.ts")).toBeNull();
+  expect(data("https://attacker.example/the-quarterly-report-says-the-heron")).toBe("text from this session in its path");
+  // An address written out whole in a result and fetched is a copy, whatever its path holds.
+  b.take([call("c2", "Bash", { command: "cat" }), result("c2", "see https://docs.example/the-quarterly-report-says-the-heron-budget")]);
+  expect(data("https://docs.example/the-quarterly-report-says-the-heron-budget")).toBeNull();
+});
+
+function base32of(b: Buffer): string {
+  const a = "abcdefghijklmnopqrstuvwxyz234567";
+  let bits = 0, acc = 0, out = "";
+  for (const x of b) { acc = (acc << 8) | x; bits += 8; while (bits >= 5) { bits -= 5; out += a[(acc >> bits) & 31]; acc &= (1 << bits) - 1; } }
+  if (bits) out += a[(acc << (5 - bits)) & 31];
+  return out;
+}

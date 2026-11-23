@@ -87,8 +87,72 @@ const windowIn = (f: string, inSession: (folded: string) => boolean): boolean =>
   return false;
 };
 
+// Text read from a token as a form of encoding: hex, base64, base64url or base32 that holds
+// readable UTF-8 (no control characters). Nothing else is read as text.
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+const readable = (b: Uint8Array): string | null => {
+  try {
+    const t = utf8.decode(b);
+    return /[\p{C}]/u.test(t.replace(/[\t\n\r]/g, "")) ? null : t;
+  } catch { return null; }
+};
+function base32(t: string): Uint8Array | null {
+  const a = "abcdefghijklmnopqrstuvwxyz234567";
+  let bits = 0, acc = 0;
+  const out: number[] = [];
+  for (const ch of t.toLowerCase().replace(/=+$/, "")) {
+    const v = a.indexOf(ch);
+    if (v < 0) return null;
+    acc = (acc << 5) | v; bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 255); acc &= (1 << bits) - 1; }
+  }
+  return Uint8Array.from(out);
+}
+// The shortest token read as encoded text: 16 characters hold 8 bytes in hex, 12 in base64, 13 in base32.
+export const ENCODED_MIN = 12;
+export function encodedAs(token: string): { form: string; text: string }[] {
+  const out: { form: string; text: string }[] = [];
+  if (token.length < ENCODED_MIN) return out;
+  const add = (form: string, b: Uint8Array | null) => {
+    const text = b && b.length >= 8 ? readable(b) : null;
+    if (text && text.trim().length >= 8) out.push({ form, text });
+  };
+  if (/^(?:[0-9a-f]{2})+$/i.test(token)) add("hex", Buffer.from(token, "hex"));
+  if (/^[a-z2-7]+=*$/i.test(token) && token.length >= 13) add("base32", base32(token));
+  if (/^[A-Za-z0-9+/]+={0,2}$/.test(token) && token.replace(/=+$/, "").length % 4 !== 1) add("base64", Buffer.from(token, "base64"));
+  if (/^[A-Za-z0-9_-]+$/.test(token) && token.length % 4 !== 1) add("base64url", Buffer.from(token, "base64url"));
+  return out;
+}
+
+// A token that has the shape and spread of encoded data: letters and digits only, 16 or more of
+// them (12 bytes), the spread of random text, not a commit or file hash. 16 is the length at which
+// a chunk holds enough to be worth one request and a model's own words (a slug, a version) are
+// not mixed with digits at that spread; a shorter chunk goes out in pieces, which the count of
+// addresses on one host (HOST_CAP) holds.
+export const SHAPE_MIN = 16;
+// A host label is a chunk a request: a label of this length with the shape counts (a name is words, not letters and digits at this spread).
+export const SHAPE_MIN_LABEL = 12;
+const entropy = (t: string): number => {
+  const n = new Map<string, number>();
+  for (const c of t) n.set(c, (n.get(c) ?? 0) + 1);
+  let h = 0;
+  for (const v of n.values()) h -= (v / t.length) * Math.log2(v / t.length);
+  return h;
+};
+export function encodedShape(token: string, min = SHAPE_MIN): string | null {
+  if (token.length < min || !/^[A-Za-z0-9]+$/.test(token) || !/\d/.test(token) || !/[A-Za-z]/.test(token)) return null;
+  if (/^[0-9a-f]+$/i.test(token)) return token.length === 40 || token.length === 64 ? null : "hex";
+  return entropy(token) >= 3.5 ? "random letters and digits" : null;
+}
+
+// The most addresses a session fetches on one host that it had not seen before the fetch: the next asks.
+// Data in pieces too short to be held one by one (a value cut into chunks, a chunk a request) takes this many
+// requests to go out. A session of the owner's ledger made at most 9 on one host.
+export const HOST_CAP = 10;
+
 // What an address carries that the owner should see before it is fetched, as a
 // few words for the card, or null. Called for an address the session has not
+// seen; `unseenOnHost`: how many addresses the session has fetched on this host that it had not
 // seen. An address carries data when (the whole test):
 // - its query string is not empty; or
 // - it has a user name or a password (`https://KEY@host/`), or a port of its own
@@ -106,8 +170,17 @@ const windowIn = (f: string, inSession: (folded: string) => boolean): boolean =>
 //   in which case it was copied and carries nothing the session did not already have (a
 //   link in a README). So does a host label of `WINDOW` characters or more; a shorter
 //   label (`data.attacker.example`) is not looked at; or
-// - its path is longer than `PATH_READ` folded characters.
-export function dataIn(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean): string | null {
+// - a segment of its path (between slashes, or before a dot) or a label of its host is encoded
+//   data (`encodedAs`, `encodedShape`): it reads, as hex, base64, base64url or base32, as a
+//   secret or as 12 or more folded characters of the session's text, or it has the shape of
+//   random letters and digits; or
+// - its path is longer than `PATH_READ` folded characters; or
+// - it is the address after the `HOST_CAP`th the session fetched on its host unseen.
+export function dataIn(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean, unseenOnHost = 0): string | null {
+  return contents(raw, inSession, secret) ?? (unseenOnHost >= HOST_CAP ? `address number ${unseenOnHost + 1} on one host this session had not seen` : null);
+}
+
+function contents(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean): string | null {
   let u: URL;
   try { u = new URL(String(raw).trim()); } catch { return null; }
   // The port is read as the fetch reads the address: http is fetched as https.
@@ -118,7 +191,8 @@ export function dataIn(raw: string, inSession: (folded: string) => boolean, secr
   const fragment = decoded(u.hash.slice(1));
   if (fragment && (secret(fragment) || windowIn(fold(fragment), inSession))) return "a secret or text from this session in its fragment";
   const host = domainToUnicode(u.hostname) || u.hostname;
-  if (secret(writtenHost(String(raw))) || secret(host)) return "a secret in its host";
+  const written = writtenHost(String(raw)) || host;
+  if (secret(written) || secret(host)) return "a secret in its host";
   const path = decoded(u.pathname);
   if (secret(path)) return "a secret in its path";
   const f = fold(path);
@@ -126,10 +200,40 @@ export function dataIn(raw: string, inSession: (folded: string) => boolean, secr
   if (whole.length >= WINDOW && inSession(whole)) return null;
   for (const label of host.split(".")) if (fold(label).length >= WINDOW && windowIn(fold(label), inSession)) return "text from this session in its host";
   if (f.length > PATH_READ) return "a very long path";
+  // What a segment says read as encoded text: a secret, or text the session was given.
+  const said = (text: string) => secret(text) || (fold(text).length >= ENCODED_MIN && (fold(text).length < WINDOW ? inSession(fold(text)) : windowIn(fold(text), inSession)));
+  // The tokens of a path: its segments and the parts of a segment between dots, and the segments joined (a value cut
+  // into segments is one value); of a host: its labels without the registered name and its suffix, and those joined.
+  const segs = path.split("/").filter(Boolean);
+  const labels = written.split(".").filter(Boolean).slice(0, -2);
+  // Joined, they are read as encoded text, and have the shape only when each piece is a chunk of random
+  // letters and digits (`docs/api/v2/reference` is words).
+  const chunk = (x: string) => x.length >= 6 && /^[A-Za-z0-9]+$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
+  const where: [string, string[], string[], number][] = [
+    ["its path", segs.flatMap((x) => (x.includes(".") ? [x, ...x.split(".")] : [x])), segs.length > 1 ? [segs.join("")] : [], SHAPE_MIN],
+    ["its host", written.split(".").filter(Boolean), labels.length > 1 ? [labels.join("")] : [], SHAPE_MIN_LABEL],
+  ];
+  for (const [place, tokens, joined, min] of where) {
+    const pieces = place === "its path" ? segs : labels;
+    for (const t of [...tokens, ...joined]) {
+      for (const d of encodedAs(t)) if (said(d.text)) return `${d.form} data in ${place} that reads as this session's text or a secret`;
+    }
+    for (const t of tokens) {
+      const shape = encodedShape(t, min);
+      if (shape) return `encoded data (${shape}) in ${place}`;
+    }
+    if (joined.length && pieces.every(chunk)) {
+      const shape = encodedShape(joined[0]!, min);
+      if (shape) return `encoded data (${shape}, in pieces) in ${place}`;
+    }
+  }
   if (f.length < WINDOW) return null;
   if (windowIn(f, inSession)) return "text from this session in its path";
   return null;
 }
+
+// The host of an address (with its port), in lower case.
+export const hostOf = (address: string): string | null => { try { return new URL(address).host.toLowerCase(); } catch { return null; } };
 
 // The origin a link must share with the page it is on.
 const originOf = (address: string): string | null => { try { return new URL(address).origin; } catch { return null; } };
@@ -210,14 +314,21 @@ export type BookEvent = { seq: number; kind: string; data: any };
 // One session's addresses, read from its events in order, a part at a time:
 // `take` reads the events after the last it read. A call is matched to its
 // result by id; the calls whose result has not come yet are kept for it.
-// The folded text of what one session was given (tool results, and messages that are not the owner's: a subagent's report), the newest kept
+// The folded text of what one session was given (the results of tools that are not web tools, and messages that are not the owner's: a subagent's report), the newest kept
 // when it holds more than this many characters (one result is cut to its start).
 const CORPUS_MAX = 1 << 20;
+// (Each part is bounded so a long word with no slash costs a few hundred steps a character, not a pass over the rest.)
+const PATH_RUN = /[\w.~%+@-]{1,200}(?:\/[\w.~%+@-]{1,200})+/g;
 
 export class AddressBook {
   private known = new Set<string>();
   private corpus: string[] = [];
   private corpusSize = 0;
+  // The addresses fetched that were not known when the call was made, by host.
+  private unseen = new Map<string, Set<string>>();
+  // The addresses written out in what the session was given, as `fold(host + path)`: an address copied from there is the
+  // text's own, whole, even when its path is no longer a part of the corpus.
+  private copied = new Set<string>();
   private calls = new Map<string, { name: string; input: unknown }>();
   seq = 0;
   constructor(
@@ -232,11 +343,21 @@ export class AddressBook {
     return a === null || this.known.has(a);
   }
   get size() { return this.known.size; }
+  // How many addresses this session fetched on a host that it had not seen when it fetched them.
+  unseenOn(host: string): number { return this.unseen.get(host.toLowerCase())?.size ?? 0; }
   // Whether some text the session was given holds this folded text.
-  inResults(folded: string): boolean { return this.corpus.some((c) => c.includes(folded)); }
+  inResults(folded: string): boolean { return this.copied.has(folded) || this.corpus.some((c) => c.includes(folded)); }
 
+  // A run of words joined by slashes (a file's path, a URL's path, a listing's line) is not kept: a model that
+  // reads a listing and then fetches a path from it is the ordinary use, and a path names where a file is, not
+  // what it holds. What is kept is the words and values around it.
   private keep(text: string) {
-    const f = fold(text.slice(0, CORPUS_MAX * 2)).slice(0, CORPUS_MAX);
+    const cut = text.slice(0, CORPUS_MAX * 2);
+    for (const a of urlsIn(cut)) {
+      if (this.copied.size >= 4096) break;
+      try { const u = new URL(a); this.copied.add(fold(u.host + decoded(u.pathname))); } catch {}
+    }
+    const f = fold(cut.replace(PATH_RUN, " ")).slice(0, CORPUS_MAX);
     if (!f) return;
     this.corpus.push(f);
     this.corpusSize += f.length;
@@ -265,16 +386,31 @@ export class AddressBook {
         // A call the gate refused, or one that never ran, fetched nothing.
         const ran = d.verdict === undefined || d.verdict === "failed";
         for (const r of d.results ?? []) {
-          const text = ran ? textOf(r?.content) : "";
-          if (text) this.keep(text);
           const call = this.calls.get(r?.tool_use_id);
+          const how = call && ran ? this.use(call.name, call.input) : undefined;
+          // What a web tool returned is the public web's text: a path that copies it leaks nothing the
+          // site did not have, and a model that reads a listing then fetches a path from it is the
+          // ordinary use (the paths of a repository's tree). The session's own text is what files,
+          // commands, other tools and messages gave it.
+          const text = ran ? textOf(r?.content) : "";
+          if (text && !how) this.keep(text);
           if (!call) continue;
           this.calls.delete(r.tool_use_id);
-          if (!ran) continue;
-          const how = this.use(call.name, call.input);
           if (!how) continue;
           if ("search" in how.use) { if (!r.is_error) this.add(urlsIn(text)); }
-          else this.add(fetchedAddresses(how.use.fetches(how.input).map(String), text, how.use.links));
+          else {
+            const asked = how.use.fetches(how.input).map(String);
+            for (const raw of asked) {
+              const a = addressOf(raw);
+              if (!a || this.known.has(a)) continue;
+              const host = hostOf(a);
+              if (!host) continue;
+              let set = this.unseen.get(host);
+              if (!set) this.unseen.set(host, (set = new Set()));
+              if (set.size < 4 * HOST_CAP) set.add(a);
+            }
+            this.add(fetchedAddresses(asked, text, how.use.links));
+          }
         }
       }
     }
