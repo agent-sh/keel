@@ -63,6 +63,18 @@ class WireTest {
         assertEquals("photo.jpg", Wire.renamed("", "image/jpeg"))
     }
 
+    @Test fun aPhotoThePickerNamesByItsIdIsNamedByItsDate() {
+        val zone = java.time.ZoneId.of("Asia/Jerusalem")
+        // 2026-11-20 12:32:05 UTC, 14:32:05 on the phone's clock.
+        val taken = java.time.Instant.parse("2026-11-20T12:32:05Z").toEpochMilli()
+        assertEquals("Photo 2026-11-20 at 14.32.05.jpg", Wire.pickedName("1000000044.jpg", "image/jpeg", taken, zone))
+        assertEquals("Photo 2026-11-20 at 14.32.05.png", Wire.pickedName("1000000045", "image/png", taken, zone))
+        // A real name, a file that is not a photo, or a date nobody knows: the name stays.
+        assertEquals("receipt.png", Wire.pickedName("receipt.png", "image/png", taken, zone))
+        assertEquals("1000000046.pdf", Wire.pickedName("1000000046.pdf", "application/pdf", taken, zone))
+        assertEquals("1000000044.jpg", Wire.pickedName("1000000044.jpg", "image/jpeg", null, zone))
+    }
+
     @Test fun aFileTooLargeIsRefusedBeforeItGoesUp() {
         val max = 20L * 1024 * 1024
         assertEquals("", Wire.tooLarge("a.zip", max, max))

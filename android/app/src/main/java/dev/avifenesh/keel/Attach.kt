@@ -9,6 +9,7 @@ import android.media.ExifInterface
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.LruCache
 import android.webkit.MimeTypeMap
@@ -71,10 +72,12 @@ object Attach {
     fun add(ctx: Context, chat: String, uris: List<Uri>) {
         val app = ctx.applicationContext
         for (uri in uris) {
-            val (name, size) = meta(app, uri)
+            val (given, size) = meta(app, uri)
             val mime = app.contentResolver.getType(uri)?.lowercase()
-                ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+                ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(given.substringAfterLast('.', "").lowercase())
                 ?: "application/octet-stream"
+            // A photo the picker names by its media id is named by when it was taken.
+            val name = if (Wire.byMediaId(given, mime)) Wire.pickedName(given, mime, taken(app, uri)) else given
             val key = UUID.randomUUID().toString()
             put(chat, Picked(key, name, mime, size ?: 0, Up.READING, uri = uri, pickedSize = size))
             Hub.scope.launch { take(app, chat, key, uri, name, mime, size) }
@@ -141,6 +144,20 @@ object Attach {
             }
         }
     }.getOrNull().let { (it?.first?.ifBlank { null } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file") to it?.second }
+
+    // When a photo was taken, in ms since the epoch: the photo picker and the media store say it in
+    // DATE_TAKEN; a photo with no date of its own (a screenshot, a saved image) has its file's date,
+    // else the moment it was picked. Each column is asked on its own, so a provider that refuses one
+    // still gives the others.
+    private fun taken(ctx: Context, uri: Uri): Long =
+        column(ctx, uri, MediaStore.MediaColumns.DATE_TAKEN)
+            ?: column(ctx, uri, MediaStore.MediaColumns.DATE_MODIFIED)?.let { it * 1000 }
+            ?: System.currentTimeMillis()
+    private fun column(ctx: Context, uri: Uri, name: String): Long? = runCatching {
+        ctx.contentResolver.query(uri, arrayOf(name), null, null, null)?.use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0).takeIf { it > 0 } else null
+        }
+    }.getOrNull()
 
     // The file's bytes; past `max` it is refused, without reading the rest.
     private fun read(ctx: Context, uri: Uri, max: Long?): ByteArray {
