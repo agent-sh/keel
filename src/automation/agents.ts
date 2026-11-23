@@ -439,6 +439,20 @@ function readCodexDir(dir: string, source: string): AgentDef[] {
   return out;
 }
 
+// The built-in roles Codex models are trained to name in spawn_agent's
+// agent_type, as Keel's types (developers.openai.com/codex/subagents, "Codex
+// ships with built-in agents"): default is the general-purpose fallback,
+// worker the one that implements and fixes, explorer the read-heavy one. A
+// definition of the same name goes first, as a custom agent does in Codex.
+export const ROLE_ALIASES: Record<string, string> = { default: "general-purpose", worker: "general-purpose", explorer: "Explore" };
+
+// The definition a spawn names (none: general-purpose), by name in any case, else by a Codex role.
+export function defFor(defs: readonly AgentDef[], type: string | undefined): AgentDef | undefined {
+  const want = (type ?? "general-purpose").trim().toLowerCase();
+  const named = (n: string) => defs.find((d) => d.name.toLowerCase() === n.toLowerCase());
+  return named(want) ?? (ROLE_ALIASES[want] ? named(ROLE_ALIASES[want]!) : undefined);
+}
+
 // Built-ins, then the owner's, then the project's (nearest directory wins). A
 // project file never takes a built-in's name.
 export function definitions(cwd: string): AgentDef[] {
@@ -745,9 +759,8 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   const max = maxDepth();
   if (!canStart(depth, max)) throw Object.assign(new Error(`AGENT_DEPTH: agents ${max} level${max === 1 ? "" : "s"} below the session cannot start agents of their own. Do this part yourself, then report.`), { status: 409 });
   if (!input.prompt?.trim()) throw new Error("the agent needs a prompt");
-  const defs = definitions(parent.workspace);
-  const def = defs.find((d) => d.name.toLowerCase() === (input.type ?? "general-purpose").toLowerCase());
-  if (!def) throw new Error(`no agent type "${input.type}"; available: ${defs.map((d) => d.name).join(", ")}`);
+  const def = defFor(definitions(parent.workspace), input.type);
+  if (!def) throw new Error(`no agent type "${input.type}"; available: ${definitions(parent.workspace).map((d) => d.name).join(", ")}, and Codex's ${Object.keys(ROLE_ALIASES).join(", ")}`);
   if (input.output_schema !== undefined) {
     const bad = validSchema(input.output_schema);
     if (bad) throw new Error(bad);

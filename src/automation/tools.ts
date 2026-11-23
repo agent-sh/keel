@@ -222,12 +222,12 @@ const spawn_agent: Tool = {
   description:
     "Spawn a sub-agent for a well-scoped task. Returns the spawned agent id. The agent works in the background in its own session; its final answer arrives as a message when it finishes, or call wait_agent when you are blocked on it. " +
     "Spawn several in one round for independent subtasks with disjoint write scopes. Spawned agents use your current model unless model names another. A sub-agent may spawn agents of its own, three levels below the session at most; the session's agent limit counts every agent of the tree. " +
-    "Agent types: general-purpose (default), Explore (read-only). In a git repository an agent that can edit gets its own worktree and branch (isolation: \"none\" shares your checkout); its result names the branch to merge. output_schema makes its final answer one JSON value matching that schema.",
+    "Agent types: default or worker (general-purpose, every tool; the default), explorer (read-only search), and the types listed in the system prompt. In a git repository an agent that can edit gets its own worktree and branch (isolation: \"none\" shares your checkout); its result names the branch to merge. output_schema makes its final answer one JSON value matching that schema.",
   input_schema: {
     type: "object",
     properties: {
       message: { type: "string", description: "Initial plain-text task for the new agent." },
-      agent_type: { type: "string", description: "Agent type for the new agent. Omit for general-purpose." },
+      agent_type: { type: "string", description: "Agent type for the new agent: default, worker, explorer, or a listed type. Omit for default." },
       fork_context: { type: "boolean", description: "True starts the agent with a copy of this conversation; false or omitted starts it with only the task." },
       model: { type: "string", description: "Model override for the new agent. Omit unless an explicit override is needed." },
       isolation: { type: "string", enum: ["worktree", "none"], description: "worktree (default for agents that edit, in a git repository) or none (edit this checkout)." },

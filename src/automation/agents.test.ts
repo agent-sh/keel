@@ -102,6 +102,19 @@ test("an agent that messages the session that started it is told that its report
   await settled();
 });
 
+test("a spawn names Codex's built-in roles as Keel's types, and a definition of that name goes first", async () => {
+  // (The built-ins alone: a machine's own agent files may hold any name.)
+  const builtIn = agents.definitions(dir).filter((d) => d.source === "built-in");
+  for (const [role, type] of [["explorer", "Explore"], ["worker", "general-purpose"], ["default", "general-purpose"], ["Explorer", "Explore"], [undefined, "general-purpose"]]) {
+    expect(agents.defFor(builtIn, role)?.name).toBe(type!);
+  }
+  expect(agents.defFor(builtIn, "tester")).toBeUndefined();
+  const own = { name: "explorer", description: "mine", source: "project" };
+  expect(agents.defFor([...builtIn, own], "explorer")).toBe(own);
+  // A spawn that names a role starts that type (explorer reads only: no worktree).
+  expect((await spawn({ type: "explorer", isolation: undefined })).type).toBe(agents.defFor(agents.definitions(dir), "explorer")!.name);
+});
+
 test("blocking spawns wake on failed admission and a raised limit, and detach when cancelled", async () => {
   const p = store.createSession({ model: parent.model, workspace: dir, title: "Slots" });
   store.append(p.id, "assistant", { blocks: [] });
