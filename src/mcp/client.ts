@@ -61,7 +61,8 @@ const LOOSE_MAX = 120;
 // Error codes the modern spec reserves; seeing one means the server is modern.
 const MODERN_ERRORS = new Set([-32020, -32021, -32022]);
 
-export type McpTool = { name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: Record<string, unknown> };
+// `outputSchema`: the JSON Schema its structured content conforms to (2025-11-25 server/tools; src/mcp/result.ts checks it).
+export type McpTool = { name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; annotations?: Record<string, unknown> };
 export type McpContent =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string }

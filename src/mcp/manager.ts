@@ -1010,7 +1010,10 @@ export class McpManager {
       return noted({ content: `${shown}__${tool} failed: ${(err as Error).message}`, is_error: true });
     }
     this.callEnded(ctx.sessionId, card);
-    return noted(await toOutput(r, ctx, `${shown}__${tool}`));
+    // The schema of the tool as it was listed when the call went out (a list that changed meanwhile is the next call's).
+    const declared = tools?.find((t) => t.name === tool)?.outputSchema;
+    const schema = declared && typeof declared === "object" && !Array.isArray(declared) ? declared : undefined;
+    return noted(await toOutput(r, ctx, `${shown}__${tool}`, schema));
   }
 
   // ---- what a server asks while it works on a call ----
