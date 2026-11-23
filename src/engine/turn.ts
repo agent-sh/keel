@@ -15,6 +15,7 @@ import { conceal } from "../core/conceal.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
 import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
+import { editedPath, noteMark, type Marks } from "./instruction-marks.ts";
 import { testBuild } from "../core/build.ts";
 import { BuildPins, coldReason, pinAged } from "./build-pin.ts";
 import type { AssistantBlock, ErrorRecord, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
@@ -248,17 +249,21 @@ export const instructionFilter: { file?: (path: string, text: string) => string 
 // (src/automation/agents.ts).
 // A file linked from two places is one source: it is listed once, where it is
 // met first from the root down (the owner's own file before a folder's).
+// `marks`: every path looked for is noted with its mark on disk, before it is
+// looked at (src/engine/instruction-marks.ts).
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-export function instructionPaths(cwd: string): { path: string; scope: "owner" | "parent" | "folder" }[] {
+export function instructionPaths(cwd: string, marks?: Marks): { path: string; scope: "owner" | "parent" | "folder" }[] {
   const found: { path: string; scope: "owner" | "parent" | "folder" }[] = [];
   const seen = new Set<string>();
   for (let dir = cwd; !seen.has(dir); dir = dirname(dir)) {
     seen.add(dir);
+    if (marks) for (const n of ["AGENTS.md", "CLAUDE.md"]) noteMark(marks, join(dir, n));
     const name = ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
     if (name) found.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
     if (dirname(dir) === dir || dir === homedir()) break;
   }
   const own = join(configDir(), "AGENTS.md");
+  noteMark(marks, own);
   if (existsSync(own)) found.unshift({ path: own, scope: "owner" });
   const ids = new Set<string>();
   return found.filter((f) => !ids.has(real(f.path)) && !!ids.add(real(f.path)));
@@ -269,24 +274,25 @@ export function instructionPaths(cwd: string): { path: string; scope: "owner" | 
 // the line as text: what they would import is not under their trust pin.
 // `seen` holds the real paths already in the prompt: a file two others import
 // comes in once, and the later line stays as the reference it is.
-export function expandImports(text: string, from: string, depth = 0, seen = new Set([real(from)])): string {
+export function expandImports(text: string, from: string, depth = 0, seen = new Set([real(from)]), marks?: Marks): string {
   if (depth >= 4) return text;
   return text.replace(/^@(\S+)[ \t]*$/gm, (line, ref: string) => {
     const p = ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : resolve(dirname(from), ref);
     if (seen.has(real(p)) || rootOf(dirname(p)) || heldFile(p)) return line;
+    noteMark(marks, p);
     try {
       const t = readFileSync(p, "utf8");
       seen.add(real(p));
-      return expandImports(t, p, depth + 1, seen).trimEnd();
+      return expandImports(t, p, depth + 1, seen, marks).trimEnd();
     } catch {
       return line;
     }
   });
 }
 
-export function instructionFiles(cwd: string): string {
+export function instructionFiles(cwd: string, marks?: Marks): string {
   const parts: string[] = [];
-  const files = instructionPaths(cwd);
+  const files = instructionPaths(cwd, marks);
   const seen = new Set(files.map((f) => real(f.path)));
   for (const { path: p } of files) {
     let read: string;
@@ -299,7 +305,7 @@ export function instructionFiles(cwd: string): string {
       parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
       continue;
     }
-    const raw = rootOf(dirname(p)) ? read : expandImports(read, p, 0, seen);
+    const raw = rootOf(dirname(p)) ? read : expandImports(read, p, 0, seen, marks);
     const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
     if (text !== null) parts.push(`# ${p}\n\n${text.slice(0, 40_000)}`);
   }
@@ -316,8 +322,8 @@ const CORE = [
 ].join("\n");
 
 // The per-session part, as its two blocks: the place and the instruction files.
-function sessionParts(cwd: string, created: number): PromptPart[] {
-  const inst = instructionFiles(cwd);
+function sessionParts(cwd: string, created: number, marks?: Marks): PromptPart[] {
+  const inst = instructionFiles(cwd, marks);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
   return [{ name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst }];
 }
@@ -446,6 +452,10 @@ export class Engine {
   // and sessions that moved (their next request renders for the new place).
   private checked = new Set<string>();
   private moved = new Set<string>();
+  // The marks on disk of the instruction files each session's last render read
+  // or looked for (src/engine/instruction-marks.ts). One that dropped out has
+  // the prompt rendered and compared again at the session's next request.
+  private marks = new SessionMap<Marks>(1024);
   // The newest render of a session's prompt while its kept one stays sent: a
   // change of the owner's side is told at the tail until it is folded in
   // (src/engine/prompt-note.ts).
@@ -693,6 +703,43 @@ export class Engine {
     this.adopting.delete(id);
     if (moved) this.moved.add(id);
     else this.checked.delete(id);
+  }
+
+  // The session whose prompt this one's requests carry: itself, or for a
+  // subagent on this machine its top session.
+  private promptHolder(session: Session): Session | undefined {
+    for (let x: Session | undefined = session, hops = 0; x && hops < 32; hops++) {
+      if (!x.parent_id || x.machine) return x;
+      x = this.store.session(x.parent_id);
+    }
+    return undefined;
+  }
+
+  // Whether an instruction file of the prompt the session's requests carry was
+  // edited, made or deleted since that prompt was rendered: a stat of each file
+  // the render read or looked for, before each request of a turn. When one
+  // was, the prompt is rendered and compared again as at a daemon start: a
+  // change of the owner's side is told at the tail while a warm cache holds the
+  // context, and taken into the prompt when it is cold (loadSystem). True when
+  // the session's own prompt was forgotten and its step is to be made again;
+  // a subagent riding its top session's prompt has that one rendered here, and
+  // is told by the note (tellPrompt).
+  private async instructionsEdited(session: Session, info: ModelInfo): Promise<boolean> {
+    const top = this.promptHolder(session);
+    if (!top || !this.checked.has(top.id) || this.rendering.has(top.id)) return false;
+    const marks = this.marks.get(top.id);
+    if (marks && editedPath(marks) === undefined) return false;
+    this.forgetSystem(top.id, false);
+    if (top.id === session.id) return true;
+    await this.systemOf(top, info, false);
+    return false;
+  }
+
+  // The prompt the session holds is not the one this step was made with: a
+  // request of one of its subagents rendered it again and took a change.
+  private heldElsewhere(id: string, st: Step): boolean {
+    const held = this.systems.get(id);
+    return !!held && held.text !== st.system;
   }
 
   // The branch the session shows, oldest first. The store keeps it (walked
@@ -1478,8 +1525,9 @@ export class Engine {
 
   // The prompt is kept with the session (session_prompts), so a restart or a
   // session that dropped out of memory sends the same bytes again. Once per
-  // daemon run it is rendered again for the model it was made for and
-  // compared block by block. A block that differs (an instruction file was
+  // daemon run, and again when an instruction file it read was edited
+  // (instructionsEdited), it is rendered again for the model it was made for
+  // and compared block by block. A block that differs (an instruction file was
   // edited, a skill was added, a server published other instructions, a new
   // build reworded one) replaces the kept prompt when the session's cache is
   // cold or the change must not wait, and the row then names the blocks;
@@ -1640,7 +1688,10 @@ export class Engine {
     const own = (await Promise.all(allHooks().map((h) => h.sessionSystem?.(session, info) ?? ""))).flatMap((b) => part(b, (t) => `\n${t}\n`));
     // The place and its instruction files: the same for every session of the
     // folder (started that day), so the session's own blocks come after them.
-    const folder = sessionParts(session.workspace, session.created).map(sent);
+    // (The instruction files' marks on disk, noted before they are read: an edit is noticed by them, instructionsEdited.)
+    const marks: Marks = new Map();
+    const folder = sessionParts(session.workspace, session.created, marks).map(sent);
+    this.marks.set(session.id, marks);
     const parts = [...shared, ...folder, ...own];
     const chars = (list: PromptPart[]) => list.reduce((n, p) => n + p.text.length, 0);
     return { text: parts.map((p) => p.text).join(""), split: chars(shared), own: chars(shared) + chars(folder), blocks: blocksOf(parts), model: info?.id ?? null };
@@ -2294,6 +2345,9 @@ export class Engine {
         }
         // A context no warm cache holds any more (just compacted or cleared, expired),
         // the owner's request, or a pin past its age: this build's tools and prompt from this request on.
+        // An instruction file edited since the prompt was rendered: compared again now (instructionsEdited),
+        // and a prompt taken under a running turn by another session's request is this request's too.
+        if (st.info.id === session.model && ((await this.instructionsEdited(session, st.info)) || this.heldElsewhere(id, st))) st = await this.step(session, session.model);
         const waits = st.info.id === session.model ? this.pins.waits(id) : undefined;
         if (waits === "now" || (waits && this.coldWhy(id, st.provider, st.info, events))) st = await this.step(session, session.model);
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);

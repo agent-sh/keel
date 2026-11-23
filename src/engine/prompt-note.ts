@@ -62,9 +62,25 @@ const fingerprint = (blocks: PromptBlock[], name: string) => {
 // files name each file on a line "# /path"), so a rule is read with its file.
 const CONTEXT = 3;
 const HEADING = /^# \//;
+// A file the block no longer holds is told apart from an edit: its heading
+// went, so the file was deleted (or moved out of the folders read); a heading
+// that came is a new file.
+const headings = (t: string) => new Set(splitLines(t).filter((l) => HEADING.test(l)).map((l) => l.slice(2).trim()));
+function filesSaid(before: string, after: string): string {
+  const was = headings(before), is = headings(after);
+  const gone = [...was].filter((f) => !is.has(f)), came = [...is].filter((f) => !was.has(f));
+  return [
+    ...(gone.length ? [`Deleted (or no longer found where it was read): ${gone.join(", ")}. What it said no longer applies.`] : []),
+    ...(came.length ? [`New: ${came.join(", ")}.`] : []),
+  ].map((l) => `${l}\n`).join("");
+}
 export function blockDiff(before: string, after: string): string {
-  if (!after.trim()) return "It is empty now: what the system prompt says under it no longer applies.";
-  if (!before.trim()) return `It reads:\n${after.trimEnd()}`;
+  const files = filesSaid(before, after);
+  if (!after.trim()) return `${files}It is empty now: what the system prompt says under it no longer applies.`;
+  if (!before.trim()) return `${files}It reads:\n${after.trimEnd()}`;
+  return files + changedLines(before, after);
+}
+function changedLines(before: string, after: string): string {
   const ops = diffLines(splitLines(before), splitLines(after));
   const keep = new Array<boolean>(ops.length).fill(false);
   ops.forEach((o, i) => { if (o.t !== " ") for (let k = Math.max(0, i - CONTEXT); k <= Math.min(ops.length - 1, i + CONTEXT); k++) keep[k] = true; });

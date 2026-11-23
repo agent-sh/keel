@@ -73,3 +73,20 @@ test("a block's diff", () => {
     "Changed lines (- before, + now, the rest as it was):\n@@ # /b/AGENTS.md\n line 13\n line 14\n line 15\n-line 16\n+line sixteen\n line 17\n line 18\n line 19",
   );
 });
+
+test("a deleted instruction file is told apart from an edit, and so is a new one", () => {
+  const two = `# /home/me/AGENTS.md\n\n${RULES}\n\n# /home/me/work/AGENTS.md\n\nWork rule one.\nWork rule two.\n`;
+  const one = `# /home/me/AGENTS.md\n\n${RULES}`;
+  const gone = promptNote(render("core", two), render("core", one), new Map())!;
+  expect(gone.text).toContain("Deleted (or no longer found where it was read): /home/me/work/AGENTS.md. What it said no longer applies.");
+  expect(gone.text).toContain("-Work rule one.");
+  // An edit names no file as deleted or new.
+  const edited = promptNote(render("core", two), render("core", two.replace("Work rule two.", "Work rule two, changed.")), new Map())!;
+  expect(edited.text).not.toContain("Deleted");
+  expect(edited.text).not.toContain("New:");
+  expect(edited.text).toContain("+Work rule two, changed.");
+  const came = promptNote(render("core", one), render("core", two), new Map())!;
+  expect(came.text).toContain("New: /home/me/work/AGENTS.md.");
+  // The last file deleted: the block is empty, and the file is named.
+  expect(blockDiff(one, "")).toBe("Deleted (or no longer found where it was read): /home/me/AGENTS.md. What it said no longer applies.\nIt is empty now: what the system prompt says under it no longer applies.");
+});

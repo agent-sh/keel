@@ -291,10 +291,10 @@ test("a deferred tool the conversation loaded keeps its definition across an upg
   }
 });
 
-// An instruction file edited while a session's cache is warm: the session
-// keeps the prompt it was sent, byte for byte, and its next request carries
-// the change as a note at the tail of its history. A subagent riding its
-// parent's prompt is told the same way. The prompt takes the change when the
+// An instruction file edited while a session's cache is warm, with no daemon
+// restart: the session keeps the prompt it was sent, byte for byte, and its
+// next request carries the change as a note at the tail of its history. A
+// subagent riding its parent's prompt is told the same way. The prompt takes the change when the
 // cache is cold anyway (a compaction here), and no note is needed after it.
 test("an edited instruction file reaches a warm session at its tail and is folded in at a compaction", async ({ page }) => {
   test.setTimeout(240_000);
@@ -316,9 +316,8 @@ test("an edited instruction file reaches a warm session at its tail and is folde
     expect(before.system).toContain("Always answer in one line.");
     expect(sent(child).at(-1)!.system).toBe(before.system);
 
-    // The owner adds a rule, and the daemon starts again (the prompt is compared once a run).
+    // The owner adds a rule while the daemon runs: the next request notices it by the file's mark on disk.
     writeFileSync(join(r.state, "work", "AGENTS.md"), `# Rules\n\nAlways answer in one line.\n${RULE}\nKeep it lean.\n`);
-    await restart(undefined);
     await turn(id, "hello after the edit");
     expect(sent(id).at(-1)!.system, "the prompt after the edit is the one before it").toBe(before.system);
     const told = await notes(id);
