@@ -413,6 +413,28 @@ export function codeGiven(run: Run): string | null {
   const p = name(run.words[0]);
   return INTERPRETERS.test(p) ? inline(p, run.words.slice(1)) : null;
 }
+// How a command takes a file `hit` picks: "runs" when it runs it (as its program, as the script a shell or an
+// interpreter is given, or so in a script given to a shell with -c), "code" when code given to an interpreter on
+// its command line names it in a string. Code that names a file is not read for what it does with it: json.load
+// and exec look alike to the rules, and a read taken for a run costs less than a run taken for a read.
+function takes(words: string[], hit: (path: string) => boolean, depth = 0): { how: "runs" | "code"; by: string } | null {
+  const q = name(words[0]);
+  if (words[0] !== undefined && hit(words[0])) return { how: "runs", by: q };
+  if (!(SHELLS.test(q) || INTERPRETERS.test(q) || q === "source" || q === ".") || (SHELLS.test(q) && words.includes("-n"))) return null;
+  const args = words.slice(1);
+  if (args.some((a) => !a.startsWith("-") && hit(a))) return { how: "runs", by: q };
+  if (SHELLS.test(q)) {
+    const k = args.findIndex((a) => /^-[a-zA-Z]*c$/.test(a));
+    const given = k >= 0 ? args[k + 1] : undefined;
+    if (given === undefined || depth >= DEPTH || given.length > SCRIPT_MAX) return null;
+    // (A script the rules cannot split is high risk on its own.)
+    for (const s of splitCommand(given) ?? []) { const t = takes(unwrap(s.words).words, hit, depth + 1); if (t) return t; }
+    return null;
+  }
+  const code = INTERPRETERS.test(q) ? inline(q, args) : null;
+  if (code !== null) for (const m of code.slice(0, SCRIPT_MAX).matchAll(/(["'`])((?:(?!\1)[^\\\n]){1,300})\1/g)) if (hit(m[2]!)) return { how: "code", by: q };
+  return null;
+}
 // Whether a shell or an interpreter reads its program from its input: it is given no script and no code.
 const fromInput = (p: string, args: string[]) => inline(p, args) === null && (!args.some((a) => !a.startsWith("-")) || args.includes("-s") || args.includes("-")) && !(SHELLS.test(p) && args.some((a) => /^-[a-zA-Z]*c$/.test(a)));
 const STDIN = /^(\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/;
@@ -911,9 +933,8 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
           if (!/^(cat|tee)$/.test(fed.get(k)?.by ?? "") && namesFile(parts[k]!.text, file)) { line.push({ rule: "hidden", why: `hands ${file}, a file the same line downloads, to ${fed.get(k)?.by || "a program"} in a here-document: it may run it` }); break; }
           continue;
         }
-        const r = runs[k]!.words;
-        const q = name(r[0]);
-        if (q === file || ((SHELLS.test(q) || INTERPRETERS.test(q) || q === "source" || q === ".") && !(SHELLS.test(q) && r.includes("-n")) && r.slice(1).some((a) => name(a) === file))) { line.push({ rule: "hidden", why: `runs ${file}, a script the same line downloads` }); break; }
+        const t = takes(runs[k]!.words, (a) => name(a) === file);
+        if (t) { line.push({ rule: "hidden", why: t.how === "runs" ? `runs ${file}, a script the same line downloads` : `hands ${file}, a file the same line downloads, to code given to ${t.by}: whether the code runs it is not read` }); break; }
       }
     }
     // A repository the line clones and then builds or runs in: what runs was fetched a moment before.
@@ -924,6 +945,9 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       if (into) for (let k = i + 1; k < n && k < i + 64; k++) {
         const at = dirs[k], q = name(runs[k]!.words[0]);
         if (at && under(into, at) && q !== "cd" && q !== "git" && !isReadOnly(parts[k]!)) { line.push({ rule: "hidden", why: `runs ${q} in ${name(into)}, a repository the same line clones from ${url!.slice(0, 80)}` }); break; }
+        // From outside it: a program, a script or code of the clone named by its path (python3 r/setup.py, ./r/install.sh).
+        const t = at ? takes(runs[k]!.words, (a) => a.includes("/") || a === name(into) ? !/[$`*?]/.test(a) && under(into, resolve(at, a)) : false) : null;
+        if (t) { line.push({ rule: "hidden", why: `${t.how === "runs" ? "runs" : `gives ${t.by} code that reads`} files of ${name(into)}, a repository the same line clones from ${url!.slice(0, 80)}` }); break; }
       }
     }
     // A credential file staged in a line that pushes.
