@@ -462,11 +462,15 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
 // or goes: what shrinks is the room under them. A press opens the session, as its row does.
 // Another machine's part of the list, when it begins below what the list shows: its name and count at
 // the list's foot, a press away (a long list of this machine's sessions hid that there are others).
+// What the list scrolls in: the list itself, or on a phone the rail's body, where the list scrolls
+// with what stands above it (bridge.css, .k-rail-body). The observers that say what is out of view watch that.
+const scrollerOf = (nav: HTMLElement | null) => (nav && getComputedStyle(nav).overflowY === "visible" ? nav.closest<HTMLElement>(".k-rail-body") ?? nav : nav);
+
 function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }; machines: { machine: string; count: number }[] }) {
   const key = machines.map((m) => `${m.machine}:${m.count}`).join(" ");
   const [below, setBelow] = useState<string[]>([]);
   useEffect(() => {
-    const root = nav.current;
+    const root = scrollerOf(nav.current);
     if (!root || !machines.length) return setBelow([]);
     const at = new Map<string, boolean>();
     const io = new IntersectionObserver((es) => {
@@ -499,7 +503,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   const key = ids.join(" ");
   const [found, setOut] = useState<string[]>([]);
   useEffect(() => {
-    const root = nav.current;
+    const root = scrollerOf(nav.current);
     if (!root || !ids.length) return setOut([]);
     // What the observer said of each row it watches. A row it has not spoken of yet is left out: named
     // before the first word, every row was named for a frame each time the set of sessions changed.
@@ -1017,7 +1021,7 @@ function Index({ current }: { current: string | null }) {
   useEffect(() => {
     const el = lateBox.current;
     if (!waits || !el || !nav.current) return setLateSeen(true);
-    const io = new IntersectionObserver(([e]) => setLateSeen(!!e?.isIntersecting), { root: nav.current });
+    const io = new IntersectionObserver(([e]) => setLateSeen(!!e?.isIntersecting), { root: scrollerOf(nav.current) });
     io.observe(el);
     return () => io.disconnect();
   }, [waits]);
