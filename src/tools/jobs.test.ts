@@ -696,3 +696,33 @@ test("a variable a feature keeps from a session's commands is not in them, and o
   } finally { off(); }
   expect(toolEnv("reviewer").GH_TOKEN).toBe("env-drop-probe");
 });
+
+// A state folder keeps the record of every command its sessions ran; a start
+// shows the newest ended ones and looks at nothing of the rest. Synthetic pids:
+// the stand-in read counts the lookups and finds no process.
+test("a start looks up only the ended commands it keeps, and marks the rest concealed once", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-many-"));
+  const dir = join(root, "spill", "s-many", "jobs");
+  mkdirSync(dir, { recursive: true });
+  const total = 260, kept = 200, at = Date.now() - 86_400_000;
+  for (let i = 0; i < total; i++) {
+    const id = `many-${i}`;
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, num: 5000 + i, sessionId: "s-many", command: `echo ${i}`, cwd: root, started: at + i * 1000, background: false, pid: 987600000 + i, boot: "100", reported: true, ended: at + i * 1000 + 10, exit_code: 0, signal: null, read_off: 0 }));
+  }
+  const real = procfs.stat;
+  let looked = 0;
+  procfs.stat = (p: number) => { if (p >= 987600000 && p < 987600000 + total) { looked++; throw new Error("no such process"); } return real(p); };
+  try {
+    expect(adoptJobs(join(root, "spill"))).toBe(0);
+  } finally {
+    procfs.stat = real;
+  }
+  expect(looked).toBe(kept);
+  const shown = jobsOf("s-many").map((j) => j.id);
+  expect(shown).toContain(`many-${total - 1}`);
+  expect(shown).not.toContain("many-0");
+  // The records it does not keep are written once more with their mark, after the start.
+  const marked = () => readdirSync(dir).filter((f) => f.endsWith(".json") && JSON.parse(readFileSync(join(dir, f), "utf8")).concealed === true).length;
+  for (let i = 0; i < 100 && marked() < total - kept; i++) await Bun.sleep(20);
+  expect(marked()).toBe(total - kept);
+});

@@ -262,6 +262,7 @@ export type Meta = {
   cgroup?: string; contain?: "cgroup" | "group"; contain_why?: string;
   ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
   read_off?: number; // bytes of the log the model was handed (a later daemon goes on from there)
+  concealed?: true;  // written with placeholders for the values the secrets vault knew then
 };
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
@@ -270,7 +271,7 @@ const meta = (j: Job, pid: number): Meta => ({
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
 function writeMeta(log: string, m: Meta) {
-  writeFileSync(metaPath(log), JSON.stringify(concealDeep(m, m.sessionId)));
+  writeFileSync(metaPath(log), JSON.stringify({ ...concealDeep(m, m.sessionId), concealed: true }));
 }
 function patchMeta(log: string, patch: Partial<Meta>) {
   try { writeMeta(log, { ...JSON.parse(readFileSync(metaPath(log), "utf8")), ...patch }); } catch {}
@@ -407,6 +408,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   try { sessions = readdirSync(spillRoot); } catch { return 0; }
   const history: Job[] = [];
   const terminals: Job[] = [];
+  const ended: { m: Meta; dir: string; f: string }[] = [];
   for (const sid of sessions) {
     const dir = join(spillRoot, sid, "jobs");
     let files: string[] = [];
@@ -415,55 +417,80 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
       let m: Meta;
       try { m = JSON.parse(readFileSync(join(dir, f), "utf8")); } catch { continue; }
       if (!m || typeof m !== "object") continue;
-      const why = notOurs(m);
-      if (why) { refused?.(join(dir, f), why); continue; }
-      counter = Math.max(counter, m.num ?? 0);
-      if (jobs.has(m.id)) continue;
-      const log = join(dir, `${m.id}.log`);
-      // A sidecar an older daemon wrote with a value in it: rewritten with placeholders.
-      const shown = concealDeep(m, m.sessionId);
-      if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
-      const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
-        pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-        callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
-      // A stop the last daemon began and did not see through (it went down
-      // first) is finished here: whoever asked for it was told the command
-      // was stopped, and what ignored the first signal still runs.
-      // A stop that then leaves something alive is said: its call was told the command was stopped.
-      const finishStop = (j: Job) => {
-        if (!m.stopping || m.pty) return;
-        j.left ??= [m.pid];
-        void stopJob(j, m.stop_reason ?? "was stopped").then((left) => {
-          if (left.length) addNotice(j.sessionId, `The command \`${j.command.slice(0, 80)}\` (ID ${j.id}) could not be stopped: process ${left.join(", ")} of it still runs. Its output is in ${j.log}.`);
-          // Seen through: the record is not looked at again at a later start.
-          else patchMeta(log, { stopping: undefined });
-        }, () => {});
-      };
-      if (m.reported || m.pty) {
-        // History: a PTY never outlives its daemon; one with no end ended with it.
-        const j: Job = { ...base, wake: m.wake, readOff: m.read_off ?? size(log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() };
-        history.push(j);
-        finishStop(j);
-        // A terminal the daemon held is gone with it. What ignored the hangup (the daemon was killed, so
-        // nothing ended it as an exit does) is ended below, as a daemon that exits ends its terminals' commands.
-        // (Looked at once: the record says it ended, so a later start does not look for it again.)
-        if (m.pty && m.ended === undefined) { terminals.push(j); patchMeta(log, { ended: m.started }); }
-        continue;
-      }
-      let resolve!: () => void;
-      // A command in front whose stop was under way was told to its call; a background one's end is a note of its own.
-      const job: Job = { ...base, pty: false, wake: m.wake, stopping: !!m.stopping, stopReason: m.stopping ? m.stop_reason : undefined, background: m.background || !m.stopping, exited: new Promise<void>((r) => (resolve = r)) };
-      jobs.set(job.id, job);
-      adopted.set(job.id, { job, meta: m, resolve });
-      finishStop(job);
-      n++;
+      // An end already reported, with no stop to see through and no terminal
+      // to sweep, needs nothing at a start but to be listed: only the newest
+      // are looked at (below). A state folder keeps every command its sessions
+      // ever ran, and looking at each one held a start for seconds.
+      if ((m.reported || m.pty) && !(m.pty ? m.ended === undefined : m.stopping)) { ended.push({ m, dir, f }); continue; }
+      take(m, dir, f);
     }
   }
+  ended.sort((a, b) => (Number(b.m.started) || 0) - (Number(a.m.started) || 0));
+  for (const e of ended.slice(0, MAX_ENDED)) take(e.m, e.dir, e.f);
+  for (const e of ended.slice(MAX_ENDED)) counter = Math.max(counter, Number.isInteger(e.m.num) ? e.m.num : 0);
+  concealLater(ended.slice(MAX_ENDED).filter((e) => e.m.concealed !== true));
   for (const j of history.sort((a, b) => b.started - a.started).slice(0, MAX_ENDED)) jobs.set(j.id, j);
   // One read of the process table for all of them, however many records an upgrade left without an end.
   if (terminals.length) { const rows = procTable(true); for (const j of terminals) j.swept = sweep(j, rows); }
   if (adopted.size) { watchAdopted(); watcher ??= setInterval(watchAdopted, 1000); }
   return n;
+
+  function take(m: Meta, dir: string, f: string) {
+    const why = notOurs(m);
+    if (why) { refused?.(join(dir, f), why); return; }
+    counter = Math.max(counter, m.num ?? 0);
+    if (jobs.has(m.id)) return;
+    const log = join(dir, `${m.id}.log`);
+    // A sidecar an older daemon wrote with a value in it: rewritten with placeholders.
+    const shown = concealDeep(m, m.sessionId);
+    if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
+    const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
+      pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
+      callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
+    // A stop the last daemon began and did not see through (it went down
+    // first) is finished here: whoever asked for it was told the command
+    // was stopped, and what ignored the first signal still runs.
+    // A stop that then leaves something alive is said: its call was told the command was stopped.
+    const finishStop = (j: Job) => {
+      if (!m.stopping || m.pty) return;
+      j.left ??= [m.pid];
+      void stopJob(j, m.stop_reason ?? "was stopped").then((left) => {
+        if (left.length) addNotice(j.sessionId, `The command \`${j.command.slice(0, 80)}\` (ID ${j.id}) could not be stopped: process ${left.join(", ")} of it still runs. Its output is in ${j.log}.`);
+        // Seen through: the record is not looked at again at a later start.
+        else patchMeta(log, { stopping: undefined });
+      }, () => {});
+    };
+    if (m.reported || m.pty) {
+      // History: a PTY never outlives its daemon; one with no end ended with it.
+      const j: Job = { ...base, wake: m.wake, readOff: m.read_off ?? size(log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() };
+      history.push(j);
+      finishStop(j);
+      // A terminal the daemon held is gone with it. What ignored the hangup (the daemon was killed, so
+      // nothing ended it as an exit does) is ended below, as a daemon that exits ends its terminals' commands.
+      // (Looked at once: the record says it ended, so a later start does not look for it again.)
+      if (m.pty && m.ended === undefined) { terminals.push(j); patchMeta(log, { ended: m.started }); }
+      return;
+    }
+    let resolve!: () => void;
+    // A command in front whose stop was under way was told to its call; a background one's end is a note of its own.
+    const job: Job = { ...base, pty: false, wake: m.wake, stopping: !!m.stopping, stopReason: m.stopping ? m.stop_reason : undefined, background: m.background || !m.stopping, exited: new Promise<void>((r) => (resolve = r)) };
+    jobs.set(job.id, job);
+    adopted.set(job.id, { job, meta: m, resolve });
+    finishStop(job);
+    n++;
+  }
+}
+
+// The ended records a start does not keep are not read again by this daemon.
+// One no daemon marked as written with placeholders (an older one wrote it,
+// perhaps with a value in it) is written once more with them, a hundred at a
+// time after the start, and is not looked at by a later start.
+function concealLater(rest: { m: Meta; dir: string; f: string }[]) {
+  const step = () => {
+    for (const e of rest.splice(0, 100)) { try { writeMeta(join(e.dir, e.f.replace(/\.json$/, ".log")), e.m); } catch {} }
+    if (rest.length) setTimeout(step, 50);
+  };
+  if (rest.length) setTimeout(step, 0);
 }
 
 // The exit code a job's wrapper wrote when its command ended by itself, and when (nothing: it has not).
