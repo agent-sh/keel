@@ -242,9 +242,12 @@ test.describe("on a phone", () => {
       await page.goto(`/s/${ask}`);
       await expect(pane.getByTestId("allow-once")).toBeVisible();
       await check("approval card");
-      // What else waits is said without the key that goes there, and without what is left of its words.
-      await expect(pane.getByTestId("waiting-elsewhere")).toHaveText(/wait for you\.$/, { useInnerText: true });
+      // What else waits is said without the key that goes there, and without what is left of its words:
+      // a finger's way to the next stands in their place, and goes there.
+      await expect(pane.getByTestId("waiting-elsewhere")).toHaveText(/waits? for you\.\nGo to the next$/, { useInnerText: true });
       await shoot(page, "phone-04-targets-approval");
+      await pane.getByTestId("waiting-next").tap();
+      await expect(page).not.toHaveURL(new RegExp(`/s/${ask}$`));
       await page.goto(`/s/${q}`);
       await expect(pane.getByTestId("question-option").first()).toBeVisible();
       await check("question card");

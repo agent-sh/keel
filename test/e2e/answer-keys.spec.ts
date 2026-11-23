@@ -817,7 +817,7 @@ test("the sequence stays with the owner: it goes on through a grant, ends when t
   await page.getByTestId("composer").focus();
   await page.keyboard.type("x");
   await expect(page.getByTestId("waiting-elsewhere")).not.toHaveAttribute("data-on", "true");
-  await expect(page.getByTestId("waiting-elsewhere")).toHaveText("2 more sessions wait for you.AltAgoes to the next.");
+  await expect(page.getByTestId("waiting-elsewhere")).toHaveText(/^2 more sessions wait for you\.\s*Alt\s*A\s*goes to the next\.$/, { useInnerText: true });
   await shoot(page, "answer-keys-09-waits-elsewhere");
   await page.getByTestId("composer").fill("");
   await expect(cards).toHaveAttribute("data-live", "true");
