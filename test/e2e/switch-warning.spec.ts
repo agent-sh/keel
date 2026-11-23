@@ -4,7 +4,7 @@ import { shoot } from "./shots.ts";
 // Feature: each row of the model picker says what a switch to it re-reads
 // without the prompt cache and what that adds, and offers Compact first. A
 // switch asks first only when that is material: it adds at least the owner's
-// amount (model_switch.ask_usd, a cent by default), or the conversation is
+// amount (model_switch.ask_usd, a quarter by default; this spec sets a cent), or the conversation is
 // past where the new model compacts. Asked, it names the tokens and their
 // cost; switching back to the model the conversation ran on, or with nothing
 // cached, never asks. Runs on the scripted stand-in (its listing has prices

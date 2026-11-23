@@ -65,7 +65,7 @@ test("a limit's time is a span back, a day's local midnight, or an ISO time", ()
 test("a word is searched by its stem: other forms of it find it, a short or foreign word as typed", () => {
   for (const [w, s] of [["compressed", "compress"], ["compression", "compress"], ["compressing", "compress"], ["exports", "export"], ["exported", "export"],
     ["used", "use"], ["fixes", "fix"], ["files", "file"], ["status", "status"], ["class", "class"], ["running", "run"], ["stopped", "stop"],
-    ["string", "string"], ["speed", "speed"], ["sessions", "sess"], ["queries", "quer"], ["deployments", "deploy"], ["configuration", "configur"]] as const) expect(`${w} ${stem(w)}`).toBe(`${w} ${s}`);
+    ["string", "string"], ["speed", "speed"], ["sessions", "sess"], ["queries", "quer"], ["deployments", "deploy"], ["configuration", "configur"], ["uses", "use"], ["cases", "case"], ["classes", "class"], ["fixes", "fix"]] as const) expect(`${w} ${stem(w)}`).toBe(`${w} ${s}`);
   expect(searchTerms("compressed exports")).toEqual(['"compress"*', '"export"*']);
   // A number, a short word and a word of another script are as typed, the last one as a prefix.
   expect(searchTerms('agent 17 a.ts "fix" שלום')).toEqual(['"agent"*', '"17"', '"a.ts"', '"fix"', '"שלום"*']);

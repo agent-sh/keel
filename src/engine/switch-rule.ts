@@ -52,11 +52,13 @@ export function switchCost(tokens: number, from: Price | undefined, to: Price | 
 
 // The amount a switch must add before the picker asks, in USD, unless the
 // owner set another (Settings, Providers; the model_switch.ask_usd setting).
-// What is worth a question is the owner's call; the default is one cent, the
-// smallest amount a provider's bill shows: a switch that adds less changes no
-// line of a bill, and the cost is already on the picker's row before the
-// press. 0 asks before every switch that loses a warm cache.
-export const ASK_USD_DEFAULT = 0.01;
+// What is worth a question is the owner's call. The default is a quarter: at
+// catalog prices a switch between frontier models costs about 5 to 20 cents
+// for a 20,000-token context and 50 cents to a dollar for 100,000, so a short
+// context switches at once and a long one asks; a switch to a cheaper model
+// stays quiet to about 150,000 tokens. The cost is on the picker's row before
+// the press either way. 0 asks before every switch that loses a warm cache.
+export const ASK_USD_DEFAULT = 0.25;
 
 // Whether a switch asks first, and why. Asked:
 // - "context": the conversation is past where the new model compacts, so its

@@ -201,9 +201,10 @@ export function stem(word: string): string {
     if ((end === "ed" || end === "ing") && /([b-df-hj-np-tv-z])\1$/.test(s) && !/(ll|ss|zz|ff)$/.test(s) && s.length > 3) s = s.slice(0, -1);
     return s;
   }
-  // "used" is "use"; "fixes" is "fix", "files" is "file"; "class" and "status" keep their s.
+  // "used" is "use"; "fixes" is "fix", "classes" is "class", "files" is "file"; "class" and "status" keep
+  // their s. ("uses", "cases" and "bases" lose only their s: "us", "cas" and "bas" would find far more.)
   if (w.endsWith("ed") && !w.endsWith("eed")) return w.slice(0, -1);
-  if (/(s|x|z|ch|sh)es$/.test(w)) return w.slice(0, -2);
+  if (/(ss|x|z|ch|sh)es$/.test(w)) return w.slice(0, -2);
   if (w.endsWith("s") && !/(ss|us|is)$/.test(w)) return w.slice(0, -1);
   return w;
 }
