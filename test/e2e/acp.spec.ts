@@ -390,3 +390,47 @@ test("acp client", async ({ page, request }) => {
   rmSync(own, { recursive: true, force: true });
   await request.delete("/api/acp/agents/standin");
 });
+
+// Feature: an ACP agent's models. ACP states them only in a session's setup
+// (session config options, category model; a reasoning level is category
+// thought_level): Keel asks each agent once, lists each model under the
+// agent in the picker, with its levels as efforts, and a session moves
+// between them in place, the agent keeping its conversation.
+test("acp agent models", async ({ page, request }) => {
+  const standin = join(import.meta.dirname, "fixtures/acp-agent-standin.ts");
+  await request.delete("/api/acp/agents/standin-m").catch(() => {});
+  expect((await request.post("/api/acp/agents", { data: { id: "standin-m", command: "bun", args: [standin] } })).ok()).toBe(true);
+  try {
+    const models = async () => ((await (await request.get("/api/models")).json()).models as any[]).filter((m) => m.provider === "acp" && m.model.split("/")[0] === "standin-m");
+    await expect.poll(async () => (await models()).map((m) => m.id).sort(), { timeout: 60_000 }).toEqual(["acp:standin-m", "acp:standin-m/deep", "acp:standin-m/fast"]);
+    const deep = (await models()).find((m) => m.id === "acp:standin-m/deep");
+    expect(deep).toMatchObject({ name: "standin-m: Deep", efforts: ["low", "high"] });
+
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-models-${Date.now()}`);
+    mkdirSync(ws, { recursive: true });
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "acp:standin-m/deep" } })).json();
+    expect((await request.patch(`/api/sessions/${session.id}`, { data: { settings: { effort: "high" } } })).ok()).toBe(true);
+    await page.goto(`/s/${session.id}`);
+    const which = async (n: number) => {
+      await page.getByTestId("composer").fill("which model are you on");
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    };
+    await which(1);
+    await expect(page.getByTestId("assistant-text").last()).toContainText("model deep, effort high");
+
+    // The picker has the agent's models; the session moves to another in place.
+    await page.getByTestId("model-picker").click();
+    await page.getByPlaceholder("Search models").fill("standin-m");
+    await expect(page.getByTestId("model-option").filter({ hasText: "standin-m: Fast" })).toBeVisible();
+    await shoot(page, "acp-15-agent-models");
+    await page.getByTestId("model-option").filter({ hasText: "standin-m: Fast" }).click();
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.model).toBe("acp:standin-m/fast");
+    await which(2);
+    await expect(page.getByTestId("assistant-text").last()).toContainText("model fast, effort high");
+    // To another agent's model it does not move: that agent would not know what was said.
+    expect((await request.patch(`/api/sessions/${session.id}`, { data: { model: HAIKU } })).status()).toBe(409);
+  } finally {
+    await request.delete("/api/acp/agents/standin-m");
+  }
+});

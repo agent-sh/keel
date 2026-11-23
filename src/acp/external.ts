@@ -22,10 +22,13 @@ import type { ExternalIO } from "../engine/hooks.ts";
 import { shellText, type CallClass } from "../safety/policy.ts";
 import type { AcpAgent, AcpAgents } from "./agents.ts";
 import { AcpConnection } from "./rpc.ts";
+import { choicesOf, pickable, settle, splitModel, withOptions, type AgentChoices } from "./choices.ts";
 
 type Json = any;
 export const ACP_PREFIX = "acp:";
 export const isAcpModel = (model: string) => model.startsWith(ACP_PREFIX);
+// The agent of an `acp:` model, and the model (or mode) of it the session chose (choices.ts).
+export const agentOf = (model: string) => splitModel(model.slice(ACP_PREFIX.length)).agent;
 
 // What judges a request of the agent: the gate's answer for a call of this class.
 export type Judge = (s: Session, call: { id: string; name: string; cls: CallClass; input: Json; signal: AbortSignal }) => Promise<{ deny: string } | void>;
@@ -124,7 +127,8 @@ const REJECT = ["reject_once", "reject_always"];
 export const optionFor = (options: Json[], allow: boolean): string | undefined =>
   (options.find((o) => o.kind === (allow ? "allow_once" : "reject_once")) ?? options.find((o) => (allow ? ALLOW : REJECT).includes(o.kind)))?.optionId;
 
-type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Json; turn?: TurnState };
+// `choices`: what the agent's session offers now (its setup result, then its updates).
+type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Json; choices: AgentChoices; missed?: string; turn?: TurnState };
 type TurnState = {
   io: ExternalIO;
   session: Session;
@@ -151,7 +155,7 @@ export class AcpRunner {
 
   // The agent a session talks to; started (and its conversation opened or found again) once.
   private async connect(s: Session, io: ExternalIO): Promise<Live> {
-    const id = s.model.slice(ACP_PREFIX.length);
+    const id = agentOf(s.model);
     const have = this.live.get(s.id);
     if (have && have.conn.alive && have.agent.id === id) return have;
     if (have) { have.conn.close(); this.live.delete(s.id); }
@@ -169,7 +173,7 @@ export class AcpRunner {
     const c = this.confine(s, agent);
     const conn = new AcpConnection(c.argv, { cwd: s.workspace, env: agent.run.env }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
     io.append("note", { kind: "acp", sandbox: c.confined ? "on" : "off", text: c.note });
-    const live: Live = { agent, conn, acpSession: "", caps: {} };
+    const live: Live = { agent, conn, acpSession: "", caps: {}, choices: {} };
     conn.onNotification = (method, params) => { if (method === "session/update") this.update(live, params); };
     conn.onRequest = (method, params) => this.request(live, method, params);
     void conn.exited.then(() => { if (this.live.get(s.id) === live) this.live.delete(s.id); });
@@ -185,9 +189,11 @@ export class AcpRunner {
       if (link && link.agent === id) {
         // The same conversation again after a restart: resumed without replay where offered, else loaded (its replay is not stored again).
         try {
-          if (live.caps.sessionCapabilities?.resume) await conn.request("session/resume", { ...base, sessionId: link.acp_session });
-          else if (live.caps.loadSession) { live.acpSession = "loading"; await conn.request("session/load", { ...base, sessionId: link.acp_session }); }
+          let r: Json;
+          if (live.caps.sessionCapabilities?.resume) r = await conn.request("session/resume", { ...base, sessionId: link.acp_session });
+          else if (live.caps.loadSession) { live.acpSession = "loading"; r = await conn.request("session/load", { ...base, sessionId: link.acp_session }); }
           else throw new Error("the agent keeps no sessions");
+          this.setup(live, r);
           live.acpSession = link.acp_session;
         } catch (e) {
           live.acpSession = "";
@@ -201,6 +207,7 @@ export class AcpRunner {
           throw e;
         }
         live.acpSession = String(r.sessionId);
+        this.setup(live, r);
         this.store.db.run("INSERT OR REPLACE INTO acp_links (session_id, agent, acp_session, ts) VALUES (?, ?, ?, ?)", [s.id, id, live.acpSession, Date.now()]);
       }
     } catch (e) {
@@ -211,12 +218,36 @@ export class AcpRunner {
     return live;
   }
 
+  // A setup result: what the agent offers in this session, and in its listing.
+  private setup(live: Live, r: Json) {
+    live.choices = choicesOf(r);
+    this.agents.learn(live.agent, r);
+  }
+
+  // The agent's session brought to the model (or mode) and effort the Keel
+  // session has, before its prompt. A choice it no longer offers is said once.
+  private async settleChoices(live: Live, s: Session, io: ExternalIO) {
+    const choice = splitModel(s.model.slice(ACP_PREFIX.length)).choice;
+    const set = pickable(live.choices);
+    if (choice && !set?.options.some((o) => o.value === choice)) {
+      if (live.missed !== choice) io.append("note", { kind: "acp", text: `${live.agent.name} does not offer ${choice} in this session now: it goes on with ${set?.options.find((o) => o.value === set.current)?.name ?? "its own choice"}.` });
+      live.missed = choice;
+      return;
+    }
+    for (const step of settle(live.choices, { choice, effort: s.settings?.effort })) {
+      const r = await live.conn.request(step.method, { sessionId: live.acpSession, ...step.params });
+      if (Array.isArray(r?.configOptions)) live.choices = withOptions(live.choices, r.configOptions);
+      else if (step.method === "session/set_mode" && live.choices.modes) live.choices.modes = { ...live.choices.modes, current: step.params.modeId };
+    }
+  }
+
   // One turn: the owner's new words to the agent, its stream into keel events.
   async turn(s: Session, io: ExternalIO): Promise<{ reason: string; usage?: Usage }> {
     const prompt = promptOf(io.events());
     if (!prompt.length) return { reason: "end_turn" };
     io.status({ kind: "model", since: Date.now(), model: s.model });
     const live = await this.connect(s, io);
+    await this.settleChoices(live, s, io);
     const t: TurnState = { io, session: s, text: "", thinking: "", calls: new Map(), stored: new Set(), done: new Set(), cost: live.turn?.lastCost };
     live.turn = t;
     const cancel = () => live.conn.notify("session/cancel", { sessionId: live.acpSession });
@@ -267,7 +298,11 @@ export class AcpRunner {
   private update(live: Live, p: Json) {
     const t = live.turn;
     const u = p?.update;
-    if (!t || !u || p.sessionId !== live.acpSession) return; // a load's replay, or another conversation
+    if (!u || p.sessionId !== live.acpSession) return; // a load's replay, or another conversation
+    // The agent changed a choice itself, in a turn or between them: what is current follows it.
+    if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) live.choices = withOptions(live.choices, u.configOptions);
+    if (u.sessionUpdate === "current_mode_update" && live.choices.modes?.via === "mode" && typeof u.currentModeId === "string") live.choices.modes = { ...live.choices.modes, current: u.currentModeId };
+    if (!t) return;
     switch (u.sessionUpdate) {
       case "agent_message_chunk":
         if (u.content?.type === "text") { t.text += u.content.text; t.io.delta("text", 1, u.content.text); t.io.status({ kind: "idle" }); }
@@ -307,10 +342,10 @@ export class AcpRunner {
           t.lastCost = u.cost.amount;
         }
         break;
+      case "config_option_update":
+      case "current_mode_update":
       case "session_info_update":
       case "available_commands_update":
-      case "current_mode_update":
-      case "config_option_update":
         break;
     }
   }

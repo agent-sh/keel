@@ -3,7 +3,8 @@
 // and a prompt with: a thought, a plan, a command it asks permission for, a
 // file it writes through the client, a usage update and a reply. A prompt
 // with "wait" hangs until session/cancel; "again" answers with what it was
-// told before, so a test sees the agent keep its own history.
+// told before, so a test sees the agent keep its own history. Its models and
+// reasoning levels are config options; "which model" names the current ones.
 const out = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 let next = 1;
 const waiting = new Map<number, (m: any) => void>();
@@ -13,10 +14,20 @@ const said: string[] = [];
 let cwd = "";
 let cancel: (() => void) | null = null;
 let cost = 0;
+// Its models and reasoning levels, as session config options; "which model" is answered with the current ones.
+const config = { model: "fast", effort: "low" };
+const configOptions = () => [
+  { id: "model", name: "Model", category: "model", type: "select", currentValue: config.model, options: [{ group: "main", name: "Main", options: [{ value: "fast", name: "Fast" }, { value: "deep", name: "Deep", description: "Slower, thinks longer" }] }] },
+  { id: "effort", name: "Reasoning", category: "thought_level", type: "select", currentValue: config.effort, options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
+];
 
 async function prompt(id: number, p: any) {
   const s = p.sessionId;
   const text = (p.prompt ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ");
+  if (/which model/.test(text)) {
+    update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `model ${config.model}, effort ${config.effort}` } });
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
   if (/again/.test(text)) {
     update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Before, you said: ${said.join(" | ")}` } });
     said.push(text);
@@ -67,7 +78,12 @@ process.stdin.on("data", (d) => {
     const m = JSON.parse(line);
     if (m.method === undefined) { waiting.get(m.id)?.(m); waiting.delete(m.id); continue; }
     if (m.method === "initialize") out({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: false, sessionCapabilities: { close: {} } }, agentInfo: { name: "standin", version: "1" }, authMethods: [] } });
-    else if (m.method === "session/new") { cwd = m.params.cwd; out({ jsonrpc: "2.0", id: m.id, result: { sessionId: `standin-${Date.now()}` } }); }
+    else if (m.method === "session/new") { cwd = m.params.cwd; out({ jsonrpc: "2.0", id: m.id, result: { sessionId: `standin-${Date.now()}`, configOptions: configOptions() } }); }
+    else if (m.method === "session/set_config_option") {
+      const key = m.params.configId === "model" ? "model" : m.params.configId === "effort" ? "effort" : null;
+      if (!key) out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: `no option ${m.params.configId}` } });
+      else { config[key] = String(m.params.value); out({ jsonrpc: "2.0", id: m.id, result: { configOptions: configOptions() } }); }
+    }
     else if (m.method === "session/prompt") void prompt(m.id, m.params);
     else if (m.method === "session/cancel") cancel?.();
     else if (m.method === "session/close") out({ jsonrpc: "2.0", id: m.id, result: {} });

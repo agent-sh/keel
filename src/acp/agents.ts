@@ -5,11 +5,13 @@
 // is hard-coded: a registry agent counts when its binary is on PATH; one the
 // registry ships through npx or uvx is offered to add (it downloads on first run).
 import { configRefused } from "../core/named-config.ts";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
+import { choicesOf, listedOf, type Learned } from "./choices.ts";
 import { readFolders } from "./confine.ts";
+import { AcpConnection } from "./rpc.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 
 export const REGISTRY_URL = () => process.env.KEEL_ACP_REGISTRY ?? "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
@@ -77,16 +79,107 @@ export function writeCustom(agents: Record<string, CustomAgent>, path = agentsPa
   writeOwnFile(path, JSON.stringify({ agents }, null, 2) + "\n");
 }
 
+// How long a probe of an agent's choices is given: its start, initialize and
+// session/new. An agent run through npx or uvx downloads its package on its
+// first start, which takes a minute or more on a slow link; past this the
+// probe is a failure, kept until the agent's program changes.
+const PROBE_MS = 180_000;
+
+// Which program an agent is now: its command, arguments and the command's
+// file time (an upgrade in place changes it). What it stated is kept under this.
+export function programKey(run: AgentCommand): string {
+  const path = run.command.includes("/") ? run.command : Bun.which(run.command);
+  let mtime = 0;
+  try { if (path) mtime = statSync(path).mtimeMs; } catch {}
+  return JSON.stringify([run.command, run.args, mtime]);
+}
+
 export class AcpAgents {
   private reg: Registry | null = null;
   private fetched = 0;
+  private known: Record<string, Learned> = {};
+  private queue: AcpAgent[] = [];
+  private probing = false;
   error?: string;
+  // Told when an agent's choices changed (the route lists the provider again).
+  onLearned?: () => void;
+  // How a probe's agent runs in `cwd`: its argv (the route confines it as a new session's would be).
+  argvOf: (a: AcpAgent, cwd: string) => string[] = (a) => [a.run!.command, ...a.run!.args];
 
   constructor(private stateDir: string) {
     try { this.reg = JSON.parse(readFileSync(this.cacheFile, "utf8")); } catch {}
+    try { this.known = JSON.parse(readFileSync(this.choicesFile, "utf8")); } catch {}
   }
 
   private get cacheFile() { return join(this.stateDir, "acp-registry.json"); }
+  private get choicesFile() { return join(this.stateDir, "acp-choices.json"); }
+
+  // What an agent stated in its last session setup, if anything was learned.
+  learned(id: string): Learned | undefined {
+    return this.known[id];
+  }
+
+  // A session setup result of an agent (a session it opened, or a probe): its choices, kept.
+  learn(a: AcpAgent, result: unknown) {
+    this.keep(a.id, { ...choicesOf(result), key: programKey(a.run!), at: Date.now() });
+  }
+
+  private keep(id: string, l: Learned) {
+    const was = this.known[id];
+    this.known[id] = l;
+    try { writeFileSync(this.choicesFile, JSON.stringify(this.known)); } catch (e) { this.error = `saving ${this.choicesFile}: ${(e as Error).message}`; }
+    const same = (x?: Learned) => JSON.stringify(x ? { ...x, at: 0 } : null);
+    if (same(was) !== same(l)) this.onLearned?.();
+  }
+
+  // Agents whose choices are not known for the program they are now: asked in
+  // the background, one at a time (nothing waits for them, and each is a
+  // process of its own).
+  ask(agents: AcpAgent[]) {
+    for (const a of agents) if (a.run && this.known[a.id]?.key !== programKey(a.run) && !this.queue.some((q) => q.id === a.id)) this.queue.push(a);
+    if (!this.probing) void this.drain();
+  }
+
+  private async drain() {
+    this.probing = true;
+    try {
+      for (let a = this.queue.shift(); a; a = this.queue.shift()) await this.probe(a);
+    } finally {
+      this.probing = false;
+    }
+  }
+
+  // One agent started to read what it offers: initialize, session/new in a
+  // folder of Keel's own, then the session closed (and deleted where the agent
+  // can) and the process ended. Its choices, or why there are none, are kept.
+  private async probe(a: AcpAgent) {
+    const cwd = join(this.stateDir, "acp-probe");
+    mkdirSync(cwd, { recursive: true });
+    let conn: AcpConnection | undefined;
+    const key = programKey(a.run!);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      conn = new AcpConnection(this.argvOf(a, cwd), { cwd, env: a.run!.env });
+      const c = conn;
+      const work = (async () => {
+        const init = await c.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "keel", title: "Keel", version: "0.1.0" } });
+        const caps = init?.agentCapabilities ?? {};
+        const r = await c.request("session/new", { cwd, mcpServers: [] });
+        const id = r?.sessionId;
+        if (id && caps.sessionCapabilities?.close) await c.request("session/close", { sessionId: id }).catch(() => {});
+        if (id && caps.sessionCapabilities?.delete) await c.request("session/delete", { sessionId: id }).catch(() => {});
+        return r;
+      })();
+      const r = await Promise.race([work, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`no answer in ${PROBE_MS / 1000} s`)), PROBE_MS); })]);
+      this.keep(a.id, { ...choicesOf(r), key, at: Date.now() });
+    } catch (e) {
+      const code = (e as any)?.code;
+      this.keep(a.id, { key, at: Date.now(), error: code === -32000 ? "it needs its own sign-in first" : (e as Error).message });
+    } finally {
+      clearTimeout(timer);
+      conn?.close();
+    }
+  }
 
   // The registry asked again on each listing refresh; its last good copy is kept.
   async refresh(): Promise<void> {
@@ -136,9 +229,13 @@ export class AcpProvider implements Provider {
     return true;
   }
 
+  // Each installed agent, and each model (else mode) it stated it offers
+  // (choices.ts); one whose choices are not known yet is asked in the background.
   async list(): Promise<ListedModel[]> {
     await this.agents.refresh();
-    return this.agents.list().filter((a) => a.run).map((a) => ({ model: a.id, name: a.name, billing: { kind: "subscription", plan: a.name }, images: true }));
+    const installed = this.agents.list().filter((a) => a.run);
+    this.agents.ask(installed);
+    return installed.flatMap((a) => listedOf(a, this.agents.learned(a.id)));
   }
 
   async stream(_req: ProviderRequest, _onDelta: (d: Delta) => void): Promise<ProviderResult> {

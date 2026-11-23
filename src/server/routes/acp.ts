@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { allHooks, registerHooks, type TurnHooks } from "../../engine/hooks.ts";
 import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { AcpProvider, readCustom, writeCustom } from "../../acp/agents.ts";
-import { AcpRunner, isAcpModel, type Judge } from "../../acp/external.ts";
+import { AcpRunner, agentOf, isAcpModel, type Judge } from "../../acp/external.ts";
 import type { Tool } from "../../tools/types.ts";
 import { gate, presence } from "./permissions.ts";
 
@@ -35,6 +35,9 @@ export const acpRoutes: RouteModule = (deps) => {
   g.__keelAcp?.dispose();
   // The agent's process follows the session's sandbox and network, as its commands would.
   const permOf = (sessionId?: string) => gate ? (sessionId ? gate.perm(sessionId) : { sandbox: gate.defaultSandbox(), network: true }) : { sandbox: "off" as const, network: true };
+  // What an agent offers (its models, else its modes) is asked of it once per program, as a new session's agent would run.
+  provider.agents.argvOf = (a, cwd) => confineAgent(a, permOf(), cwd, false).argv;
+  provider.agents.onLearned = () => void deps.providers.refresh("acp").catch((e) => deps.errors.capture("provider", e, { at: "acp listing" }));
   const runner = (g.__keelAcp = new AcpRunner(deps.store, provider.agents, judge, (e, ctx) => deps.errors.capture("provider", e, ctx), (s, a) => confineAgent(a, permOf(s.id), s.workspace)));
   // Registered once per hook list (a hot reload may make a new one); it calls the runner of now.
   g.__keelAcpHook ??= { external: (s) => (g.__keelAcp?.claims(s) ? (io) => g.__keelAcp!.turn(s, io) : undefined) };
@@ -44,11 +47,13 @@ export const acpRoutes: RouteModule = (deps) => {
 
   // An agent keeps its own history: a session that has talked moves neither to
   // nor from an agent, nor between two (the other side would not know what was said).
+  // Between the models (or modes) of its own agent it moves freely: the agent switches in place.
   registerSessionPatch({
     id: "acp-model",
     fields: ["model"],
     check(s, body) {
       if (!body.model || body.model === s.model || (!isAcpModel(body.model) && !isAcpModel(s.model))) return;
+      if (isAcpModel(body.model) && isAcpModel(s.model) && agentOf(body.model) === agentOf(s.model)) return;
       if (deps.store.hasKind(s.id, "turn_start"))
         throw Object.assign(new Error("this session has a conversation: an ACP agent keeps its own history, so start a new session to talk to another agent or model"), { status: 409 });
     },
