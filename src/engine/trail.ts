@@ -148,13 +148,19 @@ function walk(span: readonly StoredEvent[]): Omit<Trail, "ids"> {
     return f;
   };
   const branch = (b: string) => { const k = branches.indexOf(b); if (k >= 0) branches.splice(k, 1); branches.push(b); };
-  const calls = new Map<string, { name: string; input: any }>();
-  for (const e of span) {
-    if (e.kind === "assistant") { for (const b of e.data.blocks ?? []) if (b.type === "tool_use") calls.set(b.id, { name: b.name, input: b.input }); continue; }
-    if (e.kind !== "tool_result") continue;
-    for (const r of e.data.results ?? []) {
-      const call = calls.get(r.tool_use_id);
-      if (!call) continue;
+  // The calls in the order the replies made them, each with its result:
+  // results are stored as they finish (a batch's in another order each run,
+  // some in a later event), so a result is read where its call was made.
+  // (A server that sends no call ids can give two steps' calls one id: they take its results in turn.)
+  const results = new Map<string, any[]>();
+  for (const e of span) if (e.kind === "tool_result") for (const r of e.data.results ?? []) results.set(r.tool_use_id, [...(results.get(r.tool_use_id) ?? []), r]);
+  const made: { call: { name: string; input: any }; r: any }[] = [];
+  for (const e of span) if (e.kind === "assistant") for (const b of e.data.blocks ?? []) {
+    const r = b.type === "tool_use" ? results.get(b.id)?.shift() : undefined;
+    if (r) made.push({ call: { name: b.name, input: b.input }, r });
+  }
+  {
+    for (const { call, r } of made) {
       const text = resultText(r.content);
       const { name, input } = call;
       if (r.verdict === "denied" || r.verdict === "none") continue; // it did not run

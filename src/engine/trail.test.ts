@@ -96,3 +96,15 @@ test("a range's compactions: median shares kept, and the sessions under the bar 
   expect(t).toMatchObject({ measured: 3, threshold: KEPT_LOW, unsupported: 1, files_kept: 0.9, anchors_kept: 0.4, files_summary: 0, anchors_summary: 0 });
   expect(t.low).toEqual([{ session_id: "b", title: "Thin", compactions: 1, files_kept: 0.1, anchors_kept: 0.1 }]);
 });
+
+test("a batch's results are read in the order its calls were made, not the order they finished", () => {
+  const calls = [{ type: "tool_use", id: "b1", name: "Bash", input: { command: "make one" } }, { type: "tool_use", id: "b2", name: "Bash", input: { command: "make two" } }];
+  const res = (id: string) => ({ type: "tool_result", tool_use_id: id, content: "ok" });
+  const a = trailOf([ev("assistant", { blocks: calls, stop: "tool_use" }), ev("tool_result", { results: [res("b2"), res("b1")] })]);
+  const b = trailOf([ev("assistant", { blocks: calls, stop: "tool_use" }), ev("tool_result", { results: [res("b1"), res("b2")] })]);
+  expect(a.commands.map((c) => c.cmd)).toEqual(["make one", "make two"]);
+  expect(trailText(a)).toBe(trailText(b));
+  // Results stored as two events, the later call's first.
+  const c = trailOf([ev("assistant", { blocks: calls, stop: "tool_use" }), ev("tool_result", { results: [res("b2")] }), ev("tool_result", { results: [res("b1")] })]);
+  expect(trailText(c)).toBe(trailText(b));
+});
