@@ -43,6 +43,10 @@ import dev.avifenesh.keel.Prefs
 import dev.avifenesh.keel.Question
 import dev.avifenesh.keel.State
 import dev.avifenesh.keel.ago
+import dev.avifenesh.keel.Hub
+import dev.avifenesh.keel.Route
+import dev.avifenesh.keel.Ui
+import dev.avifenesh.keel.nextAfterAnswer
 
 private fun closedWords(c: Card): Pair<State, String> = when (c.state) {
     "approved" -> State.DONE to when {
@@ -108,6 +112,8 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
         Approvals.run(act, c.id, choice, answers, seen = read && !c.question, rule = c.grants.joinToString(", "), feedback = feedback.takeIf { c.plan && choice == "deny" }, heading = prompt) { err ->
             busy = false
             if (!err.isNullOrEmpty()) error = err
+            // Answered in its session's screen: on to the next session that waits (the Needs you tab lists the rest already).
+            if (err == null && (Ui.route.value as? Route.Session)?.id == c.chatId) nextAfterAnswer(c, Hub.cards.value.values)?.let { Ui.open(it) }
         }
     }
     Panel(accent = if (c.pending) k.need else null, modifier = Modifier.semantics { contentDescription = "card-${c.id}" }) {

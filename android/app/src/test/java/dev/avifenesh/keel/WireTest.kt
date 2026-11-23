@@ -419,4 +419,15 @@ class WireTest {
         val card = Card.of(JSONObject().put("id", "a4").put("text", "cp \u05d0 b").put("rtl", true).put("hold", org.json.JSONArray().put("marked")))
         assertEquals("cp \u2067\u05d0\u2069 b", card.shown)
     }
+
+    // An answer in a session's screen goes on to the session whose card has waited longest, as the
+    // page on a phone does; it stays while its own session still asks, or when nothing waits.
+    @Test fun anAnswerGoesOnToTheCardThatWaitedLongest() {
+        fun card(id: String, chat: String, ts: Double, state: String = "pending") = Card(id, chat, "permission", "touch x", "Bash", emptyList(), state, null, ts, emptyList())
+        val answered = card("a1", "s1", 5.0, state = "approved")
+        val cards = listOf(answered, card("a2", "s3", 9.0), card("a3", "s2", 7.0), card("a4", "s4", 3.0, state = "denied"))
+        assertEquals("s2", nextAfterAnswer(answered, cards))
+        assertEquals(null, nextAfterAnswer(answered, cards + card("a5", "s1", 8.0)))
+        assertEquals(null, nextAfterAnswer(answered, listOf(answered)))
+    }
 }

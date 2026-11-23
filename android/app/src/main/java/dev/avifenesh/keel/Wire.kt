@@ -281,6 +281,17 @@ fun agentTree(chats: Collection<Chat>, root: String): List<AgentRow> {
 }
 
 /**
+ * Where an answer given in a session's screen leads: to the session of the card that has waited
+ * longest elsewhere, as the page on a phone goes on. Null to stay: something else of this session
+ * still waits, or nothing waits anywhere.
+ */
+fun nextAfterAnswer(answered: Card, cards: Collection<Card>): String? {
+    val left = cards.filter { it.pending && it.id != answered.id }
+    if (left.any { it.chatId == answered.chatId }) return null
+    return left.minByOrNull { it.ts }?.chatId
+}
+
+/**
  * What a session waits on the owner for, in a line for the list: the oldest open card of the session or
  * of an agent under it, said as what it asks ("Allow? Bash: rm -rf build", "Asks: Which database?",
  * "Plan to approve: Split the store"), the agent named when it is an agent's, and how many more wait.
