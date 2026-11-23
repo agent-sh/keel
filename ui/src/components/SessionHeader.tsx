@@ -2,7 +2,7 @@ import { copyOrSay } from "../lib/copy.ts";
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, MailOpen, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
 import { composing } from "../lib/keys.ts";
@@ -210,6 +210,8 @@ export function SessionHeader({ session }: { session: Session }) {
   const u = session.usage;
   const input_ = u.input + u.cache_read + u.cache_write;
   const cached = input_ ? Math.round((100 * u.cache_read) / input_) : 0;
+  const tokenWords = `${fmtTokens(input_)} in (${cached}% cached), ${fmtTokens(u.output)} out`;
+  const usageId = useId();
   const folder = session.workspace.split("/").pop();
 
   // In the row's order; the rank says which stays longest when the row is short.
@@ -269,18 +271,22 @@ export function SessionHeader({ session }: { session: Session }) {
         )}
       </div>
       <div data-tools="" className="k-head-tools">
-      {/* What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens. */}
-      {input_ + u.output > 0 && !out.includes("usage") && <button
+      {/* What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens.
+          The title is a tip under the pointer and the keyboard (lib/tips.ts), and steps aside while it shows: the
+          counts are its description too (a hidden line: the button's text stays one figure), so a screen reader
+          says them on focus. */}
+      {input_ + u.output > 0 && !out.includes("usage") && <><button
         type="button"
         data-tool="usage"
         className="k-session-usage hidden h-7 shrink-0 items-center rounded-md px-2 text-caption tabular-nums text-faint hover:bg-hover hover:text-fg md:inline-flex"
-        title={`${fmtTokens(input_)} in (${cached}% cached), ${fmtTokens(u.output)} out. Open Usage`}
+        title={`${tokenWords}. Open Usage`}
         aria-label={`${u.cost !== undefined ? `Cost ${fmtSessionCost(u.cost)}` : `${fmtTokens(input_ + u.output)} tokens`}. Open Usage`}
+        aria-describedby={usageId}
         data-testid="session-usage"
         onClick={() => openPanel("usage")}
       >
         {u.cost !== undefined ? <span data-testid="session-cost">{fmtSessionCost(u.cost)}</span> : `${fmtTokens(input_ + u.output)} tokens`}
-      </button>}
+      </button><span id={usageId} hidden>{tokenWords}</span></>}
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
       </div>
       {folded.length > 0 && <MoreTools tools={folded} live={live} list={list} changed={later} />}
