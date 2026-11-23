@@ -389,6 +389,14 @@ test("the start page lists what needs the owner in a pane beside others, and a p
   await expect(empty.getByTestId("home-count-need")).toContainText("2 need you");
   await expect(empty.getByTestId("home-session")).toHaveCount(2);
   await shoot(page, "panes-stay-06-empty-pane");
+  // Several empty panes: one lists the rows, the others say where they are.
+  await page.getByTestId("panes-4").click();
+  await expect(page.getByTestId("pane-empty")).toHaveCount(2);
+  await expect(page.getByTestId("pane-empty").getByTestId("home-session")).toHaveCount(2);
+  await expect(page.getByTestId("pane-empty-listed")).toHaveCount(1);
+  await expect(page.getByTestId("pane-empty-listed")).toHaveText(/^Listed in pane \d\.$/);
+  await expect(page.getByTestId("pane-empty").getByTestId("home-count-need")).toHaveCount(2);
+  await page.getByTestId("panes-3").click();
   await drop(request, reader, coord, q, run);
 });
 
@@ -410,6 +418,10 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   expect((await look(page)).panes.map((p) => p.holds)).toEqual([reader, coord, bench, port]);
   expect((await look(page)).panes.map((p) => p.helm)).toEqual([true, false, false, false]);
   expect(await bridge(page).evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  // The list's pane count shows every option whole, however narrow the list is at four panes.
+  const cut = await page.getByTestId("pane-count").evaluate((seg) => { const r = seg.getBoundingClientRect(); return [...seg.querySelectorAll("button")].filter((b) => { const q = b.getBoundingClientRect(); return q.left < r.left - 0.5 || q.right > r.right + 0.5 || q.width < 4; }).length; });
+  expect(cut, "pane-count options cut or scrolled out of the list").toBe(0);
+  await shoot(page, "panes-stay-23-rail-four-panes");
   const headsFit = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="station-head"]')].filter((h) => !h.closest("[inert]")).every((h) => {
     const box = h.getBoundingClientRect();
     return [...h.querySelectorAll<HTMLElement>("*")].every((x) => { const r = x.getBoundingClientRect(); return r.width === 0 || (r.left >= box.left - 1 && r.right <= box.right + 1); });

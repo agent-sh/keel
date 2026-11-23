@@ -423,8 +423,11 @@ function NewStation({ slot, grow, beside }: { slot?: number; grow?: number; besi
 
 // A pane with no session: it waits for the owner to put one in. It says what
 // needs them, as the start page does (the same headline and rows, answered
-// from here), offers the other sessions not on screen, and takes a dragged one.
-function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boolean }) {
+// from here: in one empty pane, the others point there), offers the other
+// sessions not on screen, and takes a dragged one.
+// `listsIn`: the empty pane that lists what needs the owner; another one points there instead of
+// saying the same rows again.
+function EmptyPane({ slot, grow, next, listsIn }: { slot: number; grow: number; next: boolean; listsIn: number }) {
   const { list, watches } = useLive();
   const label = useStateLabel();
   const shown = useStations((x) => x.shown);
@@ -444,7 +447,7 @@ function EmptyPane({ slot, grow, next }: { slot: number; grow: number; next: boo
           {count > 1 && <button type="button" className="k-pane-empty-close" data-testid="pane-close" title="Close this pane" aria-label={`Close pane ${slot + 1}`} onClick={(e) => { e.stopPropagation(); stations.closePane(slot); }}><X /></button>}
         </p>
         <div className="k-pane-empty-watch"><WatchHeadline /></div>
-        <WatchLists />
+        {listsIn === slot ? <WatchLists /> : <p className="k-pane-empty-hint" data-testid="pane-empty-listed">Listed in pane {listsIn + 1}.</p>}
         <p className="k-pane-empty-hint">Pick a session below or in the list, or drag one in.</p>
         {offer.length > 0 && (
           <div className="k-pane-empty-list">
@@ -769,11 +772,22 @@ export function Bridge() {
   // A phone's page keeps the name of the pane that holds its session at a desk: the session stays drawn when the window crosses phone width.
   const pageKey = (id: string) => kept.keys[kept.slots.indexOf(id)] ?? id;
   const stack = st.slots.length > 1;
+  // The empty panes, the one the next session opens in first: that one lists what needs the owner.
+  const empties = (() => {
+    if (phone) return [] as number[];
+    const all = slots.filter(({ id, i }) => {
+      const own = id && sessions[id] && !gone(id), over = st.over[i] && !gone(st.over[i]!) && sessions[st.over[i]!];
+      return i !== startAt && !own && !over && !(id && id === helm);
+    }).map(({ i }) => i);
+    const first = !fresh ? all.find((i) => target(st) === i) : undefined;
+    return first === undefined ? all : [first, ...all.filter((i) => i !== first)];
+  })();
   return (
     <>
       <main ref={track} className="k-stations" style={{ "--k-side-w": `${side.width}px` } as CSSProperties} data-count={phone ? pages.length + (fresh ? 1 : 0) : slots.length} data-focus={focus || undefined} data-need-under={needUnder.length || undefined} data-testid="bridge">
         {phone && helm && !sessions[helm] && missing(helm, helm)}
         {/* One keyed list for both layouts: a session keeps its pane (and what its panel shows) when the window crosses phone width. */}
+        {/* Of several empty panes, one lists what needs the owner (the one the next session opens in, else the first); the others point to it. */}
         {[...(phone ? pages.map((s) => <Station key={pageKey(s.id)} s={s} helm={s.id === helm} />) : []), ...slots.flatMap(({ id, i }, n) => {
           const grow = focus ? 1 : weights[i]!;
           const key = st.keys[i]!;
@@ -788,7 +802,7 @@ export function Bridge() {
             : over && sessions[over] ? <Station key={key} s={sessions[over]!} helm={on} slot={i} grow={grow} fresh={isNew} />
             : isNew ? <NewStation key={`new-${key}`} slot={i} grow={grow} beside={stack} />
             : id && id === helm ? missing(id, `gone-${key}`, i, grow)
-            : <EmptyPane key={`empty-${key}`} slot={i} grow={grow} next={!fresh && target(st) === i} />;
+            : <EmptyPane key={`empty-${key}`} slot={i} grow={grow} next={!fresh && target(st) === i} listsIn={empties[0] ?? i} />;
           const before = slots[n - 1];
           return before ? [<Grip key={`grip-${i}`} className="k-split" testid="pane-grip" label={`Width of panes ${before.i + 1} and ${i + 1}`} now={(100 * weights[before.i]!) / (weights[before.i]! + weights[i]!)} {...grip(before.i)} />, pane] : [pane];
         })]}

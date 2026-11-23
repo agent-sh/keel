@@ -102,6 +102,13 @@
   .k-rail[data-open] .k-rail-brand { gap: 0.375rem; padding-left: 0.625rem; }
   .k-rail[data-open] .k-rail-brand .k-fold { min-width: 2rem; padding: 0 0.375rem; }
 }
+/* A list narrower than its pane count with the fold beside it (four panes and more in a squeezed list):
+   the count takes a line of its own under the brand, every option whole, none scrolled out of sight. */
+@container rail (max-width: 13rem) {
+  .k-rail[data-open] .k-rail-brand { flex-wrap: wrap; height: auto; min-height: 3.25rem; row-gap: 0.375rem; padding-top: 0.625rem; padding-bottom: 0.5rem; }
+  .k-rail[data-open] .k-rail-brand .k-panes { order: 3; flex: 1 0 100%; margin-left: 0; justify-content: space-between; }
+  .k-rail[data-open] .k-rail-brand .k-panes + .k-fold { margin-left: auto; }
+}
 /* With five or six panes to choose from the name goes sooner. */
 @container rail (max-width: 19rem) { .k-rail[data-open] .k-rail-brand:has(.k-panes > :nth-child(5)) .k-brand-name { display: none; } }
 @container rail (max-width: 21rem) { .k-rail[data-open] .k-rail-brand:has(.k-panes > :nth-child(6)) .k-brand-name { display: none; } }
