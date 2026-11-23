@@ -8,7 +8,7 @@ import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
 import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
-import { dropRepeats, keyedTo, keyRefused, keyTried, keysArrived, keysSettled, mayTake, noteAnswer, owned, pageFocus, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyedTo, keyRefused, keyTried, keysArrived, mayTake, noteAnswer, owned, pageFocus, pressKeysSettled, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
@@ -1349,7 +1349,7 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
             // pointer's press then. Else a pointer's: a page that moved the keyboard here may have moved it
             // under a pointer too, and the control is not drawn live before a press of it would count. The
             // card's hint and data-ready still say when Enter allows.)
-            aria-disabled={(keysOn === "once" && keyedTo(once.current) ? !keyLive || mustOpenKey : !live || mustOpen) || undefined}
+            aria-disabled={(keysOn === "once" && keyedTo(once.current) ? !keyLive || mustOpenKey || hold.keys !== "ready" : !live || mustOpen) || undefined}
             data-nudge={nudge.mark}
             // The read-first latch is arming: Enter allows once in a moment (a line fills under the label meanwhile).
             data-arming={armingNow ? "" : undefined}
@@ -1363,7 +1363,9 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
               // pointer's press waits for the settle time of the control under it.
               // Only where the owner's own Tab or arrow put the keyboard: a request that came under the pointer and
               // whose Allow took the keyboard by itself was not seen by that hand, and its press waits the second.
-              heldDown.current = keyedTo(e.currentTarget) && !unreadKey.current && armedKey() && keysSettled(e.currentTarget, performance.now());
+              // (The keyboard's times as the press went down: when it arrived, and a key refused since. The press
+              // has made the hold the owner's by the time this runs, lib/asks.ts.)
+              heldDown.current = keyedTo(e.currentTarget) && !unreadKey.current && armedKey() && pressKeysSettled(e.currentTarget);
               pressed.onPointerDown();
             }}
             onMouseDown={pressed.onMouseDown}

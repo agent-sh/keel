@@ -54,7 +54,9 @@ const holds = new WeakMap<Element, Hold>();
 let current: Element | null = null; // the unit the keyboard is in
 let moving: { own: boolean; take: boolean; painted?: number } | null = null; // set while takeKeys moves the focus
 let tabbed = -Infinity; // the owner's last Tab
-let pressed: { at: number; unit: Element | null; box: Element | null } = { at: -Infinity, unit: null, box: null }; // their last press, and the unit or the message box it was on
+// Their last press, and the unit or the message box it was on. `settled`: the keyboard's hold on that unit had
+// settled when the press went down (judged before the press makes the hold the owner's: pressKeysSettled).
+let pressed: { at: number; unit: Element | null; box: Element | null; settled: boolean } = { at: -Infinity, unit: null, box: null, settled: false };
 let last: Element | null = null; // the unit the focus was last given to (null: something that is no card)
 let version = 0;
 const subs = new Set<() => void>();
@@ -151,10 +153,14 @@ if (typeof window !== "undefined") {
   addEventListener("pointerdown", (e) => {
     const unit = unitOf(e.target as Element);
     const box = (e.target as Element).closest?.(".k-box")?.querySelector(BOX) ?? null;
-    pressed = { at: performance.now(), unit, box };
+    const now = performance.now();
+    pressed = { at: now, unit, box, settled: !!unit && settledAt(holds.get(unit), true, Math.min(e.timeStamp, now)) };
     // A press on the message box makes the keyboard there the owner's.
     if (box) boxes.delete(box);
-    // A press on the card the keyboard is in makes it the owner's, as if their press had brought it.
+    // A press on the card the keyboard is in makes it the owner's, as if their press had brought it: what
+    // they do next there (a click into a field, then typing and Enter) is theirs. The press itself is judged
+    // by the times the hold had as it went down (pressed.settled, pressKeysSettled), and a pointer's press
+    // on an answer by its own rule besides (the control stood its second).
     if (unit?.contains(document.activeElement)) { holds.set(unit, { at: pressed.at, code: false, take: false, own: true }); changed(); }
   }, true);
   // What the owner types into a message box makes the keyboard there theirs.
@@ -197,6 +203,10 @@ export const keysSettled = (el: Element | null, at = keyAt()): boolean => settle
 export const keysArrived = (el: Element | null): boolean => settledAt(holds.get(unitOf(el)!), false);
 // The owner put the keyboard on the element's card.
 export const owned = (el: Element | null): boolean => !!holds.get(unitOf(el)!)?.own;
+// Whether the keyboard's hold on the element's card had settled when the press now being handled went down. The
+// press itself makes the hold the owner's (a fresh one, settled at once): a control judging the press by the
+// keyboard's times reads this, never keysSettled, which would see only the press's own hold.
+export const pressKeysSettled = (el: Element | null): boolean => !!el && pressed.unit === unitOf(el) && pressed.settled && performance.now() - pressed.at <= ACT_MS;
 // The owner's own Tab or arrow put the keyboard on this control, and code has not moved it since.
 export const keyedTo = (el: Element | null): boolean => !!el && keyed === el && document.activeElement === el;
 

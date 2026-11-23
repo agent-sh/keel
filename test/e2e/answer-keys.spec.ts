@@ -1422,6 +1422,50 @@ test("a request that comes under the pointer takes no click within its second, t
   await drop(request, id);
 });
 
+// A pointer's press on an Allow once the owner's own arrow put the keyboard on is judged by the keyboard's
+// times as the press went down: a key's settle time from the card's arrival, and again from a key it
+// refused. The press itself makes the hold the owner's, and that fresh hold says nothing of either. Here
+// Enter is pressed 260 ms after the card arrived (refused: it runs the settle time again), then Down; a
+// click 420 ms after the arrival comes before the keys are ready, and allows nothing. The Allow is not
+// drawn live until then.
+test("a click on an Allow the owner's arrow reached waits for the keys to be ready, after a key refused", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const id = await create(request, "Keyed gap", folder("keyed-gap"));
+  await page.goto(`/s/${id}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await page.waitForTimeout(800);
+  await page.evaluate(() => {
+    const w = window as unknown as { seen: number };
+    w.seen = 0;
+    new MutationObserver(() => { if (!w.seen && document.querySelector('[data-testid="allow-once"]')) w.seen = performance.now(); }).observe(document.body, { subtree: true, childList: true });
+  });
+  const since = (ms: number) => page.waitForFunction((ms) => { const w = window as unknown as { seen: number }; return !!w.seen && performance.now() - w.seen >= ms; }, ms, { polling: "raf", timeout: 10_000 });
+  await ask(request, id, "approval", "gap");
+  const list = cardIn(page, id, "approval"), allow = list.getByTestId("allow-once");
+  await page.waitForFunction(() => !!document.activeElement?.closest('[data-testid="approvals"]'), null, { polling: "raf", timeout: 10_000 });
+  const at = (await allow.boundingBox())!;
+  await since(260);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await expect(allow).toBeFocused();
+  await since(420);
+  const look = await allow.evaluate((b) => ({ disabled: b.getAttribute("aria-disabled"), keys: b.closest('[data-testid="approvals"]')?.getAttribute("data-keys"), t: performance.now() - (window as unknown as { seen: number }).seen }));
+  await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+  await page.waitForTimeout(300);
+  // (Only a click that came while the keys still waited proves anything.)
+  expect(look.keys, `the keys at ${Math.round(look.t)} ms`).toBe("wait");
+  expect((await approvals(request, id))[0], "a click before the keys were ready").toMatchObject({ state: "pending" });
+  expect(look.disabled, "drawn live while the keys still wait").toBe("true");
+  await expect(allow).toHaveAttribute("data-nudge", "true");
+  // Ready, drawn live, a click allows.
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 5000 });
+  await expect(allow).not.toHaveAttribute("aria-disabled", "true");
+  await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+  await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  await drop(request, id);
+});
+
 // End pressed at once after Enter opened a long command reads it to its end. The opened view may not have
 // been read after a paint yet when End comes: a step then would carry its lines out of view unread, and
 // End would stop short ("7 lines not seen yet"). The step waits for that view to count. Six times each
