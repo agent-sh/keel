@@ -113,6 +113,8 @@ test("agents start agents, message each other, and stop as a tree", async ({ pag
     await page.goto(`${d.url}/s/${session.id}`);
     const kids = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`).locator("xpath=..").getByTestId("session-children");
     await expect(kids.getByTestId("children-total")).toContainText("4 agents");
+    // The row's head counts the same agents as the line under it: the tree, not the root's own two.
+    expect((await api("/api/state")).states[session.id]).toMatchObject({ agents_total: 4 });
     await kids.getByTestId("children-toggle").click();
     const rows = kids.getByTestId("child-row");
     await expect(rows).toHaveCount(4);

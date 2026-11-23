@@ -18,6 +18,7 @@ import { stopSays } from "../core/stoppers.ts";
 import { NEEDS } from "../core/state-words.ts";
 import { CLASS, dur, type Refs, type TimelineNow, type TimelineRow } from "./timeline-rows.ts";
 import { waitingOf } from "./waiting-line.ts";
+import { AGENTS_RECENT_MS, countedSql } from "../core/agent-count.ts";
 
 // What a row did since the asked time. `turns`: its own turns that ended.
 // `cut`: those a daemon restart cut, which did not end: they are continued
@@ -84,7 +85,8 @@ export type OverviewOpts = { since: number; until?: number; spans?: [number, num
 // A turn that started more than this before the asked time and ended after
 // it is not counted: the read stays on the time index.
 const LOOKBACK = 86_400_000;
-export const DEFAULT_SINCE = 86_400_000;
+// By default a report is of the day its rows count agents for (src/core/agent-count.ts).
+export const DEFAULT_SINCE = AGENTS_RECENT_MS;
 // The longest window asked for by time: a read over more holds the daemon for its length.
 export const SINCE_MAX_MS = 7 * 86_400_000;
 export const tooFarBack = (since: number, now = Date.now()) => (now - since > SINCE_MAX_MS ? `since is at most ${dur(SINCE_MAX_MS)} back` : undefined);
@@ -227,7 +229,8 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   const ranked = (rows: OverviewRow[]) => rows.sort((a, b) => WATCH_RANK[a.watch] - WATCH_RANK[b.watch] || (b.from ?? b.failed?.ts ?? b.last ?? 0) - (a.from ?? a.failed?.ts ?? a.last ?? 0));
 
   // The asking session's agents: those still at work, and those that started
-  // or ended in the window. Every one is counted; the rows are the failed
+  // or ended in the window (the rule every count of agents follows,
+  // src/core/agent-count.ts, over the asked window). Every one is counted; the rows are the failed
   // ones first (a failure is what a coordinator must not miss), then those at
   // work, then the rest, the newest first, and the others are counted by status.
   let mine: OverviewRow[] | undefined;
@@ -235,8 +238,8 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   let agentsUnlisted: Record<string, number> | undefined;
   if (opts.of && tables.agents) {
     mine = [];
-    const all = db.query<{ id: string; session_id: string; status: string; ended: number | null; stopped_by: string | null; end_reason: string | null }, [string, number, number]>(
-      `SELECT id, session_id, status, ended, ${from.store.columnExists("agents", "stopped_by") ? "stopped_by, end_reason" : "NULL AS stopped_by, NULL AS end_reason"} FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting') OR ended >= ? OR created >= ?) ORDER BY (status = 'failed') DESC, (status IN ('running', 'waiting')) DESC, COALESCE(ended, created) DESC`).all(opts.of, since, since);
+    const all = db.query<{ id: string; session_id: string; status: string; ended: number | null; stopped_by: string | null; end_reason: string | null }, [string, number]>(
+      `SELECT id, session_id, status, ended, ${from.store.columnExists("agents", "stopped_by") ? "stopped_by, end_reason" : "NULL AS stopped_by, NULL AS end_reason"} FROM agents WHERE parent_id = ?1 AND ${countedSql("agents", "?2")} ORDER BY (status = 'failed') DESC, (status IN ('running', 'waiting')) DESC, COALESCE(ended, created) DESC`).all(opts.of, since - 1);
     agentsTotal = all.length;
     const shown = Math.min(Math.max(opts.agentsMax ?? AGENTS_MAX, 1), 40);
     for (const a of all.slice(0, shown)) {

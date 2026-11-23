@@ -26,6 +26,7 @@ import { jobsOf, liveJobs, running } from "../tools/jobs.ts";
 import { errorClass } from "../admin/classes.ts";
 import { toolLine } from "../../ui/src/lib/tools.ts";
 import { D, slotGate } from "./core.ts";
+import { countedSince, countedSql } from "../core/agent-count.ts";
 
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
 export type SessionState = State & { label: string; word: string };
@@ -120,18 +121,24 @@ function heldOf(d: From, s: Session): { text?: string; since?: number } | undefi
 type Kid = { session_id: string; title: string; status: string; type: string };
 // `tally`: the agents a session started and how many of them failed, read for a session when it is told.
 export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]>; under?: Map<string, { id: string; title: string }[]>; tally?: Map<string, { n: number; failed: number } | null> };
-export const TALLY = "SELECT COUNT(*) AS n, SUM(status = 'failed') AS failed FROM agents WHERE parent_id = ?";
-// One seek on the parent's index for the session asked about: never a pass over every agent ever
-// stored (a state is read at each flush and for each timeline's "now").
-function tallyOf(l: Lens, id: string): { n: number; failed: number } | undefined {
+// The agents a session's counts name (src/core/agent-count.ts): its tree's, live or of the last
+// day, and of them the failed ones that ended after the owner last looked (?3). Seeks on the
+// parent's index, one a counted agent: never a pass over every agent ever stored (a state is
+// read at each flush and for each timeline's "now"), and an agent past the day is not followed.
+export const TALLY = `WITH RECURSIVE t(sid, status, ended, depth) AS (
+  SELECT session_id, status, ended, 1 FROM agents WHERE parent_id = ?1 AND ${countedSql("agents", "?2")}
+  UNION ALL
+  SELECT a.session_id, a.status, a.ended, t.depth + 1 FROM agents a JOIN t ON a.parent_id = t.sid WHERE t.depth < 32 AND ${countedSql("a", "?2")}
+) SELECT COUNT(*) AS n, SUM(status = 'failed' AND ended > ?3) AS failed FROM t`;
+function tallyOf(l: Lens, s: Session): { n: number; failed: number } | undefined {
   const seen = (l.tally ??= new Map());
-  if (!seen.has(id)) {
+  if (!seen.has(s.id)) {
     const r = hasTable(l.d.store, "agents")
-      ? l.d.store.db.query<{ n: number; failed: number | null }, [string]>(TALLY).get(id)
+      ? l.d.store.db.query<{ n: number; failed: number | null }, [string, number, number]>(TALLY).get(s.id, countedSince(), s.settings.agents_fail_seen_ms ?? 0)
       : null;
-    seen.set(id, r?.n ? { n: r.n, failed: r.failed ?? 0 } : null);
+    seen.set(s.id, r?.n ? { n: r.n, failed: r.failed ?? 0 } : null);
   }
-  return seen.get(id) ?? undefined;
+  return seen.get(s.id) ?? undefined;
 }
 // The sessions with something that waits on the owner, by each session above them: a walk up
 // from the few that ask, never a search down from every session.
@@ -299,8 +306,8 @@ export function sessionState(s: Session, o: { counts?: Map<string, number>; from
   // A running step that has made no progress past its limit is marked: the one answer to "is anything stuck".
   const stuck = st.watch === "work" ? stuckOf(progressOf(s, l, facts), Date.now(), o.after ?? stuckAfter()) : null;
   if (stuck) st.stuck = stuck;
-  // Its agents in numbers, the ended ones too: a failed agent stays on its parent's row.
-  const all = tallyOf(l, s.id);
+  // Its agents in numbers, the ended ones of the last day too: a failed agent stays on its parent's row.
+  const all = tallyOf(l, s);
   if (all) {
     st.agents_total = all.n;
     if (all.failed) st.agents_failed = all.failed;

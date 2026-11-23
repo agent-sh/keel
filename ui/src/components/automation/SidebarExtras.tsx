@@ -13,6 +13,7 @@ import { Where } from "../Where.tsx";
 import { calls, useSettled } from "../../lib/settle.ts";
 import type { Watch } from "../../../../src/core/watch.ts";
 import { treeRows } from "../../../../src/core/agent-tree.ts";
+import { isCounted } from "../../../../src/core/agent-count.ts";
 
 // The panels load the first time they open.
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
@@ -36,7 +37,8 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const sessions = useStore((s) => s.sessions);
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
-  const rows = useMemo(() => treeRows(Object.values(all), parentId), [all, parentId]);
+  // The agents every count of the row names (src/core/agent-count.ts): a page open for days does not keep counting old ones.
+  const rows = useMemo(() => treeRows(Object.values(all).filter((a) => isCounted(a)), parentId), [all, parentId]);
   const liveKids = useMemo(() => rows.map((r) => r.agent), [rows]);
   const place = useMemo(() => new Map(rows.map((r) => [r.agent.id, { depth: r.depth, below: r.below }])), [rows]);
   const told = useToldStates();

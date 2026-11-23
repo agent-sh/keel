@@ -71,8 +71,9 @@ export type StuckMark = { what: "stream" | "model" | "tool" | "step"; text: stri
 export type SessionState = {
   watch: Watch;
   agents: number;   // agents of the session still at work
-  // Every agent the session started, and of them the ones that failed and the ones that wait
-  // on a wake of their own (absent when none): a row can say "12 agents, 4 failed, 1 waiting".
+  // The agents its counts name (src/core/agent-count.ts: its tree's, live or of the last day), of
+  // them the failed ones the owner has not looked at, and the ones that wait on a wake of their
+  // own (absent when none): a row can say "12 agents, 4 failed, 1 waiting".
   agents_total?: number;
   agents_failed?: number;
   agents_waiting?: number;

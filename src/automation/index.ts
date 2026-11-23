@@ -41,6 +41,7 @@ import { forwardedStanding, isLocal } from "../safety/presence.ts";
 import { spelled } from "../safety/chars.ts";
 import { fromSaid, type AnsweredBy } from "../safety/card.ts";
 import * as perm from "../server/routes/permissions.ts";
+import { countedSince, countedSql } from "../core/agent-count.ts";
 import { stopSays } from "../core/stoppers.ts";
 
 // Subagents, waits, loops and alerts: tables, tools, turn hooks, the scheduler
@@ -380,8 +381,8 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/automation": {
       GET: () => {
         const db = store.db;
-        const recent = Date.now() - 86400_000;
-        const agentRows = db.query<{ id: string }, [number]>("SELECT id FROM agents WHERE status IN ('running','waiting') OR created > ? ORDER BY created").all(recent);
+        // The agents every count names (src/core/agent-count.ts): live, or of the last day.
+        const agentRows = db.query<{ id: string }, [number]>(`SELECT id FROM agents WHERE ${countedSql("agents", "?1")} ORDER BY created`).all(countedSince());
         return json({
           agents: agentRows.map((r) => agents.get(r.id)),
           waits: waits.list(undefined, 30),

@@ -126,7 +126,7 @@ export function stateWords(st: Stated): Said {
 // The word as a head shows it, with the agents that keep it working: "Working · 2 agents".
 // The count is the agents that work, which is the "working" of the session's agent summary;
 // when it started others too it says of how many: "Working · 3 of 12 agents", so the total
-// is the one the agents' line under the row starts with (every agent it started), never another.
+// is the one the agents' line under the row starts with (src/core/agent-count.ts), never another.
 export function stateLabel(st: Stated): string {
   const s = stateWords(st);
   if (st.watch === "work") {

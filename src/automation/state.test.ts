@@ -22,10 +22,11 @@ test("a session's state counts its own agents by a seek on the parent, never by 
   const other = store.createSession({ model: "m:x", workspace: dir, title: "Other" });
   const alone = store.createSession({ model: "m:x", workspace: dir, title: "Alone" });
   // Twelve agents of one session (four failed, one waiting), and twenty thousand of another.
-  const add = store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, 'a', 'general-purpose', 'm:x', 1, ?, 1)");
+  const now = Date.now();
+  const add = store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, ended) VALUES (?, ?, ?, 'a', 'general-purpose', 'm:x', 1, ?, ?, ?)");
   store.db.transaction(() => {
-    ["failed", "failed", "failed", "failed", "waiting", ...Array(7).fill("completed")].forEach((st, i) => add.run(`lead-${i}`, lead.id, `sl-${i}`, st));
-    for (let i = 0; i < 20_000; i++) add.run(`other-${i}`, other.id, `so-${i}`, i % 5 ? "completed" : "failed");
+    ["failed", "failed", "failed", "failed", "waiting", ...Array(7).fill("completed")].forEach((st, i) => add.run(`lead-${i}`, lead.id, `sl-${i}`, st, now - 60_000, st === "waiting" ? null : now - 1000));
+    for (let i = 0; i < 20_000; i++) add.run(`other-${i}`, other.id, `so-${i}`, i % 5 ? "completed" : "failed", now - 60_000, now - 1000);
   })();
   expect(sessionState(store.session(lead.id)!)).toMatchObject({ agents: 1, agents_total: 12, agents_failed: 4, agents_waiting: 1 });
   expect(sessionState(store.session(other.id)!)).toMatchObject({ agents_total: 20_000, agents_failed: 4_000 });
@@ -35,11 +36,42 @@ test("a session's state counts its own agents by a seek on the parent, never by 
   expect(none.agents_failed).toBeUndefined();
   // The read is a search of one parent's rows on the parent's index: its cost does not grow with the table.
   // (It grouped the whole table for every state: 41 ms at a hundred thousand agents.)
-  const plan = store.db.query<{ detail: string }, [string]>(`EXPLAIN QUERY PLAN ${TALLY}`).all(lead.id).map((r) => r.detail).join("; ");
+  const plan = store.db.query<{ detail: string }, [string, number, number]>(`EXPLAIN QUERY PLAN ${TALLY}`).all(lead.id, 0, 0).map((r) => r.detail).join("; ");
   expect(plan).toContain("SEARCH agents USING INDEX agents_parent (parent_id=?)");
-  expect(plan).not.toContain("SCAN");
+  expect(plan).not.toContain("SCAN agents");
   const t0 = performance.now();
-  for (let i = 0; i < 200; i++) store.db.query(TALLY).get(lead.id);
+  for (let i = 0; i < 200; i++) store.db.query(TALLY).get(lead.id, now - 86_400_000, 0);
   expect((performance.now() - t0) / 200).toBeLessThan(1);
+  store.db.close();
+});
+
+// The row counts what the agents line under it counts (src/core/agent-count.ts): the whole tree,
+// live or of the last day, and as failed only what failed after the owner last looked.
+test("a session's agent counts are its tree's of the last day, and its failures since the owner looked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-state-"));
+  const store = new Store(join(dir, "state"));
+  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine: { isRunning: () => false, isHeld: () => false }, providers: { current: () => [] } } as any);
+  store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+  agents.migrate();
+  const lead = store.createSession({ model: "m:x", workspace: dir, title: "Coordinator" });
+  const long = store.createSession({ model: "m:x", workspace: dir, title: "Long", parent_id: lead.id } as any);
+  const now = Date.now(), day = 86_400_000;
+  const add = store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, ended) VALUES (?, ?, ?, 'a', 'general-purpose', 'm:x', 1, ?, ?, ?)");
+  store.db.transaction(() => {
+    // Three days of work: forty agents that ended days ago, eleven of them failed.
+    for (let i = 0; i < 40; i++) add.run(`old-${i}`, lead.id, `so-${i}`, i < 11 ? "failed" : "completed", now - 3 * day, now - 2 * day);
+    // Live for two days, still at work, with an agent of its own that ended an hour ago.
+    add.run("long", lead.id, long.id, "running", now - 2 * day, null);
+    add.run("deep", long.id, "s-deep", "completed", now - 2 * 3_600_000, now - 3_600_000);
+    // Today: one failure the owner looked at, then one more.
+    add.run("seen", lead.id, "s-seen", "failed", now - 5 * 3_600_000, now - 4 * 3_600_000);
+    add.run("new", lead.id, "s-new", "failed", now - 2 * 3_600_000, now - 600_000);
+  })();
+  store.mergeSettings(lead.id, { agents_failed_ms: now - 4 * 3_600_000 + 5, agents_fail_seen_ms: now - 4 * 3_600_000 + 5 });
+  // The tree's four of the day (the live one, its own agent, the two failures), one failed since the look.
+  expect(sessionState(store.session(lead.id)!)).toMatchObject({ agents_total: 4, agents_failed: 1 });
+  // Never looked at: both of the day's failures are news.
+  store.mergeSettings(lead.id, { agents_fail_seen_ms: null });
+  expect(sessionState(store.session(lead.id)!)).toMatchObject({ agents_total: 4, agents_failed: 2 });
   store.db.close();
 });
