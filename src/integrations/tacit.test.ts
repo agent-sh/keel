@@ -1059,3 +1059,22 @@ test("a long branch's first transcript is written in parts: the same bytes, the 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A call that never reached its end (here: refused after it was asked about) leaves nothing that a
+// call of another session with the same id picks up; a run_code program's own calls get no block.
+test("a memory block goes only to the call it was asked for, and never to a program's own call", () => inWorld("scope", async (w) => {
+  const a = w.store.session(w.session())!, b = w.store.session(w.session())!;
+  const h = allHooks().find((x) => x.beforeTool && x.afterTool && x.turnEnd)!;
+  const call = (id: string, command: string, ctx: any = {}) => ({ id, tool: { name: "Bash" } as any, input: { command }, ctx });
+  await h.beforeTool!(a, call("same-id", "touch kw1") as any);
+  await h.toolFailed?.(a, call("same-id", "touch kw1") as any, { type: "tool_result", tool_use_id: "same-id", content: "" } as any, new Error("refused"));
+  const res: any = { type: "tool_result", tool_use_id: "same-id", content: "1\tx" };
+  await h.afterTool!(b, { id: "same-id", tool: { name: "Read" } as any, input: { file_path: "/x" }, ctx: {} } as any, res);
+  expect(res.content).toBe("1\tx");
+  // A call made inside a run_code program.
+  const nested = call("inner", "touch kw2", { nestedIn: "outer" });
+  await h.beforeTool!(a, nested as any);
+  const out: any = { type: "tool_result", tool_use_id: "inner", content: '{"a":1}' };
+  await h.afterTool!(a, nested as any, out);
+  expect(out.content).toBe('{"a":1}');
+}), 60_000);

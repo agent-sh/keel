@@ -58,6 +58,9 @@ import { readText } from "../core/proc.ts";
 import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
 
+// A call is known by its session and its id: ids are unique within a session only.
+const preKey = (session: string, call: string) => `${session}\0${call}`;
+
 export function findBin(envVar: string, name: string, env = process.env): string | null {
   const given = env[envVar]?.trim();
   if (given) return existsSync(given) ? given : null;
@@ -330,7 +333,7 @@ export class Tacit {
   private start = new Map<string, Running>();
   private done = new Set<string>(); // user events already answered
   // A tool call's hook, and whether its result is held for the answer.
-  private preTool = new Map<string, { call: Running; holds: Promise<boolean> }>();
+  private preTool = new Map<string, { call: Running; holds: Promise<boolean> }>(); // by preKey(session, call id)
   // A kind of call that did not answer in time is out until one does: its
   // calls are made and not waited for. `failing`: its calls end in an error.
   private out: Record<Kind, boolean> = { ask: false, tool: false };
@@ -1113,6 +1116,10 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     const t = this;
     this.sweepTranscripts();
     registerHooks({
+      // A call that never reached its end (interrupted, refused by a later hook, thrown) leaves
+      // nothing for a later call of another session or turn with the same id to pick up.
+      toolFailed(s, call) { t.preTool.delete(preKey(s.id, call.id)); },
+      turnEnd(s) { for (const k of t.preTool.keys()) if (k.startsWith(`${s.id}\0`)) t.preTool.delete(k); },
       async beforeRequest(s, req) {
         // Memory for a prompt joins the turn request that answers it. A summary
         // or side request sent first keeps its own messages: rebuilding them
@@ -1224,6 +1231,9 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
       beforeCompact: (s) => t.preCompact(s),
       beforeTool(s, call) {
         if (!t.bin || !t.flags(s.id).use_memory) return;
+        // A call a run_code program makes gets its result back as data the program reads:
+        // nothing is added to it (the program's own call is the step).
+        if (call.ctx?.nestedIn) return;
         const input = tacitToolCall(call.tool.name, call.input);
         if (!input) return;
         // Not asked about a call the store never answers. Every other call is
@@ -1242,12 +1252,12 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         const p = t.call(s, "pre-tool", input);
         // Whether the result is held for the answer: only for a call that changes something.
         const holds = call.tool.target ? call.tool.target(call.input, s.id).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
-        t.preTool.set(call.id, { call: p, holds });
+        t.preTool.set(preKey(s.id, call.id), { call: p, holds });
       },
       async afterTool(s, call, result) {
-        const entry = t.preTool.get(call.id);
+        const entry = t.preTool.get(preKey(s.id, call.id));
         if (!entry) return;
-        t.preTool.delete(call.id);
+        t.preTool.delete(preKey(s.id, call.id));
         const p = entry.call;
         if (p === SKIPPED) return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
         // The tool is done. A call that changed something has its result held

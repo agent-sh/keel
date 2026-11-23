@@ -1154,6 +1154,11 @@ function settle(agentId: string, report: string) {
 // result about an agent is not older than the agent), and only those that
 // name it: the parent's history before that, and its replies, are not read,
 // and a parent that is not in memory is not brought in.
+// The JSON a tool's result starts with, before any note the harness added after it.
+export function jsonHead(content: string): string {
+  const at = content.search(/\n\n(<|\[harness\])/);
+  return at < 0 ? content : content.slice(0, at);
+}
 function waitHolds(a: AgentRecord, report = reportId(a)): boolean {
   const { store } = D();
   const legacy = () => report === reportId(a) && !store.db.query(`SELECT 1 FROM events ${bareBy(store.db)} WHERE session_id = ? AND kind = 'turn_end' AND seq <= ? LIMIT 1`).get(a.session_id, a.first_seq);
@@ -1161,7 +1166,8 @@ function waitHolds(a: AgentRecord, report = reportId(a)): boolean {
     for (const r of e.data.results ?? []) {
       if (r.is_error || typeof r.content !== "string" || !r.content.includes(a.id)) continue;
       let st: any;
-      try { st = JSON.parse(r.content)?.status?.[a.id]; } catch { continue; }
+      // (A note the harness put after the tool's JSON, a memory block or a repeat note, is not the JSON.)
+      try { st = JSON.parse(jsonHead(r.content))?.status?.[a.id]; } catch { continue; }
       if (st === undefined || st === null || !isWaitCall(e, r.tool_use_id)) continue;
       if (st.report_id !== undefined) { if (st.report_id === report) return true; continue; }
       const words = st.completed ?? st.errored ?? st.interrupted?.report ?? st.incomplete?.report;

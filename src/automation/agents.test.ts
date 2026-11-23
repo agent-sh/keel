@@ -1210,3 +1210,10 @@ test("an agent closed by a restart or a deleted session leaves no reading of its
   expect(agents.get(b.id)!.status).toBe("stopped");
   expect(reading(b.id)).toBe(0);
 });
+
+test("a wait's JSON is read before a note the harness put after it", async () => {
+  const { jsonHead } = await import("./agents.ts");
+  expect(JSON.parse(jsonHead('{"status":{}}\n\n<memory source="tacit">x</memory>'))).toEqual({ status: {} });
+  expect(JSON.parse(jsonHead('{"status":{}}\n\n[harness] same result'))).toEqual({ status: {} });
+  expect(jsonHead('{"a":"x\\n\\ny"}')).toBe('{"a":"x\\n\\ny"}');
+});
