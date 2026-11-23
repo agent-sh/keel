@@ -2,10 +2,14 @@
 // route) and the reader of its SSE events.
 import type { AssistantBlock, ImageBlock, Message } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
+import { ProviderError } from "../http.ts";
 import { project, type WireRules } from "../project.ts";
 import { bindReply, carry, unbind, type Binder } from "./binding.ts";
 import type { ProviderRequest, ProviderResult } from "../types.ts";
 import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
+
+// The error types of a stream's error event that pass by waiting (the API's errors page).
+const STREAM_ERROR_KIND: Record<string, "overloaded" | "rate" | "server"> = { overloaded_error: "overloaded", rate_limit_error: "rate", api_error: "server" };
 
 // Cache lifetime of every breakpoint. An agent loop's requests come seconds
 // apart, but the owner's next prompt often comes after more than five minutes:
@@ -217,8 +221,13 @@ export const anthropicWire: WireCodec = {
           case "message_stop":
             finished = true;
             break;
-          case "error":
-            throw Object.assign(new Error(`${ev.error?.type ?? "error"}: ${ev.error?.message ?? e.data}`), { wireError: ev.error });
+          case "error": {
+            // An error event mid-stream: the passing kinds are said as the driver's own failures,
+            // so the retry policy reads them as it reads the same answer given as an HTTP status.
+            const text = `${ev.error?.type ?? "error"}: ${ev.error?.message ?? e.data}`;
+            const kind = STREAM_ERROR_KIND[String(ev.error?.type)];
+            throw Object.assign(kind ? new ProviderError(kind, text) : new Error(text), { wireError: ev.error });
+          }
         }
       },
       result() {

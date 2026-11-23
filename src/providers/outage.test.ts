@@ -82,7 +82,8 @@ test("only an explicit upstream connect failure is an outage; ambiguous gateway 
   expect(classify("X", 504, h, "").kind).toBe("server");
   expect(classify("X", 502, h, '{"message":"the broker could not reach runtime.example.invalid: read ECONNRESET"}').kind).toBe("server");
   expect(classify("X", 502, h, '{"message":"response terminated","debug":"the broker could not reach runtime.example.invalid: EAI_AGAIN"}').kind).toBe("server");
-  expect(classify("X", 503, h, "upstream connect error or disconnect/reset before headers. reset reason: connection failure").kind).toBe("overloaded");
+  // (A gateway's 503 in its own words is a server fault: the bounded retries, not the wait an overloaded model gets.)
+  expect(classify("X", 503, h, "upstream connect error or disconnect/reset before headers. reset reason: connection failure").kind).toBe("server");
   // The provider's own words.
   expect(classify("X", 503, h, JSON.stringify({ error: { message: "The server is overloaded or not ready yet." } })).kind).toBe("overloaded");
   expect(classify("X", 502, h, JSON.stringify({ error: { type: "api_error", message: "Internal server error: connection error" } })).kind).toBe("server");

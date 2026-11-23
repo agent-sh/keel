@@ -74,7 +74,8 @@ export function overloaded(e: unknown): boolean {
   const err = e as any;
   if (!err || unreachable(e)) return false;
   if (typeof err.kind === "string") return err.kind === "overloaded";
-  const type = err.error?.error?.type ?? err.error?.type ?? err.type;
+  // (A stream's error event keeps the API's own error as `wireError`: src/providers/wires/anthropic.ts.)
+  const type = err.wireError?.type ?? err.error?.error?.type ?? err.error?.type ?? err.type;
   return type === "overloaded_error" || Number(err.status ?? 0) === 529;
 }
 // What an overloaded model's answers share as one Errors row (ErrorPlace.group, carried on the
@@ -93,11 +94,16 @@ export function retriesLeft(e: unknown, attempt: number, since?: number, now = D
   return attempt + 1 < RETRY.max;
 }
 
+// The wait before try `attempt + 1`: what the provider asked for, else 0.5 s doubling with a
+// quarter's jitter either way, to 32 s; an overloaded model's grows on, and never past
+// RETRY_WAIT_MAX_MS with its jitter (a wait over that is only ever one the provider asked for).
 export function backoffMs(attempt: number, e?: unknown): number {
   const asked = retryAfterMs(e);
   if (asked !== undefined) return asked;
-  const exp = Math.min(overloaded(e) ? RETRY_WAIT_MAX_MS : RETRY.capMs, RETRY.baseMs * 2 ** attempt);
-  return Math.round(exp * (0.75 + Math.random() * 0.5));
+  const full = overloaded(e);
+  const exp = Math.min(full ? RETRY_WAIT_MAX_MS : RETRY.capMs, RETRY.baseMs * 2 ** attempt);
+  const ms = Math.round(exp * (0.75 + Math.random() * 0.5));
+  return full ? Math.min(ms, RETRY_WAIT_MAX_MS) : ms;
 }
 
 export function sleep(ms: number, signal: AbortSignal): Promise<void> {

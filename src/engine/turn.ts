@@ -42,7 +42,7 @@ import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
-import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, overloaded, overloadedGroup, retriesLeft, retryable, sleep } from "./retry.ts";
+import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep } from "./retry.ts";
 import { OUTAGE } from "../providers/outage.ts";
 import { unreachable } from "../providers/unreachable.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
@@ -1540,6 +1540,7 @@ export class Engine {
     let down = false;
     // When the model first answered that it is overloaded, for a request that waits it out.
     let busySince: number | undefined;
+    let busyTries = 0;
     // A request the turn cannot go on without waits for a provider that cannot be reached; a call its
     // caller can go on without (a reader, a side answer, a summary made ahead) fails at once.
     const running = this.running.get(id);
@@ -1718,15 +1719,24 @@ export class Engine {
         // An overloaded model is waited out past the count by a request the turn cannot go on
         // without (retry.ts overloaded; a reader or a side answer keeps the count), and its
         // answers are one Errors row for the model, whatever words each came in.
+        // The tries an overloaded model took are counted apart: a different failure after them
+        // has its own count of retries (`attempt - busyTries`), and theirs grows by their own.
         const full = overloaded(e);
         if (full) (e as { group?: string }).group ??= overloadedGroup(st.info.id);
-        if (full && outages) busySince ??= Date.now();
-        if (!retriesLeft(e, attempt, busySince)) throw e;
-        const wait = backoffMs(attempt, e);
-        if (wait > RETRY_WAIT_MAX_MS) throw new RetryTooLong(e, Date.now() + wait);
+        const waitsOut = full && !!outages;
+        if (waitsOut) busySince ??= Date.now();
+        const counted = attempt - busyTries;
+        if (!retriesLeft(e, counted, waitsOut ? busySince : undefined)) throw e;
+        const wait = backoffMs(waitsOut ? busyTries : counted, e);
+        // Only a wait the provider asked for is longer than a turn waits (backoffMs keeps its own under it).
+        if (wait > RETRY_WAIT_MAX_MS && retryAfterMs(e) !== undefined) throw new RetryTooLong(e, Date.now() + wait);
         retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait }));
-        if (shown) this.status(id, { kind: "retry", attempt: attempt + 1, max: busySince !== undefined && full ? 0 : RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
+        if (shown) this.status(id, { kind: "retry", attempt: (waitsOut ? busyTries : counted) + 1, max: waitsOut ? 0 : RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
+        // Where the counted retries would have ended the turn, the session that started it hears
+        // that it still waits (once a request), so it can stop it or move the work to another model.
+        if (waitsOut && busyTries === RETRY.max - 1) this.measure(id, (h) => h.capacityWaiting?.(session, st.info.id, Date.now() - busySince!));
         await sleep(wait, signal);
+        if (waitsOut) busyTries++;
         attempt++;
       }
     }

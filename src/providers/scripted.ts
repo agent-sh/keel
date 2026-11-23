@@ -467,6 +467,14 @@ export class ScriptedProvider implements Provider {
         // stream's exception and an HTTP 503), each asking for a short wait so the spec is quick.
         if (attempt < 12) throw new ProviderError("overloaded", attempt % 2 ? "Scripted: HTTP 503: the model is unable to process your request." : "Scripted stream: serviceUnavailableException: the model is unable to process your request.", attempt % 2 ? 503 : undefined, 100);
         return reply("Answered after the burst passed.");
+      case "overloaded-long":
+        // Overloaded twelve times, past the counted retries, with no wait asked for: the engine's own backoff.
+        if (attempt < 12) throw new ProviderError("overloaded", "Scripted: 529 overloaded", 529);
+        return reply("Answered after a long overload.");
+      case "overloaded-asks":
+        // Overloaded, and the provider asks for a wait longer than a turn waits (KEEL_RETRY_WAIT_MAX_MS).
+        if (attempt === 0) throw new ProviderError("overloaded", "Scripted: 529 overloaded, retry after a while", 529, 400_000);
+        return reply("Answered after the asked wait.");
       case "drop":
         if (attempt === 0) {
           for (const part of ["This half reply ", "is dropped with the stream"]) {

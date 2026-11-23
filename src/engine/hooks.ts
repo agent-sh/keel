@@ -93,6 +93,9 @@ export type TurnHooks = {
   requestWaitEnded?: (s: Session, req: ProviderRequest, ms: number) => void;
   requestWaiting?: (s: Session, req: ProviderRequest) => void;
   requestFailed?: (s: Session, req: ProviderRequest, err: unknown, aborted: boolean) => void;
+  // A turn's request has been answered overloaded as many times as the counted retries and is
+  // still tried (src/engine/retry.ts overloaded): `ms` since the model first said so. Once a request.
+  capacityWaiting?: (s: Session, model: string, ms: number) => void;
   // Each streamed piece of the answer, side answers too (they never reach the bus).
   requestDelta?: (s: Session, req: ProviderRequest, d: { kind: string; text: string }) => void;
   afterResponse?: (s: Session, res: ProviderResult, messages: Message[]) => void | Promise<void>;

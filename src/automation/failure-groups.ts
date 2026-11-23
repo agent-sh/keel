@@ -286,6 +286,7 @@ function headOf(g: FailureGroup, refs: FailureRef[]): string {
     return `${g.cls} failed ${plural(sum(refs) + (others?.owed ?? 0), "time")} on one cause in ${who}`;
   }
   if (g.kind === "turn") return `A turn of this session ended on an error${cls}${g.owed > 1 ? `, ${g.owed} times` : ""}`;
+  if (g.kind === "provider" && g.cls === "overloaded") return `${plural(n, "agent")} still waiting on a model at capacity`;
   if (g.kind === "message") return `${g.owed === 1 ? "A message this session sent was" : `${g.owed} messages this session sent were`} not delivered`;
   return `${g.kind} ${g.cls}: ${plural(g.owed, "failure")}`;
 }

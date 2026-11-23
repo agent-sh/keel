@@ -4,6 +4,7 @@ import type { Store } from "../core/store.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { TurnHooks } from "../engine/hooks.ts";
 import { errorText } from "../engine/retry.ts";
+import { dur } from "../admin/timeline-rows.ts";
 import { D, capture, clip, deliver, isPending, parkedOn, rider, stillRunning, type Pending, heldWhy } from "./core.ts";
 import { cutTurn } from "./waits.ts";
 import { acked, add, classOf, cleared, fingerprintOf, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
@@ -148,6 +149,16 @@ export const hooks: TurnHooks = {
     if (!cls) return;
     const at = scope(s);
     record(at.root, { kind: "provider", cls, message: errorText(err), ref: at.ref }, s.id);
+  },
+  // An agent whose model has said it is overloaded for as long as the counted retries: its turn
+  // goes on trying and holds its slot, so the session that started it is told once (it can stop
+  // the agent, or start the work on another model). A session of the owner's says it on its row.
+  capacityWaiting: (s, model, ms) => {
+    if (!s.parent_id) return;
+    const at = scope(s);
+    if (!at.told) return;
+    const message = `waited ${dur(ms)} for ${model}, which answers that it is overloaded; it keeps trying until the model has room. Stop it, or give the work to an agent on another model, if it should not wait.`;
+    if (record(at.root, { kind: "provider", cls: "overloaded", message, ref: at.ref, tell: "wake" }, s.id)) wake(at.root);
   },
 };
 

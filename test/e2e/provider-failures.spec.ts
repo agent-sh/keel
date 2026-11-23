@@ -1,4 +1,7 @@
 import { expect, test, type Page } from "./isolate.ts";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { exited, ownDaemon } from "./peer.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: what the owner sees when the provider fails or stops early. A real
@@ -29,6 +32,54 @@ test("a burst of overloaded answers longer than the retries is waited out and is
     expect(rows.map((r) => r.count)).toEqual([12]);
   } finally {
     await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
+// Past the counted retries with the engine's own backoff, on a daemon whose longest wait is a
+// second (KEEL_RETRY_WAIT_MAX_MS) so the spec is quick: the waits stay under it and the turn goes
+// on; an agent that waits that long is told to the session that started it, once, while it still
+// tries; and only a wait the provider asked for, over the longest, ends the turn with that time.
+test("an overloaded model past the counted retries: the turn goes on, an agent's parent hears, an asked wait ends it", async () => {
+  test.setTimeout(120_000);
+  const state = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state", `overloaded-${Date.now()}`);
+  mkdirSync(state, { recursive: true });
+  const d = await ownDaemon(state, 0, { KEEL_RETRY_WAIT_MAX_MS: "1000" });
+  const api = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    fetch(d.url + path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then((r) => r.json() as any);
+  const events = async (id: string) => (await api(`/api/sessions/${id}`)).events as any[];
+  const ended = async (id: string) => (await events(id)).some((e) => e.kind === "turn_end");
+  const text = (evs: any[]) => evs.filter((e) => e.kind === "assistant").at(-1)?.data.blocks.find((b: any) => b.type === "text")?.text;
+  try {
+    // No wait asked for, twelve times: past the count, every wait at most the longest, then the answer.
+    const { session: one } = await api("/api/sessions", { model: STAND_IN, title: "Long overload" });
+    await api(`/api/sessions/${one.id}/messages`, { text: "script:overloaded-long" });
+    await expect.poll(() => ended(one.id), { timeout: 60_000 }).toBe(true);
+    const evs = await events(one.id);
+    expect(evs.filter((e) => e.kind === "error").map((e) => e.data.message)).toEqual([]);
+    expect(text(evs)).toBe("Answered after a long overload.");
+    const rows = ((await api(`/api/errors?session=${one.id}`)).errors as any[]).filter((r) => /529 overloaded/.test(r.message));
+    expect(rows.map((r) => r.count)).toEqual([12]);
+    expect(rows[0].context.wait_ms).toBeLessThanOrEqual(1000);
+
+    // An agent that waits as long: its parent is told once that it still waits, and it reports when the model has room.
+    const { session: lead } = await api("/api/sessions", { model: STAND_IN, title: "Coordinator" });
+    await api(`/api/sessions/${lead.id}/permissions`, { mode: "full-auto" }, "PUT");
+    await api(`/api/sessions/${lead.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "Busy worker\nscript:overloaded-long", isolation: "none" } }])}` });
+    const told = async () => (await events(lead.id)).filter((e) => e.kind === "user" && JSON.stringify(e.data).includes("still waiting on a model at capacity"));
+    await expect.poll(async () => (await told()).length, { timeout: 60_000 }).toBe(1);
+    expect(JSON.stringify((await told())[0].data)).toMatch(/Busy worker[^]*waited \d+ s for scripted:stand-in, which answers that it is overloaded; it keeps trying/);
+    await expect.poll(async () => ((await api(`/api/sessions/${lead.id}/agents`)).agents as any[])[0]?.status, { timeout: 60_000 }).toBe("completed");
+    expect((await told()).length).toBe(1);
+
+    // A wait the provider asks for, longer than a turn waits: the turn ends with the time it named.
+    const { session: two } = await api("/api/sessions", { model: STAND_IN, title: "Asked to wait" });
+    await api(`/api/sessions/${two.id}/messages`, { text: "script:overloaded-asks" });
+    await expect.poll(() => ended(two.id), { timeout: 30_000 }).toBe(true);
+    expect((await events(two.id)).filter((e) => e.kind === "error").map((e) => e.data.message).join("")).toMatch(/the provider asked to wait until \d\d:\d\d/);
+  } finally {
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
   }
 });
 

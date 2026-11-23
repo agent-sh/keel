@@ -59,10 +59,12 @@ under `~/.cache/keel-work/bun/research/`.
   spread out when the provider answers. The wait spends no counted retry and
   does not reset the retry budget. Gateway timeouts, resets and broken replies
   keep the bounded retries, even if no response headers arrived. An overloaded
-  model (a 529, a 503, a stream's serviceUnavailable) is at capacity, not down:
-  it joins no wait, and a turn's request is tried past the count, the backoff
-  growing to five minutes, until the model has room (`overloaded` in
-  `src/engine/retry.ts`); its answers are one Errors row a model. Readers, side
+  model (a 529, a 503 in the provider's own words, a stream's overloaded or
+  serviceUnavailable) is at capacity, not down: it joins no wait, and a turn's
+  request is tried past the count, the backoff growing to five minutes, until
+  the model has room (`overloaded` in `src/engine/retry.ts`); an agent's parent
+  is told once that it still waits, and its answers are one Errors row a model.
+  A gateway's own 503 keeps the bounded retries. Readers, side
   answers and summaries made ahead do not join the wait. The policy judge still
   fails closed when it cannot give a verdict.
 - An image never breaks a session. It is stored within `STORE`

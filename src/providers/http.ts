@@ -69,8 +69,10 @@ function retryAfter(h: Headers): number | undefined {
 
 export function classify(label: string, status: number, headers: Headers, body: string): ProviderError {
   let msg = body;
+  let envelope = false;
   try {
     const j = JSON.parse(body);
+    envelope = !!j && typeof j === "object" && !Array.isArray(j) && ("error" in j || "message" in j || "__type" in j);
     const e = Array.isArray(j) ? j[0]?.error : j?.error ?? j;
     msg = typeof e === "string" ? e : e?.message ?? j?.message ?? j?.detail ?? body;
     if (typeof msg !== "string") msg = JSON.stringify(msg);
@@ -93,7 +95,10 @@ export function classify(label: string, status: number, headers: Headers, body: 
   if (status === 429) return new ProviderError("rate", text, status, wait);
   // The broker named an upstream DNS or connection failure, not just a 5xx.
   if (gatewayDown(status, body)) return new ProviderError("unreachable", text, status, wait);
-  if (status === 529 || status === 503 || /overloaded/.test(low)) return new ProviderError("overloaded", text, status, wait);
+  // A 503 is the model at capacity when the provider says so: its own JSON error (Bedrock's
+  // documented 503 is a capacity error), or words of overload or capacity. Any other 503 (a
+  // gateway's HTML page) is a server fault with the bounded retries.
+  if (status === 529 || /overloaded/.test(low) || (status >= 500 && /capacity/.test(low)) || (status === 503 && (envelope || /unable to process|serviceunavailable/.test(low)))) return new ProviderError("overloaded", text, status, wait);
   if (status >= 500) return new ProviderError("server", text, status, wait);
   return new ProviderError("invalid", text, status);
 }

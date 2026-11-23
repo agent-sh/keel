@@ -67,7 +67,9 @@ test("failures fall into classes by the driver's kind, the status, then the word
   expect(errorClass(new ProviderError("network", "Lab: the stream broke: The socket connection was closed unexpectedly."))).toBe("stream_drop");
   expect(classOfText("HTTP 429: Scripted: 429 rate limited, retry after 1 min")).toBe("rate_limit");
   // A provider names itself before the status ("Amazon Bedrock: HTTP 503: ..."): the status is still read.
-  expect(classOfText("Amazon Bedrock: HTTP 503: Bedrock is unable to process your request.")).toBe("server");
+  // Bedrock's 503 says the model is at capacity; another 503 is a server fault.
+  expect(classOfText("Amazon Bedrock: HTTP 503: Bedrock is unable to process your request.")).toBe("overloaded");
+  expect(classOfText("Gateway: HTTP 503: <html><body><h1>503 Service Temporarily Unavailable</h1>nginx</body></html>")).toBe("server");
   expect(classOfText("Amazon Bedrock: HTTP 429: Too many requests")).toBe("rate_limit");
   // The caller's own stop is decided by its signal, not here: an abort the
   // driver tagged, or one of no known origin, is a failure of the call.

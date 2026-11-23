@@ -19,7 +19,7 @@ const KIND: Record<string, ErrorClass> = {
 };
 
 const WORDS: [RegExp, ErrorClass][] = [
-  [/overloaded|serviceunavailable|unable to process your request/i, "overloaded"],
+  [/overloaded|at capacity|serviceunavailable|unable to process your request/i, "overloaded"],
   [/rate.?limit|too many requests|throttl/i, "rate_limit"],
   [/prompt is too long|context.?(window|length)|maximum context|too many tokens|input is too long|input token count|exceeds? the maximum number of tokens|exceed.{0,30}context/i, "context_overflow"],
   [/unauthori[sz]ed|forbidden|invalid.{0,12}(api.?key|token|credential)|expired.{0,12}token|no credentials/i, "auth"],
@@ -60,13 +60,13 @@ export function errorClass(e: unknown): ErrorClass | null {
   const status = Number(err.status ?? err.statusCode ?? 0);
   const msg = String(err.message ?? err ?? "");
   if (status === 429) return "rate_limit";
-  // (A 503 is the provider at capacity, as its drivers read it: src/providers/http.ts classify.)
-  if (status === 529 || status === 503) return "overloaded";
+  if (status === 529) return "overloaded";
   if (status === 401 || status === 403) return "auth";
   if (status === 402) return "quota";
   if (status === 413) return "context_overflow";
   if (status === 408) return "stream_drop";
-  if (status >= 500) return /overloaded/i.test(msg) ? "overloaded" : "server";
+  // (A 503 is the model at capacity only when its words say so, as src/providers/http.ts classify reads it.)
+  if (status >= 500) return /overloaded|capacity|serviceunavailable|unable to process your request/i.test(msg) ? "overloaded" : "server";
   if (status === 400) return /too long|context|maximum/i.test(msg) ? "context_overflow" : "invalid_request";
   for (const [re, c] of WORDS) if (re.test(msg)) return c;
   return "other";
