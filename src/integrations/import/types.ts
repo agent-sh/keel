@@ -97,13 +97,28 @@ export class Builder {
   }
   // The source compacted its context here: what came before stays in the
   // history, and the model reads from this summary on (a Keel checkpoint,
-  // src/engine/compact.ts), as the source's model did.
-  compacted(summary: string, ts: number, extra: { owner_messages?: string[]; trigger?: string } = {}) {
-    this.events.push({ kind: "compaction", data: { mode: "summary", summary, imported: true, ...(extra.owner_messages?.length ? { owner_messages: extra.owner_messages } : {}), ...(extra.trigger ? { trigger: extra.trigger } : {}) }, ts });
+  // src/engine/compact.ts), as the source's model did. `tail`: how many events
+  // right before it the source kept verbatim beside the summary (see storedData).
+  compacted(summary: string, ts: number, extra: { owner_messages?: string[]; trigger?: string; tail?: number } = {}) {
+    this.events.push({ kind: "compaction", data: { mode: "summary", summary, imported: true, ...(extra.owner_messages?.length ? { owner_messages: extra.owner_messages } : {}), ...(extra.trigger ? { trigger: extra.trigger } : {}), ...(extra.tail ? { tail: extra.tail } : {}) }, ts });
   }
   note(text: string, ts: number, model = false) {
     this.events.push({ kind: "note", data: { text, model: model || undefined, imported: true }, ts });
   }
+}
+
+// A read event as it is stored. A compaction that kept the source's newest
+// events verbatim says how many (`tail`); stored, it names the event before
+// them (`covered`), as a Keel summary made ahead does, so the model reads the
+// summary, then those events, then what follows (checkpointAt,
+// src/engine/compact.ts). `idBack(n)`: the stored id of the event n places
+// before this one, if it is known. The read keeps the count, so the same
+// source reads the same every time (the copy's digest).
+export function storedData(e: ImportedEvent, idBack: (n: number) => string | undefined): any {
+  if (e.kind !== "compaction" || !(e.data?.tail > 0)) return e.data;
+  const { tail, ...data } = e.data;
+  const covered = idBack(tail + 1);
+  return covered ? { ...data, covered } : data;
 }
 
 // What a source holds that cannot be read here (a file id, a remote link,

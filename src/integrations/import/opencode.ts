@@ -6,7 +6,12 @@
 // assistant ({ model, content: text, reasoning and tool items; a tool item
 // holds its id, name and state: status completed or error, input, content as
 // text and file parts, error }), compaction ({ summary }), model-switched
-// ({ model }), and the harness's own system, synthetic and idle items.
+// ({ model }), and the harness's own system, synthetic and idle items. A
+// completed compaction can keep the newest messages before it verbatim beside
+// its summary: `metadata.keepID` names the first one kept (an older one kept
+// their text in `metadata.recent`). A prompt's files hold their bytes (base64)
+// or name a row of `blob` by its hash (`uri` "media:<sha256>"), and so can a
+// tool's file parts.
 // OpenCode 1 kept them in `session`, `message` (role, providerID, modelID; an
 // assistant message with `summary` true is a compaction's summary) and `part`
 // (text, reasoning, tool with callID, tool and state, file); a database
@@ -18,6 +23,7 @@ import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ATTACHMENT_MAX } from "../../engine/attachments.ts";
 import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
 
 export const opencodeHome = () => process.env.KEEL_IMPORT_OPENCODE_DIR ?? join(process.env.XDG_DATA_HOME?.startsWith("/") ? process.env.XDG_DATA_HOME : join(homedir(), ".local", "share"), "opencode");
@@ -96,14 +102,26 @@ export function opencodeSessions(path = opencodeDb(), budgetMs = Infinity): Foun
   return out.sort((a, b) => b.updated_ms - a.updated_ms);
 }
 
-// A tool's output parts as a result: text, and an image only when its bytes are here (a data URI).
-function partsOf(parts: any[]): string | any[] {
+// The bytes (base64) a `media:<sha256>` reference names in OpenCode's blob table.
+type Blobs = (uri: unknown) => string | undefined;
+function blobs(d: Database): Blobs {
+  const q = has(d, "blob") ? d.query<{ data: Uint8Array }, [string]>("SELECT data FROM blob WHERE hash = ?") : null;
+  return (uri) => {
+    const hash = typeof uri === "string" ? uri.match(/^media:([0-9a-f]{64})$/)?.[1] : undefined;
+    const row = hash && q ? q.get(hash) : null;
+    return row ? Buffer.from(row.data).toString("base64") : undefined;
+  };
+}
+
+// A tool's output parts as a result: text, and an image only when its bytes are here (a data URI or a blob).
+function partsOf(parts: any[], blob: Blobs): string | any[] {
   const out: any[] = [];
   for (const p of parts) {
     if (p?.type === "text") out.push({ type: "text", text: String(p.text ?? "") });
     else if (p?.type === "file") {
-      const m = typeof p.uri === "string" ? p.uri.match(/^data:([^;,]+);base64,(.*)$/) : null;
-      if (m && m[1]!.startsWith("image/")) out.push({ type: "image", media_type: m[1], data: m[2] });
+      const inline = typeof p.uri === "string" ? p.uri.match(/^data:([^;,]+);base64,(.*)$/) : null;
+      const [type, data] = inline ? [inline[1]!, inline[2]!] : [String(p.mime ?? ""), blob(p.uri)];
+      if (data !== undefined && type.startsWith("image/")) out.push({ type: "image", media_type: type, data });
       else out.push(unavailable(`file ${p.name ?? p.uri ?? ""}`.trim()));
     }
   }
@@ -125,6 +143,28 @@ function step(b: Builder, ts: number, model: () => string | undefined) {
   };
   return { blocks, results, flush };
 }
+// What the model read of a prompt's files, as OpenCode sends them
+// (packages/core/src/session/runner/to-llm-message.ts): an image as an image,
+// a text file, a folder's listing and a PDF as a file Keel stores with the
+// prompt (`data`: its bytes, stored when the copy is made). Other kinds were
+// never sent to OpenCode's model.
+const IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+function promptFiles(files: any[], blob: Blobs, skip: (why: string) => void): any[] {
+  const out: any[] = [];
+  for (const f of files) {
+    const mime = String(f?.mime ?? "");
+    const data = typeof f?.data === "string" ? f.data : blob(f?.uri);
+    if (!IMAGES.has(mime) && mime !== "text/plain" && mime !== "application/x-directory" && mime !== "application/pdf") { skip(`files attached to a prompt of a kind OpenCode does not send to its model (${mime || "no type"})`); continue; }
+    if (data === undefined) { skip("files attached to a prompt whose bytes OpenCode no longer holds"); continue; }
+    if (IMAGES.has(mime)) { out.push({ type: "image", media_type: mime, data }); continue; }
+    const size = Buffer.byteLength(data, "base64");
+    if (size > ATTACHMENT_MAX) { skip(`files attached to a prompt over ${ATTACHMENT_MAX / 1024 / 1024} MiB`); continue; }
+    const where = f.source?.type === "uri" ? String(f.source.uri).replace(/^file:\/\//, "") : undefined;
+    const name = String(f.name || (where ? where.split("/").filter(Boolean).pop() : "") || (mime === "application/x-directory" ? "folder" : "attachment"));
+    out.push({ type: "attachment", name, media_type: mime === "application/pdf" ? mime : "text/plain", size, data });
+  }
+  return out;
+}
 const failure = (e: any) => (typeof e === "string" ? e : e?.message ? String(e.message) : "The call failed.");
 
 export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read> {
@@ -136,6 +176,7 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
   const skip = (why: string) => { b.counts.skipped++; skipped.set(why, (skipped.get(why) ?? 0) + 1); };
   let model = f.model;
   let compactions = 0;
+  const blob = blobs(d);
   const v2 = has(d, "session_v2") && !!d.query("SELECT 1 FROM session_v2 WHERE id = ?").get(f.id);
   if (v2) {
     const rows = d.query<{ id: string; type: string; data: string; time_created: number }, [string]>("SELECT id, type, data, time_created FROM session_message WHERE session_id = ? ORDER BY seq").all(f.id);
@@ -144,7 +185,10 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
     // message's content then empty; read as OpenCode's history.ts does: the
     // parts in order, then any content kept inline.
     const parts = has(d, "session_part") ? d.query<{ type: string; data: string }, [string]>("SELECT type, data FROM session_part WHERE message_id = ? ORDER BY ordinal") : null;
+    // The first event each message gave: where a compaction's kept messages start.
+    const startOf = new Map<string, number>();
     for (const row of rows) {
+      startOf.set(row.id, b.events.length);
       const m = json(row.data) ?? {};
       if (row.type === "assistant" && parts) {
         const own = parts.all(row.id).map((p) => ({ ...(json(p.data) ?? {}), type: p.type }));
@@ -153,9 +197,7 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
       const ts = Number(m.time?.created ?? row.time_created) || f.updated_ms;
       switch (row.type) {
         case "user":
-          // Its files' bytes are not in the row (a path or a blob reference): named, not carried.
-          b.user(String(m.text ?? ""), ts);
-          if (Array.isArray(m.files) && m.files.length) skip("files attached to a prompt (OpenCode keeps them outside the message)");
+          b.user(String(m.text ?? ""), ts, Array.isArray(m.files) ? promptFiles(m.files, blob, skip) : []);
           break;
         case "assistant": {
           model = modelName(m.model) ?? model;
@@ -166,7 +208,7 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
             else if (it?.type === "tool" && it.id) {
               const s = it.state ?? {};
               blocks.push({ type: "tool_use", id: it.id, name: String(it.name ?? "tool"), input: s.input ?? {} });
-              const content = Array.isArray(s.content) && s.content.length ? partsOf(s.content) : "";
+              const content = Array.isArray(s.content) && s.content.length ? partsOf(s.content, blob) : "";
               if (s.status === "error") results.push({ tool_use_id: it.id, content: content || failure(s.error), is_error: true });
               else if (s.status === "completed") results.push({ tool_use_id: it.id, content: content || "Done." });
               else results.push({ tool_use_id: it.id, content: "OpenCode recorded no result for this call.", is_error: true });
@@ -175,10 +217,22 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
           flush({ stop: m.error && !m.finish ? "interrupted" : undefined });
           break;
         }
-        case "compaction":
-          if (typeof m.summary === "string" && m.summary.trim()) { b.compacted(m.summary, ts, { trigger: m.reason === "manual" ? "owner" : m.reason ? "threshold" : undefined }); compactions++; }
-          else skip("a compaction with no summary");
+        case "compaction": {
+          // OpenCode's history starts only at a completed one (history.ts).
+          if (m.status !== "completed") { skip(m.status === "failed" ? "compactions that failed" : "a compaction OpenCode had not finished"); break; }
+          if (typeof m.summary !== "string" || !m.summary.trim()) { skip("a compaction with no summary"); break; }
+          // Its model read the summary, then the messages from keepID on (history.ts withRecentText);
+          // without a keepID it finds, the text an older one kept (recent-text.ts).
+          const start = typeof m.metadata?.keepID === "string" ? startOf.get(m.metadata.keepID) : undefined;
+          const recent = start === undefined && typeof m.metadata?.recent === "string" && m.metadata.recent.trim() ? m.metadata.recent : "";
+          const summary = recent ? `${m.summary}\n\n<recent-context>\n${recent}\n</recent-context>` : m.summary;
+          const trigger = m.reason === "manual" ? "owner" : m.reason ? "threshold" : undefined;
+          // Kept messages with nothing before them: the summary covers no event here, so the model reads it and every message.
+          if (start === 0 && b.events.length) b.note(summary, ts, true);
+          else b.compacted(summary, ts, { trigger, tail: start === undefined ? 0 : b.events.length - start });
+          compactions++;
           break;
+        }
         case "model-switched":
           model = modelName(m.model) ?? model;
           break;
@@ -223,7 +277,7 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
       }
     }
   }
-  if (compactions) notes.push(`OpenCode compacted this conversation ${compactions === 1 ? "once" : `${compactions} times`}: all of it is here, and the model reads from the last summary on, as it did there.`);
+  if (compactions) notes.push(`OpenCode compacted this conversation ${compactions === 1 ? "once" : `${compactions} times`}: all of it is here, and the model reads from the last summary on, with the messages OpenCode kept beside it, as it did there.`);
   const n = b.counts.thoughts_dropped;
   if (n) notes.push(`${n} reasoning item${n === 1 ? " is" : "s are"} not carried: ${n === 1 ? "it belongs" : "they belong"} to the model that wrote ${n === 1 ? "it" : "them"}.`);
   notes.push("OpenCode's tool names are kept as it called them (history, not a re-run).");

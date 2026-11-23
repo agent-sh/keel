@@ -14,7 +14,8 @@ import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import { opencodeDb, opencodePending, opencodeSessions, readOpencode } from "./opencode.ts";
 import { geminiHome, geminiPending, geminiSessions, readGemini } from "./gemini.ts";
-import { inDatabase, type Found, type Harness, type Read } from "./types.ts";
+import { inDatabase, storedData, type Found, type Harness, type Read } from "./types.ts";
+import { hasAttachmentsRoot, saveAttachment } from "../../engine/attachments.ts";
 import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
 
@@ -57,6 +58,21 @@ export type Link = { session_id: string; harness: Harness; source_id: string; so
 
 // Fleet import links encode the source machine as `<machine>:<absolute path>`.
 export const sourceMachine = (path: string) => /^(m[0-9a-f]{8}):\//.exec(path)?.[1];
+
+// A prompt's file a reader carries with its bytes (`data`, base64) is stored
+// as Keel stores an attached file, once by its content, and the prompt keeps
+// the reference (src/engine/attachments.ts). A file stored for a copy that is
+// then undone stays: another prompt may hold the same bytes.
+function filesStored(data: any): any {
+  const files = data?.images;
+  if (!Array.isArray(files) || !files.some((f: any) => f?.type === "attachment" && typeof f.data === "string")) return data;
+  const images = files.flatMap((f: any) => {
+    if (f?.type !== "attachment" || typeof f.data !== "string") return [f];
+    if (!hasAttachmentsRoot()) return [];
+    return [saveAttachment(Buffer.from(f.data, "base64"), f.name, f.media_type)];
+  });
+  return { ...data, images: images.length ? images : undefined };
+}
 
 // What the copy holds of its source, so an update can tell the source went on
 // (the same events, more after them) from a source that rewound or switched
@@ -497,12 +513,34 @@ export class Imports {
   // gives it. One the source does not date takes the time of the one before
   // it (now, when it is the first), so the order in time stays the order of
   // the conversation.
-  private copy(sessionId: string, events: Read["events"]) {
+  // `before`: the source's events an earlier import copied (an update), which
+  // a compaction's kept events may reach back into.
+  private copy(sessionId: string, events: Read["events"], before: Read["events"] = []) {
     let last: number | undefined;
-    for (const e of events) {
+    const ids: string[] = [];
+    let prior: (string | undefined)[] | undefined;
+    events.forEach((e, j) => {
       if (Number.isFinite(e.ts) && e.ts > 0) last = e.ts;
-      this.store.append(sessionId, e.kind, e.data, undefined, last);
+      const data = filesStored(storedData(e, (n) => (j - n >= 0 ? ids[j - n] : (prior ??= this.copied(sessionId, before))[before.length + j - n])));
+      ids.push(this.store.append(sessionId, e.kind, data, undefined, last).id);
+    });
+  }
+
+  // The stored ids of the events an earlier import copied, by their place in
+  // `before`: the copy's branch read back from its head, matched by kind; the
+  // import's own receipt in between is passed over. Where they part (something
+  // else was written), the earlier ones stay unknown and a compaction that
+  // reaches them keeps only its summary.
+  private copied(sessionId: string, before: Read["events"]): (string | undefined)[] {
+    const out: (string | undefined)[] = new Array(before.length);
+    const line = this.store.lineage(sessionId);
+    let k = before.length - 1;
+    for (let i = line.length - 1; i >= 0 && k >= 0; i--) {
+      const e = line[i]!, want = before[k]!;
+      if (e.kind === want.kind && (e.kind !== "note" || e.data?.text === want.data?.text)) out[k--] = e.id;
+      else if (e.kind !== "note" || !e.data?.imported) break;
     }
+    return out;
   }
 
   // A new keel-bun session from a source, or the events the source gained
@@ -539,7 +577,7 @@ export class Imports {
       if (r.events.length <= link.items) return { action: "opened", session: s, imported_events: 0, read: r };
       const more = r.events.slice(link.items);
       this.store.atomic(s.id, () => {
-        this.copy(s.id, more);
+        this.copy(s.id, more, r.events.slice(0, link.items));
         this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), s.id);
       });
       return { action: "updated", session: this.store.session(s.id)!, imported_events: more.length, read: r };

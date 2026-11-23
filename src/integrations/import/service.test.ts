@@ -3,7 +3,7 @@
 // while a transcript is being read.
 import { afterAll, expect, test } from "bun:test";
 import { ownEnv } from "../../../test/env.ts";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ListQuery } from "./offer.ts";
@@ -15,7 +15,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 // the stores a walk reads are scratch ones, named before any Keel source loads.
 ownEnv({
   KEEL_CONFIG_DIR: join(root, "config"),
-  ...Object.fromEntries(["CLAUDE_DIR", "CODEX_DIR", "AGY_DIR", "HERMES_DIR"].map((k) => [`KEEL_IMPORT_${k}`, join(root, "stores", k.toLowerCase())])),
+  ...Object.fromEntries(["CLAUDE_DIR", "CODEX_DIR", "AGY_DIR", "HERMES_DIR", "OPENCODE_DIR"].map((k) => [`KEEL_IMPORT_${k}`, join(root, "stores", k.toLowerCase())])),
   KEEL_IMPORT_KEEL_DB: join(root, "stores", "keel.db"),
 });
 const { Store } = await import("../../core/store.ts");
@@ -240,4 +240,89 @@ test("a copy's events keep the times the source gives them; the receipt and the 
   expect(synced.imported_ms).toBe(link.imported_ms);
   // The copy is the last one worked on, whatever its events' dates.
   expect(store.session(made.session.id)!.updated).toBeGreaterThanOrEqual(t1);
+});
+
+// OpenCode keeps a compaction's newest messages verbatim beside its summary
+// (metadata.keepID, the first one kept: packages/core/src/session/history.ts),
+// and a prompt's files in the message or in its blob table.
+test("an OpenCode compaction that kept its newest messages: the model reads the summary, then them; a prompt's files come along", async () => {
+  const { store, imports, o } = fixture();
+  const { attachmentPath, setAttachmentsRoot } = await import("../../engine/attachments.ts");
+  const { toMessages } = await import("../../engine/turn.ts");
+  const { opencodeSessions } = await import("./opencode.ts");
+  setAttachmentsRoot(store.stateDir);
+  const path = join(process.env.KEEL_IMPORT_OPENCODE_DIR!, "opencode.db");
+  mkdirSync(process.env.KEEL_IMPORT_OPENCODE_DIR!, { recursive: true });
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(path, { create: true });
+  db.exec("CREATE TABLE IF NOT EXISTS session_v2 (id text PRIMARY KEY, parent_id text, directory text NOT NULL, title text, model text, time_updated integer NOT NULL, time_archived integer)");
+  db.exec("CREATE TABLE IF NOT EXISTS session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, data text NOT NULL)");
+  db.exec("CREATE TABLE IF NOT EXISTS blob (hash text PRIMARY KEY, mime text NOT NULL, bytes integer NOT NULL, data blob NOT NULL)");
+  const model = { providerID: "scripted", id: "stand-in" };
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQcGgAAAFkAOHHE8n2AAAAAElFTkSuQmCC";
+  const pdf = "%PDF-1.4 the tickets";
+  const pdfHash = new Bun.CryptoHasher("sha256").update(pdf).digest("hex");
+  db.query("INSERT OR REPLACE INTO blob VALUES (?, 'application/pdf', ?, ?)").run(pdfHash, pdf.length, Buffer.from(pdf));
+  const pngHash = new Bun.CryptoHasher("sha256").update(Buffer.from(png, "base64")).digest("hex");
+  db.query("INSERT OR REPLACE INTO blob VALUES (?, 'image/png', 1, ?)").run(pngHash, Buffer.from(png, "base64"));
+  const head = (sid: string): [string, unknown][] => [
+    ["user", { text: "Plan the lighthouse trip." }],
+    ["assistant", { model, finish: "stop", content: [{ type: "text", text: "An old answer about the trip." }] }],
+    ["user", { text: "Which ferry leaves first?" }],
+    ["assistant", { model, finish: "stop", content: [
+      { type: "tool", id: `${sid}-call`, name: "bash", state: { status: "completed", input: { command: "cat ferries.md" }, content: [{ type: "text", text: "the ferry at nine" }, { type: "file", uri: `media:${pngHash}`, mime: "image/png", name: "map.png" }] } },
+      { type: "text", text: "The nine o'clock ferry." },
+    ] }],
+  ];
+  const tail = (sid: string): [string, unknown][] => [
+    ["compaction", { status: "completed", reason: "auto", summary: "Summary: a lighthouse trip is planned.", metadata: { keepID: `msg_${sid}_2` } }],
+    ["user", { text: "Here are the timetable, a photo and the tickets.", files: [
+      { data: png, mime: "image/png", source: { type: "inline" }, name: "pier.png" },
+      { data: b64("Ferry 09:00\n"), mime: "text/plain", source: { type: "uri", uri: "file:///trip/timetable.txt" }, name: "timetable.txt" },
+      { uri: `media:${pdfHash}`, mime: "application/pdf", source: { type: "inline" }, name: "tickets.pdf" },
+      { uri: `media:${"0".repeat(64)}`, mime: "text/plain", source: { type: "inline" }, name: "gone.txt" },
+    ] }],
+    ["assistant", { model, finish: "stop", content: [{ type: "text", text: "Got the timetable." }] }],
+    // One OpenCode was still writing: its history reads only completed ones.
+    ["compaction", { status: "running", reason: "auto", summary: "A half-written summary." }],
+  ];
+  const t = Date.now() - 60_000;
+  const put = (sid: string, rows: [string, unknown][], from = 0) => {
+    rows.forEach(([type, data], k) => {
+      const i = from + k;
+      db.query("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)").run(`msg_${sid}_${i}`, sid, type, i, t + i, JSON.stringify({ ...(data as object), time: { created: t + i } }));
+    });
+    db.query("INSERT OR REPLACE INTO session_v2 (id, directory, title, model, time_updated) VALUES (?, ?, ?, ?, ?)").run(sid, root, "Lighthouse", JSON.stringify(model), t + from + rows.length);
+  };
+  const found = (sid: string) => opencodeSessions(path).find((f) => f.id === sid)!;
+  const check = (id: string) => {
+    const line = store.lineage(id);
+    const sent = JSON.stringify(toMessages(line));
+    for (const kept of ["Summary: a lighthouse trip is planned.", "Which ferry leaves first?", "the ferry at nine", "The nine o'clock ferry.", "Got the timetable."]) expect(sent).toContain(kept);
+    expect(sent).not.toContain("An old answer about the trip.");
+    expect(sent).not.toContain("A half-written summary.");
+    const files = line.find((e) => e.kind === "user" && e.data.text.startsWith("Here are"))!.data.images;
+    expect(files.map((f: any) => [f.type, f.name ?? f.media_type])).toEqual([["image", "image/png"], ["attachment", "timetable.txt"], ["attachment", "tickets.pdf"]]);
+    expect(files[0].data).toBe(png);
+    // A tool's file part in the blob table too.
+    expect(line.find((e) => e.kind === "tool_result")!.data.results[0].content).toEqual([{ type: "text", text: "the ferry at nine" }, { type: "image", media_type: "image/png", data: png }]);
+    expect(readFileSync(attachmentPath(files[1].id)!, "utf8")).toBe("Ferry 09:00\n");
+    expect(readFileSync(attachmentPath(files[2].id)!, "utf8")).toBe(pdf);
+  };
+
+  // Copied whole: the kept messages are among the events copied with it.
+  put("ses_a", [...head("ses_a"), ...tail("ses_a")]);
+  const a = await imports.import(found("ses_a"), o);
+  check(a.session.id);
+  expect(a.read!.notes.join(" ")).toContain("1 skipped: files attached to a prompt whose bytes OpenCode no longer holds");
+
+  // Copied before OpenCode compacted, then updated: the kept messages are in the earlier copy.
+  put("ses_b", head("ses_b"));
+  const b = await imports.import(found("ses_b"), o);
+  put("ses_b", tail("ses_b"), head("ses_b").length);
+  const upd = await imports.import(found("ses_b"), { ...o, mode: "update" });
+  expect(upd.action).toBe("updated");
+  check(b.session.id);
+  db.close();
 });
