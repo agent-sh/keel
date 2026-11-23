@@ -333,10 +333,10 @@ const SessionComposer = memo(function SessionComposer({
     document.addEventListener("pointerdown", away, true);
     return () => document.removeEventListener("pointerdown", away, true);
   }, [tapped]);
-  // What the box shows of a turn that runs (its hint, Stop, Queue): at once for a turn sent from this box,
-  // and for one that started elsewhere (a report, a loop, another device) once it has run SETTLE_MS, as the
-  // list shows it: a turn of a second came and went with the box's tools moving twice. What a key does
-  // (Enter steers, Esc stops) follows the turn itself.
+  // What the box shows of a turn that runs (its hint, Stop, Queue): at once for a turn sent from this box
+  // or while the box has the keyboard, and for one that started elsewhere (a report, a loop, another
+  // device) once it has run SETTLE_MS, as the list shows it: a turn of a second came and went with the
+  // box's tools moving twice.
   const sentHere = useRef(0);
   const [runShown, setRunShown] = useState(!!working);
   useEffect(() => {
@@ -345,7 +345,9 @@ const SessionComposer = memo(function SessionComposer({
     const t = setTimeout(() => setRunShown(true), SETTLE_MS);
     return () => clearTimeout(t);
   }, [working]);
-  const busy = !!working && runShown;
+  // Where a key would act on the turn (the box has the keyboard: Enter steers, Esc stops), Stop and Queue are there at once.
+  const [keysHere, setKeysHere] = useState(false);
+  const busy = !!working && (runShown || keysHere);
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
   const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
   // Whether the window is low changes with the window and the text size, never with what is
@@ -751,7 +753,8 @@ const SessionComposer = memo(function SessionComposer({
       data-testid="composer-box"
       data-rest={rest || undefined}
       ref={boxEl}
-      onFocus={() => setTapped(true)}
+      onFocus={() => { setTapped(true); setKeysHere(true); }}
+      onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeysHere(false); }}
       // A tap in a box that kept the focus while it went to rest (a scroll drag outside) brings no
       // focus event. The tools open once the tap is over, on its click: opened when the finger
       // goes down, they would move under it and take the tap.

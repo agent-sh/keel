@@ -289,6 +289,12 @@ test("what needs you is named in a long list, and keeps its reason in a narrow o
     await expect(named).toHaveText("Rotate the long-list certificates");
     // The list's rows did not move for it: what shrank is the room under them.
     await shoot(page, "session-rows-need-strip");
+    // The same at the desk's own size.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await list.evaluate((l, id) => { const x = l.querySelector<HTMLElement>(`[data-session="${id}"]`)!; const top = x.getBoundingClientRect().top - l.getBoundingClientRect().top + l.scrollTop; l.scrollTop = top > l.clientHeight ? 0 : l.scrollHeight; }, asker);
+    await expect(r).not.toBeInViewport();
+    await expect(named).toBeInViewport();
+    await shoot(page, "session-rows-need-strip-1920");
     await named.click();
     await expect(page.getByTestId("approval").first()).toBeVisible();
     // Four panes: the list is narrow, and the asking row says what it asks on a line of its own.
