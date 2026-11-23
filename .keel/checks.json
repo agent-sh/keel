@@ -15,6 +15,11 @@
         "node_modules",
         "node_modules/../bun.lock",
         "node_modules/.bin"
+      ],
+      "tests": [
+        "src/**/*.test.ts",
+        "scripts/**/*.test.ts",
+        "ui/src/**/*.test.ts"
       ]
     },
     "e2e": {

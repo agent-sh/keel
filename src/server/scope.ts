@@ -61,6 +61,8 @@ export function route(f: Frame): Route {
         return { topics: [feedTopic("activity"), EVERY, ...(typeof sid === "string" ? [sessionTopic(sid)] : [])] };
       }
       if (f.name === "checkpoints" && f.session_id) return one(f.session_id);
+      // A session's tests on its base, without its change: its Review view reads it.
+      if (f.name === "fails_before" && f.session_id) return one(f.session_id);
       // A branch of the session conflicts, or no longer does: its chip and its Branches panel read it.
       if (f.name === "overlap" && f.session_id) return one(f.session_id);
       // The landing queue of the session's repository changed: its Branches panel reads it.

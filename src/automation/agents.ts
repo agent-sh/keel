@@ -6,6 +6,8 @@ import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { didLine } from "./report-did.ts";
 import { proofFor } from "../checks/proof.ts";
+import { beforeLine } from "../checks/before.ts";
+import * as beforeRun from "../checks/before-run.ts";
 import { awaited, beingStopped, listens, sampleServing, unfinished } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
@@ -1637,6 +1639,17 @@ export function onTurnEnd(sessionId: string, reason: string) {
   settling.set(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
 }
 
+// The longest one shell call may run (the Bash tool's own maximum): a report waits no longer for its tests' run on the base.
+const REPORT_WAIT = 600_000;
+async function failsBefore(sessionId: string, folder: string): Promise<string> {
+  try {
+    const run = await beforeRun.startFor(sessionId, folder);
+    if (!run) return "";
+    const r = await beforeRun.settled(run, REPORT_WAIT);
+    return beforeLine({ mergeBase: r.merge_base, base: r.base, why: r.why, results: r.results });
+  } catch (e) { capture(e, { at: "agent fails before", session: sessionId }); return ""; }
+}
+
 // Agents whose ended turn is being settled (a work agent's worktree is read
 // first): a message meanwhile waits for it, then continues the agent.
 const settling = new Map<string, Promise<unknown>>();
@@ -1702,11 +1715,14 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // What the check ledger saw of its checks (src/checks/proof.ts), read before an empty worktree goes.
   const folder = a.worktree ?? D().store.session(a.session_id)?.workspace;
   const proof = row.output_schema && status === "completed" || a.machine || !folder ? "" : await proofFor(a.session_id, folder, got.events).catch(() => "");
+  // Its new and changed tests, run on the base without its change (src/checks/before-run.ts): the report waits
+  // for them as long as one shell call of its own may run (REPORT_WAIT), and says what is still running then.
+  const before = status !== "completed" || row.output_schema || a.machine || !folder ? "" : await failsBefore(a.session_id, folder);
   // What it left running is stopped, and what is new in its repositories is named (leftovers.ts), before its
   // worktree is looked at: a process of it could still write there.
   const left = a.machine ? "" : await leftovers.settle({ store: D().store, isRunning: (sid) => D().engine.isRunning(sid) }, { ...a, report: reportId(a) })
     .catch((e) => { capture(e, { at: "agent leftovers", agent: a.id }); return ""; });
-  const lines = [did, proof, row.output_schema && status === "completed" ? "" : left].filter(Boolean).join("\n");
+  const lines = [did, proof, before, row.output_schema && status === "completed" ? "" : left].filter(Boolean).join("\n");
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
   // The report is checked against its parent's history and sent into it: a

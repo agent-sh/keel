@@ -8,11 +8,16 @@
 //   and the time their earlier runs took (what answering saved).
 // GET /api/checks/named?cwd=
 //   -> { repo, source: "file" | "setting" | null, checks, problems }
+// GET /api/sessions/:id/fails-before -> { run (the newest, or null), tests (whether its repository names a check that runs test files) }
+// POST /api/sessions/:id/fails-before -> { run } (null: no test file added or changed): its new and changed
+//   tests run on the base without the change (src/checks/before-run.ts); a frame "fails_before" says each step.
 import { isAbsolute } from "node:path";
 import { onSettings, registerSettings, settings } from "../../admin/settings.ts";
 import { bindLedger, KEEP, list, namedFor, repoOf, setKeep } from "../../checks/ledger.ts";
 import { FILE, readChecks } from "../../checks/named.ts";
 import { afterCall, beforeCall, dropCall, jobDone, jobStarted } from "../../checks/runs.ts";
+import { bindBefore, latest, startFor } from "../../checks/before-run.ts";
+import { gate } from "./permissions.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { readsOf } from "../reads.ts";
 import { jobDone as jobDoneTell, jobStarted as jobStartedTell } from "../../tools/jobs.ts";
@@ -29,8 +34,9 @@ registerSettings("checks", { repos: {}, keep_runs: KEEP }, (v) => {
   return undefined;
 });
 
-export const checkRoutes: RouteModule = ({ store, errors }) => {
+export const checkRoutes: RouteModule = ({ store, errors, bus }) => {
   bindLedger(store);
+  bindBefore({ store, bus, perm: (id) => gate?.perm(id), capture: (e, ctx) => errors.capture("server", e, ctx) });
   setKeep(settings().checks?.keep_runs ?? KEEP);
   onSettings((s) => setKeep(s.checks?.keep_runs ?? KEEP));
   const quiet = (at: string, f: () => void) => { try { f(); } catch (e) { errors.capture("server", e, { at }); } };
@@ -69,6 +75,20 @@ export const checkRoutes: RouteModule = ({ store, errors }) => {
         // (Its sums go over the whole table: on the read thread.)
         const reads = readsOf(store);
         return list({ session: q.get("session") ?? undefined, repo: q.get("repo") ?? undefined, tree: q.get("tree") ?? undefined, before: n("before"), limit: n("limit") }, (sql, params) => reads.sql(sql, params)).then((r) => Response.json(r));
+      },
+    },
+    "/api/sessions/:id/fails-before": {
+      GET: (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return Response.json({ error: "no such session" }, { status: 404 });
+        const repo = repoOf(s.workspace);
+        return Response.json({ run: latest(s.id) ?? null, tests: !!(repo && namedFor(repo)?.checks.some((c) => c.tests?.length)) });
+      },
+      POST: async (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return Response.json({ error: "no such session" }, { status: 404 });
+        try { return Response.json({ run: (await startFor(s.id, s.workspace, { again: true })) ?? null }); }
+        catch (e) { errors.capture("server", e, { at: "fails before", session: s.id }); return Response.json({ error: (e as Error).message }, { status: 500 }); }
       },
     },
     "/api/checks/named": {

@@ -33,7 +33,11 @@
 //          commit id or HEAD~n; else HEAD). That argument is not part of what
 //          the run is known by: the tree is;
 //   drop   options of it that take a value and do not change what it finds
-//          (`--out DIR`): left out of what the run is known by.
+//          (`--out DIR`): left out of what the run is known by;
+//   tests  the test files it runs one at a time as its argument (globs from
+//          the repository's top, `**` for any folders; needs "args": true).
+//          A test file an agent adds or changes that one of them names is run
+//          on the base without the change (src/checks/before.ts).
 // `wait`: commands that only wait for room before what follows them runs
 // (each named by its first words). `env`: variables whose setting on the
 // check's command does not change what it finds.
@@ -94,7 +98,7 @@ const NAME = /^[A-Za-z0-9][\w.:-]{0,39}$/;
 const RUN_MAX = 400;
 
 export type TreeSpec = { kind: "work" } | { kind: "folder"; arg: number } | { kind: "commit" };
-export type Check = { name: string; run: string; args: boolean; dir: string; cache: boolean; tree: TreeSpec; drop: string[]; inputs: string[] };
+export type Check = { name: string; run: string; args: boolean; dir: string; cache: boolean; tree: TreeSpec; drop: string[]; inputs: string[]; tests?: string[] };
 export type Named = { checks: Check[]; wait: string[]; env: string[]; problems: string[] };
 
 const squash = (s: string) => s.trim().replace(/\s+/g, " ");
@@ -134,7 +138,12 @@ function oneCheck(name: string, v: unknown, problems: string[]): Check | undefin
   if (!drop || drop.some((d) => !/^--?[\w-]+$/.test(d))) { problems.push(`${name}: "drop" is a list of options (--out)`); return; }
   const inputs = o!.inputs === undefined ? [] : strings(o!.inputs, 200);
   if (!inputs || inputs.length > 16 || inputs.some((x) => x.startsWith("/") || x.includes("\0"))) { problems.push(`${name}: "inputs" is a list of up to 16 paths from the repository's top`); return; }
-  return { name, run, args: o!.args === true, dir, cache: o!.cache !== false, tree, drop, inputs };
+  const tests = o!.tests === undefined ? undefined : strings(o!.tests, 200);
+  if (o!.tests !== undefined) {
+    if (!tests || !tests.length || tests.length > 16 || tests.some((x) => x.startsWith("/") || x.split("/").includes(".."))) { problems.push(`${name}: "tests" is a list of up to 16 globs from the repository's top`); return; }
+    if (o!.args !== true || dir === "*") { problems.push(`${name}: "tests" needs "args": true and a folder of its own (not "*")`); return; }
+  }
+  return { name, run, args: o!.args === true, dir, cache: o!.cache !== false, tree, drop, inputs, ...(tests ? { tests } : {}) };
 }
 
 // The checks of a parsed file or setting, with what was wrong in it.
