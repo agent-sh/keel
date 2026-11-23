@@ -201,7 +201,8 @@ fetch("/api/sessions").then(() => document.body.append(" reached the daemon"), (
 // The review's loop case: a page that asks for the keyboard as fast as it can, from the moment
 // it loads, with no press of the owner's in it. An engine that refuses a frame the focus it
 // was not given never lets it (the desktop app's do); in a browser that does not, the page takes
-// the frame away at its second take and says so, and what the owner types is the message box's.
+// the frame away when it takes it (at once while the owner is at work in the page, else at its
+// second take) and says so, and what the owner types is the message box's.
 test("artifacts: a page that keeps taking the keyboard is stopped, and typing stays in the message box", async ({ page, request }) => {
   const word = `lp${Date.now().toString(36)}`;
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", word);
@@ -239,12 +240,12 @@ setInterval(() => { window.focus(); i.focus(); i.click(); }, 0);
       await expect(field).toHaveValue("abc");
     }
     // The owner goes back to the message box; the frame goes on asking. Where the engine lets a
-    // frame the owner was in take the keyboard, the page takes the frame away at its second
-    // take and says so in its place.
+    // frame the owner was in take the keyboard, the page takes the frame away at once (the
+    // owner is at work in the page) and says so in its place.
     await box.click();
     const stopped = page.getByTestId("frame-stopped");
     await expect(stopped).toBeVisible({ timeout: 15_000 });
-    await expect(stopped).toContainText("kept taking the keyboard and was stopped");
+    await expect(stopped).toContainText("took the keyboard by itself and was stopped");
     await expect(shown).toHaveCount(0);
     await box.click();
     await page.keyboard.type("more", { delay: 20 });
@@ -293,7 +294,7 @@ document.addEventListener("click", (e) => { if (e.isTrusted) for (let i = 1; i <
     expect(await inFrame()).toBe(true);
 
     // The owner goes to the message box. The page asks for the keyboard again within a moment,
-    // and again: at its second take it is taken away, the page says so in its place, and the
+    // and again: it is taken away at once, the page says so in its place, and the
     // keyboard is the message box's.
     const box = page.getByTestId("composer");
     await box.click();

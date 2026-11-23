@@ -9,10 +9,14 @@ export type Shell = {
   platform: string;
   // "main": the app's window. "session": one session in a window of its own.
   window: "main" | "session";
-  can: { titlebar: boolean; windows: boolean; links: boolean; notifications: boolean; tray: boolean };
+  // (`saving`: the app answers a file the page announces; one from before that keeps files by its own rule.)
+  can: { titlebar: boolean; windows: boolean; links: boolean; notifications: boolean; tray: boolean; saving?: boolean };
   // To the shell: { t: "look", ... }, { t: "window", path }, { t: "start" }, and the
   // clipboard, which the page reaches only through the app there:
-  // { t: "paste", id }, { t: "copying" }, { t: "copy", id, text }.
+  // { t: "paste", id }, { t: "copying" }, { t: "copy", id, text };
+  // { t: "can", paste, saving }: what this page does with the app (below), said as it loads;
+  // { t: "paste-through" }: the paste the app handed over is the engine's to make;
+  // { t: "saving", id, url }: a file the page is about to offer.
   post(message: unknown): void;
 };
 
@@ -60,9 +64,11 @@ export function hexOf(color: string, ctx: Pick<CanvasRenderingContext2D, "fillSt
 //   daemon: "up" (join it now) or "away" (the title bar says so).
 //   scale: the text size keys, which drive the page's own setting.
 //   pasted, copied: the app's answers to a paste and a copy the page asked for, by number.
+//   paste: the owner pressed the paste keys, which the app took from the engine (lib/paste-key.ts).
+//   saving: the app's answer to a file the page announced: kept or not.
 // (`failed`: the clipboard held a picture the app could not make ready.)
 export type Pasted = { id: number; text?: string | null; images: { type: string; data: string }[]; refused?: boolean; failed?: boolean };
-export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean }; reloaded?: "stopped" };
+export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean }; saving?: { id: number; ok: boolean }; paste?: boolean; reloaded?: "stopped" };
 
 // The clipboard in the app. The app's web view gives a page no clipboard of its own (no frame
 // in it may read or write one), so the page asks the app, which answers only at the owner's own
@@ -74,7 +80,7 @@ const waiting = new Map<number, (answer: unknown) => void>();
 if (shell) {
   addEventListener("keel-shell", (e) => {
     const d = (e as CustomEvent<ShellTold>).detail;
-    const answer = d?.pasted ?? d?.copied;
+    const answer = d?.pasted ?? d?.copied ?? d?.saving;
     if (!answer) return;
     waiting.get(answer.id)?.(answer);
     waiting.delete(answer.id);
@@ -102,6 +108,10 @@ export function pastedFiles(images: Pasted["images"]): File[] {
 // size, so what crosses is never larger than the page would keep. Null: the app did not answer.
 export const shellPaste = (edge?: number) => ask<Pasted>({ t: "paste", ...(edge ? { edge } : {}) });
 export const shellCopying = () => shell?.post({ t: "copying" });
+// A file the page offers. The app keeps a file only when the page itself announced that very
+// address at the owner's press, a moment before: a frame of content, which cannot say anything
+// to the app, saves nothing. Null: the app did not answer (one from before this was asked).
+export const shellSaving = (url: string) => ask<{ id: number; ok: boolean }>({ t: "saving", url }, 2000);
 export async function shellCopy(text: string): Promise<void> {
   const answer = await ask<{ ok: boolean }>({ t: "copy", text });
   if (!answer?.ok) throw new Error("The app did not copy to the clipboard");

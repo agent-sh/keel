@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { closed, ownersFocus, stops } from "./frames.ts";
+import { AT_WORK_MS, closed, ownersFocus, stops } from "./frames.ts";
 
 // A frame of content takes the keyboard by the owner's press over it or their Tab into it.
 test("a focus that entered a content frame is the owner's only with the pointer over it or a Tab just before", () => {
@@ -24,4 +24,13 @@ test("a frame that takes the keyboard unasked a second time is stopped", () => {
   expect(stops(1)).toBe(false);
   expect(stops(2)).toBe(true);
   expect(stops(7)).toBe(true);
+});
+
+// The review's case: the owner clicked the message box and pasted 0.4 s later; the frame they
+// had been in took the keyboard in between, and its first take was only given back.
+test("a frame that takes the keyboard while the owner is at work in the page is stopped at once", () => {
+  expect(stops(1, 400)).toBe(true);
+  expect(stops(1, AT_WORK_MS - 1)).toBe(true);
+  expect(stops(1, AT_WORK_MS)).toBe(false);
+  expect(stops(1, 60_000)).toBe(false);
 });

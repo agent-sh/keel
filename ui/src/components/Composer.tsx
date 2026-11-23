@@ -16,7 +16,8 @@ import { stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
-import { pastedFiles, shell, shellPaste } from "../lib/shell.ts";
+import { PASTED } from "../lib/paste-key.ts";
+import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -485,6 +486,26 @@ const SessionComposer = memo(function SessionComposer({
     addEventListener("keel:files", on);
     return () => removeEventListener("keel:files", on);
   });
+  // What the desktop app read from the clipboard for a paste here: its pictures are attached.
+  // One that did not come is said, not dropped in silence. True when the paste is taken.
+  const fromApp = (got: Pasted | null): boolean => {
+    if (!got || got.failed) {
+      setNotice(got ? "The picture on the clipboard could not be read." : "The clipboard was not read in time. Paste again, or attach the picture as a file.");
+      return true;
+    }
+    const files = pastedFiles(got.images);
+    if (files.length) addFiles(files);
+    return files.length > 0;
+  };
+  // The paste keys as the app hands them over (lib/paste-key.ts): a picture is this box's, as
+  // it is in a paste event that carries one; text is put in at the caret by the sender.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const on = (e: Event) => { if (fromApp((e as CustomEvent<Pasted | null>).detail)) e.preventDefault(); };
+    el.addEventListener(PASTED, on);
+    return () => el.removeEventListener(PASTED, on);
+  });
 
   // The menu under the caret: "/" at the start, "@" after a space. One closed
   // with Escape stays closed while the caret is in the same word.
@@ -877,14 +898,7 @@ const SessionComposer = memo(function SessionComposer({
           // In the desktop app the engine hands a paste nothing at all for a copied picture.
           // There, on the owner's own paste, the app reads the clipboard and hands the picture
           // over (lib/shell.ts). A browser tab asks no clipboard for anything.
-          if (shell && !e.clipboardData.types.length && e.nativeEvent.isTrusted) {
-            shellPaste(MAX_EDGE).then((got) => {
-              // A picture that did not come is said, not dropped in silence.
-              if (!got || got.failed) return setNotice(got ? "The picture on the clipboard could not be read." : "The clipboard was not read in time. Paste again, or attach the picture as a file.");
-              const files = pastedFiles(got.images);
-              if (files.length) addFiles(files);
-            }).catch(() => {});
-          }
+          if (shell && !e.clipboardData.types.length && e.nativeEvent.isTrusted) shellPaste(MAX_EDGE).then(fromApp).catch(() => {});
         }}
         onKeyDown={(e) => {
           if (composing(e)) return;
