@@ -89,6 +89,10 @@ function read(dir: string): RepoFacts | null {
       const r = git(dir, "for-each-ref", "--count=1", "--contains", "HEAD", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags");
       return r.ok ? r.out.length > 0 : null;
     },
+    ignored: () => {
+      const r = git(dir, "status", "--porcelain=v1", "--ignored=matching", "--untracked-files=normal");
+      return r.ok ? r.out.split("\n").filter((l) => l.startsWith("!! ")).length : null;
+    },
     ahead: (target) => {
       if (!/^[\w./@{}^~-]+$/.test(target) || target.startsWith("-")) return null;
       const r = git(dir, "rev-list", "--count", `${target}..HEAD`, "--");

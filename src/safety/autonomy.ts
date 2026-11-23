@@ -22,6 +22,7 @@ export type RepoFacts = {
   hidden?(): number | null;
   headOnRef?(): boolean | null;
   ahead?(target: string): number | null;
+  ignored?(): number | null;                    // ignored files and folders (.env, data/): a removed worktree takes them
   merged(remote: string, branch: string): boolean | null; // the remote's branch, as last fetched, is in its default branch
 };
 export type Look = (dir: string) => RepoFacts | null;

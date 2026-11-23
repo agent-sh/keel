@@ -2,6 +2,7 @@
 // the simple commands it runs, decide which are read-only, which are high
 // risk, and whether a stored rule covers each one. Pure functions.
 import { ENDS, KEPT, READERS, SHIMMED, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
+import { name, unwrap } from "./risk-words.ts";
 
 // One simple command: its words with quotes removed, and whether it writes
 // through a redirection. `nested`: it runs inside a substitution or a
@@ -958,7 +959,7 @@ const SHELL_PROGRAMS = /^(sh|bash|zsh|dash|ksh|fish)$/;
 // A part's own text with what is not syntax taken out: its quoted strings (a delimiter's quotes kept apart) and a comment.
 const syntaxOf = (text: string) => text.replace(/(<<-?\s*)(['"])([^'"\s]+)\2/g, "$1\u0000$3").replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''").replace(/(^|\s)#.*$/s, "$1");
 // The here-document a part owns: none, a quoted one (its text is literal) or an unquoted one (its substitutions run).
-function docOf(p: Simple): "none" | "quoted" | "unquoted" {
+export function docOf(p: Simple): "none" | "quoted" | "unquoted" {
   const t = syntaxOf(p.text);
   const m = /(?:^|[^<])<<-?\s*(\u0000|\\)?[A-Za-z_]/.exec(t);
   return !m ? "none" : m[1] ? "quoted" : "unquoted";
@@ -968,12 +969,18 @@ function readsInput(args: string[]): boolean {
   const operands = args.filter((a) => !a.startsWith("-") || a === "-");
   return !operands.length || operands.includes("-") || args.includes("-s");
 }
+// The program a part runs and its arguments: past what is set in front of it and the wrappers that start it
+// (env, sudo, nohup), by its name without the folder (/bin/bash is bash).
+function commandOf(p: Simple): string[] {
+  const w = unwrap(p.words).words;
+  return w.length ? [name(w[0]), ...w.slice(1)] : w;
+}
 // Whether the line's here-documents are read as commands by a shell on the line.
 export function docsRun(all: Simple[]): boolean {
   if (!all.some((p) => p.heredoc)) return false;
-  return all.some((p) => { if (p.heredoc) return false; const [prog, ...args] = body(p.words).words; return !!prog && SHELL_PROGRAMS.test(prog) && readsInput(args); });
+  return all.some((p) => { if (p.heredoc) return false; const [prog, ...args] = commandOf(p); return !!prog && SHELL_PROGRAMS.test(prog) && readsInput(args); });
 }
-const isFetch = (p: Simple) => FETCHERS.has(body(p.words).words[0] ?? "");
+const isFetch = (p: Simple) => FETCHERS.has(commandOf(p)[0] ?? "");
 // Whether the here-document a part owns holds a fetch (its lines come after the part, with the substitutions of the line).
 function fetchInDoc(all: Simple[], owner: Simple): boolean {
   for (let k = all.indexOf(owner) + 1; k < all.length && k < all.indexOf(owner) + 4_096; k++) {
@@ -989,14 +996,14 @@ export function lineRisk(all: Simple[]): string | null {
   if (docs.length && !shellDoc) {
     // A document holding a fetch and its run, written to a file by a line that also runs one: that may be the file it wrote.
     const held = lineRisk(docs.map(({ heredoc: _, nested: __, ...p }) => p));
-    if (held && all.some((p) => !p.heredoc && (RUNNERS.test(body(p.words).words[0] ?? "") || /^(source|\.)$/.test(body(p.words).words[0] ?? "")))) return held;
+    if (held && all.some((p) => !p.heredoc && (RUNNERS.test(commandOf(p)[0] ?? "") || /^(source|\.)$/.test(commandOf(p)[0] ?? "")))) return held;
   }
   const parts = shellDoc ? all : all.filter((p) => !p.heredoc);
   if (!parts.some(isFetch)) return null;
   // A fetch in a substitution of the line (an unquoted document's among them): its output is text the line runs with.
   const subFetch = parts.some((p) => p.nested && !p.heredoc && isFetch(p));
   const runs = parts.some((p, i) => {
-    const [prog, ...args] = body(p.words).words;
+    const [prog, ...args] = commandOf(p);
     if (!prog || !RUNNERS.test(prog)) return false;
     // The program it runs comes from a substitution: the text after -c or -e, or its first operand (bash <(curl URL)).
     // A substitution among the arguments of a script it names is only an argument (python3 x.py $(cat pid)).

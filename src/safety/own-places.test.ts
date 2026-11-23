@@ -27,12 +27,12 @@ test("a folder is the reader's own only where the words name it so", () => {
 
 const facts = (dirty: number | null, untracked: number | null, root = "/h/wt", more: Partial<RepoFacts> = {}): RepoFacts => ({
   root, branch: "keel/x", upstream: null, remotes: {}, defaultOf: () => null, dirty: () => dirty, untracked: () => untracked, merged: () => null,
-  hidden: () => 0, headOnRef: () => true, ahead: () => 0, ...more,
+  hidden: () => 0, headOnRef: () => true, ahead: () => 0, ignored: () => 0, ...more,
 });
 const own: OwnPlace[] = [{ path: "/h/wt", from: "worktree" }, { path: "/h/.cache/lane", from: "parent" }];
 const settle = (command: string, look: (dir: string) => RepoFacts | null, risks?: PartRisk[]) => {
   const parts = splitCommand(command)!;
-  const at = risks ?? parts.map((_, i) => i).filter((i) => /\bgit\b.*\b(reset|checkout|clean|worktree)\b/.test(parts[i]!.text)).map((i) => ({ at: i, rule: "destroys" as const, why: "discards uncommitted work" }));
+  const at = risks ?? parts.map((_, i) => i).filter((i) => /\bgit\b.*\b(reset|checkout|switch|clean|worktree)\b/.test(parts[i]!.text)).map((i) => ({ at: i, rule: "destroys" as const, why: "discards uncommitted work" }));
   return settleOwn({ parts, risks: at, cwd: "/h/wt", home: H, places: own, look });
 };
 
@@ -72,6 +72,14 @@ test("what Keel's facts cannot show is left to the judge", () => {
   expect(settle("git reset --hard", () => facts(0, 0, "/h/wt", { hidden: () => 1 }))).toBeNull();
   // A detached worktree whose commit no ref holds.
   expect(settle("git worktree remove --force /h/.cache/lane/base", (d) => facts(0, 0, d, { headOnRef: () => false }))).toBeNull();
+  // A checkout or switch to a branch may overwrite an untracked file the branch tracks.
+  for (const c of ["git checkout -f other", "git switch -f other", "git switch --discard-changes other", "git checkout --force other"]) {
+    expect([c, settle(c, () => facts(0, 1))]).toEqual([c, null]);
+    expect([c, settle(c, () => facts(0, 0))]).toEqual([c, { allow: expect.any(String) }]);
+  }
+  // A removed worktree takes its ignored files (.env, data/) with it.
+  expect(settle("git worktree remove --force /h/.cache/lane/base", (d) => facts(0, 0, d, { ignored: () => 2 }))).toBeNull();
+  expect(settle("git worktree remove --force /h/.cache/lane/base", (d) => facts(0, 0, d, { ignored: () => null }))).toBeNull();
   // A GIT_ variable points git at another repository than the folder's.
   for (const c of ["GIT_DIR=/h/other/.git GIT_WORK_TREE=/h/other git reset --hard", "export GIT_WORK_TREE=/h/other; git reset --hard", "GIT_INDEX_FILE=x git checkout -- ."])
     expect(settle(c, () => facts(0, 0))).toBeNull();

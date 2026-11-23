@@ -105,7 +105,9 @@ function discardOf(sub: string, args: string[]): Discard | null | "never" {
   if (sub === "reset") return args.includes("--hard") ? { sub, certain: "tracked", target: named[0] } : null;
   if (sub === "checkout" || sub === "switch" || sub === "restore") {
     const dd = args.indexOf("--");
-    const source = sub === "restore" ? args.find((x, k) => /^(-s|--source)$/.test(args[k - 1] ?? "") || x.startsWith("--source=")) : dd > 0 ? args.slice(0, dd).find((x) => !x.startsWith("-")) : named.length >= 2 ? named[0] : undefined;
+    // A checkout or switch names what it moves to first (git checkout -f BRANCH, git switch --discard-changes BRANCH);
+    // a path of the tree alone (.) is no target.
+    const source = sub === "restore" ? args.find((x, k) => /^(-s|--source)$/.test(args[k - 1] ?? "") || x.startsWith("--source=")) : (dd >= 0 ? args.slice(0, dd) : args).find((x) => !x.startsWith("-") && !/^(\.|\.\/|:\/)$/.test(x));
     return { sub, certain: "tracked", ...(source ? { target: source.replace(/^--source=/, "") } : {}) };
   }
   if (sub === "clean") return args.some((x) => x === "--ignored" || (/^-[a-zA-Z]+$/.test(x) && /[xX]/.test(x))) ? "never" : { sub, certain: "untracked" };
@@ -158,10 +160,10 @@ export function settleOwn(a: { parts: Simple[]; risks: PartRisk[]; cwd: string; 
       };
     }
     // What the counts do not show is left to the judge: an untracked file a target may overwrite, commits a hard
-    // reset leaves behind, a removed worktree's commits that no ref holds.
+    // reset leaves behind, a removed worktree's commits that no ref holds and its ignored files (.env, data/).
     if (d.target !== undefined && (f.untracked() ?? 1) > 0) return null;
     if (g.sub === "reset" && d.target !== undefined && f.ahead?.(d.target) !== 0) return null;
-    if (g.sub === "worktree" && f.headOnRef?.() !== true) return null;
+    if (g.sub === "worktree" && (f.headOnRef?.() !== true || f.ignored?.() !== 0)) return null;
     // Nothing to lose now; and nothing earlier in the line makes something to lose before it runs.
     const earlier = where.slice(0, i).every((p) => {
       if (isReadOnly(p.s) || p.s.words[0] === "cd" || p.s.heredoc) return true;

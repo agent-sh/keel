@@ -39,7 +39,7 @@ export { RULE_WORDS } from "./risk-words.ts";
 import { protectedBranch } from "./autonomy.ts";
 import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
 import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, untrailed, literal, madeName, name, redirected, rootOf, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
-import { docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
+import { docOf, docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
 export { secretFile } from "./risk-reach.ts";
 export type { Risk, RiskRule, Where } from "./risk-words.ts";
@@ -271,6 +271,12 @@ function codeKey(key: string, value?: string): boolean {
   return section === "alias" || section === "pager" || CODE_KEYS.has(`${section}.${k.slice(last + 1)}`);
 }
 const DISCARDS = "discards uncommitted work";
+// Whether text names a file: a word of it whose last part is the file's name, or its name without the extension
+// (import f for f.py).
+function namesFile(text: string, file: string): boolean {
+  const stem = file.replace(/\.[A-Za-z0-9]+$/, "");
+  return text.split(/[\s'"`()[\]{},;:=<>|&+]+/).some((t) => { const n = name(t); return n === file || (stem !== file && n === stem); });
+}
 // One file by its name: a path with an extension, or one of the files a project keeps without one.
 const oneFile = (paths: string[]) => paths.length === 1 && !GLOB.test(paths[0]!) && !paths[0]!.endsWith("/") && (/[^/.]\.[A-Za-z0-9]+$/.test(paths[0]!) || /(^|\/)(Makefile|Dockerfile|LICENSE|README|Gemfile|Rakefile|Procfile|Justfile|CODEOWNERS)$/.test(paths[0]!));
 const wide = (a: string) => a === "." || a === "./" || a === ":/" || a.endsWith("/") || GLOB.test(a);
@@ -617,6 +623,8 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     for (let k = since; k < i; k++) {
       const r = runs[k]!;
       const p = name(r.words[0]), args = r.words.slice(1);
+      // Data goes to the command that owns the document.
+      if (f.as === "data" && docOf(parts[k]!) !== "none") f = { as: "data", by: p };
       if (p === "ssh" || ((p === "kubectl" || p === "oc" || p === "docker" || p === "podman") && args.includes("exec"))) { f = { as: "away", by: p, host: p === "ssh" ? args.find((a) => !a.startsWith("-")) ?? "another machine" : "a container" }; break; }
       if ((SHELLS.test(p) && fromInput(p, args)) || p === "su") { f = { as: "shell", by: p }; break; }
       if (INTERPRETERS.test(p) && fromInput(p, args)) f = { as: "code", by: p };
@@ -680,7 +688,8 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
   for (let i = 0; i < n; i++) {
     const s = parts[i]!;
     const run = runs[i]!;
-    const old = highRisk(s);
+    // (Through what is set and the wrappers in front of it: env GIT_DIR=x git reset --hard is a hard reset.)
+    const old = highRisk(s) ?? (run.at > 0 && !run.deep ? highRisk({ ...s, words: run.words }) : null);
     const first = run.words[0];
     if (old) at(i).push({ rule: OLD(old), why: old, said: true, ...(name(first) === "git" ? { git: true as const } : {}) });
     // A line of a here-document that no shell here runs: code is read for what it deletes or evaluates.
@@ -896,7 +905,12 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       // (Not a here-document's lines, unless a shell on the line reads them as commands: else they are what a program
       // reads, and a path among them is not a program run.)
       if (file && file !== "null") for (let k = i + 1; k < n && k < i + 64; k++) {
-        if (parts[k]!.heredoc && !(docLines ??= docsRun(parts))) continue;
+        if (parts[k]!.heredoc && !(docLines ??= docsRun(parts))) {
+          // Lines a program reads other than one that only writes them out (cat, tee): a file the line downloads,
+          // named there, may be what it runs (exec(open('f').read()), require('./f.js'), . f.sh on a container's shell).
+          if (!/^(cat|tee)$/.test(fed.get(k)?.by ?? "") && namesFile(parts[k]!.text, file)) { line.push({ rule: "hidden", why: `hands ${file}, a file the same line downloads, to ${fed.get(k)?.by || "a program"} in a here-document: it may run it` }); break; }
+          continue;
+        }
         const r = runs[k]!.words;
         const q = name(r[0]);
         if (q === file || ((SHELLS.test(q) || INTERPRETERS.test(q) || q === "source" || q === ".") && !(SHELLS.test(q) && r.includes("-n")) && r.slice(1).some((a) => name(a) === file))) { line.push({ rule: "hidden", why: `runs ${file}, a script the same line downloads` }); break; }
