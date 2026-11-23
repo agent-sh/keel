@@ -79,6 +79,39 @@ export function claudeAllow(rule: string, base?: string): Mapped {
   return { skip: `Keel has no rule for ${p.tool}` };
 }
 
+// Whether a deny or ask rule of Claude Code can hold a call an allow rule
+// would let through, so the allow cannot be carried without its exception
+// (Keel's rules only allow). Two rules of one tool overlap unless their
+// specifiers can be told apart: two shell rules whose fixed starts (the text
+// before any wildcard) neither begins the other, or two edit rules on
+// folders neither holds the other. Whatever cannot be told apart overlaps.
+// `allowBase`, `heldBase`: the project roots the rules were written in.
+export function overlaps(allow: string, held: string, allowBase?: string, heldBase?: string): boolean {
+  const a = parseRule(allow), h = parseRule(held);
+  if (!a || !h) return true;
+  const sameTool = a.tool === h.tool || (h.tool.endsWith("*") && a.tool.startsWith(h.tool.slice(0, -1))) || (h.tool.startsWith("mcp__") && a.tool.startsWith(`${h.tool}__`));
+  if (!sameTool) return false;
+  if (h.spec === undefined || h.spec.trim() === "*" || a.spec === undefined || a.spec.trim() === "*") return true;
+  if (a.tool === "Bash") {
+    const head = (spec: string) => {
+      const s = spec.replace(/\\([()])/g, "$1").replace(/:\*$/, " *");
+      const w = words(s.slice(0, s.indexOf("*") >= 0 ? s.indexOf("*") : s.length).trim());
+      return w === null ? null : w.trim();
+    };
+    const x = head(a.spec), y = head(h.spec);
+    if (x === null || y === null || !x || !y) return true;
+    const begins = (long: string, short: string) => long === short || long.startsWith(`${short} `) || (!/\s$/.test(short) && long.startsWith(short));
+    return begins(x, y) || begins(y, x);
+  }
+  if (a.tool === "Edit") {
+    const x = edit(a.spec, allowBase), y = edit(h.spec, heldBase);
+    if (!("kind" in x) || !("kind" in y)) return true;
+    const within = (p: string, d: string) => d === "/" || p === d || p.startsWith(`${d}/`);
+    return within(x.pattern, y.pattern) || within(y.pattern, x.pattern);
+  }
+  return true;
+}
+
 // A rule the Rust Keel stored (its "always" answers: kind, pattern, scope folder).
 export function rustRule(kind: string, pattern: string): Mapped {
   switch (kind) {

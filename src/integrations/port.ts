@@ -32,7 +32,7 @@ import { inDatabase, type Found, type Harness } from "./import/types.ts";
 import type { Store } from "../core/store.ts";
 import type { RuleKind } from "../safety/policy.ts";
 import { Database } from "bun:sqlite";
-import { claudeAllow, parseRule, rustRule, type Mapped } from "./port-permissions.ts";
+import { claudeAllow, overlaps, parseRule, rustRule, type Mapped } from "./port-permissions.ts";
 import { keelDb } from "./import/keel.ts";
 
 export type Area = "instructions" | "memory" | "skills" | "plugins" | "mcp" | "hooks" | "permissions" | "sessions" | "settings";
@@ -704,11 +704,12 @@ function planPermissions(items: Planned[], deps: PortDeps) {
   const user = files.filter((f) => !f.root);
   const projects = files.filter((f) => f.root);
   const heldIn = (files: ClaudeFile[]) => {
-    const out: { tool: string; where: string }[] = [];
-    for (const f of files) for (const r of [...rulesOf(f.permissions, "deny"), ...rulesOf(f.permissions, "ask")]) out.push({ tool: parseRule(r)?.tool ?? r, where: f.root ? tilde(f.root) : "your user settings" });
+    const out: { rule: string; root?: string; where: string }[] = [];
+    for (const f of files) for (const r of [...rulesOf(f.permissions, "deny"), ...rulesOf(f.permissions, "ask")]) out.push({ rule: r, root: f.root, where: f.root ? tilde(f.root) : "your user settings" });
     return out;
   };
-  const holds = (held: { tool: string; where: string }[], tool: string) => held.find((h) => h.tool === tool || (h.tool.endsWith("*") && tool.startsWith(h.tool.slice(0, -1))));
+  // Only a deny or ask that can hold what the allow lets through keeps it out (overlaps).
+  const holds = (held: { rule: string; root?: string; where: string }[], allow: string, base?: string) => held.find((h) => overlaps(allow, h.rule, base, h.root));
   const userHeld = heldIn(user);
   for (const f of [...user, ...projects]) {
     const scope = f.root ?? "/";
@@ -720,9 +721,8 @@ function planPermissions(items: Planned[], deps: PortDeps) {
     for (const kind of ["deny", "ask"] as const) for (const r of rulesOf(f.permissions, kind))
       add(`permissions:${key}:${kind}:${hash(r)}`, source, `${kind} ${r}${where}`, { skip: kind === "deny" ? "Keel's rules only allow: a call no rule allows asks, and its own checks ask for risky ones whatever the rules say" : "Keel's rules only allow: a call no rule allows asks already" }, scope);
     for (const r of rulesOf(f.permissions, "allow")) {
-      const tool = parseRule(r)?.tool ?? r;
-      const h = holds(held, tool);
-      const m: Mapped = h ? { skip: `${tool} also has deny or ask rules${h.where === (f.root ? tilde(f.root) : "your user settings") ? " there" : ` in ${h.where}`}, which Keel could not keep` } : claudeAllow(r, f.root);
+      const h = holds(held, r, f.root);
+      const m: Mapped = h ? { skip: `${h.rule} (a deny or ask rule${h.where === (f.root ? tilde(f.root) : "your user settings") ? " there" : ` in ${h.where}`}) can hold what it allows, which Keel could not keep` } : claudeAllow(r, f.root);
       add(`permissions:${key}:allow:${hash(r)}`, source, `${r}${where}`, m, scope);
     }
   }

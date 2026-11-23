@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { homedir } from "node:os";
-import { claudeAllow, rustRule } from "./port-permissions.ts";
+import { claudeAllow, overlaps, rustRule } from "./port-permissions.ts";
 
 // What maps one to one, what is already so in Keel, and what stays out.
 test("Claude Code allow rules map only where the meaning is the same", () => {
@@ -30,4 +30,29 @@ test("Rust Keel stored answers map by kind", () => {
   expect(rustRule("path_write", "/data/out")).toEqual({ kind: "edit", pattern: "/data/out" });
   expect(rustRule("path_read", "/tmp")).toHaveProperty("done");
   for (const k of ["workspace_trust", "net_host", "stdin_exact", "machine_prefix"]) expect(rustRule(k, "*")).toHaveProperty("skip");
+});
+
+// FRIC-S28: one deny of a command left out every allow of the shell.
+test("a deny or ask holds an allow only where it can hold what the allow lets through", () => {
+  const apart: [string, string][] = [
+    ["Bash(git status:*)", "Bash(rm -rf /:*)"],
+    ["Bash(npm test:*)", "Bash(rm -rf /:*)"],
+    ["Bash(npm run *)", "Bash(npm publish)"],
+    ["Edit(//srv/app/**)", "Edit(//srv/other/**)"],
+    ["Bash(git log:*)", "Edit(//srv/**)"],
+    ["mcp__github__get_issue", "mcp__slack"],
+  ];
+  const held: [string, string][] = [
+    ["Bash(git status:*)", "Bash"],
+    ["Bash(git status:*)", "Bash(git:*)"],
+    ["Bash(git:*)", "Bash(git push --force:*)"],
+    ["Bash(npm run *)", "Bash(* --force)"],
+    ["Bash(ls*)", "Bash(lsblk)"],
+    ["Edit(//srv/app/**)", "Edit(//srv/app/secret/**)"],
+    ["Edit(//srv/app/**)", "Edit(*.env)"],
+    ["mcp__github__get_issue", "mcp__github"],
+    ["mcp__github__get_issue", "mcp__github__get_issue"],
+  ];
+  for (const [a, h] of apart) expect({ a, h, held: overlaps(a, h) }).toEqual({ a, h, held: false });
+  for (const [a, h] of held) expect({ a, h, held: overlaps(a, h) }).toEqual({ a, h, held: true });
 });

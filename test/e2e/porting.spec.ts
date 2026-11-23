@@ -59,7 +59,7 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
     statusLine: { type: "command", command: "bash ~/.claude/statusline.sh" },
     // Mapped: a prefix and an exact command; already so: a read; left out: a compound
     // command, and an edit allow the deny carves an exception from.
-    permissions: { allow: [`Bash(port-${stamp} run *)`, `Bash(port-${stamp} --version)`, "Read(//srv/**)", "Bash(cat a | wc -l)", "Edit(//srv/app/**)", `mcp__p${stamp}__send`], deny: ["Edit(//srv/app/secret/**)"] },
+    permissions: { allow: [`Bash(port-${stamp} run *)`, `Bash(port-${stamp} --version)`, "Read(//srv/**)", "Bash(cat a | wc -l)", "Edit(//srv/app/**)", `mcp__p${stamp}__send`], deny: ["Edit(//srv/app/secret/**)", "Bash(rm -rf /:*)"] },
   }));
   put("guard.sh", `#!/bin/sh\n# port-guard-${stamp}\nexit 0\n`);
   put(".claude/projects/-work/memory/MEMORY.md", "- [Note](note.md)\n");
@@ -115,13 +115,14 @@ test("port: plan, bring, nothing twice, sources untouched", async ({ page, reque
     await expect(perm(`Bash(port-${stamp} run *)`)).toContainText("New");
     await expect(perm("Read(//srv/**)")).toContainText("Here");
     await expect(perm("Bash(cat a | wc -l)")).toContainText("Left out");
-    await expect(perm("Edit(//srv/app/**)")).toContainText("also has deny or ask rules");
+    await expect(perm("Edit(//srv/app/**)")).toContainText("Edit(//srv/app/secret/**) (a deny or ask rule there) can hold what it allows");
+    // A shell deny of another command holds none of these allows: they come over.
     await expect(perm("deny Edit(//srv/app/secret/**)")).toContainText("Left out");
     // The project's rules hold in its folder; the user's allow its ask holds stays out.
-    await expect(perm(`mcp__p${stamp}__send`).first()).toContainText(`also has deny or ask rules in ${tilde(P)}`);
+    await expect(perm(`mcp__p${stamp}__send`).first()).toContainText(`(a deny or ask rule in ${tilde(P)}) can hold what it allows`);
     await expect(perm(`Bash(proj-${stamp} test *)`)).toContainText(`shell proj-${stamp} test *, in ${tilde(P)}`);
     await expect(perm(`Bash(proj-${stamp} lint)`)).toContainText(`shell proj-${stamp} lint, in ${tilde(P)}`);
-    await expect(perm(`Edit(/src/**) (${tilde(P)})`)).toContainText("also has deny or ask rules there");
+    await expect(perm(`Edit(/src/**) (${tilde(P)})`)).toContainText("(a deny or ask rule there) can hold what it allows");
     const projectHook = panel.locator('[data-port-item^="hooks:Claude Code (project):"]', { hasText: "PostToolUse" });
     await expect(projectHook).toContainText("New");
     await expect(panel.locator('[data-port-area="hooks"]').locator("..")).toContainText("a personal hook of this project");
