@@ -86,7 +86,7 @@ test("a tool list that breaks midway is a failure, and the model is told which p
   const closed = fake((_m, p) => { if (p.cursor === undefined) return { resources: [{ uri: "a" }], nextCursor: "c2" }; (closed as any).closed = true; throw new Error("gone"); });
   await expect(closed.listResources()).rejects.toThrow("gone");
   // list_resources: a page that failed is not "cut at 50 pages"; a list the bound stopped is.
-  installMcpTools({ configured: () => [], resources: async () => ({ resources: { items: [{ uri: "a" }], next: "c2", error: "not ready" }, templates: { items: [{ uriTemplate: "t/{x}" }], next: "c9" } }) } as any);
+  installMcpTools({ configured: () => [], refusal: () => undefined, resources: async () => ({ resources: { items: [{ uri: "a" }], next: "c2", error: "not ready" }, templates: { items: [{ uriTemplate: "t/{x}" }], next: "c9" } }) } as any);
   const list = (await catalogTools()).find((t) => t.qualified === "mcp__list_resources")!;
   const said = String((await list.run({ server: "f" }, {} as any)).content).split("\n");
   expect(said.slice(2)).toEqual(["(listing more resources failed after 1: not ready)", "(the templates were cut at 50 pages: more may exist)"]);

@@ -146,12 +146,15 @@ function builtins(m: McpManager): CatalogTool[] {
     }
     return names;
   };
-  const guard = async (f: () => Promise<string>) => {
+  // A server a session may not reach (memory off, for the store's) is refused before it is asked.
+  const guard = async (f: () => Promise<string>, server?: unknown, ctx?: { sessionId?: string }) => {
+    const no = typeof server === "string" ? m.refusal(server, ctx?.sessionId) : undefined;
+    if (no) return fail(no);
     try { return ok(await f()); } catch (e) { return fail((e as Error).message); }
   };
   return [
     t("list_resources", "List the resources an MCP server exposes (by URI), or which servers offer resources when no server is given.",
-      { server: { type: "string" } }, [], (i) => guard(async () => {
+      { server: { type: "string" } }, [], (i, ctx) => guard(async () => {
         if (!i.server) {
           const s = await offering("resources");
           return s.length ? `Servers with resources: ${s.join(", ")}` : "No connected server offers resources.";
@@ -165,21 +168,21 @@ function builtins(m: McpManager): CatalogTool[] {
           else if (h.next !== undefined) lines.push(`(the ${what} were cut at 50 pages: more may exist)`);
         }
         return lines.length ? lines.join("\n") : `${i.server} lists no resources.`;
-      })),
+      }, i.server, ctx)),
     t("read_resource", "Read one resource of an MCP server as text.", { server: { type: "string" }, uri: { type: "string" } }, ["server", "uri"],
-      (i) => guard(async () => resourceText(await m.readResource(i.server, i.uri)))),
+      (i, ctx) => guard(async () => resourceText(await m.readResource(i.server, i.uri)), i.server, ctx)),
     t("list_prompts", "List the prompt templates an MCP server publishes, or which servers offer prompts when no server is given.",
-      { server: { type: "string" } }, [], (i) => guard(async () => {
+      { server: { type: "string" } }, [], (i, ctx) => guard(async () => {
         if (!i.server) {
           const s = await offering("prompts");
           return s.length ? `Servers with prompts: ${s.join(", ")}` : "No connected server offers prompts.";
         }
         const p = await m.prompts(i.server);
         return p.length ? p.map((x: any) => `${x.name}${x.arguments?.length ? `(${x.arguments.map((a: any) => a.name + (a.required ? "" : "?")).join(", ")})` : ""}${x.description ? `: ${oneLine(x.description, 100)}` : ""}`).join("\n") : `${i.server} publishes no prompts.`;
-      })),
+      }, i.server, ctx)),
     t("get_prompt", "Get one prompt of an MCP server with its arguments filled in.",
       { server: { type: "string" }, name: { type: "string" }, arguments: { type: "object" } }, ["server", "name"],
-      (i) => guard(() => m.getPrompt(i.server, i.name, i.arguments ?? {}))),
+      (i, ctx) => guard(() => m.getPrompt(i.server, i.name, i.arguments ?? {}), i.server, ctx)),
   ];
 }
 

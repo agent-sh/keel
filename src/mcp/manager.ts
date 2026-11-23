@@ -81,6 +81,9 @@ export type BundledServer = {
   // A server with no process (phone control): its state comes from here, a
   // reload asks it again, and `call` answers every call itself.
   live?: { state(): { state: McpState; error?: string }; check(): Promise<void>; target?: string };
+  // Why a session may not reach this server at all (its tools, resources and
+  // prompts alike), or nothing: memory turned off in that session, for the store's.
+  refuses?: (session: string) => string | undefined;
   // What a call does, for the gate, before any card (phone control refuses an unarmed phone here).
   judge?: (tool: string, input: any) => Promise<CallClass>;
 };
@@ -864,8 +867,15 @@ export class McpManager {
     ]);
   }
 
+  // Why a session may not reach a server Keel brings, or nothing.
+  refusal(name: string, session: string | undefined): string | undefined {
+    return session ? this.entries.get(name)?.bundled?.refuses?.(session) : undefined;
+  }
+
   call(name: string, tool: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     const b = this.entries.get(name)?.bundled;
+    const no = this.refusal(name, ctx.sessionId);
+    if (no) return Promise.resolve({ content: no, is_error: true });
     if (b?.call) return b.call(tool, input, ctx, (t, i, m) => this.callRaw(name, t, i, ctx, m));
     return this.callRaw(name, tool, input, ctx);
   }

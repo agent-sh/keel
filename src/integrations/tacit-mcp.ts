@@ -6,8 +6,9 @@
 // is recorded as (memory-store.ts). Its list ships with Keel, so a search
 // starts nothing; once it runs, its own list is the one offered.
 //
-// A session with memory turned off is refused here, before any card: the
-// owner said that session does not read the store.
+// A session with memory turned off is refused here, before any card, its
+// tools, resources and prompts alike: the owner said that session does not
+// read the store.
 import type { McpManager } from "../mcp/manager.ts";
 import type { McpTool } from "../mcp/client.ts";
 import { onSettings } from "../admin/settings.ts";
@@ -45,9 +46,6 @@ export function installTacitServer(m: McpManager, useMemory: (session: string) =
     tools: (shipped.tools as any[]).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) as McpTool[],
     instructions: shipped.instructions,
     reads: (tool) => READS.has(tool),
-    call(tool, input, ctx, run) {
-      if (!useMemory(ctx.sessionId)) return Promise.resolve({ content: MEMORY_OFF, is_error: true });
-      return run(tool, input);
-    },
+    refuses: (session) => (useMemory(session) ? undefined : MEMORY_OFF),
   });
 }

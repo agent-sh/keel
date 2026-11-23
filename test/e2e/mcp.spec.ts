@@ -315,6 +315,9 @@ test("tacit's tools reach a session, and a server that fails says so", async ({ 
   const off = await open(false);
   await request.post(`/api/sessions/${off}/messages`, { data: { text: calls([{ name: "mcp_call", input: { tool: "tacit__tacit_search", arguments: { query: "code word" } } }]) } });
   await expect.poll(async () => (await results(off))[0] ?? "", { timeout: 60_000 }).toContain("Memory is turned off in this session");
+  // Its resources and prompts too.
+  await request.post(`/api/sessions/${off}/messages`, { data: { text: calls([{ name: "mcp_call", input: { tool: "mcp__list_resources", arguments: { server: "tacit" } } }, { name: "mcp_call", input: { tool: "mcp__list_prompts", arguments: { server: "tacit" } } }]) } });
+  await expect.poll(async () => (await results(off)).slice(1).filter((r) => r.includes("Memory is turned off in this session")).length, { timeout: 60_000 }).toBe(2);
 
   // The panel: tacit as Keel's own, the broken one failed with its reason.
   await page.goto("/");
