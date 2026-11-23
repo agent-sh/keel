@@ -22,6 +22,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,21 +58,54 @@ private fun closedWords(c: Card): Pair<State, String> = when (c.state) {
     else -> State.IDLE to c.state
 }
 
+/**
+ * Whether every line of a card's text has been on the screen. Its box's first line was in the window
+ * (its top edge not cut by the list or the window) while the box was scrolled to its start, and its last
+ * line while scrolled to its end, each at some moment: the lines between passed through the screen.
+ * Fitting its box is not enough: in the transcript (a list opened at its end) a card taller than the
+ * list shows its last lines and its buttons while its first lines sit above the top (the keyboard open,
+ * landscape, a split screen, large text).
+ */
+class Reading(private val scroll: androidx.compose.foundation.ScrollState) {
+    var read by mutableStateOf(false)
+        private set
+    private var top = false
+    private var bottom = false
+    private var at: androidx.compose.ui.layout.LayoutCoordinates? = null
+
+    fun place(c: androidx.compose.ui.layout.LayoutCoordinates) { at = c; check() }
+
+    fun check() {
+        val c = at ?: return
+        if (read || !c.isAttached) return
+        val max = scroll.maxValue
+        if (max == Int.MAX_VALUE) return
+        // The box as drawn (cut by every parent and the window), and where its edges are.
+        val shown = c.boundsInWindow()
+        if (shown.height <= 0f) return
+        val y = c.positionInWindow().y
+        if (scroll.value == 0 && shown.top <= y + 1f) top = true
+        if (scroll.value >= max && shown.bottom >= y + c.size.height - 1f) bottom = true
+        if (top && bottom) read = true
+    }
+}
+
 /** A card, live while it waits; closed, it says what was decided. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> Unit)? = null) {
+fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String? = null, onOpen: (() -> Unit)? = null) {
     val k = k()
     var busy by remember(c.id) { mutableStateOf(false) }
     var error by remember(c.id) { mutableStateOf("") }
     val picks = remember(c.id) { mutableStateMapOf<String, List<String>>() }
     val other = remember(c.id) { mutableStateMapOf<String, String>() }
-    // A permission is allowed only for what was read: every line of its text has been on screen
-    // (it fits its box, or the owner scrolled to its end). The daemon holds an allow without that word.
+    // A permission or a plan is allowed only for what was read: every line of its text has been on
+    // the screen (Reading). The daemon holds an allow without that word.
     // (Remembered for this text of this card: another text under the same id was not read.)
     val scroll = rememberScrollState()
-    var read by remember(c.id, c.shown) { mutableStateOf(false) }
-    LaunchedEffect(c.id, c.shown) { snapshotFlow { scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue }.collect { if (it) read = true } }
+    val reading = remember(c.id, c.shown) { Reading(scroll) }
+    LaunchedEffect(reading) { snapshotFlow { scroll.value to scroll.maxValue }.collect { reading.check() } }
+    val read = reading.read
     // A plan sent back: what to change, written under it.
     var back by remember(c.id) { mutableStateOf(false) }
     var feedback by remember(c.id) { mutableStateOf("") }
@@ -102,7 +138,7 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
                 Spacer(Modifier.height(8.dp))
                 Box(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.sunken).border(1.dp, k.line, RoundedCornerShape(S.r))
-                        .heightIn(max = if (c.pending) 420.dp else 160.dp).verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .heightIn(max = if (c.pending) 420.dp else 160.dp).onGloballyPositioned { reading.place(it) }.verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
                         .semantics { contentDescription = "plan-${c.id}" },
                 ) { Markdown(c.text.ifBlank { c.command }, T.ui) }
                 if (c.pending && !c.mayAllow(read)) { Spacer(Modifier.height(8.dp)); Txt(c.readFirst, T.small, k.muted, Modifier.semantics { contentDescription = "read-first-${c.id}" }) }
@@ -114,7 +150,7 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
                 // The whole request, drawn left to right in the order it is written. A held one gets more room to read in.
                 if (c.shown.isNotBlank()) Box(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))
-                        .heightIn(max = if (c.held) 360.dp else 180.dp).verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .heightIn(max = if (c.held) 360.dp else 180.dp).onGloballyPositioned { reading.place(it) }.verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
                         .semantics { contentDescription = "request-${c.id}" },
                 ) { Txt(c.shown, T.code.copy(textDirection = TextDirection.Ltr), k.fg) }
                 if (c.pending && !c.mayAllow(read)) { Spacer(Modifier.height(8.dp)); Txt(c.readFirst, T.small, k.muted, Modifier.semantics { contentDescription = "read-first-${c.id}" }) }
