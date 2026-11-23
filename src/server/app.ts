@@ -382,6 +382,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             }
             if (body.settings.speed && info && !speedOffer(info, settings.speed)) return bad(`${info.name} has no ${settings.speed} speed on ${info.provider}`);
             if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");
+            if (settings.compact_by_price !== undefined && typeof settings.compact_by_price !== "boolean") return bad("compact_by_price is true or false");
           }
           const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));
           for (const p of mine) await p.check?.(s, body);

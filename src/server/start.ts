@@ -105,6 +105,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   process.once("exit", () => { try { store.side.flush(); } catch {} });
   // And a compaction has its summary checked against the whole conversation there, not on the loop.
   store.settleOff = (ask) => readsOf(store).run("compact.settle", ask);
+  // And compaction by price reads its forecast's ledger there.
+  store.priceFactsOff = (a) => readsOf(store).run("compact.priceFacts", a);
   // (What the store has to say of writes it owes and could not keep.)
   store.owedSaid = (e) => void errors.capture("server", e, { at: "owed writes" });
   // The daemon's lock on its store, looked at in the kernel's table twice a

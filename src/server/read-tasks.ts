@@ -16,6 +16,7 @@ import type { SettleAsk } from "../engine/compact.ts";
 import { readHours, type HoursAsk } from "../admin/hours-read.ts";
 import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.ts";
 import { boardChecks, boardFacts } from "../board/facts.ts";
+import { priceFactsRead } from "../engine/price-facts.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -42,6 +43,8 @@ export const tasks = {
   "claude.mcpChoices": (_db: Database, a: { files: string[]; roots: string[] }) => claudeMcpChoices(a.files, a.roots),
   // A summary checked against every message of its branch (a compaction).
   "compact.settle": (db: Database, a: SettleAsk) => settleStored(db, a),
+  // What compaction by price forecasts from: finished agents' step counts, and summaries' sizes and times (src/engine/price-facts.ts).
+  "compact.priceFacts": (db: Database, a: { since: number; quiet: number }) => priceFactsRead(db, a),
   // Where a session's agent tree spent its time: its spans, turns, agents and waits (src/admin/hours-read.ts).
   "hours.tree": (db: Database, a: HoursAsk) => readHours(db, a),
   // Why a range cost what it did, from the cost drivers' rollup; and that rollup held against the ledger (no repair: the thread reads only).

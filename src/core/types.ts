@@ -135,6 +135,9 @@ export type SessionSettings = {
   fallback?: string;   // model id to continue on when the session's model declines (for good) or stays overloaded (that turn)
   compact_at?: number; // owner ceiling in tokens; absent = a share of the model's window
   idle_compact?: false; // false: no summary is prepared while the session is idle (src/engine/compact.ts)
+  // An agent compacts when the steps it is expected to take would read more than a summary costs (src/engine/price-compact.ts):
+  // true or false for its whole tree, set on a session at the top (a trial's arm sets it there); absent = by the window only.
+  compact_by_price?: boolean;
   speed?: string;      // a speed offer id of the model's listing; absent = standard
   // Marks, daemon state every client shares (src/server/routes/marks.ts).
   pinned_ms?: number;  // pinned at; absent = not pinned

@@ -19,6 +19,7 @@ import { Side } from "./side.ts";
 import { keyBlocks } from "./message-facts.ts";
 import { cacheStatements } from "./statement-cache.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
+import type { FactsRead } from "../engine/price-facts.ts";
 
 // Every transaction of this connection begins as a writer (BEGIN IMMEDIATE).
 // One that begins as a reader and writes later cannot wait for the write
@@ -409,6 +410,8 @@ export class Store {
   // A summary settled against its branch on the read thread (src/engine/settle-read.ts), set by the
   // daemon: without it the caller settles on the loop.
   settleOff?: (ask: SettleAsk) => Promise<Settled>;
+  // What compaction by price forecasts from, read on the read thread (src/engine/price-facts.ts), set by the daemon.
+  priceFactsOff?: (a: { since: number; quiet: number }) => Promise<FactsRead>;
 
   // The store takes no writes for now: its disk does not answer and its log
   // is at the ceiling, or the checkpoint thread holds the write lock in a

@@ -227,6 +227,14 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
       guards: [{ metric: "error", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
+    // Half of the new session trees: in the price arm their agents compact by price (src/engine/price-compact.ts).
+    id: "compact_price", label: "Agents compact by price",
+    make: () => ({ name: "Compaction by price", mode: "live", template: "compact_price",
+      hypothesis: "Agents that compact when a summary costs less than reading their context over the steps ahead cost less per turn, without more errors or failed tool calls.",
+      arms: [{ name: "window" }, { name: "price", settings: { compact_by_price: true } }], primary: "cost_usd",
+      guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
+  },
+  {
     id: "speed", label: "Speed tier",
     make: () => ({ name: "Speed tier", mode: "live", template: "speed",
       hypothesis: "A faster tier shortens turns enough to be worth its price.",

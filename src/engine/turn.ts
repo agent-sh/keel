@@ -37,12 +37,14 @@ import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successo
 import { cleanTitle, firstReply, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { derived } from "../core/message-facts.ts";
-import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing, keptMessages, fixedContext } from "./compact.ts";
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
-import { anchorsOf } from "./trail.ts";
+import { anchorsOf, TRAIL_BYTES } from "./trail.ts";
+import { priceCompaction, residual, type PriceVerdict, type Residual } from "./price-compact.ts";
+import { PriceFacts } from "./price-facts.ts";
 import type { WaitShape } from "./cache-plan.ts";
 import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
@@ -423,6 +425,14 @@ const MIN_PART_BYTES = 2_000;
 // Room planned in each part's request for the summary of the parts before it:
 // what the model can write in one reply, at most a quarter of the window.
 const SUMMARY_ROOM_BYTES = (st: Step) => Math.floor(Math.min(st.info.output, st.info.context / 4) * bytesPerToken(st.info.id));
+
+// What a compaction by price keeps of its decision on its event: what the
+// steps ahead were expected to read less and what the summary cost (dollars),
+// the steps priced, where their forecast came from, and the context it keeps.
+const priceData = (p: PriceVerdict & { ahead: Residual; delay: number; keep: number }) => ({
+  save_usd: Math.round(p.save * 1e4) / 1e4, cost_usd: Math.round(p.cost * 1e4) / 1e4, steps: Math.round(p.steps * 10) / 10,
+  from: p.ahead.from, comparable: p.ahead.n, delay: p.delay, keep_tokens: Math.round(p.keep), gap_tokens: p.gap, best_gap_tokens: p.best_gap,
+});
 
 // A summary cut at the output limit, or one too long to go with the next part
 // of a transcript, is asked for again this many times: each request of a
@@ -2529,6 +2539,7 @@ export class Engine {
         let events = this.lineage(id);
         const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
         let mark: ReturnType<typeof followUpMark>;
+        let priced: ReturnType<Engine["priced"]>;
         const used = this.used(events, st);
         // The whole request against the window: the same count for a context
         // a reply has measured, the system prompt and tools on top for one
@@ -2567,6 +2578,13 @@ export class Engine {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
           events = this.lineage(id);
+        } else if (!summaryFailed && (priced = this.priced(session, events, st, used))?.compact && events.some((e) => e.kind === "assistant") && worthSummarizing(summarizable(events))) {
+          // Compaction by price: the summary is written in the background while
+          // the steps go on, and put in place at the first step after it is
+          // ready, the newest steps kept as they were (no tool result the model
+          // has not answered yet is summarized away, and no step waits for it).
+          if (this.applyPrepared(id, events, priced)) events = this.lineage(id);
+          else this.prepare(id, st, false);
         } else if (!summaryFailed && used >= limit * (PREPARE_SHARE / COMPACT_SHARE)) {
           this.prepare(id, st);
         }
@@ -3173,6 +3191,68 @@ export class Engine {
       .finally(() => { if (this.preparing.get(id)?.abort === abort) this.preparing.delete(id); });
   }
 
+  // Compaction by price (src/engine/price-compact.ts): whether this agent's
+  // context is worth a summary now, priced over the steps it is expected to
+  // take. Only for an agent whose tree runs it (its own setting, or its root's:
+  // a trial's arm sets the root's), and only below the window's line, which
+  // compacts anyway. Undefined when it cannot be priced.
+  private readonly priceFacts = new PriceFacts(() => this.store.priceFactsOff, (e) => this.errors.capture("server", e, { at: "reading the ledger for compaction by price" }));
+  private agentKinds = new Map<string, string | undefined>();
+  private priceOn(session: Session): boolean {
+    if (!session.parent_id) return false;
+    for (let s: Session | undefined = session, up = 0; s && up < 32; s = s.parent_id ? this.store.session(s.parent_id) : undefined, up++) {
+      if (s.settings.compact_by_price !== undefined) return s.settings.compact_by_price === true;
+    }
+    return false;
+  }
+  private priced(session: Session, events: readonly StoredEvent[], st: Step, used: number): (PriceVerdict & { ahead: Residual; delay: number; keep: number }) | undefined {
+    const price = st.info.price;
+    if (!price || !this.priceOn(session)) return undefined;
+    const bpt = bytesPerToken(st.info.id);
+    const tokens = (bytes: number) => Math.ceil(bytes / bpt);
+    const prefix = tokens(this.prefixBytes(st));
+    if (used <= prefix) return undefined;
+    // Its steps so far, and the context each read since the last checkpoint (what a step adds).
+    let done = 0;
+    const since: { ts: number; prompt: number }[] = [];
+    const cp = checkpointAt(events).at;
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i]!;
+      if (e.kind !== "assistant") continue;
+      done++;
+      const u = e.data.usage;
+      if (i > cp && u && e.data.model === st.info.id) since.push({ ts: e.ts, prompt: (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0) });
+    }
+    const growth = taskShape(since.slice(-20).map((s) => s.prompt)).growth;
+    const facts = this.priceFacts.get();
+    const sum = facts?.summaries.get(st.info.id);
+    // The summary's size and time as this model's summaries had them; else its room (the most it may be).
+    const out = sum?.out ?? tokens(SUMMARY_ROOM_BYTES(st));
+    const gaps = since.slice(-11).map((s, k, a) => (k ? s.ts - a[k - 1]!.ts : 0)).slice(1).filter((g) => g > 0).sort((a, b) => a - b);
+    const stepMs = gaps.length ? gaps[Math.floor(gaps.length / 2)]! : 0;
+    // The steps the summary takes to be written while the agent works: it is in place at the next one at the earliest.
+    const delay = Math.max(1, sum?.ms && stepMs ? Math.ceil(sum.ms / stepMs) : 1);
+    if (!this.agentKinds.has(session.id)) this.agentKinds.set(session.id, this.store.db.query<{ type: string }, [string]>("SELECT type FROM agents WHERE session_id = ? LIMIT 1").get(session.id)?.type);
+    const ahead = residual(done, delay, { type: this.agentKinds.get(session.id), model: st.info.id }, facts?.lives ?? []);
+    const ask = { used, prefix, growth, summaryIn: tokens(utf8Bytes(summaryPrompt())), summaryOut: out, ahead, price, long: this.asksLong(session.id, st) };
+    // A bound first: even a summary that kept nothing but the prefix would not pay.
+    const bound = priceCompaction({ ...ask, keep: prefix + out });
+    if (!bound?.compact) return bound && { ...bound, ahead, delay, keep: prefix + out };
+    // What the summary keeps: the words kept verbatim, the fixed context, the trail and the steps taken while it is written.
+    const kept = keptMessages(events, this.wordsBudget(st));
+    const keptBytes = [...kept.owner_messages, ...(kept.other_messages ?? [])].reduce((n, t) => n + utf8Bytes(t), 0) + fixedContext(events).reduce((n, f) => n + utf8Bytes(f.text), 0) + TRAIL_BYTES;
+    // And what the agent reads again after it: the files it wrote since the last checkpoint, at their newest read.
+    const span = events.slice(Math.max(0, checkpointAt(events).keepFrom));
+    const written = new Set<string>();
+    for (const e of span) if (e.kind === "assistant") for (const b of e.data.blocks ?? []) {
+      const p = b.type === "tool_use" ? b.input?.file_path ?? b.input?.path : undefined;
+      if (typeof p === "string" && ["content", "new_string", "edits", "patch"].some((k) => b.input?.[k] !== undefined)) written.add(p);
+    }
+    const keep = prefix + out + tokens(keptBytes + rereadBytes(span, [...written])) + delay * growth;
+    const v = priceCompaction({ ...ask, keep });
+    return v && { ...v, ahead, delay, keep };
+  }
+
   // A summary's statements checked against every message of the branch it
   // summarizes (settle). The messages before the last checkpoint are in
   // nobody's memory, so the check is made on the read thread from the stored
@@ -3212,10 +3292,12 @@ export class Engine {
 
   // The prepared summary as a checkpoint, when it covers part of this branch
   // after its last checkpoint. The events since stay verbatim after it.
-  private applyPrepared(id: string, events: readonly StoredEvent[]): boolean {
+  // `price`: put in place by compaction by price, which says so with what it priced.
+  private applyPrepared(id: string, events: readonly StoredEvent[], price?: NonNullable<ReturnType<Engine["priced"]>>): boolean {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (!row) return false;
     const data = JSON.parse(row.data);
+    if (price) Object.assign(data, { trigger: "price", price: priceData(price) });
     if (!preparedHolds(events, row.covered, false, data)) {
       // Written for another branch: kept for when that branch is shown again.
       // One this branch has passed (a checkpoint came after it) serves no more.

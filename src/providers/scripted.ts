@@ -386,6 +386,12 @@ export class ScriptedProvider implements Provider {
         if (head.startsWith("[harness] This conversation was compacted") && calls.some((c) => c.name === "keel__new_context")) {
           return reply(`Went on in a fresh context. ${head.split("\n\n[")[0]!.trim().split("\n").at(-1)}`);
         }
+        // `script:then-summary` on a later line: once a summary replaced the context (the prompt is
+        // inside it now), the model goes on from it and reports what it read there, as one that
+        // follows a summary does, instead of starting the calls again.
+        if (/\nscript:then-summary\b/.test(owner) && head.startsWith("[harness] This conversation was compacted")) {
+          return reply(`Went on from the summary: ${head.match(/State: [^\n]*/)?.[0] ?? head.split("\n")[2] ?? ""}`);
+        }
         const done = msgs.slice(at + 1).filter((m) => m.role === "assistant").length;
         // `script:then-calls [...]` on a later line: each input that comes after the calls and is not a
         // tool result (a harness note, a parent's message) is answered with these calls, in order, and a
