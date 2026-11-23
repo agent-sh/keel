@@ -285,12 +285,17 @@ async function misfits(page: Page) {
     const box = (el: Element) => {
       const b = el.getBoundingClientRect();
       let l = b.left, t = b.top, r = b.right, btm = b.bottom;
+      // A box that cuts what it holds for good (overflow hidden) makes the target as small as it shows;
+      // one that scrolls shows part of a target that a scroll brings in whole.
+      // (Not past a box that scrolls: what lies outside it is a scroll away, whatever cuts it further out.)
+      let w = b.width, h = b.height, scrollsX = false, scrollsY = false;
       for (let e = el.parentElement; e && e !== document.body; e = e.parentElement) {
         const cs = getComputedStyle(e), c = e.getBoundingClientRect();
-        if (cs.overflowX !== "visible") { l = Math.max(l, c.left); r = Math.min(r, c.right); }
-        if (cs.overflowY !== "visible") { t = Math.max(t, c.top); btm = Math.min(btm, c.bottom); }
+        const cuts = (o: string) => o === "hidden" || o === "clip";
+        if (cs.overflowX !== "visible") { l = Math.max(l, c.left); r = Math.min(r, c.right); if (cuts(cs.overflowX) && !scrollsX) w = Math.min(w, Math.max(0, Math.min(b.right, c.right) - Math.max(b.left, c.left))); else scrollsX = true; }
+        if (cs.overflowY !== "visible") { t = Math.max(t, c.top); btm = Math.min(btm, c.bottom); if (cuts(cs.overflowY) && !scrollsY) h = Math.min(h, Math.max(0, Math.min(b.bottom, c.bottom) - Math.max(b.top, c.top))); else scrollsY = true; }
       }
-      return { l, t, r, b: btm, w: b.width, h: b.height };
+      return { l, t, r, b: btm, w, h };
     };
     const items = outer.map((el) => ({ el, n: name(el), L: layer(el), ...box(el) }));
     const small = items.filter((t) => t.w < tap - 0.5 || t.h < tap - 0.5).map((t) => `${t.n} ${t.w.toFixed(1)}x${t.h.toFixed(1)}`);
