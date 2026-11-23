@@ -359,6 +359,7 @@ const waitSchema = {
     path: { type: "string", description: "file: wait until it exists (and holds `contains`); log: watch lines appended to it" },
     contains: { type: "string", description: "file: text the file must contain" },
     match: { type: "string", description: "log: a regular expression a new line must match" },
+    writer: { type: "string", description: "file, log: the ID of your background command that writes the file, when its command line does not name it: its end without the condition ends the wait" },
     url: { type: "string", description: "http: the URL to probe" },
     status: { type: "number", description: "http: the status to wait for (default any 2xx or 3xx)" },
     pid: { type: "number", description: "process: wait until this process ends" },

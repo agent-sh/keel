@@ -1533,6 +1533,9 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // Parked for a daemon stop: the agent has not ended. The next daemon
   // continues the turn or ends the agent (onCutTurn, onCutTurnHeld).
   if (reason === "restart" && !stopping.has(a.id)) return;
+  // Its file and log waits whose writer ended, as it was told in this turn, can bring it nothing new:
+  // they would wake it after its report only to say what it knows (src/automation/waits.ts dropSpent).
+  if (!stopping.has(a.id)) waits.dropSpent(sessionId);
   const { engine } = D();
   // (A turn of the owner's own message is about to start in its place: a prompt edited or sent now on its page.)
   if (engine.isRunning(sessionId) || engine.startsNext?.(sessionId) || hasPending(sessionId) || redirecting.has(a.id)) return;
@@ -1587,6 +1590,11 @@ function lastRound(a: AgentRecord): string {
 
 async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: StopBy | null; end_reason: string; note?: string }) {
   withdrawParked(a);
+  // It ended: a wait it left set would wake it after its report (as a background command a subagent
+  // started ends with its final response in Claude Code). What a wait fired and its session was not
+  // given yet is not given either.
+  waits.cancelForSession(a.session_id, `Cancelled at the end of its agent (${status}): a wait left set would wake it after its report.`);
+  withdraw(a.session_id, (m) => m.kind === "wait" || (Array.isArray(m.parts) && m.parts.some((x: any) => x?.kind === "wait")));
   const got = collect(a, status === "incomplete" ? how.end_reason : undefined);
   let result = got.text;
   if (how.note) result += `${result ? "\n\n" : ""}${how.note}`;
@@ -2127,6 +2135,19 @@ export function stopChildrenOf(parentId: string) {
 
 export const isEnded = (a: AgentRecord) => a.status !== "running" && a.status !== "waiting";
 slotGate.admit = admit;
+// A wait of a parked agent ended because it can no longer fire (its writer ended or stalled): the agent
+// is woken by it, and its parent is told in a line of its next input, as a park is.
+waits.waitEnded.tell = (w, cause) => {
+  const a = byChild(w.session_id);
+  if (!a || a.status !== "waiting" || !a.background || isSilent(a.id)) return;
+  const parent = D().store.session(a.parent_id);
+  if (!parent || parent.archived) return;
+  const path = (w.spec as { path?: string }).path ?? "";
+  const text = `[harness] Agent ${attr(a.title) ? `"${attr(a.title)}" ` : ""}(${a.id}) waited on ${w.kind} wait ${w.id}, which ended: ${cause === "stalled" ? "the job that writes its file stopped making progress" : "the job that writes its file ended"} without what the wait was for${path ? ` (${attr(path)})` : ""}. The agent is told and goes on; its report comes when it finishes.`;
+  const meta = { kind: "harness", agent_id: a.id, wait_id: w.id, status: "wait_ended" };
+  // (Read again when it is sent: an agent that has reported since says it all in its report.)
+  deliver(a.parent_id, text, meta, { ride: true, refresh: () => (isEnded(get(a.id) ?? a) ? undefined : { text, meta }) });
+};
 slotGate.inLine = (sessionId) => { if (!kept.has(D().store)) return false; const a = byChild(sessionId); return !!a && !!lineAt(a.parent_id)?.has(`wake:${a.id}`); };
 // Its result goes to its own panel, never to the parent's conversation (a reviewer).
 export const isSilent = (id: string) => !!defOf(id)?.silent;

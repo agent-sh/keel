@@ -684,3 +684,100 @@ test("a wait set before the job that writes its file finds the job when it start
     await stopJob(job);
   }
 });
+
+// A wait whose writer is gone can no longer fire: it ends at the writer's end with the reason, whatever
+// holds the job (a cgroup of its own, or its process group and session), and however the writer is known:
+// its command names the file, it holds the file open for writing, or the model named it.
+test("a log wait on a file a job writes inside itself ends at the job's end, with the reason", async () => {
+  const { startJob, waitJob } = await import("../tools/jobs.ts");
+  const out = join(dir, "inside.log");
+  const script = join(dir, "inside.sh");
+  writeFileSync(script, `exec 3>>"${out}"\necho started >&3\nsleep 0.6\necho finished >&3\n`);
+  const job = startJob({ sessionId: s.id, command: `bash ${script}`, cwd: dir, logDir: join(dir, "jobs") });
+  await until(() => existsSync(out) && readFileSync(out, "utf8").includes("started"));
+  const w = waits.create(s.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 600 });
+  expect(waits.carries(w)).toContain(`job ${job.id} that writes it`);
+  await waitJob(job, 5000);
+  await Bun.sleep(2100);
+  await waits.tick();
+  expect(status(w.id)).toBe("ended");
+  expect(wakes(w.id)[0]).toContain(`The job that writes ${out} ended and no line of it matched ^DONE$.`);
+});
+
+test("a file wait on the command the model named as its writer ends at its end; a writer that is not one of the session's commands is refused", async () => {
+  const { startJob, waitJob } = await import("../tools/jobs.ts");
+  const out = join(dir, "named.out");
+  const job = startJob({ sessionId: s.id, command: `python3 -c "import time; time.sleep(0.4); open('${out}', 'w').write('partial')"`, cwd: dir, logDir: join(dir, "jobs") });
+  const w = waits.create(s.id, waits.normalize({ kind: "file", path: out, contains: "PASSED", writer: job.id }, dir), { timeout_seconds: 600 });
+  await waitJob(job, 5000);
+  await Bun.sleep(2100);
+  await waits.tick();
+  expect([status(w.id), wakes(w.id)[0]]).toEqual(["ended", expect.stringContaining(`The job that writes ${out} ended and it does not contain "PASSED".`)]);
+  expect(() => waits.create(s.id, waits.normalize({ kind: "file", path: out, writer: "bnope" }, dir))).toThrow(/no background command bnope in this session/);
+  // No writer known: the wait stays until its deadline, as before.
+  const lone = waits.create(s.id, waits.normalize({ kind: "file", path: join(dir, "never.out") }, dir), { timeout_seconds: 600 });
+  await waits.tick();
+  expect(status(lone.id)).toBe("active");
+  waits.cancel(lone.id);
+});
+
+test("a log line the writer left without a newline is matched at its end", async () => {
+  const { startJob, waitJob } = await import("../tools/jobs.ts");
+  const out = join(dir, "no-newline.log");
+  writeFileSync(out, "");
+  const job = startJob({ sessionId: s.id, command: `sleep 0.3; printf 'step\\nDONE' >> ${out}`, cwd: dir, logDir: join(dir, "jobs") });
+  const w = waits.create(s.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 600 });
+  await waitJob(job, 5000);
+  await waits.tick();
+  expect(status(w.id)).toBe("active");
+  await Bun.sleep(2100);
+  await waits.tick();
+  expect(status(w.id)).toBe("fired");
+  expect(wakes(w.id)[0]).toContain(`its last line, which job ${job.id} left without a newline before it ended):\nDONE`);
+});
+
+// A second watch of one run woke an agent a second time for the same line, after its report.
+test("waits on the same file that hold at once fire in one wake", async () => {
+  const p = log("two-watches.log");
+  const a = waits.create(s.id, waits.normalize({ kind: "file", path: p, contains: "exit" }, dir), { timeout_seconds: 60 });
+  const b = waits.create(s.id, waits.normalize({ kind: "log", path: p, match: "^exit" }, dir), { timeout_seconds: 60, note: "second watch" });
+  const before = sent.length;
+  appendFileSync(p, "exit 0\n");
+  await waits.tick();
+  await until(() => sent.length > before);
+  await Bun.sleep(50);
+  expect([status(a.id), status(b.id)]).toEqual(["fired", "fired"]);
+  const told = sent.slice(before);
+  expect(told).toHaveLength(1);
+  expect(told[0]).toContain(`Wait ${b.id} ("second watch") on the same file fired with it`);
+});
+
+test("an agent's wake names its other waits; its waits on a writer it was told ended are dropped at its turn's end", async () => {
+  const { startJob, waitJob } = await import("../tools/jobs.ts");
+  const kid = store.createSession({ model: "m", workspace: dir, title: "kid" });
+  // (The column the agents' migration adds: an agent's session names its parent.)
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(s.id, kid.id);
+  const p = join(dir, "kid.log");
+  writeFileSync(p, "");
+  const timer = waits.create(kid.id, waits.normalize({ kind: "timer", seconds: 300 }, dir), { note: "fallback check" });
+  const first = waits.create(kid.id, waits.normalize({ kind: "file", path: p, contains: "exit" }, dir), { timeout_seconds: 60 });
+  appendFileSync(p, "exit 1\n");
+  await waits.tick();
+  expect(waits.get(first.id)!.outcome).toContain(`Still set: timer wait ${timer.id} (due `);
+  expect(waits.get(first.id)!.outcome).toContain('"fallback check"');
+  waits.cancel(timer.id);
+  // Its command ended in the turn (its call's result said so): a wait on its file is spent.
+  const out = join(dir, "kid.out");
+  const job = startJob({ sessionId: kid.id, command: `echo partial > ${out}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
+  const spent = waits.create(kid.id, waits.normalize({ kind: "log", path: out, match: "PASSED" }, dir), { timeout_seconds: 600 });
+  const runs = startJob({ sessionId: kid.id, command: `sleep 5 > ${join(dir, "kid.run")}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
+  const live = waits.create(kid.id, waits.normalize({ kind: "file", path: join(dir, "kid.run"), contains: "x" }, dir), { timeout_seconds: 600 });
+  await waitJob(job, 5000);
+  expect(waits.dropSpent(kid.id)).toEqual([spent.id]);
+  expect([status(spent.id), status(live.id)]).toEqual(["cancelled", "active"]);
+  expect(waits.get(spent.id)!.outcome).toContain(`job ${job.id} that writes ${out} ended and the agent was told in the turn`);
+  waits.cancel(live.id);
+  const { stopJob } = await import("../tools/jobs.ts");
+  await stopJob(runs);
+});

@@ -69,3 +69,25 @@ test("a job's process that waits on something is not stuck: a timer, the network
   // A shell waiting on its own command, a deadlock, a stopped process: not waiting on anything outside.
   for (const wchan of ["do_wait", "futex_do_wait", "futex_wait_queue", "do_signal_stop", "0", ""]) expect([wchan, p({ wchan })]).toEqual([wchan, false]);
 });
+
+test("a writer's open file, its end, and a wait it leaves spent", async () => {
+  const { opensForWrite, writerGone, spentAtTurnEnd, othersText, WRITER_GRACE_MS } = await import("./wait-carry.ts");
+  // (fdinfo flags in octal: O_WRONLY 01, O_RDWR 02, with O_APPEND, O_LARGEFILE and O_CLOEXEC set.)
+  expect(["0100001", "02102001", "02", "0102002"].map(opensForWrite)).toEqual([true, true, true, true]);
+  expect(["0100000", "02100000", "", "zz"].map(opensForWrite)).toEqual([false, false, false, false]);
+  const now = 100_000;
+  expect(writerGone({ running: false, alive: false, ended: now - WRITER_GRACE_MS, now })).toBe(true);
+  expect(writerGone({ running: false, alive: false, ended: now - 10, now })).toBe(false);
+  expect(writerGone({ running: false, alive: true, ended: now - 60_000, now })).toBe(false);
+  expect(writerGone({ running: true, alive: true, now })).toBe(false);
+  expect(spentAtTurnEnd({ ended: 5, alive: false, told: true })).toBe(true);
+  expect(spentAtTurnEnd({ ended: 5, alive: false, told: false })).toBe(false);
+  expect(spentAtTurnEnd({ ended: 5, alive: true, told: true })).toBe(false);
+  expect(spentAtTurnEnd({ alive: false, told: true })).toBe(false);
+  const clock = () => "12:30";
+  expect(othersText([], "TaskStop", clock)).toBe("");
+  expect(othersText([{ id: "a1", kind: "timer", due: 1, note: 'check "runs"\n' }, { id: "b2", kind: "log" }], "cancel_wait", clock))
+    .toBe('Still set: timer wait a1 (due 12:30, "check runs"), log wait b2. If this wake is what one of them waited for, cancel it with cancel_wait in this turn\'s calls: a wait left set wakes you again, after your report too.');
+  const many = Array.from({ length: 7 }, (_, i) => ({ id: `w${i}`, kind: "file" }));
+  expect(othersText(many, "TaskStop", clock)).toContain("file wait w4 and 2 more.");
+});

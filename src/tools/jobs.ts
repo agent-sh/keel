@@ -1060,6 +1060,8 @@ export async function processesOf(list: Job[]): Promise<Map<string, JobProcess[]
 // Whether anything of a job is alive now: its command, what a stop left, its cgroup, or (with no cgroup) its
 // process group or session after its command ended (a server it started with `&`).
 export const jobHasProcesses = (j: Job): boolean => jobLive(j) || members(j).length > 0;
+// The pids alive of a job, as jobHasProcesses finds them (a wait looks at their open files).
+export const jobPidsOf = (j: Job): number[] => members(j).map((m) => m.pid);
 // The processes of each session's commands that still run, by what the daemon holds each command by: its cgroup
 // (the scope it was started in), else its process group and session, each with its start time checked (members).
 // Never by what a process says of itself: its environment is its own to set.
@@ -1105,6 +1107,8 @@ export function takeNotice(sessionId: string, key: string) {
   if (keep.length) notices.set(sessionId, keep);
   else notices.delete(sessionId);
 }
+// Whether the note that a background command ended still waits for its session's next request.
+export const endNoticeOwed = (sessionId: string, jobId: string) => !!notices.get(sessionId)?.some((n) => n.job === jobId);
 
 export function drainNotices(sessionId: string): Notice[] {
   const n = notices.get(sessionId) ?? [];

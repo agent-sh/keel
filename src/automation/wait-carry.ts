@@ -112,3 +112,38 @@ export function waitingProc(p: ProcLook): boolean {
 export function stalled(o: { now: number; since: number; waiting: boolean; after: number }): boolean {
   return !o.waiting && o.now - o.since >= o.after;
 }
+
+// Whether an open file's flags (`/proc/PID/fdinfo/N`, octal) open it for writing: O_WRONLY or O_RDWR.
+export function opensForWrite(flags: string): boolean {
+  if (!/^[0-7]+$/.test(flags)) return false;
+  return (Number.parseInt(flags, 8) & 3) !== 0;
+}
+
+// How long after a writer's end its last writes are given to land and be probed.
+export const WRITER_GRACE_MS = 2000;
+
+// A file's writer is gone: its command ended a moment ago or more, and nothing it started is alive.
+export function writerGone(o: { running: boolean; alive: boolean; ended?: number; now: number }): boolean {
+  return !o.running && !o.alive && o.ended !== undefined && o.now - o.ended >= WRITER_GRACE_MS;
+}
+
+// At the end of an agent's turn, a wait on a file whose writer ended can bring it nothing new: the
+// writer's end was told to the agent in the turn (the result of the call that ran it, or the note of a
+// background command's end, which goes with a request: a later step), and nothing of it is alive.
+export function spentAtTurnEnd(o: { ended?: number; alive: boolean; told: boolean }): boolean {
+  return o.ended !== undefined && o.told && !o.alive;
+}
+
+// What an agent's wake says of its other active waits: each by kind and id (a timer with when it is
+// due), its note as the model wrote it, and how to cancel the ones this wake answered.
+export type OtherWait = { id: string; kind: string; note?: string; due?: number };
+export function othersText(list: OtherWait[], tool: string, clock: (ms: number) => string): string {
+  if (!list.length) return "";
+  const shown = list.slice(0, 5).map((o) => {
+    const note = o.note ? `"${o.note.replace(/[\s<>"]+/g, " ").trim().slice(0, 60)}"` : "";
+    const parts = [o.due ? `due ${clock(o.due)}` : "", note].filter(Boolean).join(", ");
+    return `${o.kind} wait ${o.id}${parts ? ` (${parts})` : ""}`;
+  });
+  const more = list.length > 5 ? ` and ${list.length - 5} more` : "";
+  return `Still set: ${shown.join(", ")}${more}. If this wake is what one of them waited for, cancel it with ${tool} in this turn's calls: a wait left set wakes you again, after your report too.`;
+}

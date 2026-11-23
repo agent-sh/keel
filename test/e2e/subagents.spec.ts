@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the model starts two background subagents in one step; they run as
@@ -445,5 +447,47 @@ test("agents started together are one line, and the parent's row moves once for 
   } finally {
     writeFileSync(gate, "go\n");
     await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
+// An agent that set two watches of one run and a third on a line that never comes: the first two fire
+// in one wake, the third is cancelled when the agent's report goes, and nothing wakes the agent after
+// its report.
+test("an agent's leftover waits do not wake it after its report", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const dir = mkdtempSync(join(tmpdir(), "keel-agent-leftovers-"));
+  const log = join(dir, "run.log");
+  writeFileSync(log, "");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Leftover waits" } })).json();
+  try {
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+    const child = [
+      { name: "Bash", input: { command: `sleep 2; echo "exit 1" >> ${log}`, run_in_background: true } },
+      { name: "wait_for", input: { kind: "file", path: log, contains: "exit", timeout_seconds: 120, note: "run done" } },
+      { name: "wait_for", input: { kind: "log", path: log, match: "^exit", timeout_seconds: 120, note: "second watch" } },
+      { name: "wait_for", input: { kind: "log", path: log, match: "PASSED", timeout_seconds: 120, note: "pass line" } },
+    ];
+    await page.goto(`/s/${session.id}`);
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: `Watch the run\nscript:calls ${JSON.stringify(child)}`, isolation: "none" } }])}` } });
+    await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 60_000 });
+    const [a] = (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents;
+    expect(a.status).toBe("completed");
+    // Nothing of the agent is left to wake it: no wait active, no wake owed.
+    const ws = (await (await request.get(`/api/sessions/${a.session_id}/background`)).json()).waits as any[];
+    expect(ws.filter((w) => w.status === "active")).toEqual([]);
+    // (The pass line's wait is cancelled at the agent's turn end, or ends at its writer's end while that turn runs: its wake is not given either way.)
+    expect(ws.map((w) => [w.note, w.note === "pass line" && w.status === "ended" ? "cancelled" : w.status]).sort()).toEqual([["pass line", "cancelled"], ["run done", "fired"], ["second watch", "fired"]]);
+    const { events } = await (await request.get(`/api/sessions/${a.session_id}`)).json();
+    const wakes = events.filter((e: any) => e.kind === "user" && /<wait_fired/.test(String(e.data.text)));
+    expect(wakes).toHaveLength(1);
+    expect(String(wakes[0].data.text)).toContain("on the same file fired with it");
+    const last = events.filter((e: any) => e.kind === "turn_end").at(-1);
+    expect(events.filter((e: any) => e.seq > last.seq && e.kind === "user")).toEqual([]);
+    await shoot(page, "agents-leftover-waits");
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+    rmSync(dir, { recursive: true, force: true });
   }
 });

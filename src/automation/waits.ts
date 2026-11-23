@@ -1,19 +1,19 @@
 import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { gitEnv } from "../core/git.ts";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
+import { D, attr, capture, deliver, emit, familyOf, inert, isPending, withdraw } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { readStat } from "../core/pid.ts";
 import { pumpText, readText } from "../core/proc.ts";
 import { lastDown, lateWords, LATE_MS, span } from "../core/late.ts";
 import { sayAt, waitEndLine, waitSetLine } from "../admin/daemon-log.ts";
-import { zonedClock } from "../core/clock.ts";
+import { localTime, zonedClock } from "../core/clock.ts";
 import { waitsFor } from "../core/state-words.ts";
 import { homedir } from "node:os";
 import { conceal } from "../core/conceal.ts";
-import { findJob, jobLive, jobsOf, running, type Job } from "../tools/jobs.ts";
-import { CARRY_MAX, carryText, HELD_ON_FILE, jobLine, stalled, waitingProc, writesPath, type ProcLook, type ThreadLook } from "./wait-carry.ts";
+import { endNoticeOwed, findJob, jobHasProcesses, jobLive, jobPidsOf, jobsOf, running, type Job } from "../tools/jobs.ts";
+import { CARRY_MAX, carryText, HELD_ON_FILE, jobLine, opensForWrite, othersText, spentAtTurnEnd, stalled, waitingProc, WRITER_GRACE_MS, writerGone, writesPath, type ProcLook, type ThreadLook } from "./wait-carry.ts";
 import type { Session } from "../core/types.ts";
 import { shownTo } from "../safety/sandbox-view.ts";
 
@@ -24,8 +24,9 @@ import { shownTo } from "../safety/sandbox-view.ts";
 
 export type WaitSpec =
   | { kind: "timer"; seconds?: number; at_ms?: number }
-  | { kind: "file"; path: string; contains?: string }
-  | { kind: "log"; path: string; match: string }
+  // `writer`: the id of the session's background command that writes the file, named by the model.
+  | { kind: "file"; path: string; contains?: string; writer?: string }
+  | { kind: "log"; path: string; match: string; writer?: string }
   | { kind: "http"; url: string; status?: number }
   | { kind: "process"; pid: number; start?: string }
   | { kind: "monitor"; command: string; match?: string; coalesce_ms?: number; max_events?: number }
@@ -155,7 +156,7 @@ type LogCursor = { offset: number; ident?: string; skip?: boolean; skipped?: num
 // `probing`: the one probe of the wait that has not answered yet (`late` once
 // it was given up on).
 type Probing = { started: number; abort: AbortController; late?: boolean };
-const live = new Map<string, { cpu?: number; quietSince?: number; grew?: string; offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; probing?: Probing; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
+const live = new Map<string, { cpu?: number; quietSince?: number; aliveAt?: number; grew?: string; offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; probing?: Probing; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
 const LOG_READ = 4 << 20; // a probe reads at most this much of a log
 const LINE_MAX = 64 * 1024; // a monitor matches lines up to this long; a longer one is cut there
 const DISPLAY = 2000; // characters of one line shown in an event
@@ -183,28 +184,33 @@ function stateOf(id: string): Record<string, any> {
   try { return r?.state ? JSON.parse(r.state) : {}; } catch { return {}; }
 }
 
-// The Keel job that writes a file or log wait's file: its own log is the file, or its command sends
-// its output there, and it was running when the wait was set or started after (one that ended before
-// says nothing of what comes). A running one is kept with the wait; one that ended is not, so a job
-// started after it is found. When none is found, none is looked for again until the session starts
-// another job (the newest start is kept).
+// The Keel job that writes a file or log wait's file: the one the model named (`writer`), else one whose
+// own log is the file, or whose command sends its output there, or one of whose processes holds the file
+// open for writing (a script that writes it inside itself), and it was running when the wait was set or
+// started after (one that ended before says nothing of what comes). A running one is kept with the wait;
+// one that ended is not, so a job started after it is found. When the command lines name none, they are
+// not read again until the session starts another job (the newest start is kept); the open files are
+// looked at every few seconds.
 const noWriter = new Map<string, number>();
 function linkJob(w: WaitRecord, now = Date.now()): Job | undefined {
   if (w.kind !== "file" && w.kind !== "log") return undefined;
   const st = stateOf(w.id);
   const kept = st.job ? findJob(w.session_id, st.job) : undefined;
-  if (kept && running(kept)) return kept;
+  if (kept && (st.named || running(kept))) return kept;
   const jobs = jobsOf(w.session_id);
   const newest = jobs.reduce((m, j) => Math.max(m, j.started), 0);
-  if (!kept && noWriter.get(w.id) === newest) return undefined;
   const path = (w.spec as { path: string }).path;
-  const home = homedir();
-  const found = jobs.filter((j) => j.started <= now && (running(j) || (j.ended ?? 0) >= w.created) && (!kept || j.started > kept.started) && (j.log === path || writesPath(j.command, j.cwd, home, path))).sort((a, b) => b.started - a.started)[0];
-  if (found && running(found)) setState(w.id, "job", found.id);
-  if (!found && !kept) {
-    if (noWriter.size > 512) noWriter.clear();
-    noWriter.set(w.id, newest);
+  let found: Job | undefined;
+  if (kept || noWriter.get(w.id) !== newest) {
+    const home = homedir();
+    found = jobs.filter((j) => j.started <= now && (running(j) || (j.ended ?? 0) >= w.created) && (!kept || j.started > kept.started) && (j.log === path || writesPath(j.command, j.cwd, home, path))).sort((a, b) => b.started - a.started)[0];
+    if (!found && !kept) {
+      if (noWriter.size > 512) noWriter.clear();
+      noWriter.set(w.id, newest);
+    }
   }
+  found ??= holderOf(w, jobs.filter((j) => running(j) && (!kept || j.started > kept.started)), path, now);
+  if (found && running(found)) setState(w.id, "job", found.id);
   return found ?? kept;
 }
 
@@ -218,6 +224,33 @@ export function onJob(sessionId: string, job: Job): boolean {
     if (w.kind !== "file" && w.kind !== "log") return false;
     return (w.spec as { path: string }).path === `${job.log}.exit` || linkJob(w)?.id === job.id;
   });
+}
+
+// A running job one of whose processes has the waited file open for writing. Looked for at most every
+// FD_LOOK_MS a wait, in at most 64 processes a job and 1024 open files a process.
+const FD_LOOK_MS = 5000;
+const fdLooked = new Map<string, number>();
+function holderOf(w: WaitRecord, jobs: Job[], path: string, now: number): Job | undefined {
+  if (!jobs.length || process.platform !== "linux") return undefined;
+  if (now - (fdLooked.get(w.id) ?? 0) < FD_LOOK_MS) return undefined;
+  if (fdLooked.size > 512) fdLooked.clear();
+  fdLooked.set(w.id, now);
+  const real = realOrPlanned(path);
+  for (const j of jobs) {
+    for (const pid of jobPidsOf(j).slice(0, 64)) {
+      let fds: string[] = [];
+      try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+      for (const fd of fds.slice(0, 1024)) {
+        let at: string;
+        try { at = readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { continue; }
+        if (at !== real && at !== path) continue;
+        let flags = "";
+        try { flags = /^flags:\s*(\d+)/m.exec(readFileSync(`/proc/${pid}/fdinfo/${fd}`, "utf8"))?.[1] ?? ""; } catch {}
+        if (opensForWrite(flags)) return j;
+      }
+    }
+  }
+  return undefined;
 }
 
 // What Keel knows of a job, for its line in a wake.
@@ -332,7 +365,8 @@ function carried(w: WaitRecord): string {
 export function carries(w: WaitRecord): string {
   if (w.kind !== "file" && w.kind !== "log") return "";
   const j = linkJob(w);
-  const job = j ? ` and what is known of job ${j.id} that writes it (running or its exit, its last output); that job's end without the condition, or ${Math.round(stall.ms / 60_000)} min of it with no output, no processor use and nothing of it waiting on a timer, the network, a lock or another process, wakes you before the deadline` : "";
+  const quiet = j?.contain === "cgroup" ? `, or ${Math.round(stall.ms / 60_000)} min of it with no output, no processor use and nothing of it waiting on a timer, the network, a lock or another process,` : "";
+  const job = j ? ` and what is known of job ${j.id} that writes it (running or its exit, its last output); that job's end without the condition${quiet} wakes you before the deadline` : "";
   return ` Its wake carries what the file gains from now on (its last ${CARRY_MAX.toLocaleString("en-US")} characters, secrets hidden)${job}: no need to read it again.`;
 }
 
@@ -372,19 +406,39 @@ function procLook(pid: string, inCgroup: Set<string>): ProcLook {
   return { comm: read(`/proc/${pid}/comm`).trim(), threads, childOutside: children.some((c) => !inCgroup.has(c)) };
 }
 
-// A wait whose job ended without its condition, or went quiet: told now, not at the deadline. Only
-// for a job in a cgroup of its own, where every process it started is known.
-function judgeJob(w: WaitRecord, now: number): string | undefined {
+// A wait whose job ended without its condition, or went quiet: told now, not at the deadline. Its end
+// is told whatever holds the job: a cgroup of its own knows every process it started, else its process
+// group and session do (looked at every few seconds once its command ended). A stall is told only of a job
+// in a cgroup of its own, whose processor time is all counted there. `fired`: the end showed the condition
+// after all (a log's last line, which the job left without a newline).
+type Judged = { status: "ended" | "fired"; text: string; cause: "ended" | "stalled" };
+function judgeJob(w: WaitRecord, now: number): Judged | undefined {
   const j = linkJob(w, now);
-  if (!j || j.contain !== "cgroup") return undefined;
+  if (!j) return undefined;
   const path = (w.spec as { path: string }).path;
   const what = w.kind === "log" ? `no line of it matched ${(w.spec as { match: string }).match}` : (w.spec as { contains?: string }).contains ? `it does not contain "${(w.spec as { contains?: string }).contains}"` : "it is not there";
-  if (!running(j) && !jobLive(j)) {
-    // (A moment after the end, for the last writes to land and be probed.)
-    if (now - (j.ended ?? now) < 2000) return undefined;
-    return `The job that writes ${path} ended and ${what}.`;
-  }
   const st = live.get(w.id);
+  if (!running(j)) {
+    // (A moment after the end, for the last writes to land and be probed.)
+    if (now - (j.ended ?? now) < WRITER_GRACE_MS) return undefined;
+    let alive: boolean;
+    if (j.contain === "cgroup") alive = jobLive(j);
+    else {
+      // (Its group and session are read from the whole process table: not at every probe.)
+      if (st && now - (st.aliveAt ?? 0) < FD_LOOK_MS) return undefined;
+      if (st) st.aliveAt = now;
+      alive = jobHasProcesses(j);
+    }
+    if (writerGone({ running: false, alive, ended: j.ended, now })) {
+      if (w.kind === "log") {
+        const last = lastLine(w);
+        if (last === null) return undefined; // more of it is still to be read
+        if (last !== undefined) return { status: "fired", cause: "ended", text: `Matched in ${path} (its last line, which job ${j.id} left without a newline before it ended):\n${last.slice(0, DISPLAY)}` };
+      }
+      return { status: "ended", cause: "ended", text: `The job that writes ${path} ended and ${what}.` };
+    }
+    if (j.contain !== "cgroup") return undefined;
+  } else if (j.contain !== "cgroup") return undefined;
   if (!st) return undefined;
   // Progress: the processor time of everything in its cgroup, the size of the file and of its log.
   let cpu = -1;
@@ -401,7 +455,27 @@ function judgeJob(w: WaitRecord, now: number): string | undefined {
     looks = pids.map((p) => procLook(p, inCgroup));
   } catch { return undefined; }
   if (!stalled({ now, since: st.quietSince, waiting: looks.some(waitingProc), after: stall.ms })) return undefined;
-  return `Job ${j.id} that writes ${path} still runs, but in ${Math.round((now - st.quietSince) / 1000)} s it wrote nothing and used no processor time, and none of its ${looks.length} process${looks.length === 1 ? "" : "es"} was seen waiting on a timer, the network, a lock or another process; ${what}.`;
+  return { status: "ended", cause: "stalled", text: `Job ${j.id} that writes ${path} still runs, but in ${Math.round((now - st.quietSince) / 1000)} s it wrote nothing and used no processor time, and none of its ${looks.length} process${looks.length === 1 ? "" : "es"} was seen waiting on a timer, the network, a lock or another process; ${what}.` };
+}
+
+// A log wait's part after its cursor once its writer ended: the last line's match when the job left it
+// without a newline (a whole line was matched by the probe already), nothing when none matches, null
+// while more than one read of the file is still unread.
+function lastLine(w: WaitRecord): string | undefined | null {
+  const s = w.spec as Extract<WaitSpec, { kind: "log" }>;
+  const st = live.get(w.id);
+  const f = openWaited(s.path, w);
+  if ("not" in f) return undefined;
+  try {
+    const from = st?.ident === f.ident ? st.offset ?? 0 : 0;
+    if (f.size - from > LOG_READ) return null;
+    if (f.size <= from) return undefined;
+    const buf = Buffer.alloc(f.size - from);
+    readSync(f.fd, buf, 0, buf.length, from);
+    const rest = buf.toString("utf8");
+    if (rest.includes("\n")) return null; // whole lines the probe has not read yet
+    return new RegExp(s.match).test(rest) ? rest : undefined;
+  } finally { closeSync(f.fd); }
 }
 
 function resolvePath(p: string, cwd: string) {
@@ -449,6 +523,8 @@ function pattern(p: unknown): string {
   return out;
 }
 
+const writerOf = (spec: any): { writer?: string } => (spec.writer === undefined || spec.writer === null || spec.writer === "" ? {} : { writer: String(spec.writer).trim() });
+
 // Validates a spec the way the model or the page wrote it; throws the reason.
 // `elsewhere`: the session's commands run on another machine, whose files a wait here does not see.
 export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}): WaitSpec {
@@ -465,10 +541,10 @@ export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}
     }
     case "file":
       if (!spec.path) throw new Error("a file wait needs a path");
-      return { kind, path: resolvePath(String(spec.path), cwd), contains: spec.contains ? String(spec.contains) : undefined };
+      return { kind, path: resolvePath(String(spec.path), cwd), contains: spec.contains ? String(spec.contains) : undefined, ...writerOf(spec) };
     case "log":
       if (!spec.path || !spec.match) throw new Error("a log wait needs a path and a match pattern");
-      return { kind, path: resolvePath(String(spec.path), cwd), match: pattern(spec.match) };
+      return { kind, path: resolvePath(String(spec.path), cwd), match: pattern(spec.match), ...writerOf(spec) };
     case "http": {
       const u = new URL(String(spec.url));
       if (!/^https?:$/.test(u.protocol)) throw new Error("an http wait needs an http(s) URL");
@@ -532,6 +608,12 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   // (The wait reads this machine's disk; such a session's files are on another. A command waits there.)
   if (s.machine && (spec.kind === "file" || spec.kind === "log")) throw new Error(`a ${spec.kind} wait reads this machine's files, and this session's are on ${s.machine}: wait there with a command in the shell tool instead`);
   if (activeFor(sessionId) >= WAIT_LIMIT) throw new Error(`the session already has ${WAIT_LIMIT} active waits; cancel one first`);
+  // A writer named by the model is one of this session's commands.
+  const named = (spec.kind === "file" || spec.kind === "log") && spec.writer ? findJob(sessionId, spec.writer) : undefined;
+  if ((spec.kind === "file" || spec.kind === "log") && spec.writer && !named) {
+    const ids = jobsOf(sessionId).filter(running).map((j) => j.id);
+    throw new Error(`no background command ${spec.writer} in this session (writer is the ID a background command was started with${ids.length ? `; running: ${ids.slice(0, 8).join(", ")}` : "; none runs now"})`);
+  }
   const now = Date.now();
   const isMon = isMonitor(spec.kind);
   let timeout = Number(opts.timeout_seconds ?? (isMon ? MONITOR_DEFAULT : DEFAULT_TIMEOUT));
@@ -558,6 +640,7 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
     setState(rec.id, "from", from);
     // (What the gate, or the owner on its card, let it read.)
     approve(rec.id, spec.path);
+    if (named) { setState(rec.id, "job", named.id); setState(rec.id, "named", true); }
     linkJob(get(rec.id)!);
   }
   live.set(rec.id, st);
@@ -599,9 +682,12 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   if (st?.ws) try { st.ws.close(1000); } catch {}
   st?.probing?.abort.abort(); // a probe still out is stopped; what it says later is not used
   live.delete(id);
+  // An agent's wake says what else it still waits on (models set a timer beside a wait as a fallback
+  // and wrote their report on the wake, then were woken again by the timer).
+  const others = wake ? othersOf(w) : "";
   // The status changes only from active, in the same statement that reads it,
   // and the same statement records that the wake is owed.
-  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, `${kept(outcome)}${carry ? `\n\n${carry}` : ""}`, Date.now(), wake ? 1 : 0, id).changes) return false;
+  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, `${kept(outcome)}${carry ? `\n\n${carry}` : ""}${others ? `\n\n${others}` : ""}`, Date.now(), wake ? 1 : 0, id).changes) return false;
   const rec = get(id)!;
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}${lateness.late ? ` ${lateness.late}` : ""}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id, ...(lateness.late ? { late: lateness.late } : {}) });
@@ -611,6 +697,15 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   // Settled with no wake (cancelled, with its session): nothing more is waited for there, maybe.
   else try { D().engine.waitsSettled?.(w.session_id); } catch (e) { capture(e, { at: "cache plan after a wait", session: w.session_id }); }
   return true;
+}
+
+// The line of an agent's wake that names its other active waits, and how to cancel them.
+function othersOf(w: WaitRecord): string {
+  const s = D().store.session(w.session_id);
+  if (!s?.parent_id) return "";
+  const rest = list(w.session_id, 0).filter((o) => o.id !== w.id && o.status === "active");
+  if (!rest.length) return "";
+  return othersText(rest.map((o) => ({ id: o.id, kind: o.kind, note: o.note, due: o.kind === "timer" ? (o.spec as { at_ms?: number }).at_ms : undefined })), familyOf(s.model) === "claude" ? "TaskStop" : "cancel_wait", (ms) => localTime(ms).slice(0, 5));
 }
 
 const BOOT_COALESCE = 300; // how long a wake sent at start waits for the engine to close open turns
@@ -657,8 +752,8 @@ export function cancelText(id: string, r: ReturnType<typeof cancel>): string {
   return r ? `${id} had already ended (${r}); nothing to cancel.` : `No wait ${id} in this session.`;
 }
 
-export function cancelForSession(sessionId: string) {
-  for (const w of list(sessionId, 0)) if (w.status === "active") settle(w.id, "cancelled", "Cancelled with its session.", false);
+export function cancelForSession(sessionId: string, why = "Cancelled with its session.") {
+  for (const w of list(sessionId, 0)) if (w.status === "active") settle(w.id, "cancelled", why, false);
   // A stopped or archived session gets no wake of an earlier wait either, and no batch of its monitors.
   D().store.db.query("UPDATE waits SET wake = 0 WHERE session_id = ? AND wake = 1").run(sessionId);
   D().store.db.query("DELETE FROM wait_events WHERE wait_id IN (SELECT id FROM waits WHERE session_id = ?)").run(sessionId);
@@ -992,10 +1087,58 @@ const timedOut = (w: WaitRecord, last?: string | null) => `Timed out after ${Mat
 
 // What a probe said: an outcome fires the wait, nothing at the deadline times it out.
 function probed(w: WaitRecord, hit: string | undefined) {
-  if (hit) { settle(w.id, "fired", hit, true, false, carried(w)); return; }
+  if (hit) { settle(w.id, "fired", hit + firedWith(w), true, false, carried(w)); return; }
   if (Date.now() >= w.deadline) { settle(w.id, "timeout", timedOut(w, get(w.id)?.last_error), true, false, carried(w)); return; }
   const judged = w.kind === "file" || w.kind === "log" ? judgeJob(w, Date.now()) : undefined;
-  if (judged) settle(w.id, "ended", judged, true, false, carried(w));
+  if (!judged) return;
+  if (!settle(w.id, judged.status, judged.status === "fired" ? judged.text + firedWith(w) : judged.text, true, false, carried(w))) return;
+  if (judged.status === "ended") try { waitEnded.tell?.(get(w.id)!, judged.cause); } catch (e) { capture(e, { at: "a wait that can no longer fire", wait: w.id }); }
+}
+
+// The session's other file and log waits on the same file, probed when one of them fires: those that
+// hold too fire with it, in its wake (a second watch of one run woke the session a second time for the
+// same line). What they said, for the wake.
+function firedWith(w: WaitRecord): string {
+  if (w.kind !== "file" && w.kind !== "log") return "";
+  const path = (w.spec as { path: string }).path;
+  const told: string[] = [];
+  for (const o of list(w.session_id, 0)) {
+    if (o.id === w.id || o.status !== "active" || (o.kind !== "file" && o.kind !== "log") || (o.spec as { path: string }).path !== path) continue;
+    let r: unknown;
+    try { r = probe(o, new AbortController().signal); } catch { continue; }
+    if (typeof r !== "string") continue;
+    if (settle(o.id, "fired", `${r}\nTold in the wake of wait ${w.id}, which fired on the same file at the same time.`, false)) told.push(`Wait ${o.id}${o.note ? ` ("${attr(o.note)}")` : ""} on the same file fired with it: ${r.split("\n").slice(0, 2).join(" ")}`);
+  }
+  return told.length ? `\n${told.join("\n")}` : "";
+}
+
+// Told when a file or log wait ended because it can no longer fire (its writer ended or stalled):
+// src/automation/agents.ts tells the parent of an agent parked on it.
+export const waitEnded: { tell?: (w: WaitRecord, cause: "ended" | "stalled") => void } = {};
+
+// At the end of an agent's turn: its file and log waits that can no longer bring it anything new. The
+// job that writes the file ended, the agent was told so in the turn (the result of the call that ran it,
+// or the note of a background command's end, which goes with a request), and nothing of the job runs:
+// the wait would wake it after its report only to say what it knows. Each is cancelled, or the wake it
+// is owed and not yet stored is taken back, and said so on the wait. Returns their ids.
+export function dropSpent(sessionId: string): string[] {
+  const rows = D().store.db.query<Row, [string]>("SELECT * FROM waits WHERE session_id = ? AND kind IN ('file', 'log') AND (status = 'active' OR wake = 1)").all(sessionId).map(toRec);
+  const out: string[] = [];
+  for (const w of rows) {
+    const j = linkJob(w);
+    if (!j || running(j)) continue;
+    if (!spentAtTurnEnd({ ended: j.ended, alive: jobHasProcesses(j), told: !j.background || !endNoticeOwed(sessionId, j.id) })) continue;
+    const why = `job ${j.id} that writes ${(w.spec as { path: string }).path} ended and the agent was told in the turn; nothing of it runs`;
+    if (w.status === "active") {
+      if (settle(w.id, "cancelled", `Cancelled at the end of the agent's turn: ${why}, so this wait could not fire.`, false)) out.push(w.id);
+    } else if (!wakeStored(w)) {
+      withdraw(sessionId, (m) => m.wait_id === w.id);
+      D().store.db.query("UPDATE waits SET wake = 0, outcome = outcome || ? WHERE id = ? AND wake = 1").run(`\n\n(Not told: ${why}.)`, w.id);
+      emit("wait", get(w.id));
+      out.push(w.id);
+    }
+  }
+  return out;
 }
 
 function probeFailed(w: WaitRecord, e: unknown) {
