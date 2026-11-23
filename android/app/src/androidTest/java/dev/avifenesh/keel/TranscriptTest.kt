@@ -27,10 +27,12 @@ class TranscriptTest {
 
     private data class Row(val id: String, val mine: Boolean)
 
+    private val growth = androidx.compose.runtime.mutableIntStateOf(0)
+
     private fun show(rows: MutableList<Row>) = rule.setContent {
         KeelTheme(1) {
             val newest = rows.lastOrNull()
-            FollowingList(newest?.id, newest?.mine == true, 0, Modifier.size(360.dp, 640.dp).testTag("list")) {
+            FollowingList(newest?.id, newest?.mine == true, growth.intValue, Modifier.size(360.dp, 640.dp).testTag("list")) {
                 // Newest at the bottom: the list runs reversed.
                 items(rows.asReversed(), key = { it.id }) { r -> Text(r.id, Modifier.fillMaxWidth().height(220.dp).testTag(r.id)) }
             }
@@ -63,6 +65,19 @@ class TranscriptTest {
         rule.onNodeWithTag("list").performTouchInput { swipeDown() }
         rule.runOnIdle { rows += Row("me7", true) }
         rule.onNodeWithTag("me7").assertIsDisplayed()
+    }
+
+    @Test fun theReplyToTheOwnersSendStreamsWithoutPullingTheReaderDown() {
+        val rows = mutableStateListOf(Row("a1", false), Row("a2", false), Row("a3", false), Row("a4", false), Row("me5", true))
+        show(rows)
+        rule.onNodeWithTag("me5").assertIsDisplayed()
+        // The reply streams; the owner scrolls up to read an older message meanwhile.
+        rule.runOnIdle { growth.intValue++ }
+        rule.onNodeWithTag("list").performTouchInput { swipeDown() }
+        rule.waitForIdle()
+        rule.onNodeWithTag("a1").assertIsDisplayed()
+        for (i in 0 until 5) { rule.runOnIdle { growth.intValue++ }; rule.waitForIdle() }
+        rule.onNodeWithTag("a1").assertIsDisplayed()
     }
 }
 

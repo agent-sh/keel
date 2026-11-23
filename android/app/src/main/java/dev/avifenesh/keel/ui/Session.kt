@@ -172,9 +172,14 @@ fun FollowingList(newest: String?, newestMine: Boolean, growth: Int, modifier: M
     LaunchedEffect(list) {
         snapshotFlow { list.isScrollInProgress to list.canScrollBackward }.collect { (moving, back) -> if (moving && !own) follow = !back }
     }
+    // The owner's own send brings the view down once, when it arrives; the reply that streams after
+    // it (growth) follows only while the owner stays at the end.
+    var seen by remember { mutableStateOf(newest) }
     LaunchedEffect(newest, growth) {
         if (newest == null) return@LaunchedEffect
-        if (newestMine || follow) toEnd(false)
+        val arrived = newest != seen
+        seen = newest
+        if ((arrived && newestMine) || follow) toEnd(false)
     }
     Box(modifier) {
         LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = S.md), content = content)
