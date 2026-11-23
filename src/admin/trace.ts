@@ -10,6 +10,7 @@ import { fromSaid, type AnsweredBy } from "../safety/card.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { Bus } from "../core/bus.ts";
 import { errorScope } from "../core/errors.ts";
+import { messageFacts } from "../core/message-facts.ts";
 import type { Store } from "../core/store.ts";
 import type { Message, Session, ToolResultBlock } from "../core/types.ts";
 import { registerHooks } from "../engine/hooks.ts";
@@ -176,7 +177,7 @@ export function requestShape(req: Pick<ProviderRequest, "system" | "messages" | 
     roles[m.role] = (roles[m.role] ?? 0) + 1;
     const content = Array.isArray(m.content) ? m.content : [{ type: "text" }];
     for (const b of content as any[]) blocks[b.type] = (blocks[b.type] ?? 0) + 1;
-    bytes += Buffer.byteLength(JSON.stringify(m.content));
+    bytes += messageFacts(m).contentBytes;
   }
   const last = req.messages.at(-1);
   return {

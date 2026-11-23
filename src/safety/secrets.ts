@@ -10,6 +10,7 @@
 // whose value is gone is refused by name instead of running with its text.
 import { createHmac, randomBytes } from "node:crypto";
 import { homedir, hostname, userInfo } from "node:os";
+import { messageFacts } from "../core/message-facts.ts";
 
 export type SecretMeta = { id: string; kind: string; name?: string; source: Source; sessions: string[]; created: number; placeholder: string };
 type Source = "prompt" | "output" | "card" | "command";
@@ -578,7 +579,7 @@ export class Vault {
     return w;
   }
   maskSent<T extends any[]>(key: string, messages: T): T {
-    const marks = messages.map((m) => Bun.hash(JSON.stringify(m)).toString(36));
+    const marks = messages.map((m) => messageFacts(m).mark);
     const prev = this.sent.get(key);
     let k = 0;
     if (prev) while (k < marks.length && k < prev.marks.length && marks[k] === prev.marks[k]) k++;

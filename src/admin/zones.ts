@@ -6,22 +6,22 @@
 // add up to what the provider counted for the prompt.
 import type { Message } from "../core/types.ts";
 import type { ProviderRequest } from "../providers/types.ts";
+import { blobSize, messageFacts } from "../core/message-facts.ts";
 
 export const ZONES = ["tools", "system", "history", "tail"] as const;
 export type Zone = (typeof ZONES)[number];
 export type Zones = Record<Zone, number>;
 
-// An image or document counts as about 1,600 tokens (a 1.15 megapixel image
-// on Anthropic's formula), not as the length of its base64.
-const BLOB_BYTES = 6_400;
-const size = (v: unknown) =>
-  JSON.stringify(v, (k, x) => (k === "data" && typeof x === "string" && x.length > BLOB_BYTES ? " ".repeat(BLOB_BYTES) : x))?.length ?? 0;
+// An image or document counts as about 1,600 tokens, not as the length of its
+// base64 (src/core/message-facts.ts). A message's size and mark are worked out
+// once for a stored message, not again for every request that carries it.
+const size = blobSize;
 
-export const messageSizes = (messages: Message[]) => messages.map(size);
+export const messageSizes = (messages: Message[]) => messages.map((m) => messageFacts(m).size);
 const definition = (t: ProviderRequest["tools"][number]) => ({ name: t.name, description: t.description, input_schema: t.input_schema });
 // What each message holds, as a short fingerprint (never its text): an edit of
 // the same length is a different message.
-const mark = (m: Message) => Bun.hash(JSON.stringify(m)).toString(36);
+const mark = (m: Message) => messageFacts(m).mark;
 
 // `prev`: the marks of the messages the previous turn request carried. The
 // leading messages of this request that match them are frozen history.
