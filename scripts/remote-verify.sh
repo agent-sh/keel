@@ -31,11 +31,12 @@
 # the end; the logs stay on the host under runs/<run> and are copied back. Exit code: 0 when
 # every stage passed, 1 when one failed, 2 for a refusal (a tree with changes that are not
 # committed, no host, a tool missing there), 3 when the host is too busy to start (a load
-# over 20, or no free place within the wait: at most two runs are on a host at once).
+# over 20, or no free place within the wait: at most two runs are on a host at once; KEEL_VERIFY_MAX_LOAD and
+# KEEL_VERIFY_MAX_RUNS change both).
 set -euo pipefail
 
-MAX_LOAD=20     # the host's one-minute load above which a run does not start
-MAX_RUNS=2      # runs on a host at once
+MAX_LOAD=${KEEL_VERIFY_MAX_LOAD:-20}   # the host's one-minute load above which a run does not start
+MAX_RUNS=${KEEL_VERIFY_MAX_RUNS:-2}    # runs on a host at once (a host with many threads can take more)
 KEEP_DAYS=1     # how long a commit's folder and a run's logs stay on the host
 
 if [ "${1:-}" != "__remote" ]; then
@@ -89,7 +90,7 @@ if [ "${1:-}" != "__remote" ]; then
   # session), the far side is hung up and ends its run. This side waits for it as a job, so a
   # signal to this script is acted on at once and takes the connection with it.
   ssh -q -tt -o BatchMode=yes -o ConnectTimeout=15 "$host" \
-    "bash '$dir/runs/$run/remote-verify.sh' __remote '$dir' '$run' '$sha' '$wait_s' '$only' '$e2e' ${specs[*]:-}" < /dev/null &
+    "KEEL_VERIFY_MAX_RUNS=$MAX_RUNS KEEL_VERIFY_MAX_LOAD=$MAX_LOAD bash '$dir/runs/$run/remote-verify.sh' __remote '$dir' '$run' '$sha' '$wait_s' '$only' '$e2e' ${specs[*]:-}" < /dev/null &
   far=$!
   trap 'kill "$far" 2> /dev/null || true; wait "$far" 2> /dev/null || true; echo "remote-verify: stopped; the run on $host is ended" >&2; exit 130' INT TERM HUP
   wait "$far" || rc=$?
