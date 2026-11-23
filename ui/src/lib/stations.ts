@@ -141,10 +141,30 @@ export const stations = {
     const { [state.count]: _, ...rest } = state.sizes;
     set({ seeded: true, sizes: weights ? { ...rest, [state.count]: weights } : rest });
   },
-  // The panes as they are now, to be put back as they were (an act that is undone: lib/undo.ts).
-  snapshot: (): Panes & { count: number } => ({ count: state.count, slots: [...state.slots], over: [...state.over], keys: [...state.keys], active: state.active }),
-  putBack(was: Panes & { count: number }) {
-    set({ seeded: true, count: was.count, slots: [...was.slots], over: [...was.over], keys: [...was.keys], active: was.active });
+  // Acts put back (lib/undo.ts), each only while what it changed is as it left it; else nothing changes.
+  // Keep here: the pane holds `own` again, with the kept session as a look over it.
+  canUnkeep: (slot: number, look: string) => state.slots[slot] === look && !state.over[slot],
+  unkeep(slot: number, own: string | null, look: string): boolean {
+    if (!stations.canUnkeep(slot, look)) return false;
+    set({ slots: put(state.slots, slot, own), over: put(state.over, slot, look), active: slot });
+    return true;
+  },
+  // A pane closed: back at its place in the row, with what it showed, while its session is on no pane and there is room.
+  canReopen: (id: string) => !state.slots.includes(id) && !state.over.includes(id) && state.count < MAX_PANES,
+  reopen(at: number, id: string, over: string | null, key: string, helm: boolean): boolean {
+    if (!stations.canReopen(id)) return false;
+    // (A single empty pane is the one that was closed: it takes its session back in place.)
+    if (state.count === 1 && state.slots[0] == null && !state.over[0]) { set({ slots: [id], over: [over], active: 0 }); return true; }
+    const i = Math.min(Math.max(0, at), state.count);
+    const ins = <T,>(l: T[], v: T) => [...l.slice(0, i), v, ...l.slice(i)];
+    const used = state.keys.includes(key);
+    set({ seeded: true, count: state.count + 1, slots: ins(state.slots, id), over: ins(state.over, over), keys: ins(state.keys, used ? paneKey() : key), active: helm ? i : state.active >= i ? state.active + 1 : state.active });
+    return true;
+  },
+  // An archived session back in the pane it had, if that pane stands empty now.
+  refill(slot: number, id: string) {
+    if (slot < 0 || slot >= state.count || state.slots[slot] != null || state.over[slot] || state.slots.includes(id)) return;
+    set({ slots: put(state.slots, slot, id) });
   },
   toggleFocus: () => set({ focus: !state.focus }),
   setFocus: (focus: boolean) => set({ focus }),

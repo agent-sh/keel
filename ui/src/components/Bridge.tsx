@@ -81,18 +81,18 @@ registerCommand(
 
 // Closes the pane (the last one stays, empty). The helm moves to a neighbour that shows a session.
 // A look is left instead: its pane shows the session it holds again.
-// A pane that was closed is offered back for a moment (lib/undo.ts): the panes as they were, in their order.
+// A pane that was closed is offered back for a moment (lib/undo.ts): in its place in the row, the rest as it is then.
 function closeStation(id: string) {
   if (leaveLook(id)) return;
   const st = getStations();
   const i = st.slots.indexOf(id);
   const shown = st.slots.map((_, j) => shownIn(st, j));
   const next = [...shown.slice(i + 1), ...shown.slice(0, Math.max(0, i)).reverse()].find((x) => x);
-  const was = stations.snapshot();
   const helm = helmNow() === id;
+  const over = st.over[i] ?? null, key = st.keys[i]!;
   stations.close(id);
   if (helm) navigate(next ? { name: "session", id: next } : { name: "new" });
-  if (i >= 0) offerUndo(`Closed: ${getState().sessions[id]?.title || "New session"}`, () => { stations.putBack(was); if (helm) navigate({ name: "session", id }); });
+  if (i >= 0) offerUndo(`Closed: ${getState().sessions[id]?.title || "New session"}`, () => { if (stations.reopen(i, id, over, key, helm) && helm) navigate({ name: "session", id }); }, () => stations.canReopen(id));
 }
 
 function Tool({ label, onClick, children, testid, on, move }: { label: string; onClick: () => void; children: React.ReactNode; testid?: string; on?: boolean; move?: boolean }) {

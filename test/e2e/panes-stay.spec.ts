@@ -708,6 +708,15 @@ test("Escape right after a palette, a menu or the slash menu closed, or a click 
   await page.keyboard.press("Escape");
   await expect.poll(() => phase(request, beside), { timeout: 15_000 }).not.toBe("working");
   expect(await phase(request, mine)).toBe("working");
+  // A palette closed long ago holds nothing: one Escape three seconds after it closed stops the turn.
+  await box.click();
+  await page.keyboard.press("Control+k");
+  await expect(page.getByTestId("palette-input")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("palette-input")).toBeHidden();
+  await page.waitForTimeout(3000);
+  await page.keyboard.press("Escape");
+  await expect.poll(() => phase(request, mine), { timeout: 15_000 }).not.toBe("working");
   await drop(request, mine, beside);
 });
 
@@ -762,16 +771,29 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await expect(row(page, other)).toBeVisible({ timeout: 1500 });
   expect(Date.now() - t0).toBeLessThan(1500);
   await expect.poll(async () => (await (await request.get(`/api/sessions/${other}`)).json()).archived ?? false).toBe(false);
-  // Typed into a field after the act, Ctrl Z is the field's own: nothing of the panes changes.
+  // In a message box with typing of its own, Ctrl Z is the box's own undo: nothing of the panes changes.
   await slot(page, 0).getByTestId("composer").click();
   await page.keyboard.press("Alt+w");
   await expect(toast).toBeVisible();
-  await page.getByTestId("list-filter").fill("x");
+  const box1 = slot(page, 0).getByTestId("composer");
+  await box1.click();
+  await page.keyboard.type("abc");
   await page.keyboard.press("Control+z");
-  await expect.poll(holds).toEqual([[coord, coord]]);
+  await expect(box1).not.toHaveValue("abc");
+  expect(await holds()).toEqual([[coord, coord]]);
+  await box1.fill("");
+  // Undo puts back that act only: a session placed after it stays where it was placed.
+  await row(page, other).dblclick();
+  await expect.poll(holds).toEqual([[other, other]]);
   await toast.getByTestId("undo").click();
-  await expect.poll(holds).toEqual([[reader, reader], [coord, coord]]);
-  await page.getByTestId("list-filter").fill("");
+  await expect.poll(holds).toEqual([[reader, reader], [other, other]]);
+  // An act whose pane was given another session since is no longer offered.
+  await row(page, coord).click();
+  await expect(slot(page, 0)).toHaveAttribute("data-look", "");
+  await slot(page, 0).getByTestId("look-keep").click();
+  await expect(toast.getByTestId("undo-words")).toHaveText("Kept in the pane: Coordinator: release train 2.4");
+  await row(page, other).dblclick();
+  await expect(toast).toHaveCount(0);
   // On a phone the offer hangs from the top edge, clear of the message box.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/s/${other}`);

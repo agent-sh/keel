@@ -1133,6 +1133,9 @@ export function Sidebar({ open }: { open: boolean }) {
   const aside = useRef<HTMLElement>(null);
   useUI((s) => s.listW);
   useEffect(hide, [open, current]);
+  // A row that leaves the list under the pointer (archived from its own button) takes its card with it.
+  const cardGone = useStore((x) => !!card && (!x.sessions[card.s.id] || !!x.sessions[card.s.id]!.archived));
+  useEffect(() => { if (cardGone) hide(); }, [cardGone]);
   // The hand on the list: while it is there, nothing in the list moves, and what stands above it keeps its height.
   const hand = useHand();
   useEffect(() => hand.reset(), [open]);

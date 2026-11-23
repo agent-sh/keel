@@ -61,7 +61,9 @@ const last = new Map<string, Element>();
 // Looks opened from the start page (a row of what needs the owner): one that is answered leads back to its list.
 const fromHome = new Set<string>();
 // The panes' sessions that were uncovered, until the owner's next act that ends it (see the head of the file).
-type Bare = { at: number; told: boolean };
+// `menu`: a palette, a dialog or a menu closed by a key made it; it holds only the settle time
+// (a later Escape was not part of that double press, and stops the turn).
+type Bare = { at: number; told: boolean; menu?: boolean };
 const bare = new Map<string, Bare>();
 const acted = (here?: string) => { for (const [id, b] of bare) if (id === here || performance.now() - b.at >= SETTLE_MS) bare.delete(id); };
 if (typeof window !== "undefined") {
@@ -80,15 +82,20 @@ if (typeof window !== "undefined") {
   addEventListener("keydown", (e) => {
     const k = (e as KeyboardEvent).key;
     // A palette, a dialog or a menu that this key closes: the next press is the same double press.
-    if ((k === "Escape" || k === "Enter") && modalOpen()) { const id = helm(); if (id) uncovered(id); return; }
+    if ((k === "Escape" || k === "Enter") && modalOpen()) { const id = helm(); if (id) menuClosed(id); return; }
     if (k !== "Escape" && !["Shift", "Control", "Alt", "Meta"].includes(k)) acted();
   }, true);
 }
 // A pane's session shows again (said as it happens, and again when the page has drawn it).
 // Each time counts from now: what was said about an earlier time it showed is over.
 export const uncovered = (session: string) => { bare.set(session, { at: performance.now(), told: false }); };
-// A menu of the message box (its slash menu) was closed by a key: the same hold as a dialog's.
-export const menuClosed = (session: string) => uncovered(session);
+// A menu (the message box's slash menu, a palette, a dialog) was closed by a key: Escape within the settle time stops nothing.
+export const menuClosed = (session: string) => {
+  // (Not over a hold of a longer kind: a pane uncovered a moment ago keeps its own.)
+  const b = bare.get(session);
+  if (b && !b.menu) return;
+  bare.set(session, { at: performance.now(), told: false, menu: true });
+};
 const SOON = "Esc stops the turn in a moment";
 const AGAIN = "Esc again stops the turn";
 let soon = 0;
@@ -98,7 +105,7 @@ export function stopHeld(session: string): boolean {
   const b = bare.get(session);
   if (!b) return false;
   const left = b.at + SETTLE_MS - performance.now();
-  if (b.told && left <= 0) { bare.delete(session); return false; }
+  if ((b.told || b.menu) && left <= 0) { bare.delete(session); return false; }
   b.told = true;
   clearTimeout(soon);
   const words = left > 0 ? SOON : AGAIN;
@@ -208,19 +215,20 @@ export function leaveLook(id: string, answered = false): boolean {
   return true;
 }
 // Keeps a look: it is the pane's session from now on, in place of the one it lay over.
-// It is offered back for a moment (lib/undo.ts): the look over the pane's own session again.
+// It is offered back for a moment (lib/undo.ts): the look over the pane's own session again, while
+// the pane still holds the kept one.
 export function keepLook(id: string): boolean {
   const slot = getStations().over.indexOf(id);
   if (slot < 0) return false;
-  const was = stations.snapshot();
+  const own = getStations().slots[slot] ?? null;
   const home = fromHome.has(id);
   fromHome.delete(id);
   stations.place(id, slot);
   offerUndo(`Kept in the pane: ${titleOf(id)}`, () => {
-    stations.putBack(was);
+    if (!stations.unkeep(slot, own, id)) return;
     if (home) fromHome.add(id);
     navigate({ name: "session", id }, true);
-  });
+  }, () => stations.canUnkeep(slot, id));
   return true;
 }
 // Opens a session the owner just made (started from the start page, forked, cloned) where

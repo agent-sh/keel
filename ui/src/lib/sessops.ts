@@ -5,7 +5,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { confirmAction } from "../components/Confirm.tsx";
 import { actWhenLetGo, listActed, waitsLetGo } from "./list-hold.ts";
 import { pinMark, pinMove, pinnedOrder } from "./list-order.ts";
-import { stations } from "./stations.ts";
+import { getStations, stations } from "./stations.ts";
 import { actions, api, getState } from "./store.ts";
 import { offerUndo } from "./undo.ts";
 
@@ -64,11 +64,11 @@ export const setMaxSteps = (id: string, n: number) => actions.patch(id, { max_st
 // Archive; when the session still runs background commands, ask first and
 // stop them with it.
 // An archive is offered back for a moment (lib/undo.ts): the session in the list again, and in
-// the pane it had, the panes in their order.
+// the pane it had while that pane stands empty.
 export async function archive(s: Session, on = true) {
   listActed(s.id);
-  const was = stations.snapshot();
-  const back = () => { if (on) offerUndo(`Archived: ${s.title || "New session"}`, async () => { listActed(s.id); await actions.patch(s.id, { archived: false }); stations.putBack(was); }); };
+  const slot = getStations().slots.indexOf(s.id);
+  const back = () => { if (on) offerUndo(`Archived: ${s.title || "New session"}`, async () => { listActed(s.id); await actions.patch(s.id, { archived: false }); stations.refill(slot, s.id); }); };
   try {
     const r = await actions.patch(s.id, { archived: on });
     back();
