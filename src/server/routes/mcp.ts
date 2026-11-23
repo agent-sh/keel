@@ -42,6 +42,15 @@ export const mcpRoutes: RouteModule = (deps) => {
   // The daemon's manager is the one that reads and writes the owner's server list.
   const m = new McpManager(deps.errors, deps.store.stateDir, deps.workspace, configPath());
   m.elsewhere = (id) => { const at = deps.store.session(id)?.machine; return !!at && at !== "local"; };
+  // A server's sampling request is answered by the session's own model, once the owner allowed it on the card.
+  m.sampler = {
+    model: async (id) => {
+      const s = deps.store.session(id);
+      if (!s) throw new Error("the session is gone");
+      return (await deps.providers.resolve(s.model)).info.name || s.model;
+    },
+    run: (id, req, signal) => deps.engine.sample(id, req, signal),
+  };
   g.__keelMcp = m;
   installMcpTools(m);
   // A call whose server asked the owner a question waits on the owner: a

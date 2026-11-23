@@ -19,7 +19,8 @@
 //   for fields named like an object's own parts;
 // - `forever` asks again after every answer (ASK_MCP_FOREVER times), `many`
 //   asks ASK_MCP_MANY questions at once;
-// - `later` asks after two seconds, `hold` only waits (ASK_MCP_HOLD ms).
+// - `later` asks after two seconds, `hold` only waits (ASK_MCP_HOLD ms);
+// - `sample` asks for a reply of the client's model (sampling/createMessage).
 // ASK_MCP_LOG: a file that gets one JSON line per answer the server received.
 import { appendFileSync } from "node:fs";
 
@@ -66,6 +67,7 @@ const TOOLS = [
     tool("later", "Asks after two seconds"),
     tool("slow", "Works for a while before each of its questions"),
     tool("hold", "Waits"),
+    tool("sample", "Asks the client's model for a reply"),
   ]),
 ];
 
@@ -117,6 +119,15 @@ async function legacy(name: string): Promise<unknown> {
     case "later":
       await sleep(2000);
       return elicit(YESNO("A question that came late: go on?"));
+    case "sample": {
+      const r = await request("sampling/createMessage", {
+        systemPrompt: "You answer geography questions in one sentence.",
+        messages: [{ role: "user", content: { type: "text", text: "What is the capital of France?\nscript:say Paris is the capital of France." } }],
+        modelPreferences: { hints: [{ name: "claude-3-sonnet" }] },
+        maxTokens: 100,
+      });
+      return r.result ?? r.error;
+    }
     case "hold":
       await sleep(Number(process.env.ASK_MCP_HOLD ?? 6000));
       return "held";

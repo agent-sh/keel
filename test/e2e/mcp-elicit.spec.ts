@@ -431,3 +431,68 @@ test("a server's question across a daemon restart", async ({ page }) => {
     await k.stop();
   }
 });
+
+// Feature: a server asks for a reply of the session's model (MCP sampling).
+// The owner sees the whole request and allows it or not; only then does the
+// model answer, and the owner sees the reply before it goes back, or types
+// another. A declined card is the protocol's rejection.
+test("a server's sampling request is the owner's to allow, and its reply the owner's to send", async ({ page }) => {
+  const k = await setup("sample");
+  try {
+    const id = await k.session("A server asks for the model");
+    const last = page.getByTestId("assistant-text").last();
+    const ends = (n: number) => expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    const card = page.getByTestId("question");
+    const words = card.getByTestId("question-message");
+    await page.goto(`${k.at.d.url}/s/${id}`);
+
+    // 1. The request on a card: the server, the model, the system prompt and the messages, whole.
+    await run(page, "asker__sample");
+    await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
+    await expect(card.getByTestId("question-from")).toHaveText("MCP server asker is asking");
+    await expect(words).toContainText("asks for a reply from");
+    await expect(words).toContainText("You answer geography questions in one sentence.");
+    await expect(words).toContainText("What is the capital of France?");
+    await expect(card).toContainText("It would prefer claude-3-sonnet");
+    await shoot(page, "mcp-sample-01-request");
+
+    // 2. Declined: the server gets the rejection, and no reply card follows (the model was not asked).
+    await card.getByTestId("question-decline").click();
+    await ends(1);
+    await expect(last).toContainText('sample: {"code":-1,"message":"the owner rejected the sampling request"}');
+    await expect(card).toHaveCount(0);
+
+    // 3. Allowed: the model answers, and the reply waits on the card for the owner.
+    await run(page, "asker__sample");
+    await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
+    await card.getByTestId("question-option").filter({ hasText: "Send" }).click();
+    await card.getByTestId("question-submit").click();
+    await expect(words).toContainText("answered. Send this reply to asker?", { timeout: 30_000 });
+    await expect(words).toContainText("Paris is the capital of France.");
+    await shoot(page, "mcp-sample-02-reply");
+    await card.getByTestId("question-option").filter({ hasText: "Send" }).click();
+    await card.getByTestId("question-submit").click();
+    await ends(2);
+    await expect(last).toContainText('"content":{"type":"text","text":"Paris is the capital of France."}');
+    await expect(last).toContainText('"stopReason":"endTurn"');
+
+    // 4. The owner types another reply: that is what the server gets.
+    await run(page, "asker__sample");
+    await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
+    await card.getByTestId("question-option").filter({ hasText: "Send" }).click();
+    await card.getByTestId("question-submit").click();
+    await expect(words).toContainText("Paris is the capital of France.", { timeout: 30_000 });
+    await card.getByTestId("question-other").first().fill("Paris.");
+    await card.getByTestId("question-submit").click();
+    await ends(3);
+    await expect(last).toContainText('"text":"Paris."');
+
+    // 5. Both servers were told Keel offers sampling.
+    await run(page, "asker__caps");
+    await ends(4);
+    await expect(last).toContainText('"sampling":{}');
+    expect(await k.errors()).toEqual([]);
+  } finally {
+    await k.stop();
+  }
+});

@@ -13,9 +13,11 @@ import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/c
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
-import { formOf, type ElicitResult } from "./elicit.ts";
+import { formOf, plain, type ElicitResult } from "./elicit.ts";
+import { samplingOf, stopReason, type SampleRequest } from "./sampling.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { askFor, DECLINED } from "../tools/interact.ts";
+import type { Asked } from "../core/types.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
@@ -1011,10 +1013,11 @@ export class McpManager {
       }
       return Promise.resolve(this.elsewhere?.(ctx.sessionId) ? { roots: [] } : rootsOf(ctx.cwd));
     }
-    if (q.method !== "elicitation/create") throw new RpcError(-32601, `keel does not support ${q.method}`);
+    const sampling = q.method === "sampling/createMessage";
+    if (q.method !== "elicitation/create" && !sampling) throw new RpcError(-32601, `keel does not support ${q.method}`);
     const mode = q.params?.mode ?? "form";
     // 2025-11-25 elicitation, Error Handling: a mode the client did not declare is invalid params.
-    if (mode !== "form") throw new RpcError(-32602, `keel offers form elicitation only, not ${mode} mode`);
+    if (!sampling && mode !== "form") throw new RpcError(-32602, `keel offers form elicitation only, not ${mode} mode`);
     // Past a bound: the call ends, here and for every question it still sends.
     const end = (why: string): never => {
       call.ended ??= why;
@@ -1023,21 +1026,23 @@ export class McpManager {
     };
     if (call.ended) end(call.ended);
     // Answered by Keel itself, as if the owner made no choice: a few times, then the call ends.
+    // (A sampling request no one could allow is refused: its model is not asked.)
     const unasked = (why: string) => {
       if (++call.self > SELF_MAX) end(`${why} It asked ${call.self} questions that could not be put to the owner.`);
-      call.notes.add(`${why} It was answered as if the owner made no choice.`);
+      call.notes.add(`${why} ${sampling ? "Its model was not asked." : "It was answered as if the owner made no choice."}`);
+      if (sampling) return Promise.reject(new RpcError(-1, why));
       return Promise.resolve<ElicitResult>({ action: "cancel" });
     };
     const over = overLimit(server, call);
     if (over) end(over);
     call.asked++;
-    if (!card) return unasked(`${server} asked the owner a question, and a call a program made has no card to show it on: call the tool directly.`);
+    if (!card) return unasked(`${server} asked the owner ${sampling ? "to let it use the session's model" : "a question"}, and a call a program made has no card to show it on: call the tool directly.`);
     if (call.queued >= QUEUED_MAX + 1) return unasked(`${server} asked more than ${QUEUED_MAX} questions at once: one card is shown at a time, and no more than that wait behind it.`);
     call.queued++;
     // One card per call: a second question waits for the first.
     const run = (this.queue.get(card) ?? Promise.resolve()).then(() => {
       const out = call.ended ?? declinedOut(server, call);
-      return out ? end(out) : this.elicit(server, q.params, ctx, card, call, unasked);
+      return out ? end(out) : sampling ? this.sample(server, q.params, ctx, card, call) : this.elicit(server, q.params, ctx, card, call, unasked);
     }).finally(() => { call.queued--; });
     const tail = run.catch(() => {});
     this.queue.set(card, tail);
@@ -1051,7 +1056,73 @@ export class McpManager {
   private inputOutside(dir: string, q: InputRequest): Promise<unknown> {
     if (q.method === "roots/list") return Promise.resolve(rootsOf(dir));
     if (q.method === "elicitation/create") return Promise.resolve<ElicitResult>({ action: "cancel" });
+    if (q.method === "sampling/createMessage") return Promise.reject(new RpcError(-1, "the owner allows a sampling request on a card under a call, and no call is running"));
     throw new RpcError(-32601, `keel does not support ${q.method}`);
+  }
+
+  // The session's model, for a server's sampling request (the daemon sets it):
+  // its name for the card, and one reply with no tools and no history.
+  sampler?: {
+    model(sessionId: string): Promise<string>;
+    run(sessionId: string, req: SampleRequest, signal: AbortSignal): Promise<{ text: string; model: string; stop: string }>;
+  };
+
+  // A server asks for a reply of the session's model (client/sampling). The
+  // owner sees the whole request on the call's card and allows it or not;
+  // only then is the model asked. The reply is shown on the card again: sent
+  // as it is, or as the owner typed it, or not at all. A declined card is the
+  // protocol's rejection (-1); a stopped turn is too.
+  private async sample(server: string, params: unknown, ctx: ToolContext, card: string, call: CallAsks): Promise<unknown> {
+    const req = samplingOf(params);
+    if ("refuse" in req) throw new RpcError(req.code, req.refuse);
+    if (!this.sampler) throw new RpcError(-32603, "no model answers sampling requests here");
+    const model = await this.sampler.model(ctx.sessionId).catch((e) => { throw new RpcError(-32603, `the session's model cannot answer: ${(e as Error).message}`); });
+    const send = await this.onCard(server, ctx, card, call, `${server} asks to use this session's model`, {
+      from: server,
+      message: `${server} asks for a reply from ${model}. This is what it would send:\n\n${req.shown}`,
+      questions: [{ id: "send", question: `Send this to ${model}?`, options: [{ label: "Send" }] }],
+      notes: req.notes,
+    });
+    if (send === null) throw new RpcError(-1, "the owner made no choice: the request was not sent");
+    if (send === DECLINED) { call.declined++; throw new RpcError(-1, "the owner rejected the sampling request"); }
+    let r: { text: string; model: string; stop: string };
+    try { r = await this.sampler.run(ctx.sessionId, req, ctx.signal); } catch (e) {
+      if (ctx.signal.aborted) throw new RpcError(-1, "the owner stopped the turn while the model answered");
+      throw new RpcError(-32603, `${model} could not answer: ${(e as Error).message}`);
+    }
+    const reply = await this.onCard(server, ctx, card, call, `${model} answered ${server}`, {
+      from: server,
+      message: `${model} answered. Send this reply to ${server}?\n\n${plain(r.text, 20_000) || "(an empty reply)"}`,
+      questions: [{ id: "reply", question: "Send this reply, or type the reply to send instead", options: [{ label: "Send" }] }],
+      notes: [`It stopped with ${r.stop}.`],
+    });
+    if (reply === null) throw new RpcError(-1, "the owner made no choice: the reply was not sent");
+    if (reply === DECLINED) { call.declined++; throw new RpcError(-1, "the owner rejected the reply"); }
+    const typed = typeof reply.reply?.other === "string" ? reply.reply.other.trim() : "";
+    return { role: "assistant", content: { type: "text", text: typed || r.text }, model: r.model, stopReason: typed ? "endTurn" : stopReason(r.stop) };
+  }
+
+  // One card on a call, as a server's question is shown: the owner's answer,
+  // DECLINED, or null when no choice was made (a stopped turn).
+  private async onCard(server: string, ctx: ToolContext, card: string, call: CallAsks, said: string, asked: Omit<Asked, "id">) {
+    const id = `${Date.now().toString(36)}-${++this.questions}`;
+    if (call.readOnly && !this.asked.has(card)) {
+      this.asked.add(card);
+      this.keepAsked();
+    }
+    this.asking.add(card);
+    const tell = (f: (h: ReturnType<typeof allHooks>[number]) => void) => { for (const h of allHooks()) try { f(h); } catch (e) { this.errors.capture("server", e, { hook: "ownerAsked", session: ctx.sessionId, server }); } };
+    tell((h) => h.ownerAsked?.(ctx.sessionId, ctx.callId!, said, id));
+    let answered = false;
+    try {
+      const a = await askFor(ctx, { id, ...asked });
+      answered = a !== null && a !== DECLINED;
+      return a;
+    } finally {
+      this.asking.delete(card);
+      if (!this.parked.has(ctx.sessionId) && this.asked.delete(card)) this.keepAsked();
+      tell((h) => h.ownerAnswered?.(ctx.sessionId, ctx.callId!, answered, id));
+    }
   }
 
   // The owner answers on the call's question card. An answer the schema does

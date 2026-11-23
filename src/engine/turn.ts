@@ -3211,6 +3211,21 @@ export class Engine {
     return readMaterial(this.readerHost(id, callId), items, question, signal);
   }
 
+  // One reply of the session's model for an MCP server's sampling request,
+  // after the owner allowed it (src/mcp/manager.ts sample): the server's
+  // system prompt and messages, no tools, none of the session's history,
+  // booked to the session as a side request.
+  async sample(id: string, req: { system?: string; messages: Message[]; maxTokens: number }, signal: AbortSignal): Promise<{ text: string; model: string; stop: string }> {
+    const session = this.store.session(id);
+    if (!session) throw new Error("the session is gone");
+    const { provider, info } = await this.providers.resolve(session.model);
+    const st: Step = { provider, info: { ...info, output: Math.min(info.output || req.maxTokens, req.maxTokens) }, tools: [], system: req.system ?? "", systemSplit: 0 };
+    const res = await this.call(id, st, req.messages, signal, new Map(), session, true, "side");
+    this.store.addUsage(id, res.usage);
+    this.emitSession(id);
+    return { text: res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n"), model: info.model ?? info.id, stop: res.stop };
+  }
+
   private readerHost(id: string, callId?: string): ReaderHost {
     const session = this.store.session(id)!;
     return {

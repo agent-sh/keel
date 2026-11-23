@@ -25,7 +25,10 @@ const CLIENT_INFO = { name: "keel", version: "0.1.0" };
 // folder is a tool argument or server configuration), so a modern server is
 // not offered it. A server reached over HTTP is not either: a path on this
 // machine is nothing it can open, and it would learn the owner's folder names.
-const ELICITATION = { elicitation: { form: {} } };
+// Sampling (client/sampling): a server may ask for a reply of the session's
+// model; each request is put to the owner first (manager.ts sample). Neither
+// tool use nor the servers' context is offered with it.
+const ELICITATION = { elicitation: { form: {} }, sampling: {} };
 const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object> =>
   t.kind === "stdio" && era === "legacy" ? { ...ELICITATION, roots: {} } : ELICITATION;
 
@@ -346,14 +349,14 @@ export class McpClient {
     else {
       const calls = [...this.pending.values()].filter((p) => p.input); // oldest first
       const sessions = new Set(calls.map((p) => p.input!.session));
-      const question = method === "elicitation/create";
+      const question = method === "elicitation/create" || method === "sampling/createMessage";
       if (sessions.size > 1 || (question && calls.length > 1)) {
         const why = sessions.size > 1
           ? `calls of ${sessions.size} sessions were in flight on this server, and nothing names the call such a request belongs to`
           : `${calls.length} calls were in flight on this server, and nothing names the call a question belongs to`;
         for (const p of calls) p.input!.dropped?.(method, why);
         if (this.looseOver()) return;
-        return question ? reply({ result: { action: "cancel" } }) : refuse(-32603, `not answered: ${why}`);
+        return method === "elicitation/create" ? reply({ result: { action: "cancel" } }) : refuse(question ? -1 : -32603, `not answered: ${why}`);
       }
       asker = calls[0];
     }
