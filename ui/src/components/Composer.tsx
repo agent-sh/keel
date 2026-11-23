@@ -518,7 +518,8 @@ const SessionComposer = memo(function SessionComposer({
     const next: Menu | null = sm ? { kind: "slash", query: sm[1]!, start: 0 } : fm && workspace ? { kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 } : null;
     if (!next || closed.current !== `${next.kind} ${next.start}`) closed.current = null;
     if (!next || closed.current) return setMenu(null);
-    if (next.kind === "slash") loadMcpPrompts();
+    // (The servers' prompts are read when the menu opens, not at each key typed in it.)
+    if (next.kind === "slash" && menu?.kind !== "slash") loadMcpPrompts();
     setMenu(next);
   };
 

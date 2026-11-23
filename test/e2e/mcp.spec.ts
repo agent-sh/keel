@@ -39,11 +39,12 @@ test("mcp servers", async ({ page, request }) => {
 
   await panel.getByTestId("toolkit-add-+add").click();
   await panel.getByTestId("mcp-add-name").fill("echo");
-  await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE}`);
+  // (--learn: it can add a prompt and say its list changed, below.)
+  await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE} --learn`);
   await panel.getByTestId("mcp-add-submit").click();
   const row = panel.locator('[data-testid="mcp-server"][data-name="echo"]');
   await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
-  await expect(row.getByTestId("mcp-tool-count")).toHaveText("2 tools");
+  await expect(row.getByTestId("mcp-tool-count")).toHaveText("3 tools");
   await shoot(page, "mcp-02-ready");
 
   // Reads are the owner's call per tool: the server's own read-only hint is offered, not taken.
@@ -57,7 +58,7 @@ test("mcp servers", async ({ page, request }) => {
   await expect(add).toHaveAttribute("aria-pressed", "false");
   // A marked tool the server no longer offers is not counted, and is listed apart.
   await request.put("/api/mcp/servers/echo/reads", { data: { tools: ["echo", "vanished"] } });
-  await expect(row.getByTestId("mcp-reads-count")).toHaveText("1 of 2 current tools count as reads");
+  await expect(row.getByTestId("mcp-reads-count")).toHaveText("1 of 3 current tools count as reads");
   await expect(row.getByTestId("mcp-reads-gone")).toContainText("vanished");
   await row.getByTestId("mcp-reads-gone").getByRole("button", { name: "Forget them" }).click();
   await expect(row.getByTestId("mcp-reads-gone")).toHaveCount(0);
@@ -176,6 +177,14 @@ test("mcp servers", async ({ page, request }) => {
   const evs = (await (await request.get(`/api/sessions/${sp.id}`)).json()).events;
   expect(evs.find((e: any) => e.kind === "note" && e.data?.mcp_prompt === "echo:greet")?.data.text).toContain("Say hello to the owner.");
   await shoot(page, "mcp-06-prompt-run");
+  // A prompt the server adds is in the menu as soon as the server says its list changed.
+  await page.getByTestId("composer").fill(ask("Run the echo server's learn tool, then reply done.", `script:calls ${JSON.stringify([{ name: "mcp_call", input: { tool: "echo__learn", arguments: {} } }])}`));
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+  await page.getByTestId("composer").fill("/echo:");
+  await expect(menu).toContainText("/echo:farewell");
+  await shoot(page, "mcp-06b-prompt-added");
+  await page.getByTestId("composer").fill("");
   await request.delete(`/api/sessions/${sp.id}`);
 
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });

@@ -8,7 +8,9 @@ import { shoot } from "./shots.ts";
 // (roots/list), and every server is told what Keel offers. During a call the
 // answer is the folder of the session that made the call; a server that asks
 // as soon as it is connected gets the folder it was started in. A modern
-// server is not offered roots (the 2026-07-28 revision deprecates them). The
+// server is not offered roots (the 2026-07-28 revision deprecates them). A
+// local server is told when the folders change (roots.listChanged): a call
+// from a session whose folder it was not told makes it ask again. The
 // server is the stand-in under fixtures/ask-mcp.ts; the calls come from the
 // scripted provider.
 test("mcp roots: a local server is told the session's folder", async ({ page, request }) => {
@@ -25,13 +27,13 @@ test("mcp roots: a local server is told the session's folder", async ({ page, re
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
     const call = (tool: string) => ({ name: "mcp_call", input: { tool, arguments: {} } });
     await page.goto(`/s/${session.id}`);
-    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([call("rooter__roots"), call("rooter__start"), call("rooter__caps"), call("rooter2__caps")])}`);
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([call("rooter__roots"), call("rooter__start"), call("rooter__caps"), call("rooter2__caps"), call("rooter__latest")])}`);
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
     const results = ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[])
       // (A memory note may follow a result: the server's words are what comes before it.)
       .filter((e) => e.kind === "tool_result").map((e) => String(e.data.results[0].content).split("\n\n<memory")[0]!);
-    expect(results).toHaveLength(4);
+    expect(results).toHaveLength(5);
     const root = (dir: string) => ({ roots: [{ uri: pathToFileURL(realpathSync(dir)).href, name: basename(dir) }] });
     // In a call: the folder of the session that called.
     expect(results[0]).toBe(`roots: ${JSON.stringify(root(ws))}`);
@@ -41,8 +43,11 @@ test("mcp roots: a local server is told the session's folder", async ({ page, re
     expect(atStart.roots[0].uri).toMatch(/^file:\/\/\//);
     expect(atStart.roots[0].uri).not.toBe(root(ws).roots[0]!.uri);
     // What each was told Keel offers: roots to the legacy local server only; form elicitation and sampling to both.
-    expect(JSON.parse(results[2]!)).toEqual({ elicitation: { form: {} }, sampling: {}, roots: {} });
+    expect(JSON.parse(results[2]!)).toEqual({ elicitation: { form: {} }, sampling: {}, roots: { listChanged: true } });
     expect(JSON.parse(results[3]!)).toEqual({ elicitation: { form: {} }, sampling: {} });
+    // Its first call came from a session with another folder: the server was told the folders
+    // changed, once, and the folder it asked for again is that session's.
+    expect(results[4]).toBe(`latest after 1 changes: ${JSON.stringify(root(ws))}`);
 
     const tool = page.getByTestId("tool-call").first();
     await tool.click();

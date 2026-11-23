@@ -114,6 +114,7 @@ export type McpServerState = {
   resources: boolean; // the connected server offers resources
   prompts: boolean;   // the connected server offers prompt templates
   resources_rev: number; // goes up when its resource list changed (a list read again shows it)
+  prompts_rev: number;   // goes up when its prompt list changed or it connected again
   resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
   sync?: { source: string; name: string; label: string; gone: boolean }; // follows another agent's entry
   plugin?: string; // the installed plugin it comes with (it goes and stops with the plugin)
@@ -180,6 +181,10 @@ type Entry = {
   failures: number;
   bundled?: BundledServer;
   resourcesRev: number;
+  // Goes up when its prompt list changed (or it connected again): a cached list of an older one is not used.
+  promptsRev: number;
+  // Its prompts as last listed, for the composer's slash menu.
+  prompts?: { client: McpClient; rev: number; at: number; list: any[] };
   updates: Record<string, number>;
   subscribed: Set<string>;
   // A session's own server (an editor passed it with the session, over ACP):
@@ -304,6 +309,11 @@ const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn
 
 // (Whether it is on and whether its events are taken are not what the server is: neither restarts it.)
 const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined });
+
+// How long the prompt list of a server that does not say when it changes is
+// used before it is read again: the composer's own window before it asked
+// the daemon each time its slash menu opens.
+const PROMPTS_FRESH_MS = 30_000;
 
 // How long a server that refused the Streamable HTTP request is given to name
 // its address the older way, when nothing says it speaks that transport.
@@ -684,7 +694,7 @@ export class McpManager {
   }
 
   private addEntry(name: string, config: McpServerConfig, bundled?: BundledServer, own?: Own) {
-    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled, resourcesRev: 0, updates: {}, subscribed: new Set(), ...own };
+    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled, resourcesRev: 0, promptsRev: 0, updates: {}, subscribed: new Set(), ...own };
     this.entries.set(name, e);
     if (!own) this.unshadow(name);
     registerCatalog({
@@ -894,6 +904,7 @@ export class McpManager {
         e.last = Date.now();
         e.failures = 0;
         e.resourcesRev++;
+        e.promptsRev++;
         e.subscribed.clear();
         // The latest list wins: an older reply that lands last is dropped.
         let asked = 0;
@@ -904,6 +915,7 @@ export class McpManager {
             (err) => { if (mine === asked && e.client === client) this.errors.capture("server", err, { mcp: name, at: "tools/list after a change" }); },
           );
         };
+        client.onPrompts = () => { if (e.client === client) e.promptsRev++; };
         client.onResources = (c) => {
           if (e.client !== client) return;
           if ("list" in c) e.resourcesRev++;
@@ -986,6 +998,8 @@ export class McpManager {
       const text = [...call.notes].map((n) => `[keel] ${n}`).join("\n");
       return { ...out, content: typeof out.content === "string" ? `${out.content}\n\n${text}` : [...out.content, { type: "text", text }] };
     };
+    // A server that keeps the folders it was told is told they changed when this call's session has others.
+    client.rootsChange(this.rootsFor(ctx), ctx.sessionId);
     let r: McpCallResult;
     try {
       r = await client.callTool(tool, input, signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
@@ -1044,7 +1058,6 @@ export class McpManager {
 
   private input(server: string, q: InputRequest, ctx: ToolContext, card: string | undefined, call: CallAsks): Promise<unknown> {
     // The folders of the session whose call the server works on.
-    // (None for a session whose tools run on another machine: its folder is a path there, and this server runs here.)
     if (q.method === "roots/list") {
       // The folder does not change under a call: a server that asks for it over and over is ended like one that keeps asking the owner.
       if (++call.roots > QUESTIONS_MAX) {
@@ -1052,7 +1065,7 @@ export class McpManager {
         call.end?.();
         throw new RpcError(-32603, call.ended);
       }
-      return Promise.resolve(this.elsewhere?.(ctx.sessionId) ? { roots: [] } : rootsOf(ctx.cwd));
+      return Promise.resolve(this.rootsFor(ctx));
     }
     const sampling = q.method === "sampling/createMessage";
     if (q.method !== "elicitation/create" && !sampling) throw new RpcError(-32601, `keel does not support ${q.method}`);
@@ -1089,6 +1102,12 @@ export class McpManager {
     this.queue.set(card, tail);
     void tail.then(() => { if (this.queue.get(card) === tail) this.queue.delete(card); });
     return run;
+  }
+
+  // The folders a call of this session is answered with.
+  // (None for a session whose tools run on another machine: its folder is a path there, and this server runs here.)
+  private rootsFor(ctx: ToolContext) {
+    return this.elsewhere?.(ctx.sessionId) ? { roots: [] } : rootsOf(ctx.cwd);
   }
 
   // A server that asks outside any call (many ask for the roots as soon as
@@ -1248,6 +1267,7 @@ export class McpManager {
       resources: !!e.client?.capabilities.resources,
       prompts: !!e.client?.capabilities.prompts,
       resources_rev: e.resourcesRev,
+      prompts_rev: e.promptsRev,
       resource_updates: e.updates,
       channel: { on: this.channelOn(e), declared: !!e.client?.channel, status: !!e.client?.capabilities.experimental?.[STATUS_CAP] },
     } as McpServerState;
@@ -1644,12 +1664,24 @@ export class McpManager {
 
   // Every prompt of the connected servers that offer prompts, for the slash
   // menu. A server that fails to list is left out (its own state shows why).
+  // A server that says when its list changes (prompts.listChanged) is listed
+  // again after it said so, or when it connected again; one that does not is
+  // listed again when its list is older than PROMPTS_FRESH_MS.
   async allPrompts(signal?: AbortSignal): Promise<{ server: string; name: string; description: string; arguments: { name: string; description?: string; required?: boolean }[] }[]> {
     const out = await Promise.all(this.ready().map(async (server) => {
-      const c = this.entries.get(server)?.client;
-      if (!c?.capabilities.prompts) return [];
-      const list = await c.listPrompts(signal).catch((e) => (this.errors.capture("tool", e, { server, at: "mcp prompts/list" }), [] as any[]));
-      return list.map((p: any) => ({ server, name: String(p.name), description: String(p.description ?? ""), arguments: Array.isArray(p.arguments) ? p.arguments : [] }));
+      const e = this.entries.get(server);
+      const c = e?.client;
+      if (!e || !c?.capabilities.prompts) return [];
+      const kept = e.prompts;
+      const fresh = kept && kept.client === c && kept.rev === e.promptsRev && (c.capabilities.prompts.listChanged === true || Date.now() - kept.at < PROMPTS_FRESH_MS);
+      let list = fresh ? kept.list : undefined;
+      if (!list) {
+        const rev = e.promptsRev;
+        list = await c.listPrompts(signal).catch((err) => (this.errors.capture("tool", err, { server, at: "mcp prompts/list" }), undefined));
+        // (A list that changed while it was read is read again next time.)
+        if (list && e.client === c && e.promptsRev === rev) e.prompts = { client: c, rev, at: Date.now(), list };
+      }
+      return (list ?? []).map((p: any) => ({ server, name: String(p.name), description: String(p.description ?? ""), arguments: Array.isArray(p.arguments) ? p.arguments : [] }));
     }));
     return out.flat();
   }

@@ -41,19 +41,18 @@ export async function loadSkillCommands(workspace: string) {
 }
 
 type PromptInfo = { server: string; name: string; description: string; arguments: { name: string; required?: boolean }[] };
-let promptsAt = 0;
 let promptsLoading: Promise<void> | null = null;
 const promptIds = new Set<string>();
 
-// The servers' prompts, read again when the slash menu opens and the last
-// read is older than half a minute (servers come and go; prompts change).
+// The servers' prompts, read again each time the slash menu opens (servers
+// come and go; prompts change). The daemon keeps each server's list until the
+// server says it changed, or for half a minute when it never says so
+// (McpManager.allPrompts), so a read asks no server most of the time.
 export function loadMcpPrompts(): Promise<void> {
   if (promptsLoading) return promptsLoading;
-  if (Date.now() - promptsAt < 30_000) return Promise.resolve();
   promptsLoading = (async () => {
     try {
       const { prompts } = await api<{ prompts: PromptInfo[] }>("/api/mcp/prompts");
-      promptsAt = Date.now();
       const now = new Set<string>();
       for (const p of prompts) {
         const id = `${p.server}:${p.name}`;

@@ -26,12 +26,13 @@ const CLIENT_INFO = { name: "keel", version: "0.1.0" };
 // folder is a tool argument or server configuration), so a modern server is
 // not offered it. A server reached over HTTP is not either: a path on this
 // machine is nothing it can open, and it would learn the owner's folder names.
+// It says when the folders change (listChanged): see rootsChange.
 // Sampling (client/sampling): a server may ask for a reply of the session's
 // model; each request is put to the owner first (manager.ts sample). Neither
 // tool use nor the servers' context is offered with it.
 const ELICITATION = { elicitation: { form: {} }, sampling: {} };
 const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object> =>
-  t.kind === "stdio" && era === "legacy" ? { ...ELICITATION, roots: {} } : ELICITATION;
+  t.kind === "stdio" && era === "legacy" ? { ...ELICITATION, roots: { listChanged: true } } : ELICITATION;
 
 // What a server asks of the client while it works on a call, and the handler
 // a call gives for it. The handler resolves to the result the method names
@@ -155,6 +156,8 @@ export class McpClient {
   instructions?: string;
   capabilities: Record<string, any> = {};
   onListChanged?: () => void;
+  // The prompt list changed (server/prompts, listChanged).
+  onPrompts?: () => void;
   // The resource list changed, or (after a subscription) one resource's body did.
   onResources?: (change: { list: true } | { uri: string }) => void;
   // An event the server pushed (src/mcp/channel.ts), heard only from a server
@@ -319,6 +322,7 @@ export class McpClient {
     if (msg.method === "ping" && msg.id !== undefined) return this.answer({ jsonrpc: "2.0", id: msg.id, result: {} }, "ping");
     if (msg.method && msg.id !== undefined) return void this.serverRequest(msg, origin);
     if (msg.method === "notifications/tools/list_changed") this.onListChanged?.();
+    else if (msg.method === "notifications/prompts/list_changed") this.onPrompts?.();
     else if (msg.method === "notifications/resources/list_changed") this.onResources?.({ list: true });
     else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
     else if (msg.method === CHANNEL_METHOD && this.channel) this.onChannel?.(msg.params);
@@ -368,13 +372,47 @@ export class McpClient {
     if (!handler) return refuse(-32603, "nothing here answers this");
     // The owner's time is not the server's: the call's timer waits with it.
     const resume = asker?.hold();
+    const roots = method === "roots/list";
+    if (roots) this.rootsAsking++;
     try {
-      reply({ result: await handler({ method, params: msg.params }) });
+      const result = await handler({ method, params: msg.params });
+      if (roots) this.rootsTold = JSON.stringify(result);
+      reply({ result });
     } catch (e) {
       refuse(e instanceof RpcError ? e.code : -32603, (e as Error).message);
     } finally {
       resume?.();
+      // A call that came while the answer was made is for its own folders: the server is told after the answer.
+      if (roots && --this.rootsAsking === 0 && this.rootsWanted) {
+        const w = this.rootsWanted;
+        this.rootsWanted = undefined;
+        this.rootsChange(w.roots, w.session);
+      }
     }
+  }
+
+  // The folders this server was last told (roots/list), or that it was told
+  // had changed: undefined while it never asked.
+  private rootsTold?: string;
+  // Answers to roots/list being made, and the folders a call came for meanwhile.
+  private rootsAsking = 0;
+  private rootsWanted?: { roots: unknown; session: string };
+  // The folders a call is about to be made for. When they are not what the
+  // server was last told, it is told they changed
+  // (notifications/roots/list_changed), and a server that keeps them asks
+  // again: while the call is in flight, so it is answered with that call's
+  // session's folders. A server that never asked is not told, and neither is
+  // one with calls of another session in flight: its request could not be
+  // answered (serverRequest), so the next call tells it. One that is being
+  // answered is told after the answer, if it still differs. Says whether it was told.
+  rootsChange(roots: unknown, session: string): boolean {
+    if (this.rootsAsking) { this.rootsWanted = { roots, session }; return false; }
+    const now = JSON.stringify(roots);
+    if (this.closed || this.rootsTold === undefined || this.rootsTold === now || !Object.hasOwn(offered(this.t, this.era), "roots")) return false;
+    if ([...this.pending.values()].some((p) => p.input && p.input.session !== session)) return false;
+    this.rootsTold = now;
+    this.notify("notifications/roots/list_changed").catch(() => {});
+    return true;
   }
 
   // Counts a request no call answers; past the bound the connection is ended and its owner told why.
@@ -669,7 +707,7 @@ export class McpClient {
     const c = this.capabilities;
     // (The older transport's own event stream carries what the server sends: there is no second one to open.)
     if (this.t.kind !== "http" || this.t.sse || this.era !== "legacy" || this.closed || this.stream) return;
-    if (!c.tools?.listChanged && !c.resources?.listChanged && !c.resources?.subscribe) return;
+    if (!c.tools?.listChanged && !c.prompts?.listChanged && !c.resources?.listChanged && !c.resources?.subscribe) return;
     const url = this.t.url;
     const ac = (this.stream = new AbortController());
     const st: SseState = { messages: 0 };

@@ -299,7 +299,7 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
   }, [open, s.resources, s.resources_rev, s.last_connected, loadLists]);
   useEffect(() => {
     if (open && s.prompts) api<{ prompts: Prompt[] }>(`${base}/prompts`).then((r) => setPrompts(r.prompts)).catch((e) => setErr(failed(e, { at: "Mcp prompts" })));
-  }, [open, base, s.prompts, s.last_connected]);
+  }, [open, base, s.prompts, s.prompts_rev, s.last_connected]);
   // Load more goes on from where the bound stopped, and Retry from the page
   // that failed, for that one list: the rows already shown and the other list
   // stay. One request at a time per list, so a page's rows are added once.

@@ -9,7 +9,9 @@
 // - `ask` asks the owner a form (elicitation/create) and returns what came back;
 // - `roots` asks for the client's folders (roots/list) and returns them;
 // - `caps` returns the client capabilities it was told; `start` returns the
-//   roots a legacy server asked for as soon as it was connected, outside any call.
+//   roots a legacy server asked for as soon as it was connected, outside any call;
+//   `latest` the roots it holds now (asked again each time the client said they
+//   changed) and how many times it was told.
 // Legacy only, each for one thing a client must get right:
 // - `twice` asks two questions one after the other;
 // - `work` does something (a line in ASK_MCP_SIDE), asks, then does more;
@@ -51,6 +53,7 @@ const TOOLS = [
   tool("roots", "Returns the folders the client offers"),
   tool("caps", "Returns the client capabilities"),
   tool("start", "Returns the roots it was given when it connected"),
+  tool("latest", "Returns the roots it holds now"),
   // A server that never has enough: every answer gets another question (`loop`),
   // a form no card can show, which needs no owner to be answered (`blind`),
   // or the session's folder again (`folders`).
@@ -75,6 +78,8 @@ const TOOLS = [
 
 let caps: unknown = null;
 let atStart: unknown = null;
+let latest: unknown = null;
+let changes = 0;
 let nextId = 1;
 const waiting = new Map<string, (m: any) => void>();
 // A legacy server's own request to the client; resolves to the whole response.
@@ -149,7 +154,14 @@ async function handle(m: any) {
   }
   if (m.method === "notifications/initialized") {
     const r = await request("roots/list");
-    atStart = r.result ?? r.error;
+    atStart = latest = r.result ?? r.error;
+    return;
+  }
+  // Asked again when the client says its folders changed, as a server that keeps them does.
+  if (m.method === "notifications/roots/list_changed") {
+    const r = await request("roots/list");
+    latest = r.result ?? r.error;
+    changes++;
     return;
   }
   if (m.id === undefined) return;
@@ -174,6 +186,8 @@ async function handle(m: any) {
       if (!TOOLS.some((t) => t.name === name)) return fail(-32602, `no tool ${name}`);
       if (name === "caps") return reply(text(JSON.stringify(caps)));
       if (name === "start") return reply(text(`start: ${JSON.stringify(atStart)}`));
+      // (Answered after the answers already read are taken in: one read with this call is in a line before it.)
+      if (name === "latest") return void setTimeout(() => reply(text(`latest after ${changes} changes: ${JSON.stringify(latest)}`)), 0);
       if (modern && (name === "loop" || name === "blind" || name === "folders" || name === "slowly")) {
         const round = Number(m.params?.requestState ?? 0) + 1;
         if (name === "slowly") await sleep(400);
