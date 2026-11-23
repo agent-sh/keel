@@ -1,6 +1,7 @@
 // keel sessions | ls | show | logs | stop | send | approve | attach | open |
 // resume | export | models: sessions from a terminal, as a client of the
 // running daemon.
+import { nested } from "../core/agent-tree.ts";
 import { zoned } from "../core/clock.ts";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -124,10 +125,11 @@ const sessions = command("sessions", SESSIONS_USAGE, {
   if (v.json) return (printJson(list.map((s) => (states[s.id] ? { ...s, state: states[s.id] } : s))), EXIT.ok);
   if (!list.length) return (console.error("no sessions"), EXIT.ok);
   const now = Date.now();
-  for (const s of list) {
+  // An agent's session goes under the session that started it, its title indented one step a level.
+  for (const { item: s, depth } of nested(list)) {
     const st = s.archived ? undefined : states[s.id];
     const state = s.archived ? "archived" : st ? WATCH_LABEL[st.watch].toLowerCase() : s.phase;
-    console.log(`${s.id}  ${ago(s.updated).padStart(4)}  ${state.padEnd(9)}  ${modelName(s.model).slice(0, 28).padEnd(28)}  ${(line(s.title) || "(untitled)").slice(0, 60)}  ${tilde(s.workspace)}`);
+    console.log(`${s.id}  ${ago(s.updated).padStart(4)}  ${state.padEnd(9)}  ${modelName(s.model).slice(0, 28).padEnd(28)}  ${"  ".repeat(depth)}${depth ? "- " : ""}${(line(s.title) || "(untitled)").slice(0, 60)}  ${tilde(s.workspace)}`);
     // Why, when the word alone does not say it: what waits on the owner, the step, what is waited on.
     if (st && (st.text || st.agents > 0) && st.watch !== "done") console.log(`${" ".repeat(s.id.length + 8)}${line(stateLine(st, now))}`);
     // Who stopped it, when the word alone does not say ("stopped by a hook").

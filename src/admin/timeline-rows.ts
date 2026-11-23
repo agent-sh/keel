@@ -255,7 +255,7 @@ export type Lookups = {
 };
 export { waitWords };
 const STOPPED: Record<string, string> = {
-  owner: "the owner stopped it", parent: "its parent stopped it", parent_turn: "it stopped with its parent's turn",
+  owner: "the owner stopped it", parent: "its parent stopped it", ancestor: "an agent above it was stopped", parent_turn: "it stopped with its parent's turn",
   time_limit: "its time limit passed", parent_archived: "its parent session was archived",
 };
 const AGENT_END: Record<string, string> = { refusal: "the model declined", max_tokens: "it hit the output limit", max_steps: "it ran out of its step budget" };

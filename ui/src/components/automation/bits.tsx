@@ -1,7 +1,8 @@
 import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, Gauge, GitPullRequest, Hand, MessageCircleQuestion, Repeat, ServerOff, ShieldX, Square, TrendingDown, Ban } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo } from "react";
-import { auto, type AgentRecord, type Alert } from "../../lib/automation.ts";
+import { auto, autoState, isLive, type AgentRecord, type Alert } from "../../lib/automation.ts";
+import { descendants } from "../../../../src/core/agent-tree.ts";
 import { reportError } from "../../lib/store.ts";
 import { ALERT_WORD, agentState, agentWhy, stateWords, type AgentLike, type Said } from "../../../../src/core/state-words.ts";
 import { cn } from "../../lib/utils.ts";
@@ -43,9 +44,11 @@ export const STATE_INK: Record<Watch, string> = {
 // (what it changed there may not be saved).
 export async function stopAgentAsking(a: AgentRecord, title: string) {
   const ran = Date.now() - a.created;
+  // The agents below it at work stop with it (the stop goes down the tree).
+  const below = descendants(Object.values(autoState().agents), a.session_id).filter(isLive).length;
   const ok = await confirmAction({
     title: `Stop "${title}"?`,
-    body: `It has worked for ${span(ran)}. Its turn ends now and what it has so far is reported to the session that started it.${a.worktree ? " Its worktree keeps the files it changed; work it did not save there is not recovered." : ""}`,
+    body: `It has worked for ${span(ran)}. Its turn ends now and what it has so far is reported to the session that started it.${below ? (below === 1 ? " The agent below it stops too, and waits for you to resume it." : ` The ${below} agents below it stop too, and wait for you to resume them.`) : ""}${a.worktree ? " Its worktree keeps the files it changed; work it did not save there is not recovered." : ""}`,
     action: "Stop agent", danger: true,
   });
   if (ok) await auto.stopAgent(a);

@@ -8,6 +8,7 @@
 // the running step has made progress (src/core/stuck.ts). A parent whose own
 // turn ended reads as working while an agent it started still runs, and as
 // waiting while all that is left waits.
+import { countBelow } from "../core/agent-tree.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent, TurnStatus } from "../core/types.ts";
 import { statSync } from "node:fs";
@@ -51,11 +52,10 @@ function hasTable(store: Store, name: string): boolean {
   return has;
 }
 
-// Live agents per parent session, in one read.
+// Live agents below each session, its own and theirs at any depth, in one read.
 export function agentCounts(d: Pick<From, "store"> = from()): Map<string, number> {
   if (!hasTable(d.store, "agents")) return new Map();
-  const rows = d.store.db.query<{ parent_id: string; n: number }, []>("SELECT parent_id, COUNT(*) AS n FROM agents WHERE status IN ('running', 'waiting') GROUP BY parent_id").all();
-  return new Map(rows.map((r) => [r.parent_id, r.n]));
+  return countBelow(d.store.db.query<{ parent_id: string; session_id: string }, []>("SELECT parent_id, session_id FROM agents WHERE status IN ('running', 'waiting')").all());
 }
 
 export const liveAgents = (sessionId: string, d: Pick<From, "store"> = from()) =>
@@ -169,7 +169,7 @@ export function lens(d: From = from(), counts?: Map<string, number>): Lens {
   if (hasTable(d.store, "agents")) {
     for (const a of d.store.db.query<Kid & { parent_id: string }, []>("SELECT parent_id, session_id, title, status, type FROM agents WHERE status IN ('running', 'waiting') ORDER BY created").all()) push(kids, a.parent_id, a);
   }
-  return { d, asks, pending, kids, counts: counts ?? new Map([...kids].map(([k, v]) => [k, v.length])) };
+  return { d, asks, pending, kids, counts: counts ?? countBelow([...kids].flatMap(([parent_id, v]) => v.map((k) => ({ parent_id, session_id: k.session_id })))) };
 }
 
 // The tool step a turn is on, in the words the transcript uses for the call:
@@ -212,7 +212,7 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   // Its own request waits for the provider; or its step only waits for its agents and each of them does.
   const own = turn ? e.outageOf?.(s.id) : undefined;
   const down = pending.filter((p) => p.kind === "unreachable");
-  const blocked = !own && status?.kind === "tool" && status.names.every((n) => WAITING_TOOLS.has(n)) && down.length > 0 && down.length === (l.counts.get(s.id) ?? 0);
+  const blocked = !own && status?.kind === "tool" && status.names.every((n) => WAITING_TOOLS.has(n)) && down.length > 0 && down.length === (l.kids.get(s.id)?.length ?? 0);
   const outage = own ? { since: own.since, message: own.message } : blocked ? { since: Math.min(...down.map((p) => p.since ?? Date.now())), agents: down.length } : undefined;
   const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: stepOf(l.d.store, s, status.names) } : {}), ...(outage ? { outage } : {}) } : {};
   // Its agents that run, when one of them says more than a count: a goal's check.

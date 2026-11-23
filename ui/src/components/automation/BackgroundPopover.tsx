@@ -1,3 +1,4 @@
+import { treeRows } from "../../../../src/core/agent-tree.ts";
 import { Popover } from "@base-ui/react/popover";
 import { Activity, ExternalLink, Pause, Play, Repeat, Timer, Trash2, X } from "lucide-react";
 import { useMemo } from "react";
@@ -48,7 +49,12 @@ function useBackground(sessionId: string) {
   const allAgents = useAuto((s) => s.agents);
   const allWaits = useAuto((s) => s.waits);
   const allLoops = useAuto((s) => s.loops);
-  const agents = useMemo(() => Object.values(allAgents).filter((a) => a.parent_id === sessionId).sort((a, b) => b.created - a.created), [allAgents, sessionId]);
+  // Its own agents, the newest first, each followed by the agents below it (its tree, a step further in a level).
+  const agents = useMemo(() => {
+    const all = Object.values(allAgents);
+    return all.filter((a) => a.parent_id === sessionId).sort((a, b) => b.created - a.created)
+      .flatMap((a) => [{ ...a, depth: 1 }, ...treeRows(all, a.session_id).map((r) => ({ ...r.agent, depth: r.depth + 1 }))]);
+  }, [allAgents, sessionId]);
   const waits = useMemo(() => Object.values(allWaits).filter((w) => w.session_id === sessionId && w.status === "active"), [allWaits, sessionId]);
   const loops = useMemo(() => Object.values(allLoops).filter((l) => l.session_id === sessionId), [allLoops, sessionId]);
   const out = agents.filter(isLive).length, on = loops.filter((l) => l.enabled).length;
@@ -98,7 +104,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
               const title = sessions[a.session_id]?.title || a.title;
               return (
                 // The row opens the agent; Stop is a control of its own beside it. Every row keeps Stop's place, so the words line up.
-                <div key={a.id} className="flex items-center gap-1 rounded-lg pr-2 hover:bg-hover" data-testid="bg-agent" data-watch={st.watch}>
+                <div key={a.id} className="flex items-center gap-1 rounded-lg pr-2 hover:bg-hover" data-testid="bg-agent" data-watch={st.watch} data-depth={a.depth} style={a.depth > 1 ? { paddingInlineStart: `${(a.depth - 1) * 1}rem` } : undefined}>
                   <div
                     role="button"
                     tabIndex={0}

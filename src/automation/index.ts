@@ -16,6 +16,7 @@ import * as goals from "./goals.ts";
 import * as taskOut from "./task-out.ts";
 import * as taskRenames from "./task-renames.ts";
 import * as agents from "./agents.ts";
+import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
 import * as outage from "./outage.ts";
@@ -397,7 +398,11 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/sessions/:id/agents": {
       GET: (req: any) => {
         const s = session(req.params.id);
-        return s ? json({ agents: agents.list(s.id), limit: s.parent_id ? 0 : agents.limitOf(s.id) }) : bad("no such session", 404);
+        if (!s) return bad("no such session", 404);
+        // `agents`: its own; `tree`: every agent below it, each after the one that started it, with its
+        // depth under this session; `limit`: the live agents its whole tree may have (its root's).
+        const rows = agents.tree(s.id);
+        return json({ agents: agents.list(s.id), tree: rows.map((r) => ({ ...r.agent, depth: r.depth, below: r.below })), limit: agents.limitOf(s.id), root: agents.rootSession(s.id), depth: agents.depthIn(s.id), max_depth: maxDepth() });
       },
       PATCH: async (req: any) => {
         // Fleet forwarding arrives on loopback; it cannot change the host's limit.
@@ -406,7 +411,7 @@ export const automationRoutes: RouteModule = (deps) => {
         if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1)) return bad("limit must be a positive integer or null to use the daemon default");
         const s = session(req.params.id);
         if (!s) return bad("no such session", 404);
-        if (s.parent_id) return bad("a subagent cannot start agents", 409);
+        if (s.parent_id) return bad("an agent's limit is its root session's: change it there", 409);
         agents.setLimit(s.id, limit);
         return json({ limit: agents.limitOf(s.id) });
       },

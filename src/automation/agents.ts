@@ -25,11 +25,20 @@ import { enabledUnits } from "../plugins/registry.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
+import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
 
 // Subagents: a child session with its own context that works on one task and
-// reports back to the session that spawned it. One level deep. The child gets
-// the same system prompt and tool list as its parent, so its first request
-// reads the provider cache the parent already wrote.
+// reports back to the session that spawned it. The child gets the same system
+// prompt and tool list as its parent, so its first request reads the provider
+// cache the parent already wrote.
+//
+// An agent may start agents of its own, down to the depth limit, under one
+// budget for the whole tree (src/core/agent-tree.ts says the numbers and why).
+// A report goes to the agent that started it; an agent whose own agents still
+// work has not finished (their reports start its next turn). A stop of an
+// agent stops every agent below it, and the owner's stop holds them all as
+// the owner's. Agents of one tree message each other through the same queue a
+// parent's message goes through.
 
 // incomplete: the turn ended without a finished answer (the model declined, or
 // ran out of output or of steps); its report is partial.
@@ -38,10 +47,12 @@ export type AgentStatus = "running" | "waiting" | "completed" | "incomplete" | "
 // parent and the owner can tell an owner's stop from the parent's own.
 // (The last five are a stop of its own turn by something else than the owner or its parent, in the
 // words of src/core/stoppers.ts; `unknown`: a stop nobody named.)
-export type StopBy = "owner" | "parent" | "parent_turn" | "time_limit" | "parent_archived" | "hook" | "supervisor" | "api" | "handoff" | "unknown";
+// `ancestor`: an agent above it was stopped by something else than the owner, and the stop went down the tree.
+export type StopBy = "owner" | "parent" | "ancestor" | "parent_turn" | "time_limit" | "parent_archived" | "hook" | "supervisor" | "api" | "handoff" | "unknown";
 export const STOP_TEXT: Record<StopBy, string> = {
   owner: "the owner stopped it",
   parent: "its parent agent stopped it",
+  ancestor: "an agent above it was stopped",
   parent_turn: "it stopped with its parent's turn",
   time_limit: "its time limit passed",
   parent_archived: "its parent session was archived",
@@ -198,21 +209,37 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>, quiet = fal
   }
   if (sets.length) D().store.db.query(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
   const rec = get(id);
-  if (rec && patch.status && isEnded(rec)) wakeSlots(rec.parent_id);
+  if (rec && patch.status && isEnded(rec)) wakeSlots(rootSession(rec.parent_id));
   if (rec && !quiet) emit("agent", rec);
   return rec;
 }
 
-const live = (parentId: string) => D().store.db.query<{ n: number }, [string]>(
-  "SELECT count(*) AS n FROM agents WHERE parent_id = ? AND status IN ('running', 'waiting')",
-).get(parentId)!.n;
+// --- the tree ----------------------------------------------------------------
 
-export function limitOf(parentId: string) {
-  return D().store.db.query<{ max_live: number }, [string]>("SELECT max_live FROM agent_limits WHERE parent_id = ?").get(parentId)?.max_live ?? MAX_LIVE;
+const parentOf = (sessionId: string) =>
+  D().store.db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?").get(sessionId)?.parent_id ?? null;
+// The session at the top of the session's tree (itself for a session that is nobody's agent).
+export const rootSession = (sessionId: string) => rootOf(parentOf, sessionId);
+// How many agents lie between the session and its root.
+export const depthIn = (sessionId: string) => depthOf(parentOf, sessionId);
+// Every agent session below one session, on the parent index.
+const BELOW = "WITH RECURSIVE t(s) AS (SELECT session_id FROM agents WHERE parent_id = ?1 UNION SELECT a.session_id FROM agents a JOIN t ON a.parent_id = t.s)";
+// The agents below a session, each followed by its own, with their depth under it.
+export const tree = (sessionId: string): TreeRow<AgentRecord>[] =>
+  treeRows(D().store.db.query<Row, [string]>(`${BELOW} SELECT * FROM agents WHERE session_id IN (SELECT s FROM t)`).all(sessionId).map(toRec), sessionId);
+
+// The live agents of the whole tree under a root: one budget for all of them.
+const live = (root: string) => D().store.db.query<{ n: number }, [string]>(
+  `${BELOW} SELECT count(*) AS n FROM agents WHERE session_id IN (SELECT s FROM t) AND status IN ('running', 'waiting')`,
+).get(root)!.n;
+
+// The agent limit of a session's tree: its root's.
+export function limitOf(sessionId: string) {
+  return D().store.db.query<{ max_live: number }, [string]>("SELECT max_live FROM agent_limits WHERE parent_id = ?").get(rootSession(sessionId))?.max_live ?? MAX_LIVE;
 }
 
 // Stored separately from portable session settings. Only the owner API sets
-// it, and a fork, import or remote tools host cannot supply an override.
+// it (on a root), and a fork, import or remote tools host cannot supply an override.
 export function setLimit(parentId: string, limit: number | null) {
   const db = D().store.db;
   if (limit === null) db.query("DELETE FROM agent_limits WHERE parent_id = ?").run(parentId);
@@ -368,10 +395,15 @@ function inheritPermissions(parentId: string, childId: string, mode: Mode | null
 
 // --- spawn, settle, report ---------------------------------------------------
 
-const PREAMBLE =
-  "You are a subagent of a Keel session. Work on the task below on your own with your tools. " +
-  "Your final message is your report: it is handed to the session that started you, so make it complete and self-contained, and name the files you changed. " +
-  "You cannot start other agents.";
+// `depth`: the agent's own (1 for an agent the root started); `max`: the depth limit.
+export function preamble(depth: number, max: number): string {
+  const left = levelsLeft(depth, max);
+  return "You are a subagent of a Keel session. Work on the task below on your own with your tools. " +
+    "Your final message is your report: it is handed to the session that started you, so make it complete and self-contained, and name the files you changed. " +
+    (left > 0
+      ? `You may start agents of your own for parts that can run beside each other (${left === 1 ? "one more level" : `${left} more levels`} below you); the session's agent limit counts every agent of its tree. Their reports come to you, and you have not finished while they work. You can message another agent of this tree by its id or title.`
+      : "You cannot start other agents: you are at the depth limit. You can message another agent of this tree by its id or title.");
+}
 
 type Waiter = { done: (a: AgentRecord) => boolean; resolve: (r: AgentRecord) => void };
 const waiters = new Map<string, Waiter[]>(); // agent id -> callers blocked on it
@@ -399,15 +431,16 @@ function waitForSlot(parentId: string, signal?: AbortSignal) {
   });
 }
 
-function full(parentId: string): Error | undefined {
-  const limit = limitOf(parentId);
+// Slots, reservations and their waiters are the root's: one budget per tree.
+function full(root: string): Error | undefined {
+  const limit = limitOf(root);
   // Use the existing >= comparison, including for an environment-supplied limit.
-  if (live(parentId) + (reservations.get(parentId) ?? 0) >= limit)
-    return Object.assign(new Error(`AGENT_LIMIT: ${limit} agent slots of this session are in use. Do not retry: wait for one to report, or stop one.`), { status: 409 });
+  if (live(root) + (reservations.get(root) ?? 0) >= limit)
+    return Object.assign(new Error(`AGENT_LIMIT: ${limit} agent slots of this session are in use (every agent of its tree counts). Do not retry: wait for one to report, or stop one.`), { status: 409 });
 }
 
-function needSlot(parentId: string) {
-  const refused = full(parentId);
+function needSlot(sessionId: string) {
+  const refused = full(rootSession(sessionId));
   if (refused) throw refused;
 }
 
@@ -542,7 +575,9 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
   const { store } = D();
   const parent = store.session(parentId);
   if (!parent) throw new Error("no such session");
-  if (parent.parent_id) throw new Error("a subagent cannot start agents; do the work yourself or report back");
+  const depth = depthIn(parentId);
+  const max = maxDepth();
+  if (!canStart(depth, max)) throw Object.assign(new Error(`AGENT_DEPTH: agents ${max} level${max === 1 ? "" : "s"} below the session cannot start agents of their own. Do this part yourself, then report.`), { status: 409 });
   if (!input.prompt?.trim()) throw new Error("the agent needs a prompt");
   const defs = definitions(parent.workspace);
   const def = defs.find((d) => d.name.toLowerCase() === (input.type ?? "general-purpose").toLowerCase());
@@ -551,24 +586,28 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     const bad = validSchema(input.output_schema);
     if (bad) throw new Error(bad);
   }
+  const root = rootSession(parentId);
   for (;;) {
     if (signal?.aborted) throw new Error("cancelled");
     const current = store.session(parentId);
     if (!current || current.archived) throw new Error("the parent session is gone or archived");
-    const refused = full(parentId);
+    const refused = full(root);
     if (!refused) {
       // No await between checking and reserving. Both local and remote
       // placement can await before a durable agent row is available.
-      const release = reserve(parentId);
-      try { return await startSpawn(current, input, def, release, signal); }
+      const release = reserve(root);
+      try { return await startSpawn(current, input, def, release, signal, depth + 1, max); }
       finally { release(); }
     }
-    if (input.background !== false) throw refused;
-    await waitForSlot(parentId, signal);
+    // Only the root waits for a slot: an agent that waited would hold its own
+    // slot, and its ancestors theirs, while the slot it waits for may be one
+    // of theirs, which frees only when it ends.
+    if (input.background !== false || depth > 0) throw refused;
+    await waitForSlot(root, signal);
   }
 }
 
-async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, release: () => void, signal?: AbortSignal) {
+async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, release: () => void, signal: AbortSignal | undefined, depth: number, max: number) {
   const { store, bus, engine } = D();
   const parentId = parent.id;
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
@@ -616,7 +655,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const now = Date.now();
   const schema = input.output_schema === undefined ? null : JSON.stringify(input.output_schema);
   const task = [
-    PREAMBLE, def.body,
+    preamble(depth, max), def.body,
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Edit only there and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
     placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Edit only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
@@ -1078,6 +1117,9 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // A message of its parent waits and no stop holds it: its turn starts by
   // itself (the next daemon starts it when this one is on its way down).
   if (!stopping.has(a.id) && !engine.isHeld(sessionId) && waitingFor(sessionId)) return;
+  // Its own agents still work: it has not finished, and their reports start
+  // its next turn. (A blocking call on it goes on waiting; a stop ends it.)
+  if (!stopping.has(a.id) && reason !== "interrupted" && ownAtWork(sessionId)) return;
   // (A silent agent hands nothing back: its goal or its review has its answer at the turn's end, so it is
   // not kept waiting on a command that runs on.)
   const waitingOn = stopping.has(a.id) ? "" : isSilent(a.id) ? waits.describeActive(sessionId) : waitsOn(sessionId);
@@ -1094,6 +1136,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
   const turnBy = reason === "interrupted" ? stopperOf(sessionId) : undefined;
   const by = stopping.get(a.id) ?? (reason === "interrupted" ? (ownerStop(turnBy) ? "owner" : turnBy && turnBy in STOP_TEXT ? (turnBy as StopBy) : "unknown") : undefined);
   stopping.delete(a.id);
+  if (by) stopBelow(a, by);
   const status: AgentStatus = by ? "stopped" : reason === "error" ? "failed" : INCOMPLETE.has(reason) ? "incomplete" : "completed";
   settling.set(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
 }
@@ -1197,15 +1240,18 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   const a = get(id);
   if (!a) return undefined;
   const { engine } = D();
-  if (isEnded(a) && !engine.isRunning(a.session_id)) return a;
+  if (isEnded(a) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
   if (stopping.has(id)) return a;
   waits.cancelForSession(a.session_id);
   stopping.set(id, by);
   dropPending(a.session_id);
   // The child's own turn records the same actor as its record and report.
   // (Its queue waits with it: a message of its parent continues it, and one the owner stopped waits for the owner.)
-  if (engine.isRunning(a.session_id)) void engine.interrupt(a.session_id, by);
-  else {
+  if (engine.isRunning(a.session_id)) {
+    void engine.interrupt(a.session_id, by);
+    // Its own agents stop now, not when its turn has wound down.
+    stopBelow(a, by);
+  } else {
     // The owner's stop holds its queue also when no turn runs in it (it waits
     // on a timer): a message of its parent after that starts nothing either.
     if (by === "owner") engine.holdQueue(a.session_id, by);
@@ -1214,14 +1260,28 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   return get(id);
 }
 
+// Its own agents at work (silent ones aside: a review answers in its own panel).
+const ownAtWork = (sessionId: string) => list(sessionId).some((k) => !isEnded(k) && !isSilent(k.id));
+
+// A stop goes down the tree: every agent below a stopped agent stops too.
+// The owner's stop is the owner's on each of them (it holds their queues
+// until the owner resumes each); any other is the stop of an agent above
+// them, which the agent that started each can undo with a message.
+function stopBelow(a: AgentRecord, by: StopBy) {
+  const down: StopBy = by === "owner" ? "owner" : "ancestor";
+  for (const k of list(a.session_id)) if (!isEnded(k) || D().engine.isRunning(k.session_id)) stop(k.id, down);
+}
+
 // The stops made on the sending side: the parent's own, and the ones the
 // harness made for it (its turn stopped under a blocking agent, the agent's
 // time limit, the parent archived). A message of the parent releases the hold
 // such a stop left on the agent's queue, and no other: one the owner made
 // (the agent's Stop, a stop nobody named) stays until the owner resumes it.
-const OWN_HOLDS: readonly string[] = ["parent", "parent_turn", "time_limit", "parent_archived"] satisfies StopBy[];
+const OWN_HOLDS: readonly string[] = ["parent", "ancestor", "parent_turn", "time_limit", "parent_archived"] satisfies StopBy[];
+// Whether a hold by this stopper word is one its parent cannot release.
+export const isOwnerHold = (by: string | null | undefined) => !OWN_HOLDS.includes(by ?? "");
 // Whether the agent's queue is held by a stop its parent cannot release.
-export const ownerHolds = (sessionId: string) => D().engine.isHeld(sessionId) && !OWN_HOLDS.includes(D().engine.heldBy(sessionId) ?? "");
+export const ownerHolds = (sessionId: string) => D().engine.isHeld(sessionId) && isOwnerHold(D().engine.heldBy(sessionId));
 
 // A message to an agent, kept in its session's queue or stored as its prompt
 // before the sender is answered (Engine.message): a working agent reads it at
@@ -1231,15 +1291,19 @@ export const ownerHolds = (sessionId: string) => D().engine.isHeld(sessionId) &&
 // as it is. `waits`: it is in the queue, not read yet. `key`: the sender's
 // own name for this message; the same key again sends nothing (`duplicate`),
 // and with other words it is refused.
-export type MessageSent = { agent: AgentRecord; waits: boolean; held?: boolean; duplicate?: boolean };
-export async function send(id: string, message: string, interrupt = false, key?: string): Promise<MessageSent> {
+// `held_by`: the stopper word of the hold the message waits behind.
+export type MessageSent = { agent: AgentRecord; waits: boolean; held?: boolean; held_by?: string | null; duplicate?: boolean };
+// `from`: the sending session, when it is not the agent's parent: another
+// agent of the same tree. Its message says who sent it, and it releases no
+// hold: only the sender whose own stop made a hold releases it.
+export async function send(id: string, message: string, interrupt = false, key?: string, from?: string): Promise<MessageSent> {
   // Another message is making this finished agent ready (its slot held, its
   // worktree made again): this one waits for that, then steers the agent it
   // started, instead of asking for a second slot.
   const ahead = restarting.get(id);
   if (ahead) {
     await ahead;
-    return send(id, message, interrupt, key);
+    return send(id, message, interrupt, key, from);
   }
   let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
@@ -1248,14 +1312,19 @@ export async function send(id: string, message: string, interrupt = false, key?:
   if (!child) throw new Error("the agent's session is gone");
   // An archived session runs no turn: the message would wait there unread.
   if (child.archived) throw new Error("the agent's session is archived, so it cannot read a message; restore the session first");
-  const text = `Message from the session that started you:\n${message}`;
-  const meta = { kind: "steer", agent_id: id };
-  const opts = { key, fp: key ? Bun.hash(message).toString(36) : undefined, releases: OWN_HOLDS };
-  const sent = (r: Sent): MessageSent => ({ agent: get(id)!, waits: !!r.queued, ...(r.held ? { held: true } : {}), ...(r.duplicate ? { duplicate: true } : {}) });
+  const peer = from && from !== a.parent_id ? byChild(from) : undefined;
+  if (from && from !== a.parent_id && (!peer || rootSession(from) !== rootSession(a.parent_id))) throw new Error(`agent ${id} is not in this session's tree`);
+  if (peer?.id === id) throw new Error("an agent cannot message itself");
+  const text = peer
+    ? `Message from agent "${attr(peer.title)}" (${peer.id}), another agent of your session's tree:\n${message}`
+    : `Message from the session that started you:\n${message}`;
+  const meta = { kind: "steer", agent_id: id, ...(peer ? { from_agent: peer.id } : {}) };
+  const opts = { key, fp: key ? Bun.hash(message).toString(36) : undefined, releases: peer ? [] : OWN_HOLDS };
+  const sent = (r: Sent): MessageSent => ({ agent: get(id)!, waits: !!r.queued, ...(r.held ? { held: true, held_by: engine.heldBy(a!.session_id) ?? null } : {}), ...(r.duplicate ? { duplicate: true } : {}) });
   // The owner stopped it: nothing is made ready and nothing starts. A turn
   // that runs there all the same (the owner's own prompt) takes the message
-  // at its next step.
-  if (ownerHolds(a.session_id)) return sent(engine.message(a.session_id, text, meta, opts));
+  // at its next step. A peer's message waits behind any hold.
+  if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
   // A finished agent that goes on takes a slot again. It is reserved before
   // anything yields (its place on another machine, its worktree made again),
   // with no await between the check and the reservation: a spawn in that time
@@ -1264,7 +1333,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
   let ready: (() => void) | undefined;
   if (isEnded(a)) {
     needSlot(a.parent_id);
-    release = reserve(a.parent_id);
+    release = reserve(rootSession(a.parent_id));
     restarting.set(id, new Promise<void>((r) => (ready = r)));
   }
   // The slot goes back, and a message that waited for this one goes on.
@@ -1292,9 +1361,10 @@ export async function send(id: string, message: string, interrupt = false, key?:
     a = get(id); // placement may have yielded while this agent finished
     if (!a) throw new Error(`no agent ${id}`);
     // The owner stopped it while its place was made ready.
-    if (ownerHolds(a.session_id)) return sent(engine.message(a.session_id, text, meta, opts));
+    if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
     if (!isEnded(a)) {
-      if (interrupt && engine.isRunning(a.session_id)) {
+      // (Only its parent redirects it: a peer's message waits for its next step.)
+      if (interrupt && !peer && engine.isRunning(a.session_id)) {
         // The turn is stopped first, and the stop is not the agent's end: the
         // message is its next turn (onTurnEnd leaves it alone meanwhile).
         redirecting.add(id);
@@ -1325,7 +1395,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
       update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null });
       release?.(); // the running row now occupies the slot
       // The stop that ended it was the sending side's: its hold goes before anything starts.
-      engine.releaseHold(a!.session_id, OWN_HOLDS);
+      if (!peer) engine.releaseHold(a!.session_id, OWN_HOLDS);
       sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
       return sent(engine.message(a!.session_id, text, meta, opts));
     });
@@ -1382,6 +1452,21 @@ export function resolveTarget(parentId: string, target: string): AgentRecord {
   const a = all.find((x) => x.id === target) ?? all.find((x) => x.session_id === target) ?? [...all].reverse().find((x) => x.title.toLowerCase() === t);
   if (!a) throw new Error(`no agent "${target}" in this session; agents: ${all.map((x) => `${x.id} (${x.title})`).join(", ") || "none"}`);
   return a;
+}
+
+// The agent a message names: one the session started, else (from an agent)
+// any other agent of its tree, by id, session id or title (the newest of a
+// title). The root reaches the agents below its own through them.
+export function resolveInTree(sessionId: string, target: string): AgentRecord {
+  try { return resolveTarget(sessionId, target); } catch (e) {
+    const me = byChild(sessionId)?.id;
+    if (!me) throw e;
+    const all = tree(rootSession(sessionId)).map((r) => r.agent).filter((x) => x.id !== me);
+    const t = target.trim().toLowerCase();
+    const a = all.find((x) => x.id === target) ?? all.find((x) => x.session_id === target) ?? [...all].sort((x, y) => x.created - y.created).reverse().find((x) => x.title.toLowerCase() === t);
+    if (a) return a;
+    throw new Error(`no agent "${target}" in this session's tree; agents: ${all.map((x) => `${x.id} (${x.title})`).join(", ") || "none"}`);
+  }
 }
 
 // Tool lists hold at call time; the request keeps the parent's tool list so

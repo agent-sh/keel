@@ -144,6 +144,13 @@ under `~/.cache/keel-work/bun/research/`.
   own. Only what a notice can name is owed; a notice never starts a session
   held after the owner's Stop. The same rows are read at
   `GET /api/errors?session=<id>`.
+- Agents start agents down to a depth limit, under one budget for the whole
+  tree (`src/core/agent-tree.ts` says the numbers and why). A report goes to
+  the agent that started it; an agent is not finished while its own agents
+  work; a stop goes down the tree, and the owner's holds every agent below as
+  the owner's. Agents of one tree message each other through the same queue
+  as a parent's message (`agents.send` with its sender), and a peer's message
+  releases no hold.
 - An input a session's sender was told is taken is stored first and delivered
   once. A message (the owner's steer or queued prompt, a parent's message to
   its agent, another session's) is a row of the session's queue or its stored

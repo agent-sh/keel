@@ -10,13 +10,17 @@ import * as failures from "./failures.ts";
 // neither loses nor repeats it. A sender on another daemon is not told here.
 const WHY = { deleted: "its session was deleted", archived: "its session was archived", removed: "the owner removed it from that session's queue" } as const;
 
-// Who sent a queued row, and how the receiver is named to it: a parent's
-// message to its agent (the agent's id), another session's message (the
-// receiver's session, by the end of its id).
+// Who sent a queued row, and how the receiver is named to it: a message to an
+// agent from its parent or from another agent of its tree (the agent's id),
+// another session's message (the receiver's session, by the end of its id).
 function senderOf(q: QueueItem, receiver?: Session): { session: string; ref: { id: string; label?: string }; name: string; words: string } | undefined {
-  const m = q.meta as { kind?: unknown; agent_id?: unknown; from?: { session_id?: unknown } } | undefined;
+  const m = q.meta as { kind?: unknown; agent_id?: unknown; from_agent?: unknown; from?: { session_id?: unknown } } | undefined;
   if (m?.kind === "steer" && typeof m.agent_id === "string") {
-    const a = D().store.db.query<{ parent_id: string; title: string }, [string]>("SELECT parent_id, title FROM agents WHERE id = ?").get(m.agent_id);
+    const row = D().store.db.query<{ parent_id: string; session_id: string; title: string }, [string]>("SELECT parent_id, session_id, title FROM agents WHERE id = ?");
+    const a = row.get(m.agent_id);
+    // Another agent of the tree sent it: that agent is told, in its own session.
+    const peer = typeof m.from_agent === "string" ? row.get(m.from_agent) : undefined;
+    if (typeof m.from_agent === "string") return a && peer ? { session: peer.session_id, ref: { id: m.agent_id, label: a.title }, name: "the agent", words: q.text.replace(/^Message from agent [^\n]*, another agent of your session's tree:\n/, "") } : undefined;
     return a ? { session: a.parent_id, ref: { id: m.agent_id, label: a.title }, name: "the agent", words: q.text.replace(/^Message from the session that started you:\n/, "") } : undefined;
   }
   if (m?.kind === "peer" && typeof m.from?.session_id === "string") {

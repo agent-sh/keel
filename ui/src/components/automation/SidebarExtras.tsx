@@ -1,4 +1,5 @@
 import { Bell, BellOff, ChevronRight, Moon, Repeat } from "lucide-react";
+import type React from "react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
 import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
@@ -11,12 +12,14 @@ import { useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
 import { calls, useSettled } from "../../lib/settle.ts";
 import type { Watch } from "../../../../src/core/watch.ts";
+import { treeRows } from "../../../../src/core/agent-tree.ts";
 
 // The panels load the first time they open.
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
 const LoopsPanel = lazy(() => import("./LoopsPanel.tsx").then((m) => ({ default: m.LoopsPanel })));
 
-// Under a session row: the agents it started, each with its state in the one
+// Under a session row: the agents it started and theirs, as a tree (each
+// agent's own under it, indented a step a level), each with its state in the one
 // word every other surface uses for it (src/core/state-words.ts), and stop. Children
 // never appear in the top-level list and never count as unread on their own.
 // The summary is one line that never wraps: how many agents, then every state
@@ -33,7 +36,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const sessions = useStore((s) => s.sessions);
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
-  const liveKids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
+  const rows = useMemo(() => treeRows(Object.values(all), parentId), [all, parentId]);
+  const liveKids = useMemo(() => rows.map((r) => r.agent), [rows]);
+  const place = useMemo(() => new Map(rows.map((r) => [r.agent.id, { depth: r.depth, below: r.below }])), [rows]);
   const told = useToldStates();
   const seen = useAgentsSeen();
   const liveSaid = useMemo(() => liveKids.map((k) => agentSaid(k, told[k.session_id])), [liveKids, told]);
@@ -91,12 +96,14 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         )}
       </button>
       {expanded && kids.map((a, i) => {
+        // The settled list (its said rows) with each agent's place in the tree, read from the live tree by id.
+        const { depth, below } = place.get(a.id) ?? { depth: 1, below: 0 };
         const st = said[i]!;
         const title = sessions[a.session_id]?.title || a.title;
         const news = endedUnseen(a, seen);
         return (
           // The row opens the agent; Stop is a control of its own over the row's end, never inside the open target.
-          <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-testid="child-row">
+          <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-testid="child-row" data-depth={depth} style={depth > 1 ? ({ "--k-indent": `${(depth - 1) * 0.875}rem` } as React.CSSProperties) : undefined}>
             <div
               role="button"
               tabIndex={0}
@@ -105,7 +112,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
               data-asking={st.watch === "need" || undefined}
               data-fresh={news || undefined}
               data-current={current === a.session_id || undefined}
-              aria-label={`${title}, ${st.title}${news ? ", ended since you looked" : ""}`}
+              aria-label={`${title}, ${st.title}${below ? `, ${below} agent${below > 1 ? "s" : ""} below it` : ""}${news ? ", ended since you looked" : ""}`}
               // The row may be too narrow for the title or the word: the tooltip carries both.
               title={`${title}: ${st.title}`}
               onClick={() => onPick(a.session_id)}
@@ -118,6 +125,8 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
             >
               <AgentMark w={st.watch} />
               <span className="k-child-title" data-quiet={(!isLive(a) && !unread[a.session_id] && !news) || undefined} data-new={!!(unread[a.session_id] || news) || undefined} data-testid="child-title">{title}</span>
+              {/* How many agents are below it: the rows that follow, a step further in. */}
+              {below > 0 && <span className="k-child-below" data-testid="child-below" title={`${below} agent${below > 1 ? "s" : ""} below it`}>+{below}</span>}
               <span className="k-child-state" data-watch={st.watch} data-testid="child-state">{st.word}</span>
               {/* Its parent's section says where it runs; only an agent placed elsewhere names its machine. */}
               {(sessions[a.session_id]?.machine ?? a.machine ?? undefined) !== (sessions[parentId]?.machine ?? undefined) && <Where s={{ machine: sessions[a.session_id]?.machine ?? a.machine }} />}

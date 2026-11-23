@@ -56,12 +56,24 @@ export function groupsOf(store: Pick<Store, "db">, sessionId: string): FailureGr
 }
 
 // The record the owner reads: a session's groups, or for an agent's session the
-// groups of its parent that name it.
-export function recordOf(store: Pick<Store, "db" | "session">, sessionId: string): FailureGroup[] {
+// groups of its parent that name it; then the groups of every agent below it
+// that started agents of its own, each marked with that agent (`under`): an
+// agent's failures are told to the agent that started it, and the session
+// above sees its whole tree.
+export type RecordGroup = FailureGroup & { under?: { id: string; label: string } };
+const BELOW = "WITH RECURSIVE t(s) AS (SELECT session_id FROM agents WHERE parent_id = ?1 UNION SELECT a.session_id FROM agents a JOIN t ON a.parent_id = t.s) SELECT id, session_id, title FROM agents WHERE session_id IN (SELECT s FROM t) ORDER BY created";
+export function recordOf(store: Pick<Store, "db" | "session">, sessionId: string): RecordGroup[] {
   const s = store.session(sessionId);
-  if (!s?.parent_id) return groupsOf(store, sessionId);
-  const me = store.db.query<{ id: string }, [string]>("SELECT id FROM agents WHERE session_id = ?").get(sessionId)?.id;
-  return groupsOf(store, s.parent_id).filter((g) => g.refs.some((r) => r.id === me));
+  // (No agents table: a store the automation never opened.)
+  const read = <T,>(f: () => T, none: T): T => { try { return f(); } catch { return none; } };
+  const deeper = read(() => store.db.query<{ id: string; session_id: string; title: string }, [string]>(BELOW).all(sessionId), [])
+    .flatMap((a) => groupsOf(store, a.session_id).map((g) => ({ ...g, under: { id: a.id, label: a.title } })));
+  if (!s?.parent_id) return [...groupsOf(store, sessionId), ...deeper];
+  const me = read(() => store.db.query<{ id: string }, [string]>("SELECT id FROM agents WHERE session_id = ?").get(sessionId)?.id, undefined);
+  const mine = groupsOf(store, s.parent_id).filter((g) => g.refs.some((r) => r.id === me));
+  // An agent's own table holds the failures of the agents it started: they are below it.
+  const its = groupsOf(store, sessionId).map((g) => ({ ...g, under: { id: me ?? sessionId.slice(-12), label: s.title } }));
+  return [...mine, ...its, ...deeper];
 }
 
 function save(sessionId: string, g: FailureGroup) {

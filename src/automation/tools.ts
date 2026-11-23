@@ -9,6 +9,7 @@ import { toolsFor } from "../tools/registry.ts";
 import { D, familyOf } from "./core.ts";
 import * as waits from "./waits.ts";
 import { privateHost } from "../tools/web.ts";
+import { heldSays } from "../core/stoppers.ts";
 
 // Each family gets the names and shapes it was trained on: Claude the Claude
 // Code tools (Agent, SendMessage, TaskStop, Monitor, ScheduleWakeup, Cron*,
@@ -69,7 +70,7 @@ const Agent: Tool = {
     "Launch a subagent: a separate session with its own context that works on one task and returns a report. " +
     "Use it for independent work that can run beside yours, or a broad search whose file dumps you do not need. Send several Agent calls in one message to run them in parallel. " +
     "A fresh agent sees none of this conversation: the prompt must say everything it needs. subagent_type \"fork\" instead starts it with this whole conversation on your model (it reads your prompt cache), so the prompt only names its part. By default the call blocks until the agent reports; with run_in_background the call returns at once and the report arrives later as a message (do not poll it). " +
-    "Types: general-purpose (all tools, default), Explore (read-only search); more may be listed in the system prompt. A subagent cannot start agents. " +
+    "Types: general-purpose (all tools, default), Explore (read-only search); more may be listed in the system prompt. An agent may start agents of its own, three levels below the session at most; the session's agent limit counts every agent of the tree. " +
     "In a git repository an agent that can edit works in its own worktree on its own branch and commits there; its report names the branch to merge. isolation: \"none\" makes it edit your checkout instead. " +
     "output_schema (a JSON schema) makes its report one JSON value that matches it.",
   input_schema: {
@@ -128,7 +129,7 @@ export const messageHooks: TurnHooks = {
     const c = callOf(sessionId, callId);
     if (!c || !MESSAGE_TOOLS.has(c.name)) return undefined;
     let to: agents.AgentRecord;
-    try { to = agents.resolveTarget(sessionId, String(c.input?.to ?? c.input?.agent_id ?? c.input?.target)); } catch { return undefined; }
+    try { to = agents.resolveInTree(sessionId, String(c.input?.to ?? c.input?.agent_id ?? c.input?.target)); } catch { return undefined; }
     if (!D().engine.hasInput(to.session_id, keyOf(c.event, callId))) return undefined;
     return { done: `The daemon restarted before this call was answered. Its message was stored for agent ${to.id} before that and the agent reads it: do not send it again.` };
   },
@@ -139,7 +140,8 @@ function whenRead(r: agents.MessageSent): string {
   if (!r.waits) return "It reads it now.";
   const n = r.agent.messages_waiting ?? 1;
   const where = `It is kept in its queue${n > 1 ? ` (${n} of your messages wait there)` : ""}`;
-  if (r.held) return `${where}: the owner stopped that agent, and it reads the message when the owner resumes it. Nothing you send starts it before that.`;
+  if (r.held && agents.isOwnerHold(r.held_by)) return `${where}: the owner stopped that agent, and it reads the message when the owner resumes it. Nothing you send starts it before that.`;
+  if (r.held) return `${where}: that agent is stopped (${heldSays(r.held_by)}), and it reads the message when the agent that started it sends it on.`;
   if (D().engine.isDraining()) return `${where}: the daemon is restarting, and the agent reads it when it is back.`;
   // An agent of another program takes input only between its turns.
   if (D().engine.isExternal(r.agent.session_id)) return `${where}: the agent is working and reads it after its current turn.`;
@@ -150,7 +152,7 @@ const SendMessage: Tool = {
   name: "SendMessage",
   families: CLAUDE,
   readOnly: true,
-  description: "Send a message to one of your subagents by agent id or description: it steers a running agent (after its current step) or continues a finished one with its context. Its next report arrives as a message.",
+  description: "Send a message to one of your subagents, or to another agent of this session's tree, by agent id or description: it steers a running agent (after its current step) or continues a finished one with its context. Its next report goes to the agent that started it.",
   input_schema: {
     type: "object",
     properties: {
@@ -161,8 +163,10 @@ const SendMessage: Tool = {
     required: ["to", "message"],
   },
   run: (input, ctx) => guard(async () => {
-    const r = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.to ?? input.agent_id)).id, String(input.message), false, callKey(ctx));
-    return ok(`${r.held ? "Stored for" : "Sent to"} ${r.agent.id}. ${whenRead(r)}${r.held ? "" : " Its report arrives as a message."}`);
+    const to = agents.resolveInTree(ctx.sessionId, String(input.to ?? input.agent_id));
+    const r = await agents.send(to.id, String(input.message), false, callKey(ctx), ctx.sessionId);
+    const mine = to.parent_id === ctx.sessionId;
+    return ok(`${r.held ? "Stored for" : "Sent to"} ${r.agent.id}. ${whenRead(r)}${r.held ? "" : mine ? " Its report arrives as a message." : " Its report goes to the agent that started it, not to you."}`);
   }),
 };
 
@@ -191,7 +195,7 @@ const spawn_agent: Tool = {
   readOnly: true,
   description:
     "Spawn a sub-agent for a well-scoped task. Returns the spawned agent id. The agent works in the background in its own session; its final answer arrives as a message when it finishes, or call wait_agent when you are blocked on it. " +
-    "Spawn several in one round for independent subtasks with disjoint write scopes. Spawned agents use your current model unless model names another. A sub-agent cannot spawn agents. " +
+    "Spawn several in one round for independent subtasks with disjoint write scopes. Spawned agents use your current model unless model names another. A sub-agent may spawn agents of its own, three levels below the session at most; the session's agent limit counts every agent of the tree. " +
     "Agent types: general-purpose (default), Explore (read-only). In a git repository an agent that can edit gets its own worktree and branch (isolation: \"none\" shares your checkout); its result names the branch to merge. output_schema makes its final answer one JSON value matching that schema.",
   input_schema: {
     type: "object",
@@ -217,7 +221,7 @@ const send_input: Tool = {
   name: "send_input",
   families: OTHERS,
   readOnly: true,
-  description: "Send a message to an existing agent. Use interrupt=true to redirect its work immediately; otherwise it is handled after its current step. A finished agent continues with its context.",
+  description: "Send a message to an existing agent: one you spawned, or another agent of this session's tree. Use interrupt=true to redirect the work of one you spawned immediately; otherwise it is handled after its current step. A finished agent continues with its context, and its next result goes to the agent that spawned it.",
   input_schema: {
     type: "object",
     properties: {
@@ -228,7 +232,7 @@ const send_input: Tool = {
     required: ["target", "message"],
   },
   run: (input, ctx) => guard(async () => {
-    const r = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt, callKey(ctx));
+    const r = await agents.send(agents.resolveInTree(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt, callKey(ctx), ctx.sessionId);
     return ok(JSON.stringify({ submission_id: `${r.agent.id}-${Date.now()}`, delivery: whenRead(r) }));
   }),
 };

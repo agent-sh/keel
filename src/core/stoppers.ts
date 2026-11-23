@@ -9,9 +9,10 @@
 // the owner resumes it, pauses a goal and keeps agents' reports from waking the
 // session. Any other stopper ends that one turn and leaves the rest as it was.
 // (Some keep the queue waiting for reasons of their own, and a goal with it:
-// the stop of an agent by the side that started it, until that side sends it
-// something; a move of the session, until the move is over; an archive or a
-// delete, so that nothing queued starts in a session on its way out.) Two of the owner's acts cut a turn
+// the stop of an agent by the side that started it, or with an agent above it,
+// until the side that started it sends it something; a move of the session,
+// until the move is over; an archive or a delete, so that nothing queued
+// starts in a session on its way out.) Two of the owner's acts cut a turn
 // without being a Stop: a prompt they edit and a queued prompt they send now
 // (`replaces`: their message is the next turn). Pure: the page loads this file.
 
@@ -34,6 +35,7 @@ export const STOPPERS: Record<string, Stopper> = {
   edit: { says: "ended when the owner edited an earlier prompt", replaces: true },
   send_now: { says: "ended when the owner sent a new message", replaces: true },
   parent: { says: "stopped by its parent", parent: true, held: "its parent stopped this session" },
+  ancestor: { says: "stopped with an agent above it", parent: true, held: "an agent above this one was stopped" },
   parent_turn: { says: "stopped with its parent's turn", parent: true, held: "this session stopped with its parent's turn" },
   time_limit: { says: "stopped at its time limit", parent: true, held: "this session passed its time limit" },
   parent_archived: { says: "stopped when its parent session was archived", parent: true, held: "this session's parent was archived" },

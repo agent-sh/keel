@@ -403,6 +403,10 @@
 .k-child-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 .k-child-title[data-quiet] { color: var(--muted); }
 .k-child-title[data-new] { font-weight: 600; }
+/* An agent's own agents: a step further in, with a hairline back to the row that started them. */
+.k-child-row[data-depth]:not([data-depth="1"]) { padding-inline-start: var(--k-indent); }
+.k-child-row[data-depth]:not([data-depth="1"])::before { content: ""; position: absolute; top: 0.25rem; bottom: 0.25rem; inset-inline-start: calc(var(--k-indent) - 0.4375rem); width: 1px; background: var(--line); }
+.k-child-below { flex: none; color: var(--faint); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
 .k-child-state { flex-shrink: 0; white-space: nowrap; font-weight: 500; font-size: var(--text-micro); line-height: 1rem; color: var(--faint); }
 .k-child-state:is([data-watch="need"], [data-watch="work"], [data-watch="wait"], [data-watch="resume"], [data-watch="fail"], [data-watch="declined"]) { font-weight: 700; }
 .k-child-state[data-watch="need"] { color: var(--st-need-ink); }

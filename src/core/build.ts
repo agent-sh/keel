@@ -44,7 +44,8 @@ export function buildId(): string {
 // of one cache write of its context. Everything not marked waits.
 // A mark can be removed once the builds before it are no longer pinned anywhere.
 export const URGENT: { tools: Record<string, string>; blocks: Record<string, string> } = {
-  tools: { ...testBuild?.urgent?.tools },
+  // An agent may start agents of its own, and message the other agents of its tree.
+  tools: { Agent: "nested-agents", spawn_agent: "nested-agents", SendMessage: "agent-tree-messages", send_input: "agent-tree-messages", ...testBuild?.urgent?.tools },
   blocks: { ...testBuild?.urgent?.blocks },
 };
 
