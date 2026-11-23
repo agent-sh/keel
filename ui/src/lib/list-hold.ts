@@ -43,6 +43,7 @@ export const actedOn = (id: string) => own.has(id);
 // and the list is not held around where it stood.
 const onLetGo = new Set<string>();
 export const actWhenLetGo = (id: string) => void onLetGo.add(id);
+export const waitsLetGo = (id: string) => onLetGo.has(id);
 export function letGo() {
   for (const id of onLetGo) listActed(id);
   onLetGo.clear();
