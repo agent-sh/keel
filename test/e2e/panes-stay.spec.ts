@@ -522,6 +522,9 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await open(page, [reader, coord]);
   const head = slot(page, 1).getByTestId("station-head");
   await expect(head.getByTestId("station-why")).toContainText("Approve Bash");
+  // The card under the head shows the command whole: the head names the call, and does not say the command again.
+  await expect(cardIn(page, coord, "approval")).toContainText("echo release > release.txt");
+  await expect(head.getByTestId("station-why")).toHaveText("Approve Bash");
   expect(await head.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth + 1), "the title is cut").toBe(true);
   // The whole reason is its tooltip, and the keys on the header's tools show both whole.
   expect(await head.getByTestId("station-why").getAttribute("title")).toContain("echo release > release.txt");

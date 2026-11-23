@@ -180,6 +180,20 @@ export function askThing(st: Pick<SessionState, "watch" | "why" | "text" | "chil
   return at > 0 ? `${t.slice(6, at)}: ${t.slice(at + 2 + lead.length)}` : t;
 }
 
+// The first ask in the words of a pane's head while the card it stands on is drawn under it: its
+// kind and tool, with how many more wait ("Approve Bash, and 1 more", "Agent Scout: Approve
+// Bash"), not the call, which the card shows whole. `tool`: the tool of the card the page holds.
+// A text of any other shape, or of another tool, is given as it is.
+export function askBrief(st: Pick<SessionState, "watch" | "why" | "text" | "child" | "asks">, tool: string): string {
+  const t = st.text ?? "";
+  if (st.watch !== "need" || st.why !== "approval" || !tool) return t;
+  const head = `${ASK_LEAD.approval}${tool}: `;
+  const at = t.indexOf(head);
+  if (at < 0 || (at > 0 && !(st.child && t.startsWith("Agent ") && t.slice(at - 2, at) === ": "))) return t;
+  const more = (st.asks ?? 1) > 1 ? `, and ${st.asks! - 1} more` : "";
+  return `${t.slice(0, at + head.length - 2)}${more}`;
+}
+
 // What a wait is on, by its kind (the vocabulary's words). A command left running is not a wait
 // of the session's own; an agent that waits on one is said to wait on it.
 export function waitWords(kind: unknown) { return kind === "command" ? "a background command" : waitsFor(kind); }

@@ -33,6 +33,8 @@ import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
+import { useSafety } from "../lib/safety.ts";
+import { askBrief } from "../../../src/core/watch.ts";
 import { OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
@@ -134,12 +136,16 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const focus = useStations((x) => x.focus);
   const panes = useStations((x) => x.count);
   const told = st.text ? whyText(st, now) : "";
-  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : told;
+  // An approval whose card this pane draws under its head (above the message box, the agents' too):
+  // the head names the call and the card says it whole, so the command is not said twice. The
+  // whole reason is the head's tip.
+  const cardTool = useSafety((x) => (w === "need" && st.why === "approval" ? x.approvals[st.child ?? s.id]?.[0]?.tool ?? "" : ""));
+  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : cardTool ? askBrief(st, cardTool) : told;
   // The tools the helm keeps in view take room beside the title (bridge.css counts them); every pane shows them when its head is pointed at or focused, another pane over the header's end.
   const tools = helm ? (!focus && panes > 1 ? 6 : 3) : 0;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
-      style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${why}` : s.title || "New session"}>
+      style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${offline ? why : told}` : s.title || "New session"}>
       {/* The title first, in the width it needs. The state and its reason beside it when they fit, else on the line under it. */}
       <div className="k-station-row k-station-identity">
         <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
@@ -150,7 +156,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
           <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
-          {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : why}>{why}</span>}
+          {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : told}>{why}</span>}
         </span>
         <span className="k-station-meta" title={s.workspace}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>

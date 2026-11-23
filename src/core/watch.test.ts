@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Session } from "./types.ts";
-import { askText, clockText, LIST_TIER, liveAgentCounts, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
+import { askBrief, askText, clockText, LIST_TIER, liveAgentCounts, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
 
 const s = (over: Partial<Session> = {}): Session => ({
   id: "p", title: "", model: "m", workspace: "/w", created: 0, updated: 0, phase: "idle", archived: false,
@@ -37,6 +37,17 @@ test("what waits on the owner leads the state, oldest first, in one form", () =>
   expect(askText({ kind: "unsent" })).toBe("A message was not sent");
   // An agent's card names the agent it waits in.
   expect(stateOf(s(), undefined, { asks: [{ kind: "approval", text: "Bash: ls", child: "c", agent: "Scout" }] })).toMatchObject({ watch: "need", child: "c", text: "Agent Scout: Approve Bash: ls" });
+
+});
+
+test("a pane's head names the call its card shows whole: the kind and the tool, and how many more", () => {
+  const two = stateOf(s(), undefined, { asks: [{ kind: "approval", text: "Bash: git push origin HEAD:retry-cap", since: 1 }, { kind: "question", text: "Which?", since: 2 }] });
+  expect(askBrief(two, "Bash")).toBe("Approve Bash, and 1 more");
+  const agent = stateOf(s(), undefined, { asks: [{ kind: "approval", text: "Bash: ls", child: "c", agent: "Push: the branch" }] });
+  expect(askBrief(agent, "Bash")).toBe("Agent Push: the branch: Approve Bash");
+  // Another tool's card, or a text of another shape, leaves the reason whole.
+  expect(askBrief(agent, "Edit")).toBe("Agent Push: the branch: Approve Bash: ls");
+  expect(askBrief({ watch: "need", why: "question", text: "Question: Which?" }, "Bash")).toBe("Question: Which?");
 });
 
 test("a session whose turn ended waits while something it set up will wake it", () => {

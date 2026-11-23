@@ -316,7 +316,10 @@ function useStill(root: RefObject<HTMLElement | null>, live: string[]) {
   return { order, held: !!held, gone: new Set(gone), height: (id: string) => heights.current.get(id), answered: () => hold(SETTLE_MS) };
 }
 
-function List({ title, rows, most, testid, className }: { title: string; rows: { id: string; w: Watch }[]; most: number; testid: string; className?: string }) {
+// `counted`: the headline above already counts these rows in their state's words, so the list's own
+// heading is for a screen reader's way through the page only: drawn, it said the count's word a
+// second time a few lines from the first ("3 need you", then "Needs you").
+function List({ title, rows, most, testid, className, counted }: { title: string; rows: { id: string; w: Watch }[]; most: number; testid: string; className?: string; counted?: boolean }) {
   const { byId, states } = useHome();
   const root = useRef<HTMLElement>(null);
   const stands = useStands(root);
@@ -326,7 +329,7 @@ function List({ title, rows, most, testid, className }: { title: string; rows: {
   const next = more[0]?.ids[0];
   return (
     <section ref={root} className={className} data-testid={testid}>
-      <h2 className="k-pane-empty-word">{title}</h2>
+      <h2 className={counted ? "sr-only" : "k-pane-empty-word"}>{title}</h2>
       <div className="k-home-list">
         {still.order.map((id) => still.gone.has(id)
           ? <div key={id} className="k-home-row k-home-kept" data-testid="home-kept" data-session={id} style={{ minHeight: still.height(id) }} aria-hidden="true"><span dir="auto" className="k-home-row-title">{byId[id]?.title || "New session"}</span><span className="k-home-kept-word">Answered</span></div>
@@ -363,7 +366,7 @@ export function WatchLists({ className }: { className?: string }) {
   if (!attention.length && !working.length && !finished) return null;
   return (
     <div className={className} data-testid="home-lists">
-      <List title={STATE_WORD.need} rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" />
+      <List title={STATE_WORD.need} rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" counted />
       {/* Under what needs the owner: a finish that comes while they answer moves no row they are pressing. */}
       <Finished />
       <List title={working.every((r) => r.w === "work") ? STATE_WORD.work : `${STATE_WORD.work} and ${STATE_WORD.wait.toLowerCase()}`} rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />

@@ -54,6 +54,12 @@ test("home: the sessions' state, what needs you, and a place to start", async ({
     // The headline has no caption of help under it: the start box is its own part of the page.
     await expect(page.getByText("Paste screenshots")).toHaveCount(0);
     await expect(page.getByTestId("home-start")).toContainText("Start a session");
+    // The count is said once on the page: the list under the headline is not headed by its word again
+    // (a screen reader still has the heading to move by).
+    const drawn = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>("h2, h3, [data-testid^='home-count']")]
+      .filter((el) => !el.closest('[data-testid="sidebar"]') && /needs? you/i.test(el.textContent ?? "") && el.getBoundingClientRect().width > 2 && el.getBoundingClientRect().height > 2).map((el) => el.textContent!.trim()));
+    expect(await drawn()).toEqual([expect.stringMatching(/^\d+ needs? you$/)]);
+    await expect(page.getByTestId("home-attention").getByRole("heading", { name: "Needs you" })).toHaveCount(1);
 
     // A row says what kind of thing waits, once, and what it is: not the state again.
     const asking_ = row(page, asks.id);
