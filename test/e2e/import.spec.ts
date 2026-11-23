@@ -52,9 +52,10 @@ test("import and export", async ({ page, request }) => {
   // Antigravity's store is written only when the daemon reads a scratch one (KEEL_IMPORT_AGY_DIR).
   const agyScratch = !!store("agy")?.includes("keel-work");
   const ocScratch = !!store("opencode")?.includes("keel-work");
+  const gemScratch = !!store("gemini")?.includes("keel-work");
   const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `import-${tag}`);
   mkdirSync(cwd, { recursive: true });
-  const made = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/import-stores.ts"), store("claude"), store("codex"), store("keel"), cwd, tag, agyScratch ? store("agy") : "", ...(ocScratch ? [store("opencode")] : [])], { encoding: "utf8" }));
+  const made = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/import-stores.ts"), store("claude"), store("codex"), store("keel"), cwd, tag, agyScratch ? store("agy") : "", ocScratch ? store("opencode") : "", ...(gemScratch ? [store("gemini")] : [])], { encoding: "utf8" }));
 
   // The sheet: harness tabs with counts, a list, a preview.
   await page.goto("/");
@@ -147,6 +148,7 @@ test("import and export", async ({ page, request }) => {
   const others: [string, string, string][] = [["codex", "Pick a code word", "The code word is bramble."], ["keel", "Harbour Kythira", "The harbour is Kythira."]];
   if (agyScratch) others.push(["agy", "Lighthouse Pharos", "The lighthouse is Pharos."]);
   if (ocScratch) others.push(["opencode", "Lantern Faros", "The lantern is Faros."]);
+  if (gemScratch) others.push(["gemini", "Beacon Hook Head", "The beacon is Hook Head."]);
   for (const [tab, row, text] of others) {
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("Import sessions");
@@ -171,6 +173,12 @@ test("import and export", async ({ page, request }) => {
       await expect(page.getByTestId("import-preview").getByTestId("import-counts")).toContainText("2tool calls");
       await shoot(page, "import-03c-opencode");
     }
+    if (tab === "gemini") {
+      // Both calls of the reply, the failed one too; the prompt Gemini CLI took back is not there.
+      await expect(page.getByTestId("import-preview").getByTestId("import-counts")).toContainText("2tool calls");
+      await expect(page.getByTestId("import-preview")).not.toContainText("A prompt taken back.");
+      await shoot(page, "import-03d-gemini");
+    }
     await page.getByTestId("import-go").click();
     await expect(page.getByTestId("assistant-text").last()).toContainText(text);
     if (tab === "opencode") {
@@ -178,6 +186,15 @@ test("import and export", async ({ page, request }) => {
       const evs = (await (await request.get(`/api/sessions/${sid}`)).json()).events as any[];
       expect(evs.map((e) => e.kind).filter((k) => k !== "note")).toEqual(["user", "assistant", "tool_result", "assistant", "compaction", "user", "assistant"]);
       expect(JSON.stringify(evs.find((e) => e.kind === "tool_result").data.results)).toContain("no such file");
+    }
+    if (tab === "gemini") {
+      const sid = page.url().split("/s/")[1]!.split(/[?#]/)[0]!;
+      const evs = (await (await request.get(`/api/sessions/${sid}`)).json()).events as any[];
+      expect(evs.map((e) => e.kind).filter((k) => k !== "note")).toEqual(["user", "assistant", "tool_result", "user", "assistant"]);
+      expect(evs.find((e) => e.kind === "tool_result").data.results).toEqual([
+        { type: "tool_result", tool_use_id: "read_file-1", content: "the Hook Head beacon" },
+        { type: "tool_result", tool_use_id: "run_shell_command-2", content: "no such file", is_error: true },
+      ]);
     }
   }
 

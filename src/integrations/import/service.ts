@@ -13,6 +13,7 @@ import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import { opencodeDb, opencodePending, opencodeSessions, readOpencode } from "./opencode.ts";
+import { geminiHome, geminiSessions, readGemini } from "./gemini.ts";
 import { inDatabase, type Found, type Harness, type Read } from "./types.ts";
 import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
@@ -24,6 +25,7 @@ export const HARNESSES: { harness: Harness; label: string; store: () => string; 
   { harness: "agy", label: "Antigravity", store: agyHome },
   { harness: "hermes", label: "Hermes", store: hermesDb },
   { harness: "opencode", label: "OpenCode", store: opencodeDb },
+  { harness: "gemini", label: "Gemini CLI", store: geminiHome },
 ];
 
 const SCHEMA = `
@@ -94,6 +96,7 @@ export class Imports {
   private agyCache: { at: number; rows: Found[] } | null = null;
   private hermesCache: { at: number; rows: Found[] } | null = null;
   private opencodeCache: { at: number; rows: Found[] } | null = null;
+  private geminiCache: { at: number; rows: Found[] } | null = null;
   complete = false;
   // How many serialized rows of the index were decoded: a page costs its rows, a lookup one.
   decodes = 0;
@@ -220,6 +223,7 @@ export class Imports {
     this.agyCache = null;
     this.hermesCache = null;
     this.opencodeCache = null;
+    this.geminiCache = null;
   }
 
   // Up to `ms` of a refresh before answering; the rest goes on in the background.
@@ -269,13 +273,23 @@ export class Imports {
     return rows;
   }
 
-  // The sessions of the stores that list themselves (the Rust Keel, Antigravity, Hermes, OpenCode): few, read whole.
+  // Gemini CLI keeps a file a session: the newest are listed from their heads and tails, cached for a few seconds.
+  private gemini(): Found[] {
+    if (this.geminiCache && Date.now() - this.geminiCache.at < 5000) return this.geminiCache.rows;
+    let rows: Found[] = [];
+    try { rows = geminiSessions(); } catch {}
+    this.geminiCache = { at: Date.now(), rows };
+    return rows;
+  }
+
+  // The sessions of the stores that list themselves (the Rust Keel, Antigravity, Hermes, OpenCode, Gemini CLI): few, read whole.
   private side(harness?: Harness): Found[] {
     const out: Found[] = [];
     if (!harness || harness === "keel") out.push(...this.keel());
     if (!harness || harness === "agy") out.push(...this.agy());
     if (!harness || harness === "hermes") out.push(...this.hermes());
     if (!harness || harness === "opencode") out.push(...this.opencode());
+    if (!harness || harness === "gemini") out.push(...this.gemini());
     return out;
   }
 
@@ -409,6 +423,8 @@ export class Imports {
     const hit = this.store.db.query<{ harness: string; found: string | null }, [string]>("SELECT harness, found FROM import_index WHERE path = ?").get(path);
     if (hit?.found) return !harness || hit.harness === harness ? this.current(path, hit.harness as "claude" | "codex") : undefined;
     if (harness === "agy" || path.endsWith("/.system_generated/logs/transcript_full.jsonl")) return this.side("agy").find((f) => f.path === path);
+    // A Gemini CLI session (tmp/<project>/chats/...) is no Claude Code transcript, whatever its name ends with.
+    if (harness === "gemini" || /\/tmp\/[^/]+\/chats\/(?:[^/]+\/)?[^/]+\.jsonl?$/.test(path)) return this.side("gemini").find((f) => f.path === path);
     let st;
     try { st = statSync(path); } catch { return undefined; }
     const h = harness ?? (/\/rollout-[^/]*\.jsonl$/.test(path) ? "codex" : path.endsWith(".jsonl") ? "claude" : undefined);
@@ -423,6 +439,7 @@ export class Imports {
     if (f.harness === "agy") return readAgy(f);
     if (f.harness === "hermes") return readHermes(f);
     if (f.harness === "opencode") return readOpencode(f);
+    if (f.harness === "gemini") return readGemini(f);
     return readKeel(f.id);
   }
 

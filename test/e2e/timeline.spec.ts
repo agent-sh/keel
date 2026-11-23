@@ -20,7 +20,7 @@ function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
       ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300", KEEL_RESUME_GAP_MS: "0",
       KEEL_CONFIG_DIR: join(state, "config"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
       // Nothing of the machine's own is reached: no other harness's sessions, no registry, no phone.
-      KEEL_IMPORT_CLAUDE_DIR: join(state, "import/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "import/codex"), KEEL_IMPORT_AGY_DIR: join(state, "import/agy"),
+      KEEL_IMPORT_CLAUDE_DIR: join(state, "import/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "import/codex"), KEEL_IMPORT_AGY_DIR: join(state, "import/agy"), KEEL_IMPORT_GEMINI_DIR: join(state, "import/gemini"),
       KEEL_IMPORT_KEEL_DB: join(state, "import/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "import/hermes"), KEEL_MCP_CONFIG: join(state, "mcp.json"),
       KEEL_MCP_REGISTRY: `file://${join(state, "registry.json")}`, KEEL_PHONE_SOCKET: join(state, "phone.sock"), KEEL_MAIL_STANDIN: join(state, "mail"),
     },

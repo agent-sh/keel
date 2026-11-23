@@ -130,17 +130,49 @@ export function opencodeSession(path: string, cwd: string, id: string, word: str
   return path;
 }
 
-// bun test/e2e/fixtures/import-stores.ts <claude projects> <codex home> <keel db> <cwd> <tag> [agy home] [opencode db]
+// Gemini CLI's store: a project folder under tmp/ that names its root, and a
+// session log whose reply runs two calls (one fails), a line Gemini CLI only
+// showed, a rewind that takes back a prompt, and a patch to a call's result.
+export function geminiSession(home: string, cwd: string, id: string, word: string) {
+  const project = join(home, "tmp", `lantern-${id.slice(0, 8)}`);
+  mkdirSync(join(project, "chats"), { recursive: true });
+  writeFileSync(join(project, ".project_root"), cwd);
+  const t = Date.now() - 10_000;
+  const at = (i: number) => new Date(t + i * 1000).toISOString();
+  const recs = [
+    { sessionId: id, projectHash: "lantern", startTime: at(0), lastUpdated: at(0), kind: "main" },
+    { id: "m1", timestamp: at(1), type: "user", content: [{ text: "Which beacon do the notes name?" }] },
+    { id: "m2", timestamp: at(2), type: "gemini", model: "gemini-3-pro", content: [{ text: "Reading the notes." }],
+      thoughts: [{ subject: "Plan", description: "read the notes", timestamp: at(2) }],
+      toolCalls: [
+        { id: "read_file-1", name: "read_file", args: { absolute_path: `${cwd}/notes.md` }, status: "success", timestamp: at(2), result: [{ functionResponse: { id: "read_file-1", name: "read_file", response: { output: "draft" } } }] },
+        { id: "run_shell_command-2", name: "run_shell_command", args: { command: "cat gone.md" }, status: "error", timestamp: at(2), result: [{ functionResponse: { id: "run_shell_command-2", name: "run_shell_command", response: { error: "no such file" } } }] },
+      ] },
+    { $patch: { updates: [{ id: "m2", toolCalls: [{ id: "read_file-1", result: [{ functionResponse: { id: "read_file-1", name: "read_file", response: { output: `the ${word} beacon` } } }] }] }] } },
+    { id: "m3", timestamp: at(3), type: "info", content: "Gemini CLI's own display line" },
+    { id: "m4", timestamp: at(4), type: "user", content: [{ text: "A prompt taken back." }] },
+    { $rewindTo: "m4" },
+    { id: "m5", timestamp: at(5), type: "user", content: [{ text: "Say it once more." }] },
+    { id: "m6", timestamp: at(6), type: "gemini", model: "gemini-3-pro", content: [{ text: `The beacon is ${word}.` }] },
+    { $set: { lastUpdated: at(6), summary: `Beacon ${word}` } },
+  ];
+  const path = join(project, "chats", `session-${new Date(t).toISOString().slice(0, 16).replace(/:/g, "-")}-${id.slice(0, 8)}.jsonl`);
+  writeFileSync(path, recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  return path;
+}
+
+// bun test/e2e/fixtures/import-stores.ts <claude projects> <codex home> <keel db> <cwd> <tag> [agy home] [opencode db] [gemini home]
 // (an empty agy home is none)
 // (the e2e runs under node; bun:sqlite is bun's, so the stores are made here)
 if (import.meta.main) {
-  const [claude, codex, keel, cwd, tag, agy, opencode] = process.argv.slice(2) as [string, string, string, string, string, string | undefined, string | undefined];
+  const [claude, codex, keel, cwd, tag, agy, opencode, gemini] = process.argv.slice(2) as [string, string, string, string, string, string | undefined, string | undefined, string | undefined];
   const out = {
     claude: claudeSession(claude, cwd, `c0ffee00-0000-4000-8000-${tag.padStart(12, "0")}`, "quince"),
     codex: codexSession(codex, cwd, `01a2c0de-0000-7000-8000-${tag.padStart(12, "0")}`, "bramble"),
     keel: (keelDb(keel, cwd, `keel-${tag}`, "Kythira"), keel),
     agy: agy ? agySession(agy, cwd, `a9a9a9a9-0000-4000-8000-${tag.padStart(12, "0")}`, "Pharos") : undefined,
     opencode: opencode ? opencodeSession(opencode, cwd, `ses_${tag}`, "Faros") : undefined,
+    gemini: gemini ? geminiSession(gemini, cwd, `9e9e9e9e-0000-4000-8000-${tag.padStart(12, "0")}`, "Hook Head") : undefined,
   };
   console.log(JSON.stringify(out));
 }

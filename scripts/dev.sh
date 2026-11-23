@@ -30,6 +30,7 @@ export KEEL_IMPORT_AGY_DIR="${KEEL_IMPORT_AGY_DIR:-$DEV/import/agy}"
 export KEEL_IMPORT_KEEL_DB="${KEEL_IMPORT_KEEL_DB:-$DEV/import/keel.db}"
 export KEEL_IMPORT_HERMES_DIR="${KEEL_IMPORT_HERMES_DIR:-$DEV/import/hermes}"
 export KEEL_IMPORT_OPENCODE_DIR="${KEEL_IMPORT_OPENCODE_DIR:-$DEV/import/opencode}"
+export KEEL_IMPORT_GEMINI_DIR="${KEEL_IMPORT_GEMINI_DIR:-$DEV/import/gemini}"
 # The other agents' setup (MCP configs, and what keel port brings: ~/.claude, ~/.codex,
 # ~/.hermes) is read from a scratch home (the MCP import and port e2e write them there).
 export KEEL_IMPORT_HOME="${KEEL_IMPORT_HOME:-$DEV/import/home}"

@@ -58,7 +58,7 @@ export async function emptyKeel(dir: string): Promise<{ url: string; state: stri
   const proc: ChildProcess = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(dir, "state"), "--workspace", join(dir, "work")], {
     env: {
       ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(dir, "config"), KEEL_MCP_CONFIG: join(dir, "mcp.json"),
-      KEEL_IMPORT_HOME: join(dir, "home"), KEEL_IMPORT_CLAUDE_DIR: join(dir, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(dir, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(dir, "stores/agy"),
+      KEEL_IMPORT_HOME: join(dir, "home"), KEEL_IMPORT_CLAUDE_DIR: join(dir, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(dir, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(dir, "stores/agy"), KEEL_IMPORT_GEMINI_DIR: join(dir, "stores/gemini"),
       KEEL_IMPORT_KEEL_DB: join(dir, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(dir, "stores/hermes"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -94,7 +94,7 @@ export function ownDaemon(state: string, port = 0, more: Record<string, string> 
       PATH: process.env.PATH ?? "", TMPDIR: process.env.TMPDIR ?? join(state, "tmp"), LANG: "C.UTF-8", HOME: join(state, "home"),
       KEEL_KEYRING_SERVICE: "keel-scratch-empty", DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", XDG_RUNTIME_DIR: join(state, "home/run"), KEEL_CRED_GET: "/bin/false",
       KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_SERVER_NAME: "desk", KEEL_CONFIG_DIR: join(state, "config"), KEEL_SSH_CONFIG: join(state, "ssh_config"), KEEL_DESKTOP_NOTIFY: "off",
-      KEEL_MCP_CONFIG: join(state, "mcp.json"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_IMPORT_CLAUDE_DIR: join(state, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(state, "stores/agy"),
+      KEEL_MCP_CONFIG: join(state, "mcp.json"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_IMPORT_CLAUDE_DIR: join(state, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(state, "stores/agy"), KEEL_IMPORT_GEMINI_DIR: join(state, "stores/gemini"),
       KEEL_IMPORT_KEEL_DB: join(state, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "stores/hermes"), TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
       ...more,
     },

@@ -247,3 +247,21 @@ test("an OpenCode session whose reply keeps its items as rows of their own reads
   expect(b.counts).toMatchObject({ tool_calls: 2 });
   expect(b.events.map((e) => [e.kind, e.data])).toEqual(a.events.map((e) => [e.kind, e.data]));
 });
+
+// INT-M14: Gemini CLI's session log, applied as Gemini CLI loads it.
+test("a Gemini CLI session: its folder from the project's marker, calls with their results, a rewind and a patch applied", async () => {
+  const { geminiSession } = await import("../../../test/e2e/fixtures/import-stores.ts");
+  const { geminiSessions, readGemini } = await import("./gemini.ts");
+  const home = join(dir, "gemini");
+  geminiSession(home, dir, "9e9e9e9e-0000-4000-8000-000000000001", "Hook Head");
+  const [f] = geminiSessions(home);
+  expect(f).toMatchObject({ harness: "gemini", id: "9e9e9e9e-0000-4000-8000-000000000001", cwd: dir, title: "Beacon Hook Head", first_prompt: "Which beacon do the notes name?", last_prompt: "Say it once more.", model: "gemini-3-pro", kind: "interactive" });
+  const r = await readGemini(f!);
+  expect(r.events.map((e) => e.kind)).toEqual(["user", "assistant", "tool_result", "user", "assistant"]);
+  expect(r.events[2]!.data.results).toEqual([
+    { type: "tool_result", tool_use_id: "read_file-1", content: "the Hook Head beacon", is_error: undefined },
+    { type: "tool_result", tool_use_id: "run_shell_command-2", content: "no such file", is_error: true },
+  ]);
+  expect(r.counts).toMatchObject({ prompts: 2, tool_calls: 2, thoughts_dropped: 1, skipped: 1 });
+  expect(wire(r.events)).not.toContain("A prompt taken back.");
+});
