@@ -27,6 +27,7 @@ import { enabledUnits } from "../plugins/registry.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
+import { agentMemory, memoryOff, SCOPES, type MemoryScope } from "./agent-memory.ts";
 import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
 
 // Subagents: a child session with its own context that works on one task and
@@ -115,6 +116,7 @@ export type AgentDef = {
   maxTurns?: number;      // the model steps it may take before it stops, its report marked partial
   skills?: string[];      // skills whose whole content starts its task
   mcpServers?: string[];  // servers it names by name: every session has the owner's, so they are said only when missing
+  memory?: MemoryScope;   // its own memory folder (src/automation/agent-memory.ts)
   ownServers?: string[];  // servers its file defines itself (inline): run for it once the owner approved each (src/mcp/project.ts)
   notTaken?: string[];    // what its definition asks for that Keel does not run, each with why: told to its parent at the start
 };
@@ -329,8 +331,8 @@ const listOf = (v: unknown) =>
 // plugin's agent has no hooks, mcpServers or permissionMode, as there
 // (Claude Code ignores them for a plugin's agents). What Keel does not run
 // is named with why, so it is never dropped without a word.
-function claudeFields(meta: Record<string, any>, plugin: boolean): Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "ownServers" | "notTaken" | "effort"> {
-  const out: Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "ownServers" | "notTaken" | "effort"> = {};
+function claudeFields(meta: Record<string, any>, plugin: boolean): Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "ownServers" | "memory" | "notTaken" | "effort"> {
+  const out: Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "ownServers" | "memory" | "notTaken" | "effort"> = {};
   const left: string[] = [];
   const turns = Number(meta.maxTurns);
   if (meta.maxTurns !== undefined && Number.isSafeInteger(turns) && turns >= 1) out.maxTurns = turns;
@@ -344,7 +346,11 @@ function claudeFields(meta: Record<string, any>, plugin: boolean): Pick<AgentDef
     if (inline.length) out.ownServers = [...new Set(inline)].slice(0, 32);
   }
   if (!plugin && meta.hooks && typeof meta.hooks === "object" && Object.keys(meta.hooks).length) left.push(`its hooks (${Object.keys(meta.hooks).join(", ")}): Keel runs no hooks of an agent file`);
-  if (typeof meta.memory === "string" && meta.memory) left.push(`its ${meta.memory} memory folder: Keel gives an agent no memory folder of its own`);
+  if (typeof meta.memory === "string" && meta.memory) {
+    const scope = meta.memory.trim().toLowerCase();
+    if ((SCOPES as readonly string[]).includes(scope)) out.memory = scope as MemoryScope;
+    else left.push(`its memory scope ${meta.memory}: the scopes are user, project and local`);
+  }
   if (left.length) out.notTaken = left;
   return out;
 }
@@ -801,6 +807,12 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     if (given.pending.length) left.push(`its own MCP ${given.pending.length === 1 ? "server" : "servers"} (${given.pending.join(", ")}): ${given.pending.length === 1 ? "it waits" : "they wait"} for the owner's approval in Settings > MCP servers, so it starts without ${given.pending.length === 1 ? "it" : "them"}`);
   }
   left.push(...(def.notTaken ?? []));
+  // Its memory folder, with what MEMORY.md holds now; on another machine it is not where the agent works.
+  const memory = def.memory && !placed && !memoryOff() ? agentMemory(def.memory, def.name, child.workspace) : undefined;
+  if (def.memory && placed) left.push(`its ${def.memory} memory folder: it is on this machine, and the agent's tools run on ${placed.name}`);
+  if (def.memory && !placed && !memory) left.push(`its ${def.memory} memory folder: auto memory is turned off in Claude Code's settings`);
+  // (It keeps its folder with Read, Write and Edit, as in Claude Code, whatever its tools list names.)
+  const stored: AgentDef = memory && def.tools ? { ...def, tools: [...new Set([...def.tools, "Read", "Write", "Edit"])] } : def;
   const preloaded: string[] = [];
   let bytes = 0;
   for (const name of def.skills ?? []) {
@@ -817,7 +829,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   if (def.effort && !effort && def.format !== "codex") left.push(`the effort ${def.effort}: ${model} does not list it`);
   if (left.length) leftOut.set(id, left);
   const task = [
-    preamble(depth, max), def.body, ...preloaded,
+    preamble(depth, max), def.body, memory?.block ?? "", ...preloaded,
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Edit only there and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
     placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Edit only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
@@ -831,7 +843,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // task_at: where the parent's own words start, so the page shows them verbatim.
   store.db.query(
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
+  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
     JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null);
   release(); // the persisted running row now occupies the slot
   if (queued !== undefined) {

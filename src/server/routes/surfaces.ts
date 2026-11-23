@@ -95,7 +95,7 @@ export const surfaceRoutes: RouteModule = (deps) => {
     tools: d.tools ?? null, disallowed: d.disallowed ?? null, permission_mode: d.permissionMode ?? null, isolation: d.isolation ?? null,
     read_only: !!d.readOnly, trust: d.file && d.source === "project" ? trustOf(cwd, d.file) : null,
     format: d.format ?? "markdown", effort: d.effort ?? null,
-    max_turns: d.maxTurns ?? null, skills: d.skills ?? null, mcp_servers: d.mcpServers ?? null, not_carried: d.notTaken ?? null,
+    max_turns: d.maxTurns ?? null, skills: d.skills ?? null, mcp_servers: d.mcpServers ?? null, own_servers: d.ownServers ?? null, memory: d.memory ?? null, not_carried: d.notTaken ?? null,
   }));
   // A Codex agent file is checked before it is written: TOML with its three required keys.
   const codexFault = (t: string) => {

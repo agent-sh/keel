@@ -1124,10 +1124,11 @@ test("a Claude Code agent's maxTurns, skills and effort hold; what Keel does not
   ].join("\n"));
   const def = agents.definitions(dir).find((d) => d.name === "api-builder")!;
   expect([def.maxTurns, def.skills, def.mcpServers, def.ownServers, def.effort]).toEqual([7, ["api-conventions", "owner-only", "missing-skill", "huge"], ["github"], ["playwright"], "high"]);
-  expect(def.notTaken).toEqual([expect.stringContaining("its hooks (PreToolUse)"), expect.stringContaining("its project memory folder")]);
+  expect(def.notTaken).toEqual([expect.stringContaining("its hooks (PreToolUse)")]);
+  expect(def.memory).toBe("project");
   const r = await tool("Agent").run({ description: "endpoint", prompt: "add /health", subagent_type: "api-builder", run_in_background: true, isolation: "none" }, ctx as any);
   const text = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
-  for (const said of ["playwright", "hooks", "memory folder", "the skill owner-only", "the skill missing-skill", "the skill huge: the skills an agent starts with hold 64 KB together at most", "the MCP server github", "the effort high"]) expect(text).toContain(said);
+  for (const said of ["playwright", "hooks", "the skill owner-only", "the skill missing-skill", "the skill huge: the skills an agent starts with hold 64 KB together at most", "the MCP server github", "the effort high"]) expect(text).toContain(said);
   const a = agents.list(parent.id).find((x) => x.type === "api-builder")!;
   expect(store.session(a.session_id)!.settings?.max_steps).toBe(7);
   const task = sends.find((x) => x.id === a.session_id)!.text;
@@ -1157,5 +1158,32 @@ test("what an agent is started without is told when it waits for a slot, and aga
   for (let i = 0; i < 100 && !rows().some((x) => x.startsWith("started:") && x.includes("when a slot freed") && x.includes("Not carried")); i++) await Bun.sleep(20);
   expect(rows().some((x) => x.startsWith("started:") && x.includes("when a slot freed") && x.includes("Not carried from its definition"))).toBe(true);
   for (const a of agents.list(p.id)) if (a.status === "running" || a.status === "waiting") agents.stop(a.id);
+  await settled();
+});
+
+// INT-M13 leftover: an agent's memory folder (Claude Code's `memory` field). Its task says where the folder is and
+// carries MEMORY.md's first 200 lines (25 KB at most), asking it to curate a longer one; Read, Write and Edit join a
+// tools list that names other tools; an unknown scope is told to the parent.
+test("an agent file's memory folder starts its task with MEMORY.md, within its bounds", async () => {
+  const folder = join(dir, ".claude", "agents");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "reviewer.md"), ["---", "name: reviewer", "description: Reviews code", "tools: Grep", "memory: project", "---", "Review the change."].join("\n"));
+  writeFileSync(join(folder, "odd-memory.md"), ["---", "name: odd-memory", "description: x", "memory: team", "---", "x"].join("\n"));
+  const mem = join(dir, ".claude", "agent-memory", "reviewer");
+  mkdirSync(mem, { recursive: true });
+  writeFileSync(join(mem, "MEMORY.md"), Array.from({ length: 250 }, (_, i) => `- note ${i + 1}`).join("\n"));
+  expect(agents.definitions(dir).find((d) => d.name === "odd-memory")!.notTaken).toEqual([expect.stringContaining("its memory scope team")]);
+  await tool("Agent").run({ description: "review", prompt: "review the diff", subagent_type: "reviewer", run_in_background: true, isolation: "none" }, ctx as any);
+  const a = agents.list(parent.id).find((x) => x.type === "reviewer")!;
+  const task = sends.find((x) => x.id === a.session_id)!.text;
+  expect(task).toContain(`memory folder of your own at ${mem} (project scope`);
+  expect(task).toContain("- note 1\n");
+  expect(task).toContain("- note 200");
+  expect(task).not.toContain("- note 201");
+  expect(task).toContain("cut at that bound: curate it");
+  const stored = JSON.parse(store.db.query<{ def: string }, [string]>("SELECT def FROM agents WHERE id = ?").get(a.id)!.def);
+  expect(stored.tools).toEqual(["Grep", "Read", "Write", "Edit"]);
+  expect(agents.gate(a.session_id, "Write", { file_path: join(mem, "MEMORY.md") })).toBeUndefined();
+  end(a, "end_turn");
   await settled();
 });
