@@ -1491,7 +1491,12 @@ async function lookAtParks(ids = [...onCommand.keys()]) {
         if (a.background) tellPark(a, true);
       }
     }
-  } catch (e) { capture(e, { at: "agent park look" }); }
+  } catch (e) {
+    // (A look that cannot be made drops what it looked at: kept, the next look would fail the same way
+    // every PARK_LOOK_MS, one Errors row each.)
+    for (const id of ids) onCommand.delete(id);
+    capture(e, { at: "agent park look" });
+  }
   lookAgain();
 }
 

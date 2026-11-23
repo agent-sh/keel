@@ -199,6 +199,8 @@ test("a run that keeps a processor busy beside its server is not taken for a ser
   expect(jobs.running(j)).toBe(true);
   expect(agents.get(a.id)!.status).toBe("waiting");
   await jobs.stopJob(j, "was stopped by the test");
+  // (Nothing of this test looks on after it: the next file's store is another.)
+  agents.stop(a.id);
 });
 
 test("the sockets that serve are read from the /proc/net tables", () => {
