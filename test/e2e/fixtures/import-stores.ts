@@ -102,15 +102,45 @@ export function agySession(home: string, cwd: string, id: string, word: string) 
   return join(dir, "transcript_full.jsonl");
 }
 
-// bun test/e2e/fixtures/import-stores.ts <claude projects> <codex home> <keel db> <cwd> <tag> [agy home]
+// OpenCode 2's database: a session whose reply thinks, runs a command (its
+// result after it), and goes on in text; then a compaction and a later turn.
+export function opencodeSession(path: string, cwd: string, id: string, word: string) {
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path, { create: true });
+  db.exec("CREATE TABLE IF NOT EXISTS `session_v2` (`id` text PRIMARY KEY, `project_id` text NOT NULL, `parent_id` text, `slug` text NOT NULL, `directory` text NOT NULL, `title` text, `version` text NOT NULL, `model` text, `time_created` integer NOT NULL, `time_updated` integer NOT NULL, `time_archived` integer)");
+  db.exec("CREATE TABLE IF NOT EXISTS `session_message` (`id` text PRIMARY KEY, `session_id` text NOT NULL, `type` text NOT NULL, `seq` integer NOT NULL, `time_created` integer NOT NULL, `time_updated` integer NOT NULL, `data` text NOT NULL)");
+  const t = Date.now() - 10_000;
+  const model = { providerID: "scripted", id: "stand-in", variant: "default" };
+  db.query("INSERT OR REPLACE INTO session_v2 (id, project_id, slug, directory, title, version, model, time_created, time_updated) VALUES (?, 'p', 'lantern', ?, ?, '2.2.5', ?, ?, ?)").run(id, cwd, `Lantern ${word}`, JSON.stringify(model), t, t + 5000);
+  const items: [string, unknown][] = [
+    ["user", { text: "Which lantern do the notes name?", time: { created: t } }],
+    ["assistant", { agent: "build", model, time: { created: t + 1000 }, finish: "stop", content: [
+      { type: "reasoning", text: "read the notes" },
+      { type: "tool", id: "call_1", name: "bash", state: { status: "completed", input: { command: "cat notes.md" }, content: [{ type: "text", text: `the ${word} lantern` }] } },
+      { type: "tool", id: "call_2", name: "read", state: { status: "error", input: { filePath: "gone.md" }, error: { type: "unknown", message: "no such file" } } },
+      { type: "text", text: "The notes name one lantern." },
+    ] }],
+    ["system", { text: "OpenCode's own setup" }],
+    ["compaction", { status: "completed", reason: "manual", summary: `The owner asked which lantern; the notes name ${word}.`, time: { created: t + 2000 } }],
+    ["user", { text: "Say it once more.", time: { created: t + 3000 } }],
+    ["assistant", { agent: "build", model, time: { created: t + 4000 }, finish: "stop", content: [{ type: "text", text: `The lantern is ${word}.` }] }],
+  ];
+  items.forEach(([type, data], i) => db.query("INSERT OR REPLACE INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)").run(`${id}-${i}`, id, type, i, t + i, t + i, JSON.stringify(data)));
+  db.close();
+  return path;
+}
+
+// bun test/e2e/fixtures/import-stores.ts <claude projects> <codex home> <keel db> <cwd> <tag> [agy home] [opencode db]
+// (an empty agy home is none)
 // (the e2e runs under node; bun:sqlite is bun's, so the stores are made here)
 if (import.meta.main) {
-  const [claude, codex, keel, cwd, tag, agy] = process.argv.slice(2) as [string, string, string, string, string, string | undefined];
+  const [claude, codex, keel, cwd, tag, agy, opencode] = process.argv.slice(2) as [string, string, string, string, string, string | undefined, string | undefined];
   const out = {
     claude: claudeSession(claude, cwd, `c0ffee00-0000-4000-8000-${tag.padStart(12, "0")}`, "quince"),
     codex: codexSession(codex, cwd, `01a2c0de-0000-7000-8000-${tag.padStart(12, "0")}`, "bramble"),
     keel: (keelDb(keel, cwd, `keel-${tag}`, "Kythira"), keel),
     agy: agy ? agySession(agy, cwd, `a9a9a9a9-0000-4000-8000-${tag.padStart(12, "0")}`, "Pharos") : undefined,
+    opencode: opencode ? opencodeSession(opencode, cwd, `ses_${tag}`, "Faros") : undefined,
   };
   console.log(JSON.stringify(out));
 }

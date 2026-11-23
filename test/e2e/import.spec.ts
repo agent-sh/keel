@@ -51,9 +51,10 @@ test("import and export", async ({ page, request }) => {
   const tag = String(Date.now());
   // Antigravity's store is written only when the daemon reads a scratch one (KEEL_IMPORT_AGY_DIR).
   const agyScratch = !!store("agy")?.includes("keel-work");
+  const ocScratch = !!store("opencode")?.includes("keel-work");
   const cwd = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `import-${tag}`);
   mkdirSync(cwd, { recursive: true });
-  const made = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/import-stores.ts"), store("claude"), store("codex"), store("keel"), cwd, tag, ...(agyScratch ? [store("agy")] : [])], { encoding: "utf8" }));
+  const made = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/import-stores.ts"), store("claude"), store("codex"), store("keel"), cwd, tag, agyScratch ? store("agy") : "", ...(ocScratch ? [store("opencode")] : [])], { encoding: "utf8" }));
 
   // The sheet: harness tabs with counts, a list, a preview.
   await page.goto("/");
@@ -145,6 +146,7 @@ test("import and export", async ({ page, request }) => {
   // Codex, the Rust Keel and Antigravity, from their own stores.
   const others: [string, string, string][] = [["codex", "Pick a code word", "The code word is bramble."], ["keel", "Harbour Kythira", "The harbour is Kythira."]];
   if (agyScratch) others.push(["agy", "Lighthouse Pharos", "The lighthouse is Pharos."]);
+  if (ocScratch) others.push(["opencode", "Lantern Faros", "The lantern is Faros."]);
   for (const [tab, row, text] of others) {
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("Import sessions");
@@ -164,8 +166,19 @@ test("import and export", async ({ page, request }) => {
       await expect(page.getByTestId("import-preview").getByTestId("import-counts")).toContainText("2tool calls");
       await shoot(page, "import-03b-agy");
     }
+    if (tab === "opencode") {
+      // Both calls of the reply, the failed one too, and the compaction as a checkpoint with everything before it.
+      await expect(page.getByTestId("import-preview").getByTestId("import-counts")).toContainText("2tool calls");
+      await shoot(page, "import-03c-opencode");
+    }
     await page.getByTestId("import-go").click();
     await expect(page.getByTestId("assistant-text").last()).toContainText(text);
+    if (tab === "opencode") {
+      const sid = page.url().split("/s/")[1]!.split(/[?#]/)[0]!;
+      const evs = (await (await request.get(`/api/sessions/${sid}`)).json()).events as any[];
+      expect(evs.map((e) => e.kind).filter((k) => k !== "note")).toEqual(["user", "assistant", "tool_result", "assistant", "compaction", "user", "assistant"]);
+      expect(JSON.stringify(evs.find((e) => e.kind === "tool_result").data.results)).toContain("no such file");
+    }
   }
 
   // Export: Markdown and a Keel file to download, and a Claude Code transcript.

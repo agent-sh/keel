@@ -212,3 +212,19 @@ test("a compacted Codex rollout is copied whole; the model reads Codex's summary
   expect(sent).not.toContain("plums answered");
   expect(sent).toContain("figs answered");
 });
+
+test("an OpenCode session: calls with their results in place, a failed call, the compaction as a checkpoint", async () => {
+  const { opencodeSession } = await import("../../../test/e2e/fixtures/import-stores.ts");
+  const { opencodeSessions, readOpencode } = await import("./opencode.ts");
+  const p = opencodeSession(join(dir, "opencode", "opencode.db"), dir, "ses_1", "Faros");
+  const [f] = opencodeSessions(p);
+  expect(f).toMatchObject({ harness: "opencode", id: "ses_1", cwd: dir, title: "Lantern Faros", first_prompt: "Which lantern do the notes name?", last_prompt: "Say it once more.", model: "scripted:stand-in" });
+  const r = await readOpencode(f!, p);
+  expect(r.events.map((e) => e.kind)).toEqual(["user", "assistant", "tool_result", "assistant", "compaction", "user", "assistant"]);
+  expect(r.events[2]!.data.results).toEqual([
+    { type: "tool_result", tool_use_id: "call_1", content: "the Faros lantern", is_error: undefined },
+    { type: "tool_result", tool_use_id: "call_2", content: "no such file", is_error: true },
+  ]);
+  expect(r.counts).toMatchObject({ tool_calls: 2, thoughts_dropped: 1 });
+  expect(wire(r.events)).not.toContain("the Faros lantern");
+});

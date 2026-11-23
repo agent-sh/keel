@@ -9,7 +9,7 @@ import { exportTo, KeelFileTooLarge, parseKeelJsonl, redact, redactDeep, rowsOf,
 import { KEEL_FILE_MAX } from "../../core/keel-file.ts";
 import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON } from "../../integrations/import/service.ts";
 import { cursorGiven, CursorError, offered, scrub, tail } from "../../integrations/import/offer.ts";
-import type { Found, Harness, Read } from "../../integrations/import/types.ts";
+import { inDatabase, type Found, type Harness, type Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, proven } from "../../fleet/link.ts";
 import { contains } from "../../core/paths.ts";
 import { attachmentPath, dropAttachment, saveAttachment } from "../../engine/attachments.ts";
@@ -50,6 +50,8 @@ export const importRoutes: RouteModule = (deps) => {
       else if (f.row.host || !f.raw.transcript || !existsSync(f.raw.transcript)) return bad("the agent view names no transcript on this machine for this session", 409);
       else b = { path: f.raw.transcript, harness };
     }
+    // A store of one database names a session `<database>#<id>`: it is found by its harness and id.
+    if (b.path && isHarness(b.harness) && inDatabase(b.harness) && typeof b.id === "string" && b.id) b = { harness: b.harness, id: b.id };
     if (b.path) {
       if (typeof b.path !== "string" || !b.path.startsWith("/")) return bad("path must be absolute");
       if (b.harness && !isHarness(b.harness)) return bad(`unknown harness ${b.harness}`);
@@ -351,7 +353,7 @@ export const importRoutes: RouteModule = (deps) => {
         if (!l) return json({ origin: null });
         let source: { exists: boolean; grew: boolean } = { exists: false, grew: false };
         try {
-          const st = statSync(l.harness === "keel" || l.harness === "hermes" ? l.source_path.split("#")[0]! : l.source_path);
+          const st = statSync(inDatabase(l.harness) ? l.source_path.split("#")[0]! : l.source_path);
           source = { exists: true, grew: st.size !== l.source_size || Math.round(st.mtimeMs) !== l.source_mtime };
         } catch {}
         // A copy of a transcript read on another machine names that machine (its link is "<machine>:<path>").

@@ -34,6 +34,7 @@ const scratch: Record<string, string> = {
   KEEL_IMPORT_AGY_DIR: join(dir, "import", "agy"),
   KEEL_IMPORT_KEEL_DB: join(dir, "import", "keel.db"),
   KEEL_IMPORT_HERMES_DIR: join(dir, "import", "hermes"),
+  KEEL_IMPORT_OPENCODE_DIR: join(dir, "import", "opencode"),
   KEEL_MCP_REGISTRY: `file://${join(dir, "registry.json")}`,
   KEEL_MAIL_STANDIN: join(dir, "mail"),
   KEEL_PHONE_SOCKET: join(made("phone"), "phone.sock"),

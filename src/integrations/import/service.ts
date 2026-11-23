@@ -12,7 +12,8 @@ import { codexFiles, codexFound, codexHome, readCodex } from "./codex.ts";
 import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
-import type { Found, Harness, Read } from "./types.ts";
+import { opencodeDb, opencodePending, opencodeSessions, readOpencode } from "./opencode.ts";
+import { inDatabase, type Found, type Harness, type Read } from "./types.ts";
 import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
 
@@ -22,6 +23,7 @@ export const HARNESSES: { harness: Harness; label: string; store: () => string; 
   { harness: "keel", label: "Keel (Rust)", store: keelDb },
   { harness: "agy", label: "Antigravity", store: agyHome },
   { harness: "hermes", label: "Hermes", store: hermesDb },
+  { harness: "opencode", label: "OpenCode", store: opencodeDb },
 ];
 
 const SCHEMA = `
@@ -66,7 +68,7 @@ export const WENT_ON = "the Keel session went on since it was copied, so it is n
 export type { ListQuery } from "./offer.ts";
 
 const sourceStat = (f: Found) => {
-  try { const s = statSync(f.harness === "keel" || f.harness === "hermes" ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
+  try { const s = statSync(inDatabase(f.harness) ? f.path.split("#")[0]! : f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; }
 };
 
 const REFRESH_MS = 30_000;
@@ -91,6 +93,7 @@ export class Imports {
   private keelCache: { at: number; rows: Found[] } | null = null;
   private agyCache: { at: number; rows: Found[] } | null = null;
   private hermesCache: { at: number; rows: Found[] } | null = null;
+  private opencodeCache: { at: number; rows: Found[] } | null = null;
   complete = false;
   // How many serialized rows of the index were decoded: a page costs its rows, a lookup one.
   decodes = 0;
@@ -156,6 +159,13 @@ export class Imports {
         await new Promise((r) => setTimeout(r, 0));
       }
       this.hermesCache = null;
+      // OpenCode's one database the same way.
+      for (let i = 0; i < 10_000; i++) {
+        try { opencodeSessions(undefined, 40); } catch { break; }
+        if (!opencodePending) break;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      this.opencodeCache = null;
       const gone = [...known.keys()].filter((p) => !seen.has(p));
       const del = db.query("DELETE FROM import_index WHERE path = ?");
       for (const p of gone) del.run(p);
@@ -209,6 +219,7 @@ export class Imports {
     this.keelCache = null;
     this.agyCache = null;
     this.hermesCache = null;
+    this.opencodeCache = null;
   }
 
   // Up to `ms` of a refresh before answering; the rest goes on in the background.
@@ -249,12 +260,22 @@ export class Imports {
     return rows;
   }
 
-  // The sessions of the stores that list themselves (the Rust Keel, Antigravity, Hermes): few, read whole.
+  // OpenCode keeps every session in one database too: its prompts are two indexed reads a session.
+  private opencode(): Found[] {
+    if (this.opencodeCache && Date.now() - this.opencodeCache.at < 5000) return this.opencodeCache.rows;
+    let rows: Found[] = [];
+    try { rows = opencodeSessions(undefined, 50); } catch {}
+    this.opencodeCache = { at: Date.now(), rows };
+    return rows;
+  }
+
+  // The sessions of the stores that list themselves (the Rust Keel, Antigravity, Hermes, OpenCode): few, read whole.
   private side(harness?: Harness): Found[] {
     const out: Found[] = [];
     if (!harness || harness === "keel") out.push(...this.keel());
     if (!harness || harness === "agy") out.push(...this.agy());
     if (!harness || harness === "hermes") out.push(...this.hermes());
+    if (!harness || harness === "opencode") out.push(...this.opencode());
     return out;
   }
 
@@ -401,6 +422,7 @@ export class Imports {
     if (f.harness === "codex") return readCodex(f.path);
     if (f.harness === "agy") return readAgy(f);
     if (f.harness === "hermes") return readHermes(f);
+    if (f.harness === "opencode") return readOpencode(f);
     return readKeel(f.id);
   }
 

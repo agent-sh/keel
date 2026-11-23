@@ -1221,7 +1221,7 @@ describe("client commands against a running daemon", () => {
 
     const harnesses = await k(["import", "harnesses", "--json"]);
     expect(harnesses.code).toBe(0);
-    expect(json(harnesses.out).map((h: any) => h.harness).sort()).toEqual(["agy", "claude", "codex", "hermes", "keel"]);
+    expect(json(harnesses.out).map((h: any) => h.harness).sort()).toEqual(["agy", "claude", "codex", "hermes", "keel", "opencode"]);
     const badSub = await k(["import", "nope"]);
     expect(badSub.code).toBe(3);
 

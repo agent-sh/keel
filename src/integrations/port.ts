@@ -28,7 +28,7 @@ import { identity, importHome } from "../mcp/sources.ts";
 import { findBin } from "./tacit.ts";
 import { collect } from "../core/proc.ts";
 import { HARNESSES, modelFor, type Imports } from "./import/service.ts";
-import type { Found, Harness } from "./import/types.ts";
+import { inDatabase, type Found, type Harness } from "./import/types.ts";
 import type { Store } from "../core/store.ts";
 import type { RuleKind } from "../safety/policy.ts";
 import { Database } from "bun:sqlite";
@@ -600,7 +600,7 @@ async function planSessions(items: Planned[], deps: PortDeps, opts: { days: numb
     for (const f of want) {
       const link = im.links(f.harness, f.id)[0];
       // A file grew or changed; a session kept in a database went on after the last copy.
-      const db = f.harness === "keel" || f.harness === "hermes";
+      const db = inDatabase(f.harness);
       const st = db ? null : (() => { try { const s = statSync(f.path); return { size: s.size, mtime: Math.round(s.mtimeMs) }; } catch { return null; } })();
       const grew = !!link && (db ? f.updated_ms > link.synced_ms : !!st && (st.size !== link.source_size || st.mtime !== link.source_mtime));
       const wentOn = !!link && im.wentOn(link.session_id);
