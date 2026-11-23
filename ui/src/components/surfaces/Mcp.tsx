@@ -66,17 +66,21 @@ function ProjectReader({ p, x, decide }: { p: ProjectState; x: ProjectServer; de
       <ReaderHead
         title={x.name}
         path={x.target}
-        desc={waiting
+        desc={p.agent
+          ? waiting
+            ? `The agent file ${p.agent} defines this server for itself. Keel starts it for that agent while it works only once you approve it, as it reads now: a change to its entry waits for you again.`
+            : x.state === "approved" ? `The ${p.agent} agent gets it while it works, inside its own sandbox, and it ends when the agent finishes. A change to its entry waits for you again.` : "It is never started for this agent."
+          : waiting
           ? "This project's .mcp.json names this server. Keel starts it for the sessions working in the project only once you approve it, as it reads now: a change to its entry waits for you again."
           : x.state === "approved" ? "Sessions working in this project get it, inside their own sandbox. A change to its entry in .mcp.json waits for you again." : "It is never started for this project."}
         facts={[
           ["State", <span data-testid="mcp-project-state">{PROJECT_LABEL[x.state]}</span>],
-          ["Project", tilde(p.root)],
+          p.agent ? ["Agent file", tilde(p.file ?? p.root)] : ["Project", tilde(p.root)],
           ...(x.by === "claude" ? [["Decided", "in Claude Code"] as [string, React.ReactNode]] : []),
         ]}
       >
         {/* The whole entry as the file holds it, unexpanded: what an approval holds. */}
-        <div className="k-sub k-label mt-3">The entry in .mcp.json</div>
+        <div className="k-sub k-label mt-3">{p.agent ? "The entry in the agent file" : "The entry in .mcp.json"}</div>
         <pre className="mt-1 max-h-[24rem] overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap break-all" data-testid="mcp-project-entry-text">{JSON.stringify(x.entry, null, 2)}</pre>
         <div className="mt-3.5 flex flex-wrap items-center gap-2">
           {x.state !== "approved" && <button type="button" className="k-btn" data-ink data-testid="mcp-project-approve" onClick={() => decide("approved")}>Approve</button>}
@@ -588,7 +592,7 @@ export default function McpServers() {
     { id: "plugins", title: "From plugins", entries: all.filter((s) => s.plugin).map((s) => ({ ...entry(s), desc: `${s.plugin} · ${tilde(s.target)}` })) },
     { id: "bundled", title: "Built into Keel", entries: all.filter((s) => s.bundled).map(entry) },
     ...projects.map((p) => ({
-      id: `project:${p.root}`, title: `Project ${tail(p.root, 28)}`, path: ".mcp.json",
+      id: `project:${p.root}`, title: p.agent ? `Agent ${p.agent}` : `Project ${tail(p.root, 28)}`, path: p.agent ? tail(p.root, 28) : ".mcp.json",
       entries: p.servers.map((x) => ({ id: `project:${p.root}\u0000${x.name}`, name: x.name, desc: tilde(x.target), mark: projectMark(x), markLabel: PROJECT_LABEL[x.state], aside: PROJECT_LABEL[x.state].toLowerCase(), testid: "mcp-project-entry" })),
     })),
   ];

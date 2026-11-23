@@ -115,6 +115,7 @@ export type AgentDef = {
   maxTurns?: number;      // the model steps it may take before it stops, its report marked partial
   skills?: string[];      // skills whose whole content starts its task
   mcpServers?: string[];  // servers it names by name: every session has the owner's, so they are said only when missing
+  ownServers?: string[];  // servers its file defines itself (inline): run for it once the owner approved each (src/mcp/project.ts)
   notTaken?: string[];    // what its definition asks for that Keel does not run, each with why: told to its parent at the start
 };
 
@@ -311,6 +312,16 @@ function modeName(v: string | string[] | undefined): string | undefined {
   return ({ readonly: "read-only", plan: "read-only", dontask: "read-only", ask: "ask", default: "ask", acceptedits: "auto-edits", autoedits: "auto-edits", auto: "auto", fullauto: "full-auto", bypasspermissions: "full-auto" } as Record<string, string>)[m];
 }
 
+// Set by the MCP module: an agent file's own servers, given to the agent's
+// session as far as the owner approved them (`pending`: those that wait for
+// the owner), and taken away when the agent finishes.
+export const agentServers: {
+  give?: (child: Session, file: string) => { pending: string[] };
+  release?: (childId: string) => void;
+} = {};
+// The definition an agent's session was started from.
+export const defOfSession = (sessionId: string): AgentDef | undefined => { const a = byChild(sessionId); return a ? defOf(a.id) : undefined; };
+
 const listOf = (v: unknown) =>
   v === undefined || v === null ? undefined : (Array.isArray(v) ? v.map(String) : String(v).replace(/^\[|\]$/g, "").split(",")).map((x) => x.trim()).filter(Boolean);
 
@@ -318,8 +329,8 @@ const listOf = (v: unknown) =>
 // plugin's agent has no hooks, mcpServers or permissionMode, as there
 // (Claude Code ignores them for a plugin's agents). What Keel does not run
 // is named with why, so it is never dropped without a word.
-function claudeFields(meta: Record<string, any>, plugin: boolean): Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "notTaken" | "effort"> {
-  const out: Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "notTaken" | "effort"> = {};
+function claudeFields(meta: Record<string, any>, plugin: boolean): Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "ownServers" | "notTaken" | "effort"> {
+  const out: Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "ownServers" | "notTaken" | "effort"> = {};
   const left: string[] = [];
   const turns = Number(meta.maxTurns);
   if (meta.maxTurns !== undefined && Number.isSafeInteger(turns) && turns >= 1) out.maxTurns = turns;
@@ -330,7 +341,7 @@ function claudeFields(meta: Record<string, any>, plugin: boolean): Pick<AgentDef
     const named = meta.mcpServers.filter((x: unknown) => typeof x === "string") as string[];
     const inline = meta.mcpServers.filter((x: unknown) => x && typeof x === "object").flatMap((x: object) => Object.keys(x));
     if (named.length) out.mcpServers = named;
-    if (inline.length) left.push(`its own MCP servers (${inline.join(", ")}): Keel does not start servers an agent file defines; add them in Settings > MCP servers`);
+    if (inline.length) out.ownServers = [...new Set(inline)].slice(0, 32);
   }
   if (!plugin && meta.hooks && typeof meta.hooks === "object" && Object.keys(meta.hooks).length) left.push(`its hooks (${Object.keys(meta.hooks).join(", ")}): Keel runs no hooks of an agent file`);
   if (typeof meta.memory === "string" && meta.memory) left.push(`its ${meta.memory} memory folder: Keel gives an agent no memory folder of its own`);
@@ -782,7 +793,14 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const now = Date.now();
   const schema = input.output_schema === undefined ? null : JSON.stringify(input.output_schema);
   // Its definition's skills, whole, before its task; what of the definition does not run is told to its parent.
-  const left = [...(def.notTaken ?? [])];
+  // (What waits for the owner first: it is the one the owner can act on.)
+  const left: string[] = [];
+  // Its file's own servers, as far as the owner approved them; the rest wait for the owner, and it starts without them.
+  if (def.ownServers?.length && def.file) {
+    const given = agentServers.give ? agentServers.give(store.session(child.id) ?? child, def.file) : { pending: def.ownServers };
+    if (given.pending.length) left.push(`its own MCP ${given.pending.length === 1 ? "server" : "servers"} (${given.pending.join(", ")}): ${given.pending.length === 1 ? "it waits" : "they wait"} for the owner's approval in Settings > MCP servers, so it starts without ${given.pending.length === 1 ? "it" : "them"}`);
+  }
+  left.push(...(def.notTaken ?? []));
   const preloaded: string[] = [];
   let bytes = 0;
   for (const name of def.skills ?? []) {
@@ -1419,6 +1437,8 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
     return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
   })();
   emit("agent", brief(rec));
+  // It finished: the servers its file defines end with it, as in Claude Code.
+  try { agentServers.release?.(a.session_id); } catch (e) { capture(e, { at: "agent servers release", agent: a.id }); }
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);

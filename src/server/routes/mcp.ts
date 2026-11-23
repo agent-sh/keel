@@ -7,7 +7,8 @@ import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { installTacitServer } from "../../integrations/tacit-mcp.ts";
 import { memoryOn } from "../../integrations/tacit.ts";
-import { ProjectServers } from "../../mcp/project.ts";
+import { isAgentKey, ProjectServers } from "../../mcp/project.ts";
+import { agentServers, defOfSession } from "../../automation/agents.ts";
 import { readsOf } from "../reads.ts";
 import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
@@ -66,10 +67,25 @@ export const mcpRoutes: RouteModule = (deps) => {
   const reads = readsOf(deps.store);
   projects.read = (files, roots) => reads.run("claude.mcpChoices", { files, roots });
   projects.onPending = (sid, root, names) => {
-    const ev = deps.store.append(sid, "note", { kind: "mcp-project", text: `This project's .mcp.json (${root}) names ${names.length === 1 ? "a server" : "servers"} waiting for your approval: ${names.join(", ")}. ${names.length === 1 ? "It is" : "They are"} not started until you approve ${names.length === 1 ? "it" : "them"} in Settings > MCP servers.`, servers: names, root });
+    const one = names.length === 1;
+    if (isAgentKey(root)) {
+      // An agent file's: said in the agent's session and in its parent's, where the owner follows it.
+      const text = `The agent file ${root} defines ${one ? "a server" : "servers"} of its own waiting for your approval: ${names.join(", ")}. The agent works without ${one ? "it" : "them"} until you approve ${one ? "it" : "them"} in Settings > MCP servers.`;
+      // (Its session names its parent from its start, before its agent's record is written.)
+      const parent = deps.store.db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?").get(sid)?.parent_id;
+      for (const id of parent ? [sid, parent] : [sid]) deps.bus.emit({ t: "event", event: deps.store.append(id, "note", { kind: "mcp-project", text, servers: names, root }) });
+      return;
+    }
+    const ev = deps.store.append(sid, "note", { kind: "mcp-project", text: `This project's .mcp.json (${root}) names ${one ? "a server" : "servers"} waiting for your approval: ${names.join(", ")}. ${one ? "It is" : "They are"} not started until you approve ${one ? "it" : "them"} in Settings > MCP servers.`, servers: names, root });
     deps.bus.emit({ t: "event", event: ev });
   };
-  registerHooks({ turnStart: (s) => { try { projects.refresh(s); } catch (e) { deps.errors.capture("server", e, { at: "mcp project servers", session: s.id }); } } });
+  // An agent file's own servers: given to its agent at its start and at each of its turns, ended when it finishes.
+  agentServers.give = (child, file) => projects.refreshAgent(child, file);
+  agentServers.release = (id) => projects.releaseAgent(id);
+  registerHooks({ turnStart: (s) => {
+    try { projects.refresh(s); } catch (e) { deps.errors.capture("server", e, { at: "mcp project servers", session: s.id }); }
+    try { const def = defOfSession(s.id); if (def?.file && def.ownServers?.length) projects.refreshAgent(s, def.file); } catch (e) { deps.errors.capture("server", e, { at: "mcp agent file servers", session: s.id }); }
+  } });
   // Once a process, when the servers had a moment to connect: one line of what was found (daemon-log.ts).
   if (!g.__keelMcpSaid) {
     g.__keelMcpSaid = true;
@@ -104,7 +120,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   // What a session's own server did is in the session's activity and on the
   // bus: it is a program the session runs, and the owner sees that it does.
   m.onSessionServer = (e) => {
-    const from = e.project ? "of this project's .mcp.json" : "passed by the editor";
+    const from = e.project ? (isAgentKey(e.project) ? `of the agent file ${e.project}` : "of this project's .mcp.json") : "passed by the editor";
     const text = e.what === "started" ? `MCP server ${e.name}, ${from}, started: ${e.target}`
       : e.what === "failed" ? `MCP server ${e.name}, ${from}, did not connect: ${e.error ?? "it failed"}`
       : `MCP server ${e.name}, ${from}, ended`;

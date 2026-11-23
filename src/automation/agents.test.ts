@@ -1103,7 +1103,7 @@ test("a report that settles leaves a wake's short coalesce as it was", async () 
 });
 
 // INT-M13: Claude Code's sub-agent fields. maxTurns bounds its steps, skills start its task whole, an effort the
-// model lists is its own; inline MCP servers, hooks and a memory folder are not run, and its parent is told so.
+// model lists is its own; hooks and a memory folder are not run, an inline MCP server waits for the owner, and its parent is told so.
 test("a Claude Code agent's maxTurns, skills and effort hold; what Keel does not run is told to its parent", async () => {
   const folder = join(dir, ".claude", "agents"), skill = join(dir, ".claude", "skills", "api-conventions");
   mkdirSync(folder, { recursive: true });
@@ -1123,8 +1123,8 @@ test("a Claude Code agent's maxTurns, skills and effort hold; what Keel does not
     "memory: project", "---", "Build the endpoint.",
   ].join("\n"));
   const def = agents.definitions(dir).find((d) => d.name === "api-builder")!;
-  expect([def.maxTurns, def.skills, def.mcpServers, def.effort]).toEqual([7, ["api-conventions", "owner-only", "missing-skill", "huge"], ["github"], "high"]);
-  expect(def.notTaken).toEqual([expect.stringContaining("its own MCP servers (playwright)"), expect.stringContaining("its hooks (PreToolUse)"), expect.stringContaining("its project memory folder")]);
+  expect([def.maxTurns, def.skills, def.mcpServers, def.ownServers, def.effort]).toEqual([7, ["api-conventions", "owner-only", "missing-skill", "huge"], ["github"], ["playwright"], "high"]);
+  expect(def.notTaken).toEqual([expect.stringContaining("its hooks (PreToolUse)"), expect.stringContaining("its project memory folder")]);
   const r = await tool("Agent").run({ description: "endpoint", prompt: "add /health", subagent_type: "api-builder", run_in_background: true, isolation: "none" }, ctx as any);
   const text = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
   for (const said of ["playwright", "hooks", "memory folder", "the skill owner-only", "the skill missing-skill", "the skill huge: the skills an agent starts with hold 64 KB together at most", "the MCP server github", "the effort high"]) expect(text).toContain(said);
@@ -1152,7 +1152,7 @@ test("what an agent is started without is told when it waits for a slot, and aga
   const j = JSON.parse(String((await tool("spawn_agent").run({ message: "add /live", agent_type: "api-builder", isolation: "none" }, pctx as any)).content));
   expect(j).toMatchObject({ status: "waits_for_slot", not_carried: expect.stringContaining("its hooks (PreToolUse)") });
   const rows = () => activity.list({ session_id: p.id, limit: 50 }).items.map((x: any) => `${x.sub}: ${x.text}`);
-  expect(rows().filter((x) => x.startsWith("queued:") && x.includes("Not carried from its definition: its own MCP servers (playwright)"))).toHaveLength(2);
+  expect(rows().filter((x) => x.startsWith("queued:") && x.includes("Not carried from its definition") && x.includes("its own MCP server (playwright): it waits for the owner's approval"))).toHaveLength(2);
   end(busy, "end_turn");
   for (let i = 0; i < 100 && !rows().some((x) => x.startsWith("started:") && x.includes("when a slot freed") && x.includes("Not carried")); i++) await Bun.sleep(20);
   expect(rows().some((x) => x.startsWith("started:") && x.includes("when a slot freed") && x.includes("Not carried from its definition"))).toBe(true);

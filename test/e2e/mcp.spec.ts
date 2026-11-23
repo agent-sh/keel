@@ -413,3 +413,79 @@ test("a project's .mcp.json servers run once the owner approves them", async ({ 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Feature: an agent file's own MCP servers (Claude Code's sub-agent
+// `mcpServers` with an inline definition). The agent starts without one until
+// the owner approves it in Settings > MCP servers, and its parent is told
+// what waits; an approved one runs for that agent alone while it works and
+// ends when it finishes; a changed entry waits again.
+test("an agent file's own MCP servers run for that agent once the owner approves them", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  test.skip(!SCRIPTED, "drives the calls with the scripted model");
+  const model = "scripted:stand-in-strict";
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const tag = Date.now().toString(36);
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `agent-mcp-${tag}`);
+  mkdirSync(join(root, ".git"), { recursive: true });
+  mkdirSync(join(root, ".claude/agents"), { recursive: true });
+  const file = join(root, ".claude/agents", `scout${tag}.md`);
+  const write = (extra: string[] = []) => writeFileSync(file, ["---", `name: scout${tag}`, "description: Looks things up", "mcpServers:", `  - ae${tag}:`, "      type: stdio", "      command: bun", `      args: ${JSON.stringify([FIXTURE, ...extra])}`, "---", "Look things up."].join("\n"));
+  write();
+  try {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: root, model } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    type A = { id: string; session_id: string; title: string; status: string };
+    const agents = async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as A[]);
+    // One agent of the file, its report waited for: what its call of the server's tool got, and what its spawn said.
+    const spawn = async (title: string) => {
+      const calls = [{ name: "mcp_call", input: { tool: `ae${tag}__echo`, arguments: { text: title } } }];
+      const text = `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: `${title}\nscript:calls ${JSON.stringify(calls)}`, agent_type: `scout${tag}`, isolation: "none" } }])}`;
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+      await expect.poll(async () => (await agents()).find((a) => a.title === title)?.status, { timeout: 60_000 }).toBe("completed");
+      const a = (await agents()).find((x) => x.title === title)!;
+      const child = (await (await request.get(`/api/sessions/${a.session_id}`)).json()).events as any[];
+      const got = JSON.stringify(child.filter((e) => e.kind === "tool_result").map((e) => e.data.results[0].content));
+      const parent = (await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[];
+      const said = JSON.stringify(parent.filter((e) => e.kind === "tool_result").at(-1)?.data.results[0].content);
+      return { a, got, said };
+    };
+    const servers = async (id: string) => (await (await request.get(`/api/sessions/${id}/mcp`)).json()).servers.filter((x: any) => x.session).map((x: any) => x.name);
+
+    // Not approved: the agent works without it, and its parent and the owner are told what waits.
+    const first = await spawn("Before");
+    expect(first.got).toContain(`No tool named ae${tag}__echo`);
+    expect(first.said).toContain(`its own MCP server (ae${tag}): it waits for the owner's approval in Settings > MCP servers`);
+    await page.goto(`/s/${session.id}`);
+    await expect(page.getByTestId("note").filter({ hasText: `waiting for your approval: ae${tag}` })).toHaveCount(1);
+
+    // The owner approves it in the panel, shown the entry as the file holds it.
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-project-entry"]').filter({ hasText: `ae${tag}` }).first().click();
+    await expect(panel.getByTestId("mcp-project-state")).toHaveText("Needs you");
+    await expect(panel.getByTestId("mcp-project-entry-text")).toContainText(FIXTURE);
+    await expect(panel.getByTestId("mcp-project-server")).toContainText(`scout${tag}.md`);
+    await shoot(page, "mcp-13-agent-file-pending");
+    await panel.getByTestId("mcp-project-approve").click();
+    await expect(panel.getByTestId("mcp-project-state")).toHaveText("Approved");
+
+    // Approved: the next agent of the file calls it, and when it finishes the server ends with it.
+    const second = await spawn("After");
+    expect(second.got).toContain("echo: After");
+    expect(second.said).not.toContain("waits for the owner's approval");
+    await expect.poll(() => servers(second.a.session_id)).toEqual([]);
+    // It was the agent's alone: its parent never had it.
+    expect(await servers(session.id)).toEqual([]);
+
+    // Its entry changes: it waits for the owner again, and is not run meanwhile.
+    write(["changed"]);
+    const third = await spawn("Changed");
+    expect(third.got).toContain(`No tool named ae${tag}__echo`);
+    await expect(panel.locator('[data-testid="mcp-project-entry"]').filter({ hasText: `ae${tag}` }).first()).toContainText("changed since approved");
+    await shoot(page, "mcp-14-agent-file-changed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
