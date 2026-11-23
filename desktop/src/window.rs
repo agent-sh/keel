@@ -421,12 +421,15 @@ impl Win {
                 }
                 return;
             }
+            // A page that arrived (only a load that got an answer commits): the failures in a row are over.
+            // (Not at Finished: the engine ends a failed load with a Finished too, by when the first
+            // retry of it has started, and the count would never pass one.)
+            if event == webkit::LoadEvent::Committed && win.showing.get() == Showing::App {
+                win.failed.set(0);
+            }
             if event == webkit::LoadEvent::Finished {
                 win.loading.set(false);
                 win.slow.set(false);
-                if win.showing.get() == Showing::App {
-                    win.failed.set(0);
-                }
                 win.pill_now();
                 // A state the away page was told before it had loaded is told again.
                 if win.showing.get() == Showing::Away {

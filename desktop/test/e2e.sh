@@ -646,6 +646,42 @@ check "and never sent it the token, though the lock names a live process of this
 if [ "$ENGINE" = qt ]; then check "the window says Keel's page does not open, between its tries" "wait_for 12 \"last away | grep -q '\\\"failing\\\":true'\""; fi
 check "it is asked for the page a few times in those seconds, not as fast as it can refuse it" "[ \"\$(grep -c 'REQUEST GET / ' '$D/stranger.out')\" -ge 1 ] && [ \"\$(grep -c 'REQUEST GET / ' '$D/stranger.out')\" -le 8 ]"
 
+# --- 11a. a daemon that answers and whose page keeps failing to load (the answer is cut off): both engines wait
+# longer between their tries and, from the third failure in a row, say so in the window
+# (At an address of its own: the Qt engine keeps pages of the daemon's address in its cache.)
+(eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+PORT_B=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+(python3 "$HERE/listener.py" "$PORT_B" 200 16 health,drop > "$D/dropper.out" 2>&1 &)
+failing=$(logged away); sleep 0.5; (export KEEL_URL="http://127.0.0.1:$PORT_B"; launch)
+check "the window says Keel's page does not open, whichever engine draws it" "wait_for 14 \"[ \\\"\\\$(grep -c '\\\"failing\\\":true' '$D/shell.jsonl')\\\" -gt $(grep -c '"failing":true' "$D/shell.jsonl") ]\""
+sleep 4
+check "a page whose load keeps failing is asked for a few times in those seconds, not as fast as it can fail" "[ \"\$(grep -c 'REQUEST GET / ' '$D/dropper.out')\" -ge 3 ] && [ \"\$(grep -c 'REQUEST GET / ' '$D/dropper.out')\" -le 9 ]"
+shot 13a-page-does-not-open
+wait_for 12 "grep -q '^END' '$D/dropper.out'" || true
+
+# --- 11b. a page that loads and never speaks to the app (the Qt engine's): made anew twice, then left with the bar's button
+if [ "$ENGINE" = qt ]; then
+  (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+  PORT_C=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  (python3 "$HERE/listener.py" "$PORT_C" 200 110 health > "$D/silent.out" 2>&1 &)
+  sleep 0.5; (export KEEL_URL="http://127.0.0.1:$PORT_C"; launch)
+  wait_for 30 '[ "$(windows)" = 1 ]'; wait_for 20 "grep -q 'REQUEST GET / ' '$D/silent.out'" || true; sleep 3
+  silents=$(logged page-silent); stops=$(logged page-stopped)
+  for p in $(renderers); do sig -KILL "$p"; done
+  wait_for 15 "[ \"\$(logged page-stopped)\" -gt $stops ]" || true
+  check "a page that says nothing is made anew twice, then left" "wait_for 45 \"last page-silent | grep -q '\\\"left\\\":true'\" && [ \"\$(( \$(logged page-silent) - $silents ))\" = 3 ]"
+  sleep 1; shot 13b-page-keeps-stopping
+  # the bar's words, read from the picture (the top strip, light on dark turned round), and the button's pill (light)
+  convert "$D/shots/13b-page-keeps-stopping.png" -crop 1500x36+0+0 +repage -colorspace Gray -negate -resize 300% "$D/shots/13b-bar.png" 2> /dev/null
+  pill_light() { convert "$D/shots/$1.png" -crop 6x6+1320+12 +repage -colorspace Gray -format '%[fx:int(mean*255)]' info: 2> /dev/null; }
+  check "the bar says This page keeps stopping, with the button that loads it again" "tesseract '$D/shots/13b-bar.png' - --psm 7 2> /dev/null | grep -qi 'keeps stopping' && [ \"\$(pill_light 13b-page-keeps-stopping)\" -gt 200 ]"
+  # the button loads it again (a fresh load of the page, and the bar's words go)
+  read -r X Y W H _ <<< "$(geometry)"
+  loads=$(grep -c 'REQUEST GET / ' "$D/silent.out")
+  $A click --id "$WS" $((X + W - 140)) $((Y + 18)) > /dev/null 2>&1
+  check "the button loads the page again, and the bar's words go" "wait_for 20 \"[ \\\"\\\$(grep -c 'REQUEST GET / ' '$D/silent.out')\\\" -gt $loads ]\" && sleep 2 && shot 13c-page-loaded-again && [ \"\$(pill_light 13c-page-loaded-again)\" -lt 100 ]"
+fi
+
 # --- 12. an address that is not this machine's: the first page says so, and nothing is started there
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
 printf '#!/usr/bin/env bash\necho "$@" > "%s"\n' "$D/stub-ran" > "$D/keel-stub"; chmod +x "$D/keel-stub"
