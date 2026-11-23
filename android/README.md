@@ -70,6 +70,15 @@ Approve: each change asks starts it in ask (the one a phone with no screen
 lock offers). Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
+## Changes
+
+The file mark in a session's header opens what the session changed in its
+folder, read from its checkpoints: the files since its first turn, then each
+turn's files, newest first, with the lines added and removed and a mark for a
+file changed outside the session's work. A file opens its diff, one file at a
+time, with long lines wrapped under their numbers. It is read-only; reverting
+is done on the computer. A session whose files are on another machine says so.
+
 ## Photos and files
 
 The paperclip beside the message box offers Photos (the system photo picker,
@@ -159,6 +168,7 @@ so it proves nothing about who built it.
 | `Wire.kt` | the daemon's shapes and the signed messages, as pure functions |
 | `Feed.kt` | what the app holds of the daemon and how sync answers and stream frames change it, as plain state |
 | `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
+| `ui/Changes.kt` | a session's changes and one file's diff |
 | `Attach.kt` | what is picked for the next message: read, fitted, uploaded; the transcript's images |
 | `Approve.kt` | the biometric approval and the lock-screen approve activity |
 | `Push.kt` | notifications, Firebase push, the background check |

@@ -10,6 +10,7 @@ import type { Deps, RouteModule } from "../app.ts";
 import { addAllowedHosts } from "../admission.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
 import { gate } from "./permissions.ts";
+import { checkpoints } from "./checkpoints.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -119,7 +120,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
   });
 
   return {
-    ...mobileApi({ ...deps, mobile, gate: () => gate, changed }),
+    ...mobileApi({ ...deps, mobile, gate: () => gate, changed, checkpoints: () => checkpoints }),
 
     "/api/mobile/settings": {
       GET: () => json({ public_url: mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL ?? "", push: { configured: push.configured(), path: push.accountPath() } }),

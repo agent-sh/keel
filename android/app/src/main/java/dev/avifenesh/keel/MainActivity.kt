@@ -30,6 +30,10 @@ class App : Application() {
 sealed class Route {
     data class Tabs(val tab: Int) : Route()
     data class Session(val id: String) : Route()
+    /** What a session changed. */
+    data class Changes(val id: String) : Route()
+    /** One file's diff, of one turn (`turn`) or since the session's first (null); `label` names which. */
+    data class Diff(val id: String, val path: String, val turn: Long?, val label: String) : Route()
 }
 
 object BuildConfigLike {

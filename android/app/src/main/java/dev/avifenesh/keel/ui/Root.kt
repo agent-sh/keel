@@ -68,6 +68,14 @@ fun Root(act: MainActivity) {
                 BackHandler { Ui.route.value = Route.Tabs(0) }
                 SessionScreen(act, r.id)
             }
+            is Route.Changes -> {
+                BackHandler { Ui.route.value = Route.Session(r.id) }
+                ChangesScreen(r.id)
+            }
+            is Route.Diff -> {
+                BackHandler { Ui.route.value = Route.Changes(r.id) }
+                DiffScreen(r)
+            }
             is Route.Tabs -> {
                 BackHandler(enabled = r.tab != 0) { Ui.route.value = Route.Tabs(0) }
                 Column(Modifier.fillMaxSize().statusBarsPadding()) {

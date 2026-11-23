@@ -157,6 +157,10 @@ object Hub {
     }
 
     suspend fun me(): Me = Me.of(Api.get("/v1/me"))
+    suspend fun changes(chat: String): Changes = Changes.of(Api.get("/v1/chats/${Uri.encode(chat)}/changes"))
+    /** One file's diff, of one turn or (turn null) since the session's first. */
+    suspend fun fileDiff(chat: String, path: String, turn: Long?): FileDiff =
+        FileDiff.of(Api.get("/v1/chats/${Uri.encode(chat)}/changes/diff?path=${Wire.enc(path)}${turn?.let { "&turn=$it" }.orEmpty()}"))
     suspend fun pulse(): Pulse = Pulse.of(Api.get("/v1/pulse"))
     suspend fun usage(chat: String): String = usageLine(Api.get("/v1/chats/${Uri.encode(chat)}/usage"))
 }

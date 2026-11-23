@@ -361,6 +361,68 @@ class Seen {
     companion object { const val SLACK = 1f }
 }
 
+/** A file a session changed: its path, git's letter for how (A added, M changed, D deleted, T its type), the lines added and removed, written outside the session's work. */
+data class FileChange(val path: String, val status: String, val added: Int, val removed: Int, val outside: Boolean = false) {
+    val name get() = path.substringAfterLast('/')
+    val dir get() = path.substringBeforeLast('/', "")
+    companion object {
+        fun of(o: JSONObject) = FileChange(o.str("path"), o.str("status"), o.optInt("added"), o.optInt("removed"), o.optBoolean("outside"))
+    }
+}
+
+/** One turn's changes: `turn` is what a diff asks for, `n` its place among the session's turns. */
+data class ChangeTurn(val turn: Long, val n: Int?, val prompt: String, val ts: Double, val added: Int, val removed: Int, val files: List<FileChange>) {
+    companion object {
+        fun of(o: JSONObject) = ChangeTurn(
+            o.optLong("turn"), if (o.isNull("n")) null else o.optInt("n"), o.str("prompt"), o.optDouble("ts", 0.0), o.optInt("added"), o.optInt("removed"),
+            o.optJSONArray("files")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map(FileChange::of) }.orEmpty(),
+        )
+    }
+}
+
+/** GET /v1/chats/:id/changes: each turn's changes, newest first, and the files changed since the first. `unavailable`: why there is nothing. */
+data class Changes(val turns: List<ChangeTurn>, val session: List<FileChange>, val expired: Int, val scope: String, val unavailable: String) {
+    companion object {
+        fun of(o: JSONObject) = Changes(
+            o.optJSONArray("turns")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map(ChangeTurn::of) }.orEmpty(),
+            o.optJSONArray("session")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map(FileChange::of) }.orEmpty(),
+            o.optInt("expired"), o.str("scope"), o.str("unavailable"),
+        )
+    }
+}
+
+/** One line of a diff: a hunk's head, an added, removed or unchanged line, or a note ("No newline at end of file"), with its numbers in the old and new file. */
+data class DiffLine(val kind: Char, val text: String, val old: Int?, val new: Int?)
+
+/** GET /v1/chats/:id/changes/diff: one file's unified diff, cut where the page cuts one (`truncated`). */
+data class FileDiff(val path: String, val status: String, val added: Int, val removed: Int, val diff: String, val truncated: Boolean) {
+    val lines get() = diffLines(diff)
+    companion object {
+        fun of(o: JSONObject) = FileDiff(o.str("path"), o.str("status"), o.optInt("added"), o.optInt("removed"), o.str("diff"), o.optBoolean("truncated"))
+    }
+}
+
+private val HUNK = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)""")
+
+/** A unified diff as lines to draw, the file headers left out. A binary file's diff has none. */
+fun diffLines(diff: String): List<DiffLine> {
+    val out = ArrayList<DiffLine>()
+    var old = 0; var new = 0; var inHunk = false
+    for (l in diff.split('\n')) {
+        val h = HUNK.find(l)
+        when {
+            h != null -> { old = h.groupValues[1].toInt(); new = h.groupValues[2].toInt(); inHunk = true; out += DiffLine('@', l, null, null) }
+            l.startsWith("diff --git ") -> inHunk = false
+            !inHunk -> {}
+            l.startsWith("+") -> out += DiffLine('+', l.substring(1), null, new++)
+            l.startsWith("-") -> out += DiffLine('-', l.substring(1), old++, null)
+            l.startsWith(" ") -> out += DiffLine(' ', l.substring(1), old++, new++)
+            l.startsWith("\\") -> out += DiffLine('\\', l.removePrefix("\\ "), null, null)
+        }
+    }
+    return out
+}
+
 /** How an unpairing ended: whether the daemon revoked this phone, and what the owner is told. */
 data class Unpaired(val revoked: Boolean, val note: String)
 

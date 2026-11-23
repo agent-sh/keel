@@ -58,6 +58,10 @@ val Dark = Tokens(
     needSoft = Color(0xFF241D38), workSoft = Color(0xFF2B2216),
 )
 
+/** A diff's tints, as the workbench draws them (ui/src/styles.css, .k-diff-line): added on done, removed on danger. */
+val Tokens.addTint get() = done.copy(alpha = if (dark) 0.16f else 0.12f)
+val Tokens.delTint get() = dangerSoft.copy(alpha = 0.85f)
+
 fun Tokens.of(s: State): Color = when (s) {
     State.NEEDS -> need; State.WORKING -> work; State.FAILED -> fail; State.DONE -> done; State.STOPPED, State.IDLE -> idle
 }

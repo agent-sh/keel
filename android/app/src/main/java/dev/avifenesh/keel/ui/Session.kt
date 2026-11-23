@@ -113,6 +113,7 @@ fun SessionScreen(act: MainActivity, id: String) {
         Head(chat?.title ?: "Session", sub = {
             StateTag(state, when (state) { State.WORKING -> working[id]?.let { elapsed(it, now) }.orEmpty(); else -> "" })
         }, lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = Route.Tabs(0) }) }) {
+            IconBtn(Ic.FileDiff, "Changes", { Ui.route.value = Route.Changes(id) }, tint = k.muted)
             IconBtn(Ic.ChartColumn, "Session usage", {
                 if (usage != null) usage = null
                 else scope.launch { usage = runCatching { Hub.usage(id) }.getOrElse { "Usage not available: ${it.message}" } }

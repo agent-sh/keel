@@ -106,6 +106,21 @@ class WireTest {
         assertEquals(true, Seen().apply { add(0.5f, 800f); add(800.6f, 1599.4f) }.covers(1600f))
     }
 
+    @Test fun aDiffIsLinesWithTheirNumbersInTheOldAndNewFile() {
+        val d = "diff --git a/a.txt b/a.txt\nindex 1..2 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,4 @@ fun main\n one\n-two\n+TWO\n+three\n four\n\\ No newline at end of file\n@@ -10 +11 @@\n-x\n+y"
+        val l = diffLines(d)
+        assertEquals(listOf('@', ' ', '-', '+', '+', ' ', '\\', '@', '-', '+'), l.map { it.kind })
+        assertEquals(DiffLine(' ', "one", 1, 1), l[1])
+        assertEquals(DiffLine('-', "two", 2, null), l[2])
+        assertEquals(DiffLine('+', "three", null, 3), l[4])
+        assertEquals(DiffLine(' ', "four", 3, 4), l[5])
+        assertEquals(DiffLine('-', "x", 10, null), l[8])
+        assertEquals(DiffLine('+', "y", null, 11), l[9])
+        // The headers are not lines; a binary file has none.
+        assertEquals(emptyList<DiffLine>(), diffLines("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ"))
+        assertEquals(FileChange("src/a/b.kt", "M", 1, 0).let { it.name to it.dir }, "b.kt" to "src/a")
+    }
+
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))

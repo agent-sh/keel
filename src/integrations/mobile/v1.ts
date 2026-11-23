@@ -29,6 +29,9 @@ import {
 import type { Device, MobileStore, SendRecord } from "./store.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { STORE } from "../../providers/image-limits.ts";
+import { Bad, type Checkpoints } from "../../safety/checkpoints.ts";
+import type { FileChange } from "../../safety/shadow.ts";
+import { readsOf } from "../../server/reads.ts";
 import { decidePlan, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -48,7 +51,9 @@ type Signed = (req: Req, dev: Device, body: Uint8Array, srv: Server<unknown>) =>
 // may be in anyone's hand: it cannot prompt a session in one of them.
 const UNASKED = new Set(["auto-edits", "auto", "full-auto"]);
 
-export type MobileCtx = Deps & { mobile: MobileStore; gate: () => Gate | undefined; changed: () => void };
+// `checkpoints`: what each turn changed in the session's folder (src/safety/checkpoints.ts), for the
+// phone's Changes; absent where no checkpoints are kept.
+export type MobileCtx = Deps & { mobile: MobileStore; gate: () => Gate | undefined; changed: () => void; checkpoints?: () => Checkpoints | undefined };
 
 const urlOrigin = (u: string) => { try { return new URL(u).origin; } catch { return null; } };
 
@@ -291,6 +296,10 @@ export function planCardOf(c: PlanCard, end?: PlanEnd) {
     ts: secs(c.created),
   };
 }
+
+// A changed file as the phone lists it: its path, how it changed (git's letter: A, M, D, T), the lines
+// added and removed, and whether it was written outside the session's turns.
+const fileOf = (f: FileChange) => ({ path: f.path, status: f.status, added: f.added, removed: f.removed, ...(f.outside ? { outside: true } : {}) });
 
 // The card's place in the chat. It carries the card's state, so a chat read
 // after the card closed never offers a decision on it.
@@ -1033,6 +1042,62 @@ export function mobileApi(ctx: MobileCtx) {
         // The saved selection, where the Run screen reads it: the model the next
         // turn uses, not a claim about who answered before.
         return json({ chat_id: s.id, working: engine.isRunning(s.id), model: s.model, session: sessionUsage(s), steps, approvals: pendingApprovals(s.id) });
+      }),
+    },
+    // What the session changed in its folder, read-only: each turn's files with their counts, newest
+    // first, and the files changed since its first turn (`session`). A file's diff is asked for on its
+    // own (`/changes/diff`): a phone reads one file at a time. A session whose tools run on another
+    // machine, or a daemon that keeps no checkpoints, says so in `unavailable`.
+    "/v1/chats/:cid/changes": {
+      GET: signed(async (req) => {
+        const s = await warmed(req.params.cid!);
+        if (!s) return err("unknown chat", 404);
+        const c = ctx.checkpoints?.();
+        const none = (why: string) => json({ chat_id: s.id, turns: [], session: [], expired: 0, scope: "tree", unavailable: why });
+        if (s.machine) return none(`This session's files are on ${s.machine}: its changes are read on the computer.`);
+        if (!c) return none("This daemon keeps no checkpoints, so it cannot say what a turn changed.");
+        try {
+          const { turns, expired } = await c.turns(s);
+          // A turn's place among the session's turns (its first is 1), as the page numbers it.
+          // (The starts alone, from the index that holds only those columns, on the read thread.)
+          const starts = turns.length ? (await readsOf(store).sql<{ seq: number }>("SELECT seq FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq", [s.id])).map((r) => r.seq) : [];
+          const place = new Map(starts.map((seq, i) => [seq, i + 1]));
+          const all = await c.diff(s, {});
+          return json({
+            chat_id: s.id, expired, scope: all.scope,
+            session: all.files.map(fileOf),
+            turns: turns.filter((t) => t.files.length || t.unavailable || t.incomplete).reverse().map((t) => ({
+              turn: t.turn, n: place.get(t.turn) ?? null, prompt: t.prompt, ts: secs(t.created), added: t.added, removed: t.removed, files: t.files.map(fileOf),
+              ...(t.incomplete ? { incomplete: true } : {}), ...(t.elsewhere ? { elsewhere: t.elsewhere } : {}), ...(t.unavailable ? { unavailable: t.unavailable } : {}),
+            })),
+          });
+        } catch (e) {
+          if (e instanceof Bad) return none(e.message);
+          throw e;
+        }
+      }),
+    },
+    // One file's diff: of one turn (`turn`, its place in the history as /changes gives it), or since the
+    // session's first turn. Capped where the page caps a diff (`truncated`).
+    "/v1/chats/:cid/changes/diff": {
+      GET: signed(async (req) => {
+        const s = await warmed(req.params.cid!);
+        if (!s) return err("unknown chat", 404);
+        const c = ctx.checkpoints?.();
+        if (!c || s.machine) return err("this session's changes are not read here", 409);
+        const q = new URL(req.url).searchParams;
+        const path = q.get("path") ?? "";
+        if (!path || path.startsWith("/") || path.split("/").includes("..")) return err("give the file's path, relative to the session's folder", 400);
+        const turn = q.has("turn") ? Number(q.get("turn")) : undefined;
+        if (turn !== undefined && !Number.isInteger(turn)) return err("turn is a number", 400);
+        try {
+          const d = await c.diff(s, { turn, paths: [path] });
+          const f = d.files.find((x) => x.path === path);
+          return json({ chat_id: s.id, path, status: f?.status ?? "", added: f?.added ?? 0, removed: f?.removed ?? 0, diff: d.diff, truncated: d.truncated });
+        } catch (e) {
+          if (e instanceof Bad) return err(e.message, e.status);
+          throw e;
+        }
       }),
     },
     "/v1/chats/:cid/usage": {

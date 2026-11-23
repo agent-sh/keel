@@ -22,6 +22,7 @@ import { pushData, testMessage } from "./push.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
 import { Gate, type Approval } from "../../safety/gate.ts";
 import { planRoutes, plansWaiting } from "../../server/routes/plan.ts";
+import { Checkpoints } from "../../safety/checkpoints.ts";
 import { toolsFor } from "../../tools/registry.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
@@ -60,7 +61,9 @@ const card = (a: Partial<Approval> & Pick<Approval, "id" | "session_id" | "summa
   store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?)").run(full.id, full.session_id, full.state, JSON.stringify(full), full.created);
   return full;
 };
-const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {} } as any);
+// What each turn changed: a checkpoint store of the test's own, made by the changes tests.
+let ckpts: Checkpoints | undefined;
+const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts } as any);
 afterAll(() => setSystemTime());
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -359,6 +362,55 @@ describe("uploads", () => {
     expect((await upload("c.json", encodeURIComponent("Application/JSON; charset=utf-8"), text("{}"))).mime).toBe("application/json");
     expect((await upload("d.txt", encodeURIComponent("text/plain\r\nx-evil: 1"), text("d"))).mime).toBe("application/octet-stream");
     expect((await upload("e.zip", "application/zip", text("PK"))).mime).toBe("application/octet-stream");
+  });
+});
+
+// A session whose turns write files in a folder of its own, with checkpoints taken as the engine takes them.
+async function changedSession() {
+  ckpts ??= new Checkpoints(store, bus, { capture() {} } as any, join(dir, "checkpoints"));
+  const ws = mkdtempSync(join(dir, "ws-"));
+  writeFileSync(join(ws, "a.txt"), "one\ntwo\n");
+  const s = store.createSession({ model: "fx:saved", workspace: ws, title: "Edits" });
+  const call = { id: "c", tool: { name: "Bash", readOnly: false, kind: "shell" }, input: { command: "x" }, ctx: { cwd: ws } } as any;
+  // A turn of tool calls, each the change it makes; `gap`, a change someone else makes between two of them.
+  const turn = async (prompt: string, ...steps: (() => void)[]) => {
+    store.append(s.id, "user", { text: prompt });
+    store.append(s.id, "turn_start", {});
+    for (const step of steps) {
+      if ((step as any).gap) { step(); continue; }
+      await ckpts!.before(s, call); step(); await ckpts!.after(s, call);
+    }
+    await ckpts!.end(s);
+  };
+  const gap = (f: () => void) => Object.assign(f, { gap: true });
+  await turn("Change a", () => writeFileSync(join(ws, "a.txt"), "one\nTWO\nthree\n"));
+  // The owner's editor saves c.txt between two of the turn's calls: outside the session's work.
+  await turn("Add b", () => writeFileSync(join(ws, "b.txt"), "new file\n"), gap(() => writeFileSync(join(ws, "c.txt"), "the owner's\n")), () => {});
+  return s;
+}
+
+describe("changes", () => {
+  test("a session's changes: each turn's files with their counts, newest first, and one file's diff", async () => {
+    const s = await changedSession();
+    const r = (await call("GET", `/v1/chats/${s.id}/changes`)).body;
+    expect(r.turns.map((t: any) => [t.n, t.prompt, t.files.map((f: any) => [f.path, f.status, f.added, f.removed])])).toEqual([
+      [2, "Add b", [["b.txt", "A", 1, 0], ["c.txt", "A", 1, 0]]],
+      [1, "Change a", [["a.txt", "M", 2, 1]]],
+    ]);
+    expect(r.turns[0].files.map((f: any) => f.outside ?? false)).toEqual([false, true]);
+    expect(r.session.map((f: any) => f.path).sort()).toEqual(["a.txt", "b.txt", "c.txt"]);
+    const one = (await call("GET", `/v1/chats/${s.id}/changes/diff?turn=${r.turns[1].turn}&path=a.txt`)).body;
+    expect([one.path, one.status, one.truncated, one.diff.includes("-two"), one.diff.includes("+TWO"), one.diff.includes("b.txt")]).toEqual(["a.txt", "M", false, true, true, false]);
+    // Since the session's first turn, without a turn.
+    expect((await call("GET", `/v1/chats/${s.id}/changes/diff?path=b.txt`)).body.diff).toContain("+new file");
+    // A path that leaves the folder is refused; a session on another machine says where its files are.
+    expect((await call("GET", `/v1/chats/${s.id}/changes/diff?path=../x`)).status).toBe(400);
+    if (!store.columnExists("sessions", "machine")) store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+    store.db.query("UPDATE sessions SET machine = 'build box' WHERE id = ?").run(s.id);
+    try {
+      const far = (await call("GET", `/v1/chats/${s.id}/changes`)).body;
+      expect([far.turns, far.unavailable]).toEqual([[], "This session's files are on build box: its changes are read on the computer."]);
+    } finally { store.db.query("UPDATE sessions SET machine = NULL WHERE id = ?").run(s.id); }
   });
 });
 
@@ -782,6 +834,7 @@ describe("the wire contract", () => {
     pulse: [["approvals", "card"], ["live_sessions", "pulse_session"]], usage: [["session", "usage_session"]], created: [["chat", "chat"]],
     hello: [["sync", "sync"]], message_frame: [["message", "message"], ["chat", "chat"]], chat_frame: [["chat", "chat"]],
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
+    changes: [["turns", "change_turn"], ["session", "file_change"]], change_turn: [["files", "file_change"]],
   };
   // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
   function broken(shape: string, v: any, seen = new Set<string>(), out: string[] = []) {
@@ -866,6 +919,15 @@ describe("the wire contract", () => {
     take("me", (await call("GET", "/v1/me")).body);
     take("created", (await call("POST", "/v1/chats", {})).body);
     take("error", (await call("POST", `/v1/chats/${s.id}/messages`, { text: "" })).body);
+    // What a session changed, and one file's diff; a session with nothing to show says why.
+    const edits = await changedSession();
+    const changes = (await call("GET", `/v1/chats/${edits.id}/changes`)).body;
+    take("changes", changes);
+    take("file_diff", (await call("GET", `/v1/chats/${edits.id}/changes/diff?turn=${changes.turns[1].turn}&path=a.txt`)).body);
+    if (!store.columnExists("sessions", "machine")) store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
+    const far = session("Far");
+    store.db.query("UPDATE sessions SET machine = 'build box' WHERE id = ?").run(far.id);
+    take("changes", (await call("GET", `/v1/chats/${far.id}/changes`)).body);
     // Push for this app: off while the daemon lacks the app's entry (it says which file), on with it.
     writeFileSync(join(process.env.KEEL_CONFIG_DIR!, "fcm-service-account.json"), "{}");
     take("push_config", (await call("GET", "/v1/push-config?app=dev.avifenesh.keel")).body);
