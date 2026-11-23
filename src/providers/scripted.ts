@@ -36,6 +36,7 @@ import { inflateSync } from "node:zlib";
 import type { Message } from "../core/types.ts";
 import { imageSize } from "../engine/images.ts";
 import { classify, fetchFailure, ProviderError } from "./http.ts";
+import { REWORD_SYSTEM } from "../automation/successor.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
 
 export const SCRIPTED_ENV = "KEEL_SCRIPTED_PROVIDER";
@@ -323,6 +324,8 @@ export class ScriptedProvider implements Provider {
       return reply("Goal: the owner is checking how the harness handles provider failures. State: the scripted scenario ran; next, answer the newest prompt.");
     }
     if (req.model === "stand-in-backup") return reply("The backup model took the request.");
+    // A declined task's brief restated (src/automation/successor.ts): the scripted model gives it back as it was.
+    if (String(req.system ?? "").includes(REWORD_SYSTEM)) return reply(lastText.match(/<brief>\n([\s\S]*)\n<\/brief>/)?.[1] ?? "");
 
     // `script:replies ["...", "..."]`: these texts, one per reply, in order,
     // the last one from then on. Later prompts that name no script get the
@@ -398,6 +401,11 @@ export class ScriptedProvider implements Provider {
           return thought ? { ...said, blocks: [{ type: "thinking", thinking: thought, signature: "scripted" } as any, ...said.blocks] } : said;
         }
         const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
+        // `script:then-refuse` on a later line: once the calls ran, the model declines (a refusal after some work).
+        if (/\nscript:then-refuse\b/.test(owner)) {
+          const r = await reply("I will not go on with this.");
+          return { ...r, stop: "refusal", stop_details: { category: "cyber", explanation: "Scripted refusal for the test." } };
+        }
         // `script:then-find <word> ...` on a later line: an input that comes after the calls (a wait's
         // wake) is answered from its own text, as a model that read it does: for each word, its line
         // there, or "Not in the request." (it makes no call to read anything).

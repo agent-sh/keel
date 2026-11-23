@@ -74,7 +74,9 @@ const engine = {
 const followUps: any[] = [];
 let nextPlan: any;
 const bus = new Bus();
-setDeps({ store, bus, errors: { capture() {} }, engine, providers: { models: async () => [], resolve: async () => ({ info: {} }), current: () => [] } } as any);
+// (The providers whose outage is open: src/providers/outage.ts.)
+const outageOpen = new Set<string>();
+setDeps({ store, bus, errors: { capture() {} }, engine, providers: { models: async () => [], resolve: async () => ({ info: {} }), current: () => [], outages: { active: (id: string) => outageOpen.has(id) } } } as any);
 store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds it in the daemon
 agents.migrate();
 waits.migrate();
@@ -88,6 +90,9 @@ const end = (a: agents.AgentRecord, reason: string, text = "report") => {
   agents.onTurnEnd(a.session_id, reason);
 };
 const settled = () => Bun.sleep(5);
+// Both successors of the agent's task were started already: a lost context ends it as before.
+const spendSuccessors = (a: agents.AgentRecord) =>
+  store.db.query("UPDATE agents SET lost = ? WHERE id = ?").run(JSON.stringify([1, 2].map((n) => ({ kind: "refusal", model: "m:x", family: "other", session: `lost-${n}`, at: n }))), a.id);
 const tool = (name: string) => automationTools.find((t) => t.name === name)!;
 const ctx = { sessionId: parent.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
 
@@ -159,14 +164,80 @@ test("a running agent the owner stops has its own turn say the owner stopped it"
   expect(interrupted.filter((x) => x.id === a.session_id).map((x) => x.by)).toEqual(["owner"]);
 });
 
-test("a turn that declined or ran out of steps is not a completed agent", async () => {
+test("a turn that declined or ran out of steps is not a completed agent, and a declined reply is not its report", async () => {
   const [a, b, c] = [await spawn(), await spawn(), await spawn()];
-  end(a, "refusal", "partial");
+  // Both successors of their tasks were started already (src/automation/successor.ts): they end here.
+  for (const x of [a, b]) spendSuccessors(x);
+  store.append(a.session_id, "assistant", { blocks: [{ type: "text", text: "Looked at the parser." }, { type: "tool_use", id: "t1", name: "Read", input: {} }] });
+  store.append(a.session_id, "assistant", { blocks: [{ type: "text", text: "I will not" }], stop: "refusal" });
+  store.append(a.session_id, "turn_end", { reason: "refusal" });
+  agents.onTurnEnd(a.session_id, "refusal");
   end(b, "max_steps", "Running verification.");
   end(c, "end_turn", "all good");
   await settled();
   expect([a, b, c].map((x) => agents.get(x.id)!.status)).toEqual(["incomplete", "incomplete", "completed"]);
   expect(agents.get(b.id)!.result).toContain("step budget");
+  const declined = agents.get(a.id)!.result!;
+  expect(declined).toContain("the model declined to go on");
+  expect(declined).toContain("Looked at the parser.");
+  expect(declined).not.toContain("I will not");
+  expect(declined).toContain("Keel started no fresh context for it: 2 successors were started");
+});
+
+test("a lost context gets a successor, but not a step budget, an open outage or a wait the provider asked for", async () => {
+  const fail = (a: agents.AgentRecord, data: Record<string, unknown>) => {
+    store.append(a.session_id, "error", { message: "HTTP 500: Internal Server Error", ...data });
+    store.append(a.session_id, "turn_end", { reason: "error" });
+    agents.onTurnEnd(a.session_id, "error");
+  };
+  const [lost, steps, outage, later] = [await spawn(), await spawn(), await spawn(), await spawn()];
+  // A server error past the retries: a fresh context takes the task up (src/automation/successor.ts).
+  fail(lost, {});
+  // A turn's step budget is the owner's or its definition's: a successor would get it whole again.
+  end(steps, "max_steps", "Running verification.");
+  await settled();
+  outageOpen.add("m");
+  try {
+    fail(outage, {});
+    await settled();
+  } finally {
+    outageOpen.delete("m");
+  }
+  // The provider asked to be tried again in an hour, longer than a turn waits.
+  fail(later, { retry_at: Date.now() + 3_600_000 });
+  await settled();
+  const got = (a: agents.AgentRecord) => agents.get(a.id)!;
+  expect(got(lost).lost?.map((l) => l.kind)).toEqual(["provider"]);
+  expect(got(lost).session_id).not.toBe(lost.session_id);
+  expect(got(steps).status).toBe("incomplete");
+  expect(got(steps).result).toContain("step budget");
+  for (const a of [outage, later]) expect([got(a).status, got(a).lost?.length ?? 0, got(a).session_id]).toEqual(["failed", 0, a.session_id]);
+  agents.stop(lost.id);
+});
+
+test("a stop that comes once a successor's session is made finds its task there, and nothing is sent after it", async () => {
+  const a = await spawn();
+  let stoppedAt = -1, next = "";
+  // The moment its new session is announced, a stop is on its way (a request of the parent's, a tick later).
+  const off = bus.on((f: any) => {
+    if (f.t !== "session" || f.session.id === a.session_id || f.session.parent_id !== parent.id || next) return;
+    next = f.session.id;
+    queueMicrotask(() => { stoppedAt = sends.length; agents.stop(a.id); });
+  });
+  try {
+    store.append(a.session_id, "error", { message: "HTTP 500: Internal Server Error" });
+    store.append(a.session_id, "turn_end", { reason: "error" });
+    agents.onTurnEnd(a.session_id, "error");
+    await settled();
+  } finally {
+    off();
+  }
+  expect(next).not.toBe("");
+  expect(stoppedAt).toBeGreaterThanOrEqual(0);
+  // Its task went in before the stop (which then stops that), never into a session it was stopped in.
+  expect(sends.slice(stoppedAt).filter((x) => x.id === next)).toEqual([]);
+  expect(sends.slice(0, stoppedAt).some((x) => x.id === next)).toBe(true);
+  expect(agents.get(a.id)!.status).toBe("stopped");
 });
 
 test("wait_agent returns the first final result at once and names a stop as interrupted", async () => {
@@ -892,6 +963,7 @@ test("a report is said once: an earlier round a later one repeats is left out, a
   end(c, "end_turn", "Second finding: the parser is fine.");
   expect(await result(c)).toBe("Second finding: the parser is fine.\n\nEarlier reports, oldest first:\n\nFirst finding: the lexer drops tabs.");
   const d = await spawn();
+  spendSuccessors(d); // it ends here, not in a fresh context (src/automation/successor.ts)
   store.append(d.session_id, "assistant", { blocks: [{ type: "text", text: thinking }, { type: "tool_use", id: "t", name: "Bash", input: {} }] });
   store.append(d.session_id, "turn_end", { reason: "max_steps" });
   agents.onTurnEnd(d.session_id, "max_steps");

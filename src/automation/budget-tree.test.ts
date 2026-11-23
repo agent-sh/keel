@@ -69,12 +69,32 @@ test("the reads of what a task used plan on the ledger's session index", () => {
   const tx = store.db.transaction(() => { for (let i = 0; i < 5000; i++) store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, cost, outcome, purpose) VALUES (?, ?, 'm', 0.001, 'ok', 'turn')").run(`other-${i % 500}`, Date.now() - 5000 + i); });
   tx();
   store.db.exec("ANALYZE");
-  const plan = (sql: string) => (store.db.query(`EXPLAIN QUERY PLAN ${sql}`).all(root.id, t0) as { detail: string }[]).map((r) => r.detail).join(" | ");
+  const plan = (sql: string) => (store.db.query(`EXPLAIN QUERY PLAN ${sql}`).all(JSON.stringify([root.id, "lost-context"]), t0) as { detail: string }[]).map((r) => r.detail).join(" | ");
   for (const sql of [agents.STEPS_SQL, agents.TREE_SPEND_SQL]) {
     const p = plan(sql);
     expect(p).toContain("telemetry_calls_session");
     expect(p).not.toContain("telemetry_calls_ts");
   }
+});
+
+test("a task's steps and dollars count every context it lost, and the agents those started", () => {
+  // An agent that worked 3 steps, lost its context, and goes on in a successor's session (successor.ts):
+  // the record's session is the new one, the lost one is in its `lost` list.
+  const first = agent(root.id, "Lost once", { steps: 5, usd: 1 });
+  spend(first, 0.01, 3);
+  const helper = agent(first, "Helper of the lost context", null);
+  spend(helper, 0.02);
+  const id = agents.byChild(first)!.id;
+  const next = store.createSession({ model: "m", workspace: dir, title: "Lost once" });
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(root.id, next.id);
+  const lost = [{ kind: "refusal", model: "m", family: "other", session: first, at: Date.now() }];
+  store.db.query("UPDATE agents SET session_id = ?, lost = ? WHERE id = ?").run(next.id, JSON.stringify(lost), id);
+  spend(next.id, 0.01);
+  const used = agents.usedOf(agents.get(id)!);
+  expect([used.steps, +used.usd.toFixed(4)]).toEqual([4, 0.06]);
+  // Its budget is spent by the fifth step, wherever the first four were taken.
+  spend(next.id, 0.01);
+  expect(agents.budgetSpent(next.id)).toContain("Your budget for this task is spent (5 steps; used 5 steps)");
 });
 
 test("a new budget sent to a working agent counts from the message", async () => {

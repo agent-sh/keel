@@ -33,6 +33,7 @@ import { allHooks, hookChanged, type CutState, type CutTurn, type ExternalTurn, 
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
+import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successor.ts";
 import { cleanTitle, firstReply, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
@@ -919,6 +920,35 @@ export class Engine {
       }
     }
     if (last) throw last;
+  }
+
+  // A declined task's brief restated (src/automation/successor.ts): one
+  // request with the task alone, through the owner's small models in order,
+  // the successor's model last. Counted on the session `id`. Undefined when no
+  // model gave a brief that holds (each failure is captured once).
+  async reword(id: string, model: string, task: string, signal: AbortSignal): Promise<{ text: string; model: string } | undefined> {
+    const prompt = rewordPrompt(task);
+    const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(model).then((r) => r.info)]);
+    const out = Math.min(READER_OUTPUT, Math.ceil((task.length * 2) / bytesPerToken(cur.id)) + 256);
+    const choices = readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + out, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels());
+    const s = this.store.session(id);
+    if (!s) return undefined;
+    for (const m of choices) {
+      if (signal.aborted) return undefined;
+      try {
+        const { provider, info } = await this.providers.resolve(m.id);
+        const effort = ["none", "minimal", "low"].find((e) => info.efforts.includes(e));
+        const st: Step = { provider, info: { ...info, output: Math.min(info.output || out, out) }, tools: [], system: REWORD_SYSTEM, systemSplit: 0, effort };
+        const res = await this.call(id, st, [{ role: "user", content: [{ type: "text", text: prompt }] }], signal, new Map(), s, true, "reader");
+        this.store.addUsage(id, res.usage);
+        const text = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+        if (res.stop === "refusal" || res.stop === "max_tokens" || !rewordHolds(task, text)) continue;
+        return { text, model: info.id };
+      } catch (e) {
+        if (!signal.aborted) this.errors.capture("provider", e, { session: id, at: "successor reword", model: m.id });
+      }
+    }
+    return undefined;
   }
 
   // Resolves when the session's running turn (if any) has fully ended.

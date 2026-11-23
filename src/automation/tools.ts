@@ -83,7 +83,7 @@ async function onMachine(input: any, prompt: unknown) {
 
 const Agent: Tool = {
   name: "Agent",
-  urgent: "nested-agents", // an agent may start agents of its own
+  urgent: "lost-agent-successor", // a lost agent is started again by itself (src/automation/successor.ts): the parent must not start it by hand
   resultCap: agents.RESULT_CAP, // a report is cut to this by the agents' own code, never in its middle by the engine's smaller cap
   families: CLAUDE,
   readOnly: true,
@@ -93,7 +93,8 @@ const Agent: Tool = {
     "A fresh agent sees none of this conversation: the prompt must say everything it needs. subagent_type \"fork\" instead starts it with this whole conversation on your model (it reads your prompt cache), so the prompt only names its part. By default the call blocks until the agent reports; with run_in_background the call returns at once and the report arrives later as a message (do not poll it). " +
     "Types: general-purpose (all tools, default), Explore (read-only search); more may be listed in the system prompt. An agent may start agents of its own, three levels below the session at most; the session's agent limit counts every agent of the tree. " +
     "In a git repository an agent that can edit works in its own worktree on its own branch and commits there; its report names the branch to merge. isolation: \"none\" makes it edit your checkout instead. " +
-    "output_schema (a JSON schema) makes its report one JSON value that matches it.",
+    "output_schema (a JSON schema) makes its report one JSON value that matches it." +
+    " An agent whose context is lost (the model declines, its context fills, its provider fails) is started again by itself with a fresh context from a capsule of its work, in the same worktree, at most twice: you get one line, then its report. Do not start it again yourself.",
   input_schema: {
     type: "object",
     properties: {
@@ -216,13 +217,14 @@ export function extendTaskStop() {
 
 const spawn_agent: Tool = {
   name: "spawn_agent",
-  urgent: "nested-agents", // an agent may start agents of its own
+  urgent: "lost-agent-successor", // a lost agent is started again by itself (src/automation/successor.ts): the parent must not start it by hand
   families: OTHERS,
   readOnly: true,
   description:
     "Spawn a sub-agent for a well-scoped task. Returns the spawned agent id. The agent works in the background in its own session; its final answer arrives as a message when it finishes, or call wait_agent when you are blocked on it. " +
     "Spawn several in one round for independent subtasks with disjoint write scopes. Spawned agents use your current model unless model names another. A sub-agent may spawn agents of its own, three levels below the session at most; the session's agent limit counts every agent of the tree. " +
-    "Agent types: default or worker (general-purpose, every tool; the default), explorer (read-only search), and the types listed in the system prompt. In a git repository an agent that can edit gets its own worktree and branch (isolation: \"none\" shares your checkout); its result names the branch to merge. output_schema makes its final answer one JSON value matching that schema.",
+    "Agent types: default or worker (general-purpose, every tool; the default), explorer (read-only search), and the types listed in the system prompt. In a git repository an agent that can edit gets its own worktree and branch (isolation: \"none\" shares your checkout); its result names the branch to merge. output_schema makes its final answer one JSON value matching that schema." +
+    " An agent whose context is lost (the model declines, its context fills, its provider fails) is started again by itself with a fresh context from a capsule of its work, in the same worktree, at most twice: you get one line, then its report. Do not start it again yourself.",
   input_schema: {
     type: "object",
     properties: {

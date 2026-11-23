@@ -155,6 +155,27 @@ under `~/.cache/keel-work/bun/research/`.
   shows (`ui/src/lib/cover.ts`). What the page does on a beat runs on its one
   clock, which stops while the page is hidden (`ui/src/lib/clock.ts`): no
   timer of its own in a module or a component that is always there.
+- An agent whose context is lost (the model declined, its context could not
+  be made to fit, its provider kept failing past the retries) is taken up by a
+  fresh context of itself, with no step of its parent's
+  (`src/automation/successor.ts`): the same id, place and worktree, a new
+  session, a brief the harness writes from its records (its task with every
+  message its parent sent to any of its contexts, a declined one restated by a
+  small model, and the facts of its work: files, head, checks, the last failure
+  as a class). No word of a declined reply is in the brief or in any report: a
+  declined reply is left out of a report as it is out of the history, and after
+  a refusal the head is named by its id alone (its subject is the lost
+  context's words). The restatement is used when `rewordHolds` passes, which
+  checks only its length and that it does not open with an apology or a
+  refusal; otherwise the brief goes as given, and a verbatim brief that is
+  declined again is bounded by the family switch. A second refusal moves the
+  work to a model of another family; after two successors the report says so
+  and the parent decides. The parent hears one line a successor, riding its
+  next input. Not a loss: a turn's step budget (the owner's or the
+  definition's, which a fresh context would get whole again), an unreachable
+  provider, a provider whose outage is open, or a wait the provider asked for
+  past a turn's. What the task used (steps, dollars, the agents under it) is
+  counted over every context it had (`usedOf`).
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

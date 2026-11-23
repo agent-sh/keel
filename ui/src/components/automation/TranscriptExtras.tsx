@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, GitMerge, Mail, Network, Radio, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -368,6 +368,12 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
                 <Sprout className="size-3 shrink-0" />{START_CHIP[agent.start.way]}
               </span>
             )}
+            {/* Contexts its task lost, each taken up by a fresh one (src/automation/successor.ts). */}
+            {!!agent?.lost?.length && (
+              <span className="k-line-chip" data-testid="agent-call-successor" title={agent.lost.map((l, i) => `Context ${i + 1}: ${LOSS_WORDS[l.kind]}${l.category ? ` (${l.category})` : ""}, on ${l.model}`).join("\n")}>
+                <RotateCcw className="size-3 shrink-0" />{agent.lost.length === 1 ? "fresh context" : `${agent.lost.length} fresh contexts`}
+              </span>
+            )}
             <span className="k-line-chip">{type}</span>
             {agent?.branch && <span className="k-line-chip" data-code="" data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
             {(agent?.machine || input.machine) && <span className="k-line-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
@@ -395,9 +401,34 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         <div className="k-label px-3 pt-2.5">Task</div>
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
         <AgentReport agent={agent} out={out} />
+        {!!agent?.lost?.length && <LostContexts agent={agent} />}
         {agent && <FollowUps agent={agent} />}
       </Collapsible.Panel>
     </Collapsible.Root>
+  );
+}
+
+// The contexts the agent's task lost, oldest first: why each ended, on which
+// model, and its session, kept as it was.
+const LOSS_WORDS = {
+  refusal: "the model declined to go on",
+  context: "its context could not be made to fit",
+  provider: "its provider kept failing",
+} as const;
+function LostContexts({ agent }: { agent: AgentRecord }) {
+  return (
+    <div className="px-3 pb-2" data-testid="agent-lost">
+      <div className="k-label pt-1">Earlier contexts</div>
+      <ol className="pt-1 text-ui text-muted">
+        {agent.lost!.map((l, i) => (
+          <li key={l.session} className="flex items-center gap-2" data-testid="agent-lost-row" data-kind={l.kind}>
+            <span className="min-w-0 truncate">{i + 1}. {LOSS_WORDS[l.kind]}{l.category ? ` (${l.category})` : ""}, on {l.model}</span>
+            <IconButton title="Open the session of that context" onClick={() => openSession(l.session)} testid="agent-lost-open"><ExternalLink className="size-3.5" /></IconButton>
+          </li>
+        ))}
+      </ol>
+      <p className="pt-1 text-caption text-faint">Each was taken up by a fresh context from a capsule of its work, in the same worktree.</p>
+    </div>
   );
 }
 

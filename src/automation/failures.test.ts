@@ -319,7 +319,8 @@ test("a prune that fails after the failure is written does not bring the report 
   const query = store.db.query.bind(store.db);
   (store.db as any).query = (sql: string) => { if (sql.startsWith("DELETE FROM session_failures")) throw new Error("the prune failed"); return query(sql); };
   try {
-    fail(a, "HTTP 500: a cause this session has not seen");
+    // (A sign-in failure: a server error is a lost context a successor takes up, src/automation/successor.ts.)
+    fail(a, "HTTP 401: a cause this session has not seen");
     await settled();
   } finally {
     (store.db as any).query = query;
@@ -328,7 +329,7 @@ test("a prune that fails after the failure is written does not bring the report 
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain(`1 agent failed (server error), with no report of its own\n    ${a.id} "Lane": `);
+  expect(got[0]).toContain(`1 agent failed (sign-in), with no report of its own\n    ${a.id} "Lane": `);
   expect(got[0]).not.toContain("<subagent_result");
 });
 

@@ -17,7 +17,7 @@ import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { classOf } from "./failure-groups.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
-import { Worktrees } from "../worktree/manager.ts";
+import { git, Worktrees } from "../worktree/manager.ts";
 import * as leftovers from "./leftovers.ts";
 import { contains } from "../core/paths.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
@@ -29,6 +29,7 @@ import { fillContent } from "../plugins/options.ts";
 import { valuesOf } from "../plugins/settings.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
+import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, otherFamily, parentLine, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 import { agentMemory, memoryOff, SCOPES, type MemoryScope } from "./agent-memory.ts";
@@ -105,6 +106,7 @@ export type AgentRecord = {
   task_at?: number | null; // when its current task began: what its budget counts from
   start?: AgentStart | null; // where its last follow-up started, and why (src/engine/follow-up.ts)
   start_force?: Way | null; // the owner's choice of where its follow-ups start (none: Keel decides)
+  lost?: Lost[]; // the contexts its current task lost, each taken up by a successor (src/automation/successor.ts)
 };
 // Where a follow-up to the finished agent started: in its context, from a
 // summary, or fresh from a capsule of its work; why; and the context its first
@@ -194,9 +196,11 @@ CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);
 CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('running', 'waiting');`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
+  // A budget's read of the tree under a task walks the sessions' parents (TREE_SPEND_SQL).
+  if (store.columnExists("sessions", "parent_id")) store.migrate("CREATE INDEX IF NOT EXISTS sessions_parent ON sessions(parent_id)");
 }
 
 // Work agents' worktrees: the same records the worktree sessions use, so a
@@ -208,15 +212,17 @@ const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir
 // `park_told`: the task (its first_seq) whose park on a command the parent has been woken for.
 // `task`: its first prompt, kept until it is in its session (sendTask).
 // `start_from`: the last follow-up's start, as JSON (AgentStart).
-type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force"> & { budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null };
+type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost"> & { lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, ...rest } = r;
+  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, ...rest } = r;
   void def; void schema_tries; void restarts; void park_told; void task; void parked;
   // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
   const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
   let start: AgentStart | undefined;
   try { start = start_from ? JSON.parse(start_from) : undefined; } catch {}
-  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}) };
+  let lost: Lost[] | undefined;
+  try { lost = lostJson ? JSON.parse(lostJson) : undefined; } catch {}
+  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}) };
 };
 // The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
 const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
@@ -251,6 +257,7 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>, quiet = fal
     if (v === undefined) continue;
     // (A follow-up's start is kept as JSON in a column of its own name.)
     if (k === "start") { sets.push("start_from = ?"); vals.push(v ? JSON.stringify(v) : null); continue; }
+    if (k === "lost") { sets.push("lost = ?"); vals.push(Array.isArray(v) && v.length ? JSON.stringify(v) : null); continue; }
     sets.push(`${k} = ?`);
     vals.push(typeof v === "boolean" ? (v ? 1 : 0) : k === "budget" ? (v ? JSON.stringify(v) : null) : v);
   }
@@ -1052,6 +1059,10 @@ function roundsOf(evs: readonly StoredEvent[]): { rounds: Round[]; failure: stri
     if (e.kind === "assistant") {
       bad = [];
       acted = true;
+      // A declined reply is not the agent's answer, and its words are what the
+      // provider's check flagged: they stay out of the report, as out of the
+      // history (toMessages), so the parent's context does not carry them.
+      if (e.data.stop === "refusal") { carry = ""; continue; }
       const whole = carry + (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n");
       const t = whole.trim();
       const usesTools = (e.data.blocks as any[]).some((b) => b.type === "tool_use");
@@ -1517,18 +1528,24 @@ const hasTelemetry = () => {
 // The reads of what a task used. Both plan on the ledger's session index (telemetry_calls_session,
 // on session_id and ts) and read only the task's own rows: the tree's sessions come first (CROSS
 // JOIN keeps that order), so no read walks the rows of every session since the task began.
+// ?1 is a JSON list of the task's own sessions: its context now and every one it lost (a successor's
+// steps and dollars are the task's, src/automation/successor.ts). The tree below them is read from
+// the sessions' parent: an agent's every context, a lost one too, names the session that started it.
 // `unpriced`: rows of a model with no listed price (a plan, a local model), which add no dollars.
-export const STEPS_SQL = "SELECT COUNT(*) AS n FROM telemetry_calls WHERE session_id = ? AND ts >= ? AND COALESCE(purpose, 'turn') = 'turn' AND outcome = 'ok'";
-export const TREE_SPEND_SQL = "WITH RECURSIVE t(s) AS (SELECT ?1 UNION SELECT g.session_id FROM agents g JOIN t ON g.parent_id = t.s) SELECT COALESCE(SUM(c.cost), 0) AS c, COALESCE(SUM(c.cost IS NULL AND c.outcome = 'ok'), 0) AS unpriced FROM t CROSS JOIN telemetry_calls c ON c.session_id = t.s WHERE c.ts >= ?2";
+export const STEPS_SQL = "SELECT COUNT(*) AS n FROM telemetry_calls WHERE session_id IN (SELECT value FROM json_each(?1)) AND ts >= ?2 AND COALESCE(purpose, 'turn') = 'turn' AND outcome = 'ok'";
+export const TREE_SPEND_SQL = "WITH RECURSIVE t(s) AS (SELECT value FROM json_each(?1) UNION SELECT g.id FROM sessions g JOIN t ON g.parent_id = t.s) SELECT COALESCE(SUM(c.cost), 0) AS c, COALESCE(SUM(c.cost IS NULL AND c.outcome = 'ok'), 0) AS unpriced FROM t CROSS JOIN telemetry_calls c ON c.session_id = t.s WHERE c.ts >= ?2";
+// The sessions of an agent's task: the one it works in and the contexts it lost.
+export const taskSessions = (a: Pick<AgentRecord, "session_id" | "lost">): string[] => [a.session_id, ...(a.lost ?? []).map((l) => l.session)];
 // What the agent's current task used, from the telemetry ledger: the model steps of its own
-// session, and the dollars of its session and every agent below it; and the time since it began.
-export function usedOf(a: Pick<AgentRecord, "session_id" | "created" | "task_at">, now = Date.now()): Used & { unpriced: number } {
+// sessions, and the dollars of those and of every agent below them; and the time since it began.
+export function usedOf(a: Pick<AgentRecord, "session_id" | "created" | "task_at" | "lost">, now = Date.now()): Used & { unpriced: number } {
   const from = a.task_at ?? a.created;
   const ms = Math.max(0, now - from);
   if (!hasTelemetry()) return { steps: 0, ms, usd: 0, unpriced: 0 };
   const db = D().store.db;
-  const steps = db.query<{ n: number }, [string, number]>(STEPS_SQL).get(a.session_id, from)!.n;
-  const spend = db.query<{ c: number; unpriced: number }, [string, number]>(TREE_SPEND_SQL).get(a.session_id, from)!;
+  const own = JSON.stringify(taskSessions(a));
+  const steps = db.query<{ n: number }, [string, number]>(STEPS_SQL).get(own, from)!.n;
+  const spend = db.query<{ c: number; unpriced: number }, [string, number]>(TREE_SPEND_SQL).get(own, from)!;
   return { steps, ms, usd: spend.c, unpriced: spend.unpriced };
 }
 // The limit an ended agent ran out of, in words: its own, or the one of an agent above it.
@@ -1651,6 +1668,17 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // What it failed on, when that is all it has to report (it wrote nothing itself).
   let cause = status === "failed" && !got.own ? got.error || how.note || "" : "";
   let cls = how.end_reason === "restart" ? "restart" : classOf(got.error);
+  // A context lost to a refusal, a window or its provider: a fresh one takes
+  // the task up (src/automation/successor.ts), or the report says why not. Not
+  // while its provider's outage is open, nor when the provider asked for a wait
+  // longer than a turn waits: a successor would fail the same way at once.
+  const loss = a.machine || defOf(a.id)?.silent ? undefined
+    : lossOf({ status, end_reason: how.end_reason, cls, ...(status === "failed" ? await providerState(a.model, got.events) : {}) });
+  if (loss) {
+    const r = await succeed(a, loss, got, cls).catch((e) => { capture(e, { at: "agent successor", agent: a.id }); return undefined; });
+    if (r === "started" || r === "gone") return;
+    if (r) result += `${result ? "\n\n" : ""}${r.note}`;
+  }
   const row = D().store.db.query<{ output_schema: string | null; schema_tries: number }, [string]>("SELECT output_schema, schema_tries FROM agents WHERE id = ?").get(a.id)!;
   if (row.output_schema && status === "completed") {
     const text = lastRound(a);
@@ -1707,6 +1735,121 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);
   if (!blocked) handback(rec, grouped);
+}
+
+// --- a successor for a lost context ------------------------------------------
+
+// What the provider said of itself when the turn failed: whether its outage is
+// open (src/providers/outage.ts), and the time it asked to be tried again at
+// when that is longer than a turn waits (the turn's error event, RetryTooLong).
+async function providerState(model: string, evs: readonly StoredEvent[]): Promise<{ outage: boolean; retryAt?: number }> {
+  const { providers } = D();
+  const id = (await providers.resolve(model).then((r) => r.provider?.id, () => undefined)) ?? model.slice(0, Math.max(0, model.indexOf(":")));
+  const err = evs.findLast((e) => e.kind === "error");
+  const at = Number(err?.data.retry_at);
+  return { outage: !!providers.outages?.active(id), ...(Number.isFinite(at) && at > 0 ? { retryAt: at } : {}) };
+}
+
+// The lost agent's task as its brief gave it: the parent's words of its first
+// task (and the message of a later one), with the messages its parent sent
+// during the task to this context and every earlier one. Never a word of the
+// agent's own. `base` and `steers` are what the next loss keeps (Lost).
+function taskOf(a: AgentRecord, evs: readonly StoredEvent[]): { head: string; task: string; base: string; steers: string[] } {
+  const { store } = D();
+  const first = store.events(a.session_id).find((e) => e.kind === "user" && e.data.kind === "task" && e.data.agent_id === a.id);
+  const text = String(first?.data.text ?? "");
+  const at = Number(first?.data.task_at ?? 0);
+  // What the harness put before the task (the preamble, its definition, skills), less what a successor says itself.
+  const head = text.slice(0, at).replace(/\n*Task:\n$/, "").split("\n\n")
+    .filter((p) => !p.startsWith("The conversation above is your parent's") && !p.startsWith("You work in your own git worktree at")).join("\n\n").trim();
+  // A predecessor's capsule is the harness's: the task is read again from its record (taskText).
+  const base = a.lost?.length ? taskText(a) ?? text.slice(at) : text.slice(at);
+  const sent = evs.filter((e) => e.kind === "user" && e.data.kind === "steer" && !e.data.from_agent).map((e) => String(e.data.text ?? "").replace(/^Message from the session that started you:\n/, ""));
+  const steers = [...(a.lost ?? []).flatMap((l) => l.steers ?? []), ...sent];
+  return { head, task: taskWithSteers(base, steers), base, steers: sent };
+}
+// The task as the first context got it, kept with the record once a successor started (lost[0]).
+const taskText = (a: AgentRecord) => D().store.db.query<{ t: string | null }, [string]>("SELECT json_extract(lost, '$[0].task') AS t FROM agents WHERE id = ?").get(a.id)?.t ?? undefined;
+
+// The facts of the work in its worktree: its head commit and the files that differ from where it started.
+async function worktreeFacts(a: AgentRecord): Promise<{ head?: { id: string; subject: string }; files: string[] }> {
+  const w = a.worktree ? wts().get(a.session_id) : undefined;
+  if (!w || !existsSync(w.path)) return { files: [] };
+  const [head, changed, untracked] = await Promise.all([
+    git(w.path, ["log", "-1", "--format=%h%x00%s"], { ok: true }).catch(() => ""),
+    git(w.path, ["diff", "--name-only", w.base_commit], { ok: true }).catch(() => ""),
+    git(w.path, ["ls-files", "-o", "--exclude-standard"], { ok: true }).catch(() => ""),
+  ]);
+  const files = [...new Set([...changed.split("\n"), ...untracked.split("\n")].map((f) => f.trim()).filter(Boolean))];
+  const [id, subject = ""] = head.trim().split("\0");
+  return { head: id ? { id, subject } : undefined, files };
+}
+
+// The task of an agent whose context was lost is taken up by a fresh one:
+// the same record, place and worktree, a new session on the same model (or one
+// of another family after a second refusal), started from a capsule the
+// harness writes. "started": it runs again; "gone": a stop came first and
+// settles it; a note: no successor starts and the report says why; undefined:
+// the successor could not be made, and the agent ends as it would have.
+async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; events: readonly StoredEvent[] }, cls: string): Promise<"started" | "gone" | { note: string } | undefined> {
+  const { store, engine, providers, bus } = D();
+  const parent = store.session(a.parent_id);
+  const old = store.session(a.session_id);
+  if (!parent || parent.archived || !old || old.archived) return undefined;
+  const lost = a.lost ?? [];
+  const info = (await providers.resolve(a.model)).info;
+  const refusal = loss === "refusal" ? got.events.findLast((e) => e.kind === "assistant" && e.data.stop === "refusal") : undefined;
+  const category = refusal?.data.stop_details?.category ? String(refusal.data.stop_details.category).slice(0, 60) : undefined;
+  const plan = decideSuccessor(loss, lost, info.family);
+  if (!plan.go) return { note: givenUpNote({ why: plan.why, lost }) };
+  let model = a.model;
+  if (plan.switchFamily) {
+    const models = await providers.models();
+    const other = otherFamily(models.map((m) => ({ id: m.id, provider: m.provider, family: m.family, tools: m.tools, release: m.release })), { current: a.model, avoid: plan.avoid, parent: parent.model, preferred: await providers.namedDefault().catch(() => undefined) });
+    if (!other) return { note: givenUpNote({ why: `the model declined it twice, and no listed model of another family than ${plan.avoid.join(" and ")} takes tools`, lost }) };
+    model = other;
+  }
+  const { head, task, base, steers } = taskOf(a, got.events);
+  // A declined brief is restated (what the work builds or checks) by a small model that reads the task alone.
+  const reworded = loss === "refusal" ? await engine.reword(a.session_id, model, task, AbortSignal.timeout(120_000)).catch(() => undefined) : undefined;
+  const folder = a.worktree ?? old.workspace;
+  const [facts, checks] = await Promise.all([worktreeFacts(a), proofFor(a.session_id, folder, got.events).catch(() => "")]);
+  // A failure is said as its class, and a provider's own error words up to a line; a refusal by its category only.
+  const failure = loss === "refusal" ? `the model declined${category ? ` (${category})` : ""}` : `${cls}${got.error ? `: ${got.error.split("\n")[0]!.slice(0, 200)}` : ""}`;
+  const capsule = capsuleBrief({ title: attr(a.title), task: reworded?.text ?? task, reworded: !!reworded, loss, category, did: didLine(got.events), worktree: a.worktree ?? undefined, branch: a.branch ?? undefined, head: facts.head, files: facts.files, checks, failure, lost });
+  const text = [head, capsule].filter(Boolean).join("\n\n");
+  // What its old session left running stops, and its repositories are read again for the new one.
+  await leftovers.settle({ store, isRunning: (sid) => engine.isRunning(sid) }, { ...a, report: reportId(a) }).catch((e) => capture(e, { at: "agent successor leftovers", agent: a.id }));
+  await leftovers.before(store, a.id, [old.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: a.id }));
+  const settings = { ...old.settings };
+  if (model !== a.model && settings.effort && !(await providers.resolve(model)).info.efforts.includes(String(settings.effort))) delete settings.effort;
+  // (The first loss keeps the task as the first context got it; each keeps the messages its context was sent.)
+  const entry: Lost & { task?: string } = { kind: loss, model: a.model, family: info.family, session: a.session_id, ...(category ? { category } : {}), at: Date.now(), ...(steers.length ? { steers } : {}), ...(lost.length ? {} : { task: base }) };
+  // From the check to the task's start nothing waits: a stop lands before the check (and settles the
+  // agent itself, "gone") or after the task is in the new session (and stops that).
+  const child = store.db.transaction(() => {
+    const now = get(a.id);
+    if (!now || stopping.has(a.id) || isEnded(now) || now.session_id !== a.session_id) return undefined;
+    const c = store.createSession({ model, workspace: old.workspace, title: a.title, settings: Object.keys(settings).length ? settings : undefined });
+    store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(a.parent_id, c.id);
+    // The worktree goes with the work: the new session holds it, the old one keeps its history.
+    if (a.worktree) store.db.query("UPDATE worktrees SET session_id = ? WHERE session_id = ?").run(c.id, a.session_id);
+    // (task_at: the capsule is what the page shows as its task.)
+    store.db.query("UPDATE agents SET task = ? WHERE id = ?").run(JSON.stringify(store.redact(c.id, "user", { text, task_at: text.length - capsule.length })), a.id);
+    update(a.id, { session_id: c.id, model, first_seq: 0, tasks: a.tasks + 1, result: null, lost: [...lost, entry], start: null, end_reason: null, stopped_by: null }, true);
+    return c;
+  })();
+  if (!child) return "gone";
+  const g = perm.gate;
+  if (g) g.setPerm(child.id, g.perm(old.id));
+  bus.emit({ t: "session", session: store.session(child.id)! });
+  const line = parentLine({ title: attr(a.title), id: a.id, loss, category, n: plan.n, model, moved: plan.switchFamily });
+  activity.record("agent", "successor", a.parent_id, `Agent "${a.title}" lost its context (${LOSS_WORDS[loss]}); successor ${plan.n} started on ${model}`, { agent_id: a.id, child_session: child.id, lost_session: a.session_id, loss, ...(category ? { category } : {}), model });
+  emit("agent", brief(get(a.id)!));
+  // The parent hears one line, with its next input: nothing for it to act on.
+  deliver(a.parent_id, line, { kind: "harness", agent_id: a.id, successor: plan.n }, { ride: true });
+  sendTask(get(a.id)!);
+  return "started";
 }
 
 // A session someone may still work in: there, not archived, and not an agent that ended.
@@ -1902,7 +2045,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
       const last = store.lastSeq(a!.session_id);
       // (Each task has a report of its own: two started with no event between them do not share its id.)
       // (Its budget counts again from this task, the one the message gives if it gives one.)
-      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), ...(budget ? { budget } : {}), ...(start ? { start: { ...without(start), task: a!.tasks + 1 } } : {}) });
+      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), lost: [], ...(budget ? { budget } : {}), ...(start ? { start: { ...without(start), task: a!.tasks + 1 } } : {}) });
       if (start) activity.record("agent", "follow_up", a!.parent_id, `Agent "${a!.title}" ${WAY_WORDS[start.way]}`, { agent_id: id, child_session: a!.session_id, way: start.way, why: start.why, ...(start.forced ? { forced: true } : {}) });
       release?.(); // the running row now occupies the slot
       // The stop that ended it was the sending side's: its hold goes before anything starts.
