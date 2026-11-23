@@ -30,7 +30,8 @@ const COMMAND_CHARS = 160;
 const KEEP = { files: 120, commands: 40, commits: 30, branches: 20, ids: 250 };
 
 export type TrailFile = { path: string; created?: boolean; edits?: number; writes?: number; reads?: number; deleted?: boolean; moved_to?: string };
-export type TrailCommand = { cmd: string; exit: number | null; runs: number };
+// `stopped`: killed or cut before it ended (a timeout, a stop, a steer): it has no exit code.
+export type TrailCommand = { cmd: string; exit: number | null; runs: number; stopped?: boolean };
 export type Trail = { files: TrailFile[]; commands: TrailCommand[]; commits: { sha: string; branch?: string; subject: string }[]; branches: string[]; ids: string[] };
 export type Probe = {
   files: number; files_summary: number; files_kept: number;
@@ -43,7 +44,9 @@ export type Probe = {
 // hashes, PR and issue numbers, CONSTANT names (Compact-Bench's details, as
 // the research probe on real sessions read them).
 const ANCHOR = /(?:[\w.-]+\/)+[\w.-]+\.\w{1,5}|\b[\w-]+\.(?:ts|tsx|rs|py|go|md|json|sh|css|toml|yaml|yml|tsv)\b|\b[0-9a-f]{8,40}\b|#\d{2,6}\b|\b[A-Z][A-Z0-9_]{5,}\b/g;
-export const anchorsOf = (text: string): Set<string> => new Set(text.match(ANCHOR) ?? []);
+// A secret's placeholder (its hex name is not the work's) and a bare run of
+// digits (a time, a count) are not identifiers.
+export const anchorsOf = (text: string): Set<string> => new Set((text.replace(/\[secret:[0-9a-f]+\]/g, " ").match(ANCHOR) ?? []).filter((a) => !/^\d+$/.test(a)));
 // An anchor recurs when this many messages of the span hold it.
 const RECURS = 3;
 
@@ -144,6 +147,25 @@ export function trailOf(span: readonly StoredEvent[] | Span, prior?: Trail): Tra
   };
 }
 
+// How a shell command ended, from its result: its exit code, null while it
+// runs on, "stopped" when it was killed or cut (a timeout, a stop, a steer),
+// "not run" when it was cut before it ran.
+function endOf(name: string, text: string, isError: boolean): number | null | "stopped" | "not run" {
+  if (/^Interrupted\b[^\n]*before this tool ran/.test(text)) return "not run";
+  if (/^(Interrupted\b|Command was (killed|interrupted|stopped)|Command timed out|Error: Command timed out|Killed by )/.test(text.trimStart())) return "stopped";
+  return exitOf(name, text, isError);
+}
+
+// A command as the trail shows it: its first line, cut at a word's end.
+function commandLine(shell: string): string {
+  const first = shell.trim().split("\n")[0]!.replace(/\s+/g, " ");
+  const more = shell.trim().includes("\n");
+  if (first.length <= COMMAND_CHARS) return first + (more ? " ..." : "");
+  const cut = first.slice(0, COMMAND_CHARS + 1);
+  const end = cut.lastIndexOf(" ");
+  return `${(end > COMMAND_CHARS / 2 ? cut.slice(0, end) : first.slice(0, COMMAND_CHARS)).trimEnd()} ...`;
+}
+
 // The files, commands, commits and branches of a span, oldest first, walked
 // on from `seed` (an earlier trail) when given.
 function walk(span: readonly StoredEvent[], seed?: Omit<Trail, "ids">): Omit<Trail, "ids"> {
@@ -198,11 +220,12 @@ function walk(span: readonly StoredEvent[], seed?: Omit<Trail, "ids">): Omit<Tra
       continue;
     }
     if (!shell) continue;
-    const end = exitOf(name, text, !!r.is_error);
-    const cmd = shell.trim().split("\n")[0]!.replace(/\s+/g, " ").slice(0, COMMAND_CHARS) + (shell.trim().length > COMMAND_CHARS || shell.trim().includes("\n") ? " ..." : "");
+    const end = endOf(name, text, !!r.is_error);
+    if (end === "not run") continue;
+    const cmd = commandLine(shell);
     const c = commands.get(cmd);
     commands.delete(cmd);
-    commands.set(cmd, { cmd, exit: end, runs: (c?.runs ?? 0) + 1 });
+    commands.set(cmd, { cmd, exit: end === "stopped" ? null : end, ...(end === "stopped" ? { stopped: true } : {}), runs: (c?.runs ?? 0) + 1 });
     if (end !== 0 && end !== null) continue;
     const fx = shellEffects(shell);
     for (const p of fx.deleted) {
@@ -266,7 +289,7 @@ export function trailText(t: Trail, named = "", budget = TRAIL_BYTES): string {
     { head: "Files written (newest first):", items: written.slice().reverse().map(fileLine), share: 0.3 },
     { head: "Commits (newest first):", items: t.commits.slice().reverse().map((c) => `${c.sha.slice(0, 12)} ${c.subject}${c.branch ? ` (${c.branch})` : ""}`), share: 0.05 },
     { head: "Branches:", items: t.branches.slice().reverse(), share: 0.02 },
-    { head: "Commands run (newest first, exit code):", items: t.commands.slice().reverse().map((c) => `${c.cmd} -> ${c.exit === null ? "still running when last seen" : c.exit}${c.runs > 1 ? ` (${c.runs} runs)` : ""}`), share: 0.18 },
+    { head: "Commands run (newest first, exit code):", items: t.commands.slice().reverse().map((c) => `${c.cmd} -> ${c.stopped ? "stopped" : c.exit === null ? "still running when last seen" : c.exit}${c.runs > 1 ? ` (${c.runs} runs)` : ""}`), share: 0.18 },
     { head: "Files read (newest first):", items: read.slice().reverse().map((f) => `${f.path}${(f.reads ?? 0) > 1 ? ` (${f.reads} reads)` : ""}`), share: 0.12 },
     { head: "Identifiers that recur in the work and nothing above names:", items: t.ids.filter((a) => !named.includes(a)), share: 0.33, join: ", ", ids: true },
   ].filter((p) => p.items.length);
@@ -307,19 +330,32 @@ export function trailText(t: Trail, named = "", budget = TRAIL_BYTES): string {
 // the messages kept with it; `trail`: the trail's text; `support`: every text
 // the summary could have taken an identifier from (the span, the earlier
 // summary, its trail and kept messages, the fixed context).
-export function probeOf(span: Span, summary: string, kept: string, text: string, support: string): Probe {
-  // The files this span wrote (the trail carries earlier ones too).
-  const written = span.trail.files.filter((f) => f.created || f.edits || f.writes || f.deleted || f.moved_to).map((f) => f.path);
+// What a compaction needs of its span, made where the span's events are
+// read (the read thread reads them for the summary's check, so the loop
+// never walks them): the trail carried on from `prior`, the files the span
+// wrote, its recurring identifiers, and the identifiers of the summary that
+// neither the span nor `support` (what the context held before it) holds.
+export type Work = { trail: Trail; written: string[]; recurring: string[]; ids: number; unsupported: string[] };
+export function workOf(events: readonly StoredEvent[], prior: Trail | undefined, summary: string, support: string): Work {
+  const span = spanOf(events);
+  const ids = [...anchorsOf(summary)];
+  return {
+    trail: trailOf(span, prior),
+    written: span.trail.files.filter((f) => f.created || f.edits || f.writes || f.deleted || f.moved_to).map((f) => f.path),
+    recurring: span.recurring, ids: ids.length,
+    unsupported: ids.filter((a) => !span.text.includes(a) && !support.includes(a)),
+  };
+}
+
+export function probeOf(work: Work, summary: string, kept: string, text: string): Probe {
+  const { written, recurring, unsupported } = work;
   const base = (p: string) => p.split("/").pop() ?? p;
   const names = (p: string, t: string) => t.includes(p) || t.includes(base(p));
   const have = `${summary}\n${kept}`, all = `${have}\n${text}`;
-  const recurring = span.recurring;
-  const ids = [...anchorsOf(summary)];
-  const unsupported = ids.filter((a) => !span.text.includes(a) && !support.includes(a));
   return {
     files: written.length, files_summary: written.filter((p) => names(p, have)).length, files_kept: written.filter((p) => names(p, all)).length,
     anchors: recurring.length, anchors_summary: recurring.filter((a) => have.includes(a)).length, anchors_kept: recurring.filter((a) => all.includes(a)).length,
-    ids: ids.length, unsupported: unsupported.length, ...(unsupported.length ? { unsupported_ids: unsupported.slice(0, 10) } : {}),
+    ids: work.ids, unsupported: unsupported.length, ...(unsupported.length ? { unsupported_ids: unsupported.slice(0, 10) } : {}),
     trail_bytes: utf8(text),
   };
 }

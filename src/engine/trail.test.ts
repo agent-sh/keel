@@ -3,7 +3,7 @@
 // carried through compactions and held to its bound. The probe counts what a
 // compaction kept by rule.
 import { expect, test } from "bun:test";
-import { KEPT_LOW, keptTotals, probeOf, spanOf, TRAIL_BYTES, trailOf, trailText } from "./trail.ts";
+import { anchorsOf, KEPT_LOW, keptTotals, probeOf, TRAIL_BYTES, trailOf, trailText, workOf } from "./trail.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -74,7 +74,7 @@ test("the probe counts the written files and recurring identifiers kept, and ide
   const t = trailOf(span);
   const summary = "Fixed export.ts; MAX_ROWS kept. Next: PR #4512 and deadbeef99.";
   const text = trailText(t, summary);
-  const p = probeOf(spanOf(span), summary, "", text, "");
+  const p = probeOf(workOf(span, undefined, summary, ""), summary, "", text);
   expect(p.files).toBe(5); // new.ts, export.ts, notes.md, old.md, scratch.txt (the failed edit is not one)
   expect(p.files_summary).toBe(1); // export.ts, by its name
   expect(p.files_kept).toBe(5);
@@ -144,4 +144,18 @@ test("the trail follows moves, deleted folders, dropped branches, amends and har
   expect(later.branches).toEqual([]);
   expect(later.files.find((x) => x.path === "/w/b.ts")).toMatchObject({ created: true, deleted: true });
   expect(later.commits.map((c) => c.subject)).toEqual(["One"]);
+});
+
+test("a command killed or cut says it stopped, a long one is cut at a word, and placeholders and bare numbers are no identifiers", () => {
+  const t = trailOf([
+    ...round("Bash", { command: "make serve" }, "Command was killed at its 120s timeout\nlast line", true),
+    ...round("Bash", { command: "bun test slow" }, "Interrupted by the user while this tool ran.", true),
+    ...round("Bash", { command: "bun test never" }, "Interrupted by the user before this tool ran.", true),
+    ...round("Bash", { command: `${"x".repeat(150)} [secret:1a2b3c4d] tail` }, "ok"),
+  ]);
+  expect(t.commands.map((c) => [c.cmd, c.stopped ?? false])).toEqual([
+    ["make serve", true], ["bun test slow", true], [`${"x".repeat(150)} ...`, false],
+  ]);
+  expect(trailText(t)).toContain("- make serve -> stopped");
+  expect([...anchorsOf("token [secret:1a2b3c4d] at 20261123 for deadbeef1 in MAX_ROWS")]).toEqual(["deadbeef1", "MAX_ROWS"]);
 });

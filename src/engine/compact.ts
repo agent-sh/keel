@@ -8,7 +8,7 @@ import type { AssistantBlock, Message, PromptBlock, StoredEvent, Usage } from ".
 import { ownerPrompt } from "../core/owner.ts";
 import { imageTokens } from "./images.ts";
 import { fileTexts, type FileText } from "./work-calls.ts";
-import { probeOf, spanOf, trailOf, trailText } from "./trail.ts";
+import { probeOf, trailText, workOf, type Work } from "./trail.ts";
 
 // Share of the model's window at which a turn compacts before its next call.
 export const COMPACT_SHARE = 0.85;
@@ -172,7 +172,9 @@ export function summaryPrompt(focus?: string): string {
 // `file`: words of a file the work read with a file tool (`path`: the path it read), not the owner's.
 export type Statement = { by: "owner" | "work" | "file"; text: string; kind: "standing" | "request"; path?: string };
 export type StoredStatement = Omit<Statement, "kind"> & { kind?: Statement["kind"] };
-export type Settled = { summary: string; statements?: Statement[]; statements_dropped?: string[]; statements_lifted?: { text: string; by: string }[]; statements_done?: string[]; file_statements_left?: number };
+export type Settled = { summary: string; statements?: Statement[]; statements_dropped?: string[]; statements_lifted?: { text: string; by: string }[]; statements_done?: string[]; file_statements_left?: number;
+  // What the compaction keeps of the work (trail.ts), made with the check off the loop; not stored as it is.
+  work?: Work };
 
 // The most bytes of file statements a summary carries. The rules a session
 // read only in a file and lost at a compaction were at most a few hundred
@@ -569,15 +571,22 @@ export function checkpointData(lineage: readonly StoredEvent[], summary: string,
   const fixed = fixedContext(lineage, prev?.fixed ?? []);
   const said = (settled.statements ?? []).reduce((n, s) => n + utf8Bytes(s.text), 0);
   const kept = keptMessages(lineage, Math.max(0, budget - said));
-  // The span the summary covers: what the context held since the checkpoint before.
-  const span = spanOf(lineage.slice(cp.at >= 0 ? cp.keepFrom : 0).filter((e) => e.kind !== "compaction"));
-  const trail = trailOf(span, prev?.trail);
+  // The work of the span the summary covers (what the context held since the checkpoint before), made here when the check was.
+  const { work: given, ...rest } = settled;
+  const work = given ?? workOf(coveredSpan(lineage), prev?.trail, settled.summary, supportOf(prev));
   const keptText = [...kept.owner_messages, ...(kept.other_messages ?? [])].join("\n");
-  const trail_text = trailText(trail, `${settled.summary}\n${keptText}`);
-  const support = prev ? [prev.summary ?? "", prev.trail_text ?? "", ...(prev.owner_messages ?? []), ...(prev.other_messages ?? []), ...(prev.fixed ?? []).map((f: { text: string }) => f.text)].join("\n") : "";
-  const probe = probeOf(span, settled.summary, keptText, trail_text, support);
-  return { ...settled, ...(fixed.length ? { fixed } : {}), ...kept, trail, ...(trail_text ? { trail_text } : {}), probe };
+  const trail_text = trailText(work.trail, `${settled.summary}\n${keptText}`);
+  const probe = probeOf(work, settled.summary, keptText, trail_text);
+  return { ...rest, ...(fixed.length ? { fixed } : {}), ...kept, trail: work.trail, ...(trail_text ? { trail_text } : {}), probe };
 }
+
+// The events a summary of this branch covers: from where its last checkpoint's context starts.
+export function coveredSpan(lineage: readonly StoredEvent[]): StoredEvent[] {
+  const cp = checkpointAt(lineage);
+  return lineage.slice(cp.at >= 0 ? cp.keepFrom : 0).filter((e) => e.kind !== "compaction");
+}
+// What the context held before the span: an identifier from there is not one the summary made up.
+export const supportOf = (prev: any): string => (prev ? [prev.summary ?? "", prev.trail_text ?? "", ...(prev.owner_messages ?? []), ...(prev.other_messages ?? []), ...(prev.fixed ?? []).map((f: { text: string }) => f.text)].join("\n") : "");
 
 // The statements the branch's last summary stored.
 function earlierStatements(lineage: readonly StoredEvent[]): StoredStatement[] {

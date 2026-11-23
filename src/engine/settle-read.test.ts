@@ -61,8 +61,12 @@ test("a summary settled from the stored events is the one settled from the branc
   store.db.prepare = ((sql: string, ...rest: any[]) => { rows.push(sql); return (prepare as any)(sql, ...rest); }) as any;
   const got = settleStored(store.db, JSON.parse(JSON.stringify(ask)));
   store.db.prepare = prepare as any;
-  expect(got).toEqual(want);
+  // The same check, and the work of the span made beside it.
+  const { work, ...check } = got;
+  expect(check).toEqual(want);
+  expect(work?.recurring).toBeDefined();
   expect(rows.join("\n")).toContain("kind IN ('user', 'assistant', 'tool_result')");
+  // With it given, the trail and the probe are made from what the thread read, as the loop would make them.
   // With it given, the checkpoint's data is the same as with the check made in place.
   expect(checkpointData(line, summary, undefined, got)).toEqual(checkpointData(line, summary));
   // A part of a branch that does not start at its first event is settled in place.
