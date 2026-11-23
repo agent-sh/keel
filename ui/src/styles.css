@@ -586,7 +586,8 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel li > ul, .prose-keel li > ol { margin-top: 0.3em; }
 .prose-keel a { color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 45%, transparent); text-underline-offset: 0.1875rem; }
 .prose-keel a:hover { text-decoration-color: var(--accent); }
-.prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: var(--text-base); background: var(--sunken); border: 1px solid var(--line); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
+/* Code in a sentence is a tint, not a box: a reply that names ten files has no ten outlines. */
+.prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: var(--text-base); background: var(--sunken); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
 /* A quote, or words held inside another (a server's message, an agent's work, a block of calls):
    one rule, one inset, everywhere. A tone colours the rule only. */
 .prose-keel blockquote { border-left: 2px solid var(--line-strong); padding-left: 0.75rem; color: var(--muted); }

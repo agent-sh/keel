@@ -257,6 +257,20 @@ function handMade(list: Src[]): string[] {
   return out;
 }
 
+// The conversation has one strong rule, the rail of work (.k-step): the owner's words are a tint,
+// Keel's own lines a hairline. Code in a sentence is a tint, not a box. What the harness brings in
+// (TranscriptExtras.tsx, Words.tsx) is a line, never a card: no shadow, no dashed box.
+function voices(sheets: Src[], page: Src[]): string[] {
+  const out: string[] = [];
+  for (const s of sheets) for (const r of rules(s.text)) for (const d of r.decls) {
+    const wide = (v: string) => /(^|\s)(0\.[1-9]\d*rem|[2-9]px|[1-9]\d*\.?\d*rem)\b/.test(v);
+    if (s.file === "transcript.css" && /^border-left(-width)?$/.test(d.prop) && wide(d.value) && !/^\.k-step\b/.test(r.selector)) out.push(at(s, d.line, `${r.selector} { ${d.prop}: ${d.value} }`));
+    if (/\.prose-keel :not\(pre\) > code$/.test(r.selector) && /^border(-(top|right|bottom|left))?(-(width|style))?$/.test(d.prop) && !/^(0|none)$/.test(d.value)) out.push(at(s, d.line, `${r.selector} { ${d.prop} }`));
+  }
+  for (const s of page) if (/^components\/(automation\/TranscriptExtras|Words)\.tsx$/.test(s.file)) for (const { c, line } of classes(s.text)) if (/^(shadow-[1-3]|border-dashed)$/.test(c.split(":").at(-1)!)) out.push(at(s, line, c));
+  return out;
+}
+
 // A component takes its text size from the scale: none of Tailwind's own
 // sizes, no arbitrary size by any spelling, no inline size but a token (the
 // text-size setting's samples show each size).
@@ -524,6 +538,7 @@ test("no component writes a text size of its own", () => expect(pageSizes(page))
 test("no stylesheet writes a corner or a motion length of its own", () => expect(sheetCorners(sheets)).toEqual([]));
 test("no component writes a motion length or a backdrop of its own", () => expect(pageMotion(page)).toEqual([]));
 test("a class is drawn by one stylesheet", () => expect(twiceDrawn(sheets)).toEqual([]));
+test("the conversation has one strong rule, and Keel's voice no card", () => expect(voices(sheets, page)).toEqual([]));
 test("a button, a field, a select and a quote are the shared ones", () => expect(handMade(page)).toEqual([]));
 test("no component writes a corner of its own", () => {
   expect(pageCorners(page)).toEqual([]);
@@ -558,6 +573,7 @@ test("each check refuses what it is for", () => {
   expect(handMade(tsx('<button className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover" /><input className="h-8 rounded-md border border-line bg-bg outline-none focus:border-accent" /><button className="k-btn k-btn-lg" /><button className="grid h-8 rounded-full border border-line hover:bg-hover" /><Select value={v} onChange={(e) => set(e.target.value)} className="h-8 w-40 rounded-md border" /><Select value={v} className="w-28" /><div className="border-l-2 border-line pl-3" />'))).toHaveLength(4);
   expect(handMade(tsx('const SEL = "h-8 rounded-md border px-2";\nconst W = "w-40";\nexport const A = () => <><Select value={v} className={cn(SEL, "w-80")} /><Select value={v} className={cn(W, on && "max-w-full")} /></>;'))).toHaveLength(1);
   expect(pageCorners(tsx('<div className="rounded rounded-t-md rounded-3xl md:rounded-[0.4rem] rounded-[var(--radius-xl)]" />'))).toHaveLength(2);
+  expect(voices([...css(".k-owner-words { border-left: 0.1875rem solid var(--fg); }\n.k-step { border-left: 0.1875rem solid red; }\n.k-told-words { border-left: 1px solid var(--line); }", "transcript.css"), ...css(".prose-keel :not(pre) > code { border: 1px solid var(--line); }", "styles.css")], tsx('<div className="rounded-lg border border-line shadow-1" />', "components/automation/TranscriptExtras.tsx"))).toHaveLength(3);
   expect(twiceDrawn([...css(".k-dock { display: none; }"), ...css(".k-dock { display: flex; }\n.k-dock, .k-other { gap: 0; }\n@media (max-width: 767px) { .k-dock { gap: 0; } }", "styles.css")])).toEqual(["styles.css:1: .k-dock (also in bridge.css)"]);
   expect(pageMotion(tsx('<div className="fixed inset-0 bg-black/20 duration-(--dur-move) bg-white" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="[font-size:1.1rem] font-semibold" />'))).toHaveLength(1);
