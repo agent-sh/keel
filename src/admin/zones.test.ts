@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { ProviderError } from "../providers/http.ts";
 import { classOfText, errorClass } from "./classes.ts";
-import { scaleZones, zoneBytes, zoneCache } from "./zones.ts";
+import { join } from "node:path";
+import { messageSizes, scaleZones, zoneBytes, zoneCache } from "./zones.ts";
 
 const msg = (role: "user" | "assistant", text: string) => ({ role, content: [{ type: "text" as const, text }] });
 
@@ -70,4 +71,29 @@ test("failures fall into classes by the driver's kind, the status, then the word
   expect(errorClass(Object.assign(new Error("deadline"), { name: "AbortError", kind: "network" }))).toBe("stream_drop");
   expect(errorClass(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }))).toBe("stream_drop");
   expect(errorClass(Object.assign(new Error("timed out"), { name: "TimeoutError" }))).toBe("stream_drop");
+});
+
+// A Claude request of this build's tools on the Anthropic wire (recorded in
+// test/fixtures/zones/claude-request.json: the eager and deferred built-ins,
+// one deferred MCP tool, and a history where a tool search loaded WebFetch).
+// The tools zone is what the wire puts in the prompt: its tools without
+// defer_loading. The definition the search loaded counts once, with the
+// message that holds the tool_reference.
+test("deferred tools are in no zone until a tool search loads them", async () => {
+  const { anthropicBody } = await import("../providers/wires/anthropic.ts");
+  const req = await Bun.file(join(import.meta.dir, "../../test/fixtures/zones/claude-request.json")).json();
+  const def = (t: any) => ({ name: t.name, description: t.description, input_schema: t.input_schema });
+  const bytes = (v: unknown) => JSON.stringify(v).length;
+  const body = anthropicBody({ ...req, signal: new AbortController().signal }, { origin: "anthropic:claude-model", sessionKey: "k", efforts: [] });
+  const inPrompt = body.tools.filter((t: any) => !t.defer_loading).map(def);
+  expect(inPrompt.length).toBeLessThan(req.tools.length);
+  const z = zoneBytes(req, []);
+  expect(z.bytes.tools).toBe(bytes(inPrompt));
+  // The loaded definition is in the history, with the search's answer, once.
+  const webFetch = req.tools.find((t: any) => t.name === "WebFetch");
+  expect(z.sizes).toEqual(messageSizes(req.messages).map((n, i) => (i === 2 ? n + bytes(def(webFetch)) : n)));
+  // A later request with the same history counts it in the frozen part.
+  const next = zoneBytes({ ...req, messages: [...req.messages, msg("assistant", "Version 2 adds a faster index.")] }, z.marks);
+  expect(next.bytes.history).toBe(z.sizes.reduce((n, x) => n + x, 0));
+  console.log(`tools zone: ${bytes(req.tools.map(def))} bytes counted before, ${z.bytes.tools} after (the request carries ${req.tools.length - inPrompt.length} tools deferred)`);
 });

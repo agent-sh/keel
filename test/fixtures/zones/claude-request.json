@@ -1,0 +1,595 @@
+{
+ "model": "claude-model",
+ "system": "You are a coding agent.",
+ "tools": [
+  {
+   "name": "Bash",
+   "description": "Run a bash command and return its output (stdout and stderr together). The working directory carries over between calls when you cd inside the project; environment variables do not. Default timeout 120000 ms, max 600000; a command still running at its timeout moves to the background instead of being killed. Set run_in_background for servers, watchers and long jobs: you get a task ID and a log file to Read, and a notice when it ends. Stop one with TaskStop. Quote paths with spaces. Prefer the Read, Edit and Write tools for files.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "command": {
+      "type": "string",
+      "description": "The command to execute"
+     },
+     "timeout": {
+      "type": "number",
+      "description": "Optional timeout in milliseconds (max 600000)"
+     },
+     "description": {
+      "type": "string",
+      "description": "What the command does, in 5-10 words"
+     },
+     "run_in_background": {
+      "type": "boolean",
+      "description": "Run in the background; read its output file later"
+     },
+     "dangerouslyDisableSandbox": {
+      "type": "boolean",
+      "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing."
+     }
+    },
+    "required": [
+     "command"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Read",
+   "description": "Read a file by absolute path. Text comes back with line numbers (cat -n style); by default up to 2000 lines from the start, use offset and limit for other parts of long files. Images (PNG, JPEG, GIF, WebP) come back as images. PDFs: short ones whole as text; for longer ones pass pages, e.g. \"1-5\" (max 20), to see them as page images. Jupyter notebooks come back as cells with outputs. Read files, not directories (use ls).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "file_path": {
+      "type": "string",
+      "description": "The absolute path to the file to read"
+     },
+     "offset": {
+      "type": "integer",
+      "description": "The line number to start reading from"
+     },
+     "limit": {
+      "type": "integer",
+      "description": "The number of lines to read"
+     },
+     "pages": {
+      "type": "string",
+      "description": "Page range for PDF files, e.g. \"1-5\""
+     },
+     "allow_large": {
+      "type": "boolean",
+      "description": "Read a text file, or a line range of one, over the usual size limits, up to what still fits in your context. Only when you need all of it."
+     }
+    },
+    "required": [
+     "file_path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Edit",
+   "description": "Replace an exact string in a file. old_string must match the file exactly (whitespace and indentation included) and appear once, unless replace_all is set; add surrounding lines to make it unique. Read the file first and copy the text after the line-number prefix.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "file_path": {
+      "type": "string",
+      "description": "The absolute path to the file to modify"
+     },
+     "old_string": {
+      "type": "string",
+      "description": "The text to replace"
+     },
+     "new_string": {
+      "type": "string",
+      "description": "The text to replace it with (must be different from old_string)"
+     },
+     "replace_all": {
+      "type": "boolean",
+      "description": "Replace all occurrences of old_string (default false)"
+     }
+    },
+    "required": [
+     "file_path",
+     "old_string",
+     "new_string"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Write",
+   "description": "Create a file or overwrite one with the full content given, creating parent directories. Overwriting an existing file needs a Read of it first. For partial changes use Edit.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "file_path": {
+      "type": "string",
+      "description": "The absolute path to the file to write"
+     },
+     "content": {
+      "type": "string",
+      "description": "The content to write to the file"
+     }
+    },
+    "required": [
+     "file_path",
+     "content"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "TodoWrite",
+   "description": "Keep the session's task checklist, shown to the owner. Send the whole list each time. Use it for work of three or more steps; exactly one task in_progress while you work; mark a task completed as soon as it is done.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "todos": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "content": {
+         "type": "string",
+         "minLength": 1
+        },
+        "status": {
+         "type": "string",
+         "enum": [
+          "pending",
+          "in_progress",
+          "completed"
+         ]
+        },
+        "activeForm": {
+         "type": "string",
+         "minLength": 1,
+         "description": "Present-continuous form shown while in progress"
+        }
+       },
+       "required": [
+        "content",
+        "status",
+        "activeForm"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "todos"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "AskUserQuestion",
+   "description": "Ask the owner 1-4 multiple-choice questions when you need a decision or clarification, and wait for the answer. Each question has a short header (max 12 chars) and 2-4 options; the owner can also type their own answer. Put a recommended option first and add \"(Recommended)\" to its label.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "questions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+       "type": "object",
+       "properties": {
+        "question": {
+         "type": "string",
+         "description": "The complete question, ending with a question mark"
+        },
+        "header": {
+         "type": "string",
+         "description": "Very short label (max 12 chars)"
+        },
+        "options": {
+         "type": "array",
+         "minItems": 2,
+         "maxItems": 4,
+         "items": {
+          "type": "object",
+          "properties": {
+           "label": {
+            "type": "string"
+           },
+           "description": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "label",
+           "description"
+          ],
+          "additionalProperties": false
+         }
+        },
+        "multiSelect": {
+         "type": "boolean",
+         "description": "Allow more than one option"
+        }
+       },
+       "required": [
+        "question",
+        "header",
+        "options",
+        "multiSelect"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "questions"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "Skill",
+   "description": "Run a skill listed in the system prompt by name, with optional args. Its instructions come back as the result; follow them.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "skill": {
+      "type": "string",
+      "description": "The skill name"
+     },
+     "args": {
+      "type": "string",
+      "description": "Optional arguments for the skill"
+     }
+    },
+    "required": [
+     "skill"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "AskReaders",
+   "description": "Answer one question about a lot of text through cheaper reader models: they read the files, folders (every file git does not ignore), glob matches or web pages you name in parts side by side and return one compiled answer with exact quotes and path:line references. Reach for it when the material is long (many files, big logs, transcripts, a long saved output, several pages) and the answer depends on what the text says rather than on a word a search finds: which files, people or cases fit a description, what was decided or taken back, a summary across files. A search is still the way to locate a known name or string. Pass the folder or files whole: the readers cost a fraction of your rate and none of the text enters your context. The readers see nothing of this conversation: the question says what counts and what does not. Keel checks every quote against the files and says what was not read, so the answer can be used as it is; Read a cited line when you need its context. Short material comes back whole.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "question": {
+      "type": "string",
+      "description": "What to find or answer in the material. The readers see only this and the material."
+     },
+     "paths": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Files, folders or glob patterns (\"src/**/*.ts\"), relative to the working directory or absolute"
+     },
+     "urls": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "http(s) pages to fetch and read"
+     }
+    },
+    "required": [
+     "question"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ToolSearch",
+   "description": "Fetches full schema definitions for deferred tools so they can be called. Deferred tools are not loaded until searched: every MCP server's tools (named mcp__<server>__<tool>) and these built-ins: NotebookEdit, Glob, Grep, TaskStop, WebFetch, WebSearch. Once loaded, a tool is called directly by its name like any other tool. Query forms: \"select:Read,mcp__github__create_issue\" loads exact names; \"+slack send\" requires \"slack\" in the name and ranks by the rest; other words are matched against names and descriptions. An empty query lists the deferred tools by server.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "select:<names>, or keywords to search for"
+     },
+     "max_results": {
+      "type": "number",
+      "description": "Maximum number of tools to load (default 5)"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "NotebookEdit",
+   "description": "Replace, insert or delete one cell of a Jupyter notebook. cell_id is the id shown by Read. insert adds after cell_id (or at the start without one) and needs cell_type. Replacing a code cell clears its outputs.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "notebook_path": {
+      "type": "string",
+      "description": "The absolute path to the notebook"
+     },
+     "cell_id": {
+      "type": "string",
+      "description": "The ID of the cell to edit"
+     },
+     "new_source": {
+      "type": "string",
+      "description": "The new source for the cell"
+     },
+     "cell_type": {
+      "type": "string",
+      "enum": [
+       "code",
+       "markdown"
+      ]
+     },
+     "edit_mode": {
+      "type": "string",
+      "enum": [
+       "replace",
+       "insert",
+       "delete"
+      ]
+     }
+    },
+    "required": [
+     "notebook_path",
+     "new_source"
+    ],
+    "additionalProperties": false
+   },
+   "defer": true
+  },
+  {
+   "name": "Glob",
+   "description": "Find files by glob pattern (\"**/*.ts\", \"src/**/*.{js,jsx}\"), newest first, at most 100.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "pattern": {
+      "type": "string",
+      "description": "The glob pattern to match files against"
+     },
+     "path": {
+      "type": "string",
+      "description": "The directory to search in (default: the working directory)"
+     }
+    },
+    "required": [
+     "pattern"
+    ],
+    "additionalProperties": false
+   },
+   "defer": true
+  },
+  {
+   "name": "Grep",
+   "description": "Search file contents with ripgrep (regex syntax: escape { } ( ) etc.). output_mode: files_with_matches (default), content (matching lines; -A/-B/-C context, -n line numbers), count. Filter with glob or type (js, py, rust...). multiline lets . and patterns span lines. Respects .gitignore.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "pattern": {
+      "type": "string",
+      "description": "The regular expression pattern to search for"
+     },
+     "path": {
+      "type": "string",
+      "description": "File or directory to search in (default: the working directory)"
+     },
+     "glob": {
+      "type": "string",
+      "description": "Glob to filter files, e.g. \"*.js\" or \"*.{ts,tsx}\""
+     },
+     "output_mode": {
+      "type": "string",
+      "enum": [
+       "content",
+       "files_with_matches",
+       "count"
+      ]
+     },
+     "-B": {
+      "type": "number",
+      "description": "Lines before each match (content mode)"
+     },
+     "-A": {
+      "type": "number",
+      "description": "Lines after each match (content mode)"
+     },
+     "-C": {
+      "type": "number",
+      "description": "Lines before and after each match (content mode)"
+     },
+     "-n": {
+      "type": "boolean",
+      "description": "Show line numbers (content mode, default true)"
+     },
+     "-i": {
+      "type": "boolean",
+      "description": "Case insensitive search"
+     },
+     "type": {
+      "type": "string",
+      "description": "File type to search (rg --type)"
+     },
+     "head_limit": {
+      "type": "number",
+      "description": "Limit output to the first N entries (default 250)"
+     },
+     "offset": {
+      "type": "number",
+      "description": "Skip the first N entries"
+     },
+     "multiline": {
+      "type": "boolean",
+      "description": "Match across lines"
+     }
+    },
+    "required": [
+     "pattern"
+    ],
+    "additionalProperties": false
+   },
+   "defer": true
+  },
+  {
+   "name": "TaskStop",
+   "description": "Stop a running background task by its ID (from Bash run_in_background or a command moved to the background).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "task_id": {
+      "type": "string",
+      "description": "The ID of the background task to stop"
+     },
+     "shell_id": {
+      "type": "string",
+      "description": "Deprecated: use task_id instead"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "defer": true
+  },
+  {
+   "name": "WebFetch",
+   "description": "Fetch a URL (http is upgraded to https) and answer prompt from the page: a long page is read by a smaller, faster model that returns what the prompt asks for, and the whole page is saved to a file you can Read; a short page comes back as markdown (PDFs as text). Write prompt as the question to answer. Local and private addresses are refused: use curl in Bash for those. A redirect to another host is reported, not followed.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "url": {
+      "type": "string",
+      "description": "The URL to fetch content from"
+     },
+     "prompt": {
+      "type": "string",
+      "description": "The prompt to run on the fetched content: what to find or extract"
+     }
+    },
+    "required": [
+     "url",
+     "prompt"
+    ],
+    "additionalProperties": false
+   },
+   "defer": true
+  },
+  {
+   "name": "WebSearch",
+   "description": "Search the web for current information and return result titles, URLs and snippets. Read a result with WebFetch. Scope with allowed_domains or blocked_domains (not both).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "The search query to use"
+     },
+     "allowed_domains": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Only include results from these domains"
+     },
+     "blocked_domains": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Never include results from these domains"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "additionalProperties": false
+   },
+   "defer": true
+  },
+  {
+   "name": "mcp__echo__say",
+   "description": "Say the text back.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "What to say."
+     }
+    },
+    "required": [
+     "text"
+    ]
+   },
+   "defer": true,
+   "namespace": "mcp__echo"
+  }
+ ],
+ "messages": [
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "Fetch the release notes page and sum it up."
+    }
+   ]
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_1",
+     "name": "ToolSearch",
+     "input": {
+      "query": "select:WebFetch"
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "tool_use_id": "toolu_1",
+     "content": [
+      {
+       "type": "tool_reference",
+       "tool_name": "WebFetch"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_2",
+     "name": "WebFetch",
+     "input": {
+      "url": "https://example.com/notes",
+      "prompt": "Sum up the release notes."
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "tool_use_id": "toolu_2",
+     "content": "Version 2 adds a faster index."
+    }
+   ]
+  }
+ ]
+}

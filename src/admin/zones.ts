@@ -18,14 +18,36 @@ const size = (v: unknown) =>
   JSON.stringify(v, (k, x) => (k === "data" && typeof x === "string" && x.length > BLOB_BYTES ? " ".repeat(BLOB_BYTES) : x))?.length ?? 0;
 
 export const messageSizes = (messages: Message[]) => messages.map(size);
+const definition = (t: ProviderRequest["tools"][number]) => ({ name: t.name, description: t.description, input_schema: t.input_schema });
 // What each message holds, as a short fingerprint (never its text): an edit of
 // the same length is a different message.
 const mark = (m: Message) => Bun.hash(JSON.stringify(m)).toString(36);
 
 // `prev`: the marks of the messages the previous turn request carried. The
 // leading messages of this request that match them are frozen history.
+//
+// Only what the prompt holds is counted. A deferred tool (src/tools/defer.ts)
+// goes with defer_loading on the Anthropic wire and is left out on the
+// Responses wire: it is in no zone until a tool search loads it, and then its
+// definition sits where the search's answer does (the provider puts it in
+// place of the tool_reference block, or in the tool_search_output item), so
+// it counts with the message that loaded it, once.
 export function zoneBytes(req: Pick<ProviderRequest, "tools" | "system" | "messages">, prev: string[]): { bytes: Zones; sizes: number[]; marks: string[] } {
   const sizes = messageSizes(req.messages);
+  const deferred = new Map(req.tools.filter((t) => t.defer).map((t) => [t.name, t]));
+  const loaded = new Set<string>();
+  req.messages.forEach((m, i) => {
+    if (m.role !== "user") return;
+    for (const b of m.content) {
+      if (b.type !== "tool_result" || typeof b.content === "string") continue;
+      for (const c of b.content) {
+        const t = c.type === "tool_reference" && !loaded.has(c.tool_name) ? deferred.get(c.tool_name) : undefined;
+        if (!t) continue;
+        loaded.add(t.name);
+        sizes[i]! += size(definition(t));
+      }
+    }
+  });
   const marks = req.messages.map(mark);
   let frozen = 0;
   while (frozen < sizes.length - 1 && frozen < prev.length && marks[frozen] === prev[frozen]) frozen++;
@@ -34,7 +56,7 @@ export function zoneBytes(req: Pick<ProviderRequest, "tools" | "system" | "messa
     sizes,
     marks,
     bytes: {
-      tools: size(req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema }))),
+      tools: size(req.tools.filter((t) => !t.defer).map(definition)),
       system: req.system.length,
       history: sum(sizes.slice(0, frozen)),
       tail: sum(sizes.slice(frozen)),
