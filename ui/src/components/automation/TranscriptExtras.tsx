@@ -143,6 +143,26 @@ function Shell({ icon: Icon, label, sub, children, testid, defaultOpen, tone, ki
   );
 }
 
+// What a report of an agent with a branch of its own leads to: its branch reviewed (the Review
+// panel, findings back to that agent), and its session. The report says where the work is; these
+// are the ways to it from the report itself. (Landing it is the owner's, from there.)
+function ReportActions({ a }: { a?: AgentRecord }) {
+  if (!a?.branch || isLive(a)) return null;
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-2.5 text-caption" data-testid="agent-report-actions">
+      <span className="k-line-chip" data-code="" title={a.worktree ? `Its own worktree: ${a.worktree}` : undefined}><GitBranch className="size-3" />{a.branch}</span>
+      {!a.machine && (
+        <button type="button" className="k-btn" data-testid="agent-report-review" onClick={() => auto.reviewAgent(a).then(() => savePref("panel", "review")).catch(reportError)}>
+          <ScanSearch className="size-3.5" /> Review the branch
+        </button>
+      )}
+      <button type="button" className="k-btn" data-testid="agent-report-open" onClick={() => openSession(a.session_id)}>
+        <ExternalLink className="size-3.5" /> Open its session
+      </button>
+    </div>
+  );
+}
+
 // A message the harness put in the conversation: an agent's report, a wake, a
 // loop run, a task. Shown as what it is, never as the owner's words.
 export function InputNotice({ e }: { e: StoredEvent }) {
@@ -170,7 +190,10 @@ export function InputNotice({ e }: { e: StoredEvent }) {
             <span className="k-report-rest text-faint"><span data-testid="agent-report-status">· reported{r.task ? ` · ${r.task}` : ""}{r.said.why ? ` · ${r.said.why}` : ""}</span></span>
             <ChevronRight className="k-heard-chev group-data-[open]/rep:rotate-90" />
           </Collapsible.Trigger>
-          <Collapsible.Panel className="k-heard-body text-ui text-fg"><Markdown text={r.text} /></Collapsible.Panel>
+          <Collapsible.Panel className="k-heard-body text-ui text-fg">
+            <Markdown text={r.text} />
+            <ReportActions a={agents[r.id]} />
+          </Collapsible.Panel>
         </Collapsible.Root>
       ))}
     </div>
