@@ -15,13 +15,20 @@
   // A page that asks for the desktop's dialog of the app's shortcuts by itself, with no press of
   // the owner's, a moment after every load: the app must not act on it.
   setTimeout(() => { try { if (window.keelShell) { window.keelShell.post({ t: "shortcuts" }); say("ASKED-KEYS"); } } catch (e) {} }, 1500);
+  // The page's Find: which bar is open (a conversation's or the app's page's) and what it counts.
+  const findSaid = () => {
+    const b = document.querySelector("[data-testid=find-bar]");
+    if (!b) return "-";
+    const n = b.querySelector("[data-testid=find-count]");
+    return `${b.dataset.page ? "page" : "conversation"}:${(n ? n.textContent : "").trim().replace(/\s+/g, "_") || "empty"}`;
+  };
   let shown = false;
   let raw = "";
   let went = false;
   let frame = null;
   setInterval(async () => {
     const at = document.activeElement;
-    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")} win=${window.keelShell ? window.keelShell.window : "-"} inbox=${!!document.querySelector("[data-testid=inbox-panel]")} keys=${!!window.keelShell?.can?.shortcuts} gc=${typeof globalThis.gc}`);
+    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")} win=${window.keelShell ? window.keelShell.window : "-"} inbox=${!!document.querySelector("[data-testid=inbox-panel]")} keys=${!!window.keelShell?.can?.shortcuts} gc=${typeof globalThis.gc} find=${findSaid()}`);
     const m = location.pathname.match(/^\/s\/([\w-]+)$/);
     if (!m || shown) return;
     const r = await fetch(`/api/sessions/${m[1]}/artifacts`).then((x) => x.json()).catch(() => null);

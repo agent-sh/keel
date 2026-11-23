@@ -16,7 +16,10 @@ import { admit, initAccess } from "./admission.ts";
 import { agentsUnder, leanSessions } from "./session-list.ts";
 import { Live } from "./live.ts";
 import { readsOf } from "./reads.ts";
+import { fold, searchTerms } from "./search-query.ts";
 import { lastCall } from "./routes/calls-read.ts";
+import type { FindRow } from "./routes/find-read.ts";
+import { FindTurns } from "./routes/find-turns.ts";
 import index from "../../ui/index.html";
 import { ModelLookupError, speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch, resolveSwitchModel } from "./switch.ts";
@@ -30,6 +33,11 @@ import { moduleTook } from "../core/start-trace.ts";
 import { routeTable } from "./stable-api.ts";
 import { onProxyTrouble, ownPort } from "../safety/net-proxy.ts";
 import { onConfigRefused, refusedSentence, sessionFoldersOf, setSessionFolders } from "../core/named-config.ts";
+
+// The rows of the index one Find reads at most (a word in every reply of a long history).
+const FIND_ROWS = 5000;
+// One Find a session at a time on the read thread (routes/find-turns.ts).
+const findTurns = new FindTurns();
 
 // The seqs of the prompts of a branch, kept while the branch is the same array
 // (the store gives a new one when the branch grows or the head moves).
@@ -471,6 +479,50 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (!seqs) promptSeqs.set(line, (seqs = line.filter(shownAsPrompt).map((e) => e.seq)));
           const below = (seq: number) => { let lo = 0, hi = seqs.length; while (lo < hi) { const mid = (lo + hi) >>> 1; if (seqs[mid]! >= seq) hi = mid; else lo = mid + 1; } return lo; };
           return json({ before: q.has("before") ? below(Number(q.get("before"))) : 0, after: q.has("after") ? seqs.length - below(Number(q.get("after")) + 1) : 0, total: seqs.length });
+        }),
+      },
+
+      // The page's Find, for the part of a branch the page does not hold: where
+      // the text `q` stands outside the events from `before` to `after` (seqs;
+      // no `after`: the part reaches the branch's end) on the branch `head`
+      // ends (default: the session's), and how many times, from the search
+      // index (routes/find-read.ts). Each place is an event, and for a call or
+      // its result the call (`call`), in the branch's order.
+      "/api/sessions/:id/find": {
+        GET: wrap(async (req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          const q = new URL(req.url).searchParams;
+          const text = (q.get("q") ?? "").trim();
+          if (text.length > 500) return bad("query over 500 bytes");
+          const needle = fold(text), match = searchTerms(text).join(" ");
+          if (!needle || !match) return json({ places: [], more: false });
+          const head = q.get("head") || s.head;
+          const before = q.has("before") ? Number(q.get("before")) : -Infinity;
+          const after = q.has("after") ? Number(q.get("after")) : Infinity;
+          if (Number.isNaN(before) || Number.isNaN(after)) return bad("before and after are seqs");
+          // A newer Find of the session takes the place of one still waiting, and
+          // one the page gave up is not run: the page has asked again by then.
+          if (!(await findTurns.turn(s.id, req.signal))) return bad("replaced by a newer find", 409);
+          let found: { rows: FindRow[]; more: boolean };
+          try {
+            found = await readsOf(store).run("find.session", { session: s.id, match, needle, limit: FIND_ROWS, held: { from: before, to: after } });
+          } finally {
+            findTurns.done(s.id);
+          }
+          const { rows, more } = found;
+          const line = head === s.head ? store.lineage(s.id) : keptLine(s, head) ?? lineage(store.events(s.id), head);
+          const on = new Map(line.map((e) => [e.id, e]));
+          // A result is found where its call is: the reply that holds the call (the one it answers).
+          const callAt = new Map<string, string>();
+          const places: { event: string; seq: number; call?: string; count: number }[] = [];
+          for (const r of rows) {
+            if (!on.has(r.event_id)) continue;
+            if (r.kind === "tool_use" && r.ref) callAt.set(r.ref, r.event_id);
+            const event = r.kind === "tool_result" && r.ref ? callAt.get(r.ref) ?? on.get(r.event_id)!.parent ?? r.event_id : r.event_id;
+            places.push({ event, seq: r.seq, ...(r.ref ? { call: r.ref } : {}), count: r.count });
+          }
+          return json({ places, more });
         }),
       },
 

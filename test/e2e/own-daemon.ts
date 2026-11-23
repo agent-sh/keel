@@ -105,9 +105,12 @@ export function listening(proc: ChildProcess, ms = 60_000): Promise<{ proc: Chil
 export const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
 
 // A state folder with sessions that already hold a long transcript (fixtures/long-transcript.ts).
-export function seeded(name: string, events: number, shape: "notes" | "turns" | "run", ...titles: string[]) {
+// `shape` may carry more of the fixture's settings (fixtures/long-transcript.ts: KEEL_FIXTURE_FIND).
+type Shape = "notes" | "turns" | "run";
+export function seeded(name: string, events: number, shape: Shape | { shape: Shape; env: Record<string, string> }, ...titles: string[]) {
   const state = join(ROOT, `${name}-${Date.now()}`);
   mkdirSync(state, { recursive: true });
-  const ids = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-transcript.ts"), state, state, String(events), ...titles], { encoding: "utf8", env: { ...specEnv(state), KEEL_FIXTURE_SHAPE: shape } })) as string[];
+  const { shape: kind, env } = typeof shape === "string" ? { shape, env: {} } : shape;
+  const ids = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-transcript.ts"), state, state, String(events), ...titles], { encoding: "utf8", env: { ...specEnv(state), ...env, KEEL_FIXTURE_SHAPE: kind } })) as string[];
   return { state, ids };
 }

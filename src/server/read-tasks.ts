@@ -7,6 +7,7 @@ import { reportOf, sideOf, tokensOf, type Limits } from "../admin/telemetry-repo
 import type { Filter } from "../admin/telemetry.ts";
 import { marksOf, type MarkArgs } from "../safety/marks.ts";
 import { searchContent, type ContentQuery } from "./routes/search-content.ts";
+import { findInSession, type FindAsk } from "./routes/find-read.ts";
 import { callAnswered, callsNamed, type AnsweredAsk, type NamedAsk } from "./routes/calls-read.ts";
 import { sessionWhole, type WholeAsk } from "./routes/session-read.ts";
 import { settleStored } from "../engine/settle-read.ts";
@@ -27,6 +28,8 @@ export const tasks = {
   "telemetry.tokens": (db: Database, a: { q: Filter }) => tokensOf(db, a.q),
   "telemetry.side": (db: Database, a: { q: Filter }) => sideOf(db, a.q),
   "search.content": (db: Database, a: ContentQuery) => searchContent(db, a),
+  // The page's Find in one conversation: what the part it does not hold has of the text (routes/find-read.ts).
+  "find.session": (db: Database, a: FindAsk) => findInSession(db, a),
   // What the transcript marks on the calls of a page's events: every command of them is parsed here.
   "calls.marks": (db: Database, a: MarkArgs) => marksOf(db, a),
   // The replies of a session that hold a call by one of some names, and whether a call was answered (the last-call route).

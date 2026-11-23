@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { ContextMenuHost } from "./components/ContextMenu.tsx";
+import { PageFind } from "./components/FindBar.tsx";
+import { inShell } from "./lib/shell.ts";
 import { Attention, setBaseTitle } from "./components/Attention.tsx";
 import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -179,6 +181,7 @@ export function App() {
       <Overlays />
       <ConfirmHost />
       <ContextMenuHost />
+      {inShell && <PageFind at={route.name === "session" ? `s ${route.id}` : route.name} />}
     </Boundary>
   );
 }

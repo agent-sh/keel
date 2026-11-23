@@ -41,6 +41,10 @@
   --accent-ink: oklch(0.34 0.08 290);
   --brass: oklch(0.64 0.15 62);
   --brass-soft: oklch(0.93 0.05 75);
+  /* Find in a conversation: every match a soft amber under the words, the current one the full amber, its words in ink. */
+  --find-hit: oklch(0.89 0.09 85);
+  --find-now: oklch(0.76 0.15 68);
+  --find-now-fg: oklch(0.2 0.02 260);
   --danger: oklch(0.55 0.2 27);
   --danger-soft: oklch(0.95 0.025 25);
   --ok: oklch(0.52 0.09 168);
@@ -142,6 +146,9 @@
   --accent-ink: oklch(0.82 0.1 295);
   --brass: oklch(0.8 0.15 72);
   --brass-soft: oklch(0.32 0.05 70);
+  --find-hit: oklch(0.4 0.08 72);
+  --find-now: oklch(0.8 0.15 72);
+  --find-now-fg: oklch(0.2 0.016 255);
   --danger: oklch(0.7 0.18 27);
   --danger-soft: oklch(0.29 0.055 25);
   --ok: oklch(0.74 0.09 168);

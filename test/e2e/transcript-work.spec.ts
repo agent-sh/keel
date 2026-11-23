@@ -109,17 +109,13 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
     await page.keyboard.press("Shift+Enter");
     await expect(line).toHaveAttribute("aria-expanded", "false");
 
-    // The browser's Find does not reach inside a folded step: on its key the page says how many calls of how
-    // many steps it will not look in, each time, and offers its own search.
-    const hidden = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="work-step"]')].map((st) => Number(st.dataset.calls) - st.querySelectorAll('[data-testid="step-peek"] [data-testid="tool-call"]').length).filter((n) => n > 0));
-    const findNote = `Find in page does not reach ${hidden.reduce((a, b) => a + b, 0)} calls in ${hidden.length} folded steps.`;
+    // The find key opens the page's own Find, which reaches inside a folded step (find.spec.ts), and
+    // Escape gives the keyboard back to the step's line.
     await page.keyboard.press("Control+f");
-    await expect(page.getByTestId("find-note")).toContainText(findNote);
+    await expect(page.getByTestId("find-input")).toBeFocused();
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("find-note")).toHaveCount(0);
-    await page.keyboard.press("Control+f");
-    await expect(page.getByTestId("find-note")).toContainText(findNote);
-    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("find-bar")).toHaveCount(0);
+    await expect(line).toBeFocused();
     // A line's words are selected and copied as one line, not a part a row.
     const copied = await line.locator(".k-line-text").evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection()!; s.removeAllRanges(); s.addRange(r); const t = s.toString(); s.removeAllRanges(); return t; });
     expect(copied.replace(/\s+/g, " ").trim()).toMatch(/^Explored 7 files, 5 searches exporter\.ts, rows\.ts, encode\.ts, cli\.ts \+\d+ more$/);

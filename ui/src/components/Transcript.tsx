@@ -15,7 +15,9 @@ import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
 import { useAgentCount, useToldState } from "../lib/watch.ts";
-import { composing } from "../lib/keys.ts";
+import { composing, isMac } from "../lib/keys.ts";
+import { findKey } from "../lib/find.ts";
+import { FindBar } from "./FindBar.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtSize, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { every } from "../lib/clock.ts";
@@ -1512,42 +1514,50 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => removeEventListener("keel:sent", onSent);
   }, [earlier, sessionId]);
 
-  // The browser's own Find reaches what is in the page, and the page holds a
-  // part of a long session: on its key, a note says so and offers the search
-  // that reads the whole conversation.
-  // It reaches what is in the page too, and folded work is not: a step's calls
-  // and their output are there once it is opened. The app's search reads them.
-  const partial = more || !!reading?.end;
-  // (Said each time, with how much is folded: how many calls of how many steps Find will not look in.)
-  const folded = !!events?.some((e) => e.kind === "tool_result");
-  const [findNote, setFindNote] = useState<false | "part" | { calls: number; steps: number }>(false);
+  // The page's own Find (FindBar.tsx) on the find key: the browser's reaches only what is drawn,
+  // and this one every place of the branch shown, folded, not drawn or not read yet. The key is the
+  // conversation's in its pane (the pane with the keys; with the keys in no pane, the one at the
+  // helm or the only one) from anywhere but a text field: in the message box it is the
+  // conversation's too, and any other field (a terminal's, a panel's, a menu's) keeps its own.
+  const [findAsk, setFindAsk] = useState(0);
+  const findFrom = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    if (!partial && !folded) return setFindNote(false);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") return setFindNote(false);
-      if (e.key.toLowerCase() !== "f" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-      // In the pane with the keys; with the keys in no pane, the one at the helm (or the only one).
+      if (e.defaultPrevented || !findKey(e, isMac)) return;
       const mine = scroller.current?.closest("[data-station]");
-      const at = document.activeElement?.closest("[data-station]");
+      const t = document.activeElement as HTMLElement | null;
+      const at = t?.closest("[data-station]");
       if (at ? at !== mine : !!mine && !mine.hasAttribute("data-helm")) return;
-      if (partial) return setFindNote("part");
-      // The calls of the closed steps that have no line of their own under them.
-      let calls = 0, steps = 0;
-      for (const st of content.current?.querySelectorAll<HTMLElement>('[data-testid="work-step"]') ?? []) {
-        if (st.querySelector(':scope > .k-line[aria-expanded="true"]')) continue;
-        const hidden = Number(st.dataset.calls ?? 0) - st.querySelectorAll('[data-testid="step-peek"] [data-testid="tool-call"]').length;
-        if (hidden > 0) { calls += hidden; steps++; }
-      }
-      if (calls) setFindNote({ calls, steps });
+      const field = !!t && (t.matches("input, textarea, select") || t.isContentEditable);
+      if (field && !t.matches('[data-testid="composer"], [data-testid="find-input"]')) return;
+      if (!scroller.current?.offsetParent) return; // not shown (a view under another)
+      e.preventDefault();
+      if (!t?.closest('[data-testid="find-bar"]')) findFrom.current = t;
+      setFindAsk((n) => n + 1);
     };
-    addEventListener("keydown", onKey);
-    return () => removeEventListener("keydown", onKey);
-  }, [partial, folded]);
-  useEffect(() => {
-    if (!findNote) return;
-    const t = setTimeout(() => setFindNote(false), findNote === "part" ? 12_000 : 7_000);
-    return () => clearTimeout(t);
-  }, [findNote]);
+    // (On the document: it is asked before the page's Find of the desktop app, on the window, at any order of mounting.)
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => setFindAsk(0), [sessionId]);
+  const closeFind = () => {
+    setFindAsk(0);
+    const back = findFrom.current;
+    findFrom.current = null;
+    if (back?.isConnected && back !== document.body) back.focus({ preventScroll: true });
+    else focusBox(sessionId);
+  };
+  // A match brought into the view as the reader's own move (the view stops following the end);
+  // one in view already moves nothing.
+  const bringFound = (r: DOMRect) => {
+    const sc = scroller.current;
+    if (!sc) return;
+    const box = sc.getBoundingClientRect();
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    if (r.top >= box.top + 4 * rem && r.bottom <= box.bottom - 3 * rem) return;
+    stick.current = false;
+    sc.scrollTop += r.top - box.top - Math.max(0, (box.height - r.height) / 2);
+  };
 
   // A search hit opens the session at its message.
   // The request is checked when the frame runs, before anything moves: one
@@ -1961,11 +1971,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         </div>
       )}
       {finding && <p role="status" data-testid="finding-place" className="k-place-wait">Finding your place</p>}
-      {findNote && (
-        <div role="status" data-testid="find-note" className="absolute left-1/2 top-3 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-raised px-3 py-1.5 text-caption text-muted shadow-2 animate-pop">
-          <span>{findNote === "part" ? "Find in page reaches only the messages loaded here." : `Find in page does not reach ${findNote.calls === 1 ? "1 call" : `${findNote.calls} calls`} in ${findNote.steps === 1 ? "1 folded step" : `${findNote.steps} folded steps`}.`}</span>
-          <button type="button" data-testid="find-note-search" onClick={() => { setFindNote(false); setUI({ palette: true }); }} className="h-7 shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">{findNote === "part" ? "Search the whole conversation" : "Search the conversation"}</button>
-        </div>
+      {findAsk > 0 && events.length > 0 && (
+        <FindBar sessionId={sessionId} events={events} head={reading?.other ? reading.head ?? undefined : undefined} before={events[0]!.seq} after={reading?.end ? events.at(-1)!.seq : undefined}
+          whole={!more} content={content} bring={bringFound} ask={findAsk} onClose={closeFind} />
       )}
       {/* The way to where what is new starts, while that line is not in view, stands at the conversation's
           foot: with the way to the end when the reader is away from it; when they follow the end, over the

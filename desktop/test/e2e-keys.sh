@@ -57,6 +57,23 @@ $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&
 $A key --id "$WS" ctrl+n > /dev/null 2>&1
 check "Ctrl+N in the window starts a session, from the message box too" "wait_for 10 \"since $mark | grep -aq '^PROBE AT $URL/ '\""
 
+# --- f2. Find: the find key opens the page's own bar over a conversation (the web view has no Find
+# of its own), from the message box too; and the app's Find of the page on its other pages.
+on_session; mark=$(lines)
+read -r X Y W H _ <<< "$(geometry)"
+$A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 0.5
+$A key --id "$WS" ctrl+f > /dev/null 2>&1; sleep 0.5
+$A type --id "$WS" "one line" > /dev/null 2>&1
+check "Ctrl+F over a conversation opens its own Find, which counts what the conversation holds" "wait_for 10 \"since $mark | grep -aq '^PROBE AT $URL/s/$other .* find=conversation:[0-9]*_of_[0-9]'\""
+$A key --id "$WS" Escape > /dev/null 2>&1
+check "Escape closes it and gives the keyboard back to the message box" "wait_for 10 \"said 'AT ' | grep -q ' active=composer .* find=-'\""
+"$SHELL_BIN" "keel://settings/general" 2> /dev/null; wait_for 15 "said 'AT ' | grep -q \"AT $URL/settings\""; mark=$(lines)
+$A key --id "$WS" ctrl+f > /dev/null 2>&1; sleep 0.5
+$A type --id "$WS" "general" > /dev/null 2>&1
+check "on a page that is no conversation the app's Find of the page opens and counts its words" "wait_for 10 \"since $mark | grep -aq '^PROBE AT .* find=page:[0-9]*_of_[0-9]'\""
+$A key --id "$WS" Escape > /dev/null 2>&1
+check "and closes on Escape" "wait_for 10 \"said 'AT ' | grep -q ' find=-'\""
+
 # --- g. the next start asks again by itself, and the desktop answers with no dialog
 binds=$(portal 'BIND silent')
 relaunch

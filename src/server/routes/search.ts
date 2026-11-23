@@ -5,7 +5,7 @@
 // (search-fill.ts).
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
-import { holdsWord, searchLimits, searchTerms } from "../search-query.ts";
+import { fold, holdsWord, searchLimits, searchTerms } from "../search-query.ts";
 import { board } from "./state.ts";
 import { initSearchIndex, keepIndexed } from "./search-index.ts";
 import { startFill } from "./search-fill.ts";
@@ -19,9 +19,7 @@ type Hit = {
   missing?: string[]; // the words of the query this hit does not hold (it holds the others)
 };
 
-// Case and accents fold the way the transcript index folds them (é = e = É),
-// and the canonically equal spellings (a composed é and e + combining accent) are one.
-export const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
+export { fold } from "../search-query.ts";
 
 // How well a title holds the words asked for, the lower the better: 0, the words as typed, as whole
 // words ("agent 17" in "Agent 17: check the parser", not in "Agent 170"); 1, as typed; 2, each

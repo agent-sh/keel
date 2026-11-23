@@ -211,6 +211,10 @@ export function stem(word: string): string {
 
 // The query's words as FTS5 terms: an English word of four letters or more as its stem's prefix,
 // any other word as typed (the last one as a prefix: "deb func" finds "debounce function").
+// Case and accents fold the way the transcript index folds them (é = e = É),
+// and the canonically equal spellings (a composed é and e + combining accent) are one.
+export const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
+
 export function searchTerms(q: string): string[] {
   const words = q.normalize("NFKC").split(/\s+/).map((w) => w.replace(/"/g, "")).filter(Boolean);
   return words.map((w, i) => (/^[a-z]{4,}$/i.test(w) ? `"${stem(w)}"*` : `"${w}"${i === words.length - 1 ? "*" : ""}`));

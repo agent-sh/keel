@@ -9,6 +9,10 @@
 //     fits the window;
 //   run (KEEL_FIXTURE_SHAPE=run): one turn of <events> tool calls with a short
 //     line before each: a run of calls longer than the part a page holds.
+// KEEL_FIXTURE_FIND=word (turns): the word in the second turn's prompt (older
+// than the part a page opens with), in the prompt of a turn half way down that
+// part (far from the end the page opens at), and in the output of a call near
+// the end (folded in its closed card), and nowhere else.
 // Usage: bun long-transcript.ts <state-dir> <workspace> <events> <title>...
 // Prints the session ids as a JSON list, in the order of the titles.
 import { Store } from "../../../src/core/store.ts";
@@ -20,18 +24,23 @@ const usage = { input: 1200, output: 300, cache_read: 40_000, cache_write: 900, 
 const words = "the parser reads each line and keeps the offsets so a later pass can report where a token began without reading the file again".split(" ");
 const say = (k: number, n: number) => Array.from({ length: n }, (_, i) => words[(k * 7 + i * 3) % words.length]).join(" ");
 
+const FIND = process.env.KEEL_FIXTURE_FIND;
 function turns(id: string, model: string) {
-  let n = 0, t = 0;
+  let n = 0, t = 0, found = false, middle = false;
   const add = (kind: Parameters<Store["append"]>[1], data: unknown, parent?: string | null) => { n++; return store.append(id, kind, data, parent); };
   const turn = (parent?: string | null, tag = "") => {
     t++;
-    add("user", { text: `Prompt ${t}${tag}: ${say(t, 14)}?` }, parent);
+    const late = !!FIND && !found && n >= N - 30;
+    if (late) found = true;
+    const mid = !!FIND && !middle && n >= N - 130;
+    if (mid) middle = true;
+    add("user", { text: `Prompt ${t}${tag}: ${say(t, 14)}${FIND && (t === 2 || mid) ? ` ${FIND}` : ""}?` }, parent);
     add("turn_start", { model });
     add("assistant", { model, usage, stop: "tool_use", blocks: [
       { type: "text", text: `Looking at **step ${t}**. ${say(t + 1, 22)}.` },
       { type: "tool_use", id: `call-${t}`, name: "Bash", input: { command: `rg -n "token ${t}" src | head -20`, description: `Search for token ${t}` } },
     ] });
-    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${t}`, content: Array.from({ length: 12 }, (_, i) => `src/parse/file${i}.ts:${t + i}: ${say(t + i, 9)}`).join("\n") }] });
+    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${t}`, content: Array.from({ length: 12 }, (_, i) => `src/parse/file${i}.ts:${t + i}: ${say(t + i, 9)}${late && i === 7 ? ` ${FIND}` : ""}`).join("\n") }] });
     add("assistant", { model, usage, stop: "end_turn", blocks: [{ type: "text", text: `## Result ${t}\n\n${say(t + 2, 40)}.\n\n- First: \`src/parse/file1.ts:${t}\` ${say(t + 3, 8)}\n- Second: ${say(t + 4, 10)}\n\n\`\`\`ts\nexport function step${t}(input: string): string[] {\n  return input.split("\\n").filter(Boolean);\n}\n\`\`\`\n\nReply ${t} ends here.` }] });
     add("turn_end", { reason: "end_turn", usage, ms: 4200 + (t % 7) * 310, steps: 2, tools: 1 });
   };

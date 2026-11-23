@@ -194,13 +194,11 @@ test("a long session opens with its newest part and reads the rest as asked", as
     // and what acts on the session where it stands is not offered on it.
     await expect(page.getByTestId("turn-end").first()).toBeVisible();
     await expect(page.getByTestId("retry")).toHaveCount(0);
-    // The browser's own Find reaches only what is loaded: its key says so and offers the search of the whole conversation.
+    // The find key opens the page's own Find, which reaches the messages not loaded too (find.spec.ts).
     await page.keyboard.press("Control+f");
-    await expect(page.getByTestId("find-note")).toContainText("reaches only the messages loaded here");
-    await page.getByTestId("find-note-search").click();
-    await expect(page.getByTestId("palette-input")).toBeVisible();
+    await expect(page.getByTestId("find-input")).toBeFocused();
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("find-note")).toHaveCount(0);
+    await expect(page.getByTestId("find-bar")).toHaveCount(0);
     // A turn that somebody else starts (another tab, the command line, an
     // agent's report) leaves the reader in the part: only this page's own send moves them.
     const idle = () => expect.poll(async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).running, { timeout: 30_000 }).toBe(false);
