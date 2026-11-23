@@ -108,3 +108,40 @@ test("a batch's results are read in the order its calls were made, not the order
   const c = trailOf([ev("assistant", { blocks: calls, stop: "tool_use" }), ev("tool_result", { results: [res("b2")] }), ev("tool_result", { results: [res("b1")] })]);
   expect(trailText(c)).toBe(trailText(b));
 });
+
+test("the trail follows moves, deleted folders, dropped branches, amends and hard resets", () => {
+  const span = [
+    ...round("Write", { file_path: "/w/a.ts" }, "File created successfully at: /w/a.ts"),
+    ...round("Bash", { command: "mv /w/a.ts /w/b.ts" }, ""),
+    ...round("Bash", { command: "git mv src/c.ts src/d.ts" }, ""),
+    ...round("Bash", { command: "mv x.ts y.ts lib/" }, ""),
+    ...round("Write", { file_path: "/w/build/out.js" }, "File created successfully at: /w/build/out.js"),
+    ...round("Bash", { command: "rm -rf /w/build" }, ""),
+    ...round("Bash", { command: "git checkout -b tmp" }, "Switched to a new branch 'tmp'"),
+    ...round("Bash", { command: "git switch -c keep" }, "Switched to a new branch 'keep'"),
+    ...round("Bash", { command: "git branch -D tmp" }, "Deleted branch tmp (was abc1234)."),
+    ...round("Bash", { command: "git commit -m 'One'" }, "[keep 1111111a] One"),
+    ...round("Bash", { command: "git commit -m 'Two'" }, "[keep 2222222b] Two"),
+    ...round("Bash", { command: "git commit --amend -m 'Two again'" }, "[keep 3333333c] Two again"),
+    ...round("Bash", { command: "git commit -m 'Three'" }, "[keep 4444444d] Three"),
+    ...round("Bash", { command: "git reset --hard 3333333c" }, "HEAD is now at 3333333 Two again"),
+  ];
+  const t = trailOf(span);
+  const f = Object.fromEntries(t.files.map((x) => [x.path, x]));
+  expect(f["/w/a.ts"]).toMatchObject({ created: true, moved_to: "/w/b.ts" });
+  expect(f["/w/b.ts"]).toMatchObject({ created: true });
+  expect(f["src/c.ts"]!.moved_to).toBe("src/d.ts");
+  expect(f["x.ts"]!.moved_to).toBe("lib/x.ts");
+  expect(f["/w/build/out.js"]!.deleted).toBe(true);
+  expect(t.branches).toEqual(["keep"]);
+  expect(t.commits.map((c) => c.subject)).toEqual(["One", "Two again"]);
+  // Carried on: a later span drops a branch, deletes a file and resets one commit back.
+  const later = trailOf([
+    ...round("Bash", { command: "git push origin --delete keep" }, ""),
+    ...round("Bash", { command: "rm /w/b.ts" }, ""),
+    ...round("Bash", { command: "git reset --hard HEAD~1" }, "HEAD is now at 1111111 One"),
+  ], t);
+  expect(later.branches).toEqual([]);
+  expect(later.files.find((x) => x.path === "/w/b.ts")).toMatchObject({ created: true, deleted: true });
+  expect(later.commits.map((c) => c.subject)).toEqual(["One"]);
+});

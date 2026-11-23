@@ -76,71 +76,82 @@ const shellWords = (s: string) => s.trim().split(/\s+/).map((w) => w.replace(/^[
 const plainPath = (p: string) => /^[\w.~/-]+$/.test(p) && /\w/.test(p) && !p.startsWith("-") && !p.startsWith("/dev/") && !p.startsWith("/proc/") && (p.includes("/") || /\.\w{1,8}$/.test(p));
 
 // What a shell command did to files and branches, read from its words.
-function shellEffects(command: string): { deleted: string[]; written: string[]; branches: string[] } {
-  const deleted: string[] = [], written: string[] = [], branches: string[] = [];
+type Effects = { deleted: string[]; written: string[]; moved: [string, string][]; branches: string[]; dropped: string[]; amend: boolean; reset?: string };
+function shellEffects(command: string): Effects {
+  const fx: Effects = { deleted: [], written: [], moved: [], branches: [], dropped: [], amend: false };
   // (Quoted words are left out: what a quote holds is an argument's text, not a file the command writes.)
   for (const seg of segments(command.replace(/'[^'\n]*'|"(?:[^"\\\n]|\\.)*"/g, "_"))) {
-    for (const m of seg.matchAll(/(?:^|[^0-9&>])>{1,2}\s*([^\s;&|]+)/g)) if (plainPath(m[1]!.replace(/^['"]|['"]$/g, ""))) written.push(m[1]!.replace(/^['"]|['"]$/g, ""));
+    for (const m of seg.matchAll(/(?:^|[^0-9&>])>{1,2}\s*([^\s;&|]+)/g)) if (plainPath(m[1]!.replace(/^['"]|['"]$/g, ""))) fx.written.push(m[1]!.replace(/^['"]|['"]$/g, ""));
     const w = shellWords(seg.replace(/\d?>{1,2}\s*\S+/g, ""));
     const at = w.findIndex((x) => !/^\w+=/.test(x) && x !== "sudo");
     const prog = (w[at] ?? "").split("/").pop();
     const args = w.slice(at + 1);
-    if (prog === "rm") for (const a of args) if (plainPath(a)) deleted.push(a);
-    if (prog === "tee") for (const a of args) if (plainPath(a)) written.push(a);
+    const plain = (xs: string[]) => xs.filter((a) => !a.startsWith("-"));
+    // mv A B, mv A B DIR/: each source to the destination, or into it when it is a folder.
+    const move = (xs: string[]) => {
+      const p = plain(xs);
+      if (p.length < 2 || !p.every(plainPath) && !p.every((x) => /^[\w.~/-]+$/.test(x))) return;
+      const to = p.at(-1)!, from = p.slice(0, -1);
+      const into = from.length > 1 || to.endsWith("/");
+      for (const f of from) fx.moved.push([f, into ? `${to.replace(/\/$/, "")}/${f.split("/").pop()}` : to]);
+    };
+    if (prog === "rm") for (const a of args) if (plainPath(a) || /^[\w.~/-]+$/.test(a) && a.includes("/")) fx.deleted.push(a.replace(/\/$/, ""));
+    if (prog === "mv") move(args);
+    if (prog === "tee") for (const a of args) if (plainPath(a)) fx.written.push(a);
     if (prog !== "git") continue;
-    const sub = args.findIndex((a) => !a.startsWith("-") && !(args[args.indexOf(a) - 1] ?? "").match(/^-C$/));
+    let sub = 0;
+    while (sub < args.length && args[sub]!.startsWith("-")) sub += /^-[Cc]$/.test(args[sub]!) ? 2 : 1;
     const verb = args[sub], rest = args.slice(sub + 1);
-    if (verb === "rm") for (const a of rest) if (plainPath(a)) deleted.push(a);
+    if (verb === "rm") for (const a of rest) if (plainPath(a)) fx.deleted.push(a);
+    if (verb === "mv") move(rest);
     const flag = (f: string[]) => { const k = rest.findIndex((a) => f.includes(a)); return k >= 0 ? rest[k + 1] : undefined; };
-    const made = verb === "checkout" ? flag(["-b", "-B"]) : verb === "switch" ? flag(["-c", "-C", "--create"]) : verb === "worktree" && rest[0] === "add" ? flag(["-b", "-B"]) : verb === "branch" && rest.length && !rest[0]!.startsWith("-") ? rest[0] : undefined;
-    if (made && /^[\w./-]+$/.test(made)) branches.push(made);
+    const made = verb === "checkout" ? flag(["-b", "-B"]) : verb === "switch" ? flag(["-c", "-C", "--create"]) : verb === "worktree" && rest[0] === "add" ? flag(["-b", "-B"])
+      : verb === "branch" && rest.length && !rest[0]!.startsWith("-") ? rest[0] : undefined;
+    if (made && /^[\w./-]+$/.test(made)) fx.branches.push(made);
+    // A branch deleted here or on the remote.
+    if (verb === "branch" && rest.some((a) => /^(-d|-D|--delete)$/.test(a))) fx.dropped.push(...plain(rest));
+    if (verb === "push" && rest.some((a) => a === "--delete" || a === "-d")) fx.dropped.push(...plain(rest).slice(1));
+    if (verb === "push") for (const a of plain(rest).slice(1)) if (/^:[\w./-]+$/.test(a)) fx.dropped.push(a.slice(1));
+    if (verb === "commit" && rest.includes("--amend")) fx.amend = true;
+    if (verb === "reset" && rest.includes("--hard")) fx.reset = plain(rest)[0] ?? "HEAD";
   }
-  return { deleted, written, branches };
+  return fx;
 }
 
 // What a span (the events a summary covers) did, and its text as the probe reads it.
-export type Span = { trail: Trail; recurring: string[]; text: string };
+export type Span = { trail: Trail; recurring: string[]; text: string; events: readonly StoredEvent[] };
 export function spanOf(span: readonly StoredEvent[]): Span {
   const texts = span.map(eventText);
   // Identifiers that recur in the span, most often first.
   const count = new Map<string, number>();
   for (const t of texts) for (const a of anchorsOf(t)) count.set(a, (count.get(a) ?? 0) + 1);
   const recurring = [...count].filter(([, n]) => n >= RECURS).sort((a, b) => b[1] - a[1]).map(([a]) => a);
-  return { trail: { ...walk(span), ids: recurring }, recurring, text: texts.join("\n") };
+  return { trail: { ...walk(span), ids: recurring }, recurring, text: texts.join("\n"), events: span };
 }
 
-// The trail of `span` carried on from `prior`: the span's entries are the
-// newest, an entry of both is merged (its counts summed, its state the span's).
+// The trail of `span` carried on from `prior`: the span is walked on from
+// the earlier trail's state (a file it deletes, a branch it drops, a commit
+// a reset takes back were the earlier span's), its entries the newest.
 export function trailOf(span: readonly StoredEvent[] | Span, prior?: Trail): Trail {
-  const t = "trail" in span ? span.trail : spanOf(span).trail;
-  const files = new Map<string, TrailFile>((prior?.files ?? []).map((f) => [f.path, { ...f }]));
-  for (const f of t.files) {
-    const was = files.get(f.path);
-    files.delete(f.path);
-    const sum = (k: "edits" | "writes" | "reads") => ((was?.[k] ?? 0) + (f[k] ?? 0)) || undefined;
-    files.set(f.path, clean({ ...was, ...f, edits: sum("edits"), writes: sum("writes"), reads: sum("reads"), created: f.created || was?.created || undefined,
-      // Deleted when the span deleted it, or the earlier trail did and the span made nothing of it again.
-      deleted: f.deleted || (!f.created && !f.writes && !f.edits && was?.deleted) || undefined }));
-  }
-  const commands = new Map<string, TrailCommand>((prior?.commands ?? []).map((c) => [c.cmd, c]));
-  for (const c of t.commands) { const was = commands.get(c.cmd); commands.delete(c.cmd); commands.set(c.cmd, { ...c, runs: c.runs + (was?.runs ?? 0) }); }
-  const branches = [...(prior?.branches ?? []).filter((b) => !t.branches.includes(b)), ...t.branches];
+  const s = "events" in span ? span : spanOf(span);
+  const t = prior ? walk(s.events, prior) : s.trail;
   return {
-    files: [...files.values()].slice(-KEEP.files),
-    commands: [...commands.values()].slice(-KEEP.commands),
-    commits: [...(prior?.commits ?? []), ...t.commits].slice(-KEEP.commits),
-    branches: branches.slice(-KEEP.branches),
-    ids: [...new Set([...t.ids, ...(prior?.ids ?? [])])].slice(0, KEEP.ids),
+    files: t.files.slice(-KEEP.files),
+    commands: t.commands.slice(-KEEP.commands),
+    commits: t.commits.slice(-KEEP.commits),
+    branches: t.branches.slice(-KEEP.branches),
+    ids: [...new Set([...s.trail.ids, ...(prior?.ids ?? [])])].slice(0, KEEP.ids),
   };
 }
-const clean = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
 
-// The files, commands, commits and branches of a span, oldest first.
-function walk(span: readonly StoredEvent[]): Omit<Trail, "ids"> {
-  const files = new Map<string, TrailFile>();
-  const commands = new Map<string, TrailCommand>();
-  const commits: Trail["commits"] = [];
-  const branches: string[] = [];
+// The files, commands, commits and branches of a span, oldest first, walked
+// on from `seed` (an earlier trail) when given.
+function walk(span: readonly StoredEvent[], seed?: Omit<Trail, "ids">): Omit<Trail, "ids"> {
+  const files = new Map<string, TrailFile>((seed?.files ?? []).map((f) => [f.path, { ...f }]));
+  const commands = new Map<string, TrailCommand>((seed?.commands ?? []).map((c) => [c.cmd, { ...c }]));
+  let commits: Trail["commits"] = [...(seed?.commits ?? [])];
+  const branches: string[] = [...(seed?.branches ?? [])];
+  let current: string | undefined = commits.at(-1)?.branch;
   const file = (path: string) => {
     const f = files.get(path) ?? { path };
     files.delete(path); // newest last
@@ -159,50 +170,71 @@ function walk(span: readonly StoredEvent[]): Omit<Trail, "ids"> {
     const r = b.type === "tool_use" ? results.get(b.id)?.shift() : undefined;
     if (r) made.push({ call: { name: b.name, input: b.input }, r });
   }
-  {
-    for (const { call, r } of made) {
-      const text = resultText(r.content);
-      const { name, input } = call;
-      if (r.verdict === "denied" || r.verdict === "none") continue; // it did not run
-      for (const p of fileReads(name, input)) if (!r.is_error) { const f = file(p); f.reads = (f.reads ?? 0) + 1; }
-      const key = WRITERS[name];
-      if (key && typeof input?.[key] === "string" && !r.is_error) {
-        const f = file(input[key]);
-        if (/^(File created successfully|Created new file)/.test(text)) { f.created = true; delete f.deleted; }
-        else f.edits = (f.edits ?? 0) + 1;
-        continue;
+  for (const { call, r } of made) {
+    const text = resultText(r.content);
+    const { name, input } = call;
+    if (r.verdict === "denied" || r.verdict === "none") continue; // it did not run
+    for (const p of fileReads(name, input)) if (!r.is_error) { const f = file(p); f.reads = (f.reads ?? 0) + 1; }
+    const key = WRITERS[name];
+    if (key && typeof input?.[key] === "string" && !r.is_error) {
+      const f = file(input[key]);
+      if (/^(File created successfully|Created new file)/.test(text)) { f.created = true; delete f.deleted; }
+      else f.edits = (f.edits ?? 0) + 1;
+      continue;
+    }
+    const patch = name === "apply_patch" ? String(typeof input === "string" ? input : input?.input ?? input?.patch ?? "") : "";
+    const shell = SHELLS[name] && typeof input?.[SHELLS[name]!] === "string" ? String(input[SHELLS[name]!]) : "";
+    const body = patch || (/\*\*\* Begin Patch/.test(shell) ? shell : "");
+    if (body) {
+      if (r.is_error) continue;
+      let last: TrailFile | undefined;
+      for (const m of body.matchAll(PATCH)) {
+        if (m[3]) { if (last) { last.moved_to = m[3].trim(); file(m[3].trim()).created = true; } continue; }
+        last = file(m[2]!.trim());
+        if (m[1] === "Add") { last.created = true; delete last.deleted; }
+        else if (m[1] === "Delete") last.deleted = true;
+        else last.edits = (last.edits ?? 0) + 1;
       }
-      const patch = name === "apply_patch" ? String(typeof input === "string" ? input : input?.input ?? input?.patch ?? "") : "";
-      const shell = SHELLS[name] && typeof input?.[SHELLS[name]!] === "string" ? String(input[SHELLS[name]!]) : "";
-      const body = patch || (/\*\*\* Begin Patch/.test(shell) ? shell : "");
-      if (body) {
-        if (r.is_error) continue;
-        let last: TrailFile | undefined;
-        for (const m of body.matchAll(PATCH)) {
-          if (m[3]) { if (last) { last.moved_to = m[3].trim(); file(m[3].trim()).created = true; } continue; }
-          last = file(m[2]!.trim());
-          if (m[1] === "Add") { last.created = true; delete last.deleted; }
-          else if (m[1] === "Delete") last.deleted = true;
-          else last.edits = (last.edits ?? 0) + 1;
-        }
-        continue;
+      continue;
+    }
+    if (!shell) continue;
+    const end = exitOf(name, text, !!r.is_error);
+    const cmd = shell.trim().split("\n")[0]!.replace(/\s+/g, " ").slice(0, COMMAND_CHARS) + (shell.trim().length > COMMAND_CHARS || shell.trim().includes("\n") ? " ..." : "");
+    const c = commands.get(cmd);
+    commands.delete(cmd);
+    commands.set(cmd, { cmd, exit: end, runs: (c?.runs ?? 0) + 1 });
+    if (end !== 0 && end !== null) continue;
+    const fx = shellEffects(shell);
+    for (const p of fx.deleted) {
+      file(p).deleted = true;
+      // A folder deleted: every file the trail knows under it with it.
+      for (const f of files.values()) if (f.path.startsWith(`${p}/`)) f.deleted = true;
+    }
+    for (const p of fx.written) { const f = file(p); f.writes = (f.writes ?? 0) + 1; delete f.deleted; }
+    for (const [from, to] of fx.moved) { file(from).moved_to = to; const t = file(to); t.created = true; delete t.deleted; }
+    for (const b of fx.branches) branch(b);
+    for (const b of fx.dropped) { const k = branches.indexOf(b); if (k >= 0) branches.splice(k, 1); }
+    for (const m of text.matchAll(/^\[([^\]\s]+)(?: \(root-commit\))? ([0-9a-f]{7,40})\] (.+)$/gm)) {
+      const made = { sha: m[2]!, branch: m[1], subject: m[3]!.slice(0, 100) };
+      // An amend replaces the commit it amends: the last one on its branch.
+      const k = fx.amend ? commits.findLastIndex((x) => x.branch === made.branch) : -1;
+      if (k >= 0) commits.splice(k, 1);
+      commits.push(made);
+      branch(m[1]!);
+      current = m[1];
+    }
+    for (const m of text.matchAll(/Switched to (?:a new )?branch '([^']+)'/g)) { branch(m[1]!); current = m[1]; }
+    // A hard reset takes back the commits after its target on the branch it is on.
+    if (fx.reset) {
+      const at = text.match(/HEAD is now at ([0-9a-f]{7,40})/)?.[1];
+      const k = at ? commits.findLastIndex((x) => x.sha.startsWith(at) || at.startsWith(x.sha)) : -1;
+      const back = fx.reset.match(/^HEAD(?:~(\d+)|(\^+))$/);
+      const on = k >= 0 ? commits[k]!.branch : current;
+      if (k >= 0) commits = commits.filter((x, i) => i <= k || x.branch !== on);
+      else if (back) {
+        let n = back[1] ? Number(back[1]) : back[2]!.length;
+        for (let i = commits.length - 1; i >= 0 && n > 0; i--) if (commits[i]!.branch === on) { commits.splice(i, 1); n--; }
       }
-      if (!shell) continue;
-      const exit = exitOf(name, text, !!r.is_error);
-      const cmd = shell.trim().split("\n")[0]!.replace(/\s+/g, " ").slice(0, COMMAND_CHARS) + (shell.trim().length > COMMAND_CHARS || shell.trim().includes("\n") ? " ..." : "");
-      const c = commands.get(cmd) ?? { cmd, exit, runs: 0 };
-      commands.delete(cmd);
-      commands.set(cmd, { cmd, exit, runs: c.runs + 1 });
-      if (exit !== 0 && exit !== null) continue;
-      const fx = shellEffects(shell);
-      for (const p of fx.deleted) file(p).deleted = true;
-      for (const p of fx.written) { const f = file(p); f.writes = (f.writes ?? 0) + 1; delete f.deleted; }
-      for (const b of fx.branches) branch(b);
-      for (const m of text.matchAll(/^\[([^\]\s]+)(?: \(root-commit\))? ([0-9a-f]{7,40})\] (.+)$/gm)) {
-        commits.push({ sha: m[2]!, branch: m[1], subject: m[3]!.slice(0, 100) });
-        branch(m[1]!);
-      }
-      for (const m of text.matchAll(/Switched to a new branch '([^']+)'/g)) branch(m[1]!);
     }
   }
   return { files: [...files.values()], commands: [...commands.values()], commits, branches };
