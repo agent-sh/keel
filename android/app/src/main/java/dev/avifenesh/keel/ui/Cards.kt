@@ -36,6 +36,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.Approvals
+import dev.avifenesh.keel.Attach
+import dev.avifenesh.keel.Unsent
 import dev.avifenesh.keel.Card
 import dev.avifenesh.keel.Seen
 import dev.avifenesh.keel.MainActivity
@@ -112,8 +114,12 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
         Approvals.run(act, c.id, choice, answers, seen = read && !c.question, rule = c.grants.joinToString(", "), feedback = feedback.takeIf { c.plan && choice == "deny" }, heading = prompt) { err ->
             busy = false
             if (!err.isNullOrEmpty()) error = err
-            // Answered in its session's screen: on to the next session that waits (the Needs you tab lists the rest already).
-            if (err == null && (Ui.route.value as? Route.Session)?.id == c.chatId) nextAfterAnswer(c, Hub.cards.value.values)?.let { Ui.open(it) }
+            // Answered in its session's screen: on to the next session that waits (the Needs you tab lists the rest already),
+            // unless the owner has begun a message in its box.
+            if (err == null && (Ui.route.value as? Route.Session)?.id == c.chatId) {
+                val holds = Unsent.of(c.chatId).isNotEmpty() || Attach.pending.value[c.chatId].orEmpty().isNotEmpty()
+                nextAfterAnswer(c, Hub.cards.value.values, Hub.chats.value, holds)?.let { Ui.open(it) }
+            }
         }
     }
     Panel(accent = if (c.pending) k.need else null, modifier = Modifier.semantics { contentDescription = "card-${c.id}" }) {

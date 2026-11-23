@@ -29,6 +29,17 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.UUID
 
+/**
+ * The words begun in each session's box, held for the app's life: a session left and opened again
+ * (Back, a notification, the next waiting card) finds them where they were.
+ */
+object Unsent {
+    val text = MutableStateFlow<Map<String, String>>(emptyMap())
+    fun of(chat: String): String = text.value[chat].orEmpty()
+    fun put(chat: String, words: String) = text.update { if (words.isEmpty()) it - chat else it + (chat to words) }
+    fun reset() { text.value = emptyMap() }
+}
+
 /** Where a picked file stands: being read and made fit, going up, stored on the computer, or not sent. */
 enum class Up { READING, UPLOADING, READY, FAILED }
 
@@ -49,7 +60,7 @@ object Attach {
     // Photos are decoded two at a time: a dozen picked at once must not hold a dozen full-size bitmaps.
     private val decoding = Semaphore(2)
 
-    fun reset() { pending.value = emptyMap(); limits = null; Media.clear() }
+    fun reset() { pending.value = emptyMap(); limits = null; Media.clear(); Unsent.reset() }
 
     fun remove(chat: String, key: String) = pending.update { m -> m + (chat to m[chat].orEmpty().filter { it.key != key }) }
     fun clear(chat: String) = pending.update { it - chat }

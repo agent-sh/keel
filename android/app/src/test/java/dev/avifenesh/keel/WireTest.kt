@@ -426,8 +426,33 @@ class WireTest {
         fun card(id: String, chat: String, ts: Double, state: String = "pending") = Card(id, chat, "permission", "touch x", "Bash", emptyList(), state, null, ts, emptyList())
         val answered = card("a1", "s1", 5.0, state = "approved")
         val cards = listOf(answered, card("a2", "s3", 9.0), card("a3", "s2", 7.0), card("a4", "s4", 3.0, state = "denied"))
-        assertEquals("s2", nextAfterAnswer(answered, cards))
-        assertEquals(null, nextAfterAnswer(answered, cards + card("a5", "s1", 8.0)))
-        assertEquals(null, nextAfterAnswer(answered, listOf(answered)))
+        assertEquals("s2", nextAfterAnswer(answered, cards, emptyMap(), holds = false))
+        assertEquals(null, nextAfterAnswer(answered, cards + card("a5", "s1", 8.0), emptyMap(), holds = false))
+        assertEquals(null, nextAfterAnswer(answered, listOf(answered), emptyMap(), holds = false))
+    }
+
+    // It stays while the owner has begun a message in the session's box: words or files would be left
+    // behind mid-thought. And it does not go on to a card in an archived tree: the session archived,
+    // or the session at the top of an agent's tree.
+    @Test fun anAnswerStaysForABegunMessageAndSkipsArchivedTrees() {
+        fun card(id: String, chat: String, ts: Double, state: String = "pending") = Card(id, chat, "permission", "touch x", "Bash", emptyList(), state, null, ts, emptyList())
+        fun chat(id: String, archived: Boolean = false, parent: String? = null) = Chat(id, id, "idle", 0.0, 0, false, archived, "", "", parent)
+        val answered = card("a1", "s1", 5.0, state = "approved")
+        val cards = listOf(answered, card("a2", "s3", 9.0), card("a3", "s2", 7.0), card("a6", "ag", 1.0))
+        val chats = listOf(chat("s1"), chat("s2", archived = true), chat("s3"), chat("top", archived = true), chat("ag", parent = "top")).associateBy { it.id }
+        assertEquals(null, nextAfterAnswer(answered, cards, emptyMap(), holds = true))
+        assertEquals("s3", nextAfterAnswer(answered, cards, chats, holds = false))
+        assertEquals(null, nextAfterAnswer(answered, cards.filter { it.chatId != "s3" }, chats, holds = false))
+    }
+
+    // What the owner began in a box is kept with its session for the app's life, and an empty box holds nothing.
+    @Test fun anUnsentMessageStaysWithItsSession() {
+        Unsent.reset()
+        Unsent.put("s1", "half a thought")
+        Unsent.put("s2", "other")
+        assertEquals("half a thought", Unsent.of("s1"))
+        Unsent.put("s2", "")
+        assertEquals(setOf("s1"), Unsent.text.value.keys)
+        Unsent.reset()
     }
 }

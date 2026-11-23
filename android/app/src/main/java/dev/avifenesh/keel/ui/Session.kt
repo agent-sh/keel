@@ -50,6 +50,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import dev.avifenesh.keel.ApiError
 import dev.avifenesh.keel.Attach
+import dev.avifenesh.keel.Unsent
 import dev.avifenesh.keel.Up
 import dev.avifenesh.keel.Earlier
 import dev.avifenesh.keel.Hub
@@ -299,7 +300,9 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
     var menu by rememberSaveable(id) { mutableStateOf(false) }
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { if (it.isNotEmpty()) Attach.add(ctx, id, it) }
     val docs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { if (it.isNotEmpty()) Attach.add(ctx, id, it) }
-    var text by rememberSaveable(id) { mutableStateOf("") }
+    // The words begun here: kept with the session (Unsent), so a session left and opened again has them.
+    var text by rememberSaveable(id) { mutableStateOf(Unsent.of(id)) }
+    LaunchedEffect(id, text) { Unsent.put(id, text) }
     var mode by rememberSaveable(id) { mutableStateOf("steer") }
     var busy by remember { mutableStateOf(false) }
     // The send in hand: its id stays with the words until the daemon answers,

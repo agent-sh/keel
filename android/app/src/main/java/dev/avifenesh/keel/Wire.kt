@@ -282,11 +282,15 @@ fun agentTree(chats: Collection<Chat>, root: String): List<AgentRow> {
 
 /**
  * Where an answer given in a session's screen leads: to the session of the card that has waited
- * longest elsewhere, as the page on a phone goes on. Null to stay: something else of this session
- * still waits, or nothing waits anywhere.
+ * longest elsewhere, as the page on a phone goes on. A card in an archived tree (the session or the
+ * one at its top archived) is not gone on to, as the lasting notification does not count it. Null
+ * to stay: the session's box holds words or files the owner began (`holds`), something else of this
+ * session still waits, or nothing waits anywhere.
  */
-fun nextAfterAnswer(answered: Card, cards: Collection<Card>): String? {
-    val left = cards.filter { it.pending && it.id != answered.id }
+fun nextAfterAnswer(answered: Card, cards: Collection<Card>, chats: Map<String, Chat>, holds: Boolean): String? {
+    if (holds) return null
+    val shelved = { id: String -> chats[id]?.archived == true || chats[rootOf(chats, id)]?.archived == true }
+    val left = cards.filter { it.pending && it.id != answered.id && !shelved(it.chatId) }
     if (left.any { it.chatId == answered.chatId }) return null
     return left.minByOrNull { it.ts }?.chatId
 }
