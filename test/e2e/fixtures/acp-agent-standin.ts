@@ -46,9 +46,15 @@ async function viaMcp(server: any, calls: [string, any][]): Promise<any[]> {
 }
 // Its models and reasoning levels, as session config options; "which model" is answered with the current ones.
 const config = { model: "fast", effort: "low" };
+// Its on and off options, offered to a client that shows them (session.configOptions.boolean).
+const switches: Record<string, boolean> = { brief: false, brave_mode: true };
 const configOptions = () => [
   { id: "model", name: "Model", category: "model", type: "select", currentValue: config.model, options: [{ group: "main", name: "Main", options: [{ value: "fast", name: "Fast" }, { value: "deep", name: "Deep", description: "Slower, thinks longer" }, { value: "busy", name: "Busy", description: "Listed, and refused when asked for" }] }] },
   { id: "effort", name: "Reasoning", category: "thought_level", type: "select", currentValue: config.effort, options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
+  ...(clientCaps.session?.configOptions?.boolean ? [
+    { id: "brief", name: "Brief replies", description: "Answer in one line", type: "boolean", currentValue: switches.brief },
+    { id: "brave_mode", name: "Brave Mode", description: "Skip confirmation prompts and act autonomously", type: "boolean", currentValue: switches.brave_mode },
+  ] : []),
 ];
 
 async function prompt(id: number, p: any) {
@@ -61,7 +67,7 @@ async function prompt(id: number, p: any) {
     return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
   }
   if (/which model/.test(text)) {
-    update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `model ${config.model}, effort ${config.effort}` } });
+    update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `model ${config.model}, effort ${config.effort}, brief ${switches.brief ? "on" : "off"}, brave ${switches.brave_mode ? "on" : "off"}` } });
     return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
   }
   if (/again/.test(text)) {
@@ -181,7 +187,8 @@ process.stdin.on("data", (d) => {
     }
     else if (m.method === "session/set_config_option") {
       const key = m.params.configId === "model" ? "model" : m.params.configId === "effort" ? "effort" : null;
-      if (!key) out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: `no option ${m.params.configId}` } });
+      if (m.params.type === "boolean" && m.params.configId in switches) { switches[m.params.configId] = !!m.params.value; out({ jsonrpc: "2.0", id: m.id, result: { configOptions: configOptions() } }); }
+      else if (!key) out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: `no option ${m.params.configId}` } });
       else if (m.params.value === "busy") out({ jsonrpc: "2.0", id: m.id, error: { code: -32603, message: "that model is busy" } });
       else { config[key] = String(m.params.value); out({ jsonrpc: "2.0", id: m.id, result: { configOptions: configOptions() } }); }
     }

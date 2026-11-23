@@ -26,7 +26,7 @@ import type { ExternalIO } from "../engine/hooks.ts";
 import { shellText, type CallClass } from "../safety/policy.ts";
 import type { AcpAgent, AcpAgents } from "./agents.ts";
 import { AcpConnection } from "./rpc.ts";
-import { commandsOf, mergeChoices, pickable, settle, splitModel, unknownCurrent, withOptions, type AgentChoices, type SlashCommand } from "./choices.ts";
+import { commandsOf, heldSwitch, mergeChoices, pickable, settle, splitModel, unknownCurrent, withOptions, type AgentChoices, type SlashCommand, type Switch } from "./choices.ts";
 import { catalogTools } from "../tools/catalog.ts";
 import { clearServed, SERVED_NAME, ServedTools, type ServedTool } from "./served.ts";
 import { AcpTerminals } from "./terminals.ts";
@@ -222,7 +222,8 @@ export class AcpRunner {
     try {
       const init = await conn.request("initialize", {
         protocolVersion: 1,
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell },
+        // (Boolean config options are shown: session-config-options.)
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell, session: { configOptions: { boolean: {} } } },
         clientInfo: { name: "keel", title: "Keel", version: "0.1.0" },
       });
       live.caps = init?.agentCapabilities ?? {};
@@ -294,7 +295,7 @@ export class AcpRunner {
       live.missed = choice;
       return;
     }
-    for (const step of settle(live.choices, { choice, effort: s.settings?.effort })) {
+    for (const step of settle(live.choices, { choice, effort: s.settings?.effort, switches: s.settings?.acp_switches })) {
       let r: Json;
       // A switch the agent refuses does not cost the turn: the agent goes on with what it has, and the session is told.
       try { r = await live.conn.request(step.method, { sessionId: live.acpSession, ...step.params }); } catch (e) {
@@ -305,6 +306,7 @@ export class AcpRunner {
       }
       if (Array.isArray(r?.configOptions)) live.choices = withOptions(live.choices, r.configOptions);
       else if (step.method === "session/set_mode" && live.choices.modes) live.choices.modes = { ...live.choices.modes, current: step.params.modeId };
+      else if (step.method === "session/set_config_option" && step.params.type === "boolean") live.choices.switches = live.choices.switches?.map((x) => (x.id === step.params.configId ? { ...x, current: step.params.value } : x));
       else if (step.method === "session/set_config_option") for (const k of ["models", "modes", "efforts"] as const) { const c = live.choices[k]; if (c?.via === "config" && c.configId === step.params.configId) live.choices[k] = { ...c, current: step.params.value }; }
     }
   }
@@ -518,6 +520,17 @@ export class AcpRunner {
 
   dispose() {
     for (const id of [...this.live.keys()]) this.release(id);
+  }
+
+  // The switches a session's agent offers (its boolean config options), each with what it is now and what the owner set.
+  // Held: one about what the agent may do without asking (heldSwitch), which Keel's gate and sandbox decide instead.
+  switches(s: Session): { agent: string; started: boolean; switches: (Switch & { set?: boolean; held?: true })[] } {
+    const agent = agentOf(s.model);
+    const l = this.live.get(s.id);
+    const mine = l && l.agent.id === agent ? l.choices.switches : undefined;
+    const list = mine ?? (this.agents.learned(agent)?.switches ?? []).map(({ current: _, ...x }) => x);
+    const set = s.settings?.acp_switches ?? {};
+    return { agent, started: !!mine, switches: list.map((x) => ({ ...x, ...(typeof set[x.id] === "boolean" ? { set: set[x.id] } : {}), ...(heldSwitch(x) ? { held: true as const } : {}) })) };
   }
 
   // The slash commands a session's agent offers: its own when it has started, else what that agent last advertised

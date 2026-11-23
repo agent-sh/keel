@@ -176,7 +176,7 @@ export class AcpAgents {
       let commands: SlashCommand[] | undefined;
       c.onNotification = (method, p) => { if (method === "session/update" && p?.update?.sessionUpdate === "available_commands_update") commands = commandsOf(p.update.availableCommands); };
       const work = (async () => {
-        const init = await c.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "keel", title: "Keel", version: "0.1.0" } });
+        const init = await c.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, session: { configOptions: { boolean: {} } } }, clientInfo: { name: "keel", title: "Keel", version: "0.1.0" } });
         const caps = init?.agentCapabilities ?? {};
         const t0 = Date.now();
         const r = await c.request("session/new", { cwd, mcpServers: [] });

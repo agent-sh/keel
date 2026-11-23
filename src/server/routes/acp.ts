@@ -113,6 +113,31 @@ export const acpRoutes: RouteModule = (deps) => {
         return json(r);
       },
     },
+    // The agent's switches (its boolean options): what each is, and the owner's setting, sent before its next prompt.
+    "/api/acp/sessions/:id/switches": {
+      GET: (req: any) => {
+        const s = deps.store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (!isAcpModel(s.model)) return json({ switches: [] });
+        return json(runner.switches(s));
+      },
+      PUT: async (req: any) => {
+        const s = deps.store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (!isAcpModel(s.model)) return bad("this session is not answered by an ACP agent");
+        const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
+        const sw = runner.switches(s).switches.find((x) => x.id === b.id);
+        if (!sw) return bad(`the agent offers no option ${b.id}`, 404);
+        if (sw.held) return bad(`${sw.name} is about what the agent may do without asking: Keel's permission mode and sandbox decide that for this session`, 409);
+        if (b.value !== null && typeof b.value !== "boolean") return bad("value is true, false, or null for the agent's own");
+        const set = { ...(s.settings.acp_switches ?? {}) };
+        if (b.value === null) delete set[sw.id];
+        else set[sw.id] = b.value;
+        const next = deps.store.mergeSettings(s.id, { acp_switches: Object.keys(set).length ? set : null });
+        if (next) deps.bus.emit({ t: "session", session: next });
+        return json(runner.switches(next ?? s));
+      },
+    },
     // The owner's writable folders for one agent; null goes back to the guess. Used from its next start.
     "/api/acp/agents/:id/folders": {
       PUT: async (req: any) => {

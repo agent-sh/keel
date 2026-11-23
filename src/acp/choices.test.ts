@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { choicesOf, listedOf, mergeChoices, settle, splitModel, unknownCurrent, withOptions } from "./choices.ts";
+import { choicesOf, heldSwitch, listedOf, mergeChoices, settle, splitModel, unknownCurrent, withOptions } from "./choices.ts";
 
 const model = { id: "model", name: "Model", category: "model", type: "select", currentValue: "a", options: [{ group: "g", name: "G", options: [{ value: "a", name: "A" }, { value: "x/b", name: "B" }] }] };
 const level = { id: "think", name: "Thinking", category: "thought_level", type: "select", currentValue: "low", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] };
@@ -54,4 +54,25 @@ test("a result that states no options keeps what was known; one that states them
 test("modes that skip the agent's permission checks are not offered as models", () => {
   const c = choicesOf({ modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass Permissions" }, { id: "yolo", name: "Auto", description: "Run everything without asking" }] } });
   expect(listedOf({ id: "ag", name: "Ag" }, c).map((m) => m.model)).toEqual(["ag", "ag/default", "ag/plan"]);
+});
+
+test("an agent's switches are its boolean options; one that loosens what it may do is never sent", () => {
+  const c = choicesOf({ configOptions: [
+    { id: "brief", name: "Brief", type: "boolean", currentValue: false },
+    { id: "brave_mode", name: "Brave Mode", description: "Skip confirmation prompts", type: "boolean", currentValue: false },
+    { id: "odd", type: "boolean", currentValue: "yes" },
+  ] });
+  expect(c.switches?.map((s) => s.id)).toEqual(["brief", "brave_mode"]);
+  expect(settle(c, { switches: { brief: true, brave_mode: true } })).toEqual([{ method: "session/set_config_option", params: { configId: "brief", type: "boolean", value: true } }]);
+  // A held switch the agent has on is turned off before the prompt, whatever was asked.
+  expect(settle({ switches: [{ id: "yolo", name: "YOLO", current: true }] }, { switches: { yolo: true } })).toEqual([{ method: "session/set_config_option", params: { configId: "yolo", type: "boolean", value: false } }]);
+  expect(settle({ switches: [{ id: "yolo", name: "YOLO", current: false }] }, {})).toEqual([]);
+  // Held in either direction: anything about asking, approving, trust, the sandbox, the network or acting alone.
+  const held = ["Bypass permissions", "YOLO", "Auto-run commands", "Allow all tools", "Trust this folder", "Accept edits automatically", "Autonomous mode", "Disable sandbox",
+    "Network access", "Execute without prompting", "auto_execute", "Unattended", "Run shell commands freely", "autoApprove", "Skip confirmations", "Ask before running commands"];
+  expect(held.filter((n) => !heldSwitch({ id: n.toLowerCase().replace(/\W+/g, "_"), name: n }))).toEqual([]);
+  expect(["Brief replies", "Show thinking", "Use emoji", "Verbose logs", "Task list"].filter((n) => heldSwitch({ id: n.toLowerCase().replace(/\W+/g, "_"), name: n }))).toEqual([]);
+  expect(settle(c, { switches: { brief: false } })).toEqual([]);
+  // After a resume that stated nothing the agent's value is not known: the owner's is sent, and a held one is turned off.
+  expect(settle(unknownCurrent(c), { switches: { brief: false } }).map((x) => [x.params.configId, x.params.value])).toEqual([["brief", false], ["brave_mode", false]]);
 });

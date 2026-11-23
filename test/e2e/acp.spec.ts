@@ -495,6 +495,47 @@ test("acp agent commands", async ({ page, request }) => {
   }
 });
 
+// Feature: an ACP agent's on and off options (boolean session config
+// options). Keel says it shows them, lists them in the session panel (known
+// from the agent before its session starts it), and sends the owner's setting
+// before the next prompt. One about what the agent may do without asking is
+// held, and turned off when the agent has it on: Keel's permission mode and
+// sandbox decide that.
+test("acp agent options", async ({ page, request }) => {
+  const standin = join(import.meta.dirname, "fixtures/acp-agent-standin.ts");
+  await request.delete("/api/acp/agents/standin-o").catch(() => {});
+  expect((await request.post("/api/acp/agents", { data: { id: "standin-o", command: "bun", args: [standin] } })).ok()).toBe(true);
+  try {
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-options-${Date.now()}`);
+    mkdirSync(ws, { recursive: true });
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "acp:standin-o" } })).json();
+    const switches = async () => ((await (await request.get(`/api/acp/sessions/${session.id}/switches`)).json()).switches as { id: string; held?: true }[]);
+    // (Learned when the agent was asked what it offers.)
+    await expect.poll(async () => (await switches()).map((x) => `${x.id}${x.held ? " held" : ""}`), { timeout: 60_000 }).toEqual(["brief", "brave_mode held"]);
+    await page.goto(`/s/${session.id}`);
+    await openPanel(page, "session");
+    const panel = page.getByTestId("agent-switches");
+    const brief = panel.getByTestId("agent-switch-brief");
+    await expect(brief).toHaveAttribute("aria-checked", "false");
+    await expect(panel.getByTestId("agent-switch-held")).toHaveCount(1);
+    await expect(panel).toContainText("this session's permission mode and sandbox decide that");
+    expect((await request.put(`/api/acp/sessions/${session.id}/switches`, { data: { id: "brave_mode", value: true } })).status()).toBe(409);
+    await brief.click();
+    await expect(brief).toHaveAttribute("aria-checked", "true");
+    await panel.scrollIntoViewIfNeeded();
+    await shoot(page, "acp-19-agent-options");
+    await page.getByTestId("composer").fill("which model are you on");
+    await page.keyboard.press("Enter");
+    // (The held one the agent had on is turned off before the prompt.)
+    await expect(page.getByTestId("assistant-text").last()).toContainText("brief on, brave off", { timeout: 30_000 });
+    // Back to the agent's own: the switch shows what the agent has (on, as it was told).
+    await request.put(`/api/acp/sessions/${session.id}/switches`, { data: { id: "brief", value: null } });
+    await expect.poll(async () => (await switches()).find((x) => x.id === "brief")).toMatchObject({ current: true });
+  } finally {
+    await request.delete("/api/acp/agents/standin-o");
+  }
+});
+
 // Feature: an ACP agent's models. ACP states them only in a session's setup
 // (session config options, category model; a reasoning level is category
 // thought_level): Keel asks each agent once, lists each model under the

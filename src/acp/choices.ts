@@ -19,7 +19,10 @@ type Json = any;
 export type Choice = { value: string; name: string; description?: string };
 // How a choice is made: a config option by its id, or the older session mode.
 export type ChoiceSet = { via: "config"; configId: string; name: string; current: string; options: Choice[] } | { via: "mode"; name: string; current: string; options: Choice[] };
-export type AgentChoices = { models?: ChoiceSet; modes?: ChoiceSet; efforts?: ChoiceSet };
+// A boolean config option (offered only to a client that says it shows them: session.configOptions.boolean).
+// `current` is unknown after a resume that stated nothing.
+export type Switch = { id: string; name: string; description?: string; current?: boolean };
+export type AgentChoices = { models?: ChoiceSet; modes?: ChoiceSet; efforts?: ChoiceSet; switches?: Switch[] };
 // What was learned of one agent: under which program (`key`), when, and what failed if it did.
 // `commands`: the slash commands it last advertised.
 export type Learned = AgentChoices & { key: string; at: number; error?: string; commands?: SlashCommand[] };
@@ -67,9 +70,12 @@ export function choicesOf(result: Json): AgentChoices {
     const options = legacy.availableModes.filter((m: Json) => typeof m?.id === "string").map((m: Json) => ({ value: m.id, name: typeof m.name === "string" && m.name ? m.name : m.id, ...(m.description ? { description: String(m.description) } : {}) }));
     if (options.length) modes = { via: "mode", name: "Mode", current: String(legacy.currentModeId ?? ""), options };
   }
+  const switches = opts.filter((x) => x?.type === "boolean" && typeof (x.id ?? x.configId) === "string" && typeof x.currentValue === "boolean").slice(0, 50)
+    .map((x): Switch => ({ id: String(x.id ?? x.configId), name: typeof x.name === "string" && x.name ? x.name : String(x.id ?? x.configId), ...(typeof x.description === "string" && x.description ? { description: x.description } : {}), current: x.currentValue }));
   if (models) out.models = models;
   if (modes) out.modes = modes;
   if (efforts) out.efforts = efforts;
+  if (switches.length) out.switches = switches;
   return out;
 }
 
@@ -87,9 +93,11 @@ export function mergeChoices(prev: AgentChoices, result: Json): AgentChoices {
   const efforts = config ? next.efforts : prev.efforts;
   // Modes: a config mode option when the list has one, else the older modes the result states, else what was known.
   const modes = next.modes?.via === "config" ? next.modes : legacy ? next.modes : config && prev.modes?.via === "config" ? undefined : prev.modes;
+  const switches = config ? next.switches : prev.switches;
   if (models) out.models = models;
   if (modes) out.modes = modes;
   if (efforts) out.efforts = efforts;
+  if (switches) out.switches = switches;
   return out;
 }
 
@@ -99,14 +107,22 @@ export function mergeChoices(prev: AgentChoices, result: Json): AgentChoices {
 export function unknownCurrent(c: AgentChoices): AgentChoices {
   const out: AgentChoices = {};
   for (const k of ["models", "modes", "efforts"] as const) if (c[k]) out[k] = { ...c[k]!, current: "" };
+  if (c.switches) out.switches = c.switches.map(({ current: _, ...s }) => s);
   return out;
 }
 
 // Modes that loosen what the agent may do without asking (a bypass of its
 // own permission checks): Keel's gate decides that, so none is offered as a
 // model of the agent. Read from the agent's own words for the mode.
-const LOOSENS = /bypass|yolo|dangerous|skip[\s_-]?permission|no[\s_-]?approval|full[\s_-]?access|dont[\s_-]?ask|don't ask/i;
+const LOOSENS = /bypass|yolo|dangerous|brave|skip[\s_-]?(permission|confirm|approv)|no[\s_-]?approval|auto[\s_-]?approv|without (asking|approval|confirm)|full[\s_-]?access|dont[\s_-]?ask|don't ask/i;
 export const offeredModes = (set: ChoiceSet): Choice[] => set.options.filter((o) => !LOOSENS.test(`${o.value} ${o.name} ${o.description ?? ""}`));
+// A switch about what the agent may do without the owner (asking, approving, confirming, permissions, trust,
+// the sandbox, the network, acting by itself), in either direction ("Ask before running commands" too): Keel's
+// permission mode and sandbox decide that, so the owner does not set it here, and one the agent has on is
+// turned off. Read from the agent's own words for it, word by word (an id's parts too: auto_execute, autoApprove).
+const HOLDS = /(^|[^a-z])(ask|asks|asking|approv\w*|confirm\w*|permission\w*|prompt\w*|trust\w*|sandbox\w*|network\w*|auto\w*|accept\w*|allow\w*|unattended|bypass\w*|yolo|dangerous\w*|brave|freely|unrestricted|full access|without)(?![a-z])/i;
+const words = (t: string) => t.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ");
+export const heldSwitch = (s: Switch): boolean => HOLDS.test(words(`${s.id} ${s.name} ${s.description ?? ""}`)) || LOOSENS.test(`${s.id} ${s.name} ${s.description ?? ""}`);
 
 // The choices after the agent sent its whole config option list again (a
 // set_config_option result, a config_option_update): the older session modes
@@ -139,7 +155,8 @@ export function listedOf(agent: { id: string; name: string }, c?: AgentChoices):
 // The requests that bring a live agent session to what the Keel session wants:
 // its choice (when the model names one) and its effort (when the agent has
 // reasoning levels and the effort is one of them). Nothing when it is there already.
-export function settle(c: AgentChoices, want: { choice?: string; effort?: string }): { method: string; params: Json }[] {
+// And each switch the owner set (`switches`, by id) that differs from the agent's (a held one never).
+export function settle(c: AgentChoices, want: { choice?: string; effort?: string; switches?: Record<string, boolean> }): { method: string; params: Json }[] {
   const out: { method: string; params: Json }[] = [];
   const set = pickable(c);
   if (want.choice && set && set.current !== want.choice && set.options.some((o) => o.value === want.choice))
@@ -147,5 +164,10 @@ export function settle(c: AgentChoices, want: { choice?: string; effort?: string
   const e = c.efforts;
   if (want.effort && e && e.via === "config" && e.current !== want.effort && e.options.some((o) => o.value === want.effort))
     out.push({ method: "session/set_config_option", params: { configId: e.configId, value: want.effort } });
+  for (const s of c.switches ?? []) {
+    // (A held one is turned off when the agent has it on, or may: after a resume its value is not known.)
+    const v = heldSwitch(s) ? false : want.switches?.[s.id];
+    if (typeof v === "boolean" && v !== s.current) out.push({ method: "session/set_config_option", params: { configId: s.id, type: "boolean", value: v } });
+  }
   return out;
 }

@@ -291,6 +291,38 @@ function EditorServers({ s }: { s: Session }) {
   );
 }
 
+type AgentSwitch = { id: string; name: string; description?: string; current?: boolean; set?: boolean; held?: true };
+
+// An ACP agent's own on and off options (its boolean config options). The
+// owner's setting goes to the agent before its next prompt; one that would let
+// the agent act without asking is Keel's permission mode's to decide.
+function AgentSwitches({ s }: { s: Session }) {
+  const [list, setList] = useState<AgentSwitch[]>([]);
+  const acp = s.model.startsWith("acp:");
+  useEffect(() => {
+    if (!acp) return setList([]);
+    api<{ switches: AgentSwitch[] }>(`/api/acp/sessions/${s.id}/switches`).then((r) => setList(r.switches), reportError);
+  }, [s.id, s.model, acp, JSON.stringify(s.settings.acp_switches ?? {})]);
+  if (!list.length) return null;
+  const put = (id: string, value: boolean) =>
+    api<{ switches: AgentSwitch[] }>(`/api/acp/sessions/${s.id}/switches`, { method: "PUT", body: JSON.stringify({ id, value }) }).then((r) => setList(r.switches), reportError);
+  return (
+    <Section title="Agent options" testid="agent-switches">
+      <p className="pb-1 text-caption text-faint">The agent's own options. A change reaches it with your next message.</p>
+      {list.map((x) => {
+        const on = x.set ?? x.current ?? false;
+        return (
+          <Line key={x.id} label={x.name} hint={x.held ? "It is about what the agent may do without asking: this session's permission mode and sandbox decide that." : x.description}>
+            {x.held
+              ? <span className="shrink-0 text-caption text-muted" data-testid="agent-switch-held">Held by Keel</span>
+              : <Toggle on={on} label={x.name} testid={`agent-switch-${x.id}`} onChange={(v) => put(x.id, v)} />}
+          </Line>
+        );
+      })}
+    </Section>
+  );
+}
+
 export function SessionPanel({ session: s }: { session: Session }) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-4" data-testid="session-panel">
@@ -317,6 +349,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
       {!s.machine && <Place s={s} />}
       <SkillMode s={s} />
       <EditorServers s={s} />
+      <AgentSwitches s={s} />
       <Section title="Archive">
         <Line label={s.archived ? "Archived" : "Put it away"} hint={s.archived ? "Restore it to work in it again." : "Stops its turn and background commands; it stays searchable."}>
           <button type="button" className={button} data-testid="panel-archive" onClick={() => archive(s, !s.archived).catch(reportError)}>{s.archived ? "Restore" : "Archive"}</button>
