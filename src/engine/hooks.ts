@@ -212,6 +212,13 @@ export type ExternalIO = {
 };
 export type ExternalTurn = (io: ExternalIO) => Promise<{ reason: string; usage?: Usage }>;
 
+// What the ledger found of a turn request's cache, set by its requestDone
+// (src/admin/telemetry.ts cacheBreak): the cause it counts a break by, or
+// "none" when the request read the cache. A wait kept warm is told by it
+// (src/engine/cache-plans.ts answered): a break the warm requests did not
+// cause is not theirs.
+export const cacheBreaks = new WeakMap<ProviderResult, string>();
+
 const hooks: TurnHooks[] = [];
 export const registerHooks = (h: TurnHooks) => void hooks.push(h);
 export const allHooks = () => hooks;

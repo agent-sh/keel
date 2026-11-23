@@ -29,7 +29,7 @@ import { AGENT_BUDGET_SPENT, APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT,
 import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
-import { allHooks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
+import { allHooks, cacheBreaks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
@@ -2623,7 +2623,7 @@ export class Engine {
           throw e;
         }
         // A wait kept warm before this request is told by what it read (src/engine/cache-plans.ts).
-        if (this.cachePlans.owes(id)) this.cachePlans.answered(id, { route: st.info.id, usage: res.usage, sentAt, compactedAt: events.findLast((e) => e.kind === "compaction")?.ts });
+        if (this.cachePlans.owes(id)) this.cachePlans.answered(id, { route: st.info.id, usage: res.usage, sentAt, compactedAt: events.findLast((e) => e.kind === "compaction")?.ts, cause: cacheBreaks.get(res) });
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
         // (Right before the step's own writes: the hold's notice comes a moment before the lock is taken.)
         if (this.store.pacing?.()) await this.store.clear(signal);

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
-import { allHooks } from "../engine/hooks.ts";
+import { allHooks, cacheBreaks } from "../engine/hooks.ts";
 import { changedBlocks } from "../engine/prompt-store.ts";
 import { PromptStore } from "../engine/prompt-store.ts";
 import { breakCause, prefixDiff, prefixOf, Telemetry } from "./telemetry.ts";
@@ -141,15 +141,19 @@ test("a miss after warm requests is told as theirs", () => withStore(async (stor
     const req = { model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal, purpose, route: "p:m", cacheMs: 300_000 } as any;
     const sess = store.session(s.id)!;
     hooks.requestSent!(sess, req);
-    hooks.requestDone!(sess, req, { blocks: [], stop: "end_turn", usage: { input: 0, output: 1, cache_read: read, cache_write: write } } as any);
+    const res = { blocks: [], stop: "end_turn", usage: { input: 0, output: 1, cache_read: read, cache_write: write } } as any;
+    hooks.requestDone!(sess, req, res);
+    return res;
   };
   const causes = async () => (await t.report({})).breaks.map((b) => [b.cause, b.count]);
   await send("turn", 0, 10_000);
   await send("turn", 1_000, 9_000);
   expect(await causes()).toEqual([["provider_miss", 1]]);
   await send("warm", 10_000, 0);
-  await send("turn", 1_000, 9_100);
+  const missed = await send("turn", 1_000, 9_100);
   expect(await causes()).toEqual([["warm_missed", 1], ["provider_miss", 1]]);
+  // The cause is told with the answer, for the wait kept warm (src/engine/cache-plans.ts answered); a read is "none".
+  expect([cacheBreaks.get(missed), cacheBreaks.get(await send("turn", 10_000, 100))]).toEqual(["warm_missed", "none"]);
 }));
 
 test("a cache break is a changed prefix only where a stored fingerprint differs", () => {
@@ -174,6 +178,8 @@ test("a cache break is a changed prefix only where a stored fingerprint differs"
   // Warm requests read it within its lifetime: their miss, past the lifetime or not; a changed prefix is still that.
   expect(breakCause({ ...gap, gapMs: 3_600_000, lifeMs: 300_000, diff: [], warmed: true })).toBe("warm_missed");
   expect(breakCause({ ...gap, gapMs: 1_000, diff: ["tools"], warmed: true })).toBe("prefix_changed");
+  // With no difference recorded for the last request, nothing says the prefix held: not the warm requests' miss.
+  expect(breakCause({ ...gap, gapMs: 1_000, diff: null, warmed: true })).toBe("prefix_changed");
   // Another branch is its own cause: before a changed prefix, after a compaction or a model switch.
   expect(breakCause({ ...gap, gapMs: 1_000, switched: true, diff: ["history"] })).toBe("branch_switch");
   expect(breakCause({ ...gap, compacted: true, gapMs: 1_000, switched: true, diff: ["history"] })).toBe("compaction");

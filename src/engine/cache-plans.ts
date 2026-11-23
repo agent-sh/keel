@@ -301,12 +301,16 @@ export class CachePlans {
   // read less than half of what the warm requests kept (the rule a cache break
   // is counted by, src/admin/telemetry.ts) wrote the context again: the warm
   // requests failed. One on another route, or after a compaction, says nothing
-  // of them.
-  answered(id: string, o: { route: string; usage: Usage; sentAt: number; compactedAt?: number }) {
+  // of them. `cause`: the break the ledger counted for the request
+  // (src/admin/telemetry.ts breakCause, "none" for a read): one it names by
+  // something else (a changed prefix, an urgent build, a compaction) says
+  // nothing of them either.
+  answered(id: string, o: { route: string; usage: Usage; sentAt: number; compactedAt?: number; cause?: string }) {
     const w = this.owed.get(id);
     if (!w) return;
     const prompt = o.usage.input + o.usage.cache_read + o.usage.cache_write;
     if (o.route !== w.data.route || (o.compactedAt ?? 0) > w.touched || o.sentAt > w.touched + w.life) return this.settle(id, "unchecked");
+    if (o.cause !== undefined && o.cause !== "none" && o.cause !== "warm_missed") return this.settle(id, "unchecked");
     this.settle(id, o.usage.cache_read >= 0.5 * Math.min(w.data.tokens, prompt) ? "read" : "missed", o.usage);
   }
 

@@ -135,6 +135,14 @@ test("a wait kept warm is told by what the next request read", async () => {
   const b = await kept("missed");
   b.plans.answered(b.id, { route: MODEL, usage: { input: 10, cache_read: 3_000, cache_write: 97_000, output: 5 }, sentAt: Date.now() });
   expect(notes(b.id)).toEqual([expect.objectContaining({ outcome: "warm_missed", next_read_tokens: 3_000, next_written_tokens: 97_010, text: expect.stringMatching(/^The warm requests did not keep the prompt cache through a wait of 1 s: 1 warm request for \$0\.050, and the next request read 3,000 of 100,000 tokens and wrote the rest again/) })]);
+  // A miss the ledger names by another cause (an urgent build, an edited instruction file, an
+  // effort change) is not the warm requests'; one it names theirs is.
+  const f = await kept("prefix changed");
+  f.plans.answered(f.id, { route: MODEL, usage: { input: 10, cache_read: 3_000, cache_write: 97_000, output: 5 }, sentAt: Date.now(), cause: "prefix_changed" });
+  expect(notes(f.id)).toEqual([expect.objectContaining({ outcome: "warm_unchecked" })]);
+  const g = await kept("warm missed");
+  g.plans.answered(g.id, { route: MODEL, usage: { input: 10, cache_read: 3_000, cache_write: 97_000, output: 5 }, sentAt: Date.now(), cause: "warm_missed" });
+  expect(notes(g.id)).toEqual([expect.objectContaining({ outcome: "warm_missed" })]);
   // Another route's request says nothing of this cache; nor does none at all, once the cache's lifetime passed.
   const c = await kept("other route");
   c.plans.answered(c.id, { route: "standin:other", usage: { input: 10, cache_read: 0, cache_write: 97_000, output: 5 }, sentAt: Date.now() });
@@ -149,5 +157,5 @@ test("a wait kept warm is told by what the next request read", async () => {
   (e.plans as any).d.errors = { capture: (...x: unknown[]) => { failed.push(x); return {}; } };
   e.plans.answered(e.id, { route: MODEL, usage: { input: 10, cache_read: TOKENS, cache_write: 200, output: 5 }, sentAt: Date.now() });
   expect([e.plans.owes(e.id), failed]).toEqual([false, []]);
-  for (const p of [a, b, c, d, e]) p.plans.stopAll();
+  for (const p of [a, b, c, d, e, f, g]) p.plans.stopAll();
 });

@@ -8,7 +8,7 @@ import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { lineage } from "../core/tree.ts";
-import { registerHooks } from "../engine/hooks.ts";
+import { cacheBreaks, registerHooks } from "../engine/hooks.ts";
 import { promptOf } from "../engine/prompt-store.ts";
 import { adoptionBetween, EXPIRED } from "../engine/build-pin.ts";
 import { errorText } from "../engine/retry.ts";
@@ -212,7 +212,8 @@ export class Telemetry {
         const p = this.take(req);
         if (!p) return;
         const cls = res.stop === "refusal" ? "refusal" : res.stop === "model_context_window_exceeded" ? "context_overflow" : null;
-        this.callEnd(p, { outcome: "ok", usage: res.usage, stop: res.stop, cls });
+        const brk = this.callEnd(p, { outcome: "ok", usage: res.usage, stop: res.stop, cls });
+        if (p.purpose === "turn") cacheBreaks.set(res, brk?.cause ?? "none");
       },
       requestWaitEnded: (_s, req, ms) => {
         const step = this.steps.get(req);
@@ -323,6 +324,7 @@ export class Telemetry {
     }
     if (r.outcome === "ok" && p.purpose === "warm" && !((this.lastWarmCall.get(p.session)?.ts ?? -1) > p.t0)) this.lastWarmCall.set(p.session, { ts: p.t0, model: p.model, cache_ms: p.cacheMs ?? null });
     this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0);
+    return brk;
   }
 
   // The last warm request of the session on `model` between two turn requests, when it read the
@@ -707,14 +709,15 @@ const ratio = (list: { prompt_tokens: number; cache_read: number }[]) => {
 // history before it is another), with no compaction since.
 // `warmed`: warm requests read the cache after the last request, the last one
 // within the lifetime: they were sent to keep it and did not, a failed warm,
-// not an expiry (src/engine/cache-plans.ts).
+// not an expiry (src/engine/cache-plans.ts). With no difference recorded for
+// the last request, the prefix may have changed: an unknown change, as without them.
 export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChanged: boolean; compacted: boolean; switched?: boolean; diff?: string[] | null; tookExpired?: boolean; warmed?: boolean }): (typeof BREAK_CAUSES)[number] {
   if (b.modelChanged) return "model_switch";
   if (b.compacted) return "compaction";
   if (b.switched) return "branch_switch";
   if (b.tookExpired) return "expired";
   if (b.diff?.length) return "prefix_changed";
-  if (b.warmed) return "warm_missed";
+  if (b.warmed) return b.diff ? "warm_missed" : "prefix_changed";
   if (b.lifeMs && b.gapMs > b.lifeMs) return "expired";
   return b.diff ? "provider_miss" : "prefix_changed";
 }
