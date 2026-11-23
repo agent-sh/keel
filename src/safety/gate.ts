@@ -893,7 +893,8 @@ export class Gate {
   // are judged again; a looser change reaches only the agents that follow.
   setPerm(sessionId: string, patch: Partial<Omit<SessionPerm, "session_id">>, tie?: PermTie): SessionPerm {
     const prev = this.perm(sessionId);
-    const next = { ...prev, ...patch };
+    // (A patch may be another session's whole settings, as a successor takes its lost context's: they are this session's.)
+    const next = { ...prev, ...patch, session_id: sessionId };
     const fields = PERM_FIELDS.filter((k) => prev[k] !== next[k]);
     const changed = new Set<string>();
     this.store.db.transaction(() => {
