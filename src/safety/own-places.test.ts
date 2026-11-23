@@ -15,12 +15,19 @@ test("a folder is the reader's own only where the words name it so", () => {
     "The audit report with its evidence paths is /h/.cache/work/audits/ui.md.",
     "Scratch files go under ~/.cache/work/lanes/<TASK-ID>/, never /tmp.",
     "Scratch dir ~/.ssh/keys and scratch dir ~ and scratch: /h/.cache and scratch dir /usr/local/share.",
+    // Not given: a sentence that says no, casual wording, a looser form.
+    "Do not use scratch dir ~/projects/a/keel; never touch it.",
+    "Rebuild the index from scratch ~/projects/a/keel/src",
+    "Never write to your folder /h/data/owner.",
+    "Scratch dir /h/.cache/lane-x is not yours.",
+    "scratch: ~/.cache/keel-work",
   ].join("\n");
-  expect(namedPlaces(task, H).sort()).toEqual(["/h/.cache/audit-2", "/h/.cache/audit-follow2", "/h/.cache/work/lanes/L01", "/h/.cache/work/lanes/W2-U3"]);
+  expect(namedPlaces(task, H).sort()).toEqual(["/h/.cache/audit-2", "/h/.cache/work/lanes/L01", "/h/.cache/work/lanes/W2-U3"]);
 });
 
-const facts = (dirty: number | null, untracked: number | null, root = "/h/wt"): RepoFacts => ({
+const facts = (dirty: number | null, untracked: number | null, root = "/h/wt", more: Partial<RepoFacts> = {}): RepoFacts => ({
   root, branch: "keel/x", upstream: null, remotes: {}, defaultOf: () => null, dirty: () => dirty, untracked: () => untracked, merged: () => null,
+  hidden: () => 0, headOnRef: () => true, ahead: () => 0, ...more,
 });
 const own: OwnPlace[] = [{ path: "/h/wt", from: "worktree" }, { path: "/h/.cache/lane", from: "parent" }];
 const settle = (command: string, look: (dir: string) => RepoFacts | null, risks?: PartRisk[]) => {
@@ -31,8 +38,8 @@ const settle = (command: string, look: (dir: string) => RepoFacts | null, risks?
 
 test("a discard in the session's own folders is settled by what it would lose", () => {
   // Nothing to lose: settled. A hard reset leaves untracked files.
-  expect(settle("git reset --hard origin/main", () => facts(0, 1))).toMatchObject({ allow: expect.stringContaining("no uncommitted tracked change") });
-  expect(settle("git fetch -q origin main && git reset -q --hard origin/main", () => facts(0, 3))).toMatchObject({ allow: expect.any(String) });
+  expect(settle("git reset --hard", () => facts(0, 1))).toMatchObject({ allow: expect.stringContaining("no uncommitted tracked change") });
+  expect(settle("git fetch -q origin main && git reset -q --hard origin/main", () => facts(0, 0))).toMatchObject({ allow: expect.stringContaining("no commit of its own that origin/main lacks") });
   // Something to lose: refused, with the way to save it.
   const lost = settle("git checkout w2-final -- .", () => facts(13, 0));
   const deny = lost && "deny" in lost ? lost.deny : "";
@@ -56,14 +63,25 @@ test("what Keel's facts cannot show is left to the judge", () => {
   // Another reason the rules flagged it, or the line as a whole.
   expect(settle("git reset --hard", () => facts(0, 0), [{ at: 0, rule: "remote", why: "x" }])).toBeNull();
   expect(settle("git reset --hard", () => facts(0, 0), [{ at: null, rule: "destroys", why: "x" }])).toBeNull();
+  // A clean that takes ignored files deletes what no count shows (.env, data, an ignored nested repository).
+  for (const c of ["git clean -fdx", "git clean -fdX", "git clean -ffdx", "git clean -fd --ignored"]) expect(settle(c, () => facts(0, 0))).toBeNull();
+  // A reset to a target that lacks commits HEAD has; a target that may overwrite an untracked file.
+  expect(settle("git reset --hard origin/main", () => facts(0, 0, "/h/wt", { ahead: () => 2 }))).toBeNull();
+  expect(settle("git reset --hard origin/main", () => facts(0, 1))).toBeNull();
+  // Changes git was told not to look at (assume-unchanged, skip-worktree), which no count shows.
+  expect(settle("git reset --hard", () => facts(0, 0, "/h/wt", { hidden: () => 1 }))).toBeNull();
+  // A detached worktree whose commit no ref holds.
+  expect(settle("git worktree remove --force /h/.cache/lane/base", (d) => facts(0, 0, d, { headOnRef: () => false }))).toBeNull();
+  // A GIT_ variable points git at another repository than the folder's.
+  for (const c of ["GIT_DIR=/h/other/.git GIT_WORK_TREE=/h/other git reset --hard", "export GIT_WORK_TREE=/h/other; git reset --hard", "GIT_INDEX_FILE=x git checkout -- ."])
+    expect(settle(c, () => facts(0, 0))).toBeNull();
   // A delete that is not one of git's discards.
   expect(settle("rm -rf build", () => facts(0, 0), [{ at: 0, rule: "destroys", why: "deletes build" }])).toBeNull();
 });
 
 test("the shape of a call folds what changes between runs", () => {
-  const places = ["/h/wt", "/h/.cache/lane"];
-  expect(shapeOf("Bash", "cd /h/wt && git reset --hard 1a2b3c4d", places)).toBe(shapeOf("Bash", "cd /h/wt  && git reset --hard 9f8e7d6c5b", places));
-  expect(shapeOf("Bash", "git reset --hard x", places)).not.toBe(shapeOf("Bash", "git checkout -- .", places));
+  expect(shapeOf("Bash", "cd /h/wt && git reset --hard 1a2b3c4d")).toBe(shapeOf("Bash", "cd /h/wt  && git reset --hard 9f8e7d6c5b"));
+  expect(shapeOf("Bash", "git reset --hard x")).not.toBe(shapeOf("Bash", "git checkout -- ."));
 });
 
 test("precision is the share of refusals the owner left standing", () => {
@@ -75,5 +93,7 @@ test("precision is the share of refusals the owner left standing", () => {
   expect(p.total).toMatchObject({ reviewed: 12, refused: 6, taken_back: 1, precision: 5 / 6 });
   expect(p.days.map((d) => d.key)).toEqual(["2026-11-23", "2026-11-22"]);
   expect(p.classes.find((c) => c.key === "judge:ordinary:own")!.precision).toBeNull();
+  // Fewer than five refusals: no share, the counts say it.
+  expect(p.classes.find((c) => c.key === "judge:destroys:own")).toMatchObject({ refused: 4, taken_back: 1, precision: null });
   expect(p.classes[0]!.key).toBe("judge:destroys:own");
 });

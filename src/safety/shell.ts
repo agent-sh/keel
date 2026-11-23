@@ -943,21 +943,58 @@ const RUNNERS = /^(sh|bash|zsh|dash|ksh|fish|python3?|perl|ruby|node|bun|deno)$/
 // What makes the whole line high risk beyond its parts: a script fetched from
 // the network and run by a shell or interpreter that reads it from a pipe or
 // a substitution (curl URL | sh, bash <(curl URL), sh -c "$(curl URL)").
-// A runner that reads its program from its input reads the fetch only when
-// that input can carry it: a pipe, a redirect, or a group or subshell whose
-// input the rules do not follow. A here-document is text in the command
-// (`curl -o f URL; python3 - <<'EOF'`), and an input nothing feeds is the
-// tool's own, which no fetch reaches.
-// A here-document's lines are read as commands only when a shell is fed one:
-// given to cat, tee or an interpreter they are a file's text or code of
-// another language, and neither a fetch nor a run of the line.
-const HEREDOC = /(^|[^<])<<-?\s*["'\\]?[A-Za-z_]/;
+// A runner that reads its program from its input reads the fetch when that
+// input can carry it: a pipe, a redirect, a here-string, or a group, loop or
+// subshell whose input the rules do not follow. A here-document it owns is
+// text in the command (`curl -o f URL; python3 - <<'EOF'`), unless the
+// document is unquoted and a substitution in it fetches: that text is what
+// runs. An input nothing feeds is the tool's own, which no fetch reaches.
+// The lines of a here-document are read as commands when a shell on the line
+// reads its program from its input (`bash <<EOF`, `cat <<EOF | sh`); given to
+// cat, tee or an interpreter they are a file's text or code of another
+// language. A document that holds a fetch and a run, on a line that runs a
+// script or a file, is taken as the script that line runs.
 const SHELL_PROGRAMS = /^(sh|bash|zsh|dash|ksh|fish)$/;
+// A part's own text with what is not syntax taken out: its quoted strings (a delimiter's quotes kept apart) and a comment.
+const syntaxOf = (text: string) => text.replace(/(<<-?\s*)(['"])([^'"\s]+)\2/g, "$1\u0000$3").replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''").replace(/(^|\s)#.*$/s, "$1");
+// The here-document a part owns: none, a quoted one (its text is literal) or an unquoted one (its substitutions run).
+function docOf(p: Simple): "none" | "quoted" | "unquoted" {
+  const t = syntaxOf(p.text);
+  const m = /(?:^|[^<])<<-?\s*(\u0000|\\)?[A-Za-z_]/.exec(t);
+  return !m ? "none" : m[1] ? "quoted" : "unquoted";
+}
+// Whether a program reads its program from its input: no script operand, `-`, or -s.
+function readsInput(args: string[]): boolean {
+  const operands = args.filter((a) => !a.startsWith("-") || a === "-");
+  return !operands.length || operands.includes("-") || args.includes("-s");
+}
+// Whether the line's here-documents are read as commands by a shell on the line.
+export function docsRun(all: Simple[]): boolean {
+  if (!all.some((p) => p.heredoc)) return false;
+  return all.some((p) => { if (p.heredoc) return false; const [prog, ...args] = body(p.words).words; return !!prog && SHELL_PROGRAMS.test(prog) && readsInput(args); });
+}
+const isFetch = (p: Simple) => FETCHERS.has(body(p.words).words[0] ?? "");
+// Whether the here-document a part owns holds a fetch (its lines come after the part, with the substitutions of the line).
+function fetchInDoc(all: Simple[], owner: Simple): boolean {
+  for (let k = all.indexOf(owner) + 1; k < all.length && k < all.indexOf(owner) + 4_096; k++) {
+    const q = all[k]!;
+    if (!q.heredoc && !q.nested) break;
+    if (isFetch(q)) return true;
+  }
+  return false;
+}
 export function lineRisk(all: Simple[]): string | null {
-  const shellDoc = all.some((p) => !p.heredoc && HEREDOC.test(p.text) && SHELL_PROGRAMS.test(body(p.words).words[0] ?? ""));
+  const docs = all.filter((p) => p.heredoc);
+  const shellDoc = docsRun(all);
+  if (docs.length && !shellDoc) {
+    // A document holding a fetch and its run, written to a file by a line that also runs one: that may be the file it wrote.
+    const held = lineRisk(docs.map(({ heredoc: _, nested: __, ...p }) => p));
+    if (held && all.some((p) => !p.heredoc && (RUNNERS.test(body(p.words).words[0] ?? "") || /^(source|\.)$/.test(body(p.words).words[0] ?? "")))) return held;
+  }
   const parts = shellDoc ? all : all.filter((p) => !p.heredoc);
-  const fetches = parts.some((p) => FETCHERS.has(body(p.words).words[0] ?? ""));
-  if (!fetches) return null;
+  if (!parts.some(isFetch)) return null;
+  // A fetch in a substitution of the line (an unquoted document's among them): its output is text the line runs with.
+  const subFetch = parts.some((p) => p.nested && !p.heredoc && isFetch(p));
   const runs = parts.some((p, i) => {
     const [prog, ...args] = body(p.words).words;
     if (!prog || !RUNNERS.test(prog)) return false;
@@ -966,11 +1003,15 @@ export function lineRisk(all: Simple[]): string | null {
     const c = args.findIndex((a) => /^(-[a-zA-Z]*[ce]|--eval)$/.test(a));
     const program = c >= 0 ? args[c + 1] : args.find((a) => !a.startsWith("-"));
     if (program !== undefined && (program.includes("$(...)") || program.includes("`...`"))) return true;
-    const operands = args.filter((a) => !a.startsWith("-") || a === "-");
-    if (!(!operands.length || operands.includes("-") || args.includes("-s"))) return false;
-    if (HEREDOC.test(p.text)) return false;
-    const piped = i > 0 && (parts[i - 1]!.sep === "|" || parts[i - 1]!.sep === "|&");
-    return piped || !!p.inputs?.length || p.text.includes("<<<") || !!p.nested;
+    // Handed what a fetch printed as an argument: what the script does with it is not in the command.
+    if (subFetch && args.some((a) => a.includes("$(...)") || a.includes("`...`"))) return true;
+    if (!readsInput(args)) return false;
+    // A here-document it owns is its input, whatever a pipe or a group would give it.
+    const doc = docOf(p);
+    if (doc !== "none") return doc === "unquoted" && fetchInDoc(all, p);
+    const before = parts[i - 1];
+    const piped = !!before && (before.sep === "|" || before.sep === "|&");
+    return piped || !!p.inputs?.length || syntaxOf(p.text).includes("<<<") || !!p.nested || !!p.flow;
   });
   return runs ? "runs a downloaded script" : null;
 }

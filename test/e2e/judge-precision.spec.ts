@@ -68,7 +68,8 @@ test("Auto keeps the judge's verdicts and the refusals the owner took back, and 
   await box.scrollIntoViewIfNeeded();
   const total = box.getByTestId("judge-precision-total");
   await expect(total).toContainText(String(after.total.reviewed));
-  await expect(total).toContainText(`${Math.round(((after.total.refused - after.total.taken_back) / after.total.refused) * 100)}%`);
+  const stood = after.total.refused - after.total.taken_back;
+  await expect(total).toContainText(after.total.refused >= 5 ? `${Math.round((stood / after.total.refused) * 100)}%` : `${stood} of ${after.total.refused}`);
   const row = box.locator(`[data-testid="judge-precision-class"][data-key="${reset}"]`);
   await expect(row).toContainText("Keel's rules");
   await expect(row).toContainText("destroys work or data, in the session's own folders");

@@ -6,15 +6,16 @@
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
 import type { Bus } from "../core/bus.ts";
 import { locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
-import { namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
-import { lookRepo, repoContext } from "./repofacts.ts";
+import { fitsAsPlace, namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
+import { lookRepo, readRepo, repoContext } from "./repofacts.ts";
 import { looking, type Looked } from "./looked.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
@@ -27,7 +28,7 @@ import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
-import { ownerPrompt } from "../core/owner.ts";
+import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
@@ -179,6 +180,8 @@ export type Blocked = {
 export type VerdictRow = { session_id: string; by: "judge" | "reviewer" | "rule"; decision: "allow" | "deny"; class: string; place: "own" | "outside" | "unknown"; risk?: string; model?: string; tool: string; shape: string; blocked_id?: string };
 // How long after a refusal an owner's allow of the same call counts as taking it back.
 export const OVERRIDE_DAYS = 7;
+// How long a verdict is kept.
+export const VERDICT_DAYS = 90;
 // How a full-auto high-risk call was settled, for the activity list and alerts.
 export type Judged = { session_id: string; call_id: string; tool: string; summary: string; outcome: "rule" | "judge" | "retry" | "refused" | "repeat" | "unavailable" | "streak" | "unreviewed"; reason: string; model?: string; ms?: number; blocked_id?: string };
 
@@ -203,6 +206,29 @@ type CheckResult = { deny: string } | { cls: CallClass; authorization?: ToolAuth
 const interruptedApproval = "The earlier approval cannot be used under Auto. Check the prior outcome before proposing the action again.";
 const changedReview = { deny: "Refused: authorization or the action changed while permission was pending. Check the current permissions before proposing it again." };
 const secretReview = { deny: "Refused: Auto cannot review an action that contains a secret or requires secret substitution. Use Ask to approve the action yourself." };
+
+// Whether a folder is part of a git checkout or holds one: a `.git` in it or above it, or one in the folders below it
+// (three levels, at most 2,000 entries looked at; more than that counts as holding one). Off the loop.
+// `top`: where the look upward stops (a test's own folder); by default the root.
+export async function checkoutAt(dir: string, top = "/"): Promise<boolean> {
+  const there = (p: string) => lstat(p).then(() => true, () => false);
+  for (let d = dir; ; d = dirname(d)) {
+    if (await there(join(d, ".git"))) return true;
+    if (d === top || dirname(d) === d) break;
+  }
+  let seen = 0;
+  const walk = async (d: string, depth: number): Promise<boolean> => {
+    let entries: import("node:fs").Dirent[];
+    try { entries = await readdir(d, { withFileTypes: true }); } catch { return false; }
+    for (const e of entries) {
+      if (++seen > 2_000) return true;
+      if (e.name === ".git") return true;
+      if (depth < 3 && e.isDirectory() && !e.isSymbolicLink() && e.name !== "node_modules" && await walk(join(d, e.name), depth + 1)) return true;
+    }
+    return false;
+  };
+  return walk(dir, 1);
+}
 
 function hasSecret(input: unknown, values: string[]): boolean {
   if (typeof input === "string") return !!(placeholdersIn(input).length || values.some((v) => input.includes(v)) || detect(input).length);
@@ -507,11 +533,15 @@ export class Gate {
   // A read of the store off the loop (the permission routes give the read thread; a test reads on the loop).
   readSql: (sql: string, params: (string | number | null)[]) => Promise<unknown[]> = async (sql, params) => this.store.db.query(sql).all(...params);
   // The folders that are a session's own (own-places.ts), read at most every 30 seconds per session: its folder,
-  // the worktree Keel made for it, its scratch, and the folders its parent's task, its parent's messages or the
-  // owner's messages name as its own. Only Keel's stored words count: a task Keel stored from the parent's call, a
-  // message it stored from the parent, the owner's prompts. Never one of Keel's own folders.
+  // the worktree Keel made for it, its scratch, and the folders named as its own scratch in words Keel stored: the
+  // owner's own prompts, and for an agent the task and the messages its parent gave it. Text the agent wrote, read
+  // or fetched never adds one. A named folder counts only by its real path, reached through no link, that is no
+  // part of a git checkout and holds none, and is none of Keel's own folders; one an agent's parent named counts
+  // only inside the parent's own folders (a parent gives no more than it has).
   private placesKept = new Map<string, { at: number; list: OwnPlace[] }>();
-  async places(session: Session): Promise<OwnPlace[]> {
+  // Whether a folder is part of a git checkout or holds one (a test looks no higher than its own folder).
+  checkout: (dir: string) => Promise<boolean> = (dir) => checkoutAt(dir);
+  async places(session: Session, depth = 0): Promise<OwnPlace[]> {
     const have = this.placesKept.get(session.id);
     if (have && Date.now() - have.at < 30_000) return have.list;
     const list: OwnPlace[] = [{ path: realOf(session.workspace), from: "folder" }];
@@ -522,31 +552,41 @@ export class Gate {
     for (const d of this.scope(session).scratch) list.push({ path: d, from: "scratch" });
     const home = realOf(homedir());
     const keel = ownFolders();
-    for (const w of await this.placeWords(session)) for (const p of namedPlaces(w.text, home)) {
+    const words = await this.placeWords(session);
+    const parent = session.parent_id && words.some((w) => w.from === "parent") ? this.store.session(session.parent_id) : undefined;
+    const given = parent && depth < 8 ? await this.places(parent, depth + 1) : [];
+    for (const w of words) for (const p of namedPlaces(w.text, home)) {
       const real = realOf(p);
+      // (Through a link, or out of the folders a scratch folder can be once resolved: not a place.)
+      if (real !== resolve(p) || !fitsAsPlace(real, home)) continue;
       if (keel.some((k) => contains(k, real) || contains(real, k)) || list.some((x) => x.path === real)) continue;
+      if (w.from === "parent" && !given.some((x) => contains(x.path, real))) continue;
+      if (await this.checkout(real)) continue;
       list.push({ path: real, from: w.from });
     }
     if (this.placesKept.size > 512) this.placesKept.clear();
     this.placesKept.set(session.id, { at: Date.now(), list });
     return list;
   }
-  // The stored words that may name a session's own folders, newest first: its tasks and its parent's messages (an
-  // agent's), and the owner's own prompts. Read on the read thread: a long session's rows are not read on the loop.
+  // The stored words that may name a session's own folders, newest first: for an agent its tasks and its parent's
+  // messages, and the owner's own prompts (ownerPrompt), but none a session imported from another harness holds
+  // (they are that harness's transcript). Read on the read thread, only the fields read.
   private async placeWords(session: Session): Promise<{ text: string; from: "parent" | "owner" }[]> {
-    let rows: { data: string }[] = [];
+    type Row = { kind: string | null; origin: string | null; from_agent: string | null; text: string | null; ts: number };
+    let rows: Row[] = [];
+    let since = 0;
+    try { since = this.store.db.query<{ synced_ms: number }, [string]>("SELECT synced_ms FROM import_links WHERE session_id = ?").get(session.id)?.synced_ms ?? 0; } catch {} // nothing was imported here
     try {
-      rows = await this.readSql("SELECT data FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 200", [session.id]) as { data: string }[];
+      rows = await this.readSql("SELECT json_extract(data, '$.kind') AS kind, json_extract(data, '$.origin') AS origin, json_extract(data, '$.from_agent') AS from_agent, substr(json_extract(data, '$.text'), 1, 20000) AS text, ts FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 200", [session.id]) as Row[];
     } catch { return []; }
     const out: { text: string; from: "parent" | "owner" }[] = [];
     for (const r of rows) {
-      let d: any;
-      try { d = JSON.parse(r.data); } catch { continue; }
-      const text = typeof d?.text === "string" ? d.text : "";
+      const text = typeof r.text === "string" ? r.text : "";
       if (!text) continue;
-      if (session.parent_id && d.kind === "task") out.push({ text: text.replace(/^[\s\S]*?\nTask:\n/, ""), from: "parent" });
-      else if (session.parent_id && d.kind === "steer" && !d.from_agent && text.startsWith(FROM_PARENT)) out.push({ text, from: "parent" });
-      else if (!d.kind && !["harness", "restart"].includes(d.origin) && !text.startsWith("[harness]")) out.push({ text, from: "owner" });
+      const kind = r.kind ?? undefined, origin = r.origin ?? undefined;
+      if (session.parent_id && kind === "task") out.push({ text: text.replace(/^[\s\S]*?\nTask:\n/, ""), from: "parent" });
+      else if (session.parent_id && kind === "steer" && !r.from_agent && text.startsWith(FROM_PARENT)) out.push({ text, from: "parent" });
+      else if (ownerPrompt({ kind, origin }) && r.ts > since && !text.startsWith("[harness]") && !text.startsWith(PEER_PREFIX)) out.push({ text, from: "owner" });
     }
     return out;
   }
@@ -1111,7 +1151,7 @@ export class Gate {
       if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
       const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
       const record = (decision: "allow" | "deny", blocked_id?: string) => "unavailable" in v ? undefined
-        : this.verdict({ session_id: session.id, tool: name, by: "reviewer", decision, class: "ordinary", place: "unknown", risk: v.risk, model: v.model, shape: this.shapeIn(name, summary, []), blocked_id });
+        : this.verdict({ session_id: session.id, tool: name, by: "reviewer", decision, class: "ordinary", place: "unknown", risk: v.risk, model: v.model, shape: shapeOf(name, summary), blocked_id });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
       else if (v.allow) return record("allow"), { cls };
       else {
@@ -1239,14 +1279,14 @@ export class Gate {
     const cwd = auto?.cwd ?? (cls.kind === "shell" ? cls.cwd : undefined) ?? session.workspace;
     const places = this.checking.get(callKey(session.id, call.id))?.own ?? [];
     const sort = this.sortOf(cls, auto?.ask, places, cwd);
-    const record = (v: Omit<VerdictRow, "session_id" | "tool" | "class" | "place" | "shape">) => this.verdict({ session_id: session.id, tool: name, class: sort.class, place: sort.place, shape: this.shapeIn(name, summary, places), ...v });
+    const record = (v: Omit<VerdictRow, "session_id" | "tool" | "class" | "place" | "shape">) => this.verdict({ session_id: session.id, tool: name, class: sort.class, place: sort.place, shape: shapeOf(name, summary), ...v });
     // What Keel's facts settle of a high-risk command inside the session's own folders: a discard of git work with
     // nothing there to lose is judged as the ordinary call it then is; one that would lose uncommitted work is refused
     // here, with the way to do it safely (own-places.ts).
     let settled: string | undefined;
     if (auto && high && cls.kind === "shell" && auto.ask.risks?.length && places.length) {
       const parts = splitCommand(cls.command);
-      const s = parts ? settleOwn({ parts, risks: auto.ask.risks, cwd, home: homedir(), places, look: lookRepo }) : null;
+      const s = parts ? settleOwn({ parts, risks: auto.ask.risks, cwd, home: homedir(), places, look: readRepo }) : null;
       if (s && "deny" in s) {
         const b = this.block({ ...base, calls: [call.id], reason: s.deny, risk: "high", model: "", key, by: "rule" });
         record({ by: "rule", decision: "deny", blocked_id: b.id });
@@ -1276,13 +1316,13 @@ export class Gate {
     const allOwn = places.length > 0 && paths.length > 0 && paths.every((p) => !!ownPlaceOf(realOf(p), places));
     return { class: rule, place: allOwn ? "own" : "outside" };
   }
-  private shapeIn(tool: string, summary: string, places: OwnPlace[]): string {
-    return shapeOf(tool, summary, places.map((p) => p.path));
-  }
 
   // One verdict on a call, kept to count how often the owner later takes it back (judgeStats).
+  private pruned = 0;
   private verdict(v: VerdictRow) {
     try {
+      // (Kept 90 days, pruned at most once a day: the counts read a week, and nothing reads past that.)
+      if (Date.now() - this.pruned > 86_400_000) { this.pruned = Date.now(); this.store.db.query("DELETE FROM judge_verdicts WHERE created < ?").run(Date.now() - VERDICT_DAYS * 86_400_000); }
       this.store.db.query("INSERT INTO judge_verdicts (id, session_id, created, by, decision, class, place, risk, model, tool, shape, blocked_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(crypto.randomUUID(), v.session_id, Date.now(), v.by, v.decision, v.class, v.place, v.risk ?? null, v.model ?? null, v.tool, v.shape, v.blocked_id ?? null);
     } catch {} // a store that takes no writes now: the verdict stands, uncounted (the store says why it takes none)
@@ -1506,7 +1546,7 @@ export class Gate {
     }
     this.finish(a, { state: "allowed", choice: c.choice, by });
     // (An allow of a call the judge or the rules refused in this session before: the owner took that refusal back.)
-    this.overridden("card", { session_id: a.session_id, shape: this.shapeIn(a.tool, a.summary, this.placesKept.get(a.session_id)?.list ?? []) });
+    this.overridden("card", { session_id: a.session_id, shape: shapeOf(a.tool, a.summary) });
     w?.resolve({ allow: true });
     // A new grant may settle other open cards it covers: the ones a line shows
     // whole. A card that is read first stays open for its own answer.

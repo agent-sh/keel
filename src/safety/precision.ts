@@ -15,7 +15,9 @@ export function classKey(r: Pick<VerdictCount, "by" | "class" | "place">): strin
   return `${r.by}:${r.class}:${r.place}`;
 }
 
-// Precision of the refusals: the share the owner did not take back. Nothing refused: no precision to say.
+// Below this many refusals a share says little: the counts are shown instead.
+export const FEW = 5;
+// Precision of the refusals: the share the owner did not take back. Fewer than FEW refusals: no share to say.
 export function precisionOf(rows: VerdictCount[], since: number): Precision {
   const sum = (key: string, of: VerdictCount[]): PrecisionRow => {
     let reviewed = 0, allowed = 0, refused = 0, taken = 0;
@@ -23,7 +25,7 @@ export function precisionOf(rows: VerdictCount[], since: number): Precision {
       reviewed += r.n;
       if (r.decision === "deny") { refused += r.n; taken += r.taken_back; } else allowed += r.n;
     }
-    return { key, reviewed, allowed, refused, taken_back: taken, precision: refused ? (refused - taken) / refused : null };
+    return { key, reviewed, allowed, refused, taken_back: taken, precision: refused >= FEW ? (refused - taken) / refused : null };
   };
   const group = (f: (r: VerdictCount) => string) => {
     const m = new Map<string, VerdictCount[]>();

@@ -102,7 +102,8 @@ function classWords(key: string): { who: string; what: string } {
   const [by = "", flag = "", place = ""] = key.split(":");
   return { who: DECIDER[by] ?? by, what: [FLAGGED[flag] ?? flag, PLACE[place] ?? place].filter(Boolean).join(", ") };
 }
-const pct = (p: number | null) => (p === null ? "none" : `${Math.round(p * 100)}%`);
+// A share when there are enough refusals to say one; else how many of them stood.
+const pct = (r: PrecisionRow) => (r.precision !== null ? `${Math.round(r.precision * 100)}%` : r.refused ? `${r.refused - r.taken_back} of ${r.refused}` : "no refusals");
 
 // How often you took back what the judge or Keel's rules decided without you: a refusal you let one retry of
 // through, or the same call you allowed later on a card. Per class and per day, the last seven days.
@@ -115,7 +116,7 @@ function JudgePrecisionCard() {
       <td className={`${td} text-right`}>{r.reviewed}</td>
       <td className={`${td} text-right`}>{r.refused}</td>
       <td className={`${td} text-right ${r.taken_back ? "text-warn" : "text-muted"}`}>{r.taken_back}</td>
-      <td className={`${td} text-right font-medium`}>{pct(r.precision)}</td>
+      <td className={`${td} text-right font-medium`}>{pct(r)}</td>
     </>
   );
   // (One set of column widths for both tables, so their numbers line up.)
@@ -124,7 +125,7 @@ function JudgePrecisionCard() {
     <thead>
       <tr className="border-b border-line text-left text-caption text-faint">
         <th className={th}>{first}</th><th className={`${th} text-right`}>Reviewed</th><th className={`${th} text-right`}>Refused</th>
-        <th className={`${th} text-right`}>You took back</th><th className={`${th} text-right`}>Precision</th>
+        <th className={`${th} text-right`}>Taken back</th><th className={`${th} text-right`}>Stood</th>
       </tr>
     </thead>
   );
@@ -133,7 +134,7 @@ function JudgePrecisionCard() {
       <h3 className="px-1 text-ui font-medium text-muted">Judge precision</h3>
       <Card>
         <div className="py-4" data-testid="judge-precision">
-          <p className="text-ui text-muted">Calls the judge or Keel's rules decided without you in the last seven days. A refusal counts as taken back when you let one retry of it through, or allow the same call later. Precision is the share of refusals you left standing.</p>
+          <p className="text-ui text-muted">Calls the judge or Keel's rules decided for you in the last seven days. A refusal is taken back when you let one retry of it through, or allow the same call in that session later. Stood is the share of refusals you did not take back, given from five refusals on.</p>
           {!p ? null : p.total.reviewed === 0 ? <p className="k-empty mt-3">No verdicts in the last seven days.</p> : (
             <div className="mt-3 flex flex-col gap-4">
               <table className="w-full table-fixed text-ui" data-testid="judge-precision-classes">

@@ -39,7 +39,7 @@ export { RULE_WORDS } from "./risk-words.ts";
 import { protectedBranch } from "./autonomy.ts";
 import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
 import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LEAVES, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, confined, firmOf, cluster, dirsOf, untrailed, literal, madeName, name, redirected, rootOf, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
-import { highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
+import { docsRun, highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
 export { secretFile } from "./risk-reach.ts";
 export type { Risk, RiskRule, Where } from "./risk-words.ts";
@@ -863,6 +863,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     if (s.sep === "|" && parts[i + 1]!.sep === "&" && s.words.length === 1 && parts[i + 1]!.words.length === 1 && parts[i + 1]!.words[0] === s.words[0]) { line.push({ rule: "machine", why: `pipes ${s.words[0]} into itself in the background: every run starts two more, until the machine stops` }); break; }
   }
   const added = new Map<string, string>(); // the remotes the line adds, by name
+  let docLines: boolean | undefined; // whether a shell on the line reads its here-documents as commands
   for (const i of lined) {
     const s = parts[i]!;
     if (s.heredoc) continue;
@@ -892,9 +893,10 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       const o = args.findIndex((a) => /^(--output|--output-document|-[a-zA-Z]*[oO])$/.test(a));
       const to = redirected(s)[0]?.to ?? (o < 0 ? (p === "wget" ? url : undefined) : /O$/.test(args[o]!) && p === "curl" ? url : args[o + 1]);
       const file = name(to);
-      // (Not a here-document's lines: they are what a program reads, and a path among them is not a program run.)
+      // (Not a here-document's lines, unless a shell on the line reads them as commands: else they are what a program
+      // reads, and a path among them is not a program run.)
       if (file && file !== "null") for (let k = i + 1; k < n && k < i + 64; k++) {
-        if (parts[k]!.heredoc) continue;
+        if (parts[k]!.heredoc && !(docLines ??= docsRun(parts))) continue;
         const r = runs[k]!.words;
         const q = name(r[0]);
         if (q === file || ((SHELLS.test(q) || INTERPRETERS.test(q) || q === "source" || q === ".") && !(SHELLS.test(q) && r.includes("-n")) && r.slice(1).some((a) => name(a) === file))) { line.push({ rule: "hidden", why: `runs ${file}, a script the same line downloads` }); break; }

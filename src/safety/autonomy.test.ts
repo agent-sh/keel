@@ -96,3 +96,9 @@ test("never allowed: home and system roots, disks, credentials sent out", () => 
   expect(neverAllowedText("rm -rf ~/ <<'EOF'\nit's\nEOF", HOME)).toContain("home");
   expect(neverAllowedText("cat <<'EOF'\nrm -rf ./x\nit's\nEOF", HOME)).toBeNull();
 });
+
+test("a GIT_ variable set for git points it elsewhere: the folder's facts settle nothing", () => {
+  expect(allow("git reset --hard")).toContain("no uncommitted change");
+  for (const c of ["GIT_DIR=/o/.git GIT_WORK_TREE=/o git reset --hard", "GIT_WORK_TREE=/o git checkout -- .", "GIT_INDEX_FILE=/tmp/i git clean -f", "GIT_DIR=/o/.git git push -f"])
+    expect(allow(c)).toBeNull();
+});

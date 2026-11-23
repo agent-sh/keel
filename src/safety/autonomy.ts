@@ -16,6 +16,12 @@ export type RepoFacts = {
   defaultOf(remote: string): string | null;     // the remote's default branch, from its HEAD as last fetched
   dirty(): number | null;                       // tracked files with uncommitted changes
   untracked(): number | null;
+  // Read only by own-places.ts (settleOwn), each one local git command: tracked files git was told not to look at
+  // (assume-unchanged, skip-worktree), whose changes no count shows; whether HEAD is on a ref other than HEAD itself
+  // (a detached worktree's commits are lost with it otherwise); commits HEAD has that a target does not.
+  hidden?(): number | null;
+  headOnRef?(): boolean | null;
+  ahead?(target: string): number | null;
   merged(remote: string, branch: string): boolean | null; // the remote's branch, as last fetched, is in its default branch
 };
 export type Look = (dir: string) => RepoFacts | null;
@@ -54,9 +60,12 @@ const afterEnv = (w: string[]) => {
 };
 
 // git's own options before the subcommand: where it runs (-C), and the rest.
+// A GIT_ variable set for the call (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE...) points git at another repository or
+// work tree than the folder says: such a call is judged, never settled from the folder's facts.
 export function gitCall(words: string[], dir: string | null, home: string): { dir: string | null; sub: string; args: string[] } | null {
   const w = afterEnv(words);
   if (w[0] !== "git") return null;
+  if (words.slice(0, words.length - w.length).some((a) => /^GIT_/.test(a))) return null;
   let i = 1;
   let at = dir;
   while (i < w.length && w[i]!.startsWith("-")) {

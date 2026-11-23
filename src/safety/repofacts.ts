@@ -20,6 +20,9 @@ function git(dir: string, ...args: string[]): { ok: boolean; code: number; out: 
   return { ok: r.code === 0, code: r.code, out: r.out.trim() };
 }
 
+// The facts read now, not kept: what settles a discard is read at the moment it is decided.
+export const readRepo = (dir: string): RepoFacts | null => read(dir);
+
 export function lookRepo(dir: string): RepoFacts | null {
   const hit = cache.get(dir);
   if (hit && Date.now() - hit.at < KEEP_MS) return hit.f;
@@ -78,6 +81,19 @@ function read(dir: string): RepoFacts | null {
       return tracked.length + work.dirty.filter((p) => !listed.has(p)).length;
     },
     untracked: () => lines()?.filter((l) => l.startsWith("??")).length ?? null,
+    hidden: () => {
+      const r = git(dir, "ls-files", "-v");
+      return r.ok ? r.out.split("\n").filter((l) => /^[a-zS] /.test(l)).length : null;
+    },
+    headOnRef: () => {
+      const r = git(dir, "for-each-ref", "--count=1", "--contains", "HEAD", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags");
+      return r.ok ? r.out.length > 0 : null;
+    },
+    ahead: (target) => {
+      if (!/^[\w./@{}^~-]+$/.test(target) || target.startsWith("-")) return null;
+      const r = git(dir, "rev-list", "--count", `${target}..HEAD`, "--");
+      return r.ok && /^\d+$/.test(r.out) ? Number(r.out) : null;
+    },
     merged(remote, b) {
       const def = defaultOf(remote);
       if (!def) return null;
