@@ -812,7 +812,7 @@ export function parseTrace(text: string): TraceLine[] {
 // parent's statuses), at the end of a group it ended, or at the end of the
 // whole command. Undefined: it never started (a wait before it gave up).
 // `exit` null: it started and its status is not known: none was seen (it was
-// stopped, or the report reached its cap), its pipe's filters ended a group
+// stopped, or the report reached its cap), its shell's process is not reported (bash 3), its pipe's filters ended a group
 // (whose status is the last filter's), or a job in the background may have
 // printed the line read.
 export function checkStatus(lines: readonly TraceLine[], start: string, filters: number, nth = 0, bg = false): { exit: number | null } | undefined {
@@ -821,6 +821,8 @@ export function checkStatus(lines: readonly TraceLine[], start: string, filters:
   const i = lines.findIndex((l) => "command" in l && norm(l.command) === start && seen++ === nth);
   if (i < 0) return undefined;
   const at = lines[i] as Extract<TraceLine, { pid: string }>;
+  // (A shell with no $BASHPID, bash before 4, reports no process: which line is the check's own shell is not known.)
+  if (!at.pid) return { exit: null };
   // (The shell stops reporting after this many lines.)
   const capped = lines.filter((l) => "command" in l).length >= TRACE_CAP;
   let skip = filters;

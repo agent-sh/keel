@@ -258,3 +258,11 @@ test("commands that write while they seem to read, and what an answer would drop
   expect(m("bun test; tail -3 log | tee /h/t.txt")?.answers).toBe(false);
   expect(m("bun test > /h/u.log 2>&1; tail -3 /h/u.log")?.answers).toBe(true);
 });
+
+test("a shell that reports no process (bash 3 has no $BASHPID): the check's status is not known", () => {
+  const trace = (rows: string[][]) => parseTrace(rows.map((r) => r.join("\t")).join("\n"));
+  // `cat <(slow); bun test; true` with the check failing: the substitution's late line (its stale status)
+  // looks like the check's own shell when no line names its process.
+  expect(checkStatus(trace([["D", "", "0", "0", "bun test"], ["D", "", "1", "0", "echo"], ["D", "", "0", "1", "true"], ["E", "0"]]), "bun test", 0)).toEqual({ exit: null });
+  expect(checkStatus(trace([["D", "", "0", "0", "bun test"], ["E", "1"]]), "bun test", 0)).toEqual({ exit: null });
+});
