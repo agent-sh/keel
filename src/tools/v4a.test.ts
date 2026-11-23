@@ -229,6 +229,21 @@ test("symlinks and .. cannot carry a patch out of the workspace", async () => {
   expect(read(outside, "new.txt")).toBe("allowed\n");
 });
 
+test("the tool writes a file outside the session's folder once the gate let the call through", async () => {
+  // The gate judges a patch's files where they land (policy.ts), as it does a Write's; what reaches the tool was let through.
+  const { applyPatchTool, gptTools } = await import("./gpt.ts");
+  const exec = gptTools.find((t) => t.name === "exec_command")!;
+  const ws = tmp(), other = tmp();
+  put(other, "a.txt", "one\n");
+  const ctx = { sessionId: "v4a-outside", cwd: ws, seen: new Map(), signal: new AbortController().signal } as any;
+  const out = (r: any) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content));
+  const r = await applyPatchTool.run({ input: P(`*** Update File: ${join(other, "a.txt")}\n@@\n-one\n+two`) }, ctx);
+  expect([r.is_error ?? false, out(r)]).toEqual([false, expect.stringContaining("a.txt")]);
+  expect(read(other, "a.txt")).toBe("two\n");
+  const s = await exec.run({ cmd: `cd ${other} && apply_patch <<'EOF'\n${P("*** Add File: b.txt\n+new")}\nEOF` }, ctx);
+  expect([s.is_error ?? false, read(other, "b.txt")]).toEqual([false, "new\n"]);
+});
+
 test("relative paths start at the base directory; records name the workspace path", async () => {
   const ws = tmp();
   mkdirSync(join(ws, "sub"));

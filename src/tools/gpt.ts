@@ -12,7 +12,7 @@ import { cleanTerm, findJob, hasUnread, running, startJob, takeUnread, waitJob, 
 import { goneCwd, logDir, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
-import { applyPatch, extractShellApplyPatch } from "./v4a.ts";
+import { applyPatch, extractShellApplyPatch, patchTargetPaths } from "./v4a.ts";
 
 const obj = (properties: Record<string, unknown>, required: string[]) =>
   ({ type: "object", properties, required, additionalProperties: false });
@@ -50,7 +50,11 @@ function execResult(job: Job, t0: number, maxTokens: number): string {
 
 async function runPatch(text: string, base: string, ctx: ToolContext) {
   try {
-    const r = await applyPatch(ctx.cwd, text, { base, judged: ctx.judged, looked: ctx.looked, sessionId: ctx.sessionId });
+    // The gate judged these files where they land before the call ran (policy.ts reads a patch as the edit of
+    // them): one outside the session's folder that it let through is written, as a Write there is. (The judged
+    // paths when the gate named them; else the patch's own targets.)
+    const cleared = patchTargetPaths(text).map((p) => realOf(atCwd(base, p)));
+    const r = await applyPatch(ctx.cwd, text, { base, allowOutside: ctx.judged ?? cleared, judged: ctx.judged, looked: ctx.looked, sessionId: ctx.sessionId });
     for (const f of r.files) ctx.seen.set(resolve(base, f.path), Date.now());
     return ok(r.summary);
   } catch (e) {

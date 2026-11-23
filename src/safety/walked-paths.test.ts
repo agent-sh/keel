@@ -159,9 +159,11 @@ test("a file tool opens the path that was judged: what it writes and reads is th
     const r = await t.run(input, ctx());
     expect([label, r.is_error ?? false, existsSync(join(outside, name)), existsSync(join(ws, name))]).toEqual([label, false, true, false]);
   }
-  // apply_patch refuses a file that lands outside the workspace unless the gate cleared it: it names where it lands.
+  // apply_patch writes where the gate judged it too, as Write does.
+  const judged = landing(classify(tool(gptTools, "apply_patch"), { input: patch(`*** Add File: ${ws}/out/../w3.txt\n+three`) }, ws));
+  expect(judged.kind === "edit" && judged.paths.includes(join(outside, "w3.txt"))).toBe(true);
   const add = await tool(gptTools, "apply_patch").run({ input: patch(`*** Add File: ${ws}/out/../w3.txt\n+three`) }, ctx());
-  expect([add.is_error, text(add).includes(join(outside, "w3.txt")), existsSync(join(outside, "w3.txt")), existsSync(join(ws, "w3.txt"))]).toEqual([true, true, false, false]);
+  expect([add.is_error ?? false, existsSync(join(outside, "w3.txt")), existsSync(join(ws, "w3.txt"))]).toEqual([false, true, false]);
   // Edits: the file changed is the one outside.
   const c = ctx();
   await tool(claudeTools, "Read").run({ file_path: `${ws}/out/../file.txt` }, c);
