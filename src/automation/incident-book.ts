@@ -273,7 +273,7 @@ export class IncidentBook {
     return i;
   }
 
-  // A turn on it went through. A provider that keeps failing between its answers is not back: the
+  // A turn on a provider went through. A provider that keeps failing between its answers is not back: the
   // incident ends at an answer only when nothing of it came in the window, else it ends when it goes
   // quiet or at a later answer (one alert an episode, not one each time it answers once).
   answered(key: string, how: string, at: number): Incident | undefined {
