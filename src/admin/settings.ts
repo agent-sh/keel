@@ -78,9 +78,13 @@ export function patchSettings(patch: unknown): { ok: true; settings: Record<stri
     const why = s.check(v);
     if (why) return { ok: false, error: `${name}: ${why}` };
   }
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
-  renameSync(tmp, file); // atomic: a crash leaves the old file or the new one
+  // Before a state folder is loaded (a test that uses a module's settings) the change is kept in
+  // memory only: there is no settings file yet, and a name with no folder is the working folder's.
+  if (file) {
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
+    renameSync(tmp, file); // atomic: a crash leaves the old file or the new one
+  }
   current = next;
   const all = settings();
   for (const f of listeners) f(all);
