@@ -230,13 +230,15 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   // Always allow still offers the suggested rule, and Allow once still runs the command.
   // (An answer acts once it has stood in view for a moment. The card is taller than the
   // region that shows it here: the keyboard brings each answer into view, the page gets
-  // two frames to mark it as waiting, and Enter presses it when it no longer waits.
+  // two frames to mark it as waiting, and Enter presses it when it no longer waits: for a
+  // key, once it stood a key's settle time where it is now, which Allow once says itself.
   // Closing the grant's popup with Escape is no new arrival of the keyboard on the card:
   // it was in the card's own popup, so Allow once acts as soon as it stands.)
   const press = async (l: typeof once) => {
     await l.focus();
     await l.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(null)))));
     await expect(l).toBeEnabled();
+    if (l === once) await expect(once).toHaveAttribute("data-ready", "true");
     await page.keyboard.press("Enter");
   };
   await press(always);
