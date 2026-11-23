@@ -262,6 +262,7 @@ export function SessionHeader({ session }: { session: Session }) {
             type="button"
             title={`${session.workspace}\nClick to copy the path`}
             onClick={(e) => void copyOrSay(session.workspace, e.currentTarget)}
+            data-testid="head-folder"
             className="k-head-folder hidden h-6 shrink-0 items-center gap-1 rounded-sm px-1.5 text-caption text-faint hover:bg-hover hover:text-muted sm:inline-flex"
           >
             <Folder className="size-3.5" />

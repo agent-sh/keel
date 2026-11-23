@@ -42,6 +42,8 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await expect(page.getByTestId("note").filter({ hasText: "Moved from" })).toBeVisible();
+    // Its folder over there reads as the repository, as it did here.
+    await expect(page.getByTestId("head-folder")).toHaveText(basename(HOME_DIR));
 
     await page.getByTestId("composer").fill(ask("Run this with the Bash tool, one call: echo three >> a.txt && cat a.txt && pwd. Then reply with the output only.", scriptBash("echo three >> a.txt && cat a.txt && pwd")));
     await page.keyboard.press("Enter");
@@ -450,7 +452,7 @@ test("fleet move: a daemon restart in the middle leaves the session on one side,
     expect(made()).toHaveLength(1);
     const there = (await api(`/api/sessions/${sid}`)).session;
     expect(there.machine).toBe(machine);
-    expect(there.workspace).toBe(`${ROOT}/.keel/worktrees/${made()[0]}`);
+    expect(there.workspace).toBe(`${ROOT}/.keel/worktrees/${made()[0]}/${basename(home)}`);
     expect(readFileSync(`${there.workspace}/a.txt`, "utf8")).toBe("one\ntwo\n");
     const notes = (await api(`/api/sessions/${sid}`)).events.filter((e: any) => e.kind === "note" && e.data.kind === "handoff").map((e: any) => e.data.text as string);
     expect(notes.filter((t: string) => t.includes("was cut"))).toHaveLength(1);

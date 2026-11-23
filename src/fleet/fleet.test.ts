@@ -727,6 +727,8 @@ test("a move cut after the folder took the state is not left stale by the next m
   try {
     await rig.moved("m1");
     const wt = rig.session().workspace;
+    // Its folder there has the repository's name, as here.
+    expect(wt.split("/").at(-1)).toBe(rig.home.split("/").at(-1));
     await rig.moved("local");
 
     // There: the worktree takes "three", the answer is lost, the session writes "four" at home.
@@ -881,7 +883,7 @@ test("a move cut at the switch: the machine and the folder are both old or both 
 
     // Both written, the receipt not: the move is done, and its queue goes on once.
     await cutAtSwitch();
-    const wt = join(rig.root, ".keel/worktrees", rig.worktrees()[0]!);
+    const wt = join(rig.root, ".keel/worktrees", rig.worktrees()[0]!, rig.home.split("/").at(-1)!);
     rig.store.db.query("UPDATE sessions SET machine = 'm1', workspace = ? WHERE id = ?").run(wt, id);
     rig.boot();
     expect(rig.moves.latest(id)).toMatchObject({ state: "done", to: { cwd: wt } });

@@ -595,9 +595,11 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
             // A new worktree. Its name is stored before it is made: a move cut
             // between the two makes this one again (the session never ran in
             // it, so what is there is only what the cut move put) and no other.
+            // The folder has the repository's name, in a folder of the move's
+            // own: the session's folder reads as the repository wherever it shows.
             const stamp = Date.now().toString(36);
             const cut = moves.making?.[dest.id];
-            const made = cut ?? { dir: join(root, ".keel", "worktrees", `handoff-${sid.slice(-12)}-${stamp}`), branch: `keel/handoff-${sid.slice(-12)}-${stamp}` };
+            const made = cut ?? { dir: join(root, ".keel", "worktrees", `handoff-${sid.slice(-12)}-${stamp}`, name), branch: `keel/handoff-${sid.slice(-12)}-${stamp}` };
             moves.making = { ...moves.making, [dest.id]: made };
             this.saveMoves(sid, { ...moves, last: h });
             await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q --no-checkout -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}`, "worktree there");
@@ -702,7 +704,7 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
     for (const [mid, wt] of there) {
       const mr = this.fleet.row(mid);
       if (!mr?.workspace_root) continue;
-      await this.sh(mr, mr.workspace_root, `if [ -d ${q(wt)} ]; then b=$(git -C ${q(wt)} rev-parse --abbrev-ref HEAD); c=$(git -C ${q(wt)} rev-parse --git-common-dir); repo=$(cd ${q(wt)} && cd "$c/.." && pwd); git -C "$repo" worktree remove --force ${q(wt)}; git -C "$repo" branch -D "$b" >/dev/null 2>&1; git -C "$repo" update-ref -d ${q(ref)}; git -C "$repo" for-each-ref --format='%(refname)' ${q(before)} | xargs -r -n 1 git -C "$repo" update-ref -d; fi; true`).catch(() => {});
+      await this.sh(mr, mr.workspace_root, `if [ -d ${q(wt)} ]; then b=$(git -C ${q(wt)} rev-parse --abbrev-ref HEAD); c=$(git -C ${q(wt)} rev-parse --git-common-dir); repo=$(cd ${q(wt)} && cd "$c/.." && pwd); git -C "$repo" worktree remove --force ${q(wt)}; p=$(dirname ${q(wt)}); case "$(basename "$p")" in handoff-*) rmdir "$p" 2>/dev/null;; esac; git -C "$repo" branch -D "$b" >/dev/null 2>&1; git -C "$repo" update-ref -d ${q(ref)}; git -C "$repo" for-each-ref --format='%(refname)' ${q(before)} | xargs -r -n 1 git -C "$repo" update-ref -d; fi; true`).catch(() => {});
     }
     // A bundle a cut move left on a machine it went to or came from.
     for (const mid of new Set([...there.map(([mid]) => mid), m.last?.to.machine_id, m.last?.from.machine_id])) {
