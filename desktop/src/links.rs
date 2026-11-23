@@ -67,6 +67,13 @@ pub fn main_frame_may_show(uri: &str, origin: &str) -> bool {
     !origin.is_empty() && uri.strip_prefix(origin).is_some_and(|rest| page_path(rest.split('#').next().unwrap_or(rest)).is_some())
 }
 
+/// Whether a file offered from `url` is one of the daemon's own: its origin, under its API.
+/// Not the content it serves for others (a session's port behind its portal), not a script's
+/// own bytes (`blob:`, `data:`), not another origin.
+pub fn keepable(url: &str, origin: &str) -> bool {
+    !origin.is_empty() && url.strip_prefix(origin).is_some_and(|rest| rest.starts_with("/api/"))
+}
+
 /// `scheme://host:port` of an address.
 pub fn origin(u: &str) -> String {
     u.split('/').take(3).collect::<Vec<_>>().join("/")
@@ -108,6 +115,30 @@ pub fn free_name(folder: &std::path::Path, suggested: &str, taken: impl Fn(&std:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The review's case: a preview frame saved a file made by its own script.
+    #[test]
+    fn a_file_is_kept_only_from_the_daemons_own_api() {
+        let o = "http://127.0.0.1:47950";
+        assert!(keepable("http://127.0.0.1:47950/api/attachments/7?name=a.png", o));
+        assert!(keepable("http://127.0.0.1:47950/api/sessions/s/artifacts/raw?path=%2Fa&download=1", o));
+        for no in [
+            "blob:null/2b7c8a5e-1c1d-4b0e-9d5e-0f5a3c1f7a11",
+            "blob:http://127.0.0.1:47950/2b7c8a5e-1c1d-4b0e-9d5e-0f5a3c1f7a11",
+            "data:text/plain,hello",
+            "http://127.0.0.1:47950/portal/s/k/5173/x.bin",
+            "http://127.0.0.1:47950/fleet-portal/m/s/k/5173/x.bin",
+            "http://127.0.0.1:47950.evil.example/api/x",
+            "http://127.0.0.1:4795/api/x",
+            "http://127.0.0.1:5173/api/x",
+            "https://example.com/api/x",
+            "http://127.0.0.1:47950/apix",
+            "",
+        ] {
+            assert!(!keepable(no, o), "{no}");
+        }
+        assert!(!keepable("http://127.0.0.1:47950/api/x", ""));
+    }
 
     #[test]
     fn links_lead_to_page_paths() {

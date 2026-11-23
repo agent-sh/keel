@@ -134,9 +134,14 @@ impl WebKit {
         session.connect_download_started(move |_, download| {
             // A file is kept only when the owner pressed in that window a moment before: a script,
             // in the page or in a frame the page lets keep files, saves nothing by itself.
+            // And only one of the daemon's own, from its API: not what a frame's script made
+            // (`blob:`, `data:`), not what a session's port serves, not another origin.
             let from = download.web_view();
-            let pressed = known.borrow().iter().filter_map(Weak::upgrade).any(|w| Some(&w.view) == from.as_ref() && w.gate.borrow().may_keep(Instant::now()));
-            if !pressed {
+            let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string()).unwrap_or_default();
+            let kept = known.borrow().iter().filter_map(Weak::upgrade).any(|w| {
+                Some(&w.view) == from.as_ref() && links::keepable(&url, &w.origin.borrow()) && w.gate.borrow_mut().may_keep(&url, Instant::now())
+            });
+            if !kept {
                 download.cancel();
                 return;
             }
@@ -334,6 +339,13 @@ impl Win {
                         win.window.clipboard().set_text(&text);
                     }
                     win.tell(&serde_json::json!({ "copied": { "id": id, "ok": ok } }));
+                }
+                // (This engine's paste keys stay its own: it gives no frame the keyboard it was not given.)
+                Some(Asked1::Can { saving, .. }) => win.gate.borrow_mut().announces(saving),
+                Some(Asked1::PasteThrough) => {}
+                Some(Asked1::Saving(id, url)) => {
+                    let ok = links::keepable(&url, &win.origin.borrow()) && win.gate.borrow_mut().announce(&url, Instant::now());
+                    win.tell(&serde_json::json!({ "saving": { "id": id, "ok": ok } }));
                 }
                 None => {}
             }

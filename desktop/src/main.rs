@@ -148,8 +148,9 @@ impl Shell {
         self.engine.borrow().open(opening, Rc::new(|win, ask| with_shell(|s| s.asked(win, ask))))
     }
 
-    /// The Qt engine's program stopped before it drew anything: it cannot draw here. The app
-    /// draws its windows itself from now on, each in the place it was asked for.
+    /// The Qt engine's program cannot draw here (it stopped before it drew anything, or keeps
+    /// stopping soon after it is started). The app draws its windows itself from now on, each
+    /// in the place it was asked for.
     fn fall_back(self: &Rc<Self>) {
         let engine: Box<dyn Engine> = Box::new(window::WebKit::new(&self.app, &prefs::dir(), |path| with_shell(|s| s.note_done("download", serde_json::json!({ "to": path })))));
         *self.engine.borrow_mut() = engine;

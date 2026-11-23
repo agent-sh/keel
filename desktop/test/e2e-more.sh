@@ -18,34 +18,63 @@ wait_for 10 '[ "$(windows)" = 1 ]' || true
 # character is the message box's, in an artifact's frame and in the preview's; and the owner's
 # own press into the frame still gives it the keyboard.
 typed=$(printf 'k%.0s' $(seq 1 41))
+# What was typed has arrived when the page's count of it stands still (keys are sent one at a
+# time, and a busy desktop delivers them slowly).
+arrived() { local was=-1 now; for _ in $(seq 1 40); do now=$(said "LOOP at=$1" | sed -n 's/.* box=\([0-9-]*\) frameChars=\([0-9]*\) .*/\1+\2/p'); [ -n "$now" ] && [ "$now" = "$was" ] && return 0; was=$now; sleep 1.2; done; return 0; }
 for kind in artifact preview; do
   loop=$(api /api/sessions "{\"model\":\"scripted:stand-in\",\"title\":\"Desktop: a frame that takes the keyboard ($kind)\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
   "$SHELL_BIN" "keel://session/$loop"
   if wait_for 20 "said 'LOOP shown kind=$kind' | grep -q shown"; then
     sleep 2
-    read -r X Y W H _ <<< "$(geometry)"
+    # The window that shows the loop's session, found by its process and its title, and in
+    # front: what is typed next must be typed into it and no other window of the app.
+    aim=$($A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
+ws=[w for w in json.load(sys.stdin).get("windows", []) if sys.argv[1] in (w.get("title") or "")]
+w=max(ws, key=lambda w: w["geometry"]["width"]*w["geometry"]["height"]) if ws else None
+print(*([w["id"]] + [w["geometry"][k] for k in ("x","y","width","height")]) if w else "")' "takes the keyboard ($kind)")
+    read -r WID X Y W H <<< "$aim"
+    if [ -z "${WID:-}" ]; then fail "no window of the app shows the loop's session ($kind)"; continue; fi
+    $A focus-window --id "$WS" "$WID" > /dev/null 2>&1
+    wait_for 5 "$A active-window --id '$WS' 2> /dev/null | grep -q 'takes the keyboard ($kind)'" || { fail "the window of the loop's session ($kind) is not in front"; continue; }
+    kept_before=$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l)
     # the message box, at the foot of the pane beside the list (pressed twice: the first press
     # of a window that was behind another may only bring it forward)
     $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 0.7
     $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 1
-    $A type --id "$WS" "$typed" > /dev/null 2>&1; sleep 2
+    $A type --id "$WS" "$typed" > /dev/null 2>&1; arrived "$loop"
+    # (The preview's frame offered files all the while, to a page the owner was typing in.)
+    if [ "$kind" = preview ]; then
+      if said "LOOP at=$loop" | grep -q ' offered=[1-9]' && [ "$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l)" = "$kept_before" ]; then ok "a frame that may keep files kept none while the owner typed in the page ($(said "LOOP at=$loop" | sed -n 's/.* offered=\([0-9]*\) .*/\1/p') offered)"; else fail "a frame kept a file while the owner typed, or offered none: $(said "LOOP at=$loop" | cut -c1-120); $(ls "$D/apphome/Downloads" | tr '\n' ' ')"; fi
+    fi
     got=$(said "LOOP at=$loop")
     if echo "$got" | grep -q " box=41 frameChars=0 "; then ok "a frame ($kind) that asks for the keyboard in a loop gets none of 41 characters typed into the message box"; else fail "a frame ($kind) that asks for the keyboard in a loop took what was typed: $got"; fi
     # the owner's own press in the frame, then three keys
     $A click --id "$WS" $((X + W - 176)) $((Y + H - 288)) > /dev/null 2>&1; sleep 1
-    $A type --id "$WS" "abc" > /dev/null 2>&1; sleep 2
+    $A type --id "$WS" "abc" > /dev/null 2>&1; arrived "$loop"
     got=$(said "LOOP at=$loop")
     if echo "$got" | grep -q " frameChars=3 "; then ok "the owner's own press into the frame ($kind) gives it the keyboard"; else fail "the owner's own press into the frame ($kind) did not give it the keyboard: $got"; fi
+    # And their paste, keyed while they are in the frame, lands there (the Qt engine's paste
+    # keys are the app's first: it hands such a paste back to the engine).
+    in_frame=3
+    if [ -n "$SECRET" ]; then
+      (wl-copy "into-the-frame" > /dev/null 2>&1 &)
+      sleep 1
+      $A key --id "$WS" ctrl+v > /dev/null 2>&1
+      arrived "$loop"
+      got=$(said "LOOP at=$loop")
+      in_frame=$(echo "$got" | sed -n 's/.* frameChars=\([0-9]*\) .*/\1/p')
+      if [ "$in_frame" = 17 ]; then ok "the owner's paste into the frame ($kind) they are in lands there"; else fail "the owner's paste into the frame ($kind) they are in did not land there: $got"; fi
+    fi
     # The owner goes back to the message box. A frame they pressed in a moment ago may be given the
     # focus it asks for (Chromium counts their press for a while): the page gives the keyboard
-    # back, stops the frame at its second take, and what is typed then is the message box's.
+    # back and stops the frame at once, and what is typed then is the message box's.
     $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 1.5
-    $A type --id "$WS" "$typed" > /dev/null 2>&1; sleep 2
+    $A type --id "$WS" "$typed" > /dev/null 2>&1; arrived "$loop"
     got=$(said "LOOP at=$loop")
     # (A key that falls in the instant the frame takes the keyboard, before the page has it back,
     # can be lost to both: the frame gets none, and the box is allowed to miss three of the 41.)
     box=$(echo "$got" | sed -n 's/.* box=\([0-9]*\) .*/\1/p')
-    if echo "$got" | grep -q " frameChars=3 " && [ "${box:-0}" -ge 79 ]; then ok "back in the message box after that press, the frame ($kind) gets none of 41 more characters ($((${box:-0} - 41)) of them in the box)"; else fail "back in the message box after the owner's press in the frame ($kind), the frame took what was typed: $got"; fi
+    if echo "$got" | grep -q " frameChars=$in_frame " && [ "${box:-0}" -ge 79 ]; then ok "back in the message box after that press, the frame ($kind) gets none of 41 more characters ($((${box:-0} - 41)) of them in the box)"; else fail "back in the message box after the owner's press in the frame ($kind), the frame took what was typed: $got"; fi
   else
     fail "the frame of the loop case ($kind) was not shown"
   fi
@@ -147,5 +176,27 @@ fallback() { # name, then the environment of that launch
   [ -n "$pid" ] && [ "$n" = 1 ] && grep -q '"name":"webkit"' "$D/fallback-$name.jsonl" && grep -q '"what":"load"' "$D/fallback-$name.jsonl"
 }
 if fallback NoDisplay QT_QPA_PLATFORM=nonexistent; then ok "a Qt that cannot start leaves the app to draw its window itself"; else fail "a Qt that cannot start left no window ($(grep -o '"what":"[a-z-]*"' "$D/fallback-NoDisplay.jsonl" 2> /dev/null | sort | uniq -c | tr '\n' ' '))"; fi
+# And one that drew, and then stops soon after each start: the second time the app draws its windows itself.
+rm -rf "$D/fallback-Twice"; mkdir -p "$D/fallback-Twice"
+(unset KEEL_DESKTOP_PROBE; export KEEL_DESKTOP_INSTANCE="FallbackTwice" KEEL_DESKTOP_DIR="$D/fallback-Twice" KEEL_DESKTOP_LOG="$D/fallback-Twice.jsonl"; rm -f "$D/fallback-Twice.jsonl"; HOME="$D/apphome" setsid nohup "$SHELL_BIN" >> "$D/fallback-Twice.out" 2>&1 < /dev/null &)
+wait_for 25 "grep -q '\"what\":\"load\"' '$D/fallback-Twice.jsonl'" || true
+twice=""; for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -qx "KEEL_DESKTOP_DIR=$D/fallback-Twice" && twice=$p; done
+if [ -n "$twice" ]; then
+  for _ in 1 2 3; do
+    grep -q '"name":"webkit"' "$D/fallback-Twice.jsonl" && break
+    drew=$(pgrep -x keel-desktop-qt -P "$twice" 2> /dev/null | tail -1)
+    [ -n "$drew" ] && sig -KILL "$drew"
+    wait_for 12 "grep -q '\"name\":\"webkit\"' '$D/fallback-Twice.jsonl' || { q=\$(pgrep -x keel-desktop-qt -P $twice | tail -1); [ -n \"\$q\" ] && [ \"\$q\" != \"${drew:-0}\" ]; }" || true
+    sleep 1
+  done
+  has=0; for _ in $(seq 1 60); do
+    has=$($A windows --id "$WS" --pid "$twice" 2> /dev/null | py 'import json,sys; print(len(json.load(sys.stdin).get("windows", [])))'); [ "$has" = 1 ] && break; sleep 0.25
+  done
+  if grep -q '"after":"qt"' "$D/fallback-Twice.jsonl" && [ "$has" = 1 ] && kill -0 "$twice" 2> /dev/null; then ok "a drawing program that stops soon after each start is given up on the second time, and the app draws its window itself"; else fail "a drawing program that kept stopping left the app with $has windows ($(grep -o '"what":"[a-z-]*"' "$D/fallback-Twice.jsonl" | sort | uniq -c | tr '\n' ' '))"; fi
+  (export KEEL_DESKTOP_INSTANCE="FallbackTwice" KEEL_DESKTOP_DIR="$D/fallback-Twice"; timeout 10 "$SHELL_BIN" --quit > /dev/null 2>&1)
+  wait_for 10 "! kill -0 $twice 2> /dev/null" || sig -TERM "$twice"
+else
+  fail "the app of the quick-stop case did not start"
+fi
 printf '#!/usr/bin/env bash\n# Stands in for the drawing program: it says it runs, and stops before it drew anything.\nprintf \x27{"t":"ready"}\\n\x27\nsleep 1\n' > "$D/stops-early.sh"; chmod +x "$D/stops-early.sh"
 if fallback StopsEarly KEEL_DESKTOP_QT="$D/stops-early.sh" && grep -q '"after":"qt"' "$D/fallback-StopsEarly.jsonl"; then ok "a drawing program that stops before it drew anything is given up on, and the app draws its window itself"; else fail "a drawing program that stopped before it drew left no window ($(grep -o '"what":"[a-z-]*"' "$D/fallback-StopsEarly.jsonl" 2> /dev/null | sort | uniq -c | tr '\n' ' '))"; fi

@@ -21,6 +21,12 @@ pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
         "paste" => Some(Asked1::Paste(id(), m.get("edge").and_then(Value::as_i64).filter(|e| (64..=16384).contains(e)).map(|e| e as i32))),
         "copying" => Some(Asked1::Copying),
         "copy" => Some(Asked1::Copy(id(), s("text"))),
+        "can" => {
+            let b = |k: &str| m.get(k).and_then(Value::as_bool).unwrap_or(false);
+            Some(Asked1::Can { paste: b("paste"), saving: b("saving") })
+        }
+        "paste-through" => Some(Asked1::PasteThrough),
+        "saving" => Some(Asked1::Saving(id(), s("url"))),
         "look" => {
             let base = Look::of(m.get("dark").and_then(Value::as_bool).unwrap_or(false));
             let color = |k: &str, or: &str| m.get(k).and_then(Value::as_str).and_then(crate::prefs::hex).unwrap_or(or).to_string();
@@ -50,6 +56,15 @@ pub enum Asked1 {
     /// A copy is coming, said at the owner's press.
     Copying,
     Copy(u64, String),
+    /// What the page in the window does with the app: it pastes where the owner is when the
+    /// app hands it the paste keys, and it announces a file before it offers one. The app's
+    /// own script says neither as a document starts; the page then says what it does.
+    Can { paste: bool, saving: bool },
+    /// The paste keys the app handed the page are the engine's to act on: the owner is in a
+    /// frame of content by their own act.
+    PasteThrough,
+    /// A file the page is about to offer, at this address.
+    Saving(u64, String),
 }
 
 #[cfg(test)]
@@ -81,6 +96,13 @@ mod tests {
         assert!(matches!(m(r#"{"t":"window","path":"/s/abc","key":"k-123"}"#), Some(Asked1::Ask(Ask::Window(p))) if p == "/s/abc"));
         assert!(matches!(m(r#"{"t":"start","key":"k-123"}"#), Some(Asked1::Ask(Ask::Start))));
         assert!(matches!(m(r#"{"t":"paste","id":7,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
+        assert!(matches!(m(r#"{"t":"can","paste":true,"key":"k-123"}"#), Some(Asked1::Can { paste: true, saving: false })));
+        assert!(matches!(m(r#"{"t":"paste-through","key":"k-123"}"#), Some(Asked1::PasteThrough)));
+        assert!(matches!(m(r#"{"t":"saving","id":4,"url":"http://127.0.0.1:1/api/x","key":"k-123"}"#), Some(Asked1::Saving(4, u)) if u == "http://127.0.0.1:1/api/x"));
+        // A frame of content has no key: it announces nothing and switches nothing on.
+        assert!(m(r#"{"t":"saving","id":4,"url":"http://127.0.0.1:1/api/x"}"#).is_none());
+        assert!(m(r#"{"t":"can","paste":true,"saving":true}"#).is_none());
+        assert!(m(r#"{"t":"paste-through"}"#).is_none());
         assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1568,"key":"k-123"}"#), Some(Asked1::Paste(7, Some(1568)))));
         assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
         assert!(matches!(m(r#"{"t":"copying","key":"k-123"}"#), Some(Asked1::Copying)));

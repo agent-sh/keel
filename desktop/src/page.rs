@@ -29,8 +29,11 @@ pub fn bridge(engine: &str, window: &str, tray: bool, post: &str, key: &str, ori
   const post = (m) => {{ try {{ const s = JSON.stringify({{ ...m, key }}); {post}; }} catch (e) {{}} }};
   Object.defineProperty(window, "keelShell", {{ value: Object.freeze({{
     name: "keel-desktop", version: "{version}", engine: "{engine}", platform: "{platform}", window: "{window}",
-    can: Object.freeze({{ titlebar: true, windows: true, links: true, notifications: true, tray: {tray} }}), post,
+    can: Object.freeze({{ titlebar: true, windows: true, links: true, notifications: true, tray: {tray}, saving: true }}), post,
   }}) }});
+  // A new document is in the window: what the one before said it does with the app is gone
+  // with it, until this one's page says so itself.
+  post({{ t: "can" }});
 }})();"#,
         version = env!("CARGO_PKG_VERSION"),
         platform = std::env::consts::OS,

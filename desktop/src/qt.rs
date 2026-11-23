@@ -21,6 +21,10 @@
 //!   {t:"pill", win, show, text, dot, start, label, tip}  the daemon's state beside the window's controls
 //!   {t:"present", win, token} {t:"hide", win} {t:"close", win} {t:"reload", win}
 //!   {t:"clip-read", win, id, edge} {t:"clip-write", text}
+//!   {t:"can", win, paste, saving}                 what the page in the window does with the app (said off
+//!                                                 by the app's own script as a document starts, then by the page)
+//!   {t:"paste-key", win}                          the paste key it held goes on to the engine
+//!   {t:"saving", win, url, ms}                    the one file the page announced, kept if it comes in time
 //!   {t:"confirm", id, question, detail, agree}
 //!   {t:"ping"} {t:"quit"}
 //!
@@ -29,7 +33,7 @@
 //!   {t:"engine", qt, chromium, patched}
 //!   {t:"said", win, s}                            a string a page posted (any frame may: see said.rs)
 //!   {t:"input", win}                              the owner pressed a key or a button in the window
-//!   {t:"keys", win, step}                         the text size keys
+//!   {t:"keys", win, step | paste}                 the text size keys; the paste keys it took from the engine
 //!   {t:"nav", win, kind, url, gesture}            a window asked for ("new-window"), or a link out of Keel ("link")
 //!   {t:"loaded", win, url, how, code}             a load of the main frame ended: "ok", "failed" or "stopped"
 //!   {t:"url", win, url}                           the main frame's address changed
@@ -38,7 +42,7 @@
 //!   {t:"download", path} {t:"download-refused", win} {t:"confirmed", id, yes} {t:"probe", s}
 //!   {t:"crashed", win, status, code}              a page's own process ended (the app says whether it is loaded again)
 //!   {t:"pong"}                                    it answers
-use crate::clip::Gate;
+use crate::clip::{Gate, ANNOUNCED};
 use crate::daemon::{Link, DEFAULT_URL};
 use crate::links::{self, origin};
 use crate::page;
@@ -62,8 +66,10 @@ const POST: &str = "window.__keelPost(s)";
 
 /// How long the other program has to say it runs (its engine is up by then, not only its libraries).
 const READY: Duration = Duration::from_secs(8);
-/// The other program is started again when it stops, but not more often than this.
+/// A stop of the other program this soon after its start is a quick one.
 const AGAIN: Duration = Duration::from_secs(10);
+/// After this many quick stops in a row the other program cannot draw here.
+const QUICK_STOPS: u32 = 2;
 /// How long the other program is given to end when it is told to, before it is ended.
 const GRACE: Duration = Duration::from_millis(1500);
 /// How often the other program is asked whether it still answers, and how long its silence may last.
@@ -119,6 +125,8 @@ struct Inner {
     drew: Cell<bool>,
     /// The other program could not draw: the app was told to draw its windows itself.
     gave_up: Cell<bool>,
+    /// How many times in a row the other program stopped soon after its start.
+    quick: Cell<u32>,
     /// The other program was started for a screen reader (its engine builds its accessibility tree).
     reader: Cell<bool>,
     wins: RefCell<HashMap<u32, Weak<Win>>>,
@@ -151,6 +159,7 @@ impl Qt {
             starts: Cell::new(0),
             drew: Cell::new(false),
             gave_up: Cell::new(false),
+            quick: Cell::new(0),
             reader: Cell::new(false),
             wins: RefCell::new(HashMap::new()),
             next: Cell::new(1),
@@ -333,7 +342,14 @@ fn heard(start: u64, line: &str) {
         ("said", Some(win)) => win.said(&s("s")),
         ("input", Some(win)) => win.gate.borrow_mut().input(Instant::now()),
         ("keys", Some(win)) => {
-            if win.showing.get() == Showing::App {
+            if win.showing.get() != Showing::App {
+                return;
+            }
+            // The paste keys, taken from the engine for a page that pastes where the owner is.
+            if m.get("paste").and_then(Value::as_bool) == Some(true) {
+                win.gate.borrow_mut().input(Instant::now());
+                win.tell(&json!({ "paste": true }));
+            } else {
                 win.tell(&json!({ "scale": s("step") }));
             }
         }
@@ -469,27 +485,51 @@ fn ended(start: u64) {
     lost(&inner, "stopped");
 }
 
-/// The other program is gone under the app. If it never drew a page in this run, it cannot here:
-/// the app is told to draw its windows itself. Else it is started again and the windows come
-/// back where they were; twice in a short while it is left stopped, until the owner asks for a window.
+/// What follows a stop of the other program under the app: it is started again, or it cannot
+/// draw here and the app draws its windows itself. `quick`: the stops soon after a start, in a row.
+#[derive(Debug, PartialEq)]
+pub enum Next {
+    Again,
+    GiveUp,
+}
+
+/// It cannot draw here when it never drew a page in this run, or when it stopped soon after its
+/// start for the second time in a row: a program that keeps stopping is not started for ever,
+/// and the owner is never left with no window. Returns what follows and the new count.
+pub fn after_stop(drew: bool, ran: Duration, quick: u32) -> (Next, u32) {
+    if !drew {
+        return (Next::GiveUp, quick);
+    }
+    if ran >= AGAIN {
+        return (Next::Again, 0);
+    }
+    if quick + 1 >= QUICK_STOPS { (Next::GiveUp, quick + 1) } else { (Next::Again, quick + 1) }
+}
+
+/// The other program is gone under the app: started again with the windows back where they
+/// were, or given up on for this run (the app is told to draw its windows itself).
 fn lost(inner: &Rc<Inner>, how: &str) {
     for w in inner.windows() {
         w.open.set(false);
         w.showing.set(Showing::Nothing);
     }
-    if !inner.drew.get() {
+    let drew = inner.drew.get();
+    let (next, quick) = after_stop(drew, inner.started.get().elapsed(), inner.quick.get());
+    inner.quick.set(quick);
+    if next == Next::GiveUp {
         if !inner.gave_up.replace(true) {
-            eprintln!("keel-desktop: the program that draws the windows with Qt WebEngine {how} before it drew anything: using the system web view");
+            let why = if drew { "again soon after it was started" } else { "before it drew anything" };
+            eprintln!("keel-desktop: the program that draws the windows with Qt WebEngine {how} {why}: using the system web view");
+            if drew {
+                (inner.note)("engine-stopped", json!({ "how": how, "again": false }));
+            }
             (inner.give_up)();
         }
         return;
     }
-    let soon = inner.started.get().elapsed() < AGAIN;
-    eprintln!("keel-desktop: the program that draws the windows {how}{}", if soon { "; it is left stopped until a window is asked for" } else { "; starting it again" });
-    (inner.note)("engine-stopped", json!({ "how": how, "again": !soon }));
-    if !soon {
-        revive(inner);
-    }
+    eprintln!("keel-desktop: the program that draws the windows {how}; starting it again");
+    (inner.note)("engine-stopped", json!({ "how": how, "again": true }));
+    revive(inner);
 }
 
 /// Starts the other program again and puts every window back.
@@ -644,6 +684,24 @@ impl Win {
                     self.inner.send(&json!({ "t": "clip-write", "text": text }));
                 }
                 self.tell(&json!({ "copied": { "id": id, "ok": ok } }));
+            }
+            Some(Asked1::Can { paste, saving }) => {
+                self.gate.borrow_mut().announces(saving);
+                self.inner.send(&json!({ "t": "can", "win": self.id, "paste": paste, "saving": saving }));
+            }
+            Some(Asked1::PasteThrough) => {
+                if self.gate.borrow().may_read(Instant::now()) {
+                    self.inner.send(&json!({ "t": "paste-key", "win": self.id }));
+                }
+            }
+            Some(Asked1::Saving(id, url)) => {
+                // (The other program is told first, on the same pipe as the answer: the file the
+                // page then offers finds it there.)
+                let ok = links::keepable(&url, &self.origin.borrow()) && self.gate.borrow_mut().announce(&url, Instant::now());
+                if ok {
+                    self.inner.send(&json!({ "t": "saving", "win": self.id, "url": url, "ms": ANNOUNCED.as_millis() as u64 }));
+                }
+                self.tell(&json!({ "saving": { "id": id, "ok": ok } }));
             }
             None => {}
         }
@@ -817,6 +875,20 @@ mod tests {
 
     // The first review's case, for this engine: content opened windows and sent addresses to the
     // browser with no click. The engine tells of every window asked for; only the owner's press makes one.
+    // The review's case: stopped twice within ten seconds after it drew, it was left stopped with no window.
+    #[test]
+    fn a_program_that_keeps_stopping_soon_is_given_up_on_and_never_left_stopped() {
+        let (soon, late) = (Duration::from_secs(3), AGAIN + Duration::from_secs(1));
+        // It never drew: it cannot draw here.
+        assert_eq!(after_stop(false, late, 0), (Next::GiveUp, 0));
+        // It ran a while: started again, as often as it takes.
+        assert_eq!(after_stop(true, late, 0), (Next::Again, 0));
+        assert_eq!(after_stop(true, late, 1), (Next::Again, 0));
+        // Soon after its start: once more, then the app draws its windows itself.
+        assert_eq!(after_stop(true, soon, 0), (Next::Again, 1));
+        assert_eq!(after_stop(true, soon, 1), (Next::GiveUp, 2));
+    }
+
     #[test]
     fn nothing_opens_without_the_owners_press() {
         for kind in ["new-window", "link"] {

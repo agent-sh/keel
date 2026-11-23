@@ -12,6 +12,8 @@ pub const PERMIT: Duration = Duration::from_secs(30);
 /// How long after the owner's press in a window a file the page offers is kept (the daemon has
 /// to answer first). The Qt engine's program has the same time (KEEP_MS in ../qt/main.cpp).
 pub const KEEP: Duration = Duration::from_secs(10);
+/// How long after the page announced a file it may arrive (the daemon answers first).
+pub const ANNOUNCED: Duration = Duration::from_secs(10);
 
 /// The size a picture is handed to the page at: its own, or scaled down so its longer side is
 /// `edge` (the size the page keeps a picture at: it would scale a larger one down itself).
@@ -36,6 +38,10 @@ pub fn picture_format<'a>(mimes: impl Iterator<Item = &'a str>) -> Option<&'a st
 pub struct Gate {
     input: Option<Instant>,
     permit: Option<Instant>,
+    /// The file the page announced, and until when it may arrive.
+    saving: Option<(String, Instant)>,
+    /// The page of this load announces its files (said.rs `Can`).
+    announces: bool,
 }
 
 impl Gate {
@@ -49,10 +55,39 @@ impl Gate {
         self.input.is_some_and(|t| now.saturating_duration_since(t) <= GESTURE)
     }
 
-    /// A file to keep: saved only when the owner pressed in the window a moment before. A script,
-    /// in the page or in a frame the page lets keep files, saves nothing by itself.
-    pub fn may_keep(&self, now: Instant) -> bool {
-        self.input.is_some_and(|t| now.saturating_duration_since(t) <= KEEP)
+    /// Whether the page in the window announces a file before it offers one. Said by the
+    /// app's own script as a document starts (it does not, yet), then by the page itself.
+    pub fn announces(&mut self, on: bool) {
+        self.announces = on;
+        if !on {
+            self.saving = None;
+        }
+    }
+
+    /// The page announced a file at `url`: taken at the owner's own press, for one file.
+    pub fn announce(&mut self, url: &str, now: Instant) -> bool {
+        if self.pressed(now) {
+            self.saving = Some((url.to_string(), now + ANNOUNCED));
+        }
+        self.pressed(now)
+    }
+
+    /// A file to keep, offered from `url`. From a page that announces its files: only the one
+    /// file it announced, a moment before, at the owner's press. A frame of content can say
+    /// nothing to the app, so a script in one keeps nothing, whatever the owner is pressing in
+    /// the page meanwhile. From a page of before the announcement: the owner pressed in the
+    /// window a moment before.
+    pub fn may_keep(&mut self, url: &str, now: Instant) -> bool {
+        if !self.announces {
+            return self.input.is_some_and(|t| now.saturating_duration_since(t) <= KEEP);
+        }
+        match self.saving.take() {
+            Some((said, until)) if said == url && now <= until => true,
+            other => {
+                self.saving = other.filter(|(_, until)| now <= *until);
+                false
+            }
+        }
     }
 
     /// A paste: the clipboard is read only at the owner's own press.
@@ -104,11 +139,43 @@ mod tests {
     fn a_file_is_kept_only_a_moment_after_the_owners_press() {
         let t0 = Instant::now();
         let mut gate = Gate::default();
-        assert!(!gate.may_keep(t0));
+        let u = "http://127.0.0.1:1/api/a";
+        assert!(!gate.may_keep(u, t0));
         gate.input(t0);
-        assert!(gate.may_keep(t0 + Duration::from_secs(3)));
-        assert!(gate.may_keep(t0 + KEEP));
-        assert!(!gate.may_keep(t0 + KEEP + Duration::from_millis(1)));
+        assert!(gate.may_keep(u, t0 + Duration::from_secs(3)));
+        assert!(gate.may_keep(u, t0 + KEEP));
+        assert!(!gate.may_keep(u, t0 + KEEP + Duration::from_millis(1)));
+    }
+
+    // The review's case: any key the owner pressed opened ten seconds in which a preview frame
+    // could save a file. A page that announces its files keeps the one it announced, once.
+    #[test]
+    fn a_page_that_announces_its_files_keeps_only_the_one_it_announced() {
+        let t = Instant::now();
+        let (mine, other) = ("http://127.0.0.1:1/api/attachments/7?name=a.png", "http://127.0.0.1:1/api/attachments/8?name=b.png");
+        let mut g = Gate::default();
+        g.announces(true);
+        // The owner types in the page: nothing was announced, so nothing is kept.
+        g.input(t);
+        assert!(!g.may_keep(mine, t + Duration::from_millis(100)));
+        // Announced with no press of the owner's: not taken.
+        assert!(!g.announce(mine, t + GESTURE + Duration::from_secs(1)));
+        assert!(!g.may_keep(mine, t + GESTURE + Duration::from_secs(1)));
+        // Announced at the owner's press: that address, once; another address does not use it up.
+        let p = t + Duration::from_secs(60);
+        g.input(p);
+        assert!(g.announce(mine, p + Duration::from_millis(5)));
+        assert!(!g.may_keep(other, p + Duration::from_millis(40)));
+        assert!(g.may_keep(mine, p + Duration::from_millis(80)));
+        assert!(!g.may_keep(mine, p + Duration::from_millis(90)));
+        // And not after its time.
+        g.input(p);
+        assert!(g.announce(mine, p));
+        assert!(!g.may_keep(mine, p + ANNOUNCED + Duration::from_millis(1)));
+        // A new document says again what it does.
+        g.announces(false);
+        g.input(p);
+        assert!(g.may_keep(mine, p + Duration::from_secs(1)));
     }
 
     #[test]

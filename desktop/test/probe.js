@@ -8,6 +8,7 @@
   let shown = false;
   let raw = "";
   let went = false;
+  let frame = null;
   setInterval(async () => {
     const at = document.activeElement;
     say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")}`);
@@ -25,16 +26,23 @@
     f.referrerPolicy = "no-referrer";
     f.src = raw;
     f.style.cssText = "position:fixed;right:1rem;bottom:1rem;width:22rem;height:12rem;z-index:99;background:#fff";
+    // (And as the panel's frame is taken off the page when the page stops it: ui/src/components/ContentFrame.tsx.)
+    f.addEventListener("keel-frame-stopped", () => { say("FRAME stopped"); f.remove(); });
     document.body.append(f);
+    frame = f;
     say("FRAME shown");
     setTimeout(() => f.remove(), 45000);
   }, 1000);
+  // The paste keys as the app hands them to the page (the Qt engine's window).
+  addEventListener("keel-shell", (e) => { if (e.detail && e.detail.paste) say("PASTE-KEY handed to the page"); });
+  // F8: the artifact's frame is shown anew (for a case that is run more than once).
+  addEventListener("keydown", (e) => { if (e.key === "F8") { if (frame) frame.remove(); shown = false; } }, true);
   // The review's loop case: on a session titled for it, a content frame (as an artifact's, or as
   // the preview's) whose script asks for the keyboard as fast as it can. What each side got is
   // said twice a second.
   let loop = "";
-  let frameChars = 0, frameFocus = 0;
-  addEventListener("message", (e) => { if (e.data && e.data.frameChars !== undefined) { frameChars = e.data.frameChars; frameFocus = e.data.frameFocus; } });
+  let frameChars = 0, frameFocus = 0, offered = 0;
+  addEventListener("message", (e) => { if (e.data && e.data.frameChars !== undefined) { frameChars = e.data.frameChars; frameFocus = e.data.frameFocus; offered = e.data.offered || 0; } });
   setInterval(async () => {
     const m = location.pathname.match(/^\/s\/([\w-]+)$/);
     if (!m) return;
@@ -43,13 +51,18 @@
       const kind = /takes the keyboard \((artifact|preview)\)/.exec(title);
       if (!kind || loop === m[1]) return;
       loop = m[1];
-      frameChars = frameFocus = 0;
+      frameChars = frameFocus = offered = 0;
       const f = document.createElement("iframe");
       f.setAttribute("sandbox", kind[1] === "preview" ? "allow-scripts allow-forms allow-modals allow-popups allow-downloads" : "allow-scripts");
       f.setAttribute("data-content-frame", "");
       f.setAttribute("allow", "focus-without-user-activation 'none'");
       f.style.cssText = "position:fixed;right:1rem;bottom:14rem;width:20rem;height:8rem;z-index:99;background:#fff";
-      f.srcdoc = "<body><input id=i autofocus><script>let foc = 0; const i = document.getElementById('i'); addEventListener('focus', () => foc++); setInterval(() => { window.focus(); i.focus(); i.click(); }, 0); setInterval(() => parent.postMessage({ frameChars: i.value.length, frameFocus: foc }, '*'), 200);</" + "script></body>";
+      // (The preview's frame may keep files: it also offers some all the while, one of the
+      // daemon's own and one its script made. None may be kept: the owner pressed no link.)
+      // (One of the daemon's own that answers as a file to keep, asked for in a frame of the
+      // frame's own so that nothing navigates; and one its script made.)
+      const offers = kind[1] !== "preview" ? "" : `setInterval(() => { const n = document.createElement('iframe'); n.src = ${JSON.stringify(`${location.origin}/api/sessions/${m[1]}/export?format=md`)}; n.hidden = true; document.body.append(n); setTimeout(() => n.remove(), 350); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['from a frame'])); a.download = 'from-a-frame.html'; document.body.append(a); a.click(); a.remove(); off += 2; }, 400);`;
+      f.srcdoc = "<body><input id=i autofocus><script>let foc = 0, off = 0; const i = document.getElementById('i'); addEventListener('focus', () => foc++); setInterval(() => { window.focus(); i.focus(); i.click(); }, 0); setInterval(() => parent.postMessage({ frameChars: i.value.length, frameFocus: foc, offered: off }, '*'), 200);" + offers + "</" + "script></body>";
       document.body.append(f);
       // (As the page's own frames do when the page stops one that keeps taking the keyboard.)
       f.addEventListener("keel-frame-stopped", () => { say("LOOP stopped"); f.remove(); });
@@ -57,7 +70,7 @@
       say(`LOOP shown kind=${kind[1]}`);
     }
     const box = document.querySelector("textarea");
-    say(`LOOP at=${m[1]} box=${box ? box.value.length : -1} frameChars=${frameChars} frameFocus=${frameFocus} active=${document.activeElement ? document.activeElement.tagName : ""}`);
+    say(`LOOP at=${m[1]} box=${box ? box.value.length : -1} frameChars=${frameChars} frameFocus=${frameFocus} offered=${offered} active=${document.activeElement ? document.activeElement.tagName : ""}`);
   }, 500);
   // Calls between browsers: a local page has no use for them, and they must find no address here.
   setTimeout(() => {

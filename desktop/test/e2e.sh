@@ -302,12 +302,26 @@ w, h = 40, 30
 rows = b"".join(b"\x00" + bytes([18, 128, 153]) * w for _ in range(h))
 open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))' "$D/paste.png"
   (wl-copy -t image/png < "$D/paste.png" > /dev/null 2>&1 &); sleep 1
-  # inside the frame (it sits in the lower right corner of the page), then the message box, then the paste key
-  $A click --id "$WS" $((X + W - 16 - 176)) $((Y + H - 16 - 96)) > /dev/null 2>&1; sleep 0.7
-  $A click --id "$WS" $((X + 1120)) $((Y + 953)) > /dev/null 2>&1; sleep 0.4
-  $A key --id "$WS" ctrl+v > /dev/null 2>&1
-  check "the owner's paste of a copied picture attaches it" "wait_for 10 \"said AT | grep -q 'imgs=1'\""
-  sleep 4
+  # inside the frame (it sits in the lower right corner of the page), then the message box, then the paste key.
+  # KEEL_E2E_5B2_TIMES: how often, each time with the frame shown anew (the race is one of timing).
+  times=${KEEL_E2E_5B2_TIMES:-1}; attached=0
+  for i in $(seq 1 "$times"); do
+    if [ "$i" -gt 1 ]; then
+      shown=$(grep -ac '^PROBE FRAME shown' "$D/shell.out"); done_before=$(grep -ac '^PROBE ARTIFACT DONE' "$D/shell.out")
+      $A key --id "$WS" F8 > /dev/null 2>&1
+      wait_for 20 "[ \"\$(grep -ac '^PROBE FRAME shown' '$D/shell.out')\" -gt $shown ] && [ \"\$(grep -ac '^PROBE ARTIFACT DONE' '$D/shell.out')\" -gt $done_before ]" || true
+      sleep 1
+    fi
+    $A click --id "$WS" $((X + W - 16 - 176)) $((Y + H - 16 - 96)) > /dev/null 2>&1; sleep 0.7
+    $A click --id "$WS" $((X + 1120)) $((Y + 953)) > /dev/null 2>&1; sleep 0.4
+    $A key --id "$WS" ctrl+v > /dev/null 2>&1
+    if wait_for 10 "said AT | grep -q 'imgs=$i'"; then attached=$((attached + 1)); fi
+    sleep 4
+  done
+  [ "$times" = 1 ] || echo "# the race of case 5b2, $times times: the picture was attached $attached times, and landed in the frame $(grep -ac '^PROBE ARTIFACT PASTE landed' "$D/shell.out") times"
+  check "the owner's paste of a copied picture attaches it" "[ $attached = $times ]"
+  # (The Qt engine would hand the clipboard to whatever frame has the keyboard: there the app takes the paste keys and the page decides.)
+  if [ "$ENGINE" = qt ]; then check "each paste key was the app's to hand to the page, not the engine's" "[ \"\$(grep -ac '^PROBE PASTE-KEY handed' '$D/shell.out')\" -ge $times ]"; fi
   check "the frame the owner had clicked in asked for the clipboard and got nothing" "grep -aq '^PROBE ARTIFACT CLICKED' '$D/shell.out' && grep -aq '^PROBE ARTIFACT CLIP timer' '$D/shell.out' && ! grep -a '^PROBE ARTIFACT CLIP timer' '$D/shell.out' | grep -q 'read='"
   check "it asked for the keyboard too, and the paste did not land in it" "! grep -aq '^PROBE ARTIFACT PASTE landed' '$D/shell.out'"
 else
@@ -357,12 +371,8 @@ $A key --id "$WS" F9 > /dev/null 2>&1
 check "the main frame does not show an artifact's own address, and the artifact gets no app object" "wait_for 10 \"said GOING-RAW | grep -q GOING\" && sleep 5 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && ! grep -aq '^PROBE ARTIFACT handler=true keelShell=object' '$D/shell.out' && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ]"
 # The same address as a file to keep is saved, and the page is not loaded again.
 $A key --id "$WS" F10 > /dev/null 2>&1
-if [ "$ENGINE" = qt ]; then
-  # Qt's engine asks before the answer arrives, so it cannot know the address is a file: the navigation is refused as any other that is no place of the page.
-  check "a navigation to a file of the daemon's is refused like any that is no place of the page, and the page stays" "wait_for 10 \"said GOING-DOWNLOAD | grep -q GOING\" && sleep 3 && [ ! -e '$D/apphome/Downloads/shell-probe.html' ] && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
-else
-  check "a navigation that is a file to keep is saved, and the page stays" "wait_for 10 \"[ -s '$D/apphome/Downloads/shell-probe.html' ]\" && sleep 3 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
-fi
+# (Nothing announced it: a file is kept when the page offered it at a link the owner pressed, and this is no such thing.)
+check "a navigation to a file of the daemon's keeps no file, and the page stays" "wait_for 10 \"said GOING-DOWNLOAD | grep -q GOING\" && sleep 3 && [ ! -e '$D/apphome/Downloads/shell-probe.html' ] && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
 # The file offered as the page offers one (a link to keep it): saved under a free name in the downloads folder, never over a file.
 kept=$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l); notes=$(logged download)
 $A key --id "$WS" F10 > /dev/null 2>&1

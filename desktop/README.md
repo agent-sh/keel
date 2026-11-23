@@ -146,10 +146,11 @@ may use it:
 | A link out of the daemon's origin | The owner's click. A scripted click or `window.open` without one does nothing. (Qt says of a window asked for whether the owner asked, and says nothing of a link in the main frame: there the owner's press in that window, within a second, is what counts.) | Opens in the browser: http and https only. No other scheme starts a program. |
 | A new window for a place of the page | The owner's click on a link to it, or the page's `window` message. | A window of the app, capped as above. |
 | Clipboard, read | The top frame, by a keyed `paste` message, within a second of the owner's own key or button press in that window: the paste key when the event carried nothing (a copied picture), or Paste in the page's menu. | The app reads the clipboard itself and hands its text and picture to that page, the picture no larger than the page keeps one (scaled and encoded off the main loop). The engine reads it for nobody: script has no clipboard through it (WebKit's asynchronous clipboard is off; Qt's clipboard access for script is off) and every permission request is refused, in every frame. |
-| The keyboard, for a frame of content (an artifact's page, the preview of a port) | The owner: a press in the frame, or Tab into it. | Both engines refuse a frame the focus it was not given (WebKit by itself; Qt's Chromium by the permissions policy `focus-without-user-activation`, which the Qt program turns on and every content frame carries): a frame that asks for the keyboard in a loop gets none of what the owner types. A frame the owner pressed in a moment ago may still be given the focus it asks for under Chromium, and in a browser tab an engine may not refuse at all: there the page's side decides (`ui/src/lib/frames.ts`). A focus the frame asks for itself goes back to what had it, and a frame that takes it a second time is taken off the page, with a line in its place and a button that shows it again; the keyboard is then where it was. |
+| The keyboard, for a frame of content (an artifact's page, the preview of a port) | The owner: a press in the frame, or Tab into it. | Both engines refuse a frame the focus it was not given (WebKit by itself; Qt's Chromium by the permissions policy `focus-without-user-activation`, which the Qt program turns on and every content frame carries): a frame that asks for the keyboard in a loop gets none of what the owner types. A frame the owner pressed in a moment ago may still be given the focus it asks for under Chromium, and in a browser tab an engine may not refuse at all: there the page's side decides (`ui/src/lib/frames.ts`). A focus the frame asks for itself goes back to what had it, and a frame that takes it while the owner is at work in the page (a press or a key there in the last seconds), or a second time at all, is taken off the page at once, with a line in its place and a button that shows it again; the keyboard is then where it was. |
+| The paste keys (Ctrl+V, Ctrl+Shift+V, Shift+Insert) | The owner, where the keyboard is by their own act. | The Qt program takes them from its engine (which would hand the clipboard to whatever frame has the keyboard at that instant) and tells the page, for a page that said it handles them. The page decides at that moment (`ui/src/lib/paste-key.ts`): a frame of content the owner is in gets the engine's own paste; else the element of the page that has the keyboard gets what the app read from the clipboard. A frame that took the keyboard by itself is answered first and gets nothing. The system web view keeps its own paste: it gives keys to no frame the owner is not in. |
 | Clipboard, write | The top frame, by a keyed `copying` message within a second of the owner's press, then `copy` with the text within thirty seconds, once. | The app writes the text. A copy no press announced is refused. Under WebKit a frame can still copy its own selection inside the owner's click in it, as in a browser; under Qt no script copies, and the owner's own copy key and menu do. |
 | Permission requests (clipboard, location, camera, microphone, notifications, pointer lock, screen capture, full screen) | Nobody. | Refused, always, and none is remembered. |
-| Downloads | The page, and a frame the page allows downloads in (the preview of a port you opened), within ten seconds of the owner's key or button press in that window. An HTML artifact's frame cannot, and a script alone keeps nothing. | Saved to the downloads folder under a free name: never over a file, never outside that folder, never into the home folder. |
+| Downloads | The page alone: a file of the daemon's own API that the page announced to the app, with the window's value, at the owner's press on its link, a moment before. One announcement keeps one file, of that address. No frame of content can (it can say nothing to the app), whatever the owner is pressing in the page meanwhile, and nothing is kept from another origin, from a session's port, or from a script's own bytes (`blob:`, `data:`). A page from before the announcement is held to the older rule: the daemon's own API, within ten seconds of the owner's press in that window. | Saved to the downloads folder under a free name: never over a file, never outside that folder, never into the home folder. |
 | Print, `alert`, `confirm`, `prompt`, a password prompt | Nobody: the page draws its own dialogs. | The engine's dialogs are not shown. |
 | Calls between browsers (WebRTC), the engine's own files (`qrc:`) | Nobody. | The system web view has no such calls; the Qt engine's find no address of this machine, and its own files are served to no page. |
 | The Qt program's pipe to the app, its debugging port, its sandbox | The Qt program alone; a developer who starts the app with `--devtools`. | The pipe is moved off the program's standard descriptors, closed on exec: no process the engine starts (a page's script runs in one) inherits a way to write the app a line. Without `--devtools`, what the environment asks of the engine's debugging port and sandbox (`QTWEBENGINE_REMOTE_DEBUGGING`, `QTWEBENGINE_DISABLE_SANDBOX`, the like flags) is not taken, and that is said once on standard error. |
@@ -184,7 +185,9 @@ decisions between them (`main.rs`). The engine sits behind two traits in
   every permission request is refused. When the app goes away the other
   program ends with it. When the other program stops under the app, or stops
   answering, the app starts it again and the windows come back where they
-  were; what a line or an ending of the other program means is tied to the
+  were (one that stops soon after its start twice in a row cannot draw here
+  either: the app draws its windows itself, as below, and never leaves you
+  with none); what a line or an ending of the other program means is tied to the
   start it came from, so a program that was replaced is heard no more. A
   program that stops before it drew anything cannot draw here: the app draws
   its windows itself for the rest of the run, and says so once. A page whose
@@ -269,14 +272,18 @@ clicked in racing the owner's paste for the clipboard, a copy and a paste
 with no press behind them, the main frame at an artifact's own address, a
 lock whose pid was given to another process, and an address that is not this
 machine's. On both engines a frame asks for the keyboard as fast as it can
-while 41 characters are typed into the message box, and a script offers a
-file with no press. With the Qt engine it also stops the program that draws
+while 41 characters are typed into the message box, a frame that may keep
+files offers some all the while, and a script offers a file with no press.
+`KEEL_E2E_5B2_TIMES=10` runs the paste race (a click in an artifact's frame,
+a click in the message box, the paste key) that many times in the run. With
+the Qt engine it also stops the program that draws
 the windows and expects them back where they were with what was typed a
 moment before, flips the desktop's word on a screen reader ten times and
 times a second launch, ends a page's own process four times, looks at what
 the engine's processes hold of the pipe to the app, asks the environment for
-the debugging port and no sandbox, and starts a Qt that cannot start and one
-that stops before it drew (`test/e2e-more.sh`). With another
+the debugging port and no sandbox, and starts a Qt that cannot start, one
+that stops before it drew and one that stops soon after each start
+(`test/e2e-more.sh`). With another
 app in front it checks focus under Wayland: a launch that carries the
 desktop's activation token brings Keel's window to the front; one without
 it, or with a made-up one, does not where the desktop refuses it (some let an
@@ -307,7 +314,11 @@ names the Qt engine's program when it is not beside the app.
   of it. The bound costs no frames. Should a page ever need more, the engine
   ends that page's process and the app loads the page again;
   `QTWEBENGINE_CHROMIUM_FLAGS=--js-flags=--max-old-space-size=N` sets another
-  bound.
+  bound. The bound is on scripts' own heap, not on the page's whole process:
+  with several long panes streaming for half an hour that process grows to
+  less than twice its size and levels off, and gives most of it back when
+  the page has been quiet for some minutes. What grows is the engine's own
+  objects for the documents, not pictures or the graphics memory.
 - A window of the Qt engine draws its own bar and has no frame of the
   desktop's: floating, it has a line around it and no shadow; it is resized
   from its edges.

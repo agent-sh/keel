@@ -166,6 +166,13 @@ static bool pagePath(QStringView p)
 }
 
 // Whether the main frame may show `uri` while the daemon's page is up.
+// Whether a file offered from `uri` is one of the daemon's own: its origin, under its API
+// (../src/links.rs `keepable`: not a script's own bytes, not what a session's port serves).
+static bool keepable(const QString &uri, const QString &origin)
+{
+    return !origin.isEmpty() && uri.startsWith(origin + "/api/");
+}
+
 static bool mayShow(const QString &uri, const QString &origin)
 {
     if (origin.isEmpty() || !uri.startsWith(origin))
@@ -637,6 +644,13 @@ public:
     QTimer sized;
     Bridge *bridge = nullptr;
     std::unique_ptr<QWebEngineView> inspector;
+    // What the page in the window does with the app (../src/said.rs `Can`): it pastes where the
+    // owner is when handed the paste keys, and it announces a file before it offers one. Both
+    // are said off by the app's own script as a document starts, and on by the page itself.
+    bool pastes = false, announces = false;
+    // The file the page announced, and until when it may arrive.
+    QUrl saving;
+    qint64 savingUntil = 0;
 
     Win(int number, QWebEngineProfile *profile, const Look *colors, bool devtools, bool probing) : id(number), look(colors)
     {
@@ -874,6 +888,12 @@ public:
     QList<Win *> spare; // closed windows, kept for the next one asked for (see Win::retire)
     QByteArray pending;
     QHash<int, qint64> pressed, lastPress;
+    // A paste key taken from the engine for a page that pastes where the owner is: the key,
+    // where it was going and whose window that is, until the page says whose paste it is.
+    std::unique_ptr<QKeyEvent> heldKey;
+    QPointer<QObject> heldTo;
+    int heldFor = 0;
+    bool passing = false;
     Qt::Edges gripping;
     bool gripped = false;
 
@@ -910,8 +930,24 @@ public:
         connect(profile, &QWebEngineProfile::downloadRequested, this, [this](QWebEngineDownloadRequest *d) {
             if (d->isSavePageDownload())
                 return;
+            // A file is kept from the daemon's own API only, and from a page that announces its
+            // files only the one it announced a moment before, at the owner's press (the app
+            // checked both, ../src/clip.rs): a frame of content can say nothing to the app, so a
+            // script in one keeps nothing, whatever the owner is pressing meanwhile.
             const auto *from = qobject_cast<Page *>(d->page());
-            if (!from || QDateTime::currentMSecsSinceEpoch() - lastPress.value(from->win) > KEEP_MS) {
+            Win *w = from ? wins.value(from->win) : nullptr;
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            bool keep = false;
+            if (w && keepable(d->url().toString(QUrl::FullyEncoded), from->origin)) {
+                if (w->announces) {
+                    keep = now <= w->savingUntil && d->url() == w->saving;
+                    if (keep)
+                        w->savingUntil = 0;
+                } else {
+                    keep = now - lastPress.value(w->id) <= KEEP_MS;
+                }
+            }
+            if (!keep) {
                 say({{"t", "download-refused"}, {"win", from ? from->win : 0}});
                 d->cancel();
                 return;
@@ -1014,6 +1050,26 @@ public:
             spare << w;
         } else if (t == "clip-read") {
             read(w->id, m["id"].toDouble(), m["edge"].toInt());
+        } else if (t == "can") {
+            w->pastes = m["paste"].toBool();
+            w->announces = m["saving"].toBool();
+            if (!w->announces)
+                w->savingUntil = 0;
+        } else if (t == "saving") {
+            w->saving = QUrl(m["url"].toString());
+            w->savingUntil = QDateTime::currentMSecsSinceEpoch() + m["ms"].toInt();
+        } else if (t == "paste-key") {
+            // The paste the page was handed is the engine's to make (the owner is in a frame of
+            // content by their own act): the key that was held goes on to where it was going.
+            if (heldKey && heldFor == w->id && heldTo) {
+                passing = true;
+                // (As a key arrives: offered as a shortcut, then pressed.)
+                QKeyEvent offer(QEvent::ShortcutOverride, heldKey->key(), heldKey->modifiers(), heldKey->nativeScanCode(), heldKey->nativeVirtualKey(), heldKey->nativeModifiers(), heldKey->text());
+                QCoreApplication::sendEvent(heldTo, &offer);
+                QCoreApplication::sendEvent(heldTo, heldKey.get());
+                passing = false;
+            }
+            heldKey.reset();
         }
     }
 
@@ -1083,12 +1139,18 @@ protected:
     bool eventFilter(QObject *o, QEvent *e) override
     {
         const QEvent::Type type = e->type();
-        if (type != QEvent::KeyPress && type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease && type != QEvent::MouseMove && type != QEvent::Leave)
+        if (passing || (type != QEvent::KeyPress && type != QEvent::ShortcutOverride && type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease && type != QEvent::MouseMove && type != QEvent::Leave))
             return false;
         auto *widget = qobject_cast<QWidget *>(o);
         Win *w = widget ? qobject_cast<Win *>(widget->window()) : nullptr;
         if (!w)
             return false;
+        // A key is offered as a shortcut before it is pressed. The engine takes the paste keys
+        // at that offer and remembers "paste" for the press that follows: with the press taken
+        // from it (below), it would paste at the owner's next key instead. So the offer is
+        // taken from it too.
+        if (type == QEvent::ShortcutOverride)
+            return takesPaste(w, widget, static_cast<QKeyEvent *>(e));
         // (A button's release too: a click is made of both, however long the button was held.)
         if (type == QEvent::KeyPress || type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease) {
             const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -1100,6 +1162,17 @@ protected:
         }
         if (type == QEvent::KeyPress) {
             auto *k = static_cast<QKeyEvent *>(e);
+            // The paste keys, in a window whose page pastes where the owner is: taken from the
+            // engine, which would hand the clipboard to whatever frame has the keyboard at
+            // this instant (one the owner pressed in a moment ago may take it by script). The
+            // page is told, and what is pasted goes through the app (ui/src/lib/paste-key.ts).
+            if (takesPaste(w, widget, k)) {
+                heldKey.reset(k->clone());
+                heldTo = o;
+                heldFor = w->id;
+                say({{"t", "keys"}, {"win", w->id}, {"paste", true}});
+                return true;
+            }
             const Qt::KeyboardModifiers mods = k->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
             if (mods != Qt::ControlModifier)
                 return false;
@@ -1147,6 +1220,22 @@ protected:
             return true;
         }
         return false;
+    }
+
+    // Whether a key in the window is a paste key the app takes from the engine: in a window
+    // whose page pastes where the owner is, with the keyboard in the page.
+    static bool takesPaste(const Win *w, const QWidget *widget, const QKeyEvent *k)
+    {
+        return w->pastes && w->page->mode == Page::App && isPaste(k) && w->view->isAncestorOf(widget);
+    }
+
+    // The keys that paste: Ctrl+V, Ctrl+Shift+V and Shift+Insert.
+    static bool isPaste(const QKeyEvent *k)
+    {
+        const Qt::KeyboardModifiers mods = k->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier | Qt::MetaModifier);
+        if (k->key() == Qt::Key_V)
+            return mods == Qt::ControlModifier || mods == (Qt::ControlModifier | Qt::ShiftModifier);
+        return k->key() == Qt::Key_Insert && mods == Qt::ShiftModifier;
     }
 
     // The pointer's shape over an edge the window is resized from.
@@ -1243,7 +1332,14 @@ static int selfTest(const QString &file)
     const QByteArray kept = ownFlags("--remote-debugging-port=9222 --js-flags=\"--a --b\" --no-sandbox  --disable-gpu --remote-allow-origins=* --disable-web-security", &dropped);
     const bool flagsRight = kept == "--js-flags=\"--a --b\" --disable-gpu" && dropped.size() == 4;
     ::printf("the flags of the environment: %s\n", flagsRight ? "kept and dropped as they should be" : "WRONG");
-    return bad || !n || !flagsRight ? 1 : 0;
+    // And the files it keeps: the daemon's own, from its API (as ../src/links.rs has it).
+    const QString o = "http://127.0.0.1:47950";
+    bool filesRight = keepable(o + "/api/attachments/7?name=a.png", o) && !keepable(o + "/api/x", "");
+    for (const char *no : {"blob:null/2b7c8a5e", "blob:http://127.0.0.1:47950/2b7c8a5e", "data:text/plain,hello", "http://127.0.0.1:47950/portal/s/k/5173/x.bin",
+                           "http://127.0.0.1:47950.evil.example/api/x", "http://127.0.0.1:5173/api/x", "https://example.com/api/x", "http://127.0.0.1:47950/apix", ""})
+        filesRight = filesRight && !keepable(no, o);
+    ::printf("the files it keeps: %s\n", filesRight ? "the daemon's own and no others" : "WRONG");
+    return bad || !n || !flagsRight || !filesRight ? 1 : 0;
 }
 
 int main(int argc, char **argv)
