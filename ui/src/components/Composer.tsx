@@ -4,6 +4,7 @@ import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { completedPrompt, loadMcpPrompts } from "../lib/tools-ui.ts";
 import { promptArgAt, type PromptArg } from "../lib/prompt-args.ts";
+import { loadAgentCommands } from "../lib/acp-commands.ts";
 import { fromBlock, MAX_EDGE, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
@@ -526,8 +527,8 @@ const SessionComposer = memo(function SessionComposer({
       : fm && workspace ? { kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 } : null;
     if (!next || closed.current !== `${next.kind} ${next.start}`) closed.current = null;
     if (!next || closed.current) return setMenu(null);
-    // (The servers' prompts are read when the menu opens, not at each key typed in it.)
-    if (next.kind === "slash" && menu?.kind !== "slash") loadMcpPrompts();
+    // (The servers' prompts and the agent's commands are read when the menu opens, not at each key typed in it.)
+    if (next.kind === "slash" && menu?.kind !== "slash") { loadMcpPrompts(); if (sid) loadAgentCommands(sid); }
     setMenu(next);
   };
 
@@ -585,15 +586,16 @@ const SessionComposer = memo(function SessionComposer({
     if (menu.kind === "slash") {
       return slashItems
         .filter((i) => !i.when || i.when(ctx))
-        .map((i) => ({ i, s: fuzzy(menu.query, i.id + " " + i.label) }))
+        .map((i) => ({ i, s: fuzzy(menu.query, (i.word ?? i.id) + " " + i.label) }))
         .filter((x) => x.s > 0)
-        .sort((a, b) => Number(!!b.i.run) - Number(!!a.i.run) || b.s - a.s)
+        // (In an agent's session its own commands come first: they are what it answers to.)
+        .sort((a, b) => Number(!!b.i.run) - Number(!!a.i.run) || Number(!!b.i.typed) - Number(!!a.i.typed) || b.s - a.s)
         .map(({ i }) => ({
           key: i.id,
           icon: <Slash className="size-3.5" />,
           label: (
             <>
-              <span className="font-medium text-fg">/{i.id}</span>
+              <span className="font-medium text-fg">/{i.word ?? i.id}</span>
               {i.hint && <span className="ml-1.5 text-faint">{i.hint}</span>}
             </>
           ),
@@ -601,6 +603,13 @@ const SessionComposer = memo(function SessionComposer({
           disabled: !i.run,
           apply: () => {
             if (!i.run) return setNotice(`/${i.id} is not available yet.`);
+            // An agent's command goes as typed: with an input to give, the box waits for it.
+            if (i.typed) {
+              setMenu(null);
+              if (i.hint) { setText(`/${i.word ?? i.id} `); ref.current?.focus(); }
+              else { setText(`/${i.word ?? i.id}`); submit(); }
+              return;
+            }
             // A command whose argument is optional ("[...]") runs when typed in full; otherwise the argument is asked for.
             if (i.hint && !(i.hint.startsWith("[") && menu.query === i.id)) { setText(`/${i.id} `); setMenu(null); ref.current?.focus(); }
             else runSlash(i, "");
@@ -747,8 +756,9 @@ const SessionComposer = memo(function SessionComposer({
     if (!t && !images.length) return;
     const cmd = t.match(/^\/([\w:.-]+)(?:\s+([\s\S]*))?$/);
     if (cmd && !images.length) {
-      const item = slashItems.find((i) => i.id === cmd[1]);
-      if (item) return runSlash(item, (cmd[2] ?? "").trim());
+      const typed = slashItems.find((i) => i.typed && (i.word ?? i.id) === cmd[1] && (!i.when || i.when(ctx)));
+      const item = typed ?? slashItems.find((i) => i.id === cmd[1] && !i.typed);
+      if (item && !item.typed) return runSlash(item, (cmd[2] ?? "").trim());
     }
     const why = blocked(images);
     if (why) return setNotice(why);

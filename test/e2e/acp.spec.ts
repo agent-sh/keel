@@ -458,6 +458,43 @@ test("acp client tools", async ({ page, request }) => {
   }
 });
 
+// Feature: an ACP agent's slash commands. What it advertises
+// (available_commands_update) is offered in the message box of its sessions,
+// with its description and input hint, also before the session's first turn
+// (Keel asks each agent once what it offers), and goes to the agent as typed.
+test("acp agent commands", async ({ page, request }) => {
+  const standin = join(import.meta.dirname, "fixtures/acp-agent-standin.ts");
+  await request.delete("/api/acp/agents/standin-c").catch(() => {});
+  expect((await request.post("/api/acp/agents", { data: { id: "standin-c", command: "bun", args: [standin] } })).ok()).toBe(true);
+  try {
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-commands-${Date.now()}`);
+    mkdirSync(ws, { recursive: true });
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "acp:standin-c" } })).json();
+    // Asked of the agent when it was added: a session that has not started it has them too.
+    await expect.poll(async () => ((await (await request.get(`/api/acp/sessions/${session.id}/commands`)).json()).commands as { name: string }[]).map((c) => c.name), { timeout: 60_000 }).toEqual(["web", "test"]);
+    await page.goto(`/s/${session.id}`);
+    const box = page.getByTestId("composer");
+    await box.fill("/");
+    const web = page.getByRole("option").filter({ hasText: "/web" });
+    await expect(web).toContainText("Search the web for information");
+    await expect(web).toContainText("query to search for");
+    await expect(page.getByRole("option").filter({ hasText: "/test" })).toContainText("Run the project's tests");
+    await shoot(page, "acp-18-agent-commands");
+    await web.click();
+    await expect(box).toHaveValue("/web ");
+    await box.pressSequentially("agent client protocol");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("assistant-text").last()).toContainText("ran /web with: agent client protocol", { timeout: 30_000 });
+    // One without an input runs when picked.
+    await box.fill("/tes");
+    await page.getByRole("option").filter({ hasText: "/test" }).click();
+    await expect(page.getByTestId("assistant-text").last()).toContainText("ran /test", { timeout: 30_000 });
+    await expect(page.getByTestId("turn-end")).toHaveCount(2);
+  } finally {
+    await request.delete("/api/acp/agents/standin-c");
+  }
+});
+
 // Feature: an ACP agent's models. ACP states them only in a session's setup
 // (session config options, category model; a reasoning level is category
 // thought_level): Keel asks each agent once, lists each model under the

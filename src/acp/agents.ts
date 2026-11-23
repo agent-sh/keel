@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { basename, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { listedOf, mergeChoices, type Learned } from "./choices.ts";
+import { commandsOf, listedOf, mergeChoices, type Learned, type SlashCommand } from "./choices.ts";
 import { readFolders } from "./confine.ts";
 import { AcpConnection } from "./rpc.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
@@ -123,7 +123,14 @@ export class AcpAgents {
   // What the result does not state is kept as it was (mergeChoices).
   learn(a: AcpAgent, result: unknown) {
     const prev = this.known[a.id];
-    this.keep(a.id, { ...mergeChoices(prev ?? {}, result), key: programKey(a.run!), at: Date.now() });
+    this.keep(a.id, { ...mergeChoices(prev ?? {}, result), key: programKey(a.run!), at: Date.now(), ...(prev?.commands ? { commands: prev.commands } : {}) });
+  }
+
+  // The slash commands an agent advertised in a session of its: kept for its next sessions.
+  learnCommands(a: AcpAgent, commands: SlashCommand[]) {
+    const prev = this.known[a.id];
+    if (JSON.stringify(prev?.commands ?? []) === JSON.stringify(commands)) return;
+    this.keep(a.id, { ...(prev ?? { key: programKey(a.run!) }), at: Date.now(), commands });
   }
 
   private keep(id: string, l: Learned) {
@@ -139,7 +146,8 @@ export class AcpAgents {
   // the background, one at a time (nothing waits for them, and each is a
   // process of its own).
   ask(agents: AcpAgent[]) {
-    for (const a of agents) if (a.run && this.known[a.id]?.key !== programKey(a.run) && !this.queue.some((q) => q.id === a.id)) this.queue.push(a);
+    // (One learned before commands were kept is asked once more for them.)
+    for (const a of agents) if (a.run && (this.known[a.id]?.key !== programKey(a.run) || (!this.known[a.id]?.error && !this.known[a.id]?.commands)) && !this.queue.some((q) => q.id === a.id)) this.queue.push(a);
     if (!this.probing) void this.drain();
   }
 
@@ -164,17 +172,26 @@ export class AcpAgents {
     try {
       conn = new AcpConnection(this.argvOf(a, cwd), { cwd, env: a.run!.env });
       const c = conn;
+      // (The commands it advertises once the session is made: ACP v1 slash-commands.)
+      let commands: SlashCommand[] | undefined;
+      c.onNotification = (method, p) => { if (method === "session/update" && p?.update?.sessionUpdate === "available_commands_update") commands = commandsOf(p.update.availableCommands); };
       const work = (async () => {
         const init = await c.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "keel", title: "Keel", version: "0.1.0" } });
         const caps = init?.agentCapabilities ?? {};
+        const t0 = Date.now();
         const r = await c.request("session/new", { cwd, mcpServers: [] });
+        const took = Date.now() - t0;
         const id = r?.sessionId;
         if (id && caps.sessionCapabilities?.close) await c.request("session/close", { sessionId: id }).catch(() => {});
         if (id && caps.sessionCapabilities?.delete) await c.request("session/delete", { sessionId: id }).catch(() => {});
+        // What it advertises once the session is made can come after these answers: it is read until the agent ends
+        // with its input, given as long as its setup took.
+        await c.finish(took);
         return r;
       })();
       const r = await Promise.race([work, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`no answer in ${PROBE_MS / 1000} s`)), PROBE_MS); })]);
-      this.keep(a.id, { ...mergeChoices(this.known[a.id] ?? {}, r), key, at: Date.now() });
+      const prev = this.known[a.id];
+      this.keep(a.id, { ...mergeChoices(prev ?? {}, r), key, at: Date.now(), commands: commands ?? prev?.commands ?? [] });
     } catch (e) {
       // A probe that failed takes nothing away: what the agent offered before stays listed.
       const code = (e as any)?.code;

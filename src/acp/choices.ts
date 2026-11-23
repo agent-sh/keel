@@ -21,7 +21,24 @@ export type Choice = { value: string; name: string; description?: string };
 export type ChoiceSet = { via: "config"; configId: string; name: string; current: string; options: Choice[] } | { via: "mode"; name: string; current: string; options: Choice[] };
 export type AgentChoices = { models?: ChoiceSet; modes?: ChoiceSet; efforts?: ChoiceSet };
 // What was learned of one agent: under which program (`key`), when, and what failed if it did.
-export type Learned = AgentChoices & { key: string; at: number; error?: string };
+// `commands`: the slash commands it last advertised.
+export type Learned = AgentChoices & { key: string; at: number; error?: string; commands?: SlashCommand[] };
+
+// An agent's slash commands as it advertised them (ACP v1 slash-commands): a name the message box can take
+// (`/name`, then free text), what it does, and the hint for its input.
+export type SlashCommand = { name: string; description: string; hint?: string };
+export function commandsOf(list: unknown): SlashCommand[] {
+  if (!Array.isArray(list)) return [];
+  const out: SlashCommand[] = [];
+  for (const c of list.slice(0, 200)) {
+    const name = typeof c?.name === "string" ? c.name.replace(/^\//, "") : "";
+    if (!/^[\w:.-]{1,64}$/.test(name) || out.some((x) => x.name === name)) continue;
+    const hint = typeof c.input?.hint === "string" && c.input.hint.trim() ? c.input.hint.trim().slice(0, 80) : undefined;
+    out.push({ name, description: typeof c.description === "string" ? c.description.replace(/\s+/g, " ").trim().slice(0, 200) : "", ...(hint ? { hint } : {}) });
+  }
+  return out;
+}
+
 
 // The values of a select, its groups flattened in order.
 function values(options: Json): Choice[] {

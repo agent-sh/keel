@@ -26,7 +26,7 @@ import type { ExternalIO } from "../engine/hooks.ts";
 import { shellText, type CallClass } from "../safety/policy.ts";
 import type { AcpAgent, AcpAgents } from "./agents.ts";
 import { AcpConnection } from "./rpc.ts";
-import { mergeChoices, pickable, settle, splitModel, unknownCurrent, withOptions, type AgentChoices } from "./choices.ts";
+import { commandsOf, mergeChoices, pickable, settle, splitModel, unknownCurrent, withOptions, type AgentChoices, type SlashCommand } from "./choices.ts";
 import { catalogTools } from "../tools/catalog.ts";
 import { clearServed, SERVED_NAME, ServedTools, type ServedTool } from "./served.ts";
 import { AcpTerminals } from "./terminals.ts";
@@ -151,7 +151,7 @@ export const optionFor = (options: Json[], allow: boolean): string | undefined =
 
 // `choices`: what the agent's session offers now (its setup result, then its updates).
 type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Json; choices: AgentChoices; missed?: string; turn?: TurnState;
-  served?: ServedTools; offered: Set<string>; terms: AcpTerminals;
+  served?: ServedTools; offered: Set<string>; terms: AcpTerminals; commands?: SlashCommand[];
   closed: AbortController };  // aborted when the agent's connection ends
 type TurnState = {
   io: ExternalIO;
@@ -372,6 +372,12 @@ export class AcpRunner {
   private update(live: Live, p: Json) {
     const t = live.turn;
     const u = p?.update;
+    // (Commands may come before the setup's answer names the conversation, or with a load's replay.)
+    if (u?.sessionUpdate === "available_commands_update" && (p.sessionId === live.acpSession || live.acpSession === "" || live.acpSession === "loading")) {
+      live.commands = commandsOf(u.availableCommands);
+      this.agents.learnCommands(live.agent, live.commands);
+      return;
+    }
     if (!u || p.sessionId !== live.acpSession) return; // a load's replay, or another conversation
     // The agent changed a choice itself, in a turn or between them: what is current follows it.
     if (u.sessionUpdate === "config_option_update" && Array.isArray(u.configOptions)) live.choices = withOptions(live.choices, u.configOptions);
@@ -419,7 +425,6 @@ export class AcpRunner {
       case "config_option_update":
       case "current_mode_update":
       case "session_info_update":
-      case "available_commands_update":
         break;
     }
   }
@@ -513,6 +518,15 @@ export class AcpRunner {
 
   dispose() {
     for (const id of [...this.live.keys()]) this.release(id);
+  }
+
+  // The slash commands a session's agent offers: its own when it has started, else what that agent last advertised
+  // (in a session of its, or when it was asked what it offers).
+  commands(s: Session): { commands: SlashCommand[]; agent: string; started: boolean } {
+    const agent = agentOf(s.model);
+    const l = this.live.get(s.id);
+    const mine = l && l.agent.id === agent ? l.commands : undefined;
+    return { agent, started: !!mine, commands: mine ?? this.agents.learned(agent)?.commands ?? [] };
   }
 
   running(): { session: string; agent: string; acp_session: string }[] {

@@ -71,6 +71,14 @@ export class AcpConnection {
     );
   }
 
+  // Its input ends: an agent that ends with it has said all it had to say by then. Resolves when it ended or after `ms`.
+  async finish(ms: number): Promise<void> {
+    try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
+    let t: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.exited, new Promise<void>((r) => { t = setTimeout(r, ms); })]);
+    clearTimeout(t);
+  }
+
   close() {
     try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
     this.proc.kill();

@@ -54,6 +54,12 @@ const configOptions = () => [
 async function prompt(id: number, p: any) {
   const s = p.sessionId;
   const text = (p.prompt ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ");
+  // Its slash commands, sent as the text of a prompt.
+  const cmd = text.match(/^\/(web|test)\b\s*(.*)$/s);
+  if (cmd) {
+    update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `ran /${cmd[1]}${cmd[2] ? ` with: ${cmd[2]}` : ""}` } });
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
   if (/which model/.test(text)) {
     update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `model ${config.model}, effort ${config.effort}` } });
     return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
@@ -163,7 +169,16 @@ process.stdin.on("data", (d) => {
     if (m.method === undefined) { waiting.get(m.id)?.(m); waiting.delete(m.id); continue; }
     if (m.method === "initialize") clientCaps = m.params?.clientCapabilities ?? {};
     if (m.method === "initialize") out({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: false, sessionCapabilities: { close: {} } }, agentInfo: { name: "standin", version: "1" }, authMethods: [] } });
-    else if (m.method === "session/new") { cwd = m.params.cwd; mcpServers = m.params.mcpServers ?? []; out({ jsonrpc: "2.0", id: m.id, result: { sessionId: `standin-${Date.now()}`, configOptions: configOptions() } }); }
+    else if (m.method === "session/new") {
+      cwd = m.params.cwd; mcpServers = m.params.mcpServers ?? [];
+      const sessionId = `standin-${Date.now()}`;
+      out({ jsonrpc: "2.0", id: m.id, result: { sessionId, configOptions: configOptions() } });
+      // Its slash commands, once the session is made.
+      setTimeout(() => update(sessionId, { sessionUpdate: "available_commands_update", availableCommands: [
+        { name: "web", description: "Search the web for information", input: { hint: "query to search for" } },
+        { name: "test", description: "Run the project's tests" },
+      ] }), 0);
+    }
     else if (m.method === "session/set_config_option") {
       const key = m.params.configId === "model" ? "model" : m.params.configId === "effort" ? "effort" : null;
       if (!key) out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: `no option ${m.params.configId}` } });

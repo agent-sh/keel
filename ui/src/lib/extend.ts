@@ -39,6 +39,12 @@ export type SlashItem = {
   // It starts a turn in the session (a prompt for the model): held while
   // another branch is previewed, like a typed message.
   sends?: true;
+  // What is typed after the slash when it is not the id (an agent's command:
+  // its id is kept apart from Keel's own of the same name).
+  word?: string;
+  // Sent as typed, as a message: the session's agent reads the command itself.
+  // In a session where it applies it is taken before a command of Keel's of the same word.
+  typed?: true;
 };
 // `start`: in the start box, where no session exists yet, it starts one (in the folder, model
 // and machine picked there) and opens it; a command that can run in a new session calls it.

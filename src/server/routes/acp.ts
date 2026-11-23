@@ -100,6 +100,19 @@ export const acpRoutes: RouteModule = (deps) => {
         return listing();
       },
     },
+    // The slash commands a session's agent advertised (sent as typed: the agent reads them).
+    "/api/acp/sessions/:id/commands": {
+      GET: (req: any) => {
+        const s = deps.store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        if (!isAcpModel(s.model)) return json({ commands: [] });
+        const r = runner.commands(s);
+        // An agent not asked yet what it offers (its probe makes a session and keeps what it advertised) is asked now.
+        const a = provider.agents.get(r.agent);
+        if (!r.started && a) provider.agents.ask([a]);
+        return json(r);
+      },
+    },
     // The owner's writable folders for one agent; null goes back to the guess. Used from its next start.
     "/api/acp/agents/:id/folders": {
       PUT: async (req: any) => {
