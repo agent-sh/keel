@@ -11,12 +11,13 @@ type Rec = { born: string; name: string };
 
 // When a process started, as the kernel counts it (field 22 of its stat line):
 // with the pid, it names one process, never a later one that got the same pid.
-// Null where there is no /proc, or for a process that is gone or a zombie.
+// Null where there is no /proc, or for a process that is gone, a zombie or
+// dead and being reaped (state X, a moment of every exit).
 export function born(pid: number): string | null {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const after = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    return after[0] === "Z" ? null : after[19] ?? null;
+    return after[0] === "Z" || after[0] === "X" ? null : after[19] ?? null;
   } catch {
     return null;
   }
