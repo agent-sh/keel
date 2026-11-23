@@ -15,7 +15,7 @@ import { archive } from "../lib/sessops.ts";
 import { auto } from "../lib/automation.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
-import { PanelHand, PanelsButton } from "./SidePanel.tsx";
+import { PanelsButton } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
 
@@ -35,12 +35,12 @@ export function SidebarButton() {
 }
 
 // The toolbar holds what fits, three tools at most. Session actions and the Panels chooser never
-// leave it. The token counts and the panel shortcuts give way first (the turn
-// footer has the counts, the chooser every panel). After them the tools of the
+// leave it; the chooser names the panels at hand at its top. The token counts give way first (the
+// turn footer has them). After them the tools of the
 // session move, lowest rank first, into the More menu: the same controls as a
 // labeled list. Nothing scrolls out of sight.
 type Tool = { id: string; label: string; rank: number; node: ReactNode; item?: (close: () => void) => ReactNode };
-const GIVE_WAY = ["usage", "hand"];
+const GIVE_WAY = ["usage"];
 const TITLE_ROOM = 11; // rem the title's field keeps while it is renamed
 const ROW_TOOLS = 3; // the tools the row shows at most; the rest are in More
 
@@ -104,10 +104,8 @@ function useFit(tools: Tool[], reserve: number) {
         if (empty.has(id) || (c && (full || c > left))) { full ||= !empty.has(id); next.push(id); } else left -= c;
       }
     }
-    // However wide the row, it keeps the three tools of the highest rank that have something to show,
-    // and the panel shortcuts go to the Panels chooser: the rest are in More, by name. (A head of nine
-    // controls a pane read as noise, and each pane has its own.)
-    if (!next.includes("hand")) next.push("hand");
+    // However wide the row, it keeps the three tools of the highest rank that have something to show:
+    // the rest are in More, by name. (A head of nine controls a pane read as noise, and each pane has its own.)
     let kept = 0;
     for (const id of ranked) if (!next.includes(id) && cost(id) > 0 && ++kept > ROW_TOOLS) next.push(id);
     setOut((prev) => (prev.join() === next.join() ? prev : next));
@@ -282,7 +280,6 @@ export function SessionHeader({ session }: { session: Session }) {
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
       </div>
       {folded.length > 0 && <MoreTools tools={folded} live={live} list={list} changed={later} />}
-      {!out.includes("hand") && <span data-tool="hand" className="k-head-tool"><PanelHand session={session} /></span>}
       <PanelsButton session={session} />
       <Menu.Root>
         <Menu.Trigger ref={menuButton} aria-label="Session actions" data-testid="session-menu" className={iconButton}>

@@ -75,39 +75,60 @@ test("side panel, Errors, Inbox, Loops and Settings share one container grammar"
   for (const n of closing) expect(got[n]!.closeAtEnd, n).toBeLessThanOrEqual(18);
 });
 
-// The header's panel shortcuts are told apart without pointing at them: each
-// shows its glyph and its name, the open one is raised, and the chooser says
-// Panels. In a pane among four the names give way and the glyphs stay, each
-// still named for a screen reader.
-test("the header's panel shortcuts show their names", async ({ page, request }) => {
+// The header keeps few tools: the session's own three at most, and the Panels
+// chooser, which says Panels. The panels at hand (the ones used, or kept
+// there on purpose, and the open one) head the chooser, each with its glyph
+// and its name, the open one marked; a panel kept at hand joins them.
+test("the panels at hand are named at the top of the Panels chooser", async ({ page, request }) => {
   const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
   const { session } = await (await request.post("/api/sessions", { data: { model, title: "Named shortcuts" } })).json();
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto(`/s/${session.id}`);
   const header = page.getByTestId("session-header").first();
-  const hand = header.locator('[data-testid^="panel-toggle-"]');
-  await expect(hand.first()).toBeVisible();
-  const words = async () => hand.evaluateAll((els) => els.map((el) => {
-    const w = el.querySelector(".k-hand-word");
-    const r = w?.getBoundingClientRect();
-    return { name: el.getAttribute("aria-label"), text: w?.textContent ?? "", shown: !!r && r.width > 8 && r.height > 8, icon: !!el.querySelector("svg") };
-  }));
-  const wide = await words();
-  console.log(JSON.stringify(wide));
-  expect(wide.length).toBeGreaterThanOrEqual(2);
-  for (const w of wide) { expect(w.text).toBe(w.name); expect(w.shown, w.name!).toBe(true); expect(w.icon).toBe(true); }
-  await expect(header.getByTestId("panel-menu")).toContainText("Panels");
-  // The open one is raised.
-  await hand.first().click();
-  await expect(hand.first()).toHaveAttribute("aria-pressed", "true");
-  expect(await hand.first().evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
-  await shoot(page, "surfaces-06-named-shortcuts");
-  await hand.first().click();
+  const menu = header.getByTestId("panel-menu");
+  await expect(menu).toContainText("Panels");
+  // No shortcut beside it: the row holds the session's tools, More and the chooser.
+  await expect(header.locator('[data-testid^="panel-toggle-"]')).toHaveCount(0);
 
-  // A short row: the names are clipped, the glyphs and the accessible names stay.
-  await page.setViewportSize({ width: 900, height: 900 });
-  await expect.poll(async () => (await words()).filter((w) => w.shown).length).toBe(0);
-  for (const w of await words()) { expect(w.text).toBe(w.name); expect(w.icon).toBe(true); }
+  // Nothing used yet: nothing is at hand, every panel is in its group.
+  await menu.click();
+  const picker = page.getByTestId("panel-picker");
+  await expect(picker.getByTestId("panel-pick-files")).toBeVisible();
+  await expect(picker.getByTestId("panels-at-hand")).toHaveCount(0);
+  // Picked once, a panel is at hand: at the top, named, with its glyph, marked while it is open.
+  await picker.getByTestId("panel-pick-files").click();
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "files");
+  await menu.click();
+  const hand = picker.getByTestId("panels-at-hand");
+  await expect(picker.locator("section").first()).toHaveAttribute("data-testid", "panels-at-hand");
+  await expect(hand.locator(".k-picker-group")).toHaveText("At hand");
+  const files = hand.getByTestId("panel-pick-files");
+  await expect(files).toContainText("Files");
+  expect(await files.locator("svg").count()).toBeGreaterThan(0);
+  await expect(hand.locator(".k-picker-row").filter({ has: page.getByTestId("panel-pick-files") })).toHaveAttribute("aria-current", "true");
+  // Listed once: not again in its group.
+  await expect(picker.getByTestId("panel-pick-files")).toHaveCount(1);
+  // Kept at hand on purpose: another panel joins them.
+  const usageRow = picker.locator(".k-picker-row").filter({ has: page.getByTestId("panel-pick-usage") });
+  await usageRow.getByRole("button", { name: /Keep .* at hand/ }).click();
+  await expect(hand.getByTestId("panel-pick-usage")).toBeVisible();
+  await shoot(page, "surfaces-06-panels-at-hand");
+  // A search lists the matches by group, at hand or not.
+  await page.getByTestId("panel-search").fill("files");
+  await expect(picker.getByTestId("panels-at-hand")).toHaveCount(0);
+  await expect(picker.getByTestId("panel-pick-files")).toBeVisible();
+  await page.getByTestId("panel-search").fill("");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Close the panel" }).click();
+  await expect(page.getByTestId("side-panel")).toHaveCount(0);
+
+  // On a phone the chooser is the same, and nothing is cut.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await header.getByTestId("panel-menu").click();
+  await expect(picker.getByTestId("panels-at-hand")).toBeInViewport();
+  await shoot(page, "surfaces-06b-panels-at-hand-phone");
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1920, height: 1040 });
 });
 
 // An overlay ends cleanly. The panel chooser shows every group when the window

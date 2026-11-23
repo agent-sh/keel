@@ -1,7 +1,7 @@
-// Side panels in the Bridge. A station's header keeps the few panels you use
-// most at hand (ranked by use, or kept there on purpose); every panel, grouped
-// and searchable, is one click away in the Panels picker, and each is a
-// command in the palette. The panel beside the helm is remembered per station.
+// Side panels in the Bridge. The Panels picker in a station's header holds
+// every panel, grouped and searchable, with the few you use most at hand at
+// its top (ranked by use, or kept there on purpose), each named; each panel is
+// also a command in the palette. The panel beside the helm is remembered per station.
 import { Popover } from "@base-ui/react/popover";
 import { ChevronDown, PanelRight, Pin, PinOff, Search, X } from "lucide-react";
 import { Suspense, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
@@ -61,13 +61,14 @@ export function openPanel(id: string | null) {
 }
 
 const AT_HAND = 3;
-// Kept ones first, then by use, then the registry's order; the open panel is always there.
+// The panels at hand: the kept ones first, then by use; the open panel is always there. A panel
+// never used or kept is not at hand: its group lists it.
 function atHand(list: Panel[], open: string | null): Panel[] {
   const rank = (p: Panel) => (kept.includes(p.id) ? 1e6 : 0) + (use[p.id] ?? 0);
-  const top = [...list].sort((a, b) => rank(b) - rank(a) || (a.order ?? 50) - (b.order ?? 50)).slice(0, Math.max(AT_HAND, kept.length));
+  const top = list.filter((p) => rank(p) > 0).sort((a, b) => rank(b) - rank(a) || (a.order ?? 50) - (b.order ?? 50)).slice(0, Math.max(AT_HAND, kept.length));
   const cur = list.find((p) => p.id === open);
   if (cur && !top.includes(cur)) top.push(cur);
-  return list.filter((p) => top.includes(p));
+  return top;
 }
 
 // Every panel is a palette command.
@@ -94,8 +95,10 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
     // A name, group or id matches from its first letters typed; what a panel does matches from three.
     const hits = list.filter((p) => !w || `${p.label} ${groupOf(p)} ${p.id}`.toLowerCase().includes(w) || (w.length >= 3 && hintOf(p).toLowerCase().includes(w)));
     const place = (p: Panel) => (GROUPS.includes(groupOf(p)) ? groupOf(p) : "More"); // a group the picker does not know is listed under More
-    return GROUPS.map((g) => ({ g, items: hits.filter((p) => place(p) === g) })).filter((x) => x.items.length);
-  }, [list, q]);
+    // Before a search, the panels at hand head the list, each once.
+    const hand = w ? [] : atHand(list, open);
+    return [{ g: "At hand", items: hand }, ...GROUPS.map((g) => ({ g, items: hits.filter((p) => place(p) === g && !hand.includes(p)) }))].filter((x) => x.items.length);
+  }, [list, q, open, ver]);
   // Picking shows the panel; it never closes one (the X and the header toggles do).
   const pick = (id: string) => { openPanel(id); setShow(false); setQ(""); };
   return (
@@ -127,7 +130,7 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
             <div className="k-picker-list k-scroll-more">
               {shown.map(({ g, items }) => {
                 return (
-                  <section key={g}>
+                  <section key={g} data-testid={g === "At hand" ? "panels-at-hand" : undefined}>
                     <h3 className="k-picker-group k-label">{g}</h3>
                     {items.map((p) => (
                       <div key={p.id} className={open === p.id ? "k-picker-row k-picked" : "k-picker-row"} aria-current={open === p.id ? "true" : undefined}>
@@ -155,33 +158,6 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
         </Popover.Positioner>
       </Popover.Portal>
     </Popover.Root>
-  );
-}
-
-// The header's shortcuts: the panels at hand. They show while the row has room
-// for them; the chooser below holds every panel either way.
-export function PanelHand({ session }: { session: Session }) {
-  useSyncExternalStore(panels.subscribe, panels.version);
-  usePrefs();
-  const open = useUI((s) => s.panel);
-  if (phone()) return null;
-  return (
-    <>
-      {atHand(visible(session), open).map((p) => (
-        <button
-          key={p.id}
-          type="button"
-          title={p.label}
-          aria-label={p.label}
-          aria-pressed={open === p.id}
-          data-testid={`panel-toggle-${p.id}`}
-          onClick={() => openPanel(open === p.id ? null : p.id)}
-          className="k-hand"
-        >
-          {p.icon}<span className="k-hand-word">{p.label}</span>
-        </button>
-      ))}
-    </>
   );
 }
 
