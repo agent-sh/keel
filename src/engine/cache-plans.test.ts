@@ -142,5 +142,12 @@ test("a wait kept warm is told by what the next request read", async () => {
   const d = await kept("none");
   await Bun.sleep(LIFE); // (the last read was 1.25 s into the step: its cache lived 2 s from there)
   expect(notes(d.id)).toEqual([expect.objectContaining({ outcome: "warm_unchecked", text: expect.stringMatching(/so whether they kept it is not known$/) })]);
-  for (const p of [a, b, c, d]) p.plans.stopAll();
+  // A session deleted while its note is owed is told nothing, and nothing fails.
+  const e = await kept("deleted");
+  store.deleteSession(e.id);
+  const failed: unknown[] = [];
+  (e.plans as any).d.errors = { capture: (...x: unknown[]) => { failed.push(x); return {}; } };
+  e.plans.answered(e.id, { route: MODEL, usage: { input: 10, cache_read: TOKENS, cache_write: 200, output: 5 }, sentAt: Date.now() });
+  expect([e.plans.owes(e.id), failed]).toEqual([false, []]);
+  for (const p of [a, b, c, d, e]) p.plans.stopAll();
 });

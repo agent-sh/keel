@@ -315,6 +315,8 @@ export class CachePlans {
     if (!w) return;
     this.owed.delete(id);
     clearTimeout(w.timer);
+    // (A session deleted meanwhile has nothing to be told.)
+    if (!this.d.store.session(id)) return;
     const d = w.data;
     const long = mins(d.waited_ms), reqs = `${d.pings} warm ${d.pings === 1 ? "request" : "requests"}`;
     const next = u ? { next_read_tokens: u.cache_read, next_written_tokens: u.cache_write + u.input } : {};
