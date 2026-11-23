@@ -13,6 +13,7 @@ import { openPlaced } from "../lib/looks.ts";
 import { ago, cn, fmtCost } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { SessionOrganize } from "./SessionOrganize.tsx";
+import { useAuto } from "../lib/automation.ts";
 
 export function Section({ title, children, testid }: { title: string; children: React.ReactNode; testid?: string }) {
   return (
@@ -102,6 +103,47 @@ function Steps({ s }: { s: Session }) {
       onKeyDown={(e) => e.key === "Enter" && !composing(e) && save()}
       className={cn(field, "w-20 text-right tabular-nums")}
     />
+  );
+}
+
+// How many of its agents may work at once. Agents that wait on a wait of their own hold no slot;
+// an agent asked for, or woken, while every slot works waits in line and goes on when one frees.
+type Slots = { limit: number; default_limit: number; own_limit: number | null };
+function AgentSlots({ s }: { s: Session }) {
+  const [got, setGot] = useState<Slots>();
+  const [v, setV] = useState("");
+  const all = useAuto((st) => st.agents);
+  useEffect(() => {
+    let live = true;
+    api<Slots>(`/api/sessions/${s.id}/agents`).then((r) => { if (live) { setGot(r); setV(r.own_limit === null ? "" : String(r.own_limit)); } }).catch(reportError);
+    return () => { live = false; };
+  }, [s.id]);
+  const mine = Object.values(all).filter((a) => a.parent_id === s.id);
+  const work = mine.filter((a) => a.status === "running").length;
+  const line = mine.filter((a) => a.status === "waiting" && a.slot_wait).length;
+  const wait = mine.filter((a) => a.status === "waiting" && !a.slot_wait).length;
+  const save = () => {
+    if (!got) return;
+    const n = v.trim() === "" ? null : Number(v);
+    if (n !== null && (!Number.isInteger(n) || n < 1)) return setV(got.own_limit === null ? "" : String(got.own_limit));
+    if (n === got.own_limit) return;
+    api<Slots>(`/api/sessions/${s.id}/agents`, { method: "PATCH", body: JSON.stringify({ limit: n }) }).then((r) => setGot({ ...got, ...r })).catch(reportError);
+  };
+  const said = [`${work} of ${got?.limit ?? ""} ${work === 1 ? "works" : "work"}`, wait && `${wait} ${wait === 1 ? "waits on a wait of its own" : "wait on waits of their own"}`, line && `${line} in line for a slot`].filter(Boolean).join(", ");
+  return (
+    <Line label="Agents at once" hint={<>Agents that work at the same time; one that waits holds no slot. Empty: the daemon's {got?.default_limit ?? ""}.<span className="block" data-testid="agent-slots-said">{got ? said : ""}</span></>}>
+      <input
+        value={v}
+        inputMode="numeric"
+        placeholder={got ? String(got.default_limit) : ""}
+        aria-label="Agents at once"
+        data-testid="agent-limit"
+        onChange={(e) => setV(e.target.value.replace(/[^0-9]/g, ""))}
+        onBlur={save}
+        onKeyDown={(e) => e.key === "Enter" && !composing(e) && save()}
+        className={cn(field, "w-20 text-right tabular-nums")}
+      />
+    </Line>
   );
 }
 
@@ -262,6 +304,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
         <Line label="Step budget" hint="Model steps one turn may take. Empty: no budget.">
           <Steps s={s} />
         </Line>
+        {!s.parent_id && <AgentSlots s={s} />}
         <Tags s={s} />
       </Section>
       <SessionOrganize s={s} />

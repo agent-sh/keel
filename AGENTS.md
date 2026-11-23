@@ -196,6 +196,13 @@ under `~/.cache/keel-work/bun/research/`.
   model (`src/checks/proof.ts`). The ledger keeps the newest
   `checks.keep_runs` rows (20,000 by default) and is read at `/api/checks`
   and in the session's timeline.
+- A session's agent slots are its tree's and count the agents that work. An
+  agent that waits on a wait of its own holds none. Its wake, and an agent
+  asked for while every slot works, wait in line as owed and take the next
+  free slot in the order they parked or were asked for
+  (`src/automation/slots.ts`): none is refused or dropped for a slot, and the
+  limit's refusal of a finished agent asked to go on says how many work and
+  how many wait.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

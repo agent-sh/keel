@@ -36,7 +36,7 @@ export const WHERE: Record<string, keyof typeof from> = {
   ui: "admin", status: "admin", drain: "admin", restart: "admin", upgrade: "admin", storage: "admin", cleanup: "admin",
   backup: "admin", backups: "admin", restore: "admin", report: "admin", usage: "admin", service: "admin", activity: "admin",
   plugin: "plugin",
-  sessions: "sessions", ls: "sessions", stuck: "sessions", show: "sessions", logs: "sessions", stop: "sessions", send: "sessions",
+  sessions: "sessions", ls: "sessions", stuck: "sessions", show: "sessions", logs: "sessions", stop: "sessions", agents: "sessions", send: "sessions",
   approve: "sessions", attach: "sessions", open: "sessions", resume: "sessions", export: "sessions", models: "sessions", search: "sessions",
   login: "login", logout: "login",
   providers: "providers",

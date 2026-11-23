@@ -81,12 +81,6 @@ const pending = new Map<string, Pending[]>();
 const riding = new Map<string, Pending[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Whether a turn may start in the session now (an ended agent whose tree has
-// no free slot may not: what is lined up for it waits there, and goes when a
-// slot frees). Set by the agents module.
-export const startGate: { open?: (sessionId: string) => boolean } = {};
-// The sessions with something lined up.
-export const pendingSessions = () => [...pending.keys()];
 
 export function hasPending(sessionId: string) {
   return (pending.get(sessionId)?.length ?? 0) > 0;
@@ -154,6 +148,10 @@ function inputRoom(model: string): number {
   return window ? Math.floor(window * INPUT_SHARE * bytesPerToken(model)) : Infinity;
 }
 
+// Whether an input may start a turn of this session now (set by agents.ts).
+// `inLine`: the agent of this session waits in line for a slot of its parent.
+export const slotGate: { admit?: (sessionId: string) => boolean; inLine?: (sessionId: string) => boolean } = {};
+
 export function flush(sessionId: string) {
   const list = pending.get(sessionId);
   if (!list?.length) return;
@@ -162,8 +160,9 @@ export function flush(sessionId: string) {
   // Nor does a session where the owner's own message is about to be the next turn (a prompt they
   // edited or sent now): what waits here goes after that turn, never in its place.
   if (D().engine.isRunning(sessionId) || D().engine.isDraining?.() || D().engine.isClosing?.(sessionId) || D().engine.startsNext?.(sessionId)) return;
-  // Nor does an ended agent whose tree's agent limit is in use: the start would reopen it past the limit.
-  if (startGate.open && !startGate.open(sessionId)) return;
+  // Nor does an agent that waits while every slot of its parent works: its
+  // input stays owed here, and it goes first when a slot frees (agents.admit).
+  if (slotGate.admit && !slotGate.admit(sessionId)) return;
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
   if (!s || s.archived) return void riding.delete(sessionId);

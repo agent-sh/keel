@@ -289,6 +289,9 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
       case "failed": return row("agent", `${name} failed${took}`, { ms, tone: "failed" }, r);
       case "incomplete": return row("agent", `${name} did not finish${g?.end_reason ? `: ${AGENT_END[g.end_reason] ?? g.end_reason}` : ""}`, { ms, tone: "failed" }, r);
       case "stopped": return row("agent", `${name} stopped${by ? `: ${STOPPED[by] ?? by}` : ""}`, { ms }, r);
+      // Every agent slot worked: it was made and waits to start, or its wake waits for a slot.
+      case "queued": return row("agent", `${name} waits for a free agent slot to start`, {}, r);
+      case "slot_wait": return row("agent", `${name} was woken and waits for a free agent slot`, {}, r);
       default: return row("agent", `${name}: ${a.sub}`, {}, r);
     }
   }

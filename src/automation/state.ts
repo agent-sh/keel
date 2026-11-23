@@ -25,7 +25,7 @@ import { allPendingQuestions } from "../tools/interact.ts";
 import { jobsOf, liveJobs, running } from "../tools/jobs.ts";
 import { errorClass } from "../admin/classes.ts";
 import { toolLine } from "../../ui/src/lib/tools.ts";
-import { D } from "./core.ts";
+import { D, slotGate } from "./core.ts";
 
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
 export type SessionState = State & { label: string; word: string };
@@ -203,6 +203,8 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
     const down = downOf(k);
     const theirs = l.pending.get(k.session_id);
     if (down) pending.push({ kind: "unreachable", agent: k.title, since: down.since });
+    // Its wake came (or it was never started) and every slot works: it waits for one, first in line.
+    else if (slotGate.inLine?.(k.session_id)) pending.push({ kind: "slot", agent: k.title });
     else if (theirs?.length) for (const p of theirs) pending.push({ ...p, agent: k.title });
     else pending.push({ kind: "wake", agent: k.title });
   }

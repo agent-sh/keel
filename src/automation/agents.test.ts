@@ -9,7 +9,7 @@ import { allHooks, registerHooks } from "../engine/hooks.ts";
 import { Engine, toMessages } from "../engine/turn.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
-import { dropPending, flush, isPending, setDeps } from "./core.ts";
+import { deliver, dropPending, flush, isPending, setDeps } from "./core.ts";
 import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
 
@@ -793,12 +793,19 @@ test("a message that restarts a finished agent holds its slot while its worktree
   const again = agents.send(a.id, "one more thing");
   const rival = agents.spawn(p.id, { prompt: "rival", isolation: "none", background: true });
   const [sent, spawned] = await Promise.allSettled([again, rival]);
-  expect(spawned).toMatchObject({ status: "rejected" });
-  expect(String((spawned as PromiseRejectedResult).reason)).toContain("AGENT_LIMIT");
+  // The rival in the background is made and waits in line, holding no slot.
+  expect(spawned).toMatchObject({ status: "fulfilled", value: { status: "waiting", slot_wait: true } });
+  const queued = (spawned as PromiseFulfilledResult<agents.AgentRecord>).value;
   expect(sent).toMatchObject({ status: "fulfilled", value: { agent: { id: a.id, status: "running" } } });
-  expect(agents.list(p.id).filter((x) => !agents.isEnded(x)).map((x) => x.id)).toEqual([a.id]);
-  // The slot is the running agent's now, not held twice: at a limit of two there is room for one more.
+  expect(agents.list(p.id).filter((x) => x.status === "running").map((x) => x.id)).toEqual([a.id]);
+  // The slot is the running agent's now, not held twice: at a limit of two the one in line starts.
   agents.setLimit(p.id, 2);
+  expect(agents.get(queued.id)!.status).toBe("running");
+  expect(agents.get(queued.id)!.slot_wait).toBeUndefined();
+  for (let i = 0; i < 100 && store.events(queued.session_id).every((e) => e.data.kind !== "task"); i++) await Bun.sleep(20);
+  expect(store.events(queued.session_id).filter((e) => e.kind === "user" && e.data.kind === "task")).toHaveLength(1);
+  agents.stop(queued.id, "parent");
+  await settled();
   expect((await agents.spawn(p.id, { prompt: "second", isolation: "none", background: true })).status).toBe("running");
 
   // Two messages at once to a finished agent, at the limit less one: the first
@@ -1013,3 +1020,50 @@ test("a report of several answers over the cap shortens the oldest first and say
   expect(left(alone)).toHaveLength(1);
   expect(alone.isWellFormed()).toBe(true);
 });
+
+// A waiting agent holds no slot, and its wake is first in line: a spawn made
+// after it parked does not take the slot that frees first. The wake waits as
+// owed while every slot works, and the record says so.
+test("a waiting agent gives its slot back and its wake goes first when one frees", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Slots for waits" });
+  store.append(p.id, "assistant", { blocks: [] });
+  agents.setLimit(p.id, 1);
+  // The engine's turn start says the agent works (the real one calls the hook as the turn starts).
+  const send = engine.send;
+  engine.send = (id: string, text: string, o: any) => { const r = send(id, text, o); agents.onTurnStart(id); return r; };
+  try {
+    const a = await agents.spawn(p.id, { prompt: "park", isolation: "none", background: true });
+    const w = waits.create(a.session_id, waits.normalize({ kind: "timer", seconds: 600 }, dir));
+    end(a, "end_turn", "parked");
+    expect(agents.get(a.id)!.status).toBe("waiting");
+    // Its slot is free: another agent starts at once.
+    const b = await agents.spawn(p.id, { prompt: "work", isolation: "none", background: true });
+    expect(b.status).toBe("running");
+    expect(agents.slotsOf(p.id)).toMatchObject({ limit: 1, working: 1, waiting: 1, line: 0 });
+    // A's wake comes while B works: it waits in line, owed.
+    void w;
+    deliver(a.session_id, "[harness] The timer fired.", { kind: "wait" });
+    await settled();
+    expect(agents.get(a.id)).toMatchObject({ status: "waiting", slot_wait: true });
+    expect(isPending(a.session_id, () => true)).toBe(true);
+    // A spawn after that is made and waits behind it.
+    const c = await agents.spawn(p.id, { prompt: "later", isolation: "none", background: true });
+    expect(c).toMatchObject({ status: "waiting", slot_wait: true });
+    expect(agents.slotsOf(p.id)).toMatchObject({ working: 1, waiting: 0, line: 2 });
+    const refused = await agents.spawn(p.id, { prompt: "blocking", isolation: "none", background: false }, AbortSignal.timeout(50)).catch((e) => String(e));
+    expect(refused).toContain("cancelled");
+    // B ends: A goes on with its wake; C still waits.
+    end(b, "end_turn");
+    await settled();
+    expect(agents.get(a.id)!.status).toBe("running");
+    expect(store.events(a.session_id).some((e) => e.kind === "user" && e.data.kind === "wait")).toBe(true);
+    expect(agents.get(c.id)).toMatchObject({ status: "waiting", slot_wait: true });
+    end(agents.get(a.id)!, "end_turn");
+    await settled();
+    for (let i = 0; i < 100 && agents.get(c.id)!.status !== "running"; i++) await Bun.sleep(20);
+    expect(agents.get(c.id)!.status).toBe("running");
+  } finally {
+    engine.send = send;
+  }
+});
+

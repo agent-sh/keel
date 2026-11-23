@@ -61,7 +61,7 @@ export const NEEDS: Record<string, string> = {
 export const WAITS_FOR: Record<string, string> = {
   timer: "a timer", file: "a file", log: "a log line", http: "an HTTP check", process: "a process", monitor: "a monitor",
   websocket: "a WebSocket", pr_checks: "a pull request's checks", session: "another session", wake: "a wake of its own",
-  agent: "an agent", resume: "the provider", unreachable: "the provider", send: "Keel to be back",
+  agent: "an agent", slot: "a free agent slot", resume: "the provider", unreachable: "the provider", send: "Keel to be back",
 };
 export const waitsFor = (kind: unknown) => WAITS_FOR[String(kind)] ?? "a condition";
 // A command the session left running after its turn: the session works.
@@ -179,11 +179,14 @@ export const countsNow = (st: { offline?: boolean } | undefined): boolean => !!s
 // something it set up, ended and how); its session's served state says what
 // it needs or does. One state from both, so the tree, the card, the list of
 // background work and the agent's own pane say the same word.
-export type AgentLike = { status: string; stopped_by?: string | null; end_reason?: string | null };
+// `slot_wait`: it waits for a free slot of its parent (its wake came, or it was never started).
+export type AgentLike = { status: string; stopped_by?: string | null; end_reason?: string | null; slot_wait?: boolean };
 const LIVE: readonly Watch[] = ["need", "work", "wait", "resume"];
 export function agentState(a: AgentLike, told?: SessionState): SessionState {
   const base = { agents: told?.agents ?? 0 };
   if (a.status === "running" || a.status === "waiting") {
+    // In line for a slot: its session's own words (a wait that fired, a task not sent yet) say nothing of that.
+    if (a.status === "waiting" && a.slot_wait) return { ...base, watch: "wait", why: "wait", on: "slot", text: "Its parent's agent slots all work: it goes on, first in line, when one frees" };
     // Its session says more while it is live: what it needs, the step, what it waits for.
     if (told && LIVE.includes(told.watch)) return told;
     return a.status === "running" ? { ...base, watch: "work" } : { ...base, watch: "wait", why: "wait" };

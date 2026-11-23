@@ -196,6 +196,29 @@ const stop = command("stop", STOP_USAGE, {}, async (v, pos, c) => {
   return EXIT.ok;
 });
 
+// ---- keel agents
+
+const AGENTS_USAGE = `keel agents ID [--limit N|default] [--json]
+  The agents a session started, each with what it does now: works, waits on a wait of its
+  own (it holds no slot), waits in line for a slot, or how it ended. With --limit: how many
+  of its agents may work at once (default: the daemon's limit).`;
+const agentsCmd = command("agents", AGENTS_USAGE, { limit: { type: "string" } }, async (v, pos, c) => {
+  if (!pos[0]) return usageError("agents", "name the session", AGENTS_USAGE);
+  const s = await c.resolve(pos[0]);
+  if (v.limit !== undefined) {
+    const n = v.limit === "default" ? null : Number(v.limit);
+    if (n !== null && (!Number.isSafeInteger(n) || n < 1)) return usageError("agents", "--limit is a whole number of at least 1, or default", AGENTS_USAGE);
+    await c.patch(`/api/sessions/${s.id}/agents`, { limit: n });
+  }
+  const r = await c.get<{ agents: any[]; limit: number; own_limit?: number | null; default_limit?: number; slots?: { working: number; waiting: number; line: number } }>(`/api/sessions/${s.id}/agents`);
+  if (v.json) return (printJson(r), EXIT.ok);
+  const word = (a: any) => a.status === "running" ? "works" : a.status === "waiting" ? (a.slot_wait ? "waits for a slot" : "waits") : a.status;
+  const o = r.slots ?? { working: 0, waiting: 0, line: 0 };
+  console.log(`${o.working} of ${r.limit} slots work${r.own_limit == null ? ` (the daemon's limit)` : ""}${o.waiting ? `; ${o.waiting} waiting, holding none` : ""}${o.line ? `; ${o.line} in line for a slot` : ""}`);
+  for (const a of r.agents) console.log(line(`  ${a.id}  ${word(a).padEnd(16)}  ${a.title}`));
+  return EXIT.ok;
+});
+
 // ---- keel send
 
 const SEND_USAGE = `keel send [ID] [TEXT] [options]
@@ -752,6 +775,7 @@ export const sessionCommands = {
   show: logsOf("show", SHOW_USAGE),
   logs: logsOf("logs", LOGS_USAGE),
   stop,
+  agents: agentsCmd,
   send,
   approve,
   attach,

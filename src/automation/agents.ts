@@ -9,7 +9,8 @@ import { proofFor } from "../checks/proof.ts";
 import { awaited } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, heldWhy, inert, isPending, parkedOn, pendingSessions, startGate, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
+import { Line, limitWords } from "./slots.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
@@ -90,6 +91,7 @@ export type AgentRecord = {
   call_id?: string | null; // the tool_use id of the call that started it
   messages_waiting?: number; // its parent's messages still in its queue: it reads them at its next step, or when it goes on
   tasks: number; // how many times it was given new work after it ended (a message continued it, a turn started in its session)
+  slot_wait?: boolean; // it waits, its wake came, and it waits in line for a slot of its parent
 };
 
 export type AgentDef = {
@@ -132,8 +134,12 @@ const BUILTIN: AgentDef[] = [
   },
 ];
 
+// The stores whose agents this module keeps (the slot gate of core.ts asks only those).
+const kept = new WeakSet<object>();
+
 export function migrate() {
   const { store } = D();
+  kept.add(store);
   if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
   store.migrate(`
 CREATE TABLE IF NOT EXISTS agent_limits (
@@ -161,7 +167,7 @@ CREATE INDEX IF NOT EXISTS agents_parent ON agents(parent_id);
 CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
 }
@@ -174,11 +180,13 @@ const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir
 // `restarts`: a column from when a restart count decided an agent's end; unused.
 // `park_told`: the task (its first_seq) whose park the parent has been told of.
 // `task`: its first prompt, kept until it is in its session (sendTask).
-type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null };
+type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, restarts, park_told, task, ...rest } = r;
-  void def; void schema_tries; void restarts; void park_told; void task;
-  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, messages_waiting: waitingFor(r.session_id) };
+  const { def, output_schema, schema_tries, restarts, park_told, task, parked, ...rest } = r;
+  void def; void schema_tries; void restarts; void park_told; void task; void parked;
+  // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
+  const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
+  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}) };
 };
 // The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
 const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
@@ -209,7 +217,8 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>, quiet = fal
   }
   if (sets.length) D().store.db.query(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
   const rec = get(id);
-  if (rec && patch.status && isEnded(rec)) wakeSlots(rootSession(rec.parent_id));
+  // An agent that ends or parks gives its slot back: the first in line takes it.
+  if (rec && patch.status && rec.status !== "running") wakeSlots(rec.parent_id);
   if (rec && !quiet) emit("agent", rec);
   return rec;
 }
@@ -228,14 +237,23 @@ const BELOW = "WITH RECURSIVE t(s) AS (SELECT session_id FROM agents WHERE paren
 export const tree = (sessionId: string): TreeRow<AgentRecord>[] =>
   treeRows(D().store.db.query<Row, [string]>(`${BELOW} SELECT * FROM agents WHERE session_id IN (SELECT s FROM t)`).all(sessionId).map(toRec), sessionId);
 
-// The live agents of the whole tree under a root: one budget for all of them.
-const live = (root: string) => D().store.db.query<{ n: number }, [string]>(
-  `${BELOW} SELECT count(*) AS n FROM agents WHERE session_id IN (SELECT s FROM t) AND status IN ('running', 'waiting')`,
-).get(root)!.n;
+// A tree's slots count its agents that work. One that waits (its turn ended
+// on a wait it set) holds none: it takes one again when its wake comes, first
+// in line (see the line below). One made while every slot worked and not
+// started yet (its task still stored with it) waits in line too.
+const counts = (sessionId: string) => D().store.db.query<{ working: number; waiting: number }, [string]>(
+  `${BELOW} SELECT count(*) FILTER (WHERE status = 'running') AS working, count(*) FILTER (WHERE status = 'waiting' AND task IS NULL) AS waiting FROM agents WHERE session_id IN (SELECT s FROM t) AND status IN ('running', 'waiting')`,
+).get(rootSession(sessionId))!;
+const working = (sessionId: string) => counts(sessionId).working;
 
+// The daemon's limit for a session that set none (KEEL_MAX_SUBAGENTS, else 8).
+export const DEFAULT_LIMIT = MAX_LIVE;
+// The limit the session set for itself, or null when it uses the daemon's.
+export const ownLimit = (parentId: string): number | null =>
+  D().store.db.query<{ max_live: number }, [string]>("SELECT max_live FROM agent_limits WHERE parent_id = ?").get(parentId)?.max_live ?? null;
 // The agent limit of a session's tree: its root's.
 export function limitOf(sessionId: string) {
-  return D().store.db.query<{ max_live: number }, [string]>("SELECT max_live FROM agent_limits WHERE parent_id = ?").get(rootSession(sessionId))?.max_live ?? MAX_LIVE;
+  return ownLimit(rootSession(sessionId)) ?? MAX_LIVE;
 }
 
 // Stored separately from portable session settings. Only the owner API sets
@@ -411,65 +429,56 @@ const waiters = new Map<string, Waiter[]>(); // agent id -> callers blocked on i
 // held the result, so the stopped parent is owed no report, whoever stopped
 // the agent and whenever it ends. Until the agent is given new work.
 const cutCalls = new Set<string>();
-const slotWaiters = new Map<string, Set<() => void>>(); // parent id -> blocking spawns
 const reservations = new Map<string, number>(); // placements not yet recorded as live
+// Per parent: who waits for a slot (src/automation/slots.ts). A waiting
+// agent's wake, at the time it parked; a blocking spawn, at the time it asked.
+const lines = new Map<string, Line>();
+const lineOf = (sessionId: string) => { const r = rootSession(sessionId); return lines.get(r) ?? lines.set(r, new Line()).get(r)!; };
+const lineAt = (sessionId: string) => lines.get(rootSession(sessionId));
+const reserved = (sessionId: string) => reservations.get(rootSession(sessionId)) ?? 0;
+const room = (sessionId: string) => working(sessionId) + reserved(sessionId) < limitOf(sessionId);
 
-// A slot of the tree under `root` may be free: blocking spawns try again, and
-// an ended agent of the tree that has input lined up starts with it (the
-// start gate kept it back while the tree was full). After the write that
-// freed the slot: a caller may be inside a transaction.
-function wakeSlots(root: string) {
-  slotWaiters.get(root)?.forEach((wake) => wake());
-  queueMicrotask(() => {
-    for (const id of pendingSessions()) {
-      if (id === root || rootSession(id) !== root) continue;
-      try { flush(id); } catch (e) { capture(e, { at: "agent slot freed", session: id }); }
-    }
-  });
-}
-
-// A turn that would reopen an ended agent takes a slot of its tree: lined-up
-// input (a report from below, a failure notice, a wake) starts no turn there
-// while the tree's limit is in use. The check and the reopening (onTurnStart,
-// in the same synchronous start) have no await between them. A message sent
-// to the agent (send) takes its slot itself; the owner's own prompt on the
-// agent's page is the owner's act and is not held to the limit.
-// (A store the agents module never opened has no table: nothing to check there.)
-const withAgents = new WeakMap<object, boolean>();
-startGate.open = (sessionId) => {
-  const { store } = D();
-  if (!withAgents.get(store)) {
-    if (!store.columnExists("agents", "session_id")) return true;
-    withAgents.set(store, true);
+// A slot of the tree may be free: the first in line takes it, then the next, while there is room.
+// (A place whose wake went meanwhile takes nothing, and the next one is asked.)
+function wakeSlots(sessionId: string) {
+  const root = rootSession(sessionId);
+  const line = lines.get(root);
+  while (line?.length && room(root)) {
+    const p = line.shift()!;
+    try { p.go(); } catch (e) { capture(e, { at: "agent slot", root, place: p.key }); }
   }
-  const a = byChild(sessionId);
-  if (!a || !isEnded(a) || isSilent(a.id)) return true;
-  const parent = D().store.session(a.parent_id);
-  if (!parent || parent.archived) return true;
-  return !full(rootSession(a.parent_id));
-};
+  if (line && !line.length) lines.delete(root);
+}
 
+// A blocking spawn's place: it resolves with the slot reserved for it, or
+// with nothing when the call was stopped first.
 function waitForSlot(parentId: string, signal?: AbortSignal) {
-  return new Promise<void>((resolve) => {
-    const waiting = slotWaiters.get(parentId) ?? new Set();
-    const wake = () => {
-      waiting.delete(wake);
-      if (!waiting.size) slotWaiters.delete(parentId);
-      signal?.removeEventListener("abort", wake);
-      resolve();
-    };
-    waiting.add(wake);
-    slotWaiters.set(parentId, waiting);
-    signal?.addEventListener("abort", wake, { once: true });
+  return new Promise<(() => void) | undefined>((resolve) => {
+    const key = `block:${Bun.randomUUIDv7()}`;
+    const quit = () => { lineOf(parentId).leave(key); resolve(undefined); };
+    lineOf(parentId).join({ key, at: Date.now(), go: () => { signal?.removeEventListener("abort", quit); resolve(reserve(parentId)); } });
+    signal?.addEventListener("abort", quit, { once: true });
   });
 }
 
-// Slots, reservations and their waiters are the root's: one budget per tree.
-function full(root: string): Error | undefined {
-  const limit = limitOf(root);
+// What the session's slots hold now: its limit, the agents that work, the
+// ones that wait on a wait of their own (no slot), and who waits for a slot.
+export function slotsOf(parentId: string) {
+  const c = counts(parentId);
+  const line = lineAt(parentId);
+  const inLine = (line?.keys() ?? []).filter((k) => k.startsWith("wake:")).map((k) => k.slice(5));
+  // `waiting`: on a wait of their own (a woken one in line, or one never started, is in `line`).
+  const woke = inLine.filter((id) => !queuedTask(id) && get(id)?.status === "waiting").length;
+  return { limit: limitOf(parentId), working: c.working, waiting: Math.max(0, c.waiting - woke), reserved: reserved(parentId), line: line?.length ?? 0, in_line: inLine };
+}
+
+// Every slot is taken, counting the ones the line is owed: whoever waits
+// for one goes first.
+function full(parentId: string): Error | undefined {
+  const o = slotsOf(parentId);
   // Use the existing >= comparison, including for an environment-supplied limit.
-  if (live(root) + (reservations.get(root) ?? 0) >= limit)
-    return Object.assign(new Error(`AGENT_LIMIT: ${limit} agent slots of this session are in use (every agent of its tree counts). Do not retry: wait for one to report, or stop one.`), { status: 409 });
+  if (o.working + o.reserved + o.line >= o.limit)
+    return Object.assign(new Error(`${limitWords(o)} Do not retry: wait for one to report, or stop one.`), { status: 409 });
 }
 
 function needSlot(sessionId: string) {
@@ -477,18 +486,52 @@ function needSlot(sessionId: string) {
   if (refused) throw refused;
 }
 
-function reserve(parentId: string) {
-  reservations.set(parentId, (reservations.get(parentId) ?? 0) + 1);
+function reserve(sessionId: string) {
+  const root = rootSession(sessionId);
+  reservations.set(root, reserved(root) + 1);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const left = reservations.get(parentId)! - 1;
-    if (left) reservations.set(parentId, left);
-    else reservations.delete(parentId);
-    wakeSlots(parentId);
+    const left = reservations.get(root)! - 1;
+    if (left) reservations.set(root, left);
+    else reservations.delete(root);
+    wakeSlots(root);
   };
 }
+
+// Asked by the delivery (core.ts flush) before an input starts a turn in a
+// session: an agent that waits takes a slot for its wake, or joins the line at
+// the time it parked and its input stays owed until a slot is its own. An
+// ended agent that input would reopen (a report from below, a failure notice,
+// a wake) does the same, in line from now. The turn that starts makes it a
+// working agent (onTurnStart). A silent agent and one whose parent is gone
+// take no slot.
+const admitting = new Set<string>();
+export function admit(sessionId: string): boolean {
+  if (!kept.has(D().store)) return true;
+  const a = byChild(sessionId);
+  if (!a) return true;
+  if (a.status !== "waiting") {
+    if (!isEnded(a) || isSilent(a.id)) return true;
+    const parent = D().store.session(a.parent_id);
+    if (!parent || parent.archived) return true;
+  }
+  const line = lineOf(a.parent_id);
+  const key = `wake:${a.id}`;
+  const at = a.status === "waiting" ? parkedAt(a) : Date.now();
+  const first = admitting.has(sessionId) || (!line.has(key) && line.ahead(at) === 0);
+  if (first && room(a.parent_id)) {
+    line.leave(key);
+    return true;
+  }
+  if (line.join({ key, at, go: () => { admitting.add(sessionId); try { flush(sessionId); } finally { admitting.delete(sessionId); } } })) {
+    emit("agent", get(a.id));
+    activity.record("agent", "slot_wait", a.parent_id, `Agent "${a.title}" was woken while every agent slot of this session works: it goes on, first in line, when one frees`, { agent_id: a.id, child_session: a.session_id });
+  }
+  return false;
+}
+const parkedAt = (a: AgentRecord) => D().store.db.query<{ parked: number | null }, [string]>("SELECT parked FROM agents WHERE id = ?").get(a.id)?.parked ?? a.created;
 
 // Resolves when the agent has ended, or with `parked` also when it parked on a
 // wait (a blocking spawn returns then); else at the timeout or the abort (at
@@ -625,22 +668,27 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     const current = store.session(parentId);
     if (!current || current.archived) throw new Error("the parent session is gone or archived");
     const refused = full(root);
-    if (!refused) {
-      // No await between checking and reserving. Both local and remote
-      // placement can await before a durable agent row is available.
-      const release = reserve(root);
-      try { return await startSpawn(current, input, def, release, signal, depth + 1, max); }
-      finally { release(); }
-    }
+    // No await between checking and reserving. Both local and remote
+    // placement can await before a durable agent row is available.
     // Only the root waits for a slot: an agent that waited would hold its own
     // slot, and its ancestors theirs, while the slot it waits for may be one
-    // of theirs, which frees only when it ends.
-    if (input.background !== false || depth > 0) throw refused;
-    await waitForSlot(root, signal);
+    // of theirs, which frees only when it ends. An agent's spawn over the
+    // limit is refused.
+    if (refused && depth > 0) throw refused;
+    // A background spawn of the root over the limit is made and waits in line,
+    // owed its start (its task is stored with it): it starts by itself, first in
+    // line, when a slot frees. A blocking one waits in line, and its slot is
+    // reserved for it when its turn comes.
+    if (refused && input.background !== false) return startSpawn(current, input, def, () => {}, signal, depth + 1, max, Date.now());
+    const release = refused ? await waitForSlot(root, signal) : reserve(root);
+    if (!release) continue; // stopped while it waited: the loop says so
+    try { return await startSpawn(current, input, def, release, signal, depth + 1, max); }
+    finally { release(); }
   }
 }
 
-async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, release: () => void, signal: AbortSignal | undefined, depth: number, max: number) {
+// `queued`: when it was asked for, for a background spawn that found every slot taken.
+async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, release: () => void, signal: AbortSignal | undefined, depth: number, max: number, queued?: number) {
   const { store, bus, engine } = D();
   const parentId = parent.id;
   // A Codex file's model names a model of Codex's provider: kept when a listing has it, else the parent's.
@@ -701,12 +749,48 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // as history is: a secret in it is its placeholder.
   // task_at: where the parent's own words start, so the page shows them verbatim.
   store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
-    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })));
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
+    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null);
   release(); // the persisted running row now occupies the slot
+  if (queued !== undefined) {
+    activity.record("agent", "queued", parentId, `Agent "${title}" (${def.name} on ${model}) waits for a slot: every agent slot of this session works`, { agent_id: id, child_session: child.id });
+    lineUp(get(id)!);
+    return get(id)!;
+  }
   activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})`, { agent_id: id, child_session: child.id });
-  const waited = await stagger(parentId, model, child.id, signal);
+  return begin(id, input, model, signal);
+}
+
+// A queued agent (made, its task stored, never started) in line for a slot,
+// at the time it was asked for. It starts when its place comes.
+function lineUp(a: AgentRecord) {
+  lineOf(a.parent_id).join({ key: `wake:${a.id}`, at: parkedAt(a), go: () => {
+    const now = get(a.id);
+    if (!now || now.status !== "waiting" || !queuedTask(now.id)) return;
+    update(a.id, { status: "running" });
+    activity.record("agent", "started", a.parent_id, `Started agent "${a.title}" (${a.type} on ${a.model}) when a slot freed`, { agent_id: a.id, child_session: a.session_id });
+    begin(a.id, { background: true }, a.model).catch((e) => capture(e, { at: "queued agent start", agent: a.id }));
+  } });
+  emit("agent", get(a.id));
+  wakeSlots(a.parent_id); // a slot freed while it was made
+}
+const queuedTask = (id: string) => !!D().store.db.query<{ task: string | null }, [string]>("SELECT task FROM agents WHERE id = ?").get(id)?.task;
+// Whether the agent was made and waits for a slot to start.
+export const queuedForSlot = (a: AgentRecord) => a.status === "waiting" && queuedTask(a.id);
+
+// What the spawning call says of an agent that waits for a slot.
+export function queuedLine(a: AgentRecord): string {
+  const o = slotsOf(a.parent_id);
+  const ahead = Math.max(0, o.in_line.indexOf(a.id));
+  return `Agent ${a.id} (${a.title}) waits for a slot: all ${o.limit} agent slots of this session work${ahead ? `, and ${ahead} ${ahead === 1 ? "agent is" : "agents are"} before it in line` : ""}${o.waiting ? ` (${o.waiting} more ${o.waiting === 1 ? "agent waits on a wait of its own" : "agents wait on waits of their own"}, holding none)` : ""}. It starts by itself, in the order it was asked for, when one frees, and its report wakes you as a message. Do not start it again: do other work or end your turn.`;
+}
+
+// Its start, once its running row holds a slot: after the first agent's cache, its task goes into its session.
+async function begin(id: string, input: Pick<SpawnInput, "background">, model: string, signal?: AbortSignal): Promise<AgentRecord> {
+  const a = get(id)!;
+  const { parent_id: parentId, session_id: childId, title } = a;
+  const waited = await stagger(parentId, model, childId, signal);
   if (waited) activity.record("agent", "staggered", parentId, `Agent "${title}" started ${Math.round(waited / 100) / 10} s after the first one on ${model}, to read its prompt cache`, { agent_id: id });
   if (settling.has(id) || get(id)?.status !== "running") return get(id)!; // stopped while it waited
   if (input.background === false && signal?.aborted) {
@@ -1157,6 +1241,8 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // not kept waiting on a command that runs on.)
   const waitingOn = stopping.has(a.id) ? "" : isSilent(a.id) ? waits.describeActive(sessionId) : waitsOn(sessionId);
   if (waitingOn) {
+    // When it parked: its place in line for a slot when its wake comes.
+    D().store.db.query("UPDATE agents SET parked = ? WHERE id = ?").run(Date.now(), a.id);
     update(a.id, { status: "waiting", result: collectResult(a) });
     wake(a.id);
     // A blocking spawn returns the park in its tool result. Reviewers and
@@ -1276,6 +1362,7 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   if (isEnded(a) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
   if (stopping.has(id)) return a;
   waits.cancelForSession(a.session_id);
+  lineAt(a.parent_id)?.leave(`wake:${a.id}`);
   stopping.set(id, by);
   dropPending(a.session_id);
   // The child's own turn records the same actor as its record and report.
@@ -1416,6 +1503,10 @@ export async function send(id: string, message: string, interrupt = false, key?:
         else if (!r.duplicate) update(id, { status: "running" });
         return sent(r);
       }
+      // Made but not started (it waits for a slot): its task goes first, so a message cannot start it.
+      if (queuedForSlot(a)) throw Object.assign(new Error(`agent ${a.id} has not started yet: it waits for a slot of this session (${limitWords(slotsOf(a.parent_id)).replace(/^AGENT_LIMIT: /, "")}). It starts by itself when one frees; send the message after that, or stop it.`), { status: 409 });
+      // One that waits holds no slot: the message that would start it takes one, as a finished agent's does.
+      if (a.status === "waiting" && !engine.isRunning(a.session_id) && !(key && engine.hasInput(a.session_id, key))) needSlot(a.parent_id);
       const r = engine.message(a.session_id, text, meta, opts);
       if (!r.duplicate && !r.held) update(id, { status: "running" });
       return sent(r);
@@ -1553,12 +1644,18 @@ function outsideWorktree(a: AgentRecord, sessionId: string, input: any): string 
 // wrote on its page, or anything else started one): the agent runs, so its
 // record says so, its parent lists it and can stop it, and the report of this
 // turn is handed back like any other. The new task begins at that prompt.
-// The slot it takes was checked where the start was decided (startGate, in
-// the same synchronous call), or is the owner's own act on its page.
+// The slot it takes was checked where the start was decided (admit, in the
+// same synchronous call), or is the owner's own act on its page.
 export function onTurnStart(sessionId: string) {
   const a = byChild(sessionId);
   if (!a) return;
-  if (a.status === "waiting") withdrawParked(a);
+  if (a.status === "waiting") {
+    // It works again: its slot is taken (the delivery made room for it; the owner's own prompt on its page needs none).
+    withdrawParked(a);
+    lineAt(a.parent_id)?.leave(`wake:${a.id}`);
+    update(a.id, { status: "running" });
+    return;
+  }
   if (!isEnded(a)) return;
   const parent = D().store.session(a.parent_id);
   if (!parent || parent.archived) return; // no one to report to: it stays the owner's own turn
@@ -1611,6 +1708,8 @@ export function recover() {
     if (a.status !== "running" && a.status !== "waiting") continue;
     const parent = D().store.session(a.parent_id);
     if (!parent || parent.archived) { update(a.id, { status: "stopped", ended: Date.now(), result: collectResult(a) }); continue; }
+    // Made and never started: it goes back in line, at the time it was asked for.
+    if (queuedForSlot(a)) { lineUp(a); continue; }
     if (waits.activeFor(a.session_id) > 0) { update(a.id, { status: "waiting", background: true }); continue; }
     // Its turn had ended (the end is stored before the end hooks run) and the
     // daemon went down before the hook settled it: settle it now, once, the
@@ -1666,6 +1765,8 @@ export function stopChildrenOf(parentId: string) {
 }
 
 export const isEnded = (a: AgentRecord) => a.status !== "running" && a.status !== "waiting";
+slotGate.admit = admit;
+slotGate.inLine = (sessionId) => { if (!kept.has(D().store)) return false; const a = byChild(sessionId); return !!a && !!lineAt(a.parent_id)?.has(`wake:${a.id}`); };
 // Its result goes to its own panel, never to the parent's conversation (a reviewer).
 export const isSilent = (id: string) => !!defOf(id)?.silent;
 export type { StoredEvent };

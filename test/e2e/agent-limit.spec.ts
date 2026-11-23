@@ -1,18 +1,23 @@
 import { expect, test } from "./isolate.ts";
-import { remoteHeaders, shoot } from "./shots.ts";
+import { openPanel, remoteHeaders, shoot } from "./shots.ts";
 
-test("the owner can refill one session to its subagent limit without oversubscribing it", async ({ page, request }) => {
+// Feature: a session's agent slots count the agents that work. An agent that
+// waits on a wait of its own holds none; an agent asked for while every slot
+// works is made and waits in line (never refused, never dropped), and a
+// waiting agent whose wake comes then is first in line, ahead of agents asked
+// for after it parked. The owner sets the limit in the session's panel and
+// sees which agents work and which wait; only the owner's desk may change it.
+test("agents that wait hold no slot, and one asked for or woken over the limit waits first in line", async ({ page, request }) => {
+  test.setTimeout(240_000);
   const model = "scripted:stand-in-strict";
   const { models } = await (await request.get("/api/models")).json();
   test.skip(!models.some((m: { id: string }) => m.id === model), "requires the scripted provider");
-  const create = async (title: string) => (await (await request.post("/api/sessions", { data: { model, title } })).json()).session.id as string;
-  const id = await create("Subagent slots");
-  const other = await create("Default slots");
+  const { session } = await (await request.post("/api/sessions", { data: { model, title: "Subagent slots" } })).json();
+  const id = session.id as string;
   const path = `/api/sessions/${id}/agents`;
-  const read = async (p = path) => (await (await request.get(p)).json()) as {
-    limit: number; agents: { id: string; session_id: string; status: string }[];
-  };
-  const patch = (limit: unknown, headers?: Record<string, string>) => request.patch(path, { data: { limit }, headers });
+  type A = { id: string; session_id: string; title: string; status: string; slot_wait?: boolean };
+  const read = async () => (await (await request.get(path)).json()) as { limit: number; own_limit: number | null; default_limit: number; agents: A[]; slots: { working: number; waiting: number; line: number } };
+  const byTitle = async (t: string) => (await read()).agents.find((a) => a.title === t);
   const run = async (calls: unknown[]) => {
     const text = `script:batch ${JSON.stringify(calls)}`;
     expect((await request.post(`/api/sessions/${id}/messages`, { data: { text } })).ok()).toBe(true);
@@ -21,71 +26,69 @@ test("the owner can refill one session to its subagent limit without oversubscri
       const i = events.findLastIndex((e: any) => e.kind === "user" && e.data.text === text);
       return events.slice(i + 1).filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results);
     };
-    await expect.poll(async () => (await results()).length).toBe(calls.length);
+    await expect.poll(async () => (await results()).length, { timeout: 30_000 }).toBe(calls.length);
     return results();
   };
-  const batch = async (n: number, rejections: number, limit: number) => {
-    const untilStopped = { name: "wait_for", input: { kind: "timer", seconds: 600, note: "Fixture holds the slot" } };
-    const calls = Array.from({ length: n }, (_, i) => ({
-      name: "spawn_agent",
-      input: { message: `Worker ${i + 1}\nscript:calls ${JSON.stringify([untilStopped])}`, isolation: "none", limit: 999 },
-    }));
-    const refused = (await run(calls)).filter((r: any) => r.is_error);
-    expect(refused).toHaveLength(rejections);
-    for (const r of refused) expect(JSON.stringify(r.content)).toContain(`AGENT_LIMIT: ${limit}`);
-    await expect.poll(async () => (await read()).agents.filter((a) => a.status === "waiting").length).toBe(limit);
-  };
+  const agent = (title: string, calls: unknown[]) => ({ name: "spawn_agent", input: { message: `${title}\nscript:calls ${JSON.stringify(calls)}`, isolation: "none" } });
+  const parks = [{ name: "wait_for", input: { kind: "timer", seconds: 600, note: "Fixture waits" } }];
   try {
     await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto" } });
-    const fallback = (await read()).limit;
-    expect(fallback).toBeGreaterThan(0);
-    if (fallback < 12) await batch(12, 12 - fallback, fallback);
-    expect((await patch(12, await remoteHeaders(request))).status()).toBe(403);
-    expect((await patch(12, { origin: "https://other.invalid" })).status()).toBe(403);
-    expect((await patch(1.5)).status()).toBe(400);
-    expect((await read()).limit).toBe(fallback);
-    const raised = await patch(12);
-    expect(raised.ok()).toBe(true);
-    expect((await raised.json()).limit).toBe(12);
-    expect((await read(`/api/sessions/${other}/agents`)).limit).toBe(fallback);
-    // One agent that ends by itself: it holds no slot once it reported, and is there to be asked again below.
-    await run([{ name: "spawn_agent", input: { message: "Quick worker\nscript:say done", isolation: "none" } }]);
-    const over = (a: { status: string }) => !["waiting", "running", "stopped"].includes(a.status);
-    await expect.poll(async () => (await read()).agents.filter(over).length, { timeout: 30_000 }).toBe(1);
-    await batch(13 - (fallback < 12 ? fallback : 0), 1, 12);
-    const kid = (await read()).agents[0]!;
-    expect((await request.patch(`/api/sessions/${kid.session_id}/agents`, { data: { limit: 12 } })).status()).toBe(409);
-    const stop = async () => {
-      const { id: agent } = (await read()).agents.find((a) => a.status === "waiting")!;
-      expect((await request.post(`${path}/${agent}/stop`)).ok()).toBe(true);
-      await expect.poll(async () => (await read()).agents.find((a) => a.id === agent)?.status).toBe("stopped");
-    };
-    for (const n of [2, 3]) {
-      await stop();
-      await batch(n, n - 1, 12);
-    }
-    // An agent that ended is not started again over the limit: the message that would is refused.
-    const ended = (await read()).agents.find(over)!;
-    const [resume] = await run([{ name: "send_input", input: { target: ended.id, message: "Continue" } }]);
-    expect(resume.is_error).toBe(true);
-    expect(JSON.stringify(resume.content)).toContain("AGENT_LIMIT: 12");
-    // One the owner stopped is not started by a message at all: it waits for the owner, the sender is
-    // told so, and the session still holds its twelve.
-    const held = (await read()).agents.find((a) => a.status === "stopped")!;
-    const [waits] = await run([{ name: "send_input", input: { target: held.id, message: "Continue" } }]);
-    expect(JSON.stringify(waits.content)).toContain("the owner stopped that agent");
-    expect((await read()).agents.find((a) => a.id === held.id)?.status).toBe("stopped");
-    expect((await read()).agents.filter((a) => a.status === "waiting")).toHaveLength(12);
+    // The limit from the session's panel, as the owner sets it; a remote device or another origin may not.
+    expect((await request.patch(path, { data: { limit: 4 }, headers: await remoteHeaders(request) })).status()).toBe(403);
+    expect((await request.patch(path, { data: { limit: 4 }, headers: { origin: "https://other.invalid" } })).status()).toBe(403);
+    expect((await request.patch(path, { data: { limit: 1.5 } })).status()).toBe(400);
     await page.goto(`/s/${id}`);
+    await openPanel(page, "session");
+    const limit = page.getByTestId("agent-limit");
+    await expect(limit).toHaveAttribute("placeholder", String((await read()).default_limit));
+    await limit.fill("2");
+    await limit.press("Enter");
+    await expect.poll(async () => (await read()).own_limit).toBe(2);
+
+    // One that ends by itself, then four that park at once on a limit of two: none is refused,
+    // the two over the limit wait in line and start as the first two park.
+    await run([agent("Quick", [])]);
+    await expect.poll(async () => (await byTitle("Quick"))?.status, { timeout: 30_000 }).toBe("completed");
+    const four = await run([1, 2, 3, 4].map((n) => agent(`Parked ${n}`, parks)));
+    expect(four.filter((r: any) => r.is_error)).toHaveLength(0);
+    await expect.poll(async () => (await read()).agents.filter((a) => a.title.startsWith("Parked") && a.status === "waiting" && !a.slot_wait).length, { timeout: 30_000 }).toBe(4);
+    expect((await read()).slots).toMatchObject({ working: 0, waiting: 4, line: 0 });
+    await expect(page.getByTestId("agent-slots-said")).toHaveText("0 of 2 work, 4 wait on waits of their own");
+
+    // A waiter whose timer fires while two others work: its wake waits in line, ahead of one asked for later.
+    await run([agent("Woken", [{ name: "wait_for", input: { kind: "timer", seconds: 20, note: "short" } }])]);
+    await expect.poll(async () => (await byTitle("Woken"))?.status, { timeout: 30_000 }).toBe("waiting");
+    await run([agent("Busy 1", [{ name: "Bash", input: { command: "sleep 35" } }]), agent("Busy 2", [{ name: "Bash", input: { command: "sleep 50" } }])]);
+    await expect.poll(async () => (await byTitle("Woken"))?.slot_wait, { timeout: 40_000 }).toBe(true);
+    const [later] = await run([agent("Later", [])]);
+    expect(String(later.content)).toContain("waits_for_slot");
+    expect(String(later.content)).toContain("1 agent is before it in line");
+    expect(await byTitle("Later")).toMatchObject({ status: "waiting", slot_wait: true });
+    // A finished agent asked to go on takes a slot too: refused, with what works and what waits.
+    const quick = (await byTitle("Quick"))!;
+    const [again] = await run([{ name: "send_input", input: { target: quick.id, message: "Continue" } }]);
+    expect(again.is_error).toBe(true);
+    expect(String(again.content)).toContain("AGENT_LIMIT: 2 agent slots of this session are in use (2 work, 2 more wait for a slot; 4 agents wait on waits of their own and hold no slot)");
+
+    // The panel says which work and which wait, and the session's slots line says it in numbers.
+    await expect(page.getByTestId("agent-slots-said")).toHaveText("2 of 2 work, 4 wait on waits of their own, 2 in line for a slot");
     await page.getByTestId("background-button").click();
-    await expect(page.getByTestId("bg-agent")).toHaveCount(15);
-    await shoot(page, "agents-limit-refilled");
-    const reset = await patch(null);
-    expect(reset.ok()).toBe(true);
-    expect((await read()).limit).toBe(fallback);
-    expect((await read()).agents.filter((a) => a.status === "waiting")).toHaveLength(12);
+    const row = (t: string) => page.getByTestId("bg-agent").filter({ hasText: t });
+    await expect(row("Woken").getByTestId("bg-agent-state")).toHaveText(/free agent slot/);
+    await expect(row("Later").getByTestId("bg-agent-state")).toHaveText(/free agent slot/);
+    await expect(row("Busy 1").getByTestId("bg-agent-state")).toHaveText(/Working/);
+    await shoot(page, "agents-slot-line");
+    await page.keyboard.press("Escape");
+
+    // A slot frees: the wake goes first, then the later one.
+    await expect.poll(async () => (await byTitle("Later"))?.status, { timeout: 90_000 }).toBe("completed");
+    const starts = async (a: A) => ((await (await request.get(`/api/sessions/${a.session_id}`)).json()).events as any[]).filter((e) => e.kind === "turn_start").map((e) => e.ts as number);
+    const woke = (await starts((await byTitle("Woken"))!)).at(-1)!, began = (await starts((await byTitle("Later"))!))[0]!;
+    expect(woke).toBeLessThan(began);
+    // The default limit again.
+    expect((await request.patch(path, { data: { limit: null } })).ok()).toBe(true);
+    expect((await read()).own_limit).toBe(null);
   } finally {
     await request.delete(`/api/sessions/${id}`);
-    await request.delete(`/api/sessions/${other}`);
   }
 });

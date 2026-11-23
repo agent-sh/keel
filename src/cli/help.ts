@@ -14,6 +14,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["sessions", "list or search sessions (also: ls)"],
     ["search", "what was said and done in any session, with when; --commands, --since, --on, --state"],
     ["stuck", "the turns, tools and agents that made no progress for too long"],
+    ["agents", "a session's agents: which work, which wait; --limit sets how many work at once"],
     ["messages", "a session's messages between sessions, each with its state"],
     ["changes", "what a session changed in its working tree, by turn; a turn's files and patch"],
     ["cost", "what one session cost: its agents, turns, requests and where the tokens went"],
