@@ -19,6 +19,10 @@ export type ToolContext = {
   // Tokens left in the model's context window after its last request (set by
   // the engine before each round of calls): what a large read may fill.
   room?: number;
+  // The characters of a text result kept inline for what carrying them costs
+  // this session now (set with `room`; src/tools/carry.ts), and the share of
+  // them from the start of the result.
+  inline?: { cap: number; head: number };
   // Files the model has read this session, with their mtime then: Edit/Write
   // refuse to overwrite a file the model never saw or that changed since.
   seen: Map<string, number>;

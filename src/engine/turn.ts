@@ -49,6 +49,7 @@ import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, overloade
 import { OUTAGE } from "../providers/outage.ts";
 import { unreachable } from "../providers/unreachable.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
+import { HEAD_SHARE, inlineCap } from "../tools/carry.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
@@ -1376,6 +1377,30 @@ export class Engine {
     }
   }
 
+  // The inline part of a text result for this session after a step that
+  // used `u` (src/tools/carry.ts): its context, its model's price, and the
+  // requests its context has had since its checkpoint and can still take.
+  private inlineOf(session: Session, st: Step, u: Usage): { cap: number; head: number } {
+    const events = this.lineage(session.id);
+    const from = checkpointAt(events).at + 1;
+    let steps = 0, first = 0, output = 0;
+    for (let i = from; i < events.length; i++) {
+      const e = events[i]!;
+      if (e.kind !== "assistant" || !e.data.usage) continue;
+      const p = e.data.usage.input + e.data.usage.cache_read + e.data.usage.cache_write;
+      if (!steps) first = p;
+      steps++;
+      output += e.data.usage.output ?? 0;
+    }
+    const context = u.input + u.cache_read + u.cache_write;
+    const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+    const cap = inlineCap({
+      context, price: st.info.price, steps: Math.max(1, steps), room: Math.max(0, limit - context),
+      growth: steps > 1 ? Math.max(0, context - first) / (steps - 1) : 0, output: steps ? output / steps : u.output, bytes: bytesPerToken(st.info.id),
+    });
+    return { cap, head: HEAD_SHARE };
+  }
+
   // Why no warm cache holds the session's context on this model, if none does.
   private coldWhy(id: string, provider: Provider, info: ModelInfo, events = this.lineage(id)): string | undefined {
     return coldReason(events, info.id, retention(provider.wire, events, info.id).max, Date.now(), this.preparedMs(id, events, { info } as Step));
@@ -2336,6 +2361,7 @@ export class Engine {
         }
         const uses = blocks.filter((b): b is ToolUseBlock => b.type === "tool_use" && b !== cut);
         ctx.room = Math.max(0, st.info.context - (u.input + u.cache_read + u.cache_write + u.output));
+        ctx.inline = this.inlineOf(session, st, u);
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = closing || (budget > 0 && steps >= budget);
@@ -2545,7 +2571,8 @@ export class Engine {
       // No tool stores more text than the cap (its own, when it bounds its
       // result itself): the rest is in a file the result names. An image
       // enters the history within what every provider takes.
-      const held = await capResult(out.content, tool.resultCap ?? OUTPUT_CAP, runCtx.dispatch ? undefined : ctx.spillDir, u.name);
+      // A failed call keeps the whole cap: its error is what the model acts on.
+      const held = await capResult(out.content, tool.resultCap ?? OUTPUT_CAP, runCtx.dispatch ? undefined : ctx.spillDir, u.name, out.is_error || tool.resultCap !== undefined || runCtx.dispatch ? undefined : ctx.inline);
       result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(held, ctx.spillDir, !!runCtx.dispatch), is_error: out.is_error || undefined };
       if (out.shown !== undefined) this.shown.set(u.id, out.shown);
       ran(result, result.is_error ? "error" : "ok");

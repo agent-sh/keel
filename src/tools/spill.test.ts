@@ -76,3 +76,29 @@ test("a result past the cap is cut through the spill, whatever its shape", async
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A result sized by what carrying it costs (src/tools/carry.ts) keeps that
+// many characters, most of them from its end; one a tool already cut and saved
+// keeps the line that names its file.
+test("a result sized for its session is cut to that size, its end kept longer than its start", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "sized-"));
+  try {
+    const long = Array.from({ length: 3000 }, (_, i) => `test ${i} ok`).join("\n") + "\nFAILED: 1 of 3000 tests";
+    const cut = (await capResult(long, OUTPUT_CAP, dir, "Bash", { cap: 10_000, head: 0.25 })) as string;
+    const [start, end] = cut.split(/\n\n\[\.\.\. \d+ chars cut; full output \(\d+ lines\) saved to \S+ \.\.\.\]\n\n/);
+    expect([start!.length, end!.length]).toEqual([2_500, 7_500]);
+    expect(end).toEndWith("FAILED: 1 of 3000 tests");
+    expect(readFileSync(/saved to (\S+) \.\.\.\]/.exec(cut)![1]!, "utf8")).toBe(long);
+    // Within the size: as it is. A tool's own cap below the size still holds.
+    expect(await capResult(long.slice(0, 9_000), OUTPUT_CAP, dir, "Bash", { cap: 10_000, head: 0.25 })).toBe(long.slice(0, 9_000));
+    // Run on another machine (no folder here to keep the rest): the size every result had.
+    const far = (await capResult(long + "\n" + "z".repeat(40_000), OUTPUT_CAP, undefined, "Bash", { cap: 10_000, head: 0.25 })) as string;
+    expect(far.length).toBeGreaterThan(27_000);
+    expect(far).toContain("chars cut and not kept");
+    // Cut and saved by the tool already: not cut again.
+    const saved = await spill("y".repeat(OUTPUT_CAP * 2), dir, "mcp");
+    expect(await capResult(saved, OUTPUT_CAP, dir, "mcp", { cap: 10_000, head: 0.25 })).toBe(saved);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
