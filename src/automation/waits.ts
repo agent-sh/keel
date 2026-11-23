@@ -229,7 +229,8 @@ export function normalize(raw: any, cwd: string): WaitSpec {
     }
     case "process": {
       const pid = Number(spec.pid);
-      if (!Number.isInteger(pid) || pid <= 1) throw new Error("a process wait needs a pid");
+      // Models sent pid 0 for a pause, or for a command they started in the background.
+      if (!Number.isInteger(pid) || pid <= 1) throw new Error('a process wait needs a running process\'s id (a number above 1, as `echo $!` prints it). A background command you started wakes this session by itself when it ends: it needs no wait. For a pause, use kind "timer" with seconds.');
       if (!procAlive(pid)) throw new Error(`process ${pid} has already ended`);
       const start = startTime(pid);
       return start ? { kind, pid, start } : { kind, pid };

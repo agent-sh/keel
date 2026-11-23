@@ -61,6 +61,14 @@ test("a log wait's pattern may start with an inline flag group", async () => {
   expect(() => waits.normalize({ kind: "monitor", command: "true", match: "(?im)^exit" }, dir)).not.toThrow();
 });
 
+// A model that wanted a pause, or the end of a command it started in the
+// background, sent a process wait with pid 0: the refusal says what to use.
+test("a process wait with no pid says what a pid is and what to use instead", () => {
+  for (const pid of [0, undefined, 1]) {
+    expect(() => waits.normalize({ kind: "process", pid, timeout_seconds: 60 }, dir)).toThrow(/a running process's id.*background command.*wakes this session.*"timer"/s);
+  }
+});
+
 test("a replaced file is read from its start, whatever its size", async () => {
   for (const [n, text] of [["small", "READY\n"], ["equal", "READY\nab\n"], ["large", "READY\nabcd\n"]] as const) {
     const p = log(`${n}.log`, "12345678");
