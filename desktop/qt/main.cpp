@@ -38,6 +38,9 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QPointer>
 #include <QPushButton>
 #include <QSocketNotifier>
@@ -1304,6 +1307,31 @@ public:
     }
 };
 
+// What draws for this desktop: the name of its OpenGL renderer (empty when it has none).
+static QString glRenderer()
+{
+    QOpenGLContext context;
+    if (!context.create())
+        return {};
+    QOffscreenSurface surface;
+    surface.setFormat(context.format());
+    surface.create();
+    if (!surface.isValid() || !context.makeCurrent(&surface))
+        return {};
+    const auto *name = reinterpret_cast<const char *>(context.functions()->glGetString(GL_RENDERER));
+    const QString renderer = QString::fromLatin1(name ? name : "");
+    context.doneCurrent();
+    return renderer;
+}
+
+// Whether the windows are drawn with Vulkan: under Wayland with the one driver the engine
+// shares no buffers with (it then draws its pages with Vulkan, which a window drawn with
+// OpenGL cannot show).
+static bool vulkanWindow(const QString &platform, const QString &renderer)
+{
+    return platform.startsWith("wayland") && renderer.contains("NVIDIA", Qt::CaseInsensitive);
+}
+
 // `--self-test FILE`: the table of paths the main frame may and may not show (lines of
 // "ok PATH" and "no PATH"), the same one the app's own rule is tested with.
 static int selfTest(const QString &file)
@@ -1339,7 +1367,12 @@ static int selfTest(const QString &file)
                            "http://127.0.0.1:47950.evil.example/api/x", "http://127.0.0.1:5173/api/x", "https://example.com/api/x", "http://127.0.0.1:47950/apix", ""})
         filesRight = filesRight && !keepable(no, o);
     ::printf("the files it keeps: %s\n", filesRight ? "the daemon's own and no others" : "WRONG");
-    return bad || !n || !flagsRight || !filesRight ? 1 : 0;
+    // And where its windows are drawn with Vulkan.
+    const bool glRight = vulkanWindow("wayland", "NVIDIA GeForce RTX 4070/PCIe/SSE2") && vulkanWindow("wayland-egl", "NVIDIA GeForce GTX 1650/PCIe/SSE2") &&
+        !vulkanWindow("xcb", "NVIDIA GeForce RTX 4070/PCIe/SSE2") && !vulkanWindow("wayland", "Mesa Intel(R) Graphics (ADL GT2)") &&
+        !vulkanWindow("wayland", "AMD Radeon Graphics (radeonsi, renoir)") && !vulkanWindow("wayland", "llvmpipe (LLVM 20.1.2, 256 bits)") && !vulkanWindow("wayland", "");
+    ::printf("where its windows are drawn with Vulkan: %s\n", glRight ? "as the table says" : "WRONG");
+    return bad || !n || !flagsRight || !filesRight || !glRight ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -1421,6 +1454,15 @@ int main(int argc, char **argv)
     // keeps the desktop's blink.
     if (qgetenv("KEEL_DESKTOP_CARET_BLINK") != "1")
         QGuiApplication::styleHints()->setCursorFlashTime(0);
+    // Under Wayland with a graphics driver the engine cannot share buffers with (it says so:
+    // "GBM is not supported"), the engine draws its pages with Vulkan, and a window that is
+    // itself drawn with OpenGL shows none of it: the page works and the window is black. There
+    // the window is drawn with Vulkan too. (Before the first window; QSG_RHI_BACKEND or
+    // QT_QUICK_BACKEND set by hand is left as it is.)
+    const QString renderer = glRenderer();
+    if (vulkanWindow(QGuiApplication::platformName(), renderer) && !qEnvironmentVariableIsSet("QSG_RHI_BACKEND") && !qEnvironmentVariableIsSet("QT_QUICK_BACKEND"))
+        qputenv("QSG_RHI_BACKEND", "vulkan");
+    const QByteArray draws = qEnvironmentVariableIsSet("QT_QUICK_BACKEND") ? qgetenv("QT_QUICK_BACKEND") : qEnvironmentVariableIsSet("QSG_RHI_BACKEND") ? qgetenv("QSG_RHI_BACKEND") : QByteArray("opengl");
     auto *profile = new QWebEngineProfile("keel", &app);
     profile->setPersistentStoragePath(dir + "/qt-web");
     profile->setCachePath(dir + "/qt-cache");
@@ -1431,7 +1473,8 @@ int main(int argc, char **argv)
     // This program runs and its engine is up: a display, the engine's own process, its profile.
     // The app waits for this line before it chooses this engine.
     say({{"t", "ready"}});
-    say({{"t", "engine"}, {"qt", qVersion()}, {"chromium", qWebEngineChromiumVersion()}, {"patched", qWebEngineChromiumSecurityPatchVersion()}});
+    say({{"t", "engine"}, {"qt", qVersion()}, {"chromium", qWebEngineChromiumVersion()}, {"patched", qWebEngineChromiumSecurityPatchVersion()},
+         {"draws", QString::fromLatin1(draws)}, {"gl", renderer.left(60)}});
 
     Host host(profile, devtools, probing);
     const int code = app.exec();

@@ -30,7 +30,7 @@
 //!
 //! The other program says:
 //!   {t:"ready"}                                   it runs and its engine is up (a display, a profile)
-//!   {t:"engine", qt, chromium, patched}
+//!   {t:"engine", qt, chromium, patched, draws, gl}  its versions, and what draws its windows
 //!   {t:"said", win, s}                            a string a page posted (any frame may: see said.rs)
 //!   {t:"input", win}                              the owner pressed a key or a button in the window
 //!   {t:"keys", win, step | paste}                 the text size keys; the paste keys it took from the engine
@@ -325,7 +325,7 @@ fn heard(start: u64, line: &str) {
     let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let win = inner.win(&m);
     match (m.get("t").and_then(Value::as_str).unwrap_or(""), win) {
-        ("engine", _) => (inner.note)("qt", json!({ "qt": s("qt"), "chromium": s("chromium"), "patched": s("patched") })),
+        ("engine", _) => (inner.note)("qt", json!({ "qt": s("qt"), "chromium": s("chromium"), "patched": s("patched"), "draws": s("draws"), "gl": s("gl") })),
         ("download", _) => (inner.note)("download", json!({ "to": s("path") })),
         // (The measurer's reports, when the app runs with one.)
         ("probe", _) => {

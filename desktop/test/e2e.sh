@@ -194,6 +194,15 @@ sleep 3
 read -r X Y W H _ <<< "$(geometry)"
 check "the window has the remembered size (1920x1040, got ${W}x${H})" "[ \"$W\" = 1920 ] && [ \"$H\" = 1040 ]"
 shot 01-window-light
+# The page is drawn, not only alive: with the light theme the middle of the window's picture is
+# light. (A window whose engine draws where the window cannot show it is black, and every other
+# case here would still pass: the page answers and takes keys.)
+if command -v convert > /dev/null; then
+  light=$(convert "$D/shots/01-window-light.png" -gravity center -crop 50%x50%+0+0 +repage -colorspace Gray -resize 1x1 -depth 8 txt: 2> /dev/null | sed -n 's/^0,0: (\([0-9]*\).*/\1/p' | head -1)
+  if [ "${light:-0}" -ge 150 ]; then ok "the window's page is drawn (the middle of its picture is light: $light of 255)"; else fail "the window's page is not drawn: the middle of its picture is dark (${light:-unread} of 255) under the light theme"; fi
+else
+  echo "# note: no ImageMagick here, so the window's picture was not read (whether the page is drawn was not checked)"
+fi
 # --- 1b. another keel-desktop on the same desktop and the same session bus, under the app's own
 # name, started after the check's (so its pid is the higher one): the owner's own app, as far as
 # the check can tell. Nothing the check launches may reach it.

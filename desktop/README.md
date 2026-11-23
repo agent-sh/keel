@@ -259,7 +259,9 @@ with the scripted model, a hidden workspace (`agent-workspace-linux`, its X11
 or its KWin session: the check starts no desktop shell of a whole session,
 which under your account could reach your own session's services), and
 stand-ins for the tray host, the notification service and the desktop's word
-on a screen reader on that workspace's bus. A signal it sends goes only to a
+on a screen reader on that workspace's bus. It reads the first picture of
+the window (with ImageMagick, when it is there): a page that answers but is
+not drawn fails the check. A signal it sends goes only to a
 process it started itself. It proves the window, a daemon restart under it, the tray count, a
 notification's click, a second launch, a link, the text size keys, the
 remembered size and the start button, and leaves screenshots in the folder
@@ -319,6 +321,22 @@ names the Qt engine's program when it is not beside the app.
   less than twice its size and levels off, and gives most of it back when
   the page has been quiet for some minutes. What grows is the engine's own
   objects for the documents, not pictures or the graphics memory.
+- Under Wayland with an NVIDIA driver as the desktop's own, Qt's engine
+  draws its pages with Vulkan (it shares no buffers with that driver), and a
+  window drawn with OpenGL shows none of it: the page works and the window
+  is black. There the Qt program draws its windows with Vulkan too
+  (`QSG_RHI_BACKEND`, left alone when you set it or `QT_QUICK_BACKEND`
+  yourself). Where Vulkan cannot start, or the card has no memory left, the
+  program stops before it drew and the app draws its windows itself. The
+  app's log says what draws (`"what":"qt"`: `draws`, `gl`).
+- Known, not fixed: when the page processes of two windows of the Qt engine
+  end at the same moment, one of the windows often comes back drawn and
+  working but with none of the app's own script in it. It then behaves as a
+  browser tab does: its title bar keeps the colors it had, a copied picture
+  does not paste, and it shows no word that it was loaded again. Loading it
+  again does not bring the script back; closing that window and opening it
+  again does. A page whose process ends by itself (the bound on its script
+  heap) is one page, and comes back whole.
 - A window of the Qt engine draws its own bar and has no frame of the
   desktop's: floating, it has a line around it and no shadow; it is resized
   from its edges.
