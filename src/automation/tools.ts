@@ -171,10 +171,10 @@ function whenRead(r: agents.MessageSent): string {
 
 const SendMessage: Tool = {
   name: "SendMessage",
-  urgent: "agent-tree-messages", // it messages the other agents of its tree
+  urgent: "follow-up-start", // it messages the other agents of its tree; a message to a finished agent may start its work fresh (src/engine/follow-up.ts)
   families: CLAUDE,
   readOnly: true,
-  description: "Send a message to one of your subagents, or to another agent of this session's tree, by agent id or description: it steers a running agent (after its current step) or continues a finished one with its context. Its next report goes to the agent that started it.",
+  description: "Send a message to one of your subagents, or to another agent of this session's tree, by agent id or description: it steers a running agent (after its current step) or gives a finished one new work. A finished agent starts where it is cheapest: in its context, or fresh from a capsule of its work (its task, its report, the files and commands of its work); the result says which. Its next report goes to the agent that started it.",
   input_schema: {
     type: "object",
     properties: {
@@ -189,7 +189,7 @@ const SendMessage: Tool = {
     const to = agents.resolveInTree(ctx.sessionId, String(input.to ?? input.agent_id));
     const r = await agents.send(to.id, String(input.message), false, callKey(ctx), ctx.sessionId, input.budget);
     const mine = to.parent_id === ctx.sessionId;
-    return ok(`${r.held ? "Stored for" : "Sent to"} ${r.agent.id}. ${whenRead(r)}${r.held ? "" : mine ? " Its report arrives as a message." : " Its report goes to the agent that started it, not to you."}`);
+    return ok(`${r.held ? "Stored for" : "Sent to"} ${r.agent.id}. ${whenRead(r)}${r.held ? "" : mine ? " Its report arrives as a message." : " Its report goes to the agent that started it, not to you."}${r.start ? ` ${r.start.why}` : ""}`);
   }),
 };
 
@@ -245,10 +245,10 @@ const spawn_agent: Tool = {
 
 const send_input: Tool = {
   name: "send_input",
-  urgent: "agent-tree-messages", // it messages the other agents of its tree
+  urgent: "follow-up-start", // it messages the other agents of its tree; a message to a finished agent may start its work fresh (src/engine/follow-up.ts)
   families: OTHERS,
   readOnly: true,
-  description: "Send a message to an existing agent: one you spawned, or another agent of this session's tree. Use interrupt=true to redirect the work of one you spawned immediately; otherwise it is handled after its current step. A finished agent continues with its context, and its next result goes to the agent that spawned it.",
+  description: "Send a message to an existing agent: one you spawned, or another agent of this session's tree. Use interrupt=true to redirect the work of one you spawned immediately; otherwise it is handled after its current step. A finished agent starts its new work where it is cheapest: in its context, or fresh from a capsule of its work (its task, its report, the files and commands of its work); the result says which. Its next result goes to the agent that spawned it.",
   input_schema: {
     type: "object",
     properties: {
@@ -261,7 +261,7 @@ const send_input: Tool = {
   },
   run: (input, ctx) => guard(async () => {
     const r = await agents.send(agents.resolveInTree(ctx.sessionId, String(input.target)).id, String(input.message), !!input.interrupt, callKey(ctx), ctx.sessionId, input.budget);
-    return ok(JSON.stringify({ submission_id: `${r.agent.id}-${Date.now()}`, delivery: whenRead(r) }));
+    return ok(JSON.stringify({ submission_id: `${r.agent.id}-${Date.now()}`, delivery: whenRead(r), ...(r.start ? { start: r.start.way, start_why: r.start.why } : {}) }));
   }),
 };
 

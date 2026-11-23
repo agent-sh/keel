@@ -656,10 +656,14 @@ export function excerpt(text: string, budget: number): string | null {
   return head + note(total - headBytes - tailBytes) + tail;
 }
 
-export function summaryMessage(data: { summary: string; trail_text?: string; fixed?: { key: string; text: string }[]; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[] }): Message {
+// `capsule`: a fresh start of an agent's follow-up (src/engine/follow-up.ts):
+// its words are the harness's from the agent's records, not a model's summary.
+export function summaryMessage(data: { summary: string; trail_text?: string; fixed?: { key: string; text: string }[]; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[]; capsule?: boolean }): Message {
   const fixed = data.fixed?.length ? `\n\n[Instructions loaded before the compaction (instruction files of subfolders, skills, prompts), carried unchanged:]\n${data.fixed.map((f) => f.text).join("\n\n")}` : "";
   const trail = data.trail_text ? `\n\n${data.trail_text}` : "";
-  const head = `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${trail}${fixed}`;
+  const head = data.capsule
+    ? `[harness] This agent starts its new work fresh. The capsule of everything before this point:\n\n${data.summary}${trail}${fixed}`
+    : `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${trail}${fixed}`;
   const msgs = data.owner_messages ?? [];
   const wrap = (t: string) => `<message>\n${t}\n</message>`;
   const others = data.other_messages?.length ? `\n\n[Other messages delivered before the compaction (agent reports, wakes, loop runs, tasks, messages from other sessions; not the owner's words), oldest first:]\n${data.other_messages.map(wrap).join("\n")}` : "";

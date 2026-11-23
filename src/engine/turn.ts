@@ -36,7 +36,9 @@ import { STALE_BIND } from "../providers/wires/binding.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
-import { CachePlans } from "./cache-plans.ts";
+import { CachePlans, cacheOf, marginOf } from "./cache-plans.ts";
+import { capsuleText, decideFollowUp, missingFrom, rereadBytes, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
+import { anchorsOf } from "./trail.ts";
 import type { WaitShape } from "./cache-plan.ts";
 import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
@@ -2092,6 +2094,19 @@ export class Engine {
           // (What is left cannot be made smaller: held to the fewest tokens it can be.)
           const now = this.whole(events, st);
           if (this.least(events, st) >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): switch to a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
+        } else if (steps === 1 && this.starts.get(id)?.way === "summary") {
+          // A follow-up the owner sends to a summary with none prepared: written now, the message its focus.
+          const start = this.starts.get(id)!;
+          this.starts.delete(id);
+          if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "follow_up", focus: start.focus, signal, step: st }).catch((e) => {
+            if (signal.aborted) throw e;
+            const rec = this.errors.capture("provider", e, { session: id, at: "follow-up summary" });
+            this.append(id, "note", { kind: "compaction_failed", text: `The context was not summarized for the follow-up (${rec.message}); it goes on with it whole.` });
+          });
+          events = this.lineage(id);
+        } else if (steps === 1 && this.starts.get(id)?.way === "carry") {
+          // A follow-up decided to go on in the whole context: no summary replaces it now.
+          this.starts.delete(id);
         } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events)) {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
@@ -2721,6 +2736,65 @@ export class Engine {
     return true;
   }
 
+  // Follow-ups to finished agents decided to go on whole or from a summary
+  // written at their start (followUp): read at the follow-up turn's first step.
+  private starts = new Map<string, { way: Way; focus?: string }>();
+
+  // Where a follow-up to a finished agent starts (src/engine/follow-up.ts
+  // decides): its context, the summary prepared while it was idle, or a
+  // capsule of its work. A capsule, or a prepared summary, is put in place
+  // here, before the message is stored; a summary the owner chose with none
+  // prepared is written at the turn's first step. What was chosen and why
+  // is kept with the agent's record and told in its parent's activity.
+  async followUp(id: string, o: { title: string; report: string; tasks: number; since: number; message: string; ended: "completed" | "failed" | "stopped" | "incomplete"; force?: Way }): Promise<FollowUpPlan | undefined> {
+    const session = this.store.session(id);
+    if (!session || this.running.has(id)) return undefined;
+    await this.warmContext(id);
+    await countPaced(this.lineage(id), session.model);
+    const st = await this.step(session, session.model);
+    if (this.running.has(id)) return undefined;
+    const events = this.lineage(id);
+    const model = st.info.id, bpt = bytesPerToken(model);
+    const tokens = (bytes: number) => Math.ceil(bytes / bpt);
+    const used = this.used(events, st);
+    const { life } = cacheOf(st, events);
+    const touched = lastWarm(events, model, this.preparedMs(id, events, st));
+    const warm = touched > 0 && life > 0 && Date.now() < touched + life - marginOf(life);
+    // The task it finished: the context each of its steps read on this model.
+    const ctx = events.filter((e) => e.seq > o.since && e.kind === "assistant" && e.data.model === model && e.data.usage).map((e) => (e.data.usage.input ?? 0) + (e.data.usage.cache_read ?? 0) + (e.data.usage.cache_write ?? 0));
+    const shape = taskShape(ctx);
+    const text = capsuleText(o);
+    const settled = await this.settled(events, text);
+    if (this.running.has(id) || this.store.session(id)?.head !== events.at(-1)?.id) return undefined;
+    const data = timed(() => "making a follow-up's capsule (its kept messages and trail)", () => checkpointData(events, text, this.wordsBudget(st), settled));
+    const capsule = { ...data, summary: text, capsule: true };
+    const capBytes = messagesBytes([summaryMessage(capsule)], model);
+    const prepared = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
+    const ready = prepared && preparedHolds(events, prepared.covered, false, JSON.parse(prepared.data)) ? JSON.parse(prepared.data) : undefined;
+    // What the message names that the context holds and the capsule leaves out, and what a fresh start reads again.
+    const { missing, reread } = timed(() => "weighing a follow-up's fresh start (what it names, what it reads again)", () => {
+      const span = events.slice(checkpointAt(events).keepFrom);
+      const kept = JSON.stringify(summaryMessage(capsule).content);
+      let held: string | undefined;
+      const missing = missingFrom([...anchorsOf(o.message)], kept, (a) => (held ??= JSON.stringify(span.map((e) => e.data))).includes(a));
+      const written = (data.trail?.files ?? []).filter((f) => f.created || f.edits || f.writes).map((f) => f.path);
+      return { missing, reread: tokens(rereadBytes(span, [...written, ...missing.filter((m) => /\.\w{1,5}$/.test(m))])) };
+    });
+    const plan = decideFollowUp({
+      used, prefix: tokens(this.prefixBytes(st)), warm, long: !!cacheLives(st.provider.wire), price: st.info.price,
+      steps: shape.steps, growth: shape.growth, capsule: tokens(capBytes), ...(ready ? { prepared: tokens(messagesBytes([summaryMessage(ready)], model)) } : {}),
+      reread, missing, ended: o.ended, force: o.force,
+    });
+    if (plan.way === "capsule") {
+      const ev = this.append(id, "compaction", { mode: "summary", ...capsule, auto: true, trigger: "follow_up", tokens_before: used, model });
+      this.emitSession(id);
+      void this.compacted(session, ev);
+    } else if (plan.way === "summary" && !this.applyPrepared(id, events)) this.starts.set(id, { way: "summary", focus: o.message.slice(0, 4_000) });
+    else if (plan.way === "carry") this.starts.set(id, { way: "carry" });
+    else this.emitSession(id);
+    return plan;
+  }
+
   // Bytes of what every request carries before the conversation and the
   // provider counts: a deferred tool is not in the prompt until a call loads it.
   private prefixBytes(st: Step): number {
@@ -2904,7 +2978,7 @@ export class Engine {
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a
   // call that would not fit) or on the owner's request between turns.
   // `trigger`: what started it (the threshold, a request that did not fit, the owner).
-  async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner"; signal?: AbortSignal; step?: Step; next?: ModelInfo } = {}) {
+  async compactNow(id: string, opts: { focus?: string; auto?: boolean; trigger?: "threshold" | "overflow" | "owner" | "follow_up"; signal?: AbortSignal; step?: Step; next?: ModelInfo } = {}) {
     const session = this.store.session(id)!;
     // (Asked for between turns too: a history not read or counted yet is read and counted in slices first.)
     await this.warmContext(id);

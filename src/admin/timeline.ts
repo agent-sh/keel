@@ -58,7 +58,7 @@ const SETTLE_MS = 2000;
 // (A cache plan's: what it did and what it cost, in numbers.)
 const PICK = `CASE WHEN kind IN ('turn_start', 'turn_end') THEN data ELSE json_object(
   'kind', data ->> '$.kind', 'from', data ->> '$.from', 'to', data ->> '$.to', 'mode', data ->> '$.mode', 'auto', data ->> '$.auto',
-  'trigger', data ->> '$.trigger', 'tokens_before', data ->> '$.tokens_before', 'error_id', data ->> '$.error_id',
+  'trigger', data ->> '$.trigger', 'tokens_before', data ->> '$.tokens_before', 'error_id', data ->> '$.error_id', 'capsule', data ->> '$.capsule',
   'outcome', data ->> '$.outcome', 'pings', data ->> '$.pings', 'spent_usd', data ->> '$.spent_usd', 'lapse_usd', data ->> '$.lapse_usd', 'waited_ms', data ->> '$.waited_ms',
   -- A compaction's probe: its counts, never the identifiers it names.
   'probe', CASE WHEN kind = 'compaction' AND data ->> '$.probe.files' IS NOT NULL THEN json_object('files', data ->> '$.probe.files', 'files_kept', data ->> '$.probe.files_kept',

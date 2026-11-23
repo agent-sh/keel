@@ -239,7 +239,7 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
   const d = e.data ?? {};
   const row = (kind: TimelineKind, sub: string, text: string, tone: Tone = "plain"): TimelineRow => clean({ id: e.id, ts: e.ts, kind, sub, tone, text, turn_event: turn });
   if (e.kind === "compaction") {
-    const text = d.mode === "clear" ? "Context cleared" : d.trigger === "model" ? "The model started a fresh context" : d.auto ? "Context compacted by itself" : "Context compacted by the owner";
+    const text = d.mode === "clear" ? "Context cleared" : d.trigger === "model" ? "The model started a fresh context" : d.capsule ? "Context replaced by a capsule of the agent's work for its follow-up" : d.trigger === "follow_up" ? "Context summarized for the agent's follow-up" : d.auto ? "Context compacted by itself" : "Context compacted by the owner";
     const kept = probeWords(d.probe);
     return row("compaction", String(d.mode ?? "summary"), `${text}${tokens(d.tokens_before)}${kept ? `; ${kept}` : ""}`);
   }
@@ -304,6 +304,8 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
       // Every agent slot worked: it was made and waits to start, or its wake waits for a slot.
       case "queued": return row("agent", `${name} waits for a free agent slot to start`, {}, r);
       case "slot_wait": return row("agent", `${name} was woken and waits for a free agent slot`, {}, r);
+      // A message continued it after it reported: where its new work started.
+      case "follow_up": return row("agent", `${name} took up new work: ${d.why ? String(d.why).replace(/^./, (c) => c.toLowerCase()) : String(d.way ?? "")}`, {}, r);
       default: return row("agent", `${name}: ${a.sub}`, {}, r);
     }
   }

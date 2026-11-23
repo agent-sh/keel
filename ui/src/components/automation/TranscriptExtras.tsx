@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Mail, Network, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Mail, Network, Radio, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -12,6 +12,7 @@ import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { Markdown } from "../Markdown.tsx";
+import { Seg } from "../Seg.tsx";
 import { ChannelEvent } from "../ChannelEvent.tsx";
 import { AgentMark, AgentNow, agentSaid, IconButton, STATE_INK, StopAgent, useAgentSaid, type AgentSaid } from "./bits.tsx";
 
@@ -331,6 +332,12 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
           )}
           <span className="k-line-end">
             <Apart />
+            {/* Where its last follow-up started (src/engine/follow-up.ts): said when it did not go on in its context. */}
+            {agent?.start && agent.start.way !== "carry" && (
+              <span className="k-line-chip" data-testid="agent-call-start" data-way={agent.start.way} title={agent.start.why}>
+                <Sprout className="size-3 shrink-0" />{START_CHIP[agent.start.way]}
+              </span>
+            )}
             <span className="k-line-chip">{type}</span>
             {agent?.branch && <span className="k-line-chip" data-code="" data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
             {(agent?.machine || input.machine) && <span className="k-line-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
@@ -358,8 +365,44 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         <div className="k-label px-3 pt-2.5">Task</div>
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
         <AgentReport agent={agent} out={out} />
+        {agent && <FollowUps agent={agent} />}
       </Collapsible.Panel>
     </Collapsible.Root>
+  );
+}
+
+// Where a follow-up to the finished agent starts: what its last one did and
+// why, and the owner's choice for the next ones (Keel decides by price unless
+// the owner names a way).
+const START_CHIP = { carry: "in its context", summary: "from a summary", capsule: "fresh start" } as const;
+type Force = "auto" | keyof typeof START_CHIP;
+function FollowUps({ agent }: { agent: AgentRecord }) {
+  const s = agent.start;
+  const force: Force = agent.start_force ?? "auto";
+  return (
+    <div className="px-3 pb-3" data-testid="agent-follow-ups">
+      <div className="k-label pt-1">Follow-ups</div>
+      {s && (
+        <p className="pt-1 text-ui text-muted" data-testid="agent-start-why" data-way={s.way}>
+          {s.why}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2 pt-2">
+        <span className="text-caption text-muted">Next ones start</span>
+        <Seg<Force>
+          label="Where this agent's follow-ups start"
+          testid="agent-start-force"
+          value={force}
+          onChange={(v) => auto.setAgentStart(agent, v).catch(reportError)}
+          options={[
+            { value: "auto", label: "Cheapest", title: "Keel prices each way and takes the cheapest", testid: "agent-start-auto" },
+            { value: "carry", label: "In its context", title: "Always go on in its whole context", testid: "agent-start-carry" },
+            { value: "summary", label: "From a summary", title: "Replace its context with a summary first", testid: "agent-start-summary" },
+            { value: "capsule", label: "Fresh", title: "Start fresh from a capsule of its work: its task, its report, the files and commands of its work", testid: "agent-start-capsule" },
+          ]}
+        />
+      </div>
+    </div>
   );
 }
 

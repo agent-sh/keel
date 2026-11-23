@@ -28,6 +28,7 @@ import { enabledUnits } from "../plugins/registry.ts";
 import { fillContent } from "../plugins/options.ts";
 import { valuesOf } from "../plugins/settings.ts";
 import { checkpointAt } from "../engine/compact.ts";
+import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 import { agentMemory, memoryOff, SCOPES, type MemoryScope } from "./agent-memory.ts";
@@ -102,7 +103,13 @@ export type AgentRecord = {
   slot_wait?: boolean; // it waits, its wake came, and it waits in line for a slot of its parent
   budget?: Budget | null; // steps, minutes or dollars for one task (src/automation/budget.ts)
   task_at?: number | null; // when its current task began: what its budget counts from
+  start?: AgentStart | null; // where its last follow-up started, and why (src/engine/follow-up.ts)
+  start_force?: Way | null; // the owner's choice of where its follow-ups start (none: Keel decides)
 };
+// Where a follow-up to the finished agent started: in its context, from a
+// summary, or fresh from a capsule of its work; why; and the context its first
+// step reads against the one it had.
+export type AgentStart = { way: Way; why: string; forced?: boolean; at: number; task: number; used: number; tokens?: number; costs: Partial<Record<Way, number>> };
 
 export type AgentDef = {
   name: string;
@@ -187,7 +194,7 @@ CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);
 CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('running', 'waiting');`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
 }
@@ -200,13 +207,16 @@ const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir
 // `restarts`: a column from when a restart count decided an agent's end; unused.
 // `park_told`: the task (its first_seq) whose park the parent has been told of.
 // `task`: its first prompt, kept until it is in its session (sendTask).
-type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget"> & { budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null };
+// `start_from`: the last follow-up's start, as JSON (AgentStart).
+type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force"> & { budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, restarts, park_told, task, parked, ...rest } = r;
+  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, ...rest } = r;
   void def; void schema_tries; void restarts; void park_told; void task; void parked;
   // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
   const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
-  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}) };
+  let start: AgentStart | undefined;
+  try { start = start_from ? JSON.parse(start_from) : undefined; } catch {}
+  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}) };
 };
 // The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
 const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
@@ -239,6 +249,8 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>, quiet = fal
   const vals: any[] = [];
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
+    // (A follow-up's start is kept as JSON in a column of its own name.)
+    if (k === "start") { sets.push("start_from = ?"); vals.push(v ? JSON.stringify(v) : null); continue; }
     sets.push(`${k} = ?`);
     vals.push(typeof v === "boolean" ? (v ? 1 : 0) : k === "budget" ? (v ? JSON.stringify(v) : null) : v);
   }
@@ -1631,7 +1643,8 @@ export const ownerHolds = (sessionId: string) => D().engine.isHeld(sessionId) &&
 // own name for this message; the same key again sends nothing (`duplicate`),
 // and with other words it is refused.
 // `held_by`: the stopper word of the hold the message waits behind.
-export type MessageSent = { agent: AgentRecord; waits: boolean; held?: boolean; held_by?: string | null; duplicate?: boolean };
+// `start`: where a finished agent's new work started, and why.
+export type MessageSent = { agent: AgentRecord; waits: boolean; held?: boolean; held_by?: string | null; duplicate?: boolean; start?: { way: Way; why: string } };
 // `from`: the sending session, when it is not the agent's parent: another
 // agent of the same tree. Its message says who sent it, and it releases no
 // hold: only the sender whose own stop made a hold releases it.
@@ -1733,6 +1746,12 @@ export async function send(id: string, message: string, interrupt = false, key?:
       return sent(r);
     }
     if (!release) needSlot(a.parent_id); // it ended while its place was made ready
+    // Where its new work starts: in its context, from a summary, or fresh from a capsule (src/engine/follow-up.ts).
+    const start = await startFor(a, message, key);
+    a = get(id);
+    if (!a) throw new Error(`no agent ${id}`);
+    // The owner stopped it while that was weighed: the message waits for the owner.
+    if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
     // The message and the record that says the agent runs again are one write.
     return store.atomic(a.session_id, () => {
       // The same message again (its sender's key was seen): the agent stays as it is.
@@ -1741,16 +1760,42 @@ export async function send(id: string, message: string, interrupt = false, key?:
       const last = store.lastSeq(a!.session_id);
       // (Each task has a report of its own: two started with no event between them do not share its id.)
       // (Its budget counts again from this task, the one the message gives if it gives one.)
-      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), ...(budget ? { budget } : {}) });
+      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), ...(budget ? { budget } : {}), ...(start ? { start: { ...start, task: a!.tasks + 1 } } : {}) });
+      if (start) activity.record("agent", "follow_up", a!.parent_id, `Agent "${a!.title}" ${WAY_WORDS[start.way]}`, { agent_id: id, child_session: a!.session_id, way: start.way, why: start.why, ...(start.forced ? { forced: true } : {}) });
       release?.(); // the running row now occupies the slot
       // The stop that ended it was the sending side's: its hold goes before anything starts.
       if (!peer) engine.releaseHold(a!.session_id, OWN_HOLDS);
       sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
-      return sent(engine.message(a!.session_id, text, meta, opts));
+      return { ...sent(engine.message(a!.session_id, text, meta, opts)), ...(start ? { start: { way: start.way, why: start.why } } : {}) };
     });
   } finally {
     free();
   }
+}
+
+// Where a follow-up to a finished agent starts, decided by the engine and put
+// in place before its message is stored. None for an agent whose work is not
+// in a session here (on another machine), whose first task never reached its
+// session, or for a message already stored once: it goes on in its context.
+// A failure to decide is captured and the agent goes on in its context.
+async function startFor(a: AgentRecord, message: string, key?: string): Promise<Omit<AgentStart, "task"> | undefined> {
+  const { engine } = D();
+  if (a.machine || queuedTask(a.id) || (key && engine.hasInput(a.session_id, key))) return undefined;
+  try {
+    const ended = a.status === "completed" || a.status === "failed" || a.status === "stopped" ? a.status : "incomplete";
+    const plan = await engine.followUp(a.session_id, { title: a.title, report: report(a.id) ?? "", tasks: a.tasks, since: a.first_seq, message, ended, force: a.start_force ?? undefined });
+    if (!plan) return undefined;
+    return { way: plan.way, why: plan.why, ...(plan.forced ? { forced: true } : {}), at: Date.now(), used: plan.used, tokens: plan.tokens[plan.way], costs: plan.costs };
+  } catch (e) {
+    capture(e, { at: "follow-up start", agent: a.id });
+    return undefined;
+  }
+}
+
+// The owner's choice of where this agent's follow-ups start (null: Keel decides).
+export function setStartForce(id: string, force: Way | null): AgentRecord | undefined {
+  if (!get(id)) return undefined;
+  return update(id, { start_force: force });
 }
 // Agents whose running turn a message is stopping to take its place.
 const redirecting = new Set<string>();

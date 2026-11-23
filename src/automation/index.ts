@@ -40,6 +40,7 @@ import { joinPulse } from "../core/pulse.ts";
 import { runMode } from "../core/runmode.ts";
 import { namesOf } from "../integrations/hooks.ts";
 import { forwardedStanding, isLocal } from "../safety/presence.ts";
+import { isWay } from "../engine/follow-up.ts";
 import { spelled } from "../safety/chars.ts";
 import { fromSaid, type AnsweredBy } from "../safety/card.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -489,7 +490,20 @@ export const automationRoutes: RouteModule = (deps) => {
         // `client_id`: the page's name for this send; the same one again sends nothing.
         const key = typeof b.client_id === "string" && b.client_id.trim() ? `page:${b.client_id.trim().slice(0, 80)}` : undefined;
         const r = await agents.send(a.id, String(b.message), !!b.interrupt, key);
-        return json({ agent: r.agent, waits: r.waits, ...(r.held ? { held: true } : {}), ...(r.duplicate ? { replayed: true } : {}) });
+        return json({ agent: r.agent, waits: r.waits, ...(r.held ? { held: true } : {}), ...(r.duplicate ? { replayed: true } : {}), ...(r.start ? { start: r.start } : {}) });
+      }),
+    },
+    // The owner's choice of where this agent's follow-ups start: carry (its
+    // context), summary, capsule, or auto (Keel decides by price).
+    "/api/sessions/:id/agents/:agent_id/start": {
+      PUT: (req: any) => attempt(async () => {
+        const a = agents.get(req.params.agent_id);
+        if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent", 404);
+        const b = await body(req);
+        const force = b.force === "auto" || b.force === null ? null : b.force;
+        if (force !== null && !isWay(force)) return bad("force is one of auto, carry, summary, capsule");
+        const now = agents.setStartForce(a.id, force);
+        return json({ agent: now ? agents.brief(now) : null });
       }),
     },
     "/api/sessions/:id/background": {
