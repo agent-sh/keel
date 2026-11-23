@@ -1,3 +1,4 @@
+import { Popover } from "@base-ui/react/popover";
 import { CopyButton } from "./CopyButton.tsx";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
@@ -518,6 +519,8 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   const u = e.data.usage;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
+  const secs = `${(e.data.ms / 1000).toFixed(1)}s`;
+  const cost = u?.cost !== undefined && !u.unpriced ? fmtCost(u.cost) : "";
   // The session's own state, for the last footer: a turn that ended on a failure or a restart and
   // that Keel goes on with by itself (the provider asked for a wait, a restart cut it) waits.
   const told = useToldState(last ? sid : undefined);
@@ -540,10 +543,27 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
           ? <span className="k-turn-reason text-muted" data-testid="turn-reason">{waits}</span>
           : <span className={cn("k-turn-reason", e.data.reason === "error" || e.data.reason === "max_tokens" ? "text-st-fail" : "text-warn")} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>)}
         {goOn > 0 && <span className="text-muted" data-testid="agents-go-on">{goOn === 1 ? "its agent goes on" : `its ${goOn} agents go on`}</span>}
-        <span>{(e.data.ms / 1000).toFixed(1)}s</span>
-        {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
-        {u && <span>{fmtTokens(u.output)} out</span>}
-        {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">{fmtCost(u.cost)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
+        {/* At the desk every figure is in the row; on a phone the row keeps one line: the cost (the
+            time when it has none), and the other figures a tap away on it. */}
+        <span className="max-md:hidden">{secs}</span>
+        {u && <span className="max-md:hidden">{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
+        {u && <span className="max-md:hidden">{fmtTokens(u.output)} out</span>}
+        {cost ? <span className="max-md:hidden" data-testid="turn-cost">{cost}</span> : u?.unpriced ? <span className="max-md:hidden">cost unknown</span> : null}
+        <Popover.Root>
+          <Popover.Trigger className="k-turn-figs hidden whitespace-nowrap rounded-xs px-1 hover:bg-hover hover:text-muted max-md:inline-flex" aria-label="Time, tokens and cost" data-testid="turn-figures">
+            {cost || secs}
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner sideOffset={4} align="end" className="z-50 outline-none">
+              <Popover.Popup className="flex flex-col gap-0.5 rounded-md border border-line-strong bg-raised px-3 py-2 text-caption tabular-nums text-muted shadow-2" data-testid="turn-figures-full">
+                <span>{secs}</span>
+                {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
+                {u && <span>{fmtTokens(u.output)} out</span>}
+                {cost ? <span>{cost}</span> : u?.unpriced ? <span>cost unknown</span> : null}
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       </span>
       {goOn > 0 && (
         <button type="button" data-testid="stop-agents" onClick={() => stopAgentsOf(sid)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-warn hover:bg-hover">

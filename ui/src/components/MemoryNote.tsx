@@ -49,13 +49,14 @@ export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: b
         const hooks: string[] = hook ? [hook] : e.data.memory?.hooks ?? [];
         // The helper's own note (src/helper/): the events and remembered items a prompt brought.
         const mine = e.data.memory?.source === "helper";
-        const label = hook ? "hook" : `${mine ? "helper" : "memory"}${facts ? ` ${facts}` : ""}`;
+        // On a phone the word gives way to the glyph (the reply's row keeps one line); the count stays.
+        const word = hook ? "hook" : mine ? "helper" : "memory";
         const from = hook ? "From a hook" : mine ? "Helper context" : "Memory from tacit";
         return (
           <span key={e.id} className="k-note-chip-wrap" data-testid="memory-note">
             <Popover.Root>
               <Popover.Trigger className="k-note-chip" title={`${from}${facts ? `, ${facts} fact${facts === 1 ? "" : "s"}` : ""}${hooks.length ? `, ${hooks.join(", ")}` : ""}`}>
-                {hook ? <Webhook className="size-3" /> : <Brain className="size-3" />} {label}
+                {hook ? <Webhook className="size-3" /> : <Brain className="size-3" />} <span className="max-md:sr-only">{word}</span>{!hook && facts ? ` ${facts}` : ""}
                 <span className="sr-only">{hooks.join(", ")}</span>
               </Popover.Trigger>
               <Popover.Portal>

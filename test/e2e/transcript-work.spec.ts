@@ -885,3 +885,46 @@ test("a reply's row of actions and counts shows on the pointer or the keyboard",
     await request.delete(`/api/sessions/${session.id}`);
   }
 });
+
+// Feature: on a phone a reply's row is one line. Its actions stay; its figures are the cost (the time
+// when it has none), and every count is a tap away on it.
+test("on a phone a reply's row is one line, the token counts a tap away", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === "scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Phone reply row" } })).json();
+  try {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:say Done, and the tests pass." } });
+    await expect.poll(async () => { const d = await (await request.get(`/api/sessions/${session.id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 20_000 }).toBe(true);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${session.id}`);
+    const foot = page.locator(".k-turn-foot").last();
+    await page.getByTestId("assistant-text").last().hover();
+    await expect(foot.getByTestId("copy-reply")).toBeVisible();
+    // One line: the row is as tall as one of its buttons, and nothing in it leaves the screen.
+    const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+    const box = (await foot.boundingBox())!;
+    expect(box.height).toBeLessThanOrEqual(1.75 * rem + 2);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+    for (const b of await foot.locator("button:visible").all()) expect((await b.boundingBox())!.y).toBeLessThan(box.y + 1.75 * rem);
+    // The figure shown is the cost; a tap on it gives every count.
+    const figures = foot.getByTestId("turn-figures");
+    await expect(figures).toBeVisible();
+    await expect(figures).toHaveText(/^\$|^\d+\.\ds$/);
+    await shoot(page, "transcript-reply-row-phone");
+    await figures.click();
+    const pop = page.getByTestId("turn-figures-full");
+    await expect(pop).toBeVisible();
+    await expect(pop).toContainText(/\d+\.\ds/);
+    await expect(pop).toContainText(" in");
+    await expect(pop).toContainText(" out");
+    await shoot(page, "transcript-reply-row-phone-figures");
+    await page.keyboard.press("Escape");
+    // At the desk the row is as it was: every figure in it, no tap needed.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.getByTestId("assistant-text").last().hover();
+    await expect(foot.getByTestId("turn-end")).toContainText(" in");
+    await expect(figures).toBeHidden();
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
