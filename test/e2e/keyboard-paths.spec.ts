@@ -48,7 +48,8 @@ test("the palette shows only rows of the query that is typed", async ({ page, re
     await expect(rows.filter({ hasText: word })).toHaveCount(0);
     expect(await page.getByTestId("palette").locator('[role="option"][aria-selected="true"]').count()).toBeLessThanOrEqual(1);
   }
-  await expect(page.getByTestId("palette")).toContainText('Nothing matches "zzqq-nothing".');
+  // (Nothing of this daemon matches, so the other harnesses' sessions are searched as well.)
+  await expect(page.getByTestId("palette")).toContainText(`Nothing matches "zzqq-nothing", here or in other harnesses' sessions.`);
   await input.fill("theme");
   await expect(rows.first()).toContainText("Theme");
   await shoot(page, "keyboard-paths-05-palette-next-query");
