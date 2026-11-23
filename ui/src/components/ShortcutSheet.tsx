@@ -35,14 +35,17 @@ export function ShortcutList() {
     ...everyCommand().filter((c) => c.keys).map((c) => [c.group ?? "General", c.label, c.keys!] as [string, string, string]),
     ...fixed(enterSends),
   ];
-  const groups = [...new Set(rows.map((r) => r[0]))];
+  // Two commands can share a name and a key (Escape goes back from a look and from the start page): one line.
+  const seen = new Set<string>();
+  const once = rows.filter((r) => !seen.has(r.join("\u0000")) && !!seen.add(r.join("\u0000")));
+  const groups = [...new Set(once.map((r) => r[0]))];
   return (
     <div className="grid gap-x-10 gap-y-6 sm:grid-cols-2">
       {groups.map((g) => (
         <section key={g}>
           <h3 className="mb-1.5 k-label">{g}</h3>
-          {rows.filter((r) => r[0] === g).map(([, label, keys]) => (
-            <div key={label} data-testid="shortcut-row" className="flex min-h-8 items-center justify-between gap-4 border-b border-line/70 py-1 text-ui last:border-0">
+          {once.filter((r) => r[0] === g).map(([, label, keys]) => (
+            <div key={`${label}\u0000${keys}`} data-testid="shortcut-row" className="flex min-h-8 items-center justify-between gap-4 border-b border-line/70 py-1 text-ui last:border-0">
               <span className="min-w-0">{label}</span>
               <Kbd keys={keys} className="shrink-0" />
             </div>
@@ -58,11 +61,11 @@ export function ShortcutSheet() {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => setUI({ shortcuts: o })}>
       <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity duration-150 data-starting-style:opacity-0 data-ending-style:opacity-0" />
+        <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="shortcuts"
           data-float
-          className="k-surface fixed left-1/2 top-1/2 z-50 max-h-[calc(100dvh-3rem)] w-[min(46rem,calc(100vw-1.5rem))] -translate-x-1/2 -translate-y-1/2 transition-[opacity,scale] duration-150 data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:scale-[0.98] data-ending-style:opacity-0"
+ className="k-surface fixed left-1/2 top-1/2 z-50 max-h-[calc(100dvh-3rem)] w-[min(46rem,calc(100vw-1.5rem))] -translate-x-1/2 -translate-y-1/2 transition-[opacity,scale] data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:scale-[0.98] data-ending-style:opacity-0"
         >
           <div className="k-surface-head">
             <Keyboard className="k-surface-icon" />
