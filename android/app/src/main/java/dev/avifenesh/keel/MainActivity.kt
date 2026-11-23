@@ -32,6 +32,8 @@ sealed class Route {
     data class Tabs(val tab: Int) : Route()
     /** `back`: where Back leads (the session it was opened from, for an agent's), else the list. */
     data class Session(val id: String, val back: Route? = null) : Route()
+    /** The search across sessions. */
+    object Search : Route()
     /** What a session changed. */
     data class Changes(val id: String) : Route()
     /** One file's diff, of one turn (`turn`) or since the session's first (null); `label` names which. */

@@ -426,6 +426,43 @@ class Seen {
     companion object { const val SLACK = 1f }
 }
 
+/** One hit of the search: where (`kind`: title, user, assistant, tool_use, tool_result, summary), the words found marked in `snippet`. */
+data class SearchHit(val chatId: String, val title: String, val kind: String, val snippet: String, val ts: Double, val eventId: String = "") {
+    /** Where it was found, in a word. */
+    val where get() = when (kind) {
+        "title" -> "Title"; "user" -> "You wrote"; "assistant" -> "Reply"; "tool_use" -> "Tool call"; "tool_result" -> "Tool output"; "summary" -> "Summary"
+        else -> kind.replaceFirstChar { it.uppercase() }
+    }
+}
+
+/** GET /v1/search: the hits, and what the query limited the search to, in words. */
+data class SearchResult(val query: String, val hits: List<SearchHit>, val limits: List<String>) {
+    companion object {
+        fun of(o: JSONObject) = SearchResult(
+            o.str("query"),
+            o.optJSONArray("hits")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty().map {
+                SearchHit(it.str("chat_id"), it.str("title"), it.str("kind"), it.str("snippet"), it.optDouble("ts", 0.0), it.str("event_id"))
+            },
+            strings(o.optJSONArray("limits")),
+        )
+    }
+}
+
+/** A snippet's parts: the text, and whether it is a word the search found (between \u0001 and \u0002). */
+fun snippetParts(s: String): List<Pair<String, Boolean>> {
+    val out = ArrayList<Pair<String, Boolean>>()
+    var at = 0
+    while (at < s.length) {
+        val open = s.indexOf('\u0001', at)
+        if (open < 0) { out += s.substring(at) to false; break }
+        if (open > at) out += s.substring(at, open) to false
+        val close = s.indexOf('\u0002', open + 1).let { if (it < 0) s.length else it }
+        out += s.substring(open + 1, close) to true
+        at = close + 1
+    }
+    return out.filter { it.first.isNotEmpty() }
+}
+
 /** One session in the away digest: what happened in it, the part that went wrong apart (`bad`). */
 data class AwaySession(val chatId: String, val title: String, val state: String, val watch: String, val text: String, val bad: String = "")
 

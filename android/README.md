@@ -79,6 +79,15 @@ and each session in which something happened, the failed one first, its
 failure in red. A row opens its session; Seen dismisses the digest here and
 on the page. Using the app ends an absence, as using a page does.
 
+## Search
+
+The magnifier on the session list searches every session through the
+daemon's own search: titles first, then what was said and done, one row a
+session, the words found in bold and where they were found (your words, a
+reply, a tool call or its output). A row opens its session, and back from it
+the search is where it was. Limits work as on the page (`state:failed`,
+`since:yesterday`) and are said above the hits.
+
 ## Starting a task
 
 The plus on the session list opens the start sheet: what the session should
@@ -218,6 +227,7 @@ so it proves nothing about who built it.
 | `Feed.kt` | what the app holds of the daemon and how sync answers and stream frames change it, as plain state |
 | `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
 | `ui/Away.kt` | what happened while the owner was away |
+| `ui/Search.kt` | search across sessions |
 | `ui/Start.kt` | the start sheet: a new session's task, folder, machine and model |
 | `ui/Agents.kt` | a session's agents, as a tree |
 | `ui/Changes.kt` | a session's changes and one file's diff |

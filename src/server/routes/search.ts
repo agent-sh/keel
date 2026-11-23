@@ -50,6 +50,9 @@ export function ftsQuery(q: string): string | null {
 const SETTLE_QUIET_MS = 5_000;
 const SETTLE_MOST_MS = 10 * 60_000;
 
+// Set when the routes load: the search, for a caller that is not the page.
+export let searchSessions: ((req: Request) => Promise<Response>) | undefined;
+
 export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
   const state = initSearchIndex(store.db);
   const kept = keepIndexed(store);
@@ -57,7 +60,9 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
   const after = () => providers ? providers.models().catch(() => {}).then(() => Bun.sleep(0)).then(() => passesSettled(SETTLE_QUIET_MS, SETTLE_MOST_MS)) : undefined;
   if (state.fill || state.drain) startFill(store, { oldGone: kept.oldGone, failed: (e, ctx) => errors?.capture("server", e, ctx), after: after() });
 
-  return {
+  // The same search for the phone (src/integrations/mobile/v1.ts): a request of this route's own shape.
+  searchSessions = (req) => routes["/api/search"].GET(req);
+  const routes = {
     "/api/search": {
       // ?q=words&limit=n (per group: titles and conversation hits are cut apart)
       // [&roots=1: no subagent sessions] [&archived=0|1: one partition]
@@ -138,4 +143,5 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
       },
     },
   };
+  return routes;
 };

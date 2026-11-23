@@ -33,6 +33,7 @@ import dev.avifenesh.keel.Chat
 import dev.avifenesh.keel.Conn
 import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.Prefs
+import dev.avifenesh.keel.Route
 import dev.avifenesh.keel.State
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.ago
@@ -107,6 +108,7 @@ fun SessionsScreen() {
 
     Column(Modifier.fillMaxSize()) {
         Head("Sessions", sub = { ConnLine() }) {
+            IconBtn(Ic.Search, "Search", { Ui.route.value = Route.Search }, tint = k.muted)
             IconBtn(Ic.Plus, "New session", { create() }, enabled = !creating)
         }
         if (error.isNotBlank()) Notice(error, modifier = Modifier.padding(horizontal = S.lg, vertical = S.sm))

@@ -17,7 +17,8 @@
   "start (GET /v1/start) is what a new session can start with: the default `model` and the `models` to pick from, the `folders` this machine's sessions worked in (newest first, the daemon's own folder marked `home`), and the `machines` of the fleet that take a session (`ready` while it answers; `root`, the folder granted there). new_chat is the body of POST /v1/chats: each field may be left out (the default model, the daemon's folder, this machine); `workspace` is an absolute folder here, or one inside `root` on another machine; `text` is the first message, sent at once.",
   "away (GET /v1/away) is the digest of the owner's last absence, the page's own, in words: `span` (when), `brief` (one line), `totals`, what the daemon went through (`daemon`), and the sessions in which something happened, the one that failed first, each with its facts and the part that went wrong (`bad`). Null when the owner was not away or nothing happened. DELETE /v1/away says it was seen: it is shown no more, here or on the page. POST /v1/presence with `idle_ms` says the owner touched the app that long ago: the phone in use ends an absence, as a page in use does.",
   "A push of kind `live` is the lasting notification's news: `w` sessions working, `q` cards waiting on the owner, `title` and `body` to show as they are, `since` (epoch milliseconds) when the longest turn started. The push service keeps only the newest (one collapse key). `w` and `q` of 0 take the notification down.",
-  "A chat row carries `h`, eight hex digits of its content. A phone that sends the marks it holds (`have=<chat id>:<h>,...` on GET /v1/events or /v1/sync) is sent in the catch-up only the rows whose mark differs, with `removed` naming the rows it holds that are gone, and `complete` false. A whole read (since 0, or a cursor that cannot be caught up from) sends every row."
+  "A chat row carries `h`, eight hex digits of its content. A phone that sends the marks it holds (`have=<chat id>:<h>,...` on GET /v1/events or /v1/sync) is sent in the catch-up only the rows whose mark differs, with `removed` naming the rows it holds that are gone, and `complete` false. A whole read (since 0, or a cursor that cannot be caught up from) sends every row.",
+  "search (GET /v1/search?q=<words>) is the page's search across sessions: titles first, then what was said and done, one hit a session at most. A hit's `snippet` holds the words found between \u0001 and \u0002; `kind` says where (title, user, assistant, tool_use, tool_result, summary). `limits` says in words what the query limited the search to (state:failed, since:yesterday)."
  ],
  "signing": {
   "request": [
@@ -417,6 +418,19 @@
    "watch": "string",
    "text": "string",
    "bad": "string?"
+  },
+  "search": {
+   "query": "string",
+   "hits": "array",
+   "limits": "array?"
+  },
+  "search_hit": {
+   "chat_id": "string",
+   "title": "string",
+   "kind": "string",
+   "snippet": "string",
+   "ts": "number",
+   "event_id": "string?"
   }
  },
  "examples": {
@@ -2602,6 +2616,52 @@
    },
    {
     "away": null
+   }
+  ],
+  "search_hit": [
+   {
+    "chat_id": "s-1",
+    "title": "Rotate the signing keys",
+    "kind": "title",
+    "snippet": "Rotate the signing keys",
+    "ts": 1795195000.5
+   },
+   {
+    "chat_id": "s-2",
+    "title": "Docs",
+    "kind": "assistant",
+    "snippet": "The \u0001invoice\u0002 \u0001total\u0002 is rounded twice.",
+    "ts": 1795195010.0,
+    "event_id": "e-9"
+   }
+  ],
+  "search": [
+   {
+    "query": "invoice total",
+    "hits": [
+     {
+      "chat_id": "s-1",
+      "title": "Rotate the signing keys",
+      "kind": "title",
+      "snippet": "Rotate the signing keys",
+      "ts": 1795195000.5
+     },
+     {
+      "chat_id": "s-2",
+      "title": "Docs",
+      "kind": "assistant",
+      "snippet": "The \u0001invoice\u0002 \u0001total\u0002 is rounded twice.",
+      "ts": 1795195010.0,
+      "event_id": "e-9"
+     }
+    ],
+    "limits": [
+     "in the last day"
+    ]
+   },
+   {
+    "query": "",
+    "hits": []
    }
   ]
  }

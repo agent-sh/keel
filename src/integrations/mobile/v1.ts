@@ -68,7 +68,12 @@ export type MobileCtx = Deps & {
   // The digest of the owner's last absence and its dismissal (src/server/routes/overview.ts), and the
   // owner seen this long ago (the phone in use ends an absence, as a page in use does).
   away?: () => Digest | null; awaySeen?: () => void; ownerSeen?: (idleMs: number) => void;
+  // The search across sessions (src/server/routes/search.ts), asked as the page asks it.
+  search?: (req: Request) => Promise<Response>;
 };
+
+// How many hits the phone is sent: a screen and a half of them; the words narrow it from there.
+const SEARCH_HITS = 30;
 
 // The digest as the phone shows it: the span and the totals in words, what the daemon went through,
 // and each session's facts with the part that went wrong apart, as the page's digest says them.
@@ -992,6 +997,31 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     "/v1/events": { GET: signed((req, dev, _b, srv) => events(req, dev, srv)) },
+    // The search across sessions, as the page's: titles first, then what was said and done, one hit a
+    // session at most. A hit's `snippet` marks the words found between \u0001 and \u0002.
+    "/v1/search": {
+      GET: signed(async (req) => {
+        const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
+        if (!q) return json({ query: "", hits: [] });
+        if (!ctx.search) return err("this daemon does not search", 409);
+        const r = await ctx.search(new Request(`http://keel/api/search?${new URLSearchParams({ q, limit: String(SEARCH_HITS), sessions: "1" })}`));
+        const out: any = await r.json();
+        if (!r.ok) return json({ error: String(out.error ?? "the search failed"), ...(out.limit ? { limit: true } : {}) }, r.status);
+        // One row a session: in the place of its first hit (a title's, when the title holds the words),
+        // with what was said when the words were said too, since that tells more than the title again.
+        const rows = new Map<string, any>();
+        for (const h of (out.hits ?? []) as any[]) {
+          const row = {
+            chat_id: h.session_id, title: h.session_title || "New chat", kind: h.kind, snippet: String(h.snippet ?? "").slice(0, 400), ts: secs(h.ts),
+            ...(h.event_id ? { event_id: h.event_id } : {}), ...(h.archived ? { archived: true } : {}), ...(h.parent_id ? { parent_id: h.parent_id } : {}),
+          };
+          const had = rows.get(h.session_id);
+          if (!had) rows.set(h.session_id, row);
+          else if (had.kind === "title" && row.kind !== "title") rows.set(h.session_id, { ...row, title: had.title });
+        }
+        return json({ query: out.query ?? q, ...(out.limits ? { limits: out.limits } : {}), hits: [...rows.values()] });
+      }),
+    },
     // What happened while the owner was away (the page's digest), and its dismissal: seen on the phone,
     // it is not shown again there or on the page.
     "/v1/away": {

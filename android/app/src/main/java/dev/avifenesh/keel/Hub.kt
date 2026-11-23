@@ -192,6 +192,7 @@ object Hub {
     fun seenAway() { away.value = null; scope.launch { runCatching { Api.delete("/v1/away") } } }
     /** The owner touched the app `idleMs` ago: the end of an absence, as a page in use says. */
     suspend fun present(idleMs: Long) { Api.post("/v1/presence", JSONObject().put("idle_ms", idleMs)) }
+    suspend fun search(q: String): SearchResult = SearchResult.of(Api.get("/v1/search?q=${Wire.enc(q)}"))
     suspend fun startOffer(): Start = Start.of(Api.get("/v1/start"))
 
     suspend fun resolve(aid: String, body: JSONObject, headers: Map<String, String>): Card? {

@@ -24,6 +24,7 @@ import { alertPush } from "../../server/routes/mobile.ts";
 import { Gate, type Approval } from "../../safety/gate.ts";
 import { planRoutes, plansWaiting } from "../../server/routes/plan.ts";
 import { Checkpoints } from "../../safety/checkpoints.ts";
+import { searchRoutes } from "../../server/routes/search.ts";
 import { toolsFor } from "../../tools/registry.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
@@ -66,6 +67,9 @@ const card = (a: Partial<Approval> & Pick<Approval, "id" | "session_id" | "summa
 let ckpts: Checkpoints | undefined;
 // The fleet as the phone sees it: its machines, and what starting a session on one answers.
 let fleetRows: any[] = [];
+// The page's search over this test's store, made at its first use.
+let searched: ((req: Request) => Promise<Response>) | undefined;
+const searchGet = () => (searched ??= (searchRoutes({ store } as any) as any)["/api/search"].GET);
 // The owner's last absence as the page's digest has it, and when the phone said the owner was there.
 let awayDigest: any = null;
 const seenAt: number[] = [];
@@ -81,7 +85,8 @@ const DIGEST = {
 let fleetStart: (b: any) => Response = () => Response.json({ error: "no fleet in this test" }, { status: 409 });
 const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
   fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b),
-  away: () => awayDigest, awaySeen: () => { awayDigest = null; }, ownerSeen: (ms: number) => void seenAt.push(ms) } as any);
+  away: () => awayDigest, awaySeen: () => { awayDigest = null; }, ownerSeen: (ms: number) => void seenAt.push(ms),
+  search: (r: Request) => searchGet()(r) } as any);
 afterAll(() => setSystemTime());
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -406,6 +411,35 @@ async function changedSession() {
   await turn("Add b", () => writeFileSync(join(ws, "b.txt"), "new file\n"), gap(() => writeFileSync(join(ws, "c.txt"), "the owner's\n")), () => {});
   return s;
 }
+
+describe("search", () => {
+  test("the phone finds a session by its title and by what was said in it, the words marked", async () => {
+    searchGet();
+    const a = session("Rotate the signing keys");
+    const b = session("Docs");
+    store.append(b.id, "user", { text: "Why does the invoice total drift by a cent?" });
+    store.append(b.id, "assistant", { blocks: [{ type: "text", text: "The invoice total is rounded twice." }] });
+    store.side.flush();
+    const r = (await call("GET", `/v1/search?q=${encodeURIComponent("invoice total")}`)).body;
+    const ofB = r.hits.filter((h: any) => h.chat_id === b.id);
+    expect(ofB.length).toBe(1); // one hit a session
+    expect(ofB[0].title).toBe("Docs");
+    expect(ofB[0].snippet).toContain("\u0001invoice\u0002");
+    expect(["user", "assistant"]).toContain(ofB[0].kind);
+    expect(typeof ofB[0].ts).toBe("number");
+    const t = (await call("GET", `/v1/search?q=${encodeURIComponent("signing")}`)).body.hits;
+    expect(t[0]).toMatchObject({ chat_id: a.id, kind: "title", title: "Rotate the signing keys" });
+    // A session whose title and talk both hold the words is one row, with what was said.
+    store.append(a.id, "user", { text: "Rotate the signing keys before Friday" });
+    store.side.flush();
+    const both = (await call("GET", `/v1/search?q=${encodeURIComponent("signing")}`)).body.hits.filter((h: any) => h.chat_id === a.id);
+    expect(both.map((h: any) => [h.kind, h.title])).toEqual([["user", "Rotate the signing keys"]]);
+    expect((await call("GET", "/v1/search?q=")).body.hits).toEqual([]);
+    // A limit the search does not understand is said as the search says it.
+    const bad = await call("GET", `/v1/search?q=${encodeURIComponent("state:sideways x")}`);
+    expect([bad.status, bad.body.limit]).toEqual([400, true]);
+  });
+});
 
 describe("reconnect", () => {
   test("a phone that says the rows it holds is sent only the ones that changed, and told which are gone", async () => {
@@ -958,6 +992,7 @@ describe("the wire contract", () => {
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
     changes: [["turns", "change_turn"], ["session", "file_change"]], change_turn: [["files", "file_change"]],
     start: [["models", "start_model"], ["folders", "start_folder"], ["machines", "start_machine"]],
+    search: [["hits", "search_hit"]],
     away: [["away.sessions", "away_session"]],
   };
   // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
@@ -1051,6 +1086,10 @@ describe("the wire contract", () => {
     const listing = providers.models;
     (providers as any).models = async () => [{ id: "fx:default", name: "Default model" }, { id: "fx:other" }];
     take("start", (await call("GET", "/v1/start")).body);
+    store.append(s.id, "user", { text: "Search the whole ledger for the drift" });
+    store.side.flush();
+    take("search", (await call("GET", `/v1/search?q=${encodeURIComponent("ledger drift since:7d")}`)).body);
+    take("search", (await call("GET", `/v1/search?q=${encodeURIComponent("Fix build")}`)).body);
     awayDigest = DIGEST;
     take("away", (await call("GET", "/v1/away")).body);
     awayDigest = null;

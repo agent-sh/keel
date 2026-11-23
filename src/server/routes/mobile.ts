@@ -16,6 +16,7 @@ import { gate } from "./permissions.ts";
 import { checkpoints } from "./checkpoints.ts";
 import { fleetMachines, startFleetSession } from "./fleet.ts";
 import { awayNow, awaySeen } from "./overview.ts";
+import { searchSessions } from "./search.ts";
 import { ownerSeen } from "../../admin/away.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -155,7 +156,8 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
 
   return {
     ...mobileApi({ ...deps, mobile, gate: () => gate, changed, checkpoints: () => checkpoints, fleetMachines: () => fleetMachines?.() ?? Promise.resolve([]), startFleetSession: (b) => (startFleetSession ? startFleetSession(b) : Promise.resolve(Response.json({ error: "this daemon has no machines to start a session on" }, { status: 409 }))),
-      away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms) }),
+      away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms),
+      search: (r) => (searchSessions ? searchSessions(r) : Promise.resolve(Response.json({ error: "the search is not loaded" }, { status: 409 }))) }),
 
     "/api/mobile/settings": {
       GET: () => json({ public_url: mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL ?? "", push: { configured: push.configured(), path: push.accountPath() } }),

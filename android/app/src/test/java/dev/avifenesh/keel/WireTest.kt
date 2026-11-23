@@ -183,6 +183,13 @@ class WireTest {
         assertEquals(false, Live.of(emptyMap(), emptyList(), chats).shown)
     }
 
+    @Test fun aSnippetMarksTheWordsFound() {
+        assertEquals(listOf("The " to false, "invoice" to true, " " to false, "total" to true, " is off." to false), snippetParts("The \u0001invoice\u0002 \u0001total\u0002 is off."))
+        assertEquals(listOf("no marks" to false), snippetParts("no marks"))
+        // A mark left open runs to the end.
+        assertEquals(listOf("…" to false, "drift" to true), snippetParts("…\u0001drift"))
+    }
+
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))
