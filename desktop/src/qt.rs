@@ -78,6 +78,10 @@ const ASK_EVERY: u32 = 5;
 const SILENCE: Duration = Duration::from_secs(20);
 /// A page that stops is loaded again this many times in a minute, and no more.
 const RELOADS: usize = 3;
+/// How long a page loaded again after its process ended has to say its first word to the app,
+/// and how many times one that said nothing is made anew.
+const SPEAKS_WITHIN: Duration = Duration::from_secs(10);
+const RENEWS: u32 = 2;
 
 thread_local! {
     static QT: RefCell<Option<Rc<Inner>>> = const { RefCell::new(None) };
@@ -390,6 +394,7 @@ fn heard(start: u64, line: &str) {
             } else if again {
                 win.say_stopped.set(true);
                 win.renew();
+                win.expect_word();
             } else {
                 win.stopped.set(true);
                 win.pill_now();
@@ -597,6 +602,7 @@ impl Engine for Qt {
             stopped: Cell::new(false),
             say_stopped: Cell::new(false),
             failed: Cell::new(0),
+            renews: Cell::new(0),
             size: Cell::new((size.0, size.1, maximized)),
             visible: Cell::new(false),
             open: Cell::new(false),
@@ -650,6 +656,8 @@ struct Win {
     say_stopped: Cell<bool>,
     /// Loads of the daemon's page that failed in a row (`retry_after`).
     failed: Cell<u32>,
+    /// Times the page was made anew because it came back and said nothing (`expect_word`).
+    renews: Cell<u32>,
     /// Width, height, maximized, as the other program last said.
     size: Cell<(i32, i32, bool)>,
     visible: Cell<bool>,
@@ -687,6 +695,23 @@ impl Win {
         (self.ask)(self, Ask::Lost);
     }
 
+    /// A page loaded again after its process ended is expected to speak: its own first word
+    /// to the app, at which it is told why it was loaded again. One that has not after a while
+    /// came back empty, or cut off from the app (seen when a page's process ends while the page
+    /// is still loading): it is made anew, twice at most.
+    fn expect_word(self: &Rc<Self>) {
+        let me = Rc::downgrade(self);
+        glib::timeout_add_local_once(SPEAKS_WITHIN, move || {
+            let Some(win) = me.upgrade() else { return };
+            if win.say_stopped.get() && win.showing.get() == Showing::App && win.renews.get() < RENEWS {
+                win.renews.set(win.renews.get() + 1);
+                (win.inner.note)("page-silent", json!({ "window": win.id, "again": win.renews.get() }));
+                win.renew();
+                win.expect_word();
+            }
+        });
+    }
+
     /// What the page says to the app: only with this window's key.
     fn said(self: &Rc<Self>, raw: &str) {
         let Ok(m) = serde_json::from_str::<Value>(raw) else { return };
@@ -716,6 +741,8 @@ impl Win {
                 // was not listening yet, and was then never said.)
                 if paste && self.showing.get() == Showing::App && self.say_stopped.replace(false) {
                     self.tell(&json!({ "reloaded": "stopped" }));
+                    self.renews.set(0);
+                    (self.inner.note)("told-reloaded", json!({ "window": self.id }));
                 }
                 self.gate.borrow_mut().announces(saving);
                 self.inner.send(&json!({ "t": "can", "win": self.id, "paste": paste, "saving": saving }));
