@@ -339,6 +339,15 @@ export class CachePlans {
     return r ? { kind: r.kind, choice: r.last.choice, why: r.last.why, at: r.last.at, pings: r.pings, spent_usd: round(r.spent), lapse_usd: round(this.lapse(r)) } : undefined;
   }
 
+  // The cache a session's wait holds now, for the next-look queue (src/core/wait-rank.ts): how
+  // many tokens, when it lapses unless something reads it, and what writing it again costs.
+  stake(id: string): { tokens: number; until: number; usd: number } | undefined {
+    const r = this.runs.get(id);
+    if (!r || r.life <= 0) return undefined;
+    const usd = this.lapse(r);
+    return usd > 0 ? { tokens: r.tokens, until: r.touched + r.life, usd: round(usd) } : undefined;
+  }
+
   stopAll() {
     // A wait kept warm that no request read after is told so now: this daemon will not see the next one.
     for (const id of [...this.owed.keys()]) this.settle(id, "unchecked");

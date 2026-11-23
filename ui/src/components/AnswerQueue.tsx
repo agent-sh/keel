@@ -1,7 +1,9 @@
 // What waits on the owner across sessions, answered in sequence from one
 // place. The order is every session whose state, as the daemon serves it,
 // reads "needs you" (an approval, a question, a plan, a secret, a message
-// that did not go), the longest wait first (lib/waiting.ts). One key goes
+// that did not go), and every session a failure stopped that the owner has
+// not looked at, in the order of the next-look queue: the costliest wait
+// first, then the longest (lib/waiting.ts, lib/next-look.ts). One key goes
 // to what waits: first to what the session on screen asks, then to the next
 // session that waits, with the keyboard on its card above that session's
 // message box (on the card, not on an answer: lib/asks.ts). That starts a
@@ -59,7 +61,9 @@ import { tipSay } from "../lib/tips.ts";
 import { getUI, navigate, useUI, type Route } from "../lib/ui.ts";
 import { keepBoxOut } from "../lib/self-focus.ts";
 import { nextWaiting, waitingOrder } from "../lib/waiting.ts";
-import { useSessionStates } from "../lib/watch.ts";
+import { useSessionStates, useToldStates } from "../lib/watch.ts";
+import { useAuto } from "../lib/automation.ts";
+import { sessionCosts } from "../lib/next-look.ts";
 import { Kbd } from "./Kbd.tsx";
 
 const KEYS = "alt+a";
@@ -185,7 +189,11 @@ export function AnswerQueue() {
   useShelfVersion();
   // What a session holds itself, by id (a request of its agent is the agent session's).
   const held = (id: string) => [...(approvals[id] ?? []).map((a) => a.id), ...(questions[id] ?? []), ...(plans[id] ?? []), ...(wanted[id] ?? []).map((r) => r.id)];
-  const order = waitingOrder(list, (id) => states[id], (id) => held(id).length > 0 || !!unsentOf(id));
+  // In the order of the next-look queue: the session whose wait costs most first (lib/next-look.ts).
+  const alerts = useAuto((s) => s.alerts);
+  const told = useToldStates();
+  const costs = useMemo(() => sessionCosts(alerts, told), [alerts, told]);
+  const order = waitingOrder(list, (id) => states[id], (id) => held(id).length > 0 || !!unsentOf(id), (id) => costs.get(id)?.key ?? 0, (id) => states[id]?.watch === "fail" && costs.has(id));
   const key = order.join();
   const cardKey = order.map((id) => (CARDS.has(states[id]?.why ?? "") || held(id).length > 0 ? 1 : 0)).join("");
   useEffect(() => set({

@@ -20,7 +20,8 @@
   "A push of kind `live` is the lasting notification's news: `w` sessions working, `q` cards waiting on the owner, `title` and `body` to show as they are, `since` (epoch milliseconds) when the longest turn started. The push service keeps only the newest (one collapse key). `w` and `q` of 0 take the notification down. The background check reads the same status from `live` in GET /v1/pulse, with the same fields.",
   "A chat row carries `h`, eight hex digits of its content. A reconnecting phone says what it holds in a bounded number of bytes (`held` on GET /v1/events or /v1/sync): its rows go into `n` buckets by `fnv(id) % n`, and each bucket is said by eight hex digits, the sum mod 2^32 of `fnv(\"<id>:<h>\")` over its rows (FNV-1a, 32 bits, over UTF-8; an empty bucket is 00000000), joined by dots in bucket order, `n` of them (at most 256). The catch-up then sends only the rows of the buckets whose digest differs, with `buckets` naming them (`n`, and `of`, their indices) and `complete` false: the phone drops each row it holds in those buckets that was not sent. `held` at the top of this file is a worked example. A whole read (since 0, or a cursor that cannot be caught up from), and a `held` not of this form, send every row.",
   "search (GET /v1/search?q=<words>) is the page's search across sessions: titles first, then what was said and done, one hit a session at most. A hit's `snippet` holds the words found between \u0001 and \u0002; `kind` says where (title, user, assistant, tool_use, tool_result, summary). `limits` says in words what the query limited the search to (state:failed, since:yesterday).",
-  "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409."
+  "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409.",
+  "What waits on the owner is in the order of the next-look queue (src/core/wait-rank.ts): the costliest wait first, then the one that waited longest. A pending card says what its wait costs: `wait` holds the facts it began with (`at` and `until` in seconds; `key`, what the wait costs a minute in dollars, is the order's key and never changes while the card waits), `wait_line` the same in words as it stood when it was sent. The app orders the cards that wait by `wait.key`, then `ts`. A push of an ask whose wait costs something also carries the words in `cost` and the key in `wk` (the app does not read them yet)."
  ],
  "signing": {
   "request": [
@@ -147,7 +148,9 @@
    "from": "string?",
    "line": "string?",
    "glance": "boolean?",
-   "grants": "array?"
+   "grants": "array?",
+   "wait.key": "number?",
+   "wait_line": "string?"
   },
   "question": {
    "id": "string",
@@ -764,7 +767,17 @@
     ],
     "state": "pending",
     "choice": null,
-    "ts": 1795195000.0
+    "ts": 1795195000.0,
+    "wait": {
+     "at": 1795194990,
+     "agents": 3,
+     "rate": 0.12,
+     "tokens": 180000,
+     "usd": 0.9,
+     "until": 1795195110,
+     "key": 0.57
+    },
+    "wait_line": "3 agents wait ($0.12/min); cache of 180K tokens expires in 2 min: about $0.90 to rewrite"
    },
    {
     "id": "apr_11",

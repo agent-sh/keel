@@ -395,6 +395,8 @@ data class Card(
     val text: String = "", val notes: List<String> = emptyList(), val cut: Boolean = false, val total: Int? = null, val lines: Int = 0,
     val hold: List<String> = emptyList(), val rtl: Boolean = false, val machine: String = "", val from: String = "",
     val line: String = "", val glance: Boolean = false, val grants: List<String> = emptyList(),
+    /** What the wait costs a minute as it began, the key the daemon orders what waits by, and that cost in words. */
+    val waitKey: Double = 0.0, val waitLine: String = "",
 ) {
     val pending get() = state == "pending"
     val question get() = kind == "question"
@@ -455,10 +457,19 @@ data class Card(
                 total = if (o.isNull("total")) null else o.optInt("total"), lines = o.optInt("lines"),
                 hold = strings(o.optJSONArray("hold")), rtl = o.optBoolean("rtl"), machine = o.str("machine"), from = o.str("from"),
                 line = o.str("line"), glance = o.optBoolean("glance"), grants = strings(o.optJSONArray("grants")),
+                waitKey = o.optJSONObject("wait")?.optDouble("key", 0.0) ?: 0.0, waitLine = o.str("wait_line"),
             )
         }
     }
 }
+
+/**
+ * What waits, in the daemon's next-look order: the costliest wait first, then the one that waited
+ * longest, then by id (src/core/wait-rank.ts). The key is fixed when a card begins to wait, so
+ * cards never change places.
+ */
+fun nextLook(cards: Collection<Card>): List<Card> =
+    cards.sortedWith(compareByDescending<Card> { it.waitKey }.thenBy { it.ts }.thenBy { it.id })
 
 /**
  * The parts of a text that were drawn, as ranges along its height, merged as they come. A part
@@ -717,6 +728,7 @@ fun Card.json(): JSONObject = JSONObject().put("id", id).put("chat_id", chatId).
     .opt("text", text).apply { if (notes.isNotEmpty()) put("notes", JSONArray(notes)) }.put("cut", cut).put("total", total ?: JSONObject.NULL).put("lines", lines)
     .apply { if (hold.isNotEmpty()) put("hold", JSONArray(hold)) }.put("rtl", rtl).opt("machine", machine).opt("from", from).opt("line", line).put("glance", glance)
     .apply { if (grants.isNotEmpty()) put("grants", JSONArray(grants)) }
+    .apply { if (waitKey != 0.0) put("wait", JSONObject().put("key", waitKey)) }.opt("wait_line", waitLine)
 
 /** "14:32" today, "Mon 14:32" this week, else "23 Nov 14:32": when the phone was last level with the computer, in its own time. */
 fun syncedAt(ms: Long, now: Long = System.currentTimeMillis(), zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {

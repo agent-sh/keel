@@ -136,6 +136,8 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
                 Spacer(Modifier.height(6.dp))
                 Txt(title, T.uiStrong, k.fg, if (onOpen != null) Modifier.press(onOpen) else Modifier, maxLines = 1)
             }
+            // What the wait costs: why it stands where it does in the list.
+            if (c.pending && c.waitLine.isNotBlank()) { Spacer(Modifier.height(4.dp)); Txt(c.waitLine, T.meta, k.muted, maxLines = 2) }
             Spacer(Modifier.height(10.dp))
             if (c.plan) {
                 // The plan's title, then the whole plan as the model wrote it, in a box that scrolls.

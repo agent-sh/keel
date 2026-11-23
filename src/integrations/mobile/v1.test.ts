@@ -1200,6 +1200,9 @@ describe("the wire contract", () => {
     // a command for another machine), and one that was answered from the phone.
     card({ id: "apr-held", session_id: s.id, summary: `cd /srv\nrm -rf build\u202e\n${"x".repeat(21_000)}`, input: { command: "x", machine: "build box" } });
     card({ id: "apr-done", session_id: s.id, summary: "npm test", state: "allowed", choice: "once", resolved: Date.now(), by: { client: "phone", device: "Pixel 8", seen: "whole" } });
+    // What the question's wait costs, as its alert keeps it (src/automation/wait-cost.ts): its card says it.
+    const wait = { at: Date.now(), agents: 2, rate: 0.05, tokens: 90_000, usd: 0.4, until: Date.now() + 120_000, key: 0.45 };
+    store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, rev, kept) VALUES ('al-wait', ?, 'question', ?, 'Question', 'Build type?', 0, ?, 0, 0)").run(Date.now(), s.id, JSON.stringify({ call_id: "call-w", open_session: s.id, wait }));
     running.add(parent.id);
     bus.emit({ t: "delta", session_id: parent.id, kind: "text", index: 0, text: "Looking at the" } as any);
 
@@ -1224,7 +1227,11 @@ describe("the wire contract", () => {
 
     // The other answers the app reads: usage, the machine, push, pairing, a refusal.
     store.updateSession(s.id, { usage: { input: 300, output: 15, cache_read: 50, cache_write: 4, cost: 0.02 } as any });
-    take("pulse", (await call("GET", "/v1/pulse")).body);
+    const pulse = (await call("GET", "/v1/pulse")).body;
+    take("pulse", pulse);
+    // What waits is in the next-look order: the wait that costs most first, whatever was asked before it.
+    expect(pulse.approvals.filter((a: any) => a.state === "pending").map((a: any) => a.id)[0]).toBe(`q-${s.id}.call-w`);
+    expect(pulse.approvals[0].wait_line).toBe("2 agents wait ($0.050/min); cache of 90K tokens expires in 2 min: about $0.40 to rewrite");
     take("usage", (await call("GET", `/v1/chats/${s.id}/usage`)).body);
     take("me", (await call("GET", "/v1/me")).body);
     take("created", (await call("POST", "/v1/chats", {})).body);
@@ -1305,6 +1312,7 @@ describe("the wire contract", () => {
     take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}&held=${heldOf([{ id: "s-gone", h: "00000000" }], 1)}`)).body);
     running.delete(parent.id);
     store.db.query("DELETE FROM approvals WHERE id IN ('apr-held', 'apr-done')").run();
+    store.db.query("DELETE FROM alerts WHERE id = 'al-wait'").run();
 
     expect(bad).toEqual([]);
     // Every field the app reads was sent at least once here, so a renamed optional field fails too.

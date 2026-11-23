@@ -19,6 +19,14 @@ test("a session that needs the owner only through its agent gives way to the age
   expect(waitingOrder(list, (id) => states[id], own)).toEqual(["agent", "both", "kid", "far"]);
 });
 
+test("a costlier wait goes first, and a failure the owner has not seen waits too", () => {
+  const list = [row("old", 1), row("dear", 2), row("failed", 3), row("done", 4)];
+  const states: Record<string, { watch: string; since?: number }> = { old: need(10), dear: need(50), failed: { watch: "fail", since: 5 }, done: { watch: "fail", since: 1 } };
+  const cost: Record<string, number> = { dear: 0.4, failed: 0.01 };
+  // "done" failed too, but the owner has looked at it: nothing of it waits.
+  expect(waitingOrder(list, (id) => states[id], () => true, (id) => cost[id] ?? 0, (id) => id === "failed")).toEqual(["dear", "failed", "old"]);
+});
+
 test("the next one follows the session the owner is in, around the end", () => {
   const order = ["a", "b", "c"];
   expect(nextWaiting(order, null)).toBe("a");

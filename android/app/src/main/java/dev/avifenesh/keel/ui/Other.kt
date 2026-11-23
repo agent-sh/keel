@@ -46,6 +46,7 @@ import dev.avifenesh.keel.Prefs
 import dev.avifenesh.keel.Pulse
 import dev.avifenesh.keel.Push
 import dev.avifenesh.keel.State
+import dev.avifenesh.keel.nextLook
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.unpaired
 import kotlinx.coroutines.launch
@@ -55,7 +56,7 @@ fun NeedsScreen(act: MainActivity) {
     val k = k()
     val cards by Hub.cards.collectAsState()
     val chats by Hub.chats.collectAsState()
-    val open = cards.values.filter { it.pending }.sortedBy { it.ts }
+    val open = nextLook(cards.values.filter { it.pending })
     Column(Modifier.fillMaxSize()) {
         Head("Needs you", sub = {
             Row(verticalAlignment = Alignment.CenterVertically) {

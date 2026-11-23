@@ -1,7 +1,7 @@
 import { onInboxView, peekInboxView } from "../../lib/inbox-view.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { Bell, CheckCheck, Settings2, X } from "lucide-react";
-import { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { alertTarget, auto, coverPanes, focusApproval, openSession, placeName, useAuto, type Alert, type Target } from "../../lib/automation.ts";
 import { useToldStates } from "../../lib/watch.ts";
 import { navigate, setUI } from "../../lib/ui.ts";
@@ -16,6 +16,9 @@ import { ALERT_GROUPS, ALERT_GROUP_WORD, ASK_KINDS, COUNTERS, STATE_WORD, alertG
 import { Mark } from "../Mark.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 import { Seg, tabId } from "../Seg.tsx";
+import { costLine, costs } from "../../../../src/core/wait-rank.ts";
+import { holdOrder, nextLook, waitsOnOwner } from "../../lib/next-look.ts";
+import { every } from "../../lib/clock.ts";
 
 const actCls = "flex h-ctl-md items-center gap-1.5 rounded-md px-2.5 text-caption text-muted outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-ring";
 
@@ -74,25 +77,37 @@ function Inbox({ onClose }: { onClose: () => void }) {
   const wide = useSyncExternalStore((f) => (WIDE.addEventListener("change", f), () => WIDE.removeEventListener("change", f)), () => WIDE.matches);
   // Three parts, in this order: what waits on the owner, what else is new since they looked, and
   // what they have seen. Nothing that waits is ever below a finish.
-  // - What waits is a queue: every ask whose card still waits (the daemon's word, read or not), in
-  //   the order they were asked, each with its session's title. It leaves when it is answered.
+  // - What waits is the next-look queue (lib/next-look.ts): every ask whose card still waits (the
+  //   daemon's word, read or not) and every failure that stopped a session the owner has not looked
+  //   at, the costliest wait first (src/core/wait-rank.ts), each with its session's title and what
+  //   its wait costs. It leaves when it is answered, or looked at. While the pointer or the keyboard
+  //   is in the list its rows stand still: one that comes meanwhile joins at the end.
   // - Inside the other parts, one session's alerts (or one agent's inside it) stand together under
   //   its title, newest first, the session with the newest alert on top. An alert of no session is
   //   a group of its own.
   const told = useToldStates();
+  // The order of what waits as it stood when the pointer or the keyboard came into the list (null: neither is there).
+  const [held, setHeld] = useState<string[] | null>(null);
+  const needIds = useRef<string[]>([]);
+  const hold = (on: boolean) => setHeld(on ? needIds.current : null);
+  // What a wait costs counts down (a cache's time left): the rows say it again on the page's clock.
+  const [, beat] = useState(0);
+  useEffect(() => every(15_000, () => beat((n) => n + 1)), []);
   const parts = useMemo(() => {
     // A turn the model declined is filed as a finish: its row says Declined, as its session does (its newest word only).
     const newest = new Map<string, string>();
     for (const a of alerts) if (a.session_id && !a.data?.child_session && !ASK_KINDS.includes(a.kind) && !newest.has(a.session_id)) newest.set(a.session_id, a.id);
     const declined = (a: Alert) => a.kind === "finished" && !!a.session_id && newest.get(a.session_id) === a.id && told[a.session_id]?.watch === "declined";
     return ALERT_GROUPS.map((part) => {
-      const of = shown.filter((a) => alertGroup(a) === part);
+      const of = shown.filter((a) => (waitsOnOwner(a, told) ? "need" : alertGroup(a)) === part);
       const named = of.map((a) => {
         const child = a.data?.child_session ?? (a.data?.open_session && a.data.open_session !== a.session_id ? a.data.open_session : undefined);
         return { a, child, place: placeName(sessions, a.session_id, child, { title: a.title, child_title: a.data?.child_title }), word: alertWord(a, declined(a)), declined: declined(a) };
       });
       if (part === "need") {
-        const rows = [...named].sort((x, y) => x.a.ts - y.a.ts || (x.a.id < y.a.id ? -1 : 1)).map((r) => ({ ...r, first: true, last: true, alone: wide, fresh: true, asks: true }));
+        const ranked = nextLook(named, (r) => r.a);
+        needIds.current = ranked.map((r) => r.a.id);
+        const rows = holdOrder(ranked, (r) => r.a.id, held).map((r) => ({ ...r, first: true, last: true, alone: wide, fresh: true, asks: true }));
         return { part, n: of.length, rows };
       }
       const groups = new Map<string, typeof named>();
@@ -105,7 +120,7 @@ function Inbox({ onClose }: { onClose: () => void }) {
       const rows = [...groups.values()].flatMap((g) => g.map((r, i) => ({ ...r, first: i === 0, last: i === g.length - 1, alone: wide && g.length === 1, fresh: g.some((x) => !x.a.read), asks: g.some((x) => !x.a.read && ASK_KINDS.includes(x.a.kind)) })));
       return { part, n: of.length, rows };
     }).filter((p) => p.n);
-  }, [alerts, shown, sessions, wide, told]);
+  }, [alerts, shown, sessions, wide, told, held]);
 
   const open = async (a: Alert) => {
     note(a.id, null);
@@ -156,7 +171,15 @@ function Inbox({ onClose }: { onClose: () => void }) {
           <CheckCheck className="size-3.5" /> <span className="max-sm:sr-only">Mark all read</span>
         </button>
       </div>
-      <ul className="min-h-0 flex-1 overflow-y-auto p-2 max-sm:pt-1.5" data-testid="inbox-list">
+      <ul
+        className="min-h-0 flex-1 overflow-y-auto p-2 max-sm:pt-1.5"
+        data-testid="inbox-list"
+        data-held={held ? "" : undefined}
+        onPointerEnter={(e) => { if (e.pointerType === "mouse") hold(true); }}
+        onPointerLeave={(e) => { if (e.pointerType === "mouse" && !e.currentTarget.contains(document.activeElement)) hold(false); }}
+        onFocus={() => { if (!held) hold(true); }}
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null) && !e.currentTarget.matches(":hover")) hold(false); }}
+      >
         {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : `Nothing ${STATE_WORD.need.toLowerCase()}.`}</Empty></li>}
         {parts.flatMap(({ part, n, rows }) => [<PartHead key={part} part={part} n={n} />, ...rows.map(({ a, first, last, alone, place, fresh, asks, word, declined }) => {
           // On a phone a row that waits gives its line the width: its mark and its "Review" say what it is, and its age is in the tooltip.
@@ -206,6 +229,12 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     {offers && <span className="shrink-0 text-micro font-medium text-accent-ink" data-testid="inbox-opens">{askAction(a)}</span>}
                     <span className={cn("shrink-0 text-micro text-faint tabular-nums", tight && "sr-only")} title={when(a.ts)}>{ago(a.ts)}</span>
                   </span>
+                  {/* What the wait costs, under what it is: why it stands where it does in the queue. */}
+                  {part === "need" && costs(a.data?.wait) && (
+                    <span className="block pb-0.5 pl-6 text-caption leading-snug text-muted sm:truncate" data-testid="inbox-cost" title="What this wait costs. The costliest wait is listed first.">
+                      {costLine(a.data.wait, Date.now())}
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"

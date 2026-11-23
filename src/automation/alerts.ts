@@ -18,6 +18,7 @@ import { classOfText } from "../admin/classes.ts";
 import { groupsOf } from "./failures.ts";
 import { exampleOf, OTHERS, SELF } from "./failure-groups.ts";
 import { handShell, shellShows, tellShells } from "../server/shell.ts";
+import { costLine, costs, rankWaiting, type WaitCost } from "../core/wait-rank.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -447,9 +448,40 @@ const absorbedBy = (kind: AlertKind, sessionId: string, data: unknown) => {
   return absorbHook.of?.(typeof d.agent_session === "string" ? d.agent_session : sessionId, d.cls);
 };
 
+// What a wait on the owner costs as it begins (src/automation/wait-cost.ts), kept with the alert of
+// an ask or a failure: the next-look queue's key (src/core/wait-rank.ts).
+export const waitHook: { of?: (sessionId: string) => WaitCost | undefined } = {};
+const COSTED = new Set<AlertKind>(["approval", "question", "failed"]);
+
+// The cost each ask that waits began with, by its card (an approval's id, a question's or a plan's
+// session and id), with the time it was first asked: what the phone orders its cards by. One read
+// from the alerts asked since `since` (the oldest card that waits), on the time index.
+export type WaitOf = { wait?: WaitCost; ts: number };
+export function waitsSince(since: number): { approval: Map<string, WaitOf>; question: Map<string, WaitOf>; plan: Map<string, WaitOf> } {
+  const out = { approval: new Map<string, WaitOf>(), question: new Map<string, WaitOf>(), plan: new Map<string, WaitOf>() };
+  const rows = D().store.db.query<{ kind: string; ts: number; data: string | null; session_id: string | null }, [number]>(
+    "SELECT kind, ts, data, session_id FROM alerts WHERE ts >= ? AND far_id IS NULL AND kind IN ('approval', 'question') ORDER BY ts").all(since);
+  for (const r of rows) {
+    let d: any;
+    try { d = r.data ? JSON.parse(r.data) : {}; } catch { continue; }
+    const at = { ...(d.wait ? { wait: d.wait as WaitCost } : {}), ts: r.ts };
+    const asker = d.open_session ?? d.child_session ?? r.session_id;
+    const put = (m: Map<string, WaitOf>, k: string) => { if (!m.has(k)) m.set(k, at); };
+    if (r.kind === "approval" && d.approval_id) put(out.approval, String(d.approval_id));
+    else if (d.plan_id) put(out.plan, `${asker}.${d.plan_id}`);
+    else if (d.call_id) put(out.question, `${asker}.${d.call_id}`);
+  }
+  return out;
+}
+
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown, silent = false): Alert | undefined {
   try {
     const { store } = D();
+    if (COSTED.has(kind) && sessionId && !(data as { expired?: boolean } | undefined)?.expired) {
+      let wait: WaitCost | undefined;
+      try { wait = waitHook.of?.(sessionId); } catch (e) { capture(e, { at: "the cost of a wait", kind }); }
+      if (wait) data = { ...(data as object), wait };
+    }
     const incident = !silent && sessionId ? absorbedBy(kind, sessionId, data) : undefined;
     if (incident) { silent = true; data = { ...(data as object), in_incident: incident }; }
     const s = sessionId ? store.session(sessionId) : undefined;
@@ -499,9 +531,13 @@ function file(x: Filing): Alert | undefined {
   // One commit for the row it replaces, its number and the row itself (they were three); what is told of it goes out after.
   const made = store.db.transaction(() => {
   let asked: number | undefined;
+  // And the cost it had when it began to wait: the queue's key is read once (src/core/wait-rank.ts).
+  let first: unknown;
   if (key && decision) {
-    asked = store.db.query<{ t: number | null }, string[]>(`SELECT MIN(ts) AS t FROM alerts WHERE kind = ? AND json_extract(data, ?) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
-      .get(...[kind, `$.${key}`, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs])?.t ?? undefined;
+    const r = store.db.query<{ t: number; w: string | null }, string[]>(`SELECT ts AS t, json_extract(data, '$.wait') AS w FROM alerts WHERE kind = ? AND json_extract(data, ?) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin} ORDER BY ts LIMIT 1`)
+      .get(...[kind, `$.${key}`, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
+    asked = r?.t ?? undefined;
+    if (r?.w) try { first = JSON.parse(r.w); } catch {}
   }
   if (key && decision) {
     // An approval or a question is its own decision: the same one raised again
@@ -544,7 +580,7 @@ function file(x: Filing): Alert | undefined {
     : { inbox_only: !chosen.length ? { no_route: true } : quietKind && chosen.some((c) => INTERRUPTS.has(c) && channels.get(c)?.available()) ? { routine: true } : { not_set_up: chosen } };
   const flags = { ...(f.deliver ? {} : { snoozed: true }), ...(f.quiet ? { held: true } : {}), ...(withheld ? { withheld: routed } : {}) };
   if (withheld) withheldMaybe = true;
-  const extra = { ...x.child, ...flags, ...inboxOnly };
+  const extra = { ...x.child, ...flags, ...inboxOnly, ...(first ? { wait: first } : {}) };
   const stored = Object.keys(extra).length ? { ...(data as object), ...extra } : data;
   const delivery: Delivery | undefined = sendTo.length ? Object.fromEntries(sendTo.map((c) => [c, { state: "pending" as const }])) : undefined;
   // When it came here, whoever raised it: the inbox is in the order things reached the owner
@@ -802,7 +838,8 @@ export function tickWithheld(now = Date.now()) {
   withheldAt = now;
   try {
     const db = D().store.db;
-    const held = db.query<Row, []>("SELECT * FROM alerts WHERE read = 0 AND json_extract(data, '$.withheld') IS NOT NULL").all().map(toAlert);
+    // Told in the order of the next-look queue: the costliest wait first (src/core/wait-rank.ts).
+    const held = rankWaiting(db.query<Row, []>("SELECT * FROM alerts WHERE read = 0 AND json_extract(data, '$.withheld') IS NOT NULL").all().map(toAlert), (a) => ({ id: a.id, ts: a.ts, wait: a.data?.wait }));
     if (!held.length) { withheldMaybe = false; return; }
     for (const a of held) {
       if (attending(a.session_id, a.data?.child_session, a.data?.open_session)) continue;
@@ -1058,7 +1095,10 @@ registerChannel({
   label: "Desktop notification",
   // An attached desktop app shows them itself, whatever this daemon could do alone.
   available: () => shellShows() || (process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!(Bun.which("gjs") || Bun.which("gdbus"))),
-  async deliver(a) {
+  async deliver(given) {
+    // What the wait costs, under what it is: the order the Inbox lists it in, said (src/core/wait-rank.ts).
+    const cost = costs(given.data?.wait) ? costLine(given.data.wait, Date.now()) : "";
+    const a = cost ? { ...given, body: `${given.body}\n${cost}` } : given;
     const key = a.session_id ?? "_";
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
     // The desktop app's to show while one is attached: its click opens the

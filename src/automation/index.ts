@@ -28,6 +28,7 @@ import * as writeAsks from "./write-asks.ts";
 import * as agents from "./agents.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
+import { waitCost } from "./wait-cost.ts";
 import * as failures from "./failures.ts";
 import * as outage from "./outage.ts";
 import * as snooze from "./snooze.ts";
@@ -82,6 +83,8 @@ function init(deps: Deps) {
   setDeps(deps);
   // What a parked session waits on, for its cache plan.
   deps.engine.waitShape = (id) => waits.shapeOf(id);
+  // What a wait on the owner costs as it begins, kept with its alert (the next-look queue's key).
+  alerts.waitHook.of = (id) => waitCost(id);
   agents.migrate();
   writeAsks.init();
   leftovers.migrate(deps.store);
