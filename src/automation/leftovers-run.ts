@@ -19,7 +19,11 @@ leftovers.migrate(store);
 const agent = store.createSession({ workspace: ws, title: "agent", model: "scripted:stand-in" });
 const other = store.createSession({ workspace: ws, title: "other", model: "scripted:stand-in" });
 const port = await new Promise<number>((ok) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => ok(p)); }); });
-const tag = String(process.pid);
+// Digits (a sleep takes it as its fraction), random and long, and found only as a whole number: a pid alone is a
+// substring of many a long number in another process's command line (a browser's), which `ours` then counted and
+// the test's sweep then killed.
+const tag = "9" + Array.from(crypto.getRandomValues(new Uint8Array(15)), (b) => b % 10).join("");
+const named = new RegExp(`(?<![0-9])${tag}(?![0-9])`);
 writeFileSync(join(root, "server.ts"), `Bun.serve({ port: ${port}, hostname: "127.0.0.1", fetch: () => new Response("x") }); setInterval(() => {}, 1 << 30);`);
 writeFileSync(join(root, "client.ts"), `await Bun.connect({ hostname: "127.0.0.1", port: ${port}, socket: { data() {} } }); setInterval(() => {}, 1 << 30);`);
 const bun = process.execPath;
@@ -41,7 +45,7 @@ const ids = new Set(jobsOf(agent.id).map((j) => j.id));
 const held = jobs.map((j) => ids.has(j.id));
 // What runs of this run's commands, by the words only they carry.
 const ours = () => readdirSync("/proc").filter((n) => /^\d+$/.test(n)).flatMap((n) => {
-  try { const c = readFileSync(`/proc/${n}/cmdline`, "utf8").replaceAll("\0", " "); return c.includes(tag) && !c.includes("leftovers-run") && !c.startsWith("bash -c") ? [c.trim()] : []; } catch { return []; }
+  try { const c = readFileSync(`/proc/${n}/cmdline`, "utf8").replaceAll("\0", " "); return named.test(c) && !c.includes("leftovers-run") && !c.startsWith("bash -c") ? [c.trim()] : []; } catch { return []; }
 });
 const before = ours();
 // A unit its commands start (named only: the `systemd-run` after `||` never runs).

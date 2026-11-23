@@ -382,10 +382,12 @@ test("the owner's Remove of a listed item works, and refuses one that changed si
 });
 
 // What carries the run's words, killed whatever the run left.
+// The tag is found only as a whole number, as leftovers-run.ts finds it.
 const sweep = (tag: string) => {
+  const named = new RegExp(`(?<![0-9])${tag}(?![0-9])`);
   for (const n of readdirSync("/proc")) {
     if (!/^\d+$/.test(n)) continue;
-    try { if (readFileSync(`/proc/${n}/cmdline`, "utf8").includes(tag)) process.kill(Number(n), "SIGKILL"); } catch {}
+    try { if (named.test(readFileSync(`/proc/${n}/cmdline`, "utf8"))) process.kill(Number(n), "SIGKILL"); } catch {}
   }
 };
 const run = (name: string, others: number, env: Record<string, string | undefined>) => {
