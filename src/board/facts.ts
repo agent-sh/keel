@@ -4,7 +4,7 @@
 // a list of trees. Each is a few indexed statements over the tree's rows, never a scan of a whole table
 // of events. A table another module makes and has not made yet reads as empty.
 import type { Database } from "bun:sqlite";
-import { MAX_ROWS, verdictOf, type Verdict } from "./rules.ts";
+import { MAX_ROWS, readReport, type ReviewFact } from "./rules.ts";
 
 export type AgentFact = {
   id: string; parent_id: string; session_id: string; depth: number; title: string; type: string; model: string;
@@ -12,7 +12,7 @@ export type AgentFact = {
   reviews: string | null; // JSON: [{ branch, tip, how }]
   repo_root: string | null; base: string | null; base_commit: string | null; wt_state: string | null; wt_path: string | null;
 };
-export type ReviewFact = { by: string; title: string; how: "named" | "task" | "panel"; state: string; branch: string; tip: string | null; verdict: Verdict; line: string; at: number };
+export type { ReviewFact };
 export type QueueRow = { id: string; repo: string; branch: string; tip: string; state: string; why: string | null; landed: string | null; updated: number };
 export type DeployRow = { repo: string; to_sha: string; ended: number };
 export type Facts = { total: number; agents: AgentFact[]; reviews: ReviewFact[]; queue: QueueRow[]; deploys: DeployRow[] };
@@ -36,7 +36,7 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
     ORDER BY a.created DESC LIMIT ?2`).all(a.root, MAX_ROWS));
   const branches = new Set(agents.map((x) => x.branch).filter((b): b is string => !!b));
 
-  // Reviews by agents of the tree: each one's verdict read here, from its report, so only the line leaves the thread.
+  // Reviews by agents of the tree: each one's report read here into its marks, so only those leave the thread.
   const reviews: ReviewFact[] = [];
   const reviewers = agents.filter((x) => x.reviews);
   const reportOf = db.prepare<{ head: string | null; tail: string | null; n: number }, [string]>(`SELECT substr(result, 1, ${REPORT_HEAD}) AS head, CASE WHEN length(result) > ${REPORT_HEAD} THEN substr(result, -${REPORT_TAIL}) END AS tail, length(result) AS n FROM agents WHERE id = ?`);
@@ -46,8 +46,8 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
       try { named = JSON.parse(r.reviews!); } catch { continue; }
       const live = r.status === "running" || r.status === "waiting";
       const rep = live ? undefined : reportOf.get(r.id);
-      const v = live ? { verdict: "pending" as const, line: "" } : verdictOf(rep?.tail ? `${rep.head}\n${rep.tail}` : rep?.head);
-      for (const n of named) if (branches.has(n.branch)) reviews.push({ by: r.id, title: r.title, how: n.how, state: r.status, branch: n.branch, tip: n.tip, verdict: v.verdict, line: v.line, at: r.ended ?? r.created });
+      const read = readReport(live ? "" : rep?.tail ? `${rep.head}\n${rep.tail}` : rep?.head);
+      for (const n of named) if (branches.has(n.branch)) reviews.push({ by: r.id, title: r.title, how: n.how, state: r.status, branch: n.branch, tip: n.tip, own: !!r.branch, read, at: r.ended ?? r.created });
     }
   } finally { reportOf.finalize(); }
 
@@ -61,9 +61,9 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
       FROM reviews WHERE session_id IN (${part.map(() => "?").join(", ")}) AND json_extract(data, '$.agent_branch') IS NOT NULL ORDER BY created DESC LIMIT 200`).all(...part));
     for (const p of rows) {
       if (!p.branch || !branches.has(p.branch)) continue;
-      const verdict: Verdict = p.state === "running" ? "pending" : p.verdict === "correct" ? "approved" : p.verdict === "incorrect" ? "refused" : "unclear";
+      const verdict = p.verdict === "correct" ? "approved" : p.verdict === "incorrect" ? "refused" : "unclear";
       const line = [p.verdict ? `verdict: ${p.verdict}` : p.state, p.findings ? `${p.findings} ${p.findings === 1 ? "finding" : "findings"}` : "", p.summary ?? ""].filter(Boolean).join(" · ").slice(0, 160);
-      reviews.push({ by: p.id, title: p.agent_title ?? "Review", how: "panel", state: p.state, branch: p.branch, tip: typeof p.head === "string" ? p.head : null, verdict, line, at: p.created });
+      reviews.push({ by: p.id, title: p.agent_title ?? "Review", how: "panel", state: p.state, branch: p.branch, tip: typeof p.head === "string" ? p.head : null, own: false, read: { marks: [], verdict, line }, at: p.created });
     }
   }
 

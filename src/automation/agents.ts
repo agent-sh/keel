@@ -22,7 +22,7 @@ import { classOf } from "./failure-groups.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { git, Worktrees } from "../worktree/manager.ts";
 import { git as gitRead, locate } from "../core/git.ts";
-import { namedIn, reviewsInput } from "../board/rules.ts";
+import { matchableTips, namedIn, reviewsInput } from "../board/rules.ts";
 import * as leftovers from "./leftovers.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { parseWrites } from "../safety/write-scope.ts";
@@ -990,7 +990,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // as history is: a secret in it is its placeholder.
   // task_at: where the parent's own words start, so the page shows them verbatim.
   const budget = mergeBudget(def.budget, parseBudget(input.budget));
-  const reviews = await reviewsAt(parentId, parent.workspace, input, !!(iso || placed?.worktree)).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
+  const reviews = await reviewsAt(parentId, parent.workspace, input).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
   store.db.query(
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes, reviews) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
@@ -1008,39 +1008,59 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
 }
 
 // The branches an agent reviews, with each one's tip as it starts (what it reviewed), as the work board
-// reads them (src/board/board.ts): the ones its spawn names in `reviews`, else, for an agent with no branch
-// of its own, the branches of its tree's agents its task names by their whole name or their head.
-async function reviewsAt(parentId: string, workspace: string, input: SpawnInput, ownBranch: boolean): Promise<string | null> {
+// reads them (src/board/board.ts): the ones its spawn names in `reviews`, else the branches of its tree's
+// agents its task names by their whole name or their head (an agent with a branch of its own counts as
+// their reviewer only when its report says LAND or a labelled verdict: src/board/rules.ts pickReview).
+// The tips come from one for-each-ref a repository; a head named only by its digits counts when no other
+// ref shares it, it moved from where its worktree started, and the base does not hold it.
+async function reviewsAt(parentId: string, workspace: string, input: SpawnInput): Promise<string | null> {
   const asked = reviewsInput(input.reviews);
-  if (!asked && ownBranch) return null;
   // (The worktree manager is kept per process for one store: its reads are not taken here.)
   let at: ReturnType<typeof locate> | undefined;
   try { at = locate(workspace); } catch {}
   const here = at?.top ? (at.common.endsWith("/.git") ? dirname(at.common) : at.top) : null;
   // (The worktrees table is the worktree manager's: a store it has not opened yet has none.)
   const joined = D().store.columnExists("worktrees", "repo_root");
-  const rows = D().store.db.query<{ branch: string; repo: string | null }, [string]>(
-    `${BELOW} SELECT a.branch AS branch, ${joined ? "w.repo_root" : "NULL"} AS repo FROM agents a ${joined ? "LEFT JOIN worktrees w ON w.session_id = a.session_id" : ""} WHERE a.session_id IN (SELECT s FROM t) AND a.branch IS NOT NULL ORDER BY a.created DESC LIMIT 400`,
+  const rows = D().store.db.query<{ branch: string; repo: string | null; base: string | null; made: string | null }, [string]>(
+    `${BELOW} SELECT a.branch AS branch, ${joined ? "w.repo_root" : "NULL"} AS repo, ${joined ? "w.base" : "NULL"} AS base, ${joined ? "w.base_commit" : "NULL"} AS made FROM agents a ${joined ? "LEFT JOIN worktrees w ON w.session_id = a.session_id" : ""} WHERE a.session_id IN (SELECT s FROM t) AND a.branch IS NOT NULL ORDER BY a.created DESC LIMIT 400`,
   ).all(rootSession(parentId));
-  const repoOf = (b: string) => rows.find((r) => r.branch === b)?.repo ?? here;
-  const tipOf = async (b: string) => {
-    const repo = repoOf(b);
-    if (!repo) return null;
-    const r = await gitRead(repo, ["rev-parse", "-q", "--verify", `refs/heads/${b}^{commit}`], { read: true, timeout: 10_000 });
-    return r.code === 0 ? r.out.trim() || null : null;
-  };
+  const cands = [...new Map(rows.map((r) => [r.branch, { ...r, repo: r.repo ?? here }])).values()];
+  // No git for a task that names no branch of the tree and no word a head could be.
+  const hex = !asked && /\b[0-9a-f]{7,40}\b/.test(input.prompt);
+  if (!asked && !hex && !namedIn(input.prompt, cands.map((c) => ({ branch: c.branch, tip: null }))).length) return null;
+  const wanted = asked ?? cands.map((c) => c.branch);
+  // Every ref's commit, one call a repository (heads, the base and remotes: a tip they share names no one branch).
+  const refs = new Map<string, Map<string, string>>();
+  for (const repo of [...new Set([...cands.filter((c) => wanted.includes(c.branch)).map((c) => c.repo), ...(asked ? [here] : [])])].filter((r): r is string => !!r).slice(0, 8)) {
+    const r = await gitRead(repo, ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/remotes"], { read: true, timeout: 10_000 });
+    const m = new Map<string, string>();
+    for (const l of (r.code === 0 ? r.out : "").split("\n")) { const [sha, ref] = l.split(" "); if (sha && ref) m.set(ref, sha); }
+    refs.set(repo, m);
+  }
+  const repoOf = (b: string) => cands.find((c) => c.branch === b)?.repo ?? here;
+  const tipOf = (b: string) => { const repo = repoOf(b); return (repo && refs.get(repo)?.get(`refs/heads/${b}`)) || null; };
   let named: { branch: string; how: "named" | "task" }[];
   if (asked) named = asked.map((branch) => ({ branch, how: "named" as const }));
   else {
-    // A head named by its digits is looked up only when the task holds such a word.
-    const hex = /\b[0-9a-f]{7,40}\b/.test(input.prompt);
-    const cands = [...new Map(rows.map((r) => [r.branch, r])).values()].slice(0, 100);
-    const tips = hex ? await Promise.all(cands.map((c) => tipOf(c.branch))) : cands.map(() => null);
-    named = namedIn(input.prompt, cands.map((c, i) => ({ branch: c.branch, tip: tips[i] ?? null }))).map((branch) => ({ branch, how: "task" as const }));
+    const all = [...refs.values()].flatMap((m) => [...m.values()]);
+    const list = matchableTips(cands.map((c) => ({ branch: c.branch, tip: hex ? tipOf(c.branch) : null, madeFrom: c.made })), all);
+    const found = namedIn(input.prompt, list);
+    named = [];
+    for (const f of found.slice(0, 20)) {
+      if (f.by === "head") {
+        // A head the base holds is the base's commit a brief names, not the branch's work.
+        const c = cands.find((x) => x.branch === f.branch)!;
+        const tip = tipOf(f.branch);
+        if (c.repo && c.base && tip) {
+          const held = await gitRead(c.repo, ["merge-base", "--is-ancestor", tip, c.base], { read: true, timeout: 10_000 });
+          if (held.code === 0) continue;
+        }
+      }
+      named.push({ branch: f.branch, how: "task" });
+    }
   }
   if (!named.length) return null;
-  const out = await Promise.all(named.slice(0, 20).map(async (n) => ({ ...n, tip: await tipOf(n.branch) })));
-  return JSON.stringify(out);
+  return JSON.stringify(named.slice(0, 20).map((n) => ({ ...n, tip: tipOf(n.branch) })));
 }
 
 // A queued agent (made, its task stored, never started) in line for a slot,

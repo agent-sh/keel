@@ -56,20 +56,20 @@ function reviewFact(r: BoardRow) {
   if (!v) return <Fact name="Review" tone="none" value="none" testid="board-review" state="none" />;
   const word = v.verdict === "pending" ? "running" : v.verdict;
   const tone: Tone = v.verdict === "approved" ? "ok" : v.verdict === "refused" ? "bad" : v.verdict === "pending" ? "wait" : "none";
-  return <Fact name="Review" tone={tone} value={<>{word}{v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${v.how === "panel" ? "The Review panel" : `Agent ${v.by}`}${v.tip ? ` reviewed ${sha(v.tip)}` : ""}`} testid="board-review" state={v.verdict} />;
+  return <Fact name="Review" tone={tone} value={<>{word}{v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${v.how === "panel" ? "The Review panel" : `${v.title} (agent ${v.by})`}${v.tip ? ` reviewed ${sha(v.tip)}` : ""}`} testid="board-review" state={v.verdict} />;
 }
 
 function landedFact(r: BoardRow) {
   const l = r.landed;
   if (!l) return null;
-  if (l.state === "yes") return <Fact name="Landed" tone="ok" value={l.how === "patch" ? "yes · as patches" : `yes · on ${r.base ?? "the base"}`} title={l.how === "patch" ? `${r.base ?? "The base"} holds a commit of the same patch for each of its commits` : `${r.base ?? "The base"} holds its head`} testid="board-landed" state="yes" />;
-  if (l.state === "no") return <Fact name="Landed" tone={r.queue?.current && ["queued", "building", "checking"].includes(r.queue.state) ? "wait" : "none"} value={r.queue?.current && r.queue.state !== "landed" ? `no · ${r.queue.state === "left" ? "left the queue" : r.queue.state}` : `no · ${l.missing} to land`} title={r.queue?.why ?? undefined} testid="board-landed" state="no" />;
+  if (l.state === "yes") return <Fact name="Landed" tone="ok" value={l.how === "patch" ? "yes · as patches" : l.how === "queue" ? "yes · by the queue" : `yes · on ${r.base ?? "the base"}`} title={l.how === "patch" ? `${r.base ?? "The base"} holds a commit of the same patch for each of its commits` : l.how === "queue" ? `The landing queue landed this head; git does not see its patches on ${r.base ?? "the base"} (a squash or edited patches)` : `${r.base ?? "The base"} holds its head`} testid="board-landed" state="yes" />;
+  if (l.state === "no") return <Fact name="Landed" tone={r.queue?.current && ["queued", "building", "checking"].includes(r.queue.state) ? "wait" : "none"} value={r.queue?.current && r.queue.state !== "landed" ? `no · ${r.queue.state === "left" ? "left the queue" : r.queue.state}` : `no · ${l.missing} to land`} title={r.queue?.why ?? "Git compares patches per commit: a squash or edited patches are not seen"} testid="board-landed" state="no" />;
   if (l.state === "nothing") return <Fact name="Landed" tone="none" value="nothing to land" testid="board-landed" state="nothing" />;
   return <Fact name="Landed" tone="none" value="not known" title={l.why} testid="board-landed" state="unknown" />;
 }
 
 function liveFact(r: BoardRow) {
-  if (!r.landed || r.landed.state !== "yes") return r.landed ? <Fact name="Live" tone="none" value="no" testid="board-live" state="no" /> : null;
+  if (!r.landed || r.landed.state !== "yes") return r.landed ? <Fact name="Live" tone="none" value="n/a" title="Not landed, so nothing that runs holds it" testid="board-live" state="n/a" /> : null;
   const v = r.live;
   if (!v || v.state === "unknown") return <Fact name="Live" tone="none" value="no deploy record" title={v?.why} testid="board-live" state="unknown" />;
   return <Fact name="Live" tone={v.state === "yes" ? "ok" : "none"} value={v.state === "yes" ? `yes · ${v.how}` : `not yet · ${v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
@@ -104,8 +104,10 @@ function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
       )}
       {r.review?.line && (
         <blockquote className="k-quote text-caption text-muted" data-testid="board-verdict">
+          <span className="block text-micro text-faint" data-testid="board-reviewer">
+            {r.review.how === "panel" ? "The Review panel" : below.some((x) => x.id === r.review!.by) ? <button type="button" className="hover:text-accent" onClick={() => openSession(below.find((x) => x.id === r.review!.by)!.session_id)}>Reviewer {r.review.title}</button> : `Reviewer ${r.review.title}`} wrote:
+          </span>
           <span className="line-clamp-2">{r.review.line}</span>
-          <span className="text-micro text-faint"> · {r.review.how === "panel" ? "Review panel" : below.some((x) => x.id === r.review!.by) ? <button type="button" className="hover:text-accent" onClick={() => openSession(below.find((x) => x.id === r.review!.by)!.session_id)}>{r.review.title}</button> : r.review.title}</span>
         </blockquote>
       )}
     </li>
@@ -133,7 +135,7 @@ export function WorkBoard({ session }: { session: Session }) {
           <p className="text-caption text-muted" data-testid="board-summary">
             {working} working · {landed} landed
             {repo?.base && <> · base <span className="font-mono">{repo.base}</span> at <span className="font-mono">{sha(repo.base_tip)}</span></>}
-            {repo?.deploy && <> · live at <span className="font-mono">{sha(repo.deploy.sha)}</span> ({repo.deploy.how})</>}
+            {repo?.deploys.map((d) => <span key={d.how}> · live at <span className="font-mono">{sha(d.sha)}</span> ({d.how})</span>)}
           </p>
         </div>
         <button type="button" onClick={refresh} disabled={busy} data-testid="board-refresh"

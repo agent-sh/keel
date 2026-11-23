@@ -56,7 +56,7 @@ const MACHINE_PROPS = {
 };
 // What a review agent reviews: the work board shows its verdict on that branch (src/board/board.ts).
 const REVIEWS_PROP = {
-  reviews: { type: "string", description: "For a review agent: the branch it reviews (several: separated by spaces). The work board shows its verdict on that branch." },
+  reviews: { type: "string", description: "For a review agent: the branch it reviews (several: separated by spaces). The work board shows its verdict on that branch, read from a \"LAND: yes\" or \"LAND: no\" line of its report (per commit: \"LAND: no for <sha>\"). Without it, an agent counts as a branch's reviewer only when its task names the branch or its head." },
 };
 // A budget for the agent's task: when one limit is reached it gets one step with no tool run to
 // write its report, and ends incomplete (ended="budget"); a message continues it.

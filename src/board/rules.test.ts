@@ -10,15 +10,9 @@ describe("verdictOf", () => {
     expect(verdictOf("Verdict - correct").verdict).toBe("approved");
     expect(verdictOf("Verdict: not approved yet").verdict).toBe("refused");
   });
-  test("without a label, the first line with a verdict's words", () => {
-    expect(verdictOf("Read 4 files.\nLGTM, merge it.")).toEqual({ verdict: "approved", line: "LGTM, merge it." });
-    expect(verdictOf("Two findings.\nRequest changes: the test does not fail before the fix.").verdict).toBe("refused");
-    // Plain words without a label decide nothing: "the tests pass" is not an approval.
-    expect(verdictOf("The tests pass.\nI found one problem in the queue.")).toEqual({ verdict: "unclear", line: "The tests pass." });
-  });
   test("a JSON report is read by its verdict key", () => {
     expect(verdictOf('```json\n{"verdict":"incorrect","summary":"One P1."}\n```')).toEqual({ verdict: "refused", line: "verdict: incorrect · One P1." });
-    expect(verdictOf('{"approved": true}').verdict).toBe("approved"); // no verdict key: its words decide
+    expect(verdictOf('{"approved": true}').verdict).toBe("approved"); // a yes-or-no key
     expect(verdictOf('{"decision": "approve"}').verdict).toBe("approved");
   });
   test("an empty report", () => expect(verdictOf(null)).toEqual({ verdict: "unclear", line: "" }));
@@ -27,12 +21,12 @@ describe("verdictOf", () => {
 describe("namedIn", () => {
   const cands = [{ branch: "keel/fix-a-1", tip: "abcdef1234567890abcdef1234567890abcdef12" }, { branch: "keel/fix-a", tip: "1111111111111111111111111111111111111111" }];
   test("a branch by its whole name, not inside a longer one", () => {
-    expect(namedIn("Review the branch keel/fix-a-1.", cands)).toEqual(["keel/fix-a-1"]);
-    expect(namedIn("Review keel/fix-a and keel/fix-a-1", cands).sort()).toEqual(["keel/fix-a", "keel/fix-a-1"]);
+    expect(namedIn("Review the branch keel/fix-a-1.", cands)).toEqual([{ branch: "keel/fix-a-1", by: "name" }]);
+    expect(namedIn("Review keel/fix-a and keel/fix-a-1", cands).map((x) => x.branch).sort()).toEqual(["keel/fix-a", "keel/fix-a-1"]);
     expect(namedIn("Look at keel/fix-a-10 and keel/fix-a/sub", cands)).toEqual([]);
   });
   test("a head by seven or more of its digits", () => {
-    expect(namedIn("Review commit abcdef1 please", cands)).toEqual(["keel/fix-a-1"]);
+    expect(namedIn("Review commit abcdef1 please", cands)).toEqual([{ branch: "keel/fix-a-1", by: "head" }]);
     expect(namedIn("abcdef is too short", cands)).toEqual([]);
   });
 });
@@ -68,19 +62,19 @@ describe("boardText", () => {
     checks: { state: "known", passed: ["typecheck"], failed: [], notRun: ["unit"] }, review: null, reviews: [],
     landed: { state: "no", missing: 1 }, queue: null, live: null, ...o,
   });
-  const board = (rows: BoardRow[]): Board => ({ session_id: "root", rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: "b".repeat(40), deploy: null }], at: 0, took_ms: 0 });
+  const board = (rows: BoardRow[]): Board => ({ session_id: "root", rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: "b".repeat(40), deploys: [] }], at: 0, took_ms: 0 });
   test("agents that need the coordinator get a line each, the rest their ids", () => {
     const text = boardText(board([
       row({ id: "work1", state: "running", title: "Working lane", landed: { state: "no", missing: 2 } }),
       row({ id: "refd1", review: { by: "rev1", title: "Review", how: "named", state: "completed", verdict: "refused", line: "Verdict: refused. It breaks X.", tip: "c".repeat(40), current: true, at: 3 } }),
-      row({ id: "land1", landed: { state: "yes", how: "patch" }, live: { state: "yes", at: "d".repeat(40), how: "after step" } }),
+      row({ id: "land1", landed: { state: "yes", how: "patch" }, live: { state: "yes", at: "d".repeat(40), how: "after step passed" } }),
       row({ id: "rev1", branch: null, checks: null, landed: null, reviews: ["keel/lane"] }),
     ]));
     const lines = text.split("\n");
     expect(lines[0]).toBe("Work board: 4 agents (1 working, 3 done); base main at bbbbbbbbb.");
     // A fact that says nothing (no review, a worktree removed) is left out of a board line.
     expect(lines[1]).toBe('work1 working "Working lane" · keel/lane@ccccccccc · checks passed typecheck; not run unit · not landed (2 commits)');
-    expect(lines[2]).toContain('review refused by rev1 "Verdict: refused. It breaks X."');
+    expect(lines[2]).toContain('review refused by rev1 ("Review"), reviewer wrote: "Verdict: refused. It breaks X."');
     expect(lines).toContain("Landed (and live where a deploy is known): land1.");
     expect(lines).toContain("Reviewers done: rev1 (keel/lane).");
     // Small: a coordinator reads it in a few hundred tokens.
@@ -90,5 +84,8 @@ describe("boardText", () => {
     const b = board([row({ id: "x1", landed: { state: "yes", how: "ancestor" }, live: { state: "no", at: "d".repeat(40), how: "this daemon" } })]);
     expect(boardText(b, { agent: "x1" })).toBe('x1 done "Lane" · keel/lane@ccccccccc (worktree removed) · checks on its head: passed typecheck; not run unit · review: none · landed on main, not live yet (this daemon at ddddddddd)');
     expect(boardText(b, { agent: "nope" })).toBe("No agent nope on this session's board.");
+    // Not landed says what git cannot see; a head the queue landed says it is the queue's word.
+    expect(boardText(board([row({ id: "n1" })]), { agent: "n1" })).toContain("not landed (1 commit the base lacks; a squash or edited patches are not seen)");
+    expect(boardText(board([row({ id: "q1", landed: { state: "yes", how: "queue" } })]), { agent: "q1" })).toContain("landed by the landing queue (git does not see its patches on main: a squash or edited patches)");
   });
 });
