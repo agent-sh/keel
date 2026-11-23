@@ -21,6 +21,9 @@ test("the inbox says how each answered approval and question was answered", asyn
   const call = (await pending(request, asked))[0]!;
   await request.post(`/api/sessions/${asked}/questions/${call}`, { data: { answers: { "0": { picked: ["Teal"] } } } });
   await expect.poll(async () => (await pending(request, asked)).length, { timeout: 15_000 }).toBe(0);
+  // The question's outcome is kept with its alert (the Inbox says it after a restart too).
+  await expect.poll(async () => ((await (await request.get("/api/alerts?limit=200")).json()).alerts as { kind: string; session_id: string; data?: { outcome?: string } }[])
+    .find((x) => x.kind === "question" && x.session_id === asked)?.data?.outcome, { timeout: 15_000 }).toBe("answered");
 
   await page.goto("/");
   await page.getByTestId("inbox-button").click();

@@ -423,3 +423,22 @@ for (const [mode, reason] of [
     }
   }, 12_000);
 }
+
+// What became of a question is kept with its alert: the Inbox says it after a restart, when this
+// daemon no longer remembers the answer.
+test("a question's outcome is stored with its alert as it closes", async () => {
+  const { session } = scratch();
+  const a = session("Answers"), b = session("Stopped");
+  const stop = new AbortController();
+  void ask({ sessionId: a, callId: "qo-a", signal: new AbortController().signal } as any);
+  void ask({ sessionId: b, callId: "qo-b", signal: stop.signal } as any);
+  alerts.raise("question", a, "Question: Answers", "Which?", { call_id: "qo-a", open_session: a });
+  alerts.raise("question", b, "Question: Stopped", "Which?", { call_id: "qo-b", open_session: b });
+  answer(a, "qo-a", {});
+  stop.abort();
+  alerts.keepOutcome("call_id", "qo-a", a, "answered");
+  alerts.keepOutcome("call_id", "qo-b", b, "not answered");
+  const kept = (id: string) => alerts.list().find((x) => x.data?.call_id === id);
+  expect([kept("qo-a")?.data.outcome, kept("qo-b")?.data.outcome]).toEqual(["answered", "not answered"]);
+  expect([kept("qo-a")?.outcome, kept("qo-b")?.outcome]).toEqual(["answered", "not answered"]);
+});

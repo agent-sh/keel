@@ -278,9 +278,11 @@ function outcomeOf(a: Alert): string | undefined {
     const r = perm.gate?.approval(String(a.data.approval_id));
     return r ? answerSaid(r) : undefined;
   }
+  if (a.kind === "question" && typeof a.data?.outcome === "string") return a.data.outcome;
+  // (An alert from before the outcome was kept with it: what this daemon took, while it remembers.)
   if (a.kind === "question" && a.data?.call_id) {
     const q = closedQuestions(0).findLast((x) => x.call_id === a.data.call_id);
-    return q ? (q.answered ? "answered" : "declined") : undefined;
+    return q?.how;
   }
   return undefined;
 }
@@ -891,6 +893,13 @@ export function offlineOver(machine: string, since: number, back: number, name: 
 
 export const raisedOffline = (machine: string, since: number) =>
   !!D().store.db.query("SELECT 1 FROM alerts WHERE json_extract(data, '$.machine_offline') = ? AND json_extract(data, '$.since_ms') = ? LIMIT 1").get(machine, since);
+
+// What became of a question, kept with its alert when it closes, so the Inbox says it after a
+// restart too: answered, declined, or not answered. Its notice of expiry is an alert of its own.
+export function keepOutcome(key: "call_id" | "ask_id", value: string, askedIn: string, outcome: string) {
+  D().store.db.query(`UPDATE alerts SET data = json_set(COALESCE(data, '{}'), '$.outcome', ?) WHERE far_id IS NULL AND kind = 'question' AND json_extract(data, ?) = ? AND ${ASKED_IN} = ? AND json_extract(data, '$.expired') IS NULL`)
+    .run(outcome, `$.${key}`, value, askedIn);
+}
 
 // Reads the unread alerts whose data names this value (an answered approval).
 // `askedIn`: only the alerts of the session that asked (a question's call id is its session's).

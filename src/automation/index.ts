@@ -2,6 +2,7 @@ import { zoned } from "../core/clock.ts";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { asksLess, isMode } from "../safety/policy.ts";
+import { closedHow } from "../tools/interact.ts";
 import * as leftovers from "./leftovers.ts";
 import { parseSince } from "../admin/timeline.ts";
 import { sessionRef } from "../admin/session-ref.ts";
@@ -127,6 +128,7 @@ function init(deps: Deps) {
       // A plan the tool refused is not the plan: the saved list stays as it was.
       if (goals.isPlanTool(call.tool.name) && !result.is_error) taskRenames.fromPlan(s.id, call.tool.name, call.input);
       if (QUESTION_TOOLS.has(call.tool.name)) {
+        alerts.keepOutcome("call_id", call.id, s.id, closedHow(s.id, call.id) ?? (result.is_error ? "not answered" : "answered"));
         alerts.readWhere("call_id", call.id, s.id);
         // The answer to a question is the owner's word: it ends a snooze.
         snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");
@@ -138,6 +140,7 @@ function init(deps: Deps) {
       if (!alerts.raisedFor("ask_id", askId, sessionId)) alerts.raise("question", sessionId, `Question: ${deps.store.session(sessionId)?.title || "a session"}`, text, { call_id: callId, open_session: sessionId, ask_id: askId });
     },
     ownerAnswered: (sessionId, _callId, answered, askId) => {
+      alerts.keepOutcome("ask_id", askId, sessionId, answered ? "answered" : "declined");
       alerts.readWhere("ask_id", askId, sessionId);
       if (answered) snooze.end(deps.store.session(sessionId)?.parent_id ?? sessionId, "the owner answered");
     },

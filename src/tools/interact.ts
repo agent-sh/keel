@@ -19,15 +19,20 @@ const keyOf = (sessionId: string, callId: string) => `${sessionId}:${callId}`;
 // learns it closed. A few hundred are plenty.
 // `answers`: what was picked, so a card reopened elsewhere shows it.
 // `question`: the id of a question a server asked (a call can have several, one after another).
-const closed: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers; question?: string }[] = [];
+// `how`: answered, declined (a server's question), or not answered (its turn was stopped).
+export type QuestionEnd = "answered" | "declined" | "not answered";
+const closed: { call_id: string; session_id: string; at: number; answered: boolean; how: QuestionEnd; answers?: Answers; question?: string }[] = [];
 // What the owner typed for a server's question is the server's alone: it is
 // not kept here, so it reaches no other device.
 const close = (call_id: string, session_id: string, reply: Reply, asked?: string) => {
   const answers = reply === DECLINED ? null : reply;
-  closed.push({ call_id, session_id, at: Date.now(), answered: answers !== null, ...(answers && !asked ? { answers } : {}), ...(asked ? { question: asked } : {}) });
+  const how: QuestionEnd = reply === DECLINED ? "declined" : reply === null ? "not answered" : "answered";
+  closed.push({ call_id, session_id, at: Date.now(), answered: answers !== null, how, ...(answers && !asked ? { answers } : {}), ...(asked ? { question: asked } : {}) });
   if (closed.length > 300) closed.splice(0, closed.length - 300);
 };
 export const closedQuestions = (sinceMs: number) => closed.filter((q) => q.at >= sinceMs);
+// How the last question of a call ended, while this daemon remembers it.
+export const closedHow = (sessionId: string, callId: string): QuestionEnd | undefined => closed.findLast((q) => q.session_id === sessionId && q.call_id === callId)?.how;
 
 // The model's own question: the card reads it from the call's input.
 export const ask = (ctx: ToolContext) => askFor(ctx) as Promise<Answers | null>;
