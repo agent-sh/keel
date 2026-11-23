@@ -87,6 +87,14 @@ export class ScriptedProvider implements Provider {
   readonly id = "scripted";
   readonly label = "Scripted (test)";
   readonly family = "other" as const;
+  // KEEL_SCRIPTED_CACHE_TTL_MS: a prompt cache that lapses as a real one does
+  // (Anthropic's: a request's prefix is kept that long from the request's
+  // start, and a read keeps it that long again). A request after the lapse
+  // reads nothing and writes its whole prompt. Set, the provider says so
+  // (`caching`), so a waiting session's cache plan can keep it.
+  private ttl = Number(process.env.KEEL_SCRIPTED_CACHE_TTL_MS) || 0;
+  readonly caching = this.ttl ? { life: this.ttl, refresh: "read" as const } : undefined;
+  private lives = new Map<string, number>(); // session and model -> when its cached prefix lapses
   private seen = new Map<string, number>();
   // The tools and system of each session's last request, per model (KEEL_SCRIPTED_CACHE=prefix).
   private prefixes = new Map<string, string>();
@@ -175,6 +183,22 @@ export class ScriptedProvider implements Provider {
       if (total > STRICT_WINDOW) throw classify("Scripted", 400, new Headers(), JSON.stringify({ error: { code: 400, message: `The input token count exceeds the maximum number of tokens allowed (${STRICT_WINDOW}); input token count: ${total}.`, status: "INVALID_ARGUMENT" } }));
       usage.input = count(last);
       usage.cache_read = total - usage.input;
+    }
+    if (this.ttl && req.purpose !== "reader") {
+      const at = `${req.sessionKey}\u0000${req.model}`;
+      const now = Date.now();
+      if ((this.lives.get(at) ?? 0) <= now) { usage.cache_write += usage.cache_read; usage.cache_read = 0; }
+      this.lives.set(at, now + this.ttl);
+    }
+    // A request that keeps the cache warm is read, not answered. It is held to
+    // what the streaming endpoints document of max_tokens, as Bedrock's
+    // InvokeModelWithResponseStream states it (a required integer; nothing says
+    // 0 is taken, and Anthropic refuses 0 with stream: true): a request that
+    // asks for less than one token is refused in a validation error's words.
+    if (req.purpose === "warm") {
+      if (!Number.isInteger(req.maxTokens) || req.maxTokens! < 1) throw classify("Scripted", 400, new Headers(), JSON.stringify({ message: "ValidationException: max_tokens: must be an integer of at least 1 on a streaming request" }));
+      usage.output = 1;
+      return { blocks: [], usage, stop: "max_tokens", model: req.model };
     }
 
     // A reply streamed `size` characters every `ms`.

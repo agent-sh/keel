@@ -26,8 +26,12 @@ under `~/.cache/keel-work/bun/research/`.
   `SystemBlock`), long tool output spilled to a
   file (`src/tools/spill.ts`), long material (pages, files, logs, a saved output)
   read in parts by cheaper reader models and compiled into one answer
-  (`src/engine/reader.ts`, `src/engine/readers.ts`), and idle compaction before a long context's cache
-  expires (`src/engine/compact.ts`).
+  (`src/engine/reader.ts`, `src/engine/readers.ts`), idle compaction before a long context's cache
+  expires (`src/engine/compact.ts`), and a cache plan for a session that waits past its cache's
+  lifetime, on a wait it set or a long tool step: a one-token read keeps the cache warm (where the
+  provider documents that a read refreshes it), its summary is prepared while warm, or it lapses,
+  whichever the model's price and the wait's length make cheapest, told in its timeline
+  (`src/engine/cache-plan.ts` decides, `src/engine/cache-plans.ts` runs it).
 - A change to a tool or a prompt block reaches a live session late by design
   (its tools and prompt are pinned, see above): when its cache is cold, or
   after `build_pin.max_age_hours` (24 by default). Mark it urgent in `URGENT`

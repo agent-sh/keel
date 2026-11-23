@@ -32,9 +32,11 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
+import { CachePlans } from "./cache-plans.ts";
+import type { WaitShape } from "./cache-plan.ts";
 import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
@@ -430,6 +432,19 @@ export class Engine {
   ) {
     this.prompts = new PromptStore(store);
     this.pins = new BuildPins(store);
+    this.cachePlans = new CachePlans({
+      store, errors,
+      append: (id, kind, data) => this.append(id, kind, data),
+      isRunning: (id) => this.running.has(id),
+      draining: () => this.draining,
+      call: async (id, st, messages, signal, tokens) => {
+        const res = await this.call(id, st as Step, messages, signal, new Map(), this.store.session(id)!, true, "warm", { tokens, base: messages });
+        this.store.addUsage(id, res.usage);
+        this.emitSession(id);
+        return res;
+      },
+      prepare: (id, st) => this.prepare(id, st as Step, true),
+    });
     registerPinnedDeferred((id) => this.pins.deferred(id));
     // A summary prepared ahead survives a restart.
     store.migrate("CREATE TABLE IF NOT EXISTS prepared_summaries (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, covered TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL)");
@@ -1113,6 +1128,7 @@ export class Engine {
   // captured as this turn's (src/core/errors.ts).
   private openTurn(id: string, data: unknown) {
     this.cancelContinue(id);
+    this.cachePlans.end(id, "woke"); // the wait it parked on is over
     return this.opened(id, this.append(id, "turn_start", data));
   }
   private opened(id: string, ev: StoredEvent) {
@@ -1405,11 +1421,11 @@ export class Engine {
       // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
       if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
     }
-    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, systemOwn: st.systemOwn, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
+    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, systemOwn: st.systemOwn, messages, tools: st.tools, effort: st.effort, maxTokens: purpose === "warm" ? 1 : st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
     // A reader's request carries no conversation for the hooks to add to.
     if (purpose === "reader") req.cache = false;
     else for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
-    if (session.parent_id && purpose !== "reader") req.cacheLife = this.cacheLife(id, st);
+    if (session.parent_id && purpose !== "reader") req.cacheLife = this.cacheLife(id, st, purpose);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     const whole = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id);
@@ -1655,13 +1671,16 @@ export class Engine {
   // the agent waits (a foreground command, wait_for, its own agents), and on
   // the short lifetime each wake would write its whole context again.
   private sent = new SessionMap<number>(256);
-  private cacheLife(id: string, st: Step): "short" | "long" | undefined {
+  // A warm request (src/engine/cache-plans.ts) keeps the lifetime the session has: its read is what
+  // keeps the cache, so the request after it is not late.
+  private cacheLife(id: string, st: Step, purpose?: ProviderRequest["purpose"]): "short" | "long" | undefined {
     const lives = cacheLives(st.provider.wire);
     const now = Date.now();
     const prev = this.sent.get(id);
     this.sent.set(id, now);
     if (!lives) return undefined;
     if (this.store.session(id)?.settings.cache_long) return "long";
+    if (purpose === "warm") return "short";
     // After a restart: the reply before this request, whatever its cache did.
     const before = prev ?? this.lineage(id).findLast((e) => e.kind === "assistant")?.ts;
     if (!before || now - before <= lives.short - PAUSE_MARGIN_MS) return "short";
@@ -1780,6 +1799,7 @@ export class Engine {
     let usage: Usage = emptyUsage();
     // One commit: the session works from its turn's first event on (the two frames go out after it, in their order).
     this.cancelContinue(id);
+    this.cachePlans.end(id, "woke"); // the wait it parked on is over: its note goes before the turn
     const began = this.store.atomic(id, () => ({ s: this.store.updateSession(id, { phase: "working" }), ev: this.store.append(id, "turn_start", { model: session.model, effort: st.effort }) }));
     this.bus.emit({ t: "session", session: began.s });
     this.emitEvent(began.ev);
@@ -1942,11 +1962,13 @@ export class Engine {
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
         const messages = toMessages(events);
         let res: ProviderResult;
+        let sentAt = 0;
         try {
           // A context with nothing to compact (a first long message, a fresh
           // summary and the prompts after it) cannot be made smaller: it is
           // sent unless it is over the window however its bytes are counted.
           const final = !worthSummarizing(summarizable(events));
+          sentAt = Date.now();
           res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.whole(events, st), ...(final ? { least: this.least(events, st) } : {}) });
         } catch (e) {
           // Counted over the window before it was sent: the provider said nothing about its own count.
@@ -2016,7 +2038,11 @@ export class Engine {
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = budget > 0 && steps >= budget;
+          // A step that runs past the cache's lifetime keeps it by its plan.
+          const planned = uses.length && !spent ? this.cachePlans.tool(id, st, events, messages, this.toolShape(id, uses), sentAt, u) : undefined;
+          try {
           await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
+          } finally { planned?.(); }
           if (cut) await settleNow(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
@@ -2278,15 +2304,20 @@ export class Engine {
     this.gaveUp.set(id, { key: this.gaveUpKey(events, st), at, id: events[at]!.id, tried: new Set([...(had?.tried ?? []), over ? "window" as const : "line" as const]), error: e as Error });
   }
 
+  // What each waiting session does with its prompt cache (src/engine/cache-plans.ts).
+  readonly cachePlans: CachePlans;
+
   // Summaries being written ahead. Each can be stopped, and names the event it covers up to.
   private preparing = new Map<string, { abort: AbortController; covered: string }>();
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // When the prepared summary's request read this context's cache on the
   // model's route: one written for this branch on the same prefix (preparedWarm).
+  // (Or a request that kept it warm while the session waited: src/engine/cache-plans.ts.)
   private preparedMs(id: string, events: readonly StoredEvent[], st: Step): number {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
-    return row && events.some((e) => e.id === row.covered) ? preparedWarm(JSON.parse(row.data), st.info.id) : 0;
+    const prepared = row && events.some((e) => e.id === row.covered) ? preparedWarm(JSON.parse(row.data), st.info.id) : 0;
+    return Math.max(prepared, this.cachePlans.warmedAt(id, st.info.id));
   }
 
   // The cache of this context has surely expired: no request of this model
@@ -2310,6 +2341,13 @@ export class Engine {
     const route = (model: string) => routes.get(model) ?? routes.set(model, this.providers.resolve(model)).get(model)!;
     for (const { id } of this.store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated > ? AND archived = 0").all(since)) {
       const s = this.store.session(id);
+      // A session parked on a wait gets its cache plan again (its step is built for it: few wait).
+      if (s && !this.running.has(id) && this.waitShape?.(id)) {
+        let planned = false;
+        try { const st = await this.step(s, s.model); planned = !this.running.has(id) && this.planPark(this.store.session(id) ?? s, st); }
+        catch (e) { this.errors.capture("provider", e, { session: id, at: "cache plan after a restart" }); }
+        if (planned || s.parent_id) continue;
+      }
       if (!s || this.running.has(id) || s.parent_id || s.settings.idle_compact === false) continue;
       try {
         const { provider, info } = await route(s.model);
@@ -2349,12 +2387,50 @@ export class Engine {
     return facts;
   }
 
+  // What the session waits on now (set by the automation module): a wait it set, with its due
+  // time, deadline and how long its earlier waits of that kind lasted.
+  waitShape?: (id: string) => WaitShape | undefined;
+
+  // A session parked on a wait: its cache plan (src/engine/cache-plan.ts). False when it waits on nothing or has no plan.
+  private planPark(session: Session, st: Step, step: () => Promise<Step> = async () => st): boolean {
+    const shape = this.waitShape?.(session.id);
+    if (!shape) return false;
+    const events = this.lineage(session.id);
+    const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
+    const used = this.used(events, st);
+    // A summary is a choice where idle compaction would make one: a long context worth summarizing.
+    const summary = session.settings.idle_compact !== false && used >= idleMinTokens(limit) && worthSummarizing(summarizable(events)) && !this.summaryGaveUp(session.id, events, st, false);
+    const out = Math.ceil(SUMMARY_ROOM_BYTES(st) / bytesPerToken(st.info.id));
+    // (No plan where nothing tells how long the route keeps the cache, or what it costs: idle compaction's rules hold.)
+    return !!this.cachePlans.park(session, st, events, shape, {
+      tokens: used, step, messages: () => toMessages(this.lineage(session.id)),
+      ...(summary ? { summaryTokens: { out, after: Math.ceil(this.prefixBytes(st) / bytesPerToken(st.info.id)) + out } } : {}),
+    });
+  }
+
+  // A tool step: how long steps of the same tool took in this session, and its own time limit.
+  private toolShape(id: string, uses: ToolUseBlock[]): WaitShape {
+    const name = uses[0]!.name;
+    let past: number[] = [];
+    try {
+      past = this.store.db.query<{ ms: number }, [string, string]>("SELECT ms FROM telemetry_tools WHERE session_id = ? AND tool = ? AND ms IS NOT NULL ORDER BY ts DESC LIMIT 20").all(id, name).map((r) => r.ms);
+    } catch {} // a store without telemetry
+    const limits = uses.map((u) => Number((u.input as any)?.timeout ?? (u.input as any)?.timeout_ms)).filter((x) => Number.isFinite(x) && x > 0);
+    return { kind: `tool:${name}`, ...(past.length ? { past } : {}), ...(limits.length === uses.length ? { deadline: Date.now() + Math.max(...limits) } : {}) };
+  }
+
   // After a turn: a context big enough gets its summary prepared shortly
   // before its cache lifetime ends, unless the session works again before then.
   private scheduleIdle(id: string, st: Step) {
     const session = this.store.session(id);
+    // A session that waits on a wait it set (an agent's or the owner's) gets a cache plan instead.
+    if (session && this.planPark(session, st)) {
+      clearTimeout(this.idleTimers.get(id));
+      this.idleTimers.delete(id);
+      return;
+    }
     // An agent's context is not prepared while idle: an ended agent is seldom
-    // taken up again, and one that waits within its turn is not idle.
+    // taken up again (one that waits has a plan above).
     if (!session || session.parent_id || session.settings.idle_compact === false) {
       clearTimeout(this.idleTimers.get(id));
       this.idleTimers.delete(id);
@@ -2754,6 +2830,7 @@ export class Engine {
     this.draining = true;
     // A summary being prepared is not waited for: the next daemon prepares it again.
     for (const p of this.preparing.values()) p.abort.abort();
+    this.cachePlans.stopAll(); // the next daemon plans what still waits again
     // What a hook still has under way (a fleet move) is waited for like a turn at work.
     let moving = 0;
     const moves: Promise<unknown>[] = [];

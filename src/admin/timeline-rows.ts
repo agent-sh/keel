@@ -17,7 +17,7 @@ import { ownerStop, stopSays, stopper } from "../core/stoppers.ts";
 import { probeWords } from "../engine/trail.ts";
 
 export type TimelineKind =
-  | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files" | "check"
+  | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files" | "check" | "cache"
   // Only in "now": what is queued, and a session with nothing going on.
   | "queue" | "idle";
 // Color is state: `failed` went wrong, `owner` waits on the owner, `live` runs now.
@@ -224,7 +224,17 @@ const short = (model: unknown) => String(model ?? "").split(":").pop() || "anoth
 const tokens = (n: unknown) => (typeof n === "number" && n > 0 ? `, from ${n < 1000 ? n : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`} tokens` : "");
 // The kinds of note that make a row: the timeline's index holds these notes
 // and no other, so a kind told here is named here (a test holds the two together).
-export const NOTE_MARKS = ["model_told", "fallback", "restart", "compaction_failed", "rewind", "fork"] as const;
+export const NOTE_MARKS = ["model_told", "fallback", "restart", "compaction_failed", "rewind", "fork", "cache_plan"] as const;
+// A cache plan's row (src/engine/cache-plans.ts): what the wait did with the prompt cache, and what it cost against a rewrite.
+const usd = (x: unknown) => { const n = Number(x) || 0; return n >= 1 ? `$${n.toFixed(2)}` : n >= 0.01 ? `$${n.toFixed(3)}` : `$${n.toFixed(4)}`; };
+function cacheLine(d: Record<string, any>): string {
+  const n = Number(d.pings) || 0, long = dur(Number(d.waited_ms) || 0);
+  const reqs = `${n} ${n === 1 ? "request" : "requests"}`;
+  if (d.outcome === "warm") return `Kept the prompt cache warm through a wait of ${long}: ${reqs} for ${usd(d.spent_usd)}, where writing the context again would cost ${usd(d.lapse_usd)}`;
+  if (d.outcome === "summary") return `Prepared the summary while the cache was warm, for a wait of ${long}; writing the whole context again would cost ${usd(d.lapse_usd)}`;
+  if (d.outcome === "lapsed") return `The prompt cache lapsed during a wait of ${long}${n ? ` after ${reqs} for ${usd(d.spent_usd)}` : ""}: writing the context again costs about ${usd(d.lapse_usd)}`;
+  return `The wait of ${long} ended before the cache lapsed`;
+}
 export function markRow(e: Mark, turn?: string): TimelineRow | null {
   const d = e.data ?? {};
   const row = (kind: TimelineKind, sub: string, text: string, tone: Tone = "plain"): TimelineRow => clean({ id: e.id, ts: e.ts, kind, sub, tone, text, turn_event: turn });
@@ -242,6 +252,8 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
     // Written when files are put back from a checkpoint: the conversation is as it was.
     case "rewind": return row("files", "restored", "Files were restored to an earlier state");
     case "fork": return row("model", "fork", "Forked from another session");
+    // What a wait did with the prompt cache, and its cost (src/engine/cache-plans.ts).
+    case "cache_plan": return row("cache", String(d.outcome ?? "plan"), cacheLine(d), d.outcome === "lapsed" ? "failed" : "plain");
     default: return null;
   }
 }

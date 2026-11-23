@@ -116,6 +116,19 @@ export function list(sessionId?: string, settled = 50): WaitRecord[] {
   return [...active, ...done].map(toRec);
 }
 
+// What the session waits on, for its cache plan (src/engine/cache-plan.ts): it
+// wakes at the first of its active waits, so the earliest due time and
+// deadline; and how long its earlier waits of that kind lasted until they fired.
+export function shapeOf(sessionId: string): { kind: string; due?: number; deadline?: number; past?: number[] } | undefined {
+  const db = D().store.db;
+  const active = db.query<{ kind: string; spec: string; deadline: number }, [string]>("SELECT kind, spec, deadline FROM waits WHERE status = 'active' AND session_id = ? ORDER BY deadline").all(sessionId);
+  if (!active.length) return undefined;
+  const dues = active.map((w) => { try { return w.kind === "timer" ? Number(JSON.parse(w.spec).at_ms) || 0 : 0; } catch { return 0; } }).filter(Boolean);
+  const kind = active[0]!.kind;
+  const past = db.query<{ ms: number }, [string, string]>("SELECT ended - created AS ms FROM waits WHERE session_id = ? AND kind = ? AND status = 'fired' AND ended IS NOT NULL ORDER BY ended DESC LIMIT 20").all(sessionId, kind).map((r) => r.ms);
+  return { kind, ...(dues.length ? { due: Math.min(...dues) } : {}), deadline: Math.min(...active.map((w) => w.deadline)), ...(past.length ? { past } : {}) };
+}
+
 export function activeFor(sessionId: string): number {
   return D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM waits WHERE status = 'active' AND session_id = ?").get(sessionId)!.n;
 }

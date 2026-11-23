@@ -45,7 +45,8 @@ export type ProviderRequest = {
   // answer outside the history, or a reader's one read of long content for a
   // tool. Read by telemetry, and by a driver that keeps a connection per
   // session to keep the turn's apart from the others'.
-  purpose?: "turn" | "summary" | "side" | "reader";
+  // A "warm" request reads the cache beside the history while the session waits (src/engine/cache-plans.ts).
+  purpose?: "turn" | "summary" | "side" | "reader" | "warm";
   // false: a one-off request nothing will repeat; no cache breakpoints (a
   // write costs more than plain input when no later request reads it).
   cache?: false;
@@ -204,6 +205,10 @@ export interface Provider {
   readonly broker?: import("./broker-address.ts").BrokerAddress;
   readonly label?: string;
   readonly wire?: Wire;
+  // How the provider keeps a prompt's cache, when it says so itself (else its
+  // wire's documented behaviour, src/engine/cache-plans.ts): for how long a
+  // request's prefix is kept for sure, and whether a read refreshes that.
+  readonly caching?: { life: number; refresh?: "read" };
   readonly family: Family; // the default for models whose id says nothing
   available(): boolean;
   // Looks again for a credential last found missing (at least `olderThanMs`

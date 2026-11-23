@@ -69,6 +69,8 @@ const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_us
 
 function init(deps: Deps) {
   setDeps(deps);
+  // What a parked session waits on, for its cache plan.
+  deps.engine.waitShape = (id) => waits.shapeOf(id);
   agents.migrate();
   waits.migrate();
   loops.migrate();

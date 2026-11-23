@@ -99,9 +99,10 @@ export function prefixDiff(prev: { h_tools: string | null; h_system: string | nu
 // same up to the last one's end and the provider's cache missed anyway.
 // Until when the prompt cache of a session's last turn request stays warm, by
 // the lifetime that request asked for; undefined when its route states none.
+// A request that kept it warm while the session waited counts as one.
 export function warmUntil(store: Store, sessionId: string): number | undefined {
   const r = store.db.query<{ ts: number; cache_ms: number | null }, [string]>(
-    "SELECT ts, cache_ms FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1").get(sessionId);
+    "SELECT ts, cache_ms FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') IN ('turn', 'warm') ORDER BY ts DESC LIMIT 1").get(sessionId);
   return r?.cache_ms ? r.ts + r.cache_ms : undefined;
 }
 

@@ -521,6 +521,7 @@ export class Providers {
       id: p.id,
       family: info.family,
       wire: p.wire,
+      caching: p.caching,
       label: p.label,
       available: () => p.available(),
       list: () => p.list(),
@@ -550,7 +551,8 @@ export class Providers {
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
-            ...req, onHeaders, onAnswer, efforts: info.efforts, maxTokens: info.output || undefined, interleaved: info.interleaved,
+            // (A warm request asks for the least output it can: it is read, not answered.)
+            ...req, onHeaders, onAnswer, efforts: info.efforts, maxTokens: req.purpose === "warm" && req.maxTokens ? req.maxTokens : info.output || undefined, interleaved: info.interleaved,
             extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
           }, (d) => { onAnswer(); onDelta(d); });

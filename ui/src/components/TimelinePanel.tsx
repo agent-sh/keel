@@ -8,7 +8,7 @@
 import { CUT_BY_RESTART, FAIL_WORD, STATE_WORD, stateLabel, stateWords } from "../../../src/core/state-words.ts";
 import { PeerMessages } from "./PeerMessages.tsx";
 import {
-  Anchor, ArrowLeftRight, Bot, ClipboardCopy, CornerDownRight, FileClock, Flag, FoldVertical, Gauge, Hand, ListChecks, ListEnd, MessageCircleQuestionMark, MessagesSquare, Power, Repeat,
+  Anchor, ArrowLeftRight, Bot, ClipboardCopy, CornerDownRight, DatabaseZap, FileClock, Flag, FoldVertical, Gauge, Hand, ListChecks, ListEnd, MessageCircleQuestionMark, MessagesSquare, Power, Repeat,
   Route, Timer, TriangleAlert, X, type LucideIcon,
 } from "lucide-react";
 import { Fragment, type KeyboardEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -29,7 +29,7 @@ import { Seg } from "./Seg.tsx";
 
 const MARK: Record<Exclude<TimelineKind, "turn">, LucideIcon> = {
   agent: Bot, wait: Timer, loop: Repeat, approval: Hand, question: MessageCircleQuestionMark, compaction: FoldVertical, model: ArrowLeftRight,
-  restart: Power, error: TriangleAlert, goal: Flag, limit: Gauge, files: FileClock, check: ListChecks, queue: ListEnd, idle: Anchor,
+  restart: Power, error: TriangleAlert, goal: Flag, limit: Gauge, files: FileClock, check: ListChecks, queue: ListEnd, idle: Anchor, cache: DatabaseZap,
 };
 const FILTERS: [Only, string][] = [["", "Everything"], ["failures", "Failures"], ["turns", "Turns"], ["agents", "Agents"]];
 const EMPTY: Record<Only, string> = {
