@@ -87,7 +87,7 @@ object Hub {
 
     fun reset() {
         live?.cancel(); live = null; saver?.cancel(); dirty = false
-        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L
+        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L; away.value = null
         note.value = ""; conn.value = Conn.OFF
     }
 
@@ -122,7 +122,7 @@ object Hub {
             override fun onOpen(eventSource: EventSource, response: Response) { conn.value = Conn.LIVE; opened() }
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 when (val step = feed.take(data)) {
-                    is Took.Applied -> { if (step.synced) note.value = ""; changed() }
+                    is Took.Applied -> { if (step.synced) { note.value = ""; readAway() }; changed() }
                     is Took.CatchUp -> catchUp(eventSource)
                     // What the frame carried was not applied: the stream ends here and the next one opens from the cursor.
                     is Took.Broken -> { broke = step.reason; note.value = step.reason; eventSource.cancel() }
@@ -183,6 +183,13 @@ object Hub {
     suspend fun newChat(n: NewChat = NewChat()): String {
         return feed.created(Api.post("/v1/chats", n.body())).id
     }
+    /** What happened while the owner was away: read each time the phone is level with the computer again. */
+    val away = MutableStateFlow<Away?>(null)
+    private fun readAway() { scope.launch { runCatching { Away.of(Api.get("/v1/away")) }.onSuccess { away.value = it } } }
+    /** The owner has seen the digest: it goes here and on the page. */
+    fun seenAway() { away.value = null; scope.launch { runCatching { Api.delete("/v1/away") } } }
+    /** The owner touched the app `idleMs` ago: the end of an absence, as a page in use says. */
+    suspend fun present(idleMs: Long) { Api.post("/v1/presence", JSONObject().put("idle_ms", idleMs)) }
     suspend fun startOffer(): Start = Start.of(Api.get("/v1/start"))
 
     suspend fun resolve(aid: String, body: JSONObject, headers: Map<String, String>): Card? {

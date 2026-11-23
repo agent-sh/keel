@@ -87,6 +87,19 @@ class MainActivity : FragmentActivity() {
         i?.getStringExtra("chat")?.let { if (Prefs.paired) Ui.open(it) }
     }
 
+    // The owner's last touch, told to the daemon at most every 20 s (a page reports as often): the phone
+    // in use ends an absence, so the away digest counts only the time the owner was at neither.
+    @Volatile private var touched = 0L
+    @Volatile private var told = 0L
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        touched = System.currentTimeMillis()
+        if (Prefs.paired && touched - told >= 20_000) {
+            told = touched
+            Hub.scope.launch { runCatching { Hub.present(System.currentTimeMillis() - touched) } }
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(net)

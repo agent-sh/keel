@@ -424,6 +424,28 @@ class Seen {
     companion object { const val SLACK = 1f }
 }
 
+/** One session in the away digest: what happened in it, the part that went wrong apart (`bad`). */
+data class AwaySession(val chatId: String, val title: String, val state: String, val watch: String, val text: String, val bad: String = "")
+
+/** GET /v1/away: what happened while the owner was away, in the page's words. Null: nothing to tell. */
+data class Away(
+    val span: String, val brief: String, val totals: String, val daemon: List<String>, val present: Boolean,
+    val failed: Int, val waiting: Int, val quiet: Int, val sessions: List<AwaySession>,
+) {
+    companion object {
+        fun of(o: JSONObject): Away? {
+            val a = o.optJSONObject("away") ?: return null
+            return Away(
+                a.str("span"), a.str("brief"), a.str("totals"), strings(a.optJSONArray("daemon")), a.optBoolean("present"),
+                a.optInt("failed"), a.optInt("waiting"), a.optInt("quiet"),
+                a.optJSONArray("sessions")?.let { x -> (0 until x.length()).mapNotNull { x.optJSONObject(it) } }.orEmpty().map {
+                    AwaySession(it.str("chat_id"), it.str("title"), it.str("state"), it.str("watch"), it.str("text"), it.str("bad"))
+                },
+            )
+        }
+    }
+}
+
 /** GET /v1/start: what a new session can start with. */
 data class StartModel(val id: String, val name: String)
 data class StartFolder(val path: String, val name: String, val last: Double = 0.0, val home: Boolean = false)

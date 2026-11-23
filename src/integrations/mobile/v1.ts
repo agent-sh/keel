@@ -33,6 +33,9 @@ import { STORE } from "../../providers/image-limits.ts";
 import { Bad, type Checkpoints } from "../../safety/checkpoints.ts";
 import type { FileChange } from "../../safety/shadow.ts";
 import { readsOf } from "../../server/reads.ts";
+import { digestBrief, digestTotals, hms, type Digest } from "../../admin/away.ts";
+import { dur } from "../../admin/timeline-rows.ts";
+import { zoneLabel } from "../../core/clock.ts";
 import { decidePlan, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -62,7 +65,26 @@ export type MobileCtx = Deps & {
   mobile: MobileStore; gate: () => Gate | undefined; changed: () => void; checkpoints?: () => Checkpoints | undefined;
   // The fleet, where the daemon has one: its machines, and a session started on one of them.
   fleetMachines?: () => Promise<any[]>; startFleetSession?: (b: any) => Promise<Response>;
+  // The digest of the owner's last absence and its dismissal (src/server/routes/overview.ts), and the
+  // owner seen this long ago (the phone in use ends an absence, as a page in use does).
+  away?: () => Digest | null; awaySeen?: () => void; ownerSeen?: (idleMs: number) => void;
 };
+
+// The digest as the phone shows it: the span and the totals in words, what the daemon went through,
+// and each session's facts with the part that went wrong apart, as the page's digest says them.
+export function awayOf(d: Digest) {
+  const many = d.spans.length > 1;
+  const at = (ts: number) => hms(ts, d.as_of);
+  const z = zoneLabel(d.as_of);
+  const span = d.present
+    ? `While you were away, ${many ? `${d.spans.length} times between ${at(d.from)} and ${at(d.to)} ${z} (${dur(d.away_ms)} in all)` : `${at(d.from)} to ${at(d.to)} ${z} (${dur(d.away_ms)})`}`
+    : `While you are away, since ${at(d.from)} ${z} (${dur(d.away_ms)})`;
+  return {
+    span, brief: digestBrief(d), totals: digestTotals(d), daemon: d.daemon, present: d.present, from: secs(d.from), to: secs(d.to),
+    failed: d.totals.failed + (d.totals.agents.failed ?? 0), waiting: d.totals.approvals + d.totals.questions, quiet: d.quiet,
+    sessions: d.sessions.map((r) => ({ chat_id: r.id, title: r.title, state: WATCH_LABEL[r.watch], watch: r.watch, text: r.text, ...(r.bad ? { bad: r.bad } : {}) })),
+  };
+}
 
 const urlOrigin = (u: string) => { try { return new URL(u).origin; } catch { return null; } };
 
@@ -937,6 +959,20 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     "/v1/events": { GET: signed((req, dev, _b, srv) => events(req, dev, srv)) },
+    // What happened while the owner was away (the page's digest), and its dismissal: seen on the phone,
+    // it is not shown again there or on the page.
+    "/v1/away": {
+      GET: signed(() => { const d = ctx.away?.(); return json({ away: d ? awayOf(d) : null }); }),
+      DELETE: signed(() => { ctx.awaySeen?.(); return json({ ok: true }); }),
+    },
+    // The owner is at the phone: its last touch this long ago (the end of an absence, as a page's report is).
+    "/v1/presence": {
+      POST: signed(withBody((_r, _d, b) => {
+        if (typeof b.idle_ms !== "number" || !(b.idle_ms >= 0)) return err("give idle_ms: how long ago the owner last touched the app", 400);
+        ctx.ownerSeen?.(b.idle_ms);
+        return json({ ok: true });
+      })),
+    },
     // What a new session can start with: the models (the default first named), the folders this
     // machine's sessions worked in, newest first, and the machines of the fleet that can take one.
     "/v1/start": {

@@ -70,6 +70,15 @@ Approve: each change asks starts it in ask (the one a phone with no screen
 lock offers). Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
+## While you were away
+
+The top of the session list tells what happened while the owner was away
+from the page and the phone: the page's own digest, in one line until opened
+(open by itself when something failed), then what the daemon went through
+and each session in which something happened, the failed one first, its
+failure in red. A row opens its session; Seen dismisses the digest here and
+on the page. Using the app ends an absence, as using a page does.
+
 ## Starting a task
 
 The plus on the session list opens the start sheet: what the session should
@@ -197,6 +206,7 @@ so it proves nothing about who built it.
 | `Wire.kt` | the daemon's shapes and the signed messages, as pure functions |
 | `Feed.kt` | what the app holds of the daemon and how sync answers and stream frames change it, as plain state |
 | `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
+| `ui/Away.kt` | what happened while the owner was away |
 | `ui/Start.kt` | the start sheet: a new session's task, folder, machine and model |
 | `ui/Agents.kt` | a session's agents, as a tree |
 | `ui/Changes.kt` | a session's changes and one file's diff |

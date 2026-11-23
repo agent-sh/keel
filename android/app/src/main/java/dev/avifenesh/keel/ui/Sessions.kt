@@ -94,6 +94,8 @@ fun SessionsScreen() {
     fun create() { error = ""; Ui.starting.value = true }
     val now = nowTick()
     val rows = sessionRows(chats, cards, working)
+    // What happened while the owner was away (read by the Hub each time the phone is level again).
+    val away by Hub.away.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
         Head("Sessions", sub = { ConnLine() }) {
@@ -107,7 +109,7 @@ fun SessionsScreen() {
             return
         }
         if (!synced) { Empty("Reaching the daemon", "Sessions appear as soon as the first sync arrives."); return }
-        SessionList(rows, now)
+        SessionList(rows, now, away = away, onSeen = { Hub.seenAway() })
     }
 }
 
@@ -123,12 +125,17 @@ fun sessionRows(chats: Map<String, Chat>, cards: Map<String, dev.avifenesh.keel.
 
 /** The list: what needs the owner first, then what works, then the rest, pinned first. */
 @Composable
-fun SessionList(rows: List<Row3>, now: Double) {
+fun SessionList(rows: List<Row3>, now: Double, away: dev.avifenesh.keel.Away? = null, onSeen: () -> Unit = {}) {
     val k = k()
     val needs = rows.filter { it.state == State.NEEDS }.sortedByDescending { it.chat.updated }
     val work = rows.filter { it.state == State.WORKING }.sortedBy { it.since ?: it.chat.updated }
     val rest = rows.filter { it.state != State.NEEDS && it.state != State.WORKING }.sortedWith(compareByDescending<Row3> { it.chat.pinned }.thenByDescending { it.chat.updated })
-    LazyColumn(Modifier.fillMaxSize()) {
+    // The digest arrives after the list: a list keeps its place by the row it shows, which would leave the
+    // digest above the screen. At the top, it comes into view.
+    val state = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(away?.span) { if (away != null && state.firstVisibleItemIndex <= 1) state.scrollToItem(0) }
+    LazyColumn(Modifier.fillMaxSize(), state = state) {
+        if (away != null) item(key = "away") { AwayCard(away, onOpen = { Ui.open(it) }, onSeen = onSeen) }
         fun section(label: String, list: List<Row3>, color: androidx.compose.ui.graphics.Color) {
             if (list.isEmpty()) return
             item(key = "h-$label") { SectionLabel(label, list.size, color, Modifier.padding(top = S.sm)) }

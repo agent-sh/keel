@@ -65,9 +65,22 @@ const card = (a: Partial<Approval> & Pick<Approval, "id" | "session_id" | "summa
 let ckpts: Checkpoints | undefined;
 // The fleet as the phone sees it: its machines, and what starting a session on one answers.
 let fleetRows: any[] = [];
+// The owner's last absence as the page's digest has it, and when the phone said the owner was there.
+let awayDigest: any = null;
+const seenAt: number[] = [];
+const T0 = Date.UTC(2026, 10, 23, 12, 0);
+const DIGEST = {
+  from: T0, to: T0 + 2 * 3600_000, spans: [{ from: T0, to: T0 + 2 * 3600_000 }], away_ms: 2 * 3600_000, present: true, as_of: T0 + 2 * 3600_000 + 60_000,
+  sessions: [
+    { id: "s-a", title: "Fix the build", watch: "fail", turns: 2, failed: { provider: 1 }, agents: {}, approvals: 0, questions: 0, parked: 0, cost: 0.12, text: "2 turns ended, 1 failed (provider); $0.12", bad: "1 failed (provider)" },
+    { id: "s-b", title: "Docs", watch: "done", turns: 1, failed: {}, agents: { done: 2 }, approvals: 1, questions: 0, parked: 0, cost: 0.03, text: "1 turn ended; agents: 2 ended; 1 approval waits; $0.03" },
+  ],
+  quiet: 4, totals: { turns: 3, failed: 1, agents: { done: 2 }, approvals: 1, questions: 0, parked: 0, cost: 0.15 }, daemon: ["The daemon went down at 12:40 and came back after 29 s."], daemon_brief: "the daemon went down and came back after 29 s",
+};
 let fleetStart: (b: any) => Response = () => Response.json({ error: "no fleet in this test" }, { status: 409 });
 const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
-  fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b) } as any);
+  fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b),
+  away: () => awayDigest, awaySeen: () => { awayDigest = null; }, ownerSeen: (ms: number) => void seenAt.push(ms) } as any);
 afterAll(() => setSystemTime());
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -392,6 +405,23 @@ async function changedSession() {
   await turn("Add b", () => writeFileSync(join(ws, "b.txt"), "new file\n"), gap(() => writeFileSync(join(ws, "c.txt"), "the owner's\n")), () => {});
   return s;
 }
+
+describe("away", () => {
+  test("the digest of the owner's absence reaches the phone in its words, and seen there it is gone", async () => {
+    awayDigest = DIGEST;
+    const a = (await call("GET", "/v1/away")).body.away;
+    expect(a.span).toMatch(/^While you were away, .* \(2 h\)$/);
+    expect(a.brief).toBe("the daemon went down and came back after 29 s; 3 turns ended, 1 failed; 1 approval waits");
+    expect([a.failed, a.waiting, a.quiet, a.daemon]).toEqual([1, 1, 4, DIGEST.daemon]);
+    expect(a.sessions.map((r: any) => [r.chat_id, r.state, r.bad ?? ""])).toEqual([["s-a", "Failed", "1 failed (provider)"], ["s-b", "Done", ""]]);
+    expect((await call("DELETE", "/v1/away")).status).toBe(200);
+    expect((await call("GET", "/v1/away")).body.away).toBeNull();
+    // The owner touching the phone ends an absence, as a page in use does.
+    expect((await call("POST", "/v1/presence", { idle_ms: 4000 })).status).toBe(200);
+    expect(seenAt.at(-1)).toBe(4000);
+    expect((await call("POST", "/v1/presence", {})).status).toBe(400);
+  });
+});
 
 describe("start", () => {
   test("a new session starts as the sheet chose: model, folder, machine and its first message", async () => {
@@ -899,6 +929,7 @@ describe("the wire contract", () => {
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
     changes: [["turns", "change_turn"], ["session", "file_change"]], change_turn: [["files", "file_change"]],
     start: [["models", "start_model"], ["folders", "start_folder"], ["machines", "start_machine"]],
+    away: [["away.sessions", "away_session"]],
   };
   // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
   function broken(shape: string, v: any, seen = new Set<string>(), out: string[] = []) {
@@ -991,6 +1022,9 @@ describe("the wire contract", () => {
     const listing = providers.models;
     (providers as any).models = async () => [{ id: "fx:default", name: "Default model" }, { id: "fx:other" }];
     take("start", (await call("GET", "/v1/start")).body);
+    awayDigest = DIGEST;
+    take("away", (await call("GET", "/v1/away")).body);
+    awayDigest = null;
     (providers as any).models = listing;
     fleetRows = [];
     take("error", (await call("POST", `/v1/chats/${s.id}/messages`, { text: "" })).body);

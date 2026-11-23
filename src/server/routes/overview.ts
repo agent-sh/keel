@@ -15,7 +15,7 @@
 // DELETE /api/away   the owner has seen the digest: it is not shown again.
 // Content-free: titles, states, classes, counts, durations and ids.
 import { wentDownAt } from "../../admin/life.ts";
-import { awayGap, bindPresence, digest, digestText, Presence, TICK_MS, type AwayWindow } from "../../admin/away.ts";
+import { awayGap, bindPresence, digest, digestText, Presence, TICK_MS, type AwayWindow, type Digest } from "../../admin/away.ts";
 import { daemonFacts } from "../../admin/daemon-facts.ts";
 import { zonedStamp } from "../../core/clock.ts";
 import { bindOverview, DEFAULT_SINCE, overview, overviewText, tooFarBack, type From } from "../../admin/overview.ts";
@@ -27,6 +27,11 @@ import { allPendingQuestions } from "../../tools/interact.ts";
 import type { RouteModule } from "../app.ts";
 
 const bad = (error: string, status = 400) => Response.json({ error }, { status });
+
+// Set when the routes load: the digest of the owner's last absence (or null when there is none, or
+// nothing happened in it), and its dismissal. The phone reads the same digest the page does.
+export let awayNow: (() => Digest | null) | undefined;
+export let awaySeen: (() => void) | undefined;
 
 export const overviewRoutes: RouteModule = ({ store, engine }) => {
   // The same "now" the timeline tells; the state word is this report's own read, so it is not read again a row.
@@ -55,6 +60,16 @@ export const overviewRoutes: RouteModule = ({ store, engine }) => {
     for (const q of allPendingQuestions()) for (const id of new Set([q.session_id, q.parent_id])) if (id) n[id] = (n[id] ?? 0) + 1;
     return n;
   };
+  awayNow = () => {
+    const now = Date.now();
+    const w = presence.window(now);
+    if (!w) return null;
+    const d = digest(overview(from, { since: w.spans[0]!.from, until: w.spans.at(-1)!.to + 1, spans: w.spans.map((s) => [s.from, s.to + 1] as [number, number]), max: 200 }), w, { daemon: daemonFacts(store.db, w.spans), questions: asked_of() });
+    // Absences in which nothing happened leave nothing to tell: they go once the owner is back.
+    if (!d && w.present) presence.dismiss();
+    return d;
+  };
+  awaySeen = () => presence.dismiss();
   const text = (body: string) => new Response(body + "\n", { headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
 
   return {

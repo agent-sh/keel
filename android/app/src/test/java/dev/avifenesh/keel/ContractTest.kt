@@ -109,6 +109,8 @@ class ContractTest {
         "me" to { o -> Me.of(o).toString() },
         "upload" to { o -> Upload.of(o).toString() },
         "start" to { o -> Start.of(o).toString() },
+        "away" to { o -> Away.of(o).toString() },
+        "away_session" to { o -> Away.of(JSONObject().put("away", JSONObject().put("sessions", JSONArray().put(o))))!!.sessions.toString() },
         "start_model" to { o -> Start.of(JSONObject().put("models", JSONArray().put(o))).models.toString() },
         "start_folder" to { o -> Start.of(JSONObject().put("folders", JSONArray().put(o))).folders.toString() },
         "start_machine" to { o -> Start.of(JSONObject().put("machines", JSONArray().put(o))).machines.toString() },
