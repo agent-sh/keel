@@ -92,6 +92,22 @@ if (host) {
     if (inbox) dispatchEvent(new Event("keel-open-inbox"));
   });
 
+  // The app's own engine collects its script heap far later than a browser does, and holds
+  // what it has not collected for minutes after the page went quiet. Where the app lets the
+  // page ask for a collection (`gc`: its engine alone gives one), the page asks when the owner
+  // has turned to another window for a few seconds, at most once a minute: nobody is looking
+  // at the pause, and the memory is the system's again.
+  const collect = (globalThis as { gc?: () => void }).gc;
+  if (typeof collect === "function") {
+    let wait: ReturnType<typeof setTimeout> | undefined;
+    let last = 0;
+    addEventListener("blur", () => {
+      clearTimeout(wait);
+      wait = setTimeout(() => { if (Date.now() - last >= 60_000) { last = Date.now(); collect(); } }, 5_000);
+    });
+    addEventListener("focus", () => clearTimeout(wait));
+  }
+
   if (soloWindow) setUI({ sidebar: false });
 
   registerCommand({

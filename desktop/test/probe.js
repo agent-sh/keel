@@ -5,13 +5,20 @@
 (() => {
   // (The measuring channel of whichever engine draws the page.)
   const say = (s) => { try { if (window.__keelProbe) window.__keelProbe(s); else window.webkit.messageHandlers.probe.postMessage(s); } catch (e) {} };
+  // What goes wrong in the page is said too (a script or a style that did not load, an error of
+  // the page's own): a page that came back empty is then not a riddle.
+  addEventListener("error", (e) => {
+    const t = e.target;
+    say(`ERR ${t && t !== window ? `${t.tagName} ${t.src || t.href || ""}` : `${e.message} ${e.filename}:${e.lineno}`}`.slice(0, 300));
+  }, true);
+  addEventListener("unhandledrejection", (e) => say(`ERR rejection ${String((e.reason && e.reason.message) || e.reason).slice(0, 200)}`));
   let shown = false;
   let raw = "";
   let went = false;
   let frame = null;
   setInterval(async () => {
     const at = document.activeElement;
-    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")} win=${window.keelShell ? window.keelShell.window : "-"} inbox=${!!document.querySelector("[data-testid=inbox-panel]")} keys=${!!window.keelShell?.can?.shortcuts}`);
+    say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length} draft=${(document.querySelector("textarea") || { value: "" }).value.length} note=${!!document.querySelector("[data-testid=shell-note]")} win=${window.keelShell ? window.keelShell.window : "-"} inbox=${!!document.querySelector("[data-testid=inbox-panel]")} keys=${!!window.keelShell?.can?.shortcuts} gc=${typeof globalThis.gc}`);
     const m = location.pathname.match(/^\/s\/([\w-]+)$/);
     if (!m || shown) return;
     const r = await fetch(`/api/sessions/${m[1]}/artifacts`).then((x) => x.json()).catch(() => null);

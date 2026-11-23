@@ -208,6 +208,8 @@ check "the app's window opens" "wait_for 30 '[ \"\$(windows)\" = 1 ]'"
 ENGINE=$(last engine | sed 's/.*"name":"\([a-z]*\)".*/\1/')
 echo "# engine: $ENGINE $(last qt | sed 's/.*"v":\({[^}]*}\).*/\1/')"
 check "the shell found the daemon and attached to it" "wait_for 20 'last link | grep -q Up' && api /api/shell | grep -q '\"attached\":true'"
+# (The Qt engine holds what its script heap has not collected for minutes: its page is let to ask for a collection.)
+if [ "$ENGINE" = qt ]; then check "the page may ask the engine for a collection, to do when the owner turns away" "wait_for 20 \"said 'AT ' | grep -q ' gc=function'\""; fi
 check "the tray host has the app's mark" "wait_for 10 \"grep -q 'ITEM ' '$D/tray-host.out'\""
 sleep 3
 read -r X Y W H _ <<< "$(geometry)"

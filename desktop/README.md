@@ -358,7 +358,10 @@ names the Qt engine's program when it is not beside the app.
   with several long panes streaming for half an hour that process grows to
   less than twice its size and levels off, and gives most of it back when
   the page has been quiet for some minutes. What grows is the engine's own
-  objects for the documents, not pictures or the graphics memory.
+  objects for the documents, not pictures or the graphics memory. So that
+  the memory comes back sooner than that, the app lets its page ask the
+  engine for a collection, and the page asks when you have turned to
+  another window for a few seconds (at most once a minute).
 - Under Wayland with an NVIDIA driver as the desktop's own, Qt's engine
   draws its pages with Vulkan (it shares no buffers with that driver), and a
   window drawn with OpenGL shows none of it: the page works and the window
@@ -381,6 +384,12 @@ names the Qt engine's program when it is not beside the app.
   and this engine reads the blink once, as a page starts, so it cannot be
   rested after the last key as the desktop's own fields are.
   `KEEL_DESKTOP_CARET_BLINK=1` keeps the desktop's blink.
+- A page of the Qt engine whose process ends is given a new page of the
+  engine's and loaded where it was. One whose process ends while it is
+  still loading can come back empty, or cut off from the app (seen with two
+  windows' pages ended together a moment after the drawing program
+  started): the app expects a reloaded page's first word within ten
+  seconds, and makes the page anew when none came, twice at most.
 - A session's own window that you close is kept by the Qt program, hidden
   and empty, for the next one you open: this engine does not give back the
   buffers of a page whose process went. Its memory comes back when it has

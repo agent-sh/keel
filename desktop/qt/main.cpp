@@ -82,6 +82,10 @@
 // inside Qt lets it grow many times further than a browser does before it collects, and the
 // process holds all of that; the page's live heap is a small part of this bound, and the bound
 // costs no frames. (QTWEBENGINE_CHROMIUM_FLAGS with a --js-flags of the owner's own is left as it is.)
+// The engine also gives what it collected back to the system only minutes after the page went
+// quiet, where a browser does it in seconds: the page is let to ask for a collection (`gc`),
+// which it does when the owner has turned to another window (ui/src/features/shell.ts). Any
+// script of the page's process can call it; it collects, and does nothing else.
 static const int HEAP_MB = 256;
 
 // A file the page offers is kept when the owner pressed a key or a button in that window this
@@ -1482,7 +1486,7 @@ int main(int argc, char **argv)
             ::fprintf(stderr, "keel-desktop-qt: not taken from the environment (start the app with --devtools for the inspector): %s\n", qPrintable(dropped.join(' ')));
     }
     if (!flags.contains("--js-flags"))
-        flags += " --js-flags=--max-old-space-size=" + QByteArray::number(HEAP_MB);
+        flags += " --js-flags=--max-old-space-size=" + QByteArray::number(HEAP_MB) + ",--expose-gc";
     // A frame of content gets the keyboard by the owner's own act in it, never by asking: the
     // engine refuses a frame of another origin (a sandboxed one is) the focus it was not given.
     // Without this a frame that asks in a loop takes every key the owner types into the page.
