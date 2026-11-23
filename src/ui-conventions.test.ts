@@ -266,9 +266,18 @@ function handMade(list: Src[]): string[] {
 const REM_PX = 16;
 const KEYWORD_PX: Record<string, number> = { thin: 1, medium: 3, thick: 5 };
 // The lengths of a value in px, in their order: what a function holds (a color, a var()) is not a length.
+// A calc(), min(), max() or clamp() is a length too: worked out with a var() as nothing (the widest a
+// min, a max or a clamp can be is what counts).
+const LEN = /(?<![\w.-])(-?\d*\.?\d+)(px|rem|em)(?![\w%.-])/g;
+function worked(name: string, body: string): string {
+  const px = (x: string) => x.replace(LEN, (_, n, u) => String(u === "px" ? Number(n) : Number(n) * REM_PX));
+  const one = (x: string) => { const e = px(x).trim(); return /^[\d.\s+\-*/()]+$/.test(e) ? Number(new Function(`return (${e})`)()) : NaN; };
+  const n = name === "calc" ? one(body) : Math.max(...body.split(",").map(one));
+  return Number.isFinite(n) ? ` ${Math.abs(n)}px ` : " ";
+}
 function lengthsPx(v: string): number[] {
-  let bare = v;
-  for (let was = ""; was !== bare;) { was = bare; bare = bare.replace(/[\w-]*\([^()]*\)/g, " "); }
+  let bare = v.replace(/var\([^()]*\)/g, "0px");
+  for (let was = ""; was !== bare;) { was = bare; bare = bare.replace(/([\w-]*)\(([^()]*)\)/g, (_, name: string, body: string) => (/^(calc|min|max|clamp)$/.test(name) ? worked(name, body) : " ")); }
   const out: number[] = [];
   for (const m of bare.matchAll(/(?<![\w.-])(-?\d*\.?\d+)(px|rem|em)?(?![\w%.-])|\b(thin|medium|thick)\b/g)) {
     if (m[3]) { out.push(KEYWORD_PX[m[3]]!); continue; }
@@ -613,7 +622,8 @@ test("each check refuses what it is for", () => {
     ".k-step-head { border-left: 3px solid red; }", ".k-step .k-x { border-left: 4px solid red; }", ".k-step, .k-y { border-left: 4px solid red; }",
     ".k-d { border-left: 2px solid red; }", ".k-e { box-shadow: inset 0 0 0 1px var(--line), 0 4px 14px red; }", ".k-f { border-left: 0.125rem solid red; }",
     ".k-g .k-step { border-left: 3px solid red; }", ".k-step[data-state=fail] { border-left-width: 0.1875rem; }", ".k-step:hover { box-shadow: inset 3px 0 0 red; }",
-  ].join("\n"), "transcript.css"), tsx('<div className="border-l-[3px] border-l-4 md:border-s-[0.25rem] border-l-2 border-l border-l-[1px]" />', "components/Words.tsx"))).toHaveLength(9);
+    ".k-h { border-left: calc(1px + 0.125rem) solid red; }", ".k-i { border-left-width: max(1px, 0.25rem); }", ".k-j { border-left: calc(var(--w) + 1px) solid oklch(0.5 0.1 27); }",
+  ].join("\n"), "transcript.css"), tsx('<div className="border-l-[3px] border-l-4 md:border-s-[0.25rem] border-l-2 border-l border-l-[1px] border-l-[calc(1px+0.25rem)]" />', "components/Words.tsx"))).toHaveLength(12);
   expect(twiceDrawn([...css(".k-dock { display: none; }"), ...css(".k-dock { display: flex; }\n.k-dock, .k-other { gap: 0; }\n@media (max-width: 767px) { .k-dock { gap: 0; } }", "styles.css")])).toEqual(["styles.css:1: .k-dock (also in bridge.css)"]);
   expect(pageMotion(tsx('<div className="fixed inset-0 bg-black/20 duration-(--dur-move) bg-white" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="[font-size:1.1rem] font-semibold" />'))).toHaveLength(1);

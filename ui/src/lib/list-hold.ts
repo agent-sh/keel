@@ -170,10 +170,26 @@ export function reanchor() {
   const row = anchor ? ROW_IN(anchored, anchor.id) : null;
   anchor = row && anchor ? { id: anchor.id, top: row.getBoundingClientRect().top } : null;
 }
+// What the list scrolls in: the list itself, or on a phone the box above the list's foot, where the
+// list scrolls with what stands above it (bridge.css, .k-list-scroll). Decided again when the screen
+// crosses the phone's width (usePhoneWidth).
+const PHONE = "(max-width: 767px)";
+export const scrollerOf = (nav: HTMLElement | null) => (nav && getComputedStyle(nav).overflowY === "visible" ? nav.closest<HTMLElement>(".k-list-scroll") ?? nav : nav);
+export const usePhoneWidth = () => useSyncExternalStore(
+  (f) => { const m = matchMedia(PHONE); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },
+  () => matchMedia(PHONE).matches,
+);
+
+// The rows stay where they are around the hand's row. What scrolls is what the list scrolls in (its own
+// box at a desk, the box with the tabs and the find above it on a phone): its position, its box and its
+// heights are read there, and its scroll is listened to there. The padding that makes up what it cannot
+// scroll to stays on the list.
 export function useAnchor(list: { current: HTMLElement | null }) {
+  const narrow = usePhoneWidth();
   useEffect(() => {
     const nav = list.current;
-    if (!nav) return;
+    const sc = scrollerOf(nav);
+    if (!nav || !sc) return;
     anchored = nav;
     let self = 0; // the scroll events this makes itself
     let aimed = 0;
@@ -198,20 +214,20 @@ export function useAnchor(list: { current: HTMLElement | null }) {
       const row = rowAt(anchor.id);
       if (!row) { anchor = null; return pad(nav, 0, 0); }
       if (performance.now() - ownMove < OWN_MS) return take(row);
-      const box = nav.getBoundingClientRect();
-      // Where the row is in the list's content (its padding aside), and where it has to be in the list's box.
-      const at = row.getBoundingClientRect().top - box.top + nav.scrollTop - padTop;
+      const box = sc.getBoundingClientRect();
+      // Where the row is in the scrolled content (the list's padding aside), and where it has to be in the box.
+      const at = row.getBoundingClientRect().top - box.top + sc.scrollTop - padTop;
       const want = anchor.top - box.top;
       const k = at - want;
-      // The list scrolls by whole pixels: what is left of a part of one is made up above the rows.
+      // The box scrolls by whole pixels: what is left of a part of one is made up above the rows.
       const scroll = k < 0 ? 0 : Math.ceil(k - 0.01), top = scroll - k;
-      const content = nav.scrollHeight - padTop - padBottom;
-      const bottom = Math.max(0, scroll + nav.clientHeight - content - top);
-      if (Math.abs(top - padTop) < 0.05 && Math.abs(bottom - padBottom) < 0.5 && scroll === Math.round(nav.scrollTop)) return;
+      const content = sc.scrollHeight - padTop - padBottom;
+      const bottom = Math.max(0, scroll + sc.clientHeight - content - top);
+      if (Math.abs(top - padTop) < 0.05 && Math.abs(bottom - padBottom) < 0.5 && scroll === Math.round(sc.scrollTop)) return;
       pad(nav, top, bottom);
-      const was = nav.scrollTop;
-      nav.scrollTop = scroll;
-      if (nav.scrollTop !== was) self++;
+      const was = sc.scrollTop;
+      sc.scrollTop = scroll;
+      if (sc.scrollTop !== was) self++;
     };
     const seen = new MutationObserver(settle);
     seen.observe(nav, { childList: true, subtree: true, characterData: true });
@@ -219,7 +235,7 @@ export function useAnchor(list: { current: HTMLElement | null }) {
     nav.addEventListener("pointerenter", aim, { passive: true });
     nav.addEventListener("pointerleave", leave);
     nav.addEventListener("focusin", focus);
-    nav.addEventListener("scroll", again, { passive: true });
+    sc.addEventListener("scroll", again, { passive: true });
     addEventListener("resize", again);
     return () => {
       seen.disconnect();
@@ -227,11 +243,11 @@ export function useAnchor(list: { current: HTMLElement | null }) {
       nav.removeEventListener("pointerenter", aim);
       nav.removeEventListener("pointerleave", leave);
       nav.removeEventListener("focusin", focus);
-      nav.removeEventListener("scroll", again);
+      sc.removeEventListener("scroll", again);
       removeEventListener("resize", again);
-      if (anchored === nav) { anchored = null; anchor = null; within = false; padTop = padBottom = 0; }
+      if (anchored === nav) { anchored = null; anchor = null; within = false; pad(nav, 0, 0); }
     };
-  }, [list]);
+  }, [list, narrow]);
 }
 
 // Whom each count on the line above the list names (Sidebar.tsx keeps them, also

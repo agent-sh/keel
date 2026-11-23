@@ -12,13 +12,13 @@
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
 import { Archive, ArchiveRestore, ArrowDown, Bug, Columns2, Folder, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
-import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
 import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
-import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, useActed, useAnchor, useCounts, useHand, useUnderLook, type Hand, type Kind } from "../lib/list-hold.ts";
+import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, scrollerOf, useActed, useAnchor, useCounts, useHand, usePhoneWidth, useUnderLook, type Hand, type Kind } from "../lib/list-hold.ts";
 import { around, folders, held as heldList, pinnedOrder, tally } from "../lib/list-order.ts";
 import { countedState, withAgentFailures } from "../lib/home.ts";
 import { focusAsk } from "../lib/asks.ts";
@@ -462,11 +462,8 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
 // or goes: what shrinks is the room under them. A press opens the session, as its row does.
 // Another machine's part of the list, when it begins below what the list shows: its name and count at
 // the list's foot, a press away (a long list of this machine's sessions hid that there are others).
-// What the list scrolls in: the list itself, or on a phone the box above the list's foot, where the
-// list scrolls with what stands above it (bridge.css, .k-list-scroll). The observers that say what is
-// out of view watch that, and look again when the screen crosses the phone's width.
-const PHONE = "(max-width: 767px)";
-const scrollerOf = (nav: HTMLElement | null) => (nav && getComputedStyle(nav).overflowY === "visible" ? nav.closest<HTMLElement>(".k-list-scroll") ?? nav : nav);
+// The observers that say what is out of view watch what the list scrolls in (scrollerOf, in
+// lib/list-hold.ts), and look again when the screen crosses the phone's width or the text size changes.
 // What stands over the top of that box: on a phone the find stays there as the rows scroll under it
 // (bridge.css), so a row behind it is out of view. Its height and the room around it, as a root margin.
 const coverOf = (root: HTMLElement) => {
@@ -475,10 +472,6 @@ const coverOf = (root: HTMLElement) => {
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
   return `${-Math.ceil(find.offsetHeight + 0.5 * rem)}px 0px 0px 0px`;
 };
-const usePhoneWidth = () => useSyncExternalStore(
-  (f) => { const m = matchMedia(PHONE); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },
-  () => matchMedia(PHONE).matches,
-);
 
 function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }; machines: { machine: string; count: number }[] }) {
   const key = machines.map((m) => `${m.machine}:${m.count}`).join(" ");
@@ -518,6 +511,8 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   const key = ids.join(" ");
   const [found, setOut] = useState<string[]>([]);
   const narrowScreen = usePhoneWidth();
+  // The find's height, which the observer leaves out on a phone, goes with the text size.
+  const scale = useUI((x) => x.scale);
   useEffect(() => {
     const root = scrollerOf(nav.current);
     if (!root || !ids.length) return setOut([]);
@@ -542,22 +537,54 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     const mo = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(watch); });
     mo.observe(root, { childList: true, subtree: true });
     return () => { io.disconnect(); mo.disconnect(); cancelAnimationFrame(frame); };
-  }, [key, nav, narrowScreen]);
+  }, [key, nav, narrowScreen, scale]);
   // While the hand is on the list the strip stands as it was: it never grows over the row under the pointer.
   const held = useContext(HandCtx).held;
   const kept = useRef(found);
   if (!held) kept.current = found;
   const out = kept.current.filter((id) => ids.includes(id));
+  // As many names as the strip's room holds, and the rest behind "+N": nothing in it scrolls out of
+  // sight. Counted down before the frame is painted, from the most (STRIP_MOST) each time what it
+  // names or its room changes.
+  const box = useRef<HTMLDivElement>(null);
+  const most = Math.min(out.length, STRIP_MOST);
+  const outKey = out.join(" ");
+  const [fit, setFit] = useState({ key: "", n: most });
+  const [room, setRoom] = useState("");
+  const n = fit.key === `${outKey}|${room}` ? fit.n : most;
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const over = el.scrollHeight > el.clientHeight + 1;
+    setFit((was) => {
+      const k = `${outKey}|${room}`;
+      const from = was.key === k ? was.n : most;
+      const next = over && from > 0 ? from - 1 : from;
+      return was.key === k && was.n === next ? was : { key: k, n: next };
+    });
+  }, [outKey, room, n, most]);
+  // Its room: its width, and the height of the rail's body its most is a part of (never its own
+  // height, which follows what it holds).
+  const shown = out.length > 0;
+  useEffect(() => {
+    const el = box.current, body = el?.closest<HTMLElement>(".k-rail-body");
+    if (!el || !body) return;
+    const ro = new ResizeObserver(() => setRoom(`${Math.round(el.getBoundingClientRect().width)}x${Math.round(body.getBoundingClientRect().height)}`));
+    ro.observe(el);
+    ro.observe(body);
+    return () => ro.disconnect();
+  }, [shown, scale]);
   if (!out.length) return null;
   const need = new Set(counts.need);
+  const rest = out.slice(n);
   return (
-    <div className="k-need-strip" data-testid="need-strip" role="group" aria-label="Out of view in the list: what needs you or failed">
-      {out.slice(0, STRIP_MOST).map((id) => (
+    <div ref={box} className="k-need-strip" data-testid="need-strip" role="group" aria-label="Out of view in the list: what needs you or failed">
+      {out.slice(0, n).map((id) => (
         <button key={id} type="button" className="k-need-name" data-session={id} data-watch={need.has(id) ? "need" : "fail"} title={`${title(id)}: ${need.has(id) ? STATE_WORD.need.toLowerCase() : STATE_WORD.fail.toLowerCase()}. Open it`} onClick={() => open(id)}>
           <Mark w={need.has(id) ? "need" : "fail"} /><span className="k-need-title">{title(id)}</span>
         </button>
       ))}
-      {out.length > STRIP_MOST && <button type="button" className="k-need-name k-need-more" data-testid="need-strip-more" title={out.slice(STRIP_MOST).map(title).join(", ")} onClick={() => jumpNext(need.has(out[STRIP_MOST]!) ? "need" : "fail")}>+{out.length - STRIP_MOST}</button>}
+      {rest.length > 0 && <button type="button" className="k-need-name k-need-more" data-testid="need-strip-more" title={rest.map(title).join(", ")} onClick={() => jumpNext(need.has(rest[0]!) ? "need" : "fail")}>+{rest.length}</button>}
     </div>
   );
 }

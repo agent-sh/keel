@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test, type Page } from "./isolate.ts";
+import { expect, test, webkit, type APIRequestContext, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: on a phone the conversation has the screen. The message box rests
@@ -280,8 +280,8 @@ test.describe("on a phone", () => {
       // Failures every few rows of a list longer than the screen: as the list scrolls, one is out of
       // view (so the foot names something) while another stands where the foot is.
       const failed: string[] = [];
-      for (let i = 1; i <= 20; i++) {
-        if (i % 4 === 1) failed.push(await make(`List ${tag} failed ${i}`, "script:billing"));
+      for (let i = 1; i <= 24; i++) {
+        if (i % 3 === 1) failed.push(await make(`List ${tag} failed ${i}`, "script:billing"));
         else await make(`List ${tag} filler ${i}`, "script:say Done.");
       }
       for (const id of made) await expect.poll(() => ended(id), { timeout: 60_000 }).toBe(true);
@@ -337,6 +337,15 @@ test.describe("on a phone", () => {
           const clear = b.top >= v.top + 1 && b.bottom <= v.bottom - 1 && hit && !under;
           if (clear && named.has(id)) out.push(`${where}: in view, named`);
         }
+        // Each name the strip shows is inside it, whole: none scrolls out of its sight.
+        const strip = document.querySelector<HTMLElement>('[data-testid="need-strip"]');
+        if (strip) {
+          const s = strip.getBoundingClientRect();
+          for (const b of strip.querySelectorAll<HTMLElement>("button")) {
+            const r = b.getBoundingClientRect();
+            if (r.top < s.top - 0.5 || r.bottom > s.bottom + 0.5) out.push(`"${b.textContent}" outside the strip (${Math.round(r.top)}..${Math.round(r.bottom)} in ${Math.round(s.top)}..${Math.round(s.bottom)})`);
+          }
+        }
         return out;
       }, failed);
       for (let y = 0; y <= max + 40; y += 40) {
@@ -349,7 +358,97 @@ test.describe("on a phone", () => {
       }
       await expect(page.getByTestId("need-strip")).toBeVisible();
       await shoot(page, "phone-list-foot");
+      // A short screen (a smaller phone, or the keyboard up): the strip holds fewer names, and the
+      // rest are behind its "+N".
+      await page.setViewportSize({ width: 390, height: 600 });
+      for (const y of [0, Math.round(max / 2)]) {
+        await current.evaluate((r, y) => {
+          let el: HTMLElement | null = r.parentElement;
+          while (el && !(/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight)) el = el.parentElement;
+          if (el) el.scrollTop = y;
+        }, y);
+        await expect.poll(unseen, { timeout: 3000, message: `at ${y} px of the scroll, 600 px tall` }).toEqual([]);
+      }
+      await shoot(page, "phone-list-foot-short");
+      // A bigger text size: the find is taller, and a row behind it is still out of view and named.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.keyboard.press("Control+Equal");
+      await page.keyboard.press("Control+Equal");
+      await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim())).toBe("1.2");
+      const { max: big } = await scroller();
+      for (let y = 0; y <= big + 40; y += 40) {
+        await current.evaluate((r, y) => {
+          let el: HTMLElement | null = r.parentElement;
+          while (el && !(/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight)) el = el.parentElement;
+          if (el) el.scrollTop = y;
+        }, y);
+        await expect.poll(unseen, { timeout: 3000, message: `at ${y} px of the scroll, text at 120%` }).toEqual([]);
+      }
+      // The page lets the browser resize it for the keyboard, so the foot stands above the keyboard.
+      expect(await page.locator('meta[name="viewport"]').getAttribute("content")).toContain("interactive-widget=resizes-content");
+    } finally {
+      await page.evaluate(() => localStorage.removeItem("keel.textScale")).catch(() => {});
+      for (const id of made) await request.delete(`/api/sessions/${id}`);
+    }
+  });
+
+  // Feature: on a phone the open session's row keeps its place on the screen while sessions arrive
+  // above it in the list, and the list is padded for none of them: its box scrolls for them (all but
+  // a part of a pixel, made up above the rows). In Chromium and in WebKit (whose
+  // scroll does not anchor by itself).
+  const arrivals = async (page: Page, request: APIRequestContext) => {
+    const tag = Math.random().toString(36).slice(2, 6);
+    const made: string[] = [];
+    const make = async (title: string) => {
+      const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title } })).json();
+      made.push(session.id);
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:say Done." } });
+      return session.id as string;
+    };
+    const ended = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "turn_end");
+    try {
+      for (let i = 1; i <= 16; i++) await make(`Anchor ${tag} ${i}`);
+      for (const id of made) await expect.poll(() => ended(id), { timeout: 60_000 }).toBe(true);
+      const target = made[8]!;
+      await page.goto(`/s/${target}`);
+      await page.getByRole("button", { name: "All sessions" }).first().tap();
+      const row = page.locator(`[data-testid="session-list"] [data-testid="session-row"][data-session="${target}"]`);
+      await expect(row).toBeInViewport();
+      const at = () => page.evaluate((id) => {
+        const nav = document.querySelector<HTMLElement>('[data-testid="session-list"]')!;
+        const r = nav.querySelector<HTMLElement>(`[data-testid="session-row"][data-session="${id}"]`);
+        const rows = [...nav.querySelectorAll<HTMLElement>('[data-testid="session-row"]')].map((x) => x.dataset.session);
+        return { top: r ? Math.round(r.getBoundingClientRect().top) : null, padTop: nav.style.paddingTop, padBottom: nav.style.paddingBottom, above: rows.slice(0, rows.indexOf(id)) };
+      }, target);
+      const before = await at();
+      const fresh: string[] = [];
+      for (let i = 1; i <= 3; i++) {
+        const id = await make(`Anchor ${tag} arrival ${i}`);
+        fresh.push(id);
+        await expect.poll(() => ended(id), { timeout: 60_000 }).toBe(true);
+        await expect.poll(async () => (await at()).above.includes(id), { timeout: 10_000, message: `arrival ${i} is drawn above the open row` }).toBe(true);
+        await expect.poll(async () => { const now = await at(); return { top: now.top, padTop: parseFloat(now.padTop || "0") < 1, padBottom: parseFloat(/([\d.]+)px/.exec(now.padBottom)?.[1] ?? "0") < 1 }; }, { timeout: 5000, message: `after arrival ${i}` }).toEqual({ top: before.top, padTop: true, padBottom: true });
+      }
+      await shoot(page, "phone-list-arrivals");
     } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  };
+  test("the open row keeps its place as sessions arrive above it", async ({ page, request }) => {
+    test.setTimeout(180_000);
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    await arrivals(page, request);
+  });
+  test("the open row keeps its place as sessions arrive above it, in WebKit", async ({ request, baseURL }) => {
+    test.setTimeout(180_000);
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    test.skip(!existsSync(webkit.executablePath()), "needs WebKit: npx playwright install webkit");
+    const browser = await webkit.launch({ headless: true });
+    try {
+      const ctx = await browser.newContext({ baseURL, viewport: { width: 390, height: 844 }, hasTouch: true,
+        storageState: { cookies: [], origins: [{ origin: new URL(baseURL!).origin, localStorage: [{ name: "keel.focus", value: "true" }] }] } });
+      await arrivals(await ctx.newPage(), request);
+    } finally { await browser.close(); }
   });
 });
 
