@@ -10,6 +10,8 @@ import { ownEnv } from "../../test/env.ts";
 import { Store } from "../core/store.ts";
 import { startJob } from "../tools/jobs.ts";
 import { Worktrees } from "../worktree/manager.ts";
+import { Overlaps } from "../worktree/overlap-scan.ts";
+import { bindLedger, record, repoOf, treeOf, unbindLedger } from "../checks/ledger.ts";
 import { cmd } from "./leftover-rules.ts";
 import * as leftovers from "./leftovers.ts";
 
@@ -221,7 +223,7 @@ test("the worktree Keel made is kept and listed with uncommitted work, an untrac
   // Uncommitted work.
   const d = await keelMade("own-dirty");
   writeFileSync(join(d.wt.path, ".gitignore"), "changed\n");
-  expect(await d.own()).toBe(`\n\nIts work is on branch ${d.wt.branch} in the worktree ${d.wt.path}: 0 commits over main, 1 uncommitted file. Review and merge it from there (git merge ${d.wt.branch}).`);
+  expect(await d.own()).toStartWith(`\n\nIts work is on branch ${d.wt.branch} in the worktree ${d.wt.path}: 0 commits over main, 1 uncommitted file. Review and merge it from there (git merge ${d.wt.branch}).\nTip: `);
   expect(existsSync(d.wt.path)).toBe(true);
   // An untracked file, where the owner's git does not show untracked files.
   const u = await keelMade("own-untracked");
@@ -417,3 +419,45 @@ test("in the daemon's own environment (a cgroup scope where the user manager giv
   const r = run("own", 0, { ...process.env });
   expectSettled(r);
 }, 120_000);
+
+// What landing needs, on lines of their own under the work note: the tip, the base's commits it lacks, the
+// forecast's conflict with the base, and the named checks that passed on its files as they are.
+test("the work note says the tip, the commits behind, the conflict with the base and the checks passed on its tree", async () => {
+  const k = await keelMade("land-conflict");
+  new Overlaps(k.store, { changed: () => {}, failed: (e) => { throw e; } });
+  bindLedger(k.store);
+  try {
+    writeFileSync(join(k.r, "a.txt"), "base\n");
+    git(k.r, "add", "-A");
+    git(k.r, "commit", "-qm", "a");
+    git(k.wt.path, "merge", "-q", "--ff-only", "main");
+    mkdirSync(join(k.wt.path, ".keel"));
+    writeFileSync(join(k.wt.path, ".keel", "checks.json"), JSON.stringify({ checks: { typecheck: { run: "tsc -p ." }, unit: { run: "bun test", args: true } } }));
+    writeFileSync(join(k.wt.path, "a.txt"), "branch\n");
+    git(k.wt.path, "add", "-A");
+    git(k.wt.path, "commit", "-qm", "branch side");
+    writeFileSync(join(k.r, "a.txt"), "main\n");
+    git(k.r, "commit", "-qam", "main side");
+    // typecheck passed on the branch's files; unit ran on one file only and failed on an older tree.
+    const repo = repoOf(k.wt.path)!;
+    const tree = (await treeOf(repo))!.tree!;
+    const at = Date.now();
+    const run = { dir: ".", repo: repo.scope, head: null, session_id: k.s.id, by: "agent" as const, exit: 0, pass: null, fail: null, started: at, ended: at, log: null, from_run: null, top: repo.top };
+    record({ ...run, name: "typecheck", command: "tsc -p .", tree, result: "pass" });
+    record({ ...run, name: "unit", command: "bun test src/x", tree, result: "pass" });
+    record({ ...run, name: "unit", command: "bun test", tree: "0".repeat(40), result: "fail" });
+    const tip = git(k.wt.path, "rev-parse", "HEAD").trim();
+    expect(await k.own()).toEndWith(`(git merge ${k.wt.branch}).\nTip: ${tip}\nBehind main: 1 commit\nConflicts with main: yes, 1 file: a.txt\nChecks passed on this tree: typecheck, unit (\`bun test src/x\`)`);
+    // A clean branch merges clean; uncommitted files are said to be outside the merge.
+    const c = await keelMade("land-clean");
+    new Overlaps(c.store, { changed: () => {}, failed: (e) => { throw e; } });
+    writeFileSync(join(c.wt.path, "b.txt"), "b\n");
+    git(c.wt.path, "add", "-A");
+    git(c.wt.path, "commit", "-qm", "b");
+    writeFileSync(join(c.wt.path, "c.txt"), "c\n");
+    const note = await c.own();
+    expect(note).toContain("\nBehind main: 0 commits\nConflicts with main: none, it merges clean (its commits only: 1 uncommitted file not in it)\nChecks passed on this tree: none named (the repository names no checks)");
+  } finally {
+    unbindLedger();
+  }
+});

@@ -88,6 +88,16 @@ export function headBranch(w: Where): string | undefined {
   try { return /^ref: refs\/heads\/(.+)$/.exec(readFileSync(join(w.gitDir, "HEAD"), "utf8").trim())?.[1]; } catch { return undefined; }
 }
 
+// The forecast of each store, for a reader outside the route that made it (an agent's work note,
+// src/automation/leftovers.ts). Kept by the store, so a test's store leaves nothing behind.
+const byStore = new WeakMap<Store, Overlaps>();
+export const forecastOf = (store: Store): Overlaps | undefined => byStore.get(store);
+
+// A branch against the base as the forecast holds it now. `nothing`: merged with the base it changes
+// nothing (its change is there already). `stale`: no row of these two tips, and a pass did not make one
+// (its session is no longer held, or git failed).
+export type AgainstBase = { base: string; base_tip: string; tip: string } & ({ state: "clean" } | { state: "conflict"; files: string[] } | { state: "nothing" } | { state: "error"; why: string } | { state: "stale" });
+
 export class Overlaps {
   private bases = new Map<string, string | null>(); // repo → the base's full ref name
   private lands = new Map<string, boolean>(); // `${tip} ${baseTip}` → landing it changes the base
@@ -104,6 +114,33 @@ export class Overlaps {
     if (!store.columnExists("overlap_pairs", "base_tip")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN base_tip TEXT");
     // A pass a stop cut left its folder: no pass runs yet, so none is in use.
     rmSync(join(store.stateDir, "overlap-objects"), { recursive: true, force: true });
+    byStore.set(store, this);
+  }
+
+  // What the forecast's table says of `branch` against the base, at the tips the two have now: read
+  // from its row, after a pass of the repository when the row is of other tips (or there is none).
+  // Undefined: the repository has no base, or the branch or the base has no tip.
+  async againstBase(repo: string, branch: string): Promise<AgainstBase | undefined> {
+    const read = async () => {
+      const base = await this.baseOf(repo);
+      if (!base) return undefined;
+      const listed = await git(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)", `refs/heads/${branch}`, base], { read: true });
+      if (listed.code !== 0) return undefined;
+      const tips = new Map(listed.out.split("\n").filter(Boolean).map((l) => l.split("\0") as [string, string]));
+      const tip = tips.get(`refs/heads/${branch}`), baseTip = tips.get(base);
+      if (!tip || !baseTip) return undefined;
+      const short = base.replace(/^refs\/(heads|remotes)\//, "");
+      const row = this.store.db.query<PairRow, [string, string, string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND a = ? AND b = ? AND base = 1").get(repo, branch, short);
+      const at = { base: short, base_tip: baseTip, tip };
+      if (this.lands.get(`${tip} ${baseTip}`) === false) return { ...at, state: "nothing" as const };
+      if (!row || row.a_tip !== tip || row.b_tip !== baseTip) return { ...at, state: "stale" as const };
+      if (row.error) return { ...at, state: "error" as const, why: row.error };
+      return row.conflict ? { ...at, state: "conflict" as const, files: (JSON.parse(row.files) as ConflictFile[]).map((f) => f.path) } : { ...at, state: "clean" as const };
+    };
+    const first = await read();
+    if (first?.state !== "stale") return first;
+    await this.scan(repo);
+    return read();
   }
 
   // ---- who holds which branch ----

@@ -24,6 +24,9 @@ import { allJobs, findJob, jobsIn, jobsOf, processesOf, stopJob, type Job } from
 import type { Worktree, Worktrees } from "../worktree/manager.ts";
 import { readsOf } from "../server/reads.ts";
 import * as rules from "./leftover-rules.ts";
+import { checksOnTree, landingLines, type BaseConflict, type ChecksOn } from "./landing.ts";
+import { forecastOf } from "../worktree/overlap-scan.ts";
+import { decidedOn, inputsOf, namedFor, repoOf, treeOf } from "../checks/ledger.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agent_git_before (agent_id TEXT NOT NULL, repo TEXT NOT NULL, snap TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (agent_id, repo));
@@ -356,8 +359,46 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
     return `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${r.reason}.`;
   }
   const why = (fate as { why: string }).why;
-  if (!unknown && !inner && !busy && (dirty || unique)) return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${rules.count(st.commits_ahead, "commit")} over ${w.base}, ${rules.count(dirty, "uncommitted file")}. Review and merge it from there (git merge ${w.branch}).`;
+  if (!unknown && !inner && !busy && (dirty || unique)) return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${rules.count(st.commits_ahead, "commit")} over ${w.base}, ${rules.count(dirty, "uncommitted file")}. Review and merge it from there (git merge ${w.branch}).${await landingOf(c.store, w, sha, dirty)}`;
   return `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${why}.`;
+}
+
+// What landing the branch needs, on lines of their own (landing.ts): its tip, the base's commits it lacks, its
+// conflict with the base from the overlap forecast's table, and the named checks that passed on its files as
+// they are (the check ledger, by the tree they ran on). Read as the agent ends; nothing is fetched.
+async function landingOf(store: Store, w: Worktree, sha: string | null, dirty: number): Promise<string> {
+  try {
+    const ov = forecastOf(store);
+    const against = ov && sha ? await ov.againstBase(w.repo_root, w.branch).catch(() => undefined) : undefined;
+    const base = against?.base ?? w.base;
+    const conflict: BaseConflict = !ov ? { state: "unknown", why: "no overlap forecast runs here" }
+      : !against ? { state: "unknown", why: "the repository has no base branch, or the branch has no tip" }
+      : against.state === "stale" ? { state: "unknown", why: "the forecast holds no row of these tips" }
+      : against.state === "error" ? { state: "unknown", why: `git could not merge them: ${against.why}` }
+      : against.state === "conflict" ? { state: "conflict", files: against.files }
+      : { state: against.state };
+    const behindOut = sha ? await run(w.repo_root, ["rev-list", "--count", `${sha}..${against?.base_tip ?? base}`, "--"]) : undefined;
+    const behind = behindOut === undefined || !/^\d+$/.test(behindOut.trim()) ? null : Number(behindOut.trim());
+    return landingLines({ base, tip: sha, behind, dirty, conflict, checks: await checksAt(w.path) });
+  } catch {
+    return "";
+  }
+}
+
+// The repository's named checks as they stand on the work tree's files now.
+async function checksAt(path: string): Promise<ChecksOn> {
+  if (!existsSync(path)) return { state: "unknown", why: "its worktree is gone" };
+  const repo = repoOf(path);
+  if (!repo) return { state: "unknown", why: "git could not read its worktree" };
+  const named = namedFor(repo)?.checks ?? [];
+  if (!named.length) return { state: "none" };
+  const look = await treeOf(repo);
+  if (!look) return { state: "unknown", why: "the tree of its files could not be read" };
+  if (look.tree === null) return { state: "unknown", why: look.why };
+  // A run counts in the check's own folder, and for a check that names inputs, with the inputs it has now.
+  const by = new Map(named.map((c) => [c.name, { dir: c.dir, inputs: inputsOf(repo.top, c.inputs) ?? null }]));
+  const runs = decidedOn(look.tree).filter((r) => { const c = by.get(r.name); return !!c && (c.dir === "*" || c.dir === r.dir) && c.inputs === (r.inputs ?? null); });
+  return { state: "known", ...checksOnTree(named, runs) };
 }
 
 // ---- the page: what is left across sessions
