@@ -561,7 +561,7 @@ export const automationRoutes: RouteModule = (deps) => {
         if (s.archived) return bad("the session is archived", 409);
         const spec = waits.normalize(b.spec ?? b, s.workspace);
         if (waits.isMonitor(spec.kind)) return bad("a monitor is started by the agent, not here");
-        return json(waits.create(s.id, spec, { timeout_seconds: b.timeout_seconds, note: b.note }), 201);
+        return json(waits.create(s.id, spec, { timeout_seconds: b.timeout_seconds, note: b.note, by: "owner" }), 201);
       }),
     },
     "/api/waits/:id": {

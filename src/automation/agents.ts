@@ -1592,9 +1592,10 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   withdrawParked(a);
   // It ended: a wait it left set would wake it after its report (as a background command a subagent
   // started ends with its final response in Claude Code). What a wait fired and its session was not
-  // given yet is not given either.
-  waits.cancelForSession(a.session_id, `Cancelled at the end of its agent (${status}): a wait left set would wake it after its report.`);
-  withdraw(a.session_id, (m) => m.kind === "wait" || (Array.isArray(m.parts) && m.parts.some((x: any) => x?.kind === "wait")));
+  // given yet is not given either. A wait the owner set by hand (POST /api/waits) is theirs: it stays, with its wake.
+  const kept = waits.cancelForSession(a.session_id, `Cancelled at the end of its agent (${status}): a wait left set would wake it after its report.`, { keepOwner: true });
+  const spent = (m: any) => m?.kind === "wait" && !kept.has(String(m.wait_id));
+  withdraw(a.session_id, (m) => spent(m) || (Array.isArray(m.parts) && m.parts.some(spent) && !m.parts.some((x: any) => x?.kind === "wait" && !spent(x))));
   const got = collect(a, status === "incomplete" ? how.end_reason : undefined);
   let result = got.text;
   if (how.note) result += `${result ? "\n\n" : ""}${how.note}`;

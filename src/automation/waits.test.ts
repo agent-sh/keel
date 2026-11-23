@@ -781,3 +781,37 @@ test("an agent's wake names its other waits; its waits on a writer it was told e
   const { stopJob } = await import("../tools/jobs.ts");
   await stopJob(runs);
 });
+
+// Review of the turn-end drop: it took back the wake of a wait that had fired (the agent was told the
+// job ended, never that the line matched), and it cancelled a wait whose file already held its text.
+test("an agent's turn end keeps a fired wait's wake and a wait that holds already; its end leaves the owner's waits", async () => {
+  const { startJob, waitJob } = await import("../tools/jobs.ts");
+  const kid = store.createSession({ model: "m", workspace: dir, title: "kid2" });
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(s.id, kid.id);
+  const kidWakes = (id: string) => store.events(kid.id).filter((e) => e.kind === "user" && String(e.data.text).includes(`<wait_fired id="${id}"`));
+  const out = join(dir, "kid2.out");
+  writeFileSync(out, "");
+  const fired = waits.create(kid.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 600 });
+  const job = startJob({ sessionId: kid.id, command: `echo DONE >> ${out}`, cwd: dir, logDir: join(dir, "jobs"), background: false });
+  await waitJob(job, 5000);
+  busy.add(kid.id); // its turn is at work: the wake waits to be stored
+  await waits.tick();
+  expect(status(fired.id)).toBe("fired");
+  // Made after its writer ended, on a file that holds what it waits for already.
+  const holds = waits.create(kid.id, waits.normalize({ kind: "file", path: out, contains: "DONE", writer: job.id }, dir), { timeout_seconds: 600 });
+  expect(waits.dropSpent(kid.id)).toEqual([]);
+  expect(status(holds.id)).toBe("active");
+  busy.delete(kid.id);
+  flush(kid.id);
+  await until(() => kidWakes(fired.id).length > 0);
+  expect(kidWakes(fired.id)).toHaveLength(1);
+  await waits.tick();
+  expect(status(holds.id)).toBe("fired");
+  // The agent ends: its own waits go, the one the owner set by hand stays.
+  const mine = waits.create(kid.id, waits.normalize({ kind: "timer", seconds: 300 }, dir));
+  const owners = waits.create(kid.id, waits.normalize({ kind: "timer", seconds: 300 }, dir), { by: "owner" });
+  expect([...waits.cancelForSession(kid.id, "agent ended", { keepOwner: true })]).toContain(owners.id);
+  expect([status(mine.id), status(owners.id)]).toEqual(["cancelled", "active"]);
+  waits.cancel(owners.id);
+});

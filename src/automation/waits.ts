@@ -8,6 +8,7 @@ import { readStat } from "../core/pid.ts";
 import { pumpText, readText } from "../core/proc.ts";
 import { lastDown, lateWords, LATE_MS, span } from "../core/late.ts";
 import { sayAt, waitEndLine, waitSetLine } from "../admin/daemon-log.ts";
+import { timed } from "../admin/stall.ts";
 import { localTime, zonedClock } from "../core/clock.ts";
 import { waitsFor } from "../core/state-words.ts";
 import { homedir } from "node:os";
@@ -58,6 +59,8 @@ export type WaitRecord = {
   last_error?: string | null;
   events: number;
   tail?: string[];
+  // Who set it: "owner" for one set through the API (POST /api/waits), else the session's model (null).
+  by?: string | null;
 };
 
 const DEFAULT_TIMEOUT = 600;
@@ -90,6 +93,8 @@ CREATE INDEX IF NOT EXISTS waits_status ON waits(status, session_id);`);
   // stored in the transcript. A restart sends what is still owed.
   if (!D().store.columnExists("waits", "wake")) D().store.migrate("ALTER TABLE waits ADD COLUMN wake INTEGER NOT NULL DEFAULT 0");
   D().store.migrate("CREATE INDEX IF NOT EXISTS waits_wake ON waits(wake) WHERE wake = 1"); // the few owed ones, read at start
+  // Who set the wait (WaitRecord.by): an agent's end leaves the owner's own waits set.
+  if (!D().store.columnExists("waits", "by")) D().store.migrate("ALTER TABLE waits ADD COLUMN by TEXT");
   // A monitor's batches its session has not been given yet, the newest
   // EVENTS_KEPT of them: a busy session gets them when its turn ends, and a
   // restart in that time loses none (they leave the table in the write that
@@ -209,7 +214,7 @@ function linkJob(w: WaitRecord, now = Date.now()): Job | undefined {
       noWriter.set(w.id, newest);
     }
   }
-  found ??= holderOf(w, jobs.filter((j) => running(j) && (!kept || j.started > kept.started)), path, now);
+  found ??= timed(() => "a wait's look for the process that writes its file", () => holderOf(w, jobs.filter((j) => running(j) && (!kept || j.started > kept.started)), path, now));
   if (found && running(found)) setState(w.id, "job", found.id);
   return found ?? kept;
 }
@@ -601,7 +606,7 @@ export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}
   }
 }
 
-export function create(sessionId: string, spec: WaitSpec, opts: { timeout_seconds?: number; note?: string } = {}): WaitRecord {
+export function create(sessionId: string, spec: WaitSpec, opts: { timeout_seconds?: number; note?: string; by?: "owner" } = {}): WaitRecord {
   const s = D().store.session(sessionId);
   if (!s) throw new Error("no such session");
   if (s.archived) throw new Error("the session is archived");
@@ -623,10 +628,10 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   const deadline = spec.kind === "timer" ? spec.at_ms! + 60_000 : now + timeout * 1000;
   const rec: WaitRecord = {
     id: Bun.randomUUIDv7().slice(-12), session_id: sessionId, kind: spec.kind, spec, note: String(opts.note ?? "").slice(0, 500),
-    status: "active", created: now, deadline, events: 0,
+    status: "active", created: now, deadline, events: 0, by: opts.by ?? null,
   };
-  D().store.db.query("INSERT INTO waits (id, session_id, kind, spec, note, status, created, deadline) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)")
-    .run(rec.id, sessionId, rec.kind, JSON.stringify(spec), rec.note, now, deadline);
+  D().store.db.query("INSERT INTO waits (id, session_id, kind, spec, note, status, created, deadline, by) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)")
+    .run(rec.id, sessionId, rec.kind, JSON.stringify(spec), rec.note, now, deadline, rec.by ?? null);
   const st: any = {};
   if (spec.kind === "log") {
     // Lines already in the file when the wait starts are not what it waits for.
@@ -752,11 +757,18 @@ export function cancelText(id: string, r: ReturnType<typeof cancel>): string {
   return r ? `${id} had already ended (${r}); nothing to cancel.` : `No wait ${id} in this session.`;
 }
 
-export function cancelForSession(sessionId: string, why = "Cancelled with its session.") {
-  for (const w of list(sessionId, 0)) if (w.status === "active") settle(w.id, "cancelled", why, false);
+// `keepOwner`: the waits the owner set by hand (by = 'owner') stay, with their owed wakes. Returns the ids left set.
+export function cancelForSession(sessionId: string, why = "Cancelled with its session.", o: { keepOwner?: boolean } = {}): Set<string> {
+  const kept = new Set<string>();
+  for (const w of list(sessionId, 0)) {
+    if (o.keepOwner && w.by === "owner") { kept.add(w.id); continue; }
+    if (w.status === "active") settle(w.id, "cancelled", why, false);
+  }
   // A stopped or archived session gets no wake of an earlier wait either, and no batch of its monitors.
-  D().store.db.query("UPDATE waits SET wake = 0 WHERE session_id = ? AND wake = 1").run(sessionId);
-  D().store.db.query("DELETE FROM wait_events WHERE wait_id IN (SELECT id FROM waits WHERE session_id = ?)").run(sessionId);
+  const mine = o.keepOwner ? " AND by IS NOT 'owner'" : "";
+  D().store.db.query(`UPDATE waits SET wake = 0 WHERE session_id = ? AND wake = 1${mine}`).run(sessionId);
+  D().store.db.query(`DELETE FROM wait_events WHERE wait_id IN (SELECT id FROM waits WHERE session_id = ?${mine})`).run(sessionId);
+  return kept;
 }
 
 // The last probe's error, of a wait still active (a probe that answers after
@@ -1122,12 +1134,16 @@ export const waitEnded: { tell?: (w: WaitRecord, cause: "ended" | "stalled") => 
 // the wait would wake it after its report only to say what it knows. Each is cancelled, or the wake it
 // is owed and not yet stored is taken back, and said so on the wait. Returns their ids.
 export function dropSpent(sessionId: string): string[] {
-  const rows = D().store.db.query<Row, [string]>("SELECT * FROM waits WHERE session_id = ? AND kind IN ('file', 'log') AND (status = 'active' OR wake = 1)").all(sessionId).map(toRec);
+  // (A wake owed for a wait that fired is never taken back: it says what the end did not, that the
+  // condition held. Only one that ended or timed out without it is.)
+  const rows = D().store.db.query<Row, [string]>("SELECT * FROM waits WHERE session_id = ? AND kind IN ('file', 'log') AND by IS NOT 'owner' AND (status = 'active' OR (wake = 1 AND status IN ('ended', 'timeout')))").all(sessionId).map(toRec);
   const out: string[] = [];
   for (const w of rows) {
     const j = linkJob(w);
     if (!j || running(j)) continue;
     if (!spentAtTurnEnd({ ended: j.ended, alive: jobHasProcesses(j), told: !j.background || !endNoticeOwed(sessionId, j.id) })) continue;
+    // An active one is probed first: a file that holds what it waits for already is kept, to fire (its next probe).
+    if (w.status === "active" && holds(w)) continue;
     const why = `job ${j.id} that writes ${(w.spec as { path: string }).path} ended and the agent was told in the turn; nothing of it runs`;
     if (w.status === "active") {
       if (settle(w.id, "cancelled", `Cancelled at the end of the agent's turn: ${why}, so this wait could not fire.`, false)) out.push(w.id);
@@ -1139,6 +1155,12 @@ export function dropSpent(sessionId: string): string[] {
     }
   }
   return out;
+}
+
+// Whether a file or log wait's condition holds now (its probe, which for a log does not pass a matching line).
+function holds(w: WaitRecord): boolean {
+  if (live.get(w.id)?.probing) return true; // a probe is out: its answer decides
+  try { return typeof probe(w, new AbortController().signal) === "string"; } catch { return false; }
 }
 
 function probeFailed(w: WaitRecord, e: unknown) {

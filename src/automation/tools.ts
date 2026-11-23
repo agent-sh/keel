@@ -399,8 +399,8 @@ const waitDesc =
 // where other actions ask and the owner can allow it by that name.
 const waitTarget = async (input: any) =>
   input?.kind === "pr_checks" || input?.spec?.kind === "pr_checks" ? { name: "wait_pr_checks", readOnly: false, input, cls: { kind: "other" as const } } : null;
-const WaitFor: Tool = { name: "WaitFor", urgent: "wait-carries-file", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
-const wait_for: Tool = { name: "wait_for", urgent: "wait-carries-file", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
+const WaitFor: Tool = { name: "WaitFor", urgent: "wait-writer-ends", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
+const wait_for: Tool = { name: "wait_for", urgent: "wait-writer-ends", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
 
 const cancel_wait: Tool = {
   name: "cancel_wait",
