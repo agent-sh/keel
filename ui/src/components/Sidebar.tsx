@@ -1037,10 +1037,10 @@ function Index({ current }: { current: string | null }) {
       <Seg kind="tabs" panel={panel} fill className="k-list-tabs mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
       <Find q={q} setQ={setQ} narrow={narrow} />
       {tags.length > 0 && !narrow && (
-        <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
+        <div className="k-tag-row" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (
             <button key={t} type="button" aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}
-              className={cn("inline-flex h-ctl-sm min-w-0 max-w-full items-center gap-1 rounded-xs px-1.5 text-caption", tag === t ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted hover:text-fg")}>
+              className="k-tag-pick">
               <Tag className="size-3 shrink-0" /><span className="truncate">{t}</span>
             </button>
           ))}
