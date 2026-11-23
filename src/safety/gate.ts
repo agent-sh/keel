@@ -450,7 +450,8 @@ export class Gate {
     // (The worktrees Keel made for the session's own agents: theirs to work in, the session's to read and merge.)
     const worktrees = this.agentTrees(session.id);
     const root = (this.rootOf(session), this.pins.get(`${session.id}\0${session.workspace}`)?.id);
-    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts)], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}) };
+    const more = [...this.readMore.values()].flatMap((f) => f(session));
+    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts), ...more], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}) };
   }
   // (Read from the store at most every two seconds per session: a turn asks for it at every call.)
   private trees = new Map<string, { at: number; list: string[] }>();
@@ -700,6 +701,15 @@ export class Gate {
   // Set by the hooks module: the files and folders the session's hooks run things from.
   hookFiles?: (session: Session) => string[];
 
+  // Features that hold some sessions to a few tools (a review of another
+  // person's pull request: its model's own reading tools, nothing that reaches
+  // an MCP server, another session, a machine or a device). An answer is the
+  // tools the session may call; nothing: no limit. Keyed by the feature.
+  readonly toolLimits = new Map<string, (session: Session) => ((tool: string) => boolean) | undefined>();
+  // Features that show a session more of Keel's own state, read-only, in its
+  // sandbox (a review's checkout reads its git folder there).
+  readonly readMore = new Map<string, (session: Session) => string[]>();
+
   // Whether a hook's allow may answer this ask. It answers only a question the
   // owner would have been asked (a mode that opens an owner card, for an
   // ordinary action: not high risk, not the owner's alone), for a call that
@@ -725,6 +735,10 @@ export class Gate {
   // (an escalation the owner allowed). Confinement follows the class the gate
   // judged, never a field of the input.
   async beforeTool(session: Session, call: ToolCall): Promise<ToolGate> {
+    for (const [, limit] of this.toolLimits) {
+      const only = limit(session);
+      if (only && !only(call.tool.name)) return { deny: `Refused: this session reviews another person's code and uses only its model's own reading tools (files, search, its sandboxed shell); ${call.tool.name} is not one of them.` };
+    }
     if (!this.perm(session.id).network) {
       const web = webRefusal(call.tool.name, call.input);
       if (web) return { deny: web };

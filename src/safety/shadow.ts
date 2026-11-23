@@ -85,6 +85,12 @@ export class Shadow {
       await this.git(["config", "gc.auto", "0"]);
     }
     this.writeExcludes([]);
+    // A snapshot keeps the work tree's bytes as they are: no clean filter of
+    // the owner's git config runs on them. The files' own .gitattributes would
+    // otherwise choose one (a pull request's author choosing which of the
+    // owner's programs runs, outside any sandbox). The store's own attributes
+    // come before the work tree's (gitattributes(5)) and unset it for every file.
+    writeFileSync(join(this.dir, "info", "attributes"), "* -filter\n");
     this.inited = true;
   }
 

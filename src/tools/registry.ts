@@ -19,6 +19,9 @@ export function registerFamily(family: ModelInfo["family"], tools: Tool[]) {
   byFamily.set(family, tools);
 }
 
+// The names of the tools the model families were trained on (their own set, no shared or catalog tool).
+export const familyToolNames = (): Set<string> => new Set([...byFamily.values()].flat().map((t) => t.name));
+
 export function registerShared(...tools: Tool[]) {
   for (const t of tools) if (!shared.some((s) => s.name === t.name)) shared.push(t);
 }

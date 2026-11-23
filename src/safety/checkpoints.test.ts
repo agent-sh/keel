@@ -387,3 +387,31 @@ test("an unchanged workspace with a file over the cap and an inner repository wi
     before = now.tree;
   }
 });
+
+// A snapshot keeps the work tree's bytes: the files' own .gitattributes cannot pick a clean filter of the owner's
+// git config (in a pull request's checkout its author would choose what runs, outside the sandbox).
+test("a snapshot runs no clean filter the files' attributes name, whole or by paths", async () => {
+  const { Shadow } = await import("./shadow.ts");
+  const dir = join(root, `case-${++n}`);
+  const ws = join(dir, "ws");
+  mkdirSync(ws, { recursive: true });
+  const mark = join(dir, "clean-ran");
+  writeFileSync(join(dir, "clean.sh"), `#!/bin/sh\ntouch "${mark}"\ntr a-z A-Z\n`);
+  chmodSync(join(dir, "clean.sh"), 0o755);
+  writeFileSync(join(dir, "gitconfig"), `[filter "probe"]\n\tclean = ${join(dir, "clean.sh")}\n`);
+  writeFileSync(join(ws, ".gitattributes"), "*.py filter=probe\n");
+  writeFileSync(join(ws, "a.py"), "x = 1\n");
+  const before = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = join(dir, "gitconfig");
+  try {
+    const sh = new Shadow(join(dir, "state", "checkpoints"), ws);
+    const tree = await sh.snapshot();
+    expect(await sh.git(["cat-file", "-p", `${tree}:a.py`])).toBe("x = 1\n");
+    writeFileSync(join(ws, "a.py"), "y = 2\n");
+    const byPath = await sh.snapshot(["a.py"]);
+    expect(await sh.git(["cat-file", "-p", `${byPath}:a.py`])).toBe("y = 2\n");
+    expect(existsSync(mark)).toBe(false);
+  } finally {
+    if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = before;
+  }
+});

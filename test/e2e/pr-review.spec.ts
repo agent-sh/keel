@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GitHubStandin, TOKEN } from "./fixtures/github-standin.ts";
 import { daemon, exited, ROOT } from "./own-daemon.ts";
@@ -27,6 +27,13 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
   git(state, "init", "-q", "--bare", bare);
   git(work, "init", "-q", "-b", "main");
   writeFileSync(join(work, "calc.py"), "def div(a, b):\n    return a / b\n");
+  // The repository names a filter for its Python files, and the owner's global git config has one of that name:
+  // git would run it on the pull request's files (a checkout smudges, a snapshot cleans). Keel runs neither.
+  writeFileSync(join(work, ".gitattributes"), "*.py filter=probe\n");
+  const marks = join(state, "marks");
+  mkdirSync(marks, { recursive: true });
+  writeFileSync(join(state, "filter.sh"), `#!/bin/sh\ntouch "${marks}/$1"\ncat\n`, { mode: 0o755 });
+  writeFileSync(join(state, "gitconfig"), `[filter "probe"]\n\tclean = ${join(state, "filter.sh")} clean\n\tsmudge = ${join(state, "filter.sh")} smudge\n`);
   git(work, "add", "-A");
   git(work, "commit", "-qm", "init");
   git(work, "push", "-q", bare, "main");
@@ -48,7 +55,7 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
   // One pull request a page: the list is several pages, and a change to one leaves the others answering 304.
   gh.pageSize = 1;
   // The daemon holds a GitHub token in its environment: the reviewer's commands must not.
-  const env = { KEEL_GITHUB_API: gh.url, KEEL_GH_BIN: join(process.cwd(), "test/e2e/fixtures/gh-standin.sh"), GH_TOKEN: TOKEN };
+  const env = { KEEL_GITHUB_API: gh.url, KEEL_GH_BIN: join(process.cwd(), "test/e2e/fixtures/gh-standin.sh"), GH_TOKEN: TOKEN, GIT_CONFIG_GLOBAL: join(state, "gitconfig") };
   let d = await daemon(state, 0, false, env);
   const api = (path: string, init?: RequestInit) => fetch(d.url + path, { ...init, headers: { "content-type": "application/json" } }).then((r) => r.json() as any);
   const reviews = async () => (await api("/api/pr-reviews")).reviews as any[];
@@ -112,12 +119,20 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
     // The owner asks the reviewer one more thing: its command reads the head's files in the sandbox, without the
     // daemon's GitHub token, and that turn's end is told in the Inbox as any turn's is.
     await page.goto(`${d.url}/settings/pull-requests`);
-    const ask = [{ name: "Bash", input: { command: "cat b.py; echo GH=[${GH_TOKEN:-none}]" } }];
+    // Its git works in the checkout (the git folder is shown read-only), and it has no MCP tool.
+    const ask = [
+      { name: "Bash", input: { command: "cat b.py; echo GH=[${GH_TOKEN:-none}]; git rev-parse HEAD" } },
+      { name: "mcp_call", input: { tool: "web__webfetch", arguments: { url: "https://example.com" } } },
+    ];
     await api(`/api/sessions/${r2.session_id}/messages`, { method: "POST", body: JSON.stringify({ text: `script:calls ${JSON.stringify(ask)}` }) });
     await expect.poll(async () => (await api(`/api/sessions/${r2.session_id}`)).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(2);
     const out = (await api(`/api/sessions/${r2.session_id}`)).events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).map((x: any) => String(x.content)).join("\n");
     expect(out).toContain("def ratio(a, b):");
     expect(out).toContain("GH=[none]");
+    expect(out).toContain(h2);
+    expect(out).toContain("mcp_call is not one of them");
+    // No filter of the owner's ran on the pull request's files: not at the checkout, not at the snapshot after the tool turn.
+    expect(readdirSync(marks)).toEqual([]);
     expect(out).not.toContain(TOKEN);
     await expect.poll(async () => (await api("/api/alerts")).alerts.filter((a: any) => a.session_id === r2.session_id && a.kind === "finished").length, { timeout: 10_000 }).toBe(1);
 

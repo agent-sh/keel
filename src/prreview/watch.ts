@@ -179,6 +179,10 @@ export class PrWatcher {
     const r = this.db.query<{ data: string }, [string]>("SELECT data FROM pr_reviews WHERE id = ?").get(id);
     return r ? JSON.parse(r.data) : undefined;
   }
+  // The git folder a review's checkout reads (its worktree's records are in it).
+  mirrorOf(r: Pick<PrReview, "repo">): string {
+    return this.dir("git", `${r.repo.replace("/", "__")}.git`);
+  }
   bySession(sessionId: string): PrReview | undefined {
     const r = this.db.query<{ data: string }, [string]>("SELECT data FROM pr_reviews WHERE session_id = ?").get(sessionId);
     return r ? JSON.parse(r.data) : undefined;
@@ -393,7 +397,7 @@ export class PrWatcher {
       const local = !/^(https?|ssh|git):\/\//.test(url) && !/^[^/]*@[^/]+:/.test(url);
       if (local && !localApi()) throw new Error(`the clone address GitHub gave is not a network address: ${url}`);
       if (!/^[\w./-]+$/.test(r.base) || r.base.includes("..")) throw new Error(`not a branch name: ${r.base}`);
-      const mirror = this.dir("git", `${r.repo.replace("/", "__")}.git`);
+      const mirror = this.mirrorOf(r);
       if (!existsSync(join(mirror, "HEAD"))) {
         mkdirSync(mirror, { recursive: true });
         const made = await git(mirror, ["init", "--bare", "-q", mirror], { mode: "plain" });
@@ -464,7 +468,7 @@ export class PrWatcher {
   private async dropWorktree(r: PrReview) {
     const wt = this.wtDir(r);
     if (!existsSync(wt)) return;
-    const mirror = this.dir("git", `${r.repo.replace("/", "__")}.git`);
+    const mirror = this.mirrorOf(r);
     const g = await git(mirror, ["worktree", "remove", "--force", wt], { mode: "own", gitDir: mirror });
     if (g.code !== 0) {
       rmSync(wt, { recursive: true, force: true });

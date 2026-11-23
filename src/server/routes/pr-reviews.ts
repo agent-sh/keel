@@ -8,6 +8,8 @@ import { parseRepo } from "../../prreview/decide.ts";
 import { forgetToken, TOKEN_CRED, token } from "../../prreview/github.ts";
 import { PrWatcher, REVIEW_ENV_DROPPED, TAG, type Auto } from "../../prreview/watch.ts";
 import { registerEnvDrop } from "../../tools/jobs.ts";
+import { familyToolNames } from "../../tools/registry.ts";
+import { gate } from "./permissions.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -42,7 +44,23 @@ export const prReviewRoutes: RouteModule = (deps: Deps) => {
   // failed), not as a finished turn too. A later turn of the session (the
   // owner asks the reviewer something) is told as any other.
   ownSessionEnd.set("pr-reviews", (id) => !!w.bySession(id) && reviewTurn(deps, id));
-  registerEnvDrop("pr-reviews", (id) => (w.bySession(id) ? REVIEW_ENV_DROPPED : []));
+  // A review of another person's code, and every session under it (an agent it
+  // starts, an independent reviewer of its own): the review is found by the
+  // root of the session's tree.
+  const reviewOf = (id: string) => {
+    let s = deps.store.session(id);
+    for (let i = 0; s?.parent_id && i < 32; i++) s = deps.store.session(s.parent_id);
+    return s ? w.bySession(s.id) : undefined;
+  };
+  // Its commands get no GitHub credentials, even inside the sandbox.
+  registerEnvDrop("pr-reviews", (id) => (reviewOf(id) ? REVIEW_ENV_DROPPED : []));
+  // Its model's own reading tools only: no MCP tool (a browser, a phone, a
+  // screen, a wiki reach the web or the owner's devices, and what they return
+  // could be posted), no other session, machine or schedule.
+  const allowed = () => new Set([...familyToolNames(), "AskReaders", "ask_readers"]);
+  gate?.toolLimits.set("pr-reviews", (s) => (reviewOf(s.id) ? (tool) => allowed().has(tool) : undefined));
+  // Its checkout's git folder is in Keel's state: shown read-only in its sandbox, so git works there.
+  gate?.readMore.set("pr-reviews", (s) => { const r = reviewOf(s.id); return r ? [w.mirrorOf(r)] : []; });
   if (!runMode.client) {
     w.recover();
     w.schedule();
