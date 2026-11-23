@@ -70,7 +70,7 @@ export const name = (w: string | undefined) => (w === undefined ? "" : w.slice(w
 export type Run = { words: string[]; at: number; set: string[]; fed?: "xargs" | "find"; find?: string[]; timed?: true; deep?: true; wrapped?: true };
 
 // Each wrapper's options that take a value in the next word.
-const VALUED: Record<string, RegExp> = {
+const VALUED: Record<string, RegExp> = Object.assign(Object.create(null), {
   env: /^(-u|--unset|-C|--chdir)$/, nice: /^(-n|--adjustment)$/, ionice: /^-[cnp]$/, timeout: /^(-s|--signal|-k|--kill-after)$/,
   stdbuf: /^-[ioe]$/, exec: /^-a$/, sudo: /^-[ugCDhprTR]$/, doas: /^-[uC]$/, chrt: /^-p$/, taskset: /^-c$/, watch: /^(-n|--interval|-d|--differences)$/,
   xargs: /^-[nLPsEdaI]$/, parallel: /^(-j|--jobs|-a|--arg-file|-S|--sshlogin|--colsep|-d|--delimiter|-I|-N|--max-args|--results|--joblog|--tmpdir|--timeout)$/,
@@ -78,11 +78,11 @@ const VALUED: Record<string, RegExp> = {
   "systemd-run": /^(-u|--unit|-p|--property|--description|--slice|-M|--machine|-H|--host|--working-directory|--uid|--gid|--nice|-E|--setenv|--on-active|--on-boot|--on-startup|--on-unit-active|--on-unit-inactive|--on-calendar|--timer-property)$/,
   uv: /^(--with|--with-editable|--with-requirements|--python|-p|--project|--directory|--env-file|--extra|--group|--index|--package|--isolated-from)$/,
   npm: /^(--prefix|-w|--workspace|-c|--call|--package|-p)$/, sshpass: /^-[pfdP]$/, direnv: /^$/, dotenv: /^(-e|-f|--file)$/, runuser: /^(-u|-g|-G|--user|--group)$/, screen: /^(-S|-L|-c|-e|-s|-T|-t|-p)$/,
-};
+});
 const WRAPPERS = new Set(["env", "nohup", "setsid", "nice", "ionice", "timeout", "stdbuf", "command", "builtin", "exec", "sudo", "doas", "time", "chrt", "taskset", "watch", "xargs", "parallel", "npx", "bunx",
   "busybox", "toybox", "coproc", "strace", "ltrace", "unshare", "fakeroot", "flock", "chronic", "systemd-run", "dotenv", "valgrind", "firejail", "proot", "runuser", "chroot", "faketime", "screen", "sshpass"]);
 // Programs that start another after a word of their own: `bundle exec CMD`, `uv run CMD`.
-const STARTS: Record<string, RegExp> = { bundle: /^exec$/, npm: /^exec$/, pnpm: /^(exec|dlx)$/, yarn: /^(exec|dlx)$/, bun: /^x$/, uv: /^run$/, poetry: /^run$/, pipenv: /^run$/, pdm: /^run$/, direnv: /^exec$/, rye: /^run$/, hatch: /^run$/ };
+const STARTS: Record<string, RegExp> = Object.assign(Object.create(null), { bundle: /^exec$/, npm: /^exec$/, pnpm: /^(exec|dlx)$/, yarn: /^(exec|dlx)$/, bun: /^x$/, uv: /^run$/, poetry: /^run$/, pipenv: /^run$/, pdm: /^run$/, direnv: /^exec$/, rye: /^run$/, hatch: /^run$/ });
 
 // A path without the slashes it ends in. (A pattern for them reads a run of slashes in the middle of a word once
 // for each of them.)

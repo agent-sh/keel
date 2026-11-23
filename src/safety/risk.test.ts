@@ -477,3 +477,10 @@ test("every reason is said once, and a part that only reads is never classed", (
   const rs = risksOf(splitCommand("rm -rf ~/a; rm -rf ~/a; cat .env; find . -name x; git log --grep 'DROP TABLE'")!, { cwd: ws, home, workspace: ws });
   expect(rs).toEqual([{ rule: "destroys", why: "deletes ~/a, outside the session's folder" }]);
 });
+
+test("a word named like a property every object has is a word like any other", () => {
+  // The tables of programs and variables are read by a command's own words: none of them may find what every object has.
+  for (const n of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    for (const c of [`${n} x`, `env ${n} x`, `sudo ${n}`, `x=1; $${n} a`, `npm ${n}`]) expect([c, how(c)]).toEqual([c, expect.stringMatching(/^(low|allow|high:.*)$/)]);
+  }
+});

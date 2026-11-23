@@ -190,7 +190,7 @@ function find(dir: string): Where | null {
 // The keys of a repository's config the view keeps: plain data that changes
 // how git reads the repository, and nothing that names a program or a file
 // to load. Sections and names are lower case, as `git config --list` gives them.
-const KEPT: Record<string, RegExp> = {
+const KEPT: Record<string, RegExp> = Object.assign(Object.create(null), {
   // (core.excludesFile names a file of patterns, which is data: without it the
   // files it leaves out show up as new and get committed by a park.
   // core.attributesFile stays out: attributes turn drivers on.)
@@ -201,7 +201,7 @@ const KEPT: Record<string, RegExp> = {
   remote: /^(url|pushurl|fetch|promisor|partialclonefilter|gh-resolved)$/,
   branch: /^(remote|merge|pushremote|gh-merge-base)$/,
   user: /^(name|email)$/,
-};
+});
 // The one filter taken from a repository's own config: Git LFS, and only when
 // its four lines are exactly what `git lfs install --local` writes
 // (git-lfs-install(1); the program is the owner's git-lfs, found on the

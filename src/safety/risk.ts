@@ -47,7 +47,7 @@ export type { Risk, RiskRule, Where } from "./risk-words.ts";
 // ---- class: destroys ----
 
 // What a deleting program's arguments name, past its options and their values.
-const TAKES: Record<string, RegExp> = { truncate: /^(-s|--size|-r|--reference|-o)$/, shred: /^(-n|--iterations|-s|--size)$/ };
+const TAKES: Record<string, RegExp> = Object.assign(Object.create(null), { truncate: /^(-s|--size|-r|--reference|-o)$/, shred: /^(-n|--iterations|-s|--size)$/ });
 const DELETES = new Set(["rm", "unlink", "shred", "truncate", "rimraf", "del", "del-cli", "trash"]);
 const LOGGISH = /\.(log|out|tmp|pid|lock)$/;
 // What is said of a path git was asked about and did not answer for: in time, or at all, where the line names
@@ -420,7 +420,7 @@ const INSTALLERS = /^(npm|pnpm|yarn|bun|pip|pip3|pipx|uv|uvx|poetry|pdm|cargo|ge
 const ADDRESS = /^(git\+|git:\/\/|https?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:)/i;
 // A variable named for what it holds: a key, a token, a password.
 // The variables a script names its tools by, and the program each stands for.
-const STANDS: Record<string, string> = { EDITOR: "vi", VISUAL: "vi", PAGER: "less", SHELL: "sh", CC: "cc", CXX: "c++", MAKE: "make", PYTHON: "python3", NODE: "node", BUN: "bun", GO: "go", CARGO: "cargo" };
+const STANDS: Record<string, string> = Object.assign(Object.create(null), { EDITOR: "vi", VISUAL: "vi", PAGER: "less", SHELL: "sh", CC: "cc", CXX: "c++", MAKE: "make", PYTHON: "python3", NODE: "node", BUN: "bun", GO: "go", CARGO: "cargo" });
 const SECRET_VAR = /(SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY)/i;
 const REGISTRY = /^(--index-url|--extra-index-url|--registry|--index|--default-index|--find-links)(=|$)/;
 function fetched(words: string[]): Risk[] {

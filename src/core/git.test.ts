@@ -250,6 +250,8 @@ test("the view keeps the repository's plain settings and none that names a progr
   writeFileSync(join(dir, "note.mine"), "left out by the owner's patterns\n");
   plant(join(dir, ".git"));
   must(dir, "config", "remote.origin.gh-resolved", "base");
+  // A section named like a property every object has is a section like any other.
+  must(dir, "config", "constructor.name", "x");
   const view = gitEnv(dir).GIT_COMMON_DIR!;
   const read = (key: string) => raw(root, "config", "--file", join(view, "config"), "--get", key).out.trim();
   expect([read("core.autocrlf"), read("user.name"), read("branch.main.remote"), read("core.repositoryformatversion")]).toEqual(["input", "Local Name", "origin", "0"]);
