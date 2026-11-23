@@ -384,6 +384,14 @@ class WireTest {
 
     // A notification carries Allow once only for a request whose whole line it shows, and a standing
     // answer's button names the rule it stores.
+    // A request answered elsewhere while its session has more: its notification alone comes down.
+    @Test fun aWithdrawNamingARequestTakesDownThatNotificationAlone() {
+        assertEquals(TakeDown.Card("apA"), PushMsg.of(mapOf("t" to "withdraw", "c" to "", "n" to "push_1", "aid" to "apA")).takesDown)
+        // Nothing in the session waits any more: everything of it.
+        assertEquals(TakeDown.Chat("s-2"), PushMsg.of(mapOf("t" to "withdraw", "c" to "s-2", "n" to "push_2")).takesDown)
+        assertEquals(null, PushMsg.of(mapOf("t" to "approval", "c" to "s-2", "aid" to "apB")).takesDown)
+    }
+
     @Test fun aNotificationAllowsOnlyWhatItsLineShowsAndAStandingAnswerNamesItsRule() {
         val card = { json: String -> Card.of(JSONObject(json)) }
         val short = card("""{"id":"a1","kind":"permission","command":"npm test","text":"npm test","hold":[],"line":"Bash: npm test","glance":true,"grants":["npm test"],"state":"pending"}""")

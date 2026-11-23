@@ -469,3 +469,22 @@ test("an open incident takes a touched session's failure alert only when the fai
     alerts.absorbHook.of = undefined;
   }
 });
+
+// One approval answered while another of its session waits: what shows for that approval alone is taken back.
+test("an answered approval is taken back alone while its session has another; the last one takes back the session", async () => {
+  const { session } = scratch();
+  const s = session("Two approvals");
+  const taken: string[] = [];
+  const withdrawn: string[] = [];
+  alerts.registerChannel({ id: "take-back", label: "take back", available: () => true, deliver: () => {}, withdraw: (id) => void withdrawn.push(id), take: (a) => void taken.push(String(a.data?.approval_id)) });
+  alerts.raise("approval", s, "Approval: Two approvals", "Bash: touch a", { approval_id: "apA", open_session: s, risk: "low" });
+  alerts.raise("approval", s, "Approval: Two approvals", "Bash: touch b", { approval_id: "apB", open_session: s, risk: "low" });
+  alerts.readWhere("approval_id", "apA");
+  await settle();
+  expect(taken).toEqual(["apA"]);
+  expect(withdrawn).toEqual([]);
+  alerts.readWhere("approval_id", "apB");
+  await settle();
+  expect(taken).toEqual(["apA"]);
+  expect(withdrawn).toEqual([s]);
+});

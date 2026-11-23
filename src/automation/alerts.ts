@@ -65,6 +65,9 @@ export type AlertChannel = {
   deliver(a: Alert): void | Promise<void>;
   // The owner read the session: take back what is still shown for it.
   withdraw?(sessionId: string): void | Promise<void>;
+  // One alert was read (an approval answered) while its session still has another unread:
+  // take back what is shown for that alert alone.
+  take?(a: Alert): void | Promise<void>;
 };
 
 export type AlertSettings = {
@@ -873,7 +876,8 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
     for (const h of hit) if (h.far_id && h.machine) (by.get(h.machine) ?? by.set(h.machine, []).get(h.machine)!).push(h.far_id);
     for (const [machine, ids] of by) try { tellRead(machine, ids); } catch (e) { capture(e, { at: "far alerts read", machine }); }
   }
-  // Each channel takes back what it shows for a session once nothing in it is unread.
+  // Each channel takes back what it shows for a session once nothing in it is unread, and
+  // what it shows for each alert read while something else in its session still is.
   const left = unreadCounts().sessions;
   for (const sid of new Set(hit.map((h) => h.session_id).filter((x): x is string => !!x))) {
     if (left[sid]) continue;
@@ -881,6 +885,12 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
       if (!c.withdraw) continue;
       Promise.resolve().then(() => c.withdraw!(sid)).catch((e) => capture(e, { at: "alert withdraw", channel: c.id }));
     }
+  }
+  const takers = [...channels.values()].filter((c) => c.take);
+  if (takers.length) for (const h of hit) {
+    if (!h.session_id || !left[h.session_id]) continue;
+    const a = get(h.id);
+    if (a) for (const c of takers) Promise.resolve().then(() => c.take!(a)).catch((e) => capture(e, { at: "alert take back", channel: c.id }));
   }
   emit("alerts_read", { ...opts, changed: hit.length, rev: currentRev() });
   return hit.length;

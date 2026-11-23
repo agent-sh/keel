@@ -4,6 +4,7 @@ import { renderSVG } from "uqr";
 import { atDesk, get as alertOf, registerChannel, type Alert } from "../../automation/alerts.ts";
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
+import { PhoneShown } from "../../integrations/mobile/shown.ts";
 import { hostOf, MobileStore } from "../../integrations/mobile/store.ts";
 import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -105,8 +106,13 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     if (f.t === "session" || (f.t === "feature" && (f.name === "approval" || f.name === "plan" || f.name === "automation"))) live.poke();
   });
 
-  // Sessions the phone holds a notification for, so a withdraw goes only there.
-  const shown = new Set<string>();
+  // What the phone holds a notification for, so a withdraw goes only there.
+  const shown = new PhoneShown();
+  const takeDown = async (msg: push.PushMessage, about: Record<string, string>) => {
+    const recs = await push.send(mobile, mobile.globalSeq(), msg);
+    for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { ...about, device: r.device_id });
+    if (recs.length) changed();
+  };
   registerChannel({
     id: "push",
     label: "Phone push",
@@ -132,8 +138,9 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         atDesk: async () => atDesk() || (await screenUnlocked()),
         sleep: (ms) => Bun.sleep(ms),
         send: async () => {
-          const recs = await push.send(mobile, mobile.globalSeq(), pushOf(a));
-          if (a.session_id && recs.some((r) => r.ok)) shown.add(a.session_id);
+          const msg = pushOf(a);
+          const recs = await push.send(mobile, mobile.globalSeq(), msg);
+          if (recs.some((r) => r.ok)) shown.pushed(msg);
           for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { alert: a.id, device: r.device_id });
           if (recs.length) changed();
         },
@@ -143,10 +150,16 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     // desktop): the phone takes down what it shows for it. Normal priority, no
     // notification of its own; the phone needs no network to act on it.
     async withdraw(sessionId) {
-      if (!shown.delete(sessionId) || !push.configured() || !mobile.pushTargets().length) return;
-      const recs = await push.send(mobile, mobile.globalSeq(), { kind: "withdraw", session_id: sessionId, high: false, data: {} });
-      for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { withdraw: sessionId, device: r.device_id });
-      if (recs.length) changed();
+      const msg = shown.clear(sessionId);
+      if (!msg || !push.configured() || !mobile.pushTargets().length) return;
+      await takeDown(msg, { withdraw: sessionId });
+    },
+    // One request answered on the desk (or another phone) while the session has more:
+    // its notification alone comes down, the others stay.
+    async take(a) {
+      const msg = shown.takeBack(alertPush(a).data.aid);
+      if (!msg || !push.configured() || !mobile.pushTargets().length) return;
+      await takeDown(msg, { withdraw: a.id });
     },
   });
 

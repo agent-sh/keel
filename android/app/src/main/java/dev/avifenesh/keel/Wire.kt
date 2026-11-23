@@ -849,6 +849,17 @@ data class PushMsg(
      * opts offered it always) and does not hold the request. Else it leads with Open.
      */
     val allows get() = !held && (choices.isEmpty() || "once" in choices)
+
+    /**
+     * What a withdraw push takes down: the one request's notification it names (answered elsewhere
+     * while its session has more), else everything shown for its session. Nothing for another kind.
+     */
+    val takesDown: TakeDown? get() = if (kind != "withdraw") null else card?.let { TakeDown.Card(it) } ?: chat?.let { TakeDown.Chat(it) }
+}
+
+sealed interface TakeDown {
+    data class Card(val aid: String) : TakeDown
+    data class Chat(val chat: String) : TakeDown
 }
 
 /**

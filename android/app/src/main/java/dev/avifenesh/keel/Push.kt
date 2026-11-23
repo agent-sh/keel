@@ -153,7 +153,11 @@ class PushService : FirebaseMessagingService() {
         if (!Prefs.paired) return
         val m = PushMsg.of(message.data)
         when (m.kind) {
-            "withdraw" -> m.chat?.let { Notify.cancelChat(this, it) }
+            "withdraw" -> when (val t = m.takesDown) {
+                is TakeDown.Card -> Notify.cancelCard(this, t.aid)
+                is TakeDown.Chat -> Notify.cancelChat(this, t.chat)
+                null -> {}
+            }
             "live" -> Notify.livePush(this, Live.of(m))
             else -> Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.allows)
         }
