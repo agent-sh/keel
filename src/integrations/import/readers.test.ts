@@ -265,3 +265,26 @@ test("a Gemini CLI session: its folder from the project's marker, calls with the
   expect(r.counts).toMatchObject({ prompts: 2, tool_calls: 2, thoughts_dropped: 1, skipped: 1 });
   expect(wire(r.events)).not.toContain("A prompt taken back.");
 });
+
+// Review of round 3, P2-d: a log costs what it touches. A file of rewinds was quadratic (seconds on the loop).
+test("a Gemini CLI log is applied in time linear in what it touches, and one past the bound is cut and says so", async () => {
+  const { conversationOf, WORK_MAX } = await import("./gemini.ts");
+  const N = 20_000;
+  const recs: any[] = [{ sessionId: "s", projectHash: "h" }];
+  for (let i = 0; i < N; i++) recs.push({ id: `m${i}`, type: "user", content: "x" });
+  for (let i = 0; i < N; i++) { recs.push({ id: `r${i}`, type: "user", content: "y" }); recs.push({ $rewindTo: `r${i}` }); }
+  recs.push({ $patch: { removeIds: ["m1"] } }, { $rewindTo: "m5" }, { $patch: { orderIds: ["m0", "m3"] } }, { id: "m2", type: "gemini", content: "replaced in place" });
+  const t0 = performance.now();
+  const c = conversationOf(recs);
+  expect(performance.now() - t0).toBeLessThan(1000);
+  // The rewinds took back each prompt they named; m1 removed; the rewind to m5 cut after m4; m0 and m3 moved last.
+  expect(c.messages.map((m) => m.id)).toEqual(["m2", "m4", "m0", "m3"]);
+  expect(c.messages[0]!.content).toBe("replaced in place");
+  expect(c.cut).toBeUndefined();
+  // Reordering a long list again and again passes the bound: the rest is not applied.
+  const many: any[] = [{ sessionId: "s", projectHash: "h" }];
+  for (let i = 0; i < 5000; i++) many.push({ id: `m${i}`, type: "user", content: "x" });
+  const order = Array.from({ length: 5000 }, (_, k) => `m${4999 - k}`);
+  for (let i = 0; i < Math.ceil(WORK_MAX / 10_000) + 10; i++) many.push({ $patch: { orderIds: order } });
+  expect(conversationOf(many).cut).toBe(true);
+});

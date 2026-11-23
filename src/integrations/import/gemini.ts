@@ -20,7 +20,7 @@
 // config/storage.ts and projectRegistry.ts (main, 2026-11-21). Nothing here writes.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { damageNotes, headTail, readLines } from "./files.ts";
 import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
 
@@ -31,50 +31,83 @@ const LISTED_MAX = 400;
 const LEGACY_MAX = 32 * 1024 * 1024;
 
 type Msg = { id: string; type: string; timestamp?: string; content?: unknown; toolCalls?: any[]; thoughts?: unknown[]; model?: string };
-type Conversation = { meta: Record<string, any>; messages: Msg[] };
+type Conversation = { meta: Record<string, any>; messages: Msg[]; cut?: boolean };
 
 const isMsg = (r: any): r is Msg => r && typeof r === "object" && typeof r.id === "string" && !("$patch" in r) && typeof r.type === "string";
 
+// The most messages a file's records may touch, summed over all of them (a
+// message added, removed, patched or moved counts one each time). Gemini CLI
+// writes a few per message (a session of 10,000 messages is some 50,000); a
+// file past this is no session of its, and the
+// rest of its records is not applied (the read says so).
+export const WORK_MAX = 1_000_000;
+
 // Every record of a session file applied in order (Gemini CLI's own loader).
+// The messages are a list with each id's place: a rewind cuts the list at a
+// place, so a file's records cost what they touch, not the list's length each.
 export function conversationOf(records: any[]): Conversation {
   let meta: Record<string, any> = {};
-  const messages = new Map<string, Msg>();
-  const setAll = (list: unknown[]) => { messages.clear(); for (const m of list) if (isMsg(m)) messages.set(m.id, m); };
+  let list: (Msg | undefined)[] = [];
+  let at = new Map<string, number>();
+  let work = 0;
+  const put = (m: Msg) => { const i = at.get(m.id); if (i === undefined) { at.set(m.id, list.length); list.push(m); } else list[i] = m; work++; };
+  const reset = () => { work += list.length; list = []; at = new Map(); };
   const patch = (p: any) => {
-    const m = messages.get(p?.id);
+    const i = typeof p?.id === "string" ? at.get(p.id) : undefined;
+    const m = i === undefined ? undefined : list[i];
     if (!m) return;
+    work++;
     if (p.content !== undefined) m.content = p.content;
-    if (Array.isArray(p.toolCalls) && m.toolCalls) for (const t of p.toolCalls) { const c = m.toolCalls.find((x) => x?.id === t?.id); if (c && "result" in t) c.result = t.result; }
+    if (Array.isArray(p.toolCalls) && Array.isArray(m.toolCalls)) for (const t of p.toolCalls) {
+      work++;
+      const c = m.toolCalls.find((x) => x?.id === t?.id);
+      if (c && t && typeof t === "object" && "result" in t) c.result = t.result;
+    }
   };
+  let cut = false;
   for (const r of records) {
+    if (work > WORK_MAX) { cut = true; break; }
     if (!r || typeof r !== "object") continue;
     if (typeof r.$rewindTo === "string") {
-      if (!messages.has(r.$rewindTo)) messages.clear();
-      else { let gone = false; for (const id of [...messages.keys()]) { if (id === r.$rewindTo) gone = true; if (gone) messages.delete(id); } }
+      const i = at.get(r.$rewindTo);
+      if (i === undefined) reset();
+      else { for (let k = i; k < list.length; k++) { const m = list[k]; if (m) at.delete(m.id); } work += list.length - i; list.length = i; }
     } else if (r.$patch && typeof r.$patch === "object") {
       const p = r.$patch;
       if (typeof p.id === "string") patch(p);
       for (const u of Array.isArray(p.updates) ? p.updates : []) patch(u);
-      for (const id of Array.isArray(p.removeIds) ? p.removeIds : []) messages.delete(id);
-      if (Array.isArray(p.orderIds)) {
-        const ordered = p.orderIds.filter((id: unknown) => typeof id === "string" && messages.has(id)) as string[];
-        const set = new Set(ordered);
-        const all = [...[...messages].filter(([id]) => !set.has(id)), ...ordered.map((id) => [id, messages.get(id)!] as [string, Msg])];
-        messages.clear();
-        for (const [id, m] of all) messages.set(id, m);
+      for (const id of Array.isArray(p.removeIds) ? p.removeIds : []) {
+        const i = typeof id === "string" ? at.get(id) : undefined;
+        if (i !== undefined) { list[i] = undefined; at.delete(id); }
+        work++;
       }
-    } else if (isMsg(r)) messages.set(r.id, r);
+      if (Array.isArray(p.orderIds)) {
+        // The named ones go last, in the order named; the rest keep theirs before them.
+        const ordered: Msg[] = [];
+        const named = new Set<string>();
+        for (const id of p.orderIds) {
+          work++;
+          const i = typeof id === "string" && !named.has(id) ? at.get(id) : undefined;
+          const m = i === undefined ? undefined : list[i];
+          if (m) { named.add(id); ordered.push(m); }
+        }
+        const rest = list.filter((m): m is Msg => !!m && !named.has(m.id));
+        work += 2 * list.length; // the list made again, and its places
+        list = [...rest, ...ordered];
+        at = new Map(list.map((m, i) => [m!.id, i]));
+      }
+    } else if (isMsg(r)) put(r);
     else if (r.$set && typeof r.$set === "object") {
-      const { messages: list, ...rest } = r.$set;
-      if (Array.isArray(list)) setAll(list);
+      const { messages: all, ...rest } = r.$set;
+      if (Array.isArray(all)) { reset(); for (const m of all) if (isMsg(m)) put(m); }
       meta = { ...meta, ...rest };
     } else if (typeof r.sessionId === "string" && typeof r.projectHash === "string") {
-      const { messages: list, ...rest } = r;
+      const { messages: all, ...rest } = r;
       meta = { ...meta, ...rest };
-      if (Array.isArray(list)) for (const m of list) if (isMsg(m)) messages.set(m.id, m);
+      if (Array.isArray(all)) for (const m of all) if (isMsg(m)) put(m);
     }
   }
-  return { meta, messages: [...messages.values()] };
+  return { meta, messages: list.filter((m): m is Msg => !!m), ...(cut ? { cut } : {}) };
 }
 
 // A file's records: a JSONL log, or an older version's one JSON object.
@@ -120,7 +153,8 @@ const timeMs = (t: unknown) => (typeof t === "string" ? Date.parse(t) || 0 : 0);
 
 // The folder a project's directory under tmp/ stands for.
 function projectRoot(dir: string): string | undefined {
-  try { return readFileSync(join(dir, ".project_root"), "utf8").trim() || undefined; } catch { return undefined; }
+  // (An absolute folder, written plainly: `..` and `.` in what the file says are resolved.)
+  try { const p = readFileSync(join(dir, ".project_root"), "utf8").trim(); return isAbsolute(p) ? resolve(p) : undefined; } catch { return undefined; }
 }
 
 // Every session file, newest first: tmp/<project>/chats/*.json(l) and a subagent's under chats/<parent>/.
@@ -213,6 +247,7 @@ export async function readGemini(f: Found): Promise<Read> {
     } else b.counts.skipped++; // info, error and warning lines are Gemini CLI's own display
   }
   if (lines) notes.push(...damageNotes(lines));
+  if (c.cut) notes.push("The session's log changes its messages more often than any session Gemini CLI writes: what it holds after that point is left out.");
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} thought summar${b.counts.thoughts_dropped === 1 ? "y is" : "ies are"} not carried: another model's thinking is not sent to this one.`);
   if (b.counts.skipped) notes.push(`${b.counts.skipped} line${b.counts.skipped === 1 ? "" : "s"} Gemini CLI showed (info, warnings, errors) ${b.counts.skipped === 1 ? "is" : "are"} not part of the conversation and ${b.counts.skipped === 1 ? "is" : "are"} left out.`);
   if (models.size > 1) notes.push(`The session used ${[...models].join(", ")}.`);
