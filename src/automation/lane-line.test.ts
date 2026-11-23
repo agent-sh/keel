@@ -23,7 +23,7 @@ describe("an agent's lane in five lines", () => {
     expect(l.doing).toMatchObject({ text: "Running bun test. 4 steps", from: "fact" });
     expect(l.waits).toMatchObject({ text: "Its command, running since 14:08 (2 min): Running bun test", from: "fact", at: at(14, 8) });
     expect(l.wrong).toMatchObject({ text: "Nothing failed in its scope", from: "fact" });
-    expect(l.changed.text).toBe("2 files (+10 \u22121) on keel/x at abc1234 \u201cAdd a\u201d: a.ts, b.ts, 1 commit over its base. Checks on this tree: unit failed (2 failed)");
+    expect(l.changed.text).toBe("2 files (+10 \u22121) on keel/x at abc1234 \u201cAdd a\u201d (its commit message): a.ts, b.ts, 1 commit over its base. Checks on this tree: unit failed (2 failed)");
     expect(l.next).toMatchObject({ text: "\u201cRun the tests\u201d (its plan, 1 of 2 done)", from: "own" });
   });
 
@@ -48,8 +48,8 @@ describe("an agent's lane in five lines", () => {
   });
 
   test("waiting on the owner: what it asks, since when", () => {
-    const l = byKey(laneLines(base({ said: stateWords({ watch: "need", why: "question" }), state: { watch: "need", why: "question", text: "Which store should I use?", since: at(14, 6) } })));
-    expect(l.waits).toMatchObject({ text: "You since 14:06 (4 min): Which store should I use?", tone: "need" });
+    const l = byKey(laneLines(base({ said: stateWords({ watch: "need", why: "question" }), state: { watch: "need", why: "question", text: "Question: Which store should I use?", since: at(14, 6) } })));
+    expect(l.waits).toMatchObject({ text: "You since 14:06 (4 min): Its question, \u201cWhich store should I use?\u201d", tone: "need" });
   });
 
   test("in line for a slot of its parent", () => {
@@ -98,9 +98,9 @@ describe("an agent's lane in five lines", () => {
 
   test("its worktree: files not committed are said so", () => {
     const g = { branch: "keel/b", head: "78fff1f", subject: "first", commits: 0, files: 1, dirty: 1, added: 0, removed: 0, names: ["notes/plan.md"] };
-    expect(byKey(laneLines(base({ worktree: true, git: g }))).changed.text).toBe("1 file on keel/b at 78fff1f \u201cfirst\u201d, not committed: notes/plan.md");
-    expect(byKey(laneLines(base({ worktree: true, git: { ...g, files: 3, dirty: 1, commits: 2, added: 5, removed: 2, names: ["a", "b", "c"] } }))).changed.text).toBe("3 files (+5 \u22122) on keel/b at 78fff1f \u201cfirst\u201d, 1 not committed: a, b, c, 2 commits over its base");
-    expect(byKey(laneLines(base({ worktree: true, git: { ...g, files: 0, dirty: 0, names: [] } }))).changed.text).toBe("No file changed on keel/b at 78fff1f \u201cfirst\u201d");
+    expect(byKey(laneLines(base({ worktree: true, git: g }))).changed.text).toBe("1 file on keel/b at 78fff1f \u201cfirst\u201d (its commit message), not committed: notes/plan.md");
+    expect(byKey(laneLines(base({ worktree: true, git: { ...g, files: 3, dirty: 1, commits: 2, added: 5, removed: 2, names: ["a", "b", "c"] } }))).changed.text).toBe("3 files (+5 \u22122) on keel/b at 78fff1f \u201cfirst\u201d (its commit message), 1 not committed: a, b, c, 2 commits over its base");
+    expect(byKey(laneLines(base({ worktree: true, git: { ...g, files: 0, dirty: 0, names: [] } }))).changed.text).toBe("No file changed on keel/b at 78fff1f \u201cfirst\u201d (its commit message)");
   });
 
   test("a missing fact is said to be missing, never guessed", () => {
@@ -131,6 +131,36 @@ describe("an agent's lane in five lines", () => {
     expect(hoursTail({ wall_ms: 120_000, classes: { unknown: 100_000, owner: 20_000 } })).toBe("Of 2 min: waiting for the owner 20 s");
     expect(hoursTail({ wall_ms: 0, classes: {} })).toBe("");
     expect(hoursTail(null)).toBe("");
+  });
+
+  test("a worktree on another machine, and one that was removed, are said so", () => {
+    expect(byKey(laneLines(base({ worktree: true, git: { remote: "build-box", branch: "keel/far" } }))).changed).toMatchObject({ text: "Its worktree is on build-box, on keel/far: not read from here", from: "missing" });
+    const gone = byKey(laneLines(base({ live: false, said: stateWords({ watch: "done" }), worktree: true, git: { gone: true, branch: "keel/done", head: "abc1234" }, checks: { tree: [], earlier: [{ name: "unit", result: "pass", pass: 3, fail: 0, ended: at(14, 2) }] } })));
+    expect(gone.changed).toMatchObject({ text: "Its worktree was removed (its branch keel/done at abc1234). No check ran on this tree; on an earlier one: unit passed (3 passed) at 14:02", from: "fact" });
+    expect(byKey(laneLines(base({ worktree: true, git: { gone: true, branch: "keel/x", head: null } }))).changed.text).toBe("Its worktree was removed (its branch keel/x is gone too)");
+  });
+
+  test("a successor says it continues after a lost context", () => {
+    const l = byKey(laneLines(base({ lost: 2, doing: { text: "Running bun test", from: "tool", steps: 1, since: at(14, 0) } })));
+    expect(l.doing.text).toBe("Running bun test. 1 step. It continues after a lost context (2)");
+    expect(byKey(laneLines(base({ doing: { text: "Running bun test", from: "tool", steps: 1, since: at(14, 0) } }))).doing.text).toBe("Running bun test. 1 step");
+  });
+
+  test("the model's prose is marked as its words: its question, its plan, its commit message", () => {
+    const asked = byKey(laneLines(base({ said: stateWords({ watch: "need", why: "question" }), state: { watch: "need", why: "question", text: "Question: Which store should I use?, and 1 more", since: at(14, 6) } })));
+    expect(asked.waits.text).toBe("You since 14:06 (4 min): Its question, \u201cWhich store should I use?\u201d, and 1 more");
+    // An approval names the call itself: no mark.
+    expect(byKey(laneLines(base({ state: { watch: "need", why: "approval", text: "Approve rm -rf build", since: at(14, 6) } }))).waits.text).toBe("You since 14:06 (4 min): Approve rm -rf build");
+    const g = { branch: "keel/b", head: "78fff1f", subject: "Fix the parser", commits: 1, files: 0, added: 0, removed: 0, names: [] };
+    expect(byKey(laneLines(base({ worktree: true, git: g }))).changed.text).toBe("No file changed on keel/b at 78fff1f \u201cFix the parser\u201d (its commit message), 1 commit over its base");
+  });
+
+  test("a failure of an agent below it names that agent", () => {
+    const f = (kind: string, below?: string) => byKey(laneLines(base({ failure: { kind, cls: "quota", text: "HTTP 402", at: at(14, 3), count: 1, ...(below ? { below } : {}) } }))).wrong.text;
+    expect(f("agent", "Bee")).toBe("Agent Bee (below it) failed at 14:03 (quota): HTTP 402");
+    expect(f("tool", "Bee")).toBe("A tool call of agent Bee (below it) failed at 14:03 (quota): HTTP 402");
+    expect(f("agent")).toBe("It failed at 14:03 (quota): HTTP 402");
+    expect(f("tool")).toBe("A tool call failed at 14:03 (quota): HTTP 402");
   });
 
   test("the text form: a line a key", () => {

@@ -20,7 +20,10 @@ describe("an agent's now line", () => {
   });
 
   test("a call whose line names only its tool says what its input is about", () => {
-    expect(nowWords({ calls: [{ name: "WaitFor", input: { kind: "log", note: "the build to finish" } }] })).toEqual({ text: "Using WaitFor: the build to finish", from: "tool" });
+    // (Prose the model wrote is quoted and marked as its words; a URL, a path or a command is the call itself.)
+    expect(nowWords({ calls: [{ name: "WaitFor", input: { kind: "log", note: "the build to finish" } }] })).toEqual({ text: "Using WaitFor: \u201cthe build to finish\u201d (its note)", from: "tool" });
+    expect(nowWords({ calls: [{ name: "Agent", input: { prompt: "Fix the parser" } }] })).toEqual({ text: "Using Agent: \u201cFix the parser\u201d (its prompt)", from: "tool" });
+    expect(nowWords({ calls: [{ name: "Bash", input: { command: "bun run build", description: "The long build" } }] })).toEqual({ text: "\u201cThe long build\u201d (its description)", from: "tool" });
     expect(nowWords({ calls: [{ name: "mcp__web__fetch", input: { url: "https://example.com/a" } }] })).toEqual({ text: "Calling mcp__web__fetch: https://example.com/a", from: "tool" });
     // A line that already says what it does is kept as it is.
     expect(nowWords({ calls: [{ name: "Bash", input: { command: "bun test", note: "x" } }] })).toEqual({ text: "Running bun test", from: "tool" });

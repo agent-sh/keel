@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Lane } from "../../../../src/automation/lane-line.ts";
 import { api, reportUnlessGone } from "../../lib/store.ts";
-import { useAuto, type AgentRecord } from "../../lib/automation.ts";
+import { autoState, useAuto, type AgentRecord } from "../../lib/automation.ts";
 import { useToldState } from "../../lib/watch.ts";
 import { cn } from "../../lib/utils.ts";
 
@@ -10,7 +10,14 @@ import { cn } from "../../lib/utils.ts";
 // and a fact that is missing is said to be missing. Read when a view shows it, and again when
 // something it says changed: the agent's record, its session's state, its "now" line (told at
 // most every 15 s). No timer of its own.
+// The last lane read of each agent, so a row folded open again shows it at once. Held for the agents
+// the page knows: one that left its list is dropped when the next lane is kept.
 const kept = new Map<string, Lane>();
+function keep(l: Lane) {
+  const known = autoState().agents;
+  for (const id of kept.keys()) if (!known[id]) kept.delete(id);
+  kept.set(l.agent_id, l);
+}
 
 export function useLane(a: AgentRecord, on: boolean): Lane | undefined {
   const told = useToldState(a.session_id);
@@ -21,7 +28,7 @@ export function useLane(a: AgentRecord, on: boolean): Lane | undefined {
     if (!on) return;
     let live = true;
     api<Lane>(`/api/automation/agents/${a.id}/lane`)
-      .then((l) => { kept.set(a.id, l); if (live) setLane(l); })
+      .then((l) => { keep(l); if (live) setLane(l); })
       .catch((e) => reportUnlessGone(e, { at: "agent lane" }));
     return () => { live = false; };
   }, [on, a.id, key]);

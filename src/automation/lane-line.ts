@@ -13,6 +13,7 @@ import { localDay, localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { HOUR_WORDS, type HourClass } from "../admin/hours-rows.ts";
 import type { Said } from "../core/state-words.ts";
+import { ASK_LEAD } from "../core/watch.ts";
 
 export type LaneKey = "doing" | "waits" | "wrong" | "changed" | "next";
 // fact: made from what Keel keeps; own: the agent's own words, quoted; missing: the fact is not there.
@@ -29,7 +30,11 @@ export type CheckFact = { name: string; result: string; pass: number | null; fai
 export type GitFact =
   // `files`: every file it carries over its base; `dirty`: of them, the ones not committed.
   | { branch: string | null; head: string; subject: string; commits: number; files: number; dirty?: number; added: number; removed: number; names: string[] }
-  | { why: string };
+  | { why: string }
+  // A worktree on another machine: its tools run there, so its folder is not read here.
+  | { remote: string; branch: string | null }
+  // Its row says removed, or the folder is gone: its branch and where that branch points, when it is kept.
+  | { gone: true; branch: string | null; head: string | null };
 export type LaneFacts = {
   now: number;
   live: boolean;
@@ -37,10 +42,12 @@ export type LaneFacts = {
   state?: { watch: string; why?: string; text?: string; since?: number; until?: number } | null; // its session's served state
   doing?: { text: string; from: string; steps: number; since: number } | null; // its "now" line (src/automation/now.ts)
   ended?: { at: number; steps: number; why?: string } | null;
+  lost?: number; // the contexts its current task lost, each taken up by a successor
   call?: { line: string; shell: boolean; since: number } | null; // the oldest call its turn runs now
   waitsOn?: string; // what its waits are, in words (src/automation/agents.ts waitsOn)
   slot?: boolean; // in line for a slot of its parent
-  failure?: { kind: string; cls: string; text: string; at: number; count: number } | null;
+  // `below`: the agent below it whose failure this is (none: its own).
+  failure?: { kind: string; cls: string; text: string; at: number; count: number; below?: string } | null;
   hours?: { wall_ms: number; classes: Partial<Record<HourClass, number>> } | null;
   worktree?: boolean;
   git?: GitFact | null;
@@ -69,6 +76,12 @@ export function hoursTail(h: LaneFacts["hours"]): string {
 }
 
 function doing(f: LaneFacts): LaneLine {
+  const l = doingOf(f);
+  // A successor: the work goes on in a fresh context, and the reader is told so.
+  if (!f.lost) return l;
+  return { ...l, text: cut(`${l.text}. It continues after a lost context (${f.lost})`) };
+}
+function doingOf(f: LaneFacts): LaneLine {
   // Its hours once it ended: a live agent's running step has no record yet, so its split would be a guess.
   const tail = f.live ? "" : hoursTail(f.hours);
   if (!f.live) {
@@ -85,6 +98,17 @@ function doing(f: LaneFacts): LaneLine {
   return { key: "doing", text: cut([own ? `${quote(d.text)} (its thinking)` : d.text, `${plural(d.steps, "step")}`, tail].filter(Boolean).join(". ")), from: own ? "own" : "fact", at: d.since };
 }
 
+// What the owner is asked, with the model's own words marked: a question or a plan is its prose, an
+// approval names the call itself.
+const ASKED: Record<string, string> = { question: "its question", plan: "its plan" };
+export function askWords(why: string | undefined, text: string): string {
+  const lead = why ? ASK_LEAD[why as keyof typeof ASK_LEAD] : undefined;
+  const mark = why ? ASKED[why] : undefined;
+  if (!lead || !mark || !text.startsWith(lead)) return text;
+  const m = /^(.*?)(, and \d+ more)?$/s.exec(text.slice(lead.length))!;
+  return `${mark.charAt(0).toUpperCase()}${mark.slice(1)}, ${quote(m[1]!)}${m[2] ?? ""}`;
+}
+
 const MODEL_WAIT: Record<string, string> = { model: "The model's reply", stalled: "The model's reply, which has gone quiet", compacting: "Its context to be compacted", retry: "The provider, to try again" };
 function waits(f: LaneFacts): LaneLine {
   const s = f.state;
@@ -93,7 +117,7 @@ function waits(f: LaneFacts): LaneLine {
   if (!f.live) return { key: "waits", text: "Nothing: it has ended", from: "fact" };
   if (f.slot) return { key: "waits", text: `A free agent slot of its parent${since}`, from: "fact", tone: "wait", ...(at ? { at } : {}) };
   if (s?.watch === "need") {
-    const what = s.text || f.said.what || "an answer";
+    const what = s.text ? askWords(s.why, s.text) : f.said.what || "an answer";
     return { key: "waits", text: cut(`You${since}: ${what}`), from: "fact", tone: "need", ...(at ? { at } : {}) };
   }
   if (s?.watch === "wait" || s?.watch === "resume") {
@@ -111,11 +135,18 @@ function waits(f: LaneFacts): LaneLine {
   return { key: "waits", text: "Nothing it is held by: between steps", from: "fact" };
 }
 
-const KIND_WORD: Record<string, string> = { agent: "It failed", turn: "A turn failed", provider: "A model request failed", tool: "A tool call failed", wait: "A wait failed", loop: "A loop failed", message: "A message was not delivered", land: "A landing failed" };
+const KIND_NOUN: Record<string, string> = { turn: "A turn", provider: "A model request", tool: "A tool call", wait: "A wait", loop: "A loop", land: "A landing" };
+// Whose failure it is: its own, or of the agent below it that had it, by name.
+export function failedWords(kind: string, below?: string): string {
+  const of = below ? ` of agent ${below} (below it)` : "";
+  if (kind === "agent") return below ? `Agent ${below} (below it) failed` : "It failed";
+  if (kind === "message") return `A message${of} was not delivered`;
+  return `${KIND_NOUN[kind] ?? "A failure"}${of} failed`;
+}
 function wrong(f: LaneFacts): LaneLine {
   const x = f.failure;
   if (x) {
-    const head = `${KIND_WORD[x.kind] ?? "A failure"} at ${clock(x.at, f.now)}${x.count > 1 ? `, ${x.count} times` : ""}`;
+    const head = `${failedWords(x.kind, x.below)} at ${clock(x.at, f.now)}${x.count > 1 ? `, ${x.count} times` : ""}`;
     const text = tidy(x.text.split("\n")[0] ?? "");
     return { key: "wrong", text: cut(`${head}${x.cls && x.cls !== "other" ? ` (${x.cls})` : ""}: ${text || "no words"}`), from: "fact", tone: "fail", at: x.at };
   }
@@ -146,7 +177,13 @@ function changed(f: LaneFacts): LaneLine {
   if (f.worktree) {
     if (!g) return { key: "changed", text: "Its worktree was not read", from: "missing" };
     if ("why" in g) return { key: "changed", text: cut(`Its worktree could not be read: ${g.why}`), from: "missing" };
-    const at = `${g.branch ?? "a detached head"} at ${g.head}${g.subject ? ` ${quote(cut(g.subject, 60))}` : ""}`;
+    if ("remote" in g) return { key: "changed", text: cut(`Its worktree is on ${g.remote}${g.branch ? `, on ${g.branch}` : ""}: not read from here`), from: "missing" };
+    if ("gone" in g) {
+      const kept = g.branch ? (g.head ? `its branch ${g.branch} at ${g.head}` : `its branch ${g.branch} is gone too`) : "no branch of it is known";
+      return { key: "changed", text: cut([`Its worktree was removed (${kept})`, checks].filter(Boolean).join(". "), 360), from: "fact" };
+    }
+    // (A commit's subject is the model's words: marked as such.)
+    const at = `${g.branch ?? "a detached head"} at ${g.head}${g.subject ? ` ${quote(cut(g.subject, 60))} (its commit message)` : ""}`;
     const lines = g.added || g.removed ? ` (+${g.added} \u2212${g.removed})` : "";
     const open = !g.dirty ? "" : g.dirty >= g.files ? ", not committed" : `, ${g.dirty} not committed`;
     const files = g.files ? `${plural(g.files, "file")}${lines} on ${at}${open}: ${names(g.names, g.files)}` : `No file changed on ${at}`;

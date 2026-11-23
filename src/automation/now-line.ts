@@ -6,7 +6,7 @@
 // Claude Code's agent view updates a row "at most once every 15 seconds from
 // the session's own recent output". The decisions here are pure;
 // src/automation/now.ts keeps what they read.
-import { toolLine } from "../core/tool-line.ts";
+import { toolKind, toolLine } from "../core/tool-line.ts";
 
 export const NOW_MS = 15_000;
 const MAX = 160; // characters of a line: a row's width at the widest
@@ -51,13 +51,22 @@ export type Seen = {
 // A call as the line says it. A call whose line names only its tool ("Using WaitFor", "Calling
 // mcp__web__fetch") says what its input is about, from the first of these fields it has: in the
 // measure of the rule over real agents' steps these were the only lines that said nothing.
+// A field of prose the model wrote (not the call itself, as a command, a path or a query is) is quoted
+// and marked as its words.
 const ABOUT = ["description", "note", "question", "query", "url", "path", "file_path", "pattern", "prompt", "message"] as const;
+const PROSE: Partial<Record<(typeof ABOUT)[number], string>> = { description: "its description", note: "its note", question: "its question", prompt: "its prompt", message: "its message" };
+const theirs = (text: string, mark: string) => `\u201c${oneLine(text)}\u201d (${mark})`;
 export function callWords(name: string, input: unknown, cwd?: string): string {
   const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  // A command the model described reads by its description (src/core/tool-line.ts): its words.
+  const described = toolKind(name) === "shell" && typeof i.description === "string" && i.description.trim();
+  if (described) return theirs(i.description as string, "its description");
   const line = toolLine(name, i, cwd);
   if (!/^(Using|Calling) \S+$/.test(line)) return line;
   const k = ABOUT.find((f) => typeof i[f] === "string" && (i[f] as string).trim());
-  return k ? `${line}: ${oneLine(i[k] as string)}` : line;
+  if (!k) return line;
+  const mark = PROSE[k];
+  return `${line}: ${mark ? theirs(i[k] as string, mark) : oneLine(i[k] as string)}`;
 }
 
 // The words of the line, and where they came from.

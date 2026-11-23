@@ -92,10 +92,10 @@ test("an agent's lane: doing, waits for, went wrong, changed and next, for each 
     await expect(line(kid("Parker"), "waits")).toContainText("(The long build) since");
     await expect(kid("Parker").getByTestId("lane-next")).toHaveAttribute("data-from", "missing");
     await expect(kid("Asker").getByTestId("lane-waits")).toHaveAttribute("data-tone", "need");
-    await expect(line(kid("Asker"), "waits")).toContainText("Which store should I use?");
+    await expect(line(kid("Asker"), "waits")).toContainText("Its question, \u201cWhich store should I use?\u201d");
     await expect(kid("Broken").getByTestId("lane-wrong")).toHaveAttribute("data-tone", "fail");
     await expect(line(kid("Broken"), "wrong")).toContainText("credit balance is too low");
-    await expect(line(kid("Builder"), "changed")).toContainText(/1 file on keel\/\S+ at [0-9a-f]{7,} \u201cFirst commit\u201d, not committed: notes\/plan\.md\. Checks on this tree: unit passed/);
+    await expect(line(kid("Builder"), "changed")).toContainText(/1 file on keel\/\S+ at [0-9a-f]{7,} \u201cFirst commit\u201d \(its commit message\), not committed: notes\/plan\.md\. Checks on this tree: unit passed/);
     await expect(line(kid("Builder"), "next")).toHaveText("Nothing: its report went to its parent");
     for (const t of Object.keys(want)) for (const k of KEYS) said[t]!.lane[k] = (await line(kid(t), k).textContent()) ?? "";
     writeFileSync(join(SHOTS, "agent-lane-rows.json"), JSON.stringify(said, null, 2));
