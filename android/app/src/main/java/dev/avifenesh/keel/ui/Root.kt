@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -136,10 +137,12 @@ fun TabBar(active: Int) {
                         Modifier.weight(1f).height(64.dp).press({ Ui.route.value = Route.Tabs(i) }).semantics { contentDescription = "tab-$label" },
                         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
                     ) {
-                        Box {
+                        // The icon's box is the icon's size: the count is drawn over its corner and takes
+                        // no room, so at a large text size it does not push this tab's label below the others.
+                        Box(Modifier.size(22.dp)) {
                             KIcon(icon, if (on) k.fg else k.faint, 22.dp)
                             if (i == 1 && open > 0) Box(
-                                Modifier.offset(x = 14.dp, y = (-6).dp).clip(RoundedCornerShape(S.rPill)).background(k.need).padding(horizontal = 5.dp, vertical = 1.dp),
+                                Modifier.wrapContentSize(Alignment.TopStart, unbounded = true).offset(x = 14.dp, y = (-6).dp).clip(RoundedCornerShape(S.rPill)).background(k.need).padding(horizontal = 5.dp, vertical = 1.dp),
                             ) { Txt("$open", T.label, if (k.dark) k.bg else k.raised) }
                         }
                         Spacer(Modifier.height(4.dp))

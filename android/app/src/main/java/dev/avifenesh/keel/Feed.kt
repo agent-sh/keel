@@ -131,7 +131,10 @@ class Feed {
         val reload = o.str("reload").isNotBlank()
         val first = cursor == 0L || reload
         val list = o.optJSONArray("chats")?.let { a -> objs(a).map(Chat::of).associateBy { it.id } }
-        if (list != null) chats.value = if (o.optBoolean("complete")) list else chats.value + list
+        if (list != null) {
+            // A whole list: a session held here and not in it is gone, and so are its words begun here.
+            if (o.optBoolean("complete")) { Unsent.drop(chats.value.keys - list.keys); chats.value = list } else chats.value = chats.value + list
+        }
         // An answer to what the phone said it holds: the buckets named are sent whole, so a row held in
         // one of them that did not come is gone (deleted meanwhile).
         o.optJSONObject("buckets")?.let { b ->
@@ -139,7 +142,7 @@ class Feed {
             val of = b.optJSONArray("of")?.let { a -> (0 until a.length()).map { a.optInt(it) }.toSet() }.orEmpty()
             val sent = list?.keys.orEmpty()
             val gone = if (n > 0) chats.value.keys.filter { it !in sent && bucketOf(it, n) in of }.toSet() else emptySet()
-            if (gone.isNotEmpty()) { chats.update { it - gone }; msgs.update { it - gone }; older.update { it - gone } }
+            if (gone.isNotEmpty()) { chats.update { it - gone }; msgs.update { it - gone }; older.update { it - gone }; Unsent.drop(gone) }
         }
         if (reload) { msgs.value = emptyMap(); older.value = emptyMap(); epoch++ }
         // `reset`: chats whose shown branch changed since the cursor. The answer's
@@ -193,7 +196,7 @@ class Feed {
                 e.optJSONObject("chat")?.let { putChat(Chat.of(it)) }
                 branch(e.str("chat_id"), objs(e.optJSONArray("messages") ?: JSONArray()).map(Msg::of), e.str("older").takeIf { it.isNotBlank() })
             }
-            "chat_removed" -> { val c = e.str("chat_id"); chats.update { it - c }; msgs.update { it - c }; older.update { it - c } }
+            "chat_removed" -> { val c = e.str("chat_id"); chats.update { it - c }; msgs.update { it - c }; older.update { it - c }; Unsent.drop(setOf(c)) }
             "working" -> {
                 val c = e.str("chat_id")
                 if (e.optBoolean("working")) working.update { it + (c to e.optDouble("since", System.currentTimeMillis() / 1000.0)) }

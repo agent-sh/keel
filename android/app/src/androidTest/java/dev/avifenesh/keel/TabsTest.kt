@@ -41,4 +41,21 @@ class TabsTest {
         val boxes = labels.map { rule.onNodeWithText(it, useUnmergedTree = true).getBoundsInRoot() }
         for ((a, b) in boxes.zipWithNext()) assertTrue("labels touch: ${a.right} and ${b.left}", a.right < b.left)
     }
+
+    // The count on Needs you does not move its label: at 200% the badge is taller than the icon, and
+    // the four labels still stand on one line.
+    @Test fun theNeedsCountLeavesTheLabelsOnOneLine() {
+        val card = Card.of(org.json.JSONObject().put("id", "q-1").put("chat_id", "c1").put("kind", "question").put("command", "Go?").put("state", "pending")
+            .put("actions", org.json.JSONArray()).put("questions", org.json.JSONArray()))
+        val before = Hub.cards.value
+        Hub.cards.value = mapOf(card.id to card)
+        try {
+            rule.setContent {
+                val d = LocalDensity.current
+                CompositionLocalProvider(LocalDensity provides Density(d.density, fontScale = 2f)) { KeelTheme(1) { TabBar(0) } }
+            }
+            val tops = listOf("Sessions", "Needs you", "Usage", "Settings").associateWith { rule.onNodeWithText(it, useUnmergedTree = true).getBoundsInRoot().top }
+            assertEquals("the labels' tops: $tops", 1, tops.values.toSet().size)
+        } finally { Hub.cards.value = before }
+    }
 }

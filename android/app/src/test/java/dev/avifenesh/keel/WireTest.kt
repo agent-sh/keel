@@ -8,6 +8,9 @@ import dev.avifenesh.keel.ui.inlineMath
 import dev.avifenesh.keel.ui.mathRuns
 import dev.avifenesh.keel.ui.mathText
 import androidx.compose.ui.text.SpanStyle
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -453,6 +456,43 @@ class WireTest {
         assertEquals("half a thought", Unsent.of("s1"))
         Unsent.put("s2", "")
         assertEquals(setOf("s1"), Unsent.text.value.keys)
+        Unsent.reset()
+    }
+
+    // A send in hand is no draft: a screen left before the daemon answers, and opened again, finds an
+    // empty box, not words a second Send would make a second prompt of. Leaving does not cut the send.
+    // Only a send that failed brings its words back, with why and its id, unless others were begun since.
+    @Test fun aSendInHandIsNoDraftAndOnlyAFailureBringsItsWordsBack() = kotlinx.coroutines.runBlocking {
+        Unsent.reset()
+        val app = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        val answer = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var reached = false
+        Unsent.put("s1", "do the thing")
+        val one = Unsent.NotSent("do the thing", "id-1", "key-1", 5.0, "")
+        val going = Unsent.send(app, "s1", one, { "unused" }) { answer.await(); reached = true }
+        assertEquals("", Unsent.of("s1"))
+        // The screen that sent it is left: its wait is cancelled, the send is not.
+        val screen = launch { going.await() }
+        screen.cancelAndJoin()
+        assertEquals("", Unsent.of("s1"))
+        answer.complete(Unit)
+        going.await()
+        assertTrue(reached)
+        assertEquals("", Unsent.of("s1"))
+        assertTrue(Unsent.notSent.value.isEmpty())
+        // One that fails: its words are back, with why and the same id.
+        Unsent.put("s1", "again")
+        val failing = Unsent.send(app, "s1", one.copy(words = "again"), { "Not sent: ${it.message}" }) { throw java.io.IOException("refused") }
+        assertTrue(runCatching { failing.await() }.isFailure)
+        assertEquals("again", Unsent.of("s1"))
+        assertEquals(one.copy(words = "again", why = "Not sent: refused"), Unsent.notSent.value["s1"])
+        Unsent.shown("s1")
+        assertTrue(Unsent.notSent.value.isEmpty())
+        // Words begun while it went stay as they are.
+        val late = Unsent.send(app, "s1", one.copy(words = "first"), { "no" }) { Unsent.put("s1", "newer"); throw java.io.IOException("x") }
+        assertTrue(runCatching { late.await() }.isFailure)
+        assertEquals("newer", Unsent.of("s1"))
+        app.cancel()
         Unsent.reset()
     }
 }

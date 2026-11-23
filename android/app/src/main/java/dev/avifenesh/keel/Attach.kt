@@ -17,6 +17,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.scale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -35,9 +38,35 @@ import java.util.UUID
  */
 object Unsent {
     val text = MutableStateFlow<Map<String, String>>(emptyMap())
+    /** A send that failed, with its id, so the same words sent again are the same prompt (`Wire.sendId`). */
+    data class NotSent(val words: String, val id: String, val key: String, val after: Double, val why: String)
+    /** The failed sends the owner has not been shown yet: a screen left while its send went shows them when opened. */
+    val notSent = MutableStateFlow<Map<String, NotSent>>(emptyMap())
     fun of(chat: String): String = text.value[chat].orEmpty()
     fun put(chat: String, words: String) = text.update { if (words.isEmpty()) it - chat else it + (chat to words) }
-    fun reset() { text.value = emptyMap() }
+    fun reset() { text.value = emptyMap(); notSent.value = emptyMap() }
+    /** A session that is gone (deleted, or not on the computer any more): its words go with it. */
+    fun drop(chats: Set<String>) { if (chats.isEmpty()) return; text.update { it - chats }; notSent.update { it - chats } }
+    /** The owner has been shown the failed send. */
+    fun shown(chat: String) = notSent.update { it - chat }
+
+    /**
+     * A send of a session's box. Its words stop being a draft as it goes, so a screen left before
+     * the daemon answers is not opened again on words a second Send would make a second prompt of.
+     * It runs in `app`, not in the screen: leaving the screen does not cut it. Only a send that
+     * failed brings its words back (unless the owner has begun others since), with why and its id.
+     */
+    fun send(app: CoroutineScope, chat: String, failed: NotSent, why: (Throwable) -> String, call: suspend () -> Unit): Deferred<Unit> {
+        text.update { it - chat }
+        notSent.update { it - chat }
+        return app.async {
+            try { call() } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                if (of(chat).isEmpty()) put(chat, failed.words)
+                notSent.update { it + (chat to failed.copy(why = why(e))) }
+                throw e
+            }
+        }
+    }
 }
 
 /** Where a picked file stands: being read and made fit, going up, stored on the computer, or not sent. */

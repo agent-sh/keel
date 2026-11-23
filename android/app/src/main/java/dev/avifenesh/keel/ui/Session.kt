@@ -313,6 +313,16 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
     var keptKey by rememberSaveable(id) { mutableStateOf("") }
     // The newest message held when the send was first made (the daemon's clock).
     var keptAfter by rememberSaveable(id) { mutableStateOf(0.0) }
+    // A send that failed, here or after the screen was left while it went: the owner is told why, and
+    // the words it brought back to the box go again as the same send.
+    val notSent = Unsent.notSent.collectAsState().value[id]
+    LaunchedEffect(notSent) {
+        val f = notSent ?: return@LaunchedEffect
+        if (text.isEmpty()) text = Unsent.of(id)
+        if (text.trim() == f.words) { keptId = f.id; keptText = f.words; keptKey = f.key; keptAfter = f.after }
+        onError(f.why)
+        Unsent.shown(id)
+    }
     val held = Hub.msgs.collectAsState().value[id].orEmpty()
     // The send got no answer here, but its message came with the stream: it is done. The words
     // leave the box, and the same words sent again are a new prompt, not a retry of this one.
@@ -335,12 +345,15 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
         if (cid != keptId) keptAfter = newestTs(held)
         keptId = cid; keptText = t; keptKey = key
         busy = true
+        val how = if (working) mode else "send"
+        val why = { e: Throwable -> dev.avifenesh.keel.reach(e).let { w -> if (w == dev.avifenesh.keel.OUT_OF_REACH) "Not sent: the computer is out of reach. Send it again when it is." else w } }
+        // (The send goes on when the screen is left; its failure comes back through Unsent.notSent.)
+        val going = Unsent.send(Hub.scope, id, Unsent.NotSent(t, cid, key, keptAfter, ""), why) {
+            Hub.send(id, t, how, cid, sending)
+            Attach.sent(id, sending)
+        }
         scope.launch {
-            runCatching { Hub.send(id, t, if (working) mode else "send", cid, sending) }
-                .onSuccess {
-                    text = ""; keptId = ""; keptText = ""; keptKey = ""; onError("")
-                    Attach.sent(id, sending)
-                }.onFailure { onError(dev.avifenesh.keel.reach(it).let { w -> if (w == dev.avifenesh.keel.OUT_OF_REACH) "Not sent: the computer is out of reach. Send it again when it is." else w }) }
+            runCatching { going.await() }.onSuccess { text = ""; keptId = ""; keptText = ""; keptKey = ""; onError("") }
             busy = false
         }
     }

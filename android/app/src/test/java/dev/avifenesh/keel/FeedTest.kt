@@ -248,4 +248,19 @@ class FeedTest {
         f.end()
         assertEquals("done", f.chats.value["c1"]?.status)
     }
+    // The words begun in a session's box go with the session: a delete seen live, a bucket sent whole
+    // without it, a whole list without it. A session still there keeps its words.
+    @Test fun aSessionThatIsGoneTakesItsBegunWordsWithIt() {
+        Unsent.reset()
+        val f = level()
+        Unsent.put("c1", "half a thought")
+        f.frame(frame("chat_removed").put("seq", 11).put("chat_id", "c1"))
+        assertEquals("", Unsent.of("c1"))
+        val two = JSONArray(listOf(chat(12.0), JSONObject().put("id", "c2").put("title", "Two").put("updated", 12.0)))
+        f.sync(JSONObject().put("seq", 12).put("complete", true).put("chats", two))
+        Unsent.put("c1", "kept"); Unsent.put("c2", "other")
+        f.sync(JSONObject().put("seq", 13).put("complete", true).put("chats", JSONArray(listOf(chat(13.0)))))
+        assertEquals(mapOf("c1" to "kept"), Unsent.text.value)
+        Unsent.reset()
+    }
 }
