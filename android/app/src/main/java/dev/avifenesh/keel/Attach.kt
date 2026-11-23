@@ -5,6 +5,7 @@
 package dev.avifenesh.keel
 
 import android.content.Context
+import android.media.ExifInterface
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
@@ -33,6 +34,8 @@ enum class Up { READING, UPLOADING, READY, FAILED }
 data class Picked(
     val key: String, val name: String, val mime: String, val size: Long, val state: Up,
     val thumb: ImageBitmap? = null, val upload: Upload? = null, val error: String = "",
+    /** Where it was picked from, kept for Try again. */
+    val uri: Uri? = null, val picked: String = name, val pickedMime: String = mime, val pickedSize: Long? = null,
 ) {
     val photo get() = mime.startsWith("image/")
     val busy get() = state == Up.READING || state == Up.UPLOADING
@@ -61,7 +64,8 @@ object Attach {
         pending.update { m -> m[chat]?.let { l -> m + (chat to l.map { if (it.key == key) f(it) else it }) } ?: m }
     private fun fail(chat: String, key: String, why: String) = change(chat, key) { it.copy(state = Up.FAILED, error = why) }
 
-    private suspend fun limits(): Me? = limits ?: runCatching { Hub.me() }.getOrNull()?.also { limits = it }
+    // What the daemon takes. Nothing is read before it says: a file cannot be held to a limit nobody knows.
+    private suspend fun limits(): Me = limits ?: Hub.me().also { limits = it }
 
     /** Files the owner picked for a session's next message: each is read and uploaded on its own. */
     fun add(ctx: Context, chat: String, uris: List<Uri>) {
@@ -72,29 +76,59 @@ object Attach {
                 ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
                 ?: "application/octet-stream"
             val key = UUID.randomUUID().toString()
-            put(chat, Picked(key, name, mime, size ?: 0, Up.READING))
+            put(chat, Picked(key, name, mime, size ?: 0, Up.READING, uri = uri, pickedSize = size))
             Hub.scope.launch { take(app, chat, key, uri, name, mime, size) }
         }
     }
 
+    /** A pick that failed, read and sent again from where it was picked. */
+    fun retry(ctx: Context, chat: String, key: String) {
+        val p = pending.value[chat]?.firstOrNull { it.key == key && it.state == Up.FAILED } ?: return
+        val uri = p.uri ?: return
+        change(chat, key) { it.copy(state = Up.READING, error = "", name = p.picked, mime = p.pickedMime) }
+        Hub.scope.launch { take(ctx.applicationContext, chat, key, uri, p.picked, p.pickedMime, p.pickedSize) }
+    }
+
     private suspend fun take(ctx: Context, chat: String, key: String, uri: Uri, name: String, mime: String, size: Long?) {
         try {
-            val me = limits()
-            // A photo is made smaller before it is checked; any other file is refused before it is read.
-            if (!mime.startsWith("image/")) Wire.tooLarge(name, size, me?.maxBytes).let { if (it.isNotEmpty()) return fail(chat, key, it) }
-            val raw = withContext(Dispatchers.IO) { read(ctx, uri, if (mime.startsWith("image/")) null else me?.maxBytes) }
-            var bytes = raw; var type = mime; var file = name; var thumb: ImageBitmap? = null
-            if (mime.startsWith("image/")) decoding.withPermit {
-                withContext(Dispatchers.Default) { runCatching { photo(raw, mime, me) }.getOrNull() }
-            }?.let { p -> bytes = p.bytes; type = p.mime; file = Wire.renamed(name, p.mime).takeIf { p.mime != mime } ?: name; thumb = p.thumb }
-            Wire.tooLarge(file, bytes.size.toLong(), me?.maxBytes).let { if (it.isNotEmpty()) return fail(chat, key, it) }
+            val me = try { limits() } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                return fail(chat, key, "$name: the computer did not say how large a file may be (${e.message ?: e.javaClass.simpleName}). Try again.")
+            }
+            val got = prepare(ctx, uri, name, mime, size, me)
+            if (got.refused.isNotEmpty()) return fail(chat, key, got.refused)
+            val bytes = got.bytes!!; val type = got.mime; val file = got.name; val thumb = got.thumb
             change(chat, key) { it.copy(name = file, mime = type, size = bytes.size.toLong(), thumb = thumb, state = Up.UPLOADING) }
             val u = Upload.of(Api.postBytes(Wire.uploadPath(file, type), bytes, type))
-            if (u.id.isBlank()) return fail(chat, key, "$file: the computer sent no id for it. Remove it and pick it again.")
+            if (u.id.isBlank()) return fail(chat, key, "$file: the computer sent no id for it. Try again.")
             change(chat, key) { it.copy(state = Up.READY, upload = u, mime = u.mime.ifBlank { type }, size = u.size.takeIf { s -> s > 0 } ?: it.size) }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             fail(chat, key, "$name: ${e.message ?: e.javaClass.simpleName}")
         }
+    }
+
+    /** What goes up for one pick: its bytes, type and name, its thumbnail; or why it does not. */
+    class Prepared(val bytes: ByteArray?, val mime: String, val name: String, val thumb: ImageBitmap?, val refused: String = "")
+
+    /**
+     * A pick made ready to go up. A photo is decoded from where it was picked, never read whole: it costs
+     * its thumbnail and, when it is written again, its copy. Anything that goes as picked is refused by
+     * its size before it is read, and read no further than the limit.
+     */
+    suspend fun prepare(ctx: Context, uri: Uri, name: String, mime: String, size: Long?, me: Me): Prepared {
+        val max = me.maxBytes
+        var bytes: ByteArray? = null; var type = mime; var file = name; var thumb: ImageBitmap? = null
+        if (mime.startsWith("image/")) {
+            val p = decoding.withPermit { withContext(Dispatchers.Default) { runCatching { photo(ctx, uri, mime, me) }.getOrNull() } }
+            if (p != null) { thumb = p.thumb; if (p.bytes != null) { bytes = p.bytes; type = p.mime; file = Wire.renamed(name, p.mime).takeIf { p.mime != mime } ?: name } }
+        }
+        if (bytes == null) {
+            Wire.tooLarge(name, size, max).let { if (it.isNotEmpty()) return Prepared(null, mime, name, thumb, it) }
+            bytes = try { withContext(Dispatchers.IO) { read(ctx, uri, max) } } catch (e: IOException) {
+                return Prepared(null, mime, name, thumb, "$name: ${e.message ?: "it could not be read"}")
+            }
+        }
+        Wire.tooLarge(file, bytes.size.toLong(), max).let { if (it.isNotEmpty()) return Prepared(null, type, file, thumb, it) }
+        return Prepared(bytes, type, file, thumb)
     }
 
     private fun meta(ctx: Context, uri: Uri): Pair<String, Long?> = runCatching {
@@ -125,20 +159,23 @@ object Attach {
         }
     }
 
-    private class Ready(val bytes: ByteArray, val mime: String, val thumb: ImageBitmap?)
+    /** bytes: the photo written again, or null when it goes as picked. */
+    private class Ready(val bytes: ByteArray?, val mime: String, val thumb: ImageBitmap?)
 
     // A photo as it goes up: as picked, or scaled to the daemon's edge and written as PNG or JPEG
-    // (Wire.photoPlan). The decoder turns it upright by its EXIF orientation, so a written copy needs none.
-    private fun photo(bytes: ByteArray, mime: String, me: Me?): Ready {
+    // (Wire.photoPlan), which also leaves out where it was taken (a written copy carries no EXIF).
+    // The decoder turns it upright by its EXIF orientation, so the copy needs none.
+    private fun photo(ctx: Context, uri: Uri, mime: String, me: Me): Ready {
         var w = 0; var h = 0
-        val thumb = ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(bytes))) { d, info, _ ->
+        val source = { ImageDecoder.createSource(ctx.contentResolver, uri) }
+        val thumb = ImageDecoder.decodeBitmap(source()) { d, info, _ ->
             w = info.size.width; h = info.size.height
             d.setTargetSampleSize(sample(maxOf(w, h), THUMB))
             d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
         }.asImageBitmap()
-        val plan = Wire.photoPlan(mime, w, h, me?.imageEdge, me?.readable ?: Me.DEFAULT_INLINE) ?: return Ready(bytes, mime, thumb)
+        val plan = Wire.photoPlan(mime, w, h, me.imageEdge, me.readable, located = located(ctx, uri, mime)) ?: return Ready(null, mime, thumb)
         val edge = maxOf(plan.width, plan.height)
-        val big = ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(bytes))) { d, _, _ ->
+        val big = ImageDecoder.decodeBitmap(source()) { d, _, _ ->
             d.setTargetSampleSize(sample(maxOf(w, h), edge))
             d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
         }
@@ -152,6 +189,12 @@ object Attach {
         fit.recycle()
         return Ready(out.toByteArray(), plan.mime, thumb)
     }
+
+    // Whether a JPEG or WebP says where it was taken (the Files picker keeps it; the photo picker may too).
+    private fun located(ctx: Context, uri: Uri, mime: String): Boolean =
+        (mime == "image/jpeg" || mime == "image/webp") && runCatching {
+            ctx.contentResolver.openInputStream(uri)?.use { FloatArray(2).let { ll -> ExifInterface(it).getLatLong(ll) } } ?: false
+        }.getOrDefault(true) // Not readable: written again, to be sure.
 
     /** The thumbnail's long edge, in pixels: a chip is 64 dp, three pixels a dp at most. */
     const val THUMB = 192

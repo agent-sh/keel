@@ -59,8 +59,11 @@ fun PickedRow(chat: String, picked: List<Picked>) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(S.sm)) {
             for (p in picked) PickedChip(p) { Attach.remove(chat, p.key) }
         }
+        // Each one that failed says why, and is read and sent again from where it was picked.
+        val ctx = androidx.compose.ui.platform.LocalContext.current
         for (p in picked.filter { it.state == Up.FAILED }) {
             Spacer(Modifier.height(S.sm)); Notice(p.error)
+            if (p.uri != null) Btn("Try again", { Attach.retry(ctx, chat, p.key) }, Tone.LINE, compact = true, tag = "retry-${p.picked}", modifier = Modifier.padding(top = 6.dp))
         }
     }
 }

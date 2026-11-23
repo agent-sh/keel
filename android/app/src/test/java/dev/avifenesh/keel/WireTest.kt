@@ -55,6 +55,9 @@ class WireTest {
         // A daemon that names no edge: only the type is changed.
         assertNull(Wire.photoPlan("image/jpeg", 8000, 6000, null, inline))
         assertNull(Wire.photoPlan("application/pdf", 10, 10, 2000, inline))
+        // A photo that says where it was taken is written again, at its own size.
+        assertEquals(Wire.Photo(1600, 1200, "image/jpeg"), Wire.photoPlan("image/jpeg", 1600, 1200, 2000, inline, located = true))
+        assertEquals(Wire.Photo(1600, 1200, "image/jpeg"), Wire.photoPlan("image/webp", 1600, 1200, 2000, inline, located = true))
         assertEquals("IMG_1.jpg", Wire.renamed("IMG_1.HEIC", "image/jpeg"))
         assertEquals("photo.jpg", Wire.renamed("", "image/jpeg"))
     }

@@ -15,6 +15,7 @@ import { chunks } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
 import type { AttachmentBlock, Message } from "../core/types.ts";
 import type { ModelInfo } from "../providers/types.ts";
+import { withoutLocation } from "./exif-scrub.ts";
 
 export const ATTACHMENT_MAX = 20 * 1024 * 1024; // the same cap as the Rust Keel's uploads
 // About 25k tokens: what one Read of a file returns in Claude Code. Longer text
@@ -73,7 +74,9 @@ function publish(part: string, id: string) {
   }
 }
 
-export function saveAttachment(bytes: Uint8Array, name: string, mediaType: string, charset?: string): AttachmentBlock {
+export function saveAttachment(given: Uint8Array, name: string, mediaType: string, charset?: string): AttachmentBlock {
+  // A photo is kept without where it was taken (src/engine/exif-scrub.ts).
+  const bytes = withoutLocation(given);
   const id = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
   const shown = shownName(name);
   if (!attachmentPath(id)) {
@@ -82,6 +85,12 @@ export function saveAttachment(bytes: Uint8Array, name: string, mediaType: strin
     publish(part, id);
   }
   return refOf(id, shown, mediaType, bytes.byteLength, charset);
+}
+
+async function looksLikeImage(path: string): Promise<boolean> {
+  const h = new Uint8Array(await Bun.file(path).slice(0, 12).arrayBuffer());
+  const a = (at: number, n: number) => String.fromCharCode(...h.subarray(at, at + n));
+  return (h[0] === 0xff && h[1] === 0xd8) || a(1, 3) === "PNG" || (a(0, 4) === "RIFF" && a(8, 4) === "WEBP");
 }
 
 const refused = (message: string, status: number) => Object.assign(new Error(message), { status });
@@ -118,7 +127,19 @@ export async function saveAttachmentStream(body: ReadableStream<Uint8Array>, nam
     rmSync(part, { recursive: true, force: true });
     throw e;
   }
-  const id = hash.digest("hex");
+  // A photo is kept without where it was taken: read back (it is at most ATTACHMENT_MAX) only when
+  // its first bytes say it is a JPEG, PNG or WebP, and written again only when that changed it.
+  const path = join(part, diskName(shown));
+  let id = hash.digest("hex");
+  if (await looksLikeImage(path)) {
+    const was = new Uint8Array(await Bun.file(path).arrayBuffer());
+    const now = withoutLocation(was);
+    if (now !== was) {
+      writeFileSync(path, now);
+      size = now.byteLength;
+      id = new Bun.CryptoHasher("sha256").update(now).digest("hex");
+    }
+  }
   publish(part, id);
   return refOf(id, shown, mediaType, size, charset);
 }

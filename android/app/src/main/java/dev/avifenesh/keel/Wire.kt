@@ -90,15 +90,17 @@ object Wire {
      * How a picked photo goes up. A photo larger than the edge the daemon stores at is scaled to it
      * (the daemon would scale it anyway: the pixels past it are bytes on the phone's network for
      * nothing), and one in a type the model does not read (HEIC, AVIF) is written as JPEG, which
-     * every model reads. PNG stays PNG, so a screenshot's text stays sharp. Null: it goes as it is.
+     * every model reads. One that says where it was taken (EXIF GPS) is written again at its size, which
+     * leaves that out. PNG stays PNG, so a screenshot's text stays sharp. Null: it goes as it is.
      */
     data class Photo(val width: Int, val height: Int, val mime: String)
-    fun photoPlan(mime: String, width: Int, height: Int, edge: Int?, inline: List<String>): Photo? {
+    fun photoPlan(mime: String, width: Int, height: Int, edge: Int?, inline: List<String>, located: Boolean = false): Photo? {
         if (!mime.startsWith("image/") || width <= 0 || height <= 0) return null
         val readable = mime in inline
         val long = maxOf(width, height)
         val scale = if (edge != null && edge > 0 && long > edge) edge.toDouble() / long else 1.0
-        if (readable && scale >= 1.0) return null
+        // located: the photo says where it was taken; it is written again, which leaves that out.
+        if (readable && scale >= 1.0 && !located) return null
         val out = if (mime == "image/png") "image/png" else "image/jpeg"
         return Photo(maxOf(1, Math.round(width * scale).toInt()), maxOf(1, Math.round(height * scale).toInt()), out)
     }

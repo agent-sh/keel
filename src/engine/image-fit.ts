@@ -17,6 +17,7 @@ import type { ImageBlock, Message, TextBlock, ToolRefBlock } from "../core/types
 import { DECODE_PIXELS, fitSize, type ImageLimits, STORE, within } from "../providers/image-limits.ts";
 import { hasAttachmentsRoot, saveAttachment } from "./attachments.ts";
 import { imageSize } from "./images.ts";
+import { base64WithoutLocation } from "./exif-scrub.ts";
 
 // The same bytes on every machine a session may run on (macOS would resize
 // with its own library otherwise).
@@ -156,10 +157,12 @@ export async function fitPromptImages(blocks: unknown): Promise<any[]> {
   for (const b of blocks) {
     if (b?.type !== "image" || typeof b.data !== "string") { out.push(b); continue; }
     n++;
-    const f = await fitImage({ type: "image", media_type: String(b.media_type ?? ""), data: b.data }, STORE);
-    const original = (type: string, name = `image-${n}`) => saveAttachment(Buffer.from(b.data, "base64"), `${name}.${EXT[type] ?? "bin"}`, type);
+    // Where the photo was taken stays here (src/engine/exif-scrub.ts): an image that fits is sent as it is.
+    const data = base64WithoutLocation(b.data);
+    const f = await fitImage({ type: "image", media_type: String(b.media_type ?? ""), data }, STORE);
+    const original = (type: string, name = `image-${n}`) => saveAttachment(Buffer.from(data, "base64"), `${name}.${EXT[type] ?? "bin"}`, type);
     if ("refused" in f) {
-      out.push(hasAttachmentsRoot() ? original(String(b.media_type || "application/octet-stream")) : b);
+      out.push(hasAttachmentsRoot() ? original(String(b.media_type || "application/octet-stream")) : { ...b, data });
       continue;
     }
     out.push(f.block);
