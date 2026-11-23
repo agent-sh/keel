@@ -587,11 +587,12 @@ test("a parent's tighter change caps its whole agent tree, and a looser one reac
   // The sandbox on and the network off reach every agent too; a tighter sandbox of an agent's own stays.
   g.setPerm(root.id, { sandbox: "workspace-write", network: false });
   expect([child, grand, planner, own].map((s) => [g.perm(s.id).sandbox, g.perm(s.id).network])).toEqual([["workspace-write", false], ["workspace-write", false], ["workspace-write", false], ["read-only", false]]);
-  // Looser: the agents that follow take it, the planner keeps its definition's plan, the one set on its own stays capped.
+  // Looser: the agents that follow take the mode, the planner keeps its definition's plan, the one set on its own
+  // stays capped. The sandbox off and the network on reach no agent through the tree (the sandbox is the backstop
+  // of a write scope): only the owner's change on the agent itself loosens them.
   g.setPerm(root.id, { mode: "auto", sandbox: "off", network: true });
   expect([mode(child), mode(grand), mode(planner), mode(own)]).toEqual(["auto", "auto", "plan", "read-only"]);
-  expect([child, grand].map((s) => [g.perm(s.id).sandbox, g.perm(s.id).network])).toEqual([["off", true], ["off", true]]);
-  expect([g.perm(own.id).sandbox, g.perm(own.id).network]).toEqual(["read-only", false]);
+  expect([child, grand, planner, own].map((s) => [g.perm(s.id).sandbox, g.perm(s.id).network])).toEqual([["workspace-write", false], ["workspace-write", false], ["workspace-write", false], ["read-only", false]]);
   // The owner sets the child itself: from then on its settings are its own, and the grandchild follows the child.
   g.setPerm(child.id, { mode: "ask" });
   expect(mode(grand)).toBe("ask");
@@ -599,6 +600,9 @@ test("a parent's tighter change caps its whole agent tree, and a looser one reac
   expect([mode(child), mode(grand)]).toEqual(["ask", "ask"]);
   // Its tie is carried as written (a successor takes its predecessor's).
   expect([g.tieOf(planner.id), g.tieOf(child.id), g.tieOf(grand.id)]).toEqual([{ follows: true, want: "plan" }, { follows: false }, { follows: true }]);
+  // The owner's change on an agent itself still loosens its sandbox and network.
+  g.setPerm(grand.id, { sandbox: "off", network: true });
+  expect([g.perm(grand.id).sandbox, g.perm(grand.id).network]).toEqual(["off", true]);
 });
 
 // RSH-S48: a grant "for this session" covers the session's whole agent tree (Claude Code's sub-agents doc: such a

@@ -114,14 +114,17 @@ export type PermTie = { follows: boolean; want?: string };
 const PERM_FIELDS = ["mode", "sandbox", "network"] as const;
 // How much a sandbox profile confines: the tighter of two is the one kept.
 const CONFINES: Record<SandboxProfile, number> = { off: 0, "workspace-write": 1, "read-only": 2 };
-// What a change of a parent's `fields` makes of an agent's settings below it. One that follows its parent takes
-// them (its mode the one a spawn would give it now); any other is only capped: never a mode that asks less, a
-// sandbox that confines less or a network the parent has not.
+// What a change of a parent's `fields` makes of an agent's settings below it. Its sandbox and network are only
+// ever capped: the tighter sandbox of the two and no network the parent has not. A looser sandbox or the network
+// on never reaches an agent through its tree: the sandbox is the backstop for the writes the gate cannot read (an
+// agent's write scope among them) and keeps the daemon's API out of reach; only the owner's change on the agent
+// itself loosens them. The mode of an agent that follows its parent is the one a spawn would give it now; any
+// other agent's is only capped (never a mode that asks less).
 export function reached(parent: SessionPerm, cur: SessionPerm, tie: PermTie, fields: readonly (typeof PERM_FIELDS)[number][]): Partial<SessionPerm> {
   const out: Partial<SessionPerm> = {};
   if (fields.includes("mode")) out.mode = childMode(parent.mode, tie.follows ? tie.want : cur.mode);
-  if (fields.includes("sandbox")) out.sandbox = tie.follows || CONFINES[parent.sandbox] > CONFINES[cur.sandbox] ? parent.sandbox : cur.sandbox;
-  if (fields.includes("network")) out.network = tie.follows ? parent.network : cur.network && parent.network;
+  if (fields.includes("sandbox")) out.sandbox = CONFINES[parent.sandbox] > CONFINES[cur.sandbox] ? parent.sandbox : cur.sandbox;
+  if (fields.includes("network")) out.network = cur.network && parent.network;
   return out;
 }
 
