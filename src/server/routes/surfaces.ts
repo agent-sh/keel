@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { RouteModule } from "../app.ts";
 import { definitions } from "../../automation/agents.ts";
-import { expandImports, instructionPaths } from "../../engine/turn.ts";
+import { expandImports, instructionLimit, instructionPaths } from "../../engine/turn.ts";
 import { ownerHooksPath, parseHooks } from "../../integrations/hooks.ts";
 import { configDir, inConfigDir } from "../../providers/config.ts";
 import { writeOwnFile } from "../../core/ownfile.ts";
@@ -110,11 +110,11 @@ export const surfaceRoutes: RouteModule = (deps) => {
   const instructionView = (cwd: string) => {
     const files = instructionPaths(cwd).map(({ path, scope }) => {
       const t = read(path) ?? "";
-      // What the prompt carries of it: its @path lines brought in (outside a repository), cut at 40,000 characters.
+      // What the prompt carries of it: its @path lines brought in (outside a repository), cut where a 200K window cuts it (instructionLimit).
       const loaded = rootOf(dirname(path)) ? t : expandImports(t, path);
       return {
-        path, scope, text: t, sha256: sha(t), bytes: Buffer.byteLength(t), loaded: loaded.slice(0, 40_000), loaded_tokens: Math.ceil(Math.min(loaded.length, 40_000) / 4),
-        imports: loaded !== t, truncated: loaded.length > 40_000, trust: scope === "owner" ? null : trustOf(cwd, path),
+        path, scope, text: t, sha256: sha(t), bytes: Buffer.byteLength(t), loaded: loaded.slice(0, instructionLimit()), loaded_tokens: Math.ceil(Math.min(loaded.length, instructionLimit()) / 4),
+        imports: loaded !== t, truncated: loaded.length > instructionLimit(), trust: scope === "owner" ? null : trustOf(cwd, path),
       };
     });
     const create: { path: string; scope: string }[] = [];

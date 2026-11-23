@@ -4,7 +4,7 @@
 // reasoning and speed in one step (applied from the next request, also mid-turn).
 import { commitSwitch } from "../switch.ts";
 import { readFileSync, statSync } from "node:fs";
-import { instructionPaths } from "../../engine/turn.ts";
+import { instructionLimit, instructionPaths } from "../../engine/turn.ts";
 import { loadedPaths } from "../../engine/nested.ts";
 import type { RouteModule } from "../app.ts";
 import { speedOffer } from "../../providers/registry.ts";
@@ -13,7 +13,8 @@ import { toolsFor } from "../../tools/registry.ts";
 import { loadsNatively } from "../../tools/defer.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
-const INSTRUCTION_LIMIT = 40_000; // what the system prompt includes of one file (engine/turn.ts)
+// What the system prompt includes of one file on a 200K window (a larger window carries more: engine/turn.ts instructionLimit).
+const INSTRUCTION_LIMIT = instructionLimit();
 
 // The instruction files the prompt reads (engine/turn.ts), with their sizes,
 // then the nested ones the work has loaded since (engine/nested.ts).
@@ -25,7 +26,7 @@ function instructions(cwd: string, nested: Iterable<string> = []) {
       const bytes = statSync(path).size;
       const included = Buffer.byteLength(readFileSync(path, "utf8").slice(0, INSTRUCTION_LIMIT));
       files.push({ path, scope, bytes, included_bytes: included, truncated: included < bytes });
-      if (included < bytes) warnings.push(`${path} is cut at ${INSTRUCTION_LIMIT} characters`);
+      if (included < bytes) warnings.push(`${path} is cut at ${INSTRUCTION_LIMIT} characters on a 200K window`);
     } catch (e) {
       warnings.push(`${path}: ${(e as Error).message}`);
     }

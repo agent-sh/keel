@@ -281,22 +281,87 @@ export function instructionPaths(cwd: string, marks?: Marks): { path: string; sc
 // `seen` holds the real paths already in the prompt: a file two others import
 // comes in once, and the later line stays as the reference it is.
 export function expandImports(text: string, from: string, depth = 0, seen = new Set([real(from)]), marks?: Marks): string {
-  if (depth >= 4) return text;
-  return text.replace(/^@(\S+)[ \t]*$/gm, (line, ref: string) => {
-    const p = ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : resolve(dirname(from), ref);
-    if (seen.has(real(p)) || rootOf(dirname(p)) || heldFile(p)) return line;
-    noteMark(marks, p);
-    try {
-      const t = readFileSync(p, "utf8");
-      seen.add(real(p));
-      return expandImports(t, p, depth + 1, seen, marks).trimEnd();
-    } catch {
-      return line;
-    }
-  });
+  return expandMapped(text, from, depth, seen, marks).text;
 }
 
-export function instructionFiles(cwd: string, marks?: Marks): string {
+// Where a line of an expanded text is on disk: each line of the result starts at `at`, and is line
+// `line` of `path` (a file the first imports, or the first itself).
+export type LineSource = { at: number; path: string; line: number };
+export function expandMapped(text: string, from: string, depth = 0, seen = new Set([real(from)]), marks?: Marks): { text: string; lines: LineSource[] } {
+  const lines: LineSource[] = [];
+  const own = text.split("\n");
+  if (depth >= 4) {
+    let at = 0;
+    own.forEach((l, i) => { lines.push({ at, path: from, line: i + 1 }); at += l.length + 1; });
+    return { text, lines };
+  }
+  let out = "";
+  own.forEach((line, i) => {
+    if (i) out += "\n";
+    // (A line of a CRLF file keeps its \r after what it brings in.)
+    const cr = line.endsWith("\r") ? "\r" : "";
+    const m = /^@(\S+)[ \t]*$/.exec(cr ? line.slice(0, -1) : line);
+    const ref = m?.[1];
+    const p = ref ? (ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : resolve(dirname(from), ref)) : "";
+    if (ref && !seen.has(real(p)) && !rootOf(dirname(p)) && !heldFile(p)) {
+      noteMark(marks, p);
+      let t: string | undefined;
+      try { t = readFileSync(p, "utf8"); } catch {}
+      if (t !== undefined) {
+        seen.add(real(p));
+        const r = expandMapped(t, p, depth + 1, seen, marks);
+        const kept = r.text.trimEnd();
+        for (const x of r.lines) if (x.at < kept.length || (x.at === 0 && !kept.length)) lines.push({ ...x, at: out.length + x.at });
+        out += kept + cr;
+        return;
+      }
+    }
+    lines.push({ at: out.length, path: from, line: i + 1 });
+    out += line;
+  });
+  return { text: out, lines };
+}
+
+// How much of one instruction file the prompt, or a call's result, carries: Claude Code's
+// (code.claude.com/docs/en/memory, the per-file limit of files that load on demand) is 40,000
+// characters on a 200K window and 150,000 on a 1M window. Between the two it grows in a line; a
+// smaller window gets its share of 40,000, never under 8,000 (a few pages of rules); a window
+// nobody stated counts as 200K.
+export function instructionLimit(window?: number): number {
+  const w = window && window > 0 ? window : 200_000;
+  if (w <= 200_000) return Math.max(8_000, Math.round((40_000 * w) / 200_000));
+  if (w >= 1_000_000) return 150_000;
+  return Math.round(40_000 + ((w - 200_000) * 110_000) / 800_000);
+}
+
+// A file past the limit: its start, cut at a line end where one is near, then a line that says
+// it was cut and where the rest starts, for the model to read it (as Claude Code's note does).
+// The line is the one on disk: `lines` maps a text with its imports brought in (expandMapped) to
+// the file each part is from; `lines: null` says the text is not what the file holds now (the
+// version the owner last trusted), so no line of the file is named.
+export function cutInstructions(path: string, text: string, limit: number, lines?: LineSource[] | null): string {
+  if (text.length <= limit) return text;
+  const nl = text.lastIndexOf("\n", limit);
+  const at = nl >= limit / 2 ? nl + 1 : limit;
+  const kept = text.slice(0, at);
+  const said = `(Cut here: this is ${at.toLocaleString("en-US")} of the file's ${text.length.toLocaleString("en-US")} characters, as much as fits this model's window. Its later instructions are not in your context.`;
+  let where: string;
+  if (lines === null) where = `What is here is the version the owner last trusted, and ${path} has changed since, so read it only as far as he trusts it.`;
+  else {
+    // The line the rest starts on: the next one after a whole line, else the line the cut is in.
+    const src = lines?.length ? lines.findLast((x) => x.at <= at) ?? lines[0]! : { at: 0, path, line: 1 };
+    const line = src.line + (text.slice(src.at, at).split("\n").length - 1);
+    where = src.path === path
+      ? `Read ${path} from line ${line} with the Read tool before you work on what they may cover.`
+      : `Read ${src.path} from line ${line} with the Read tool (${path} imports it), and then the rest of ${path} after the line that imports it, before you work on what they may cover.`;
+  }
+  return `${kept.trimEnd()}\n\n${said} ${where})`;
+}
+
+// `window`: the context window of the model the prompt is for, in tokens (instructionLimit).
+// `marks`: each file's mark on disk, noted before it is read (src/engine/instruction-marks.ts).
+export function instructionFiles(cwd: string, window?: number, marks?: Marks): string {
+  const limit = instructionLimit(window);
   const parts: string[] = [];
   const files = instructionPaths(cwd, marks);
   const seen = new Set(files.map((f) => real(f.path)));
@@ -311,9 +376,10 @@ export function instructionFiles(cwd: string, marks?: Marks): string {
       parts.push(`# ${p}\n\n(This file could not be read: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}. Its instructions are not loaded.)`);
       continue;
     }
-    const raw = rootOf(dirname(p)) ? read : expandImports(read, p, 0, seen, marks);
+    const mapped = rootOf(dirname(p)) ? undefined : expandMapped(read, p, 0, seen, marks);
+    const raw = mapped?.text ?? read;
     const text = instructionFilter.file ? instructionFilter.file(p, raw) : raw;
-    if (text !== null) parts.push(`# ${p}\n\n${text.slice(0, 40_000)}`);
+    if (text !== null) parts.push(`# ${p}\n\n${cutInstructions(p, text, limit, text !== raw ? null : mapped?.lines)}`);
   }
   return parts.join("\n\n");
 }
@@ -328,8 +394,8 @@ const CORE = [
 ].join("\n");
 
 // The per-session part, as its two blocks: the place and the instruction files.
-function sessionParts(cwd: string, created: number, marks?: Marks): PromptPart[] {
-  const inst = instructionFiles(cwd, marks);
+function sessionParts(cwd: string, created: number, window?: number, marks?: Marks): PromptPart[] {
+  const inst = instructionFiles(cwd, window, marks);
   const place = `Working directory: ${cwd}\nPlatform: ${process.platform}. Session started ${new Date(created).toISOString().slice(0, 10)}.\n`;
   return [{ name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst }];
 }
@@ -1738,7 +1804,7 @@ export class Engine {
     // folder (started that day), so the session's own blocks come after them.
     // (The instruction files' marks on disk, noted before they are read: an edit is noticed by them, instructionsEdited.)
     const marks: Marks = new Map();
-    const folder = sessionParts(session.workspace, session.created, marks).map(sent);
+    const folder = sessionParts(session.workspace, session.created, info && !info.context_assumed ? info.context : undefined, marks).map(sent);
     this.marks.set(session.id, marks);
     const parts = [...shared, ...folder, ...own];
     const chars = (list: PromptPart[]) => list.reduce((n, p) => n + p.text.length, 0);

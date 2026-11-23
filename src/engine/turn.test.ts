@@ -1096,3 +1096,77 @@ test("a model is no dearer than another only when every rate the other states is
   // A context tier dearer than any of the session's.
   expect(noDearer({ ...base, tiers: [{ above: 200_000, input: 6, output: 22.5 }] }, base)).toBe(false);
 });
+
+// A file past the limit is cut with a line that says so and where the rest is, for the model to
+// read it; the limit grows with the model's window (Claude Code: 40,000 characters on 200K, 150,000 on 1M).
+test("instruction files: a long one is cut with a note to Read the rest, the cut scaled to the window", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { instructionFiles, instructionLimit } = await import("./turn.ts");
+  const { block } = await import("./nested.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? `${process.env.HOME}/.cache/tmp`, "inst-cut-"));
+  try {
+    const long = Array.from({ length: 1_000 }, (_, i) => `Rule ${i}: ${"x".repeat(45)}`).join("\n");
+    expect(long.length).toBeGreaterThan(50_000);
+    const file = join(root, "AGENTS.md");
+    writeFileSync(file, long);
+    // (Only this file's part: the machine's own instruction files come before it.)
+    const all = instructionFiles(root);
+    const text = all.slice(all.indexOf(`# ${file}`));
+    expect(text).toContain("Cut here: this is");
+    expect(text).toContain(`Read ${file} from line `);
+    expect(text).not.toContain("Rule 999:");
+    // The cut is at a line's end, and the line it names is the first one left out.
+    const line = Number(/from line (\d+)/.exec(text)![1]);
+    expect(text).toContain(`Rule ${line - 2}: ${"x".repeat(45)}\n`);
+    expect(text).not.toContain(`Rule ${line - 1}:`);
+    // A 1M window carries the whole of this file; 200K, an unknown window and a small one less.
+    expect(instructionLimit(200_000)).toBe(40_000);
+    expect(instructionLimit()).toBe(40_000);
+    expect(instructionLimit(1_000_000)).toBe(150_000);
+    expect(instructionLimit(400_000)).toBeGreaterThan(40_000);
+    expect(instructionLimit(32_000)).toBeLessThan(40_000);
+    expect(instructionFiles(root, 1_000_000)).toContain("Rule 999:");
+    // A nested file says the same.
+    const nested = block(file)!;
+    expect(nested).toContain(`Read ${file} from line `);
+    expect(block(file, 1_000_000)).toContain("Rule 999:");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The line the note names is the one on disk, in the file the cut falls in, when imports came in.
+test("instruction files: a cut inside or after an imported file names the line on disk", async () => {
+  const { mkdtempSync, writeFileSync, rmSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { instructionFiles } = await import("./turn.ts");
+  const root = mkdtempSync(join(process.env.TMPDIR ?? `${process.env.HOME}/.cache/tmp`, "inst-cut-imp-"));
+  try {
+    const file = join(root, "AGENTS.md");
+    const big = join(root, "big.md");
+    // Cut inside the imported file.
+    writeFileSync(big, Array.from({ length: 1_500 }, (_, i) => `Imported rule ${i}: ${"y".repeat(30)}`).join("\n"));
+    writeFileSync(file, "head line\n@big.md\n" + Array.from({ length: 100 }, (_, i) => `Own rule ${i}`).join("\n") + "\n");
+    const part = (t: string) => t.slice(t.indexOf(`# ${file}`));
+    let text = part(instructionFiles(root));
+    let m = /Read (\S+) from line (\d+)/.exec(text)!;
+    expect(m[1]).toBe(big);
+    const n = Number(m[2]);
+    expect(readFileSync(big, "utf8").split("\n")[n - 1]).toStartWith(`Imported rule ${n - 1}:`);
+    expect(text).not.toContain(`Imported rule ${n - 1}:`);
+    expect(text).toContain(`the rest of ${file} after the line that imports it`);
+    // Cut after it, in the file's own lines: the line of AGENTS.md, past the one @ line.
+    writeFileSync(big, Array.from({ length: 10 }, (_, i) => `Imported rule ${i}`).join("\n"));
+    writeFileSync(file, "head line\n@big.md\n" + Array.from({ length: 2_000 }, (_, i) => `Own rule ${i}: ${"z".repeat(30)}`).join("\n") + "\n");
+    text = part(instructionFiles(root));
+    m = /Read (\S+) from line (\d+)/.exec(text)!;
+    expect(m[1]).toBe(file);
+    const k = Number(m[2]);
+    expect(readFileSync(file, "utf8").split("\n")[k - 1]).toStartWith(`Own rule ${k - 3}:`);
+    expect(text).not.toContain(`Own rule ${k - 3}:`);
+    expect(text).toContain(`Own rule ${k - 4}:`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

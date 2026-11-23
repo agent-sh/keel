@@ -5,11 +5,13 @@ import { nestedFor, stepStored } from "../../engine/nested.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import type { RouteModule } from "../app.ts";
 
-export const nestedRoutes: RouteModule = ({ store, errors }) => {
+export const nestedRoutes: RouteModule = ({ store, errors, providers }) => {
   registerHooks({
     afterTool(s, call, result) {
       try {
-        const blocks = nestedFor(store, s, call.tool, call.input, call.tool.cwdOf?.(call.ctx, call.input));
+        // (A long file comes as far as the session's model's window holds it: its listing, read without waiting.)
+        const info = providers.cachedModel(s.model);
+        const blocks = nestedFor(store, s, call.tool, call.input, call.tool.cwdOf?.(call.ctx, call.input), info && !info.context_assumed ? info.context : undefined);
         if (!blocks.length) return;
         const text = blocks.join("\n\n");
         if (typeof result.content === "string") result.content = result.content ? `${result.content}\n\n${text}` : text;

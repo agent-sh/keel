@@ -21,11 +21,10 @@ import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent, ToolResultBlock } from "../core/types.ts";
 import type { Tool } from "../tools/types.ts";
 import { checkpointAt } from "./compact.ts";
-import { instructionFilter, instructionPaths } from "./turn.ts";
+import { cutInstructions, instructionFilter, instructionLimit, instructionPaths } from "./turn.ts";
 import { rootOf } from "../safety/trust.ts";
 
 const NAMES = ["AGENTS.md", "CLAUDE.md"]; // AGENTS.md wins in one folder, as in the prompt
-const LIMIT = 40_000; // what the prompt includes of one file
 const OPEN = '<nested-instructions path="';
 const MARK = /<nested-instructions path="([^"]+)">/g;
 
@@ -113,7 +112,8 @@ export function loadedPaths(store: Store, sessionId: string): Set<string> {
   return new Set([...st.paths, ...(pending.get(sessionId) ?? [])]);
 }
 
-export function block(path: string): string | null {
+// `window`: the context window of the session's model, in tokens (how much of a long file comes: instructionLimit).
+export function block(path: string, window?: number): string | null {
   let raw: string;
   try {
     if (heldFile(path)) return null;
@@ -123,12 +123,13 @@ export function block(path: string): string | null {
   }
   const text = instructionFilter.file ? instructionFilter.file(path, raw) : raw;
   if (text === null || !text.trim()) return null;
-  const cut = text.length > LIMIT ? `${text.slice(0, LIMIT)}\n(cut at ${LIMIT} characters)` : text;
+  const cut = cutInstructions(path, text, instructionLimit(window), text !== raw ? null : undefined);
   return `${OPEN}${path}">\nInstructions for the files under ${dirname(path)}, from its ${path.slice(dirname(path).length + 1)}. They add to the project's other instruction files.\n\n${cut.trimEnd()}\n</nested-instructions>`;
 }
 
 // The blocks to append to one call's result; marks them loaded for this step.
-export function nestedFor(store: Store, s: Session, tool: Tool, input: any, toolCwd?: string): string[] {
+// `window`: the context window of the session's model, in tokens.
+export function nestedFor(store: Store, s: Session, tool: Tool, input: any, toolCwd?: string, window?: number): string[] {
   if (s.machine) return []; // the files are on the session's machine
   const cwd = s.workspace;
   const { paths, edit } = targetsOf(tool, input, toolCwd ?? cwd);
@@ -140,7 +141,7 @@ export function nestedFor(store: Store, s: Session, tool: Tool, input: any, tool
     for (const f of filesFor(p, cwd, edit, inPrompt)) {
       loaded ??= loadedPaths(store, s.id);
       if (loaded.has(f)) continue;
-      const b = block(f);
+      const b = block(f, window);
       loaded.add(f);
       if (!b) continue;
       out.push(b);
