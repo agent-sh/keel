@@ -159,16 +159,14 @@ else [ -n "${WAYLAND_DISPLAY:-}" ] && { [ "${WAYLAND_DISPLAY:-}" != "$HOST_WAYLA
 [ "$BACKEND" = x11 ] && export GDK_BACKEND=x11
 # What the check starts draws in software, off any graphics card: a check must not take a card
 # other work is using (and its pictures are then the same on every machine). Set after the
-# workspace is up, so its own compositor starts as it always does. KEEL_E2E_GPU=1 leaves the
-# drawing to the machine (to look at the app on a card).
-if [ -z "${KEEL_E2E_GPU:-}" ]; then
-  export LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa __NV_PRIME_RENDER_OFFLOAD=0
-  export GSK_RENDERER=cairo GDK_DISABLE=gl,vulkan WEBKIT_DISABLE_DMABUF_RENDERER=1
-  if [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ]; then export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json; fi
-  # Vulkan through the software driver where there is one, else through none.
-  lvp=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2> /dev/null | head -1)
-  export VK_DRIVER_FILES="${lvp:-/nonexistent}" VK_ICD_FILENAMES="${lvp:-/nonexistent}"
-fi
+# workspace is up, so its own compositor starts as it always does. Nothing the check proves
+# needs a card, so there is no way round this.
+export LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa __NV_PRIME_RENDER_OFFLOAD=0
+export GSK_RENDERER=cairo GDK_DISABLE=gl,vulkan WEBKIT_DISABLE_DMABUF_RENDERER=1
+if [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ]; then export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json; fi
+# Vulkan through the software driver where there is one, else through none.
+lvp=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2> /dev/null | head -1)
+export VK_DRIVER_FILES="${lvp:-/nonexistent}" VK_ICD_FILENAMES="${lvp:-/nonexistent}"
 ( gjs -m "$HERE/tray-host.js" > "$D/tray-host.out" 2>&1 & echo $! > "$D/host-tray.pid" )
 ( gjs -m "$HERE/notify-host.js" > "$D/notify-host.out" 2>&1 & echo $! > "$D/host-notify.pid" )
 # (And one for the desktop's word on a screen reader, where the workspace's bus has none of its own.)
@@ -222,7 +220,7 @@ echo "# engine: $ENGINE $(last qt | sed 's/.*"v":\({[^}]*}\).*/\1/')"
 # every process under the app, and whether any of them holds a device of a graphics card's own driver
 kin() { local p; for p in $(pgrep -P "$1" 2> /dev/null); do echo "$p"; kin "$p"; done; }
 on_card() { local p; for p in $(app_pid) $(kin "$(app_pid)"); do ls -l "/proc/$p/fd" 2> /dev/null; done | grep -c '/dev/nvidia' || true; }
-if [ -z "${KEEL_E2E_GPU:-}" ]; then check "the app the check started holds no device of a graphics card" "sleep 2; [ \"\$(on_card)\" = 0 ]"; fi
+check "the app the check started holds no device of a graphics card" "sleep 2; [ \"\$(on_card)\" = 0 ]"
 check "the shell found the daemon and attached to it" "wait_for 20 'last link | grep -q Up' && api /api/shell | grep -q '\"attached\":true'"
 # (The Qt engine holds what its script heap has not collected for minutes: its page is let to ask for a collection.)
 if [ "$ENGINE" = qt ]; then check "the page may ask the engine for a collection, to do when the owner turns away" "wait_for 20 \"said 'AT ' | grep -q ' gc=function'\""; fi
@@ -659,28 +657,33 @@ check "a page whose load keeps failing is asked for a few times in those seconds
 shot 13a-page-does-not-open
 wait_for 12 "grep -q '^END' '$D/dropper.out'" || true
 
-# --- 11b. a page that loads and never speaks to the app (the Qt engine's): made anew twice, then left with the bar's button
+# --- 11b. a page that loads and never speaks to the app: loaded anew twice, then left with the bar's button,
+# and the button's load is watched like any other (both engines follow one rule)
+(eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+PORT_C=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+(python3 "$HERE/listener.py" "$PORT_C" 200 150 health > "$D/silent.out" 2>&1 &)
+sleep 0.5; (export KEEL_URL="http://127.0.0.1:$PORT_C"; launch)
+wait_for 30 '[ "$(windows)" = 1 ]'; wait_for 20 "grep -q 'REQUEST GET / ' '$D/silent.out'" || true; sleep 3
+silents=$(logged page-silent); stops=$(logged page-stopped)
+for p in $(renderers); do sig -KILL "$p"; done
+wait_for 15 "[ \"\$(logged page-stopped)\" -gt $stops ]" || fail "the page's process did not end for the silent page's case"
+check "a page that says nothing is loaded anew twice, then left" "wait_for 45 \"last page-silent | grep -q '\\\"left\\\":true'\" && [ \"\$(( \$(logged page-silent) - $silents ))\" = 3 ]"
+sleep 1; shot 13b-page-keeps-stopping
+read -r X Y W H _ <<< "$(geometry)"
+loads=$(grep -c 'REQUEST GET / ' "$D/silent.out"); silents=$(logged page-silent)
 if [ "$ENGINE" = qt ]; then
-  (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
-  PORT_C=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-  (python3 "$HERE/listener.py" "$PORT_C" 200 110 health > "$D/silent.out" 2>&1 &)
-  sleep 0.5; (export KEEL_URL="http://127.0.0.1:$PORT_C"; launch)
-  wait_for 30 '[ "$(windows)" = 1 ]'; wait_for 20 "grep -q 'REQUEST GET / ' '$D/silent.out'" || true; sleep 3
-  silents=$(logged page-silent); stops=$(logged page-stopped)
-  for p in $(renderers); do sig -KILL "$p"; done
-  wait_for 15 "[ \"\$(logged page-stopped)\" -gt $stops ]" || true
-  check "a page that says nothing is made anew twice, then left" "wait_for 45 \"last page-silent | grep -q '\\\"left\\\":true'\" && [ \"\$(( \$(logged page-silent) - $silents ))\" = 3 ]"
-  sleep 1; shot 13b-page-keeps-stopping
   # the bar's words, read from the picture (the top strip, light on dark turned round), and the button's pill (light)
   convert "$D/shots/13b-page-keeps-stopping.png" -crop 1500x36+0+0 +repage -colorspace Gray -negate -resize 300% "$D/shots/13b-bar.png" 2> /dev/null
   pill_light() { convert "$D/shots/$1.png" -crop 6x6+1320+12 +repage -colorspace Gray -format '%[fx:int(mean*255)]' info: 2> /dev/null; }
   check "the bar says This page keeps stopping, with the button that loads it again" "tesseract '$D/shots/13b-bar.png' - --psm 7 2> /dev/null | grep -qi 'keeps stopping' && [ \"\$(pill_light 13b-page-keeps-stopping)\" -gt 200 ]"
-  # the button loads it again (a fresh load of the page, and the bar's words go)
-  read -r X Y W H _ <<< "$(geometry)"
-  loads=$(grep -c 'REQUEST GET / ' "$D/silent.out")
   $A click --id "$WS" $((X + W - 140)) $((Y + 18)) > /dev/null 2>&1
   check "the button loads the page again, and the bar's words go" "wait_for 20 \"[ \\\"\\\$(grep -c 'REQUEST GET / ' '$D/silent.out')\\\" -gt $loads ]\" && sleep 2 && shot 13c-page-loaded-again && [ \"\$(pill_light 13c-page-loaded-again)\" -lt 100 ]"
+else
+  # (The system web view's bar gives its button the keyboard: the page has nothing to say.)
+  $A key --id "$WS" Return > /dev/null 2>&1
+  check "the bar's button, which has the keyboard, loads the page again" "wait_for 20 \"[ \\\"\\\$(grep -c 'REQUEST GET / ' '$D/silent.out')\\\" -gt $loads ]\""
 fi
+check "the button's load is watched too: silent again, the page is loaded anew" "wait_for 20 \"[ \\\"\\\$(logged page-silent)\\\" -gt $silents ]\""
 
 # --- 12. an address that is not this machine's: the first page says so, and nothing is started there
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'

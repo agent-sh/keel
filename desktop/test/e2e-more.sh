@@ -5,7 +5,7 @@
 # every process under one (the engine starts its pages' processes from a helper of its own)
 under() { local p; for p in $(pgrep -P "$1" 2> /dev/null); do echo "$p"; under "$p"; done; }
 # the pages' own processes
-renderers() { local p; for p in $(under "$(win_pid)"); do tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -q -- '--type=renderer' && echo "$p"; done; }
+renderers() { local p; for p in $(under "$(win_pid)"); do tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -q -- '--type=renderer\|WebKitWebProcess' && echo "$p"; done; }
 # --- two windows whose pages' processes end at the same moment both come back as the app's
 # (The engine left one of two such pages without the app's script in it, every time, when the
 # page was only loaded again: drawn and working, and cut off from the app.)

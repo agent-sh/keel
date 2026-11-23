@@ -371,6 +371,7 @@ impl Shell {
             Ask::External(url) => self.external(&url),
             Ask::Window(path) => self.open_window(&path),
             Ask::Shortcuts => self.shortcuts(true),
+            Ask::Note(what, v) => self.note_done(what, v),
             // The daemon answers and its page keeps failing: the calm page says so, between the tries.
             Ask::Failing => {
                 let (link, url) = (self.link.borrow().clone(), self.url.borrow().clone());

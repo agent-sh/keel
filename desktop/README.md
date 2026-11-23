@@ -279,8 +279,8 @@ or its KWin session: the check starts no desktop shell of a whole session,
 which under your account could reach your own session's services), and
 stand-ins for the tray host, the notification service and the desktop's word
 on a screen reader on that workspace's bus. What it starts draws in
-software, off any graphics card (`KEEL_E2E_GPU=1` leaves the drawing to the
-machine), and it checks that the app holds no device of one. It reads the first picture of
+software, off any graphics card, and it checks that the app holds no device
+of one. It reads the first picture of
 the window (with ImageMagick, when it is there): a page that answers but is
 not drawn fails the check. A signal it sends goes only to a
 process it started itself. It proves the window, a daemon restart under it, the tray count, a
@@ -396,7 +396,10 @@ names the Qt engine's program when it is not beside the app.
   started): the app expects a reloaded page's first word within ten
   seconds, and makes the page anew when none came, twice at most.
 - A page that still says nothing after the second time is left, with "This
-  page keeps stopping" and the button that loads it again in the bar.
+  page keeps stopping" and the button that loads it again in the bar. The
+  button's load is watched the same way. Both engines follow this one rule:
+  the system web view's page that stops is loaded again three times in a
+  minute and told why, as the Qt window's is.
 - A daemon that answers and whose page keeps failing to load is asked for
   the page less and less often (at once, then after half a second, a second,
   up to ten), and from the third failure the window says so instead of

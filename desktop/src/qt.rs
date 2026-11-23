@@ -50,7 +50,7 @@ use crate::page;
 use crate::prefs::Look;
 use crate::said::{asked, Asked1};
 use crate::said::may_act;
-use crate::view::{retry_after, Ask, Asked, Away, Can, Engine, Opening, Showing, View, FAILS_SAID};
+use crate::view::{retry_after, Ask, Asked, Away, Can, Engine, Opening, Recovery, Step, Showing, View, FAILS_SAID, SPEAKS_WITHIN};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use serde_json::{json, Value};
@@ -77,13 +77,6 @@ const GRACE: Duration = Duration::from_millis(1500);
 /// How often the other program is asked whether it still answers, and how long its silence may last.
 const ASK_EVERY: u32 = 5;
 const SILENCE: Duration = Duration::from_secs(20);
-/// A page that stops is loaded again this many times in a minute, and no more.
-const RELOADS: usize = 3;
-/// How long a page loaded again after its process ended has to say its first word to the app,
-/// and how many times one that said nothing is made anew.
-const SPEAKS_WITHIN: Duration = Duration::from_secs(10);
-const RENEWS: u32 = 2;
-
 thread_local! {
     static QT: RefCell<Option<Rc<Inner>>> = const { RefCell::new(None) };
 }
@@ -386,28 +379,24 @@ fn heard(start: u64, line: &str) {
         ("crashed", Some(win)) => {
             // What the page said it does with the app went with it: the next one says so itself.
             win.gate.borrow_mut().announces(false);
-            let again = may_reload(&mut win.stops.borrow_mut(), Instant::now());
-            (inner.note)("page-stopped", json!({ "window": win.id, "again": again, "status": s("status") }));
             if win.showing.get() != Showing::App {
                 // The app's own page: put back as it is.
+                (inner.note)("page-stopped", json!({ "window": win.id, "again": true, "status": s("status") }));
                 win.showing.set(Showing::Nothing);
-                (win.ask)(&win, Ask::Lost);
-            } else if again {
-                win.say_stopped.set(true);
-                win.renew();
-                win.expect_word();
-            } else {
-                win.stopped.set(true);
-                win.pill_now();
+                return (win.ask)(&win, Ask::Lost);
             }
+            let next = win.rec.borrow_mut().ended(Instant::now());
+            (inner.note)("page-stopped", json!({ "window": win.id, "again": next != Step::Leave, "status": s("status") }));
+            win.follow(next);
         }
         ("start", Some(win)) => {
             // The same button, in a window whose page kept ending: it loads the page again.
-            if win.stopped.replace(false) {
-                win.stops.borrow_mut().clear();
-                win.renews.set(0);
+            let again = win.rec.borrow_mut().again();
+            if let Some(watch) = again {
+                // (Watched like any other load: a page that stays silent is left again.)
                 win.renew();
                 win.pill_now();
+                win.expect_word(watch);
             } else {
                 (win.ask)(&win, Ask::Start);
             }
@@ -438,18 +427,6 @@ pub fn place_of(url: &str, here: &str) -> Option<String> {
         return None;
     }
     links::page_path(links::place(url.strip_prefix(here)?))
-}
-
-/// Whether a reloaded page that said nothing is made anew once more, by how many times it was.
-pub fn silent_again(renews: u32) -> bool {
-    renews < RENEWS
-}
-
-/// Whether a page that ended is loaded again: a few times in a minute, and no more. Each ending is noted.
-pub fn may_reload(stops: &mut Vec<Instant>, now: Instant) -> bool {
-    stops.retain(|t| now.saturating_duration_since(*t) < Duration::from_secs(60));
-    stops.push(now);
-    stops.len() <= RELOADS
 }
 
 /// What a navigation the engine did not make leads to. It makes none by itself: a window asked
@@ -594,11 +571,8 @@ impl Engine for Qt {
             slow: Cell::new(false),
             gate: RefCell::new(Gate::default()),
             away_js: RefCell::new(String::new()),
-            stops: RefCell::new(Vec::new()),
-            stopped: Cell::new(false),
-            say_stopped: Cell::new(false),
+            rec: RefCell::new(Recovery::default()),
             failed: Cell::new(0),
-            renews: Cell::new(0),
             size: Cell::new((size.0, size.1, maximized)),
             visible: Cell::new(false),
             open: Cell::new(false),
@@ -645,15 +619,10 @@ struct Win {
     gate: RefCell<Gate>,
     /// The away page's last state, said again once that page has loaded.
     away_js: RefCell<String>,
-    /// When this window's page ended by itself, of late; `stopped`: it kept ending and was left;
-    /// `say_stopped`: it was loaded again and is to be told why.
-    stops: RefCell<Vec<Instant>>,
-    stopped: Cell<bool>,
-    say_stopped: Cell<bool>,
+    /// What is known of a page whose process ended, or that came back and says nothing (view.rs).
+    rec: RefCell<Recovery>,
     /// Loads of the daemon's page that failed in a row (`retry_after`).
     failed: Cell<u32>,
-    /// Times the page was made anew because it came back and said nothing (`expect_word`).
-    renews: Cell<u32>,
     /// Width, height, maximized, as the other program last said.
     size: Cell<(i32, i32, bool)>,
     visible: Cell<bool>,
@@ -691,30 +660,32 @@ impl Win {
         (self.ask)(self, Ask::Lost);
     }
 
-    /// A page loaded again after its process ended is expected to speak: its own first word
-    /// to the app, at which it is told why it was loaded again. One that has not after a while
-    /// came back empty, or cut off from the app (seen when a page's process ends while the page
-    /// is still loading): it is made anew, twice at most.
-    fn expect_word(self: &Rc<Self>) {
+    /// What the rule says next about this window's page (view.rs `Recovery`).
+    fn follow(self: &Rc<Self>, next: Step) {
+        match next {
+            Step::Renew(watch) => {
+                self.renew();
+                self.expect_word(watch);
+            }
+            Step::Leave => self.pill_now(),
+        }
+    }
+
+    /// A page loaded anew is expected to speak: its own first word to the app. One that has
+    /// not within `SPEAKS_WITHIN` came back empty, or cut off from the app (seen when a page's
+    /// process ends while the page is still loading): it is loaded anew, twice at most, then
+    /// left with the bar's line and button.
+    fn expect_word(self: &Rc<Self>, watch: u32) {
         let me = Rc::downgrade(self);
         glib::timeout_add_local_once(SPEAKS_WITHIN, move || {
-            let Some(win) = me.upgrade() else { return };
-            if !win.say_stopped.get() || win.showing.get() != Showing::App {
-                return;
+            let Some(win) = me.upgrade().filter(|w| w.showing.get() == Showing::App) else { return };
+            let next = win.rec.borrow_mut().silent(watch);
+            match next {
+                Some(Step::Leave) => (win.inner.note)("page-silent", json!({ "window": win.id, "left": true })),
+                Some(Step::Renew(_)) => (win.inner.note)("page-silent", json!({ "window": win.id, "again": win.rec.borrow().renews() })),
+                None => return,
             }
-            if silent_again(win.renews.get()) {
-                win.renews.set(win.renews.get() + 1);
-                (win.inner.note)("page-silent", json!({ "window": win.id, "again": win.renews.get() }));
-                win.renew();
-                win.expect_word();
-            } else {
-                // Made anew twice and still silent: left as a page that keeps stopping is, with
-                // the bar's line and the button that loads it again.
-                win.say_stopped.set(false);
-                win.stopped.set(true);
-                (win.inner.note)("page-silent", json!({ "window": win.id, "left": true }));
-                win.pill_now();
-            }
+            win.follow(next.expect("matched above"));
         });
     }
 
@@ -749,9 +720,8 @@ impl Win {
                 // One that was loaded again because its process had ended is told so, once.
                 // (Told when the load finished, the word could reach a document whose page
                 // was not listening yet, and was then never said.)
-                if paste && self.showing.get() == Showing::App && self.say_stopped.replace(false) {
+                if paste && self.showing.get() == Showing::App && self.rec.borrow_mut().spoke() {
                     self.tell(&json!({ "reloaded": "stopped" }));
-                    self.renews.set(0);
                     (self.inner.note)("told-reloaded", json!({ "window": self.id }));
                 }
                 self.gate.borrow_mut().announces(saving);
@@ -821,7 +791,7 @@ impl Win {
         let link = self.link.borrow().clone();
         let over_page = self.showing.get() == Showing::App;
         // A page that kept ending: said in the bar, with the button that loads it again.
-        if over_page && self.stopped.get() {
+        if over_page && self.rec.borrow().stopped() {
             return self.inner.send(&json!({ "t": "pill", "win": self.id, "show": true, "text": "This page keeps stopping", "dot": false, "start": true, "label": "Load again", "tip": "The page of this window ended several times in a minute, perhaps for want of memory, and was left. Your sessions go on in Keel." }));
         }
         let coming = over_page && link == Link::Up && self.loading.get() && self.slow.get();
@@ -958,12 +928,6 @@ mod tests {
     // browser with no click. The engine tells of every window asked for; only the owner's press makes one.
     // The review's case: stopped twice within ten seconds after it drew, it was left stopped with no window.
     #[test]
-    fn a_silent_page_is_made_anew_twice_and_then_left() {
-        assert!(silent_again(0) && silent_again(1));
-        assert!(!silent_again(RENEWS) && !silent_again(RENEWS + 1));
-    }
-
-    #[test]
     fn a_program_that_keeps_stopping_soon_is_given_up_on_and_never_left_stopped() {
         let (soon, late) = (Duration::from_secs(3), AGAIN + Duration::from_secs(1));
         // It never drew: it cannot draw here.
@@ -1012,21 +976,6 @@ mod tests {
         assert_eq!(place_of("http://127.0.0.1:479601/s/abc", HERE), None);
         assert_eq!(place_of("about:blank", HERE), None);
         assert_eq!(place_of(&format!("{HERE}/s/abc"), ""), None);
-    }
-
-    // The review's case: a page that needs more than the heap's bound was loaded again without end.
-    #[test]
-    fn a_page_that_keeps_ending_is_loaded_again_three_times_in_a_minute() {
-        let t0 = Instant::now();
-        let mut stops = Vec::new();
-        let at = |s: u64| t0 + Duration::from_secs(s);
-        assert!(may_reload(&mut stops, at(0)));
-        assert!(may_reload(&mut stops, at(5)));
-        assert!(may_reload(&mut stops, at(10)));
-        assert!(!may_reload(&mut stops, at(15)));
-        // A minute on, the old endings no longer count.
-        assert!(may_reload(&mut stops, at(80)));
-        assert_eq!(stops.len(), 1);
     }
 
     #[test]

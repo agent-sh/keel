@@ -32,6 +32,8 @@ pub enum Ask {
     Lost,
     /// The daemon says it is up and its page keeps failing to load: said in the window.
     Failing,
+    /// A line for the app's log (the end-to-end check reads it).
+    Note(&'static str, serde_json::Value),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -72,6 +74,104 @@ pub fn retry_after(failed: u32) -> std::time::Duration {
 /// standing empty between two tries.
 pub const FAILS_SAID: u32 = 3;
 
+/// A page that stops is loaded again this many times in a minute, and no more.
+const RELOADS: usize = 3;
+/// How long a page loaded again has to say its first word to the app, and how many times one
+/// that said nothing is loaded anew.
+pub const SPEAKS_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+const RENEWS: u32 = 2;
+
+/// What a window does next about its page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    /// Load the page anew, and watch it for its first word (the watch's number).
+    Renew(u32),
+    /// Leave it: the bar says the page keeps stopping, with the button that loads it again.
+    Leave,
+}
+
+/// What a window knows of a page whose process ended, or that came back and says nothing. One
+/// rule for both engines: the page is loaded anew a few times in a minute and told why when it
+/// first speaks; one that says nothing within `SPEAKS_WITHIN` is loaded anew, twice at most;
+/// after either limit it is left with the bar's button, and the button's load is watched too.
+#[derive(Default)]
+pub struct Recovery {
+    stops: Vec<std::time::Instant>,
+    stopped: bool,
+    /// The page is to be told it was loaded again, when it first speaks.
+    owed: bool,
+    /// The watch that is on: an older one that fires does nothing.
+    watch: Option<u32>,
+    watches: u32,
+    renews: u32,
+}
+
+impl Recovery {
+    fn arm(&mut self) -> u32 {
+        self.watches += 1;
+        self.watch = Some(self.watches);
+        self.watches
+    }
+
+    fn leave(&mut self) -> Step {
+        self.stopped = true;
+        self.owed = false;
+        self.watch = None;
+        Step::Leave
+    }
+
+    /// The page's process ended.
+    pub fn ended(&mut self, now: std::time::Instant) -> Step {
+        self.stops.retain(|t| now.saturating_duration_since(*t) < std::time::Duration::from_secs(60));
+        self.stops.push(now);
+        if self.stops.len() > RELOADS {
+            return self.leave();
+        }
+        self.owed = true;
+        Step::Renew(self.arm())
+    }
+
+    /// The time a watch gave the page has passed. None: the page spoke, or a newer watch is on.
+    pub fn silent(&mut self, watch: u32) -> Option<Step> {
+        if self.watch != Some(watch) {
+            return None;
+        }
+        if self.renews < RENEWS {
+            self.renews += 1;
+            return Some(Step::Renew(self.arm()));
+        }
+        Some(self.leave())
+    }
+
+    /// The page's own first word. Whether it is owed the word that it was loaded again.
+    pub fn spoke(&mut self) -> bool {
+        self.watch = None;
+        self.renews = 0;
+        std::mem::take(&mut self.owed)
+    }
+
+    /// The owner pressed the bar's button. None: the page was not left. Else the page is loaded
+    /// anew and watched again (its watch's number): one that stays silent is left again.
+    pub fn again(&mut self) -> Option<u32> {
+        if !self.stopped {
+            return None;
+        }
+        self.stopped = false;
+        self.stops.clear();
+        self.renews = 0;
+        Some(self.arm())
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// How many times the page was loaded anew for saying nothing, since it last spoke.
+    pub fn renews(&self) -> u32 {
+        self.renews
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +183,58 @@ mod tests {
         assert_eq!(retry_after(u32::MAX), std::time::Duration::from_secs(10));
         // The window says so before its waits are long.
         assert!(retry_after(FAILS_SAID) <= std::time::Duration::from_secs(1));
+    }
+
+    // The review's case: a page that needs more than the heap's bound was loaded again without end.
+    #[test]
+    fn a_page_that_keeps_ending_is_loaded_again_three_times_in_a_minute() {
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        let mut r = Recovery::default();
+        assert!(matches!(r.ended(at(0)), Step::Renew(_)));
+        assert!(matches!(r.ended(at(5)), Step::Renew(_)));
+        assert!(matches!(r.ended(at(10)), Step::Renew(_)));
+        assert_eq!(r.ended(at(15)), Step::Leave);
+        assert!(r.stopped());
+        // The button, and a minute on the old endings no longer count.
+        assert!(r.again().is_some() && !r.stopped());
+        assert!(matches!(r.ended(at(80)), Step::Renew(_)));
+    }
+
+    #[test]
+    fn a_page_that_says_nothing_is_loaded_anew_twice_then_left_and_the_buttons_load_is_watched_too() {
+        let mut r = Recovery::default();
+        let Step::Renew(w1) = r.ended(std::time::Instant::now()) else { panic!("not loaded again") };
+        let Some(Step::Renew(w2)) = r.silent(w1) else { panic!("not loaded anew") };
+        // The first watch, firing late, does nothing more.
+        assert_eq!(r.silent(w1), None);
+        let Some(Step::Renew(w3)) = r.silent(w2) else { panic!("not loaded anew a second time") };
+        assert_eq!(r.silent(w3), Some(Step::Leave));
+        assert!(r.stopped() && r.silent(w3).is_none());
+        // The owner's Load again is watched like any other load: silent again, it is left again.
+        let w4 = r.again().expect("the button loads the page");
+        assert!(!r.stopped());
+        let Some(Step::Renew(w5)) = r.silent(w4) else { panic!("the button's load was not watched") };
+        let Some(Step::Renew(w6)) = r.silent(w5) else { panic!() };
+        assert_eq!(r.silent(w6), Some(Step::Leave));
+        // The button does nothing for a page that was not left.
+        let mut fine = Recovery::default();
+        assert_eq!(fine.again(), None);
+    }
+
+    #[test]
+    fn a_page_that_speaks_is_told_once_and_no_longer_watched() {
+        let mut r = Recovery::default();
+        let Step::Renew(w) = r.ended(std::time::Instant::now()) else { panic!() };
+        assert!(r.spoke());
+        assert!(!r.spoke());
+        assert_eq!(r.silent(w), None);
+        // The button's load owes the page no word: the owner pressed it.
+        let mut left = Recovery::default();
+        for _ in 0..4 {
+            left.ended(std::time::Instant::now());
+        }
+        assert!(left.stopped() && left.again().is_some() && !left.spoke());
     }
 }
 

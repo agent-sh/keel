@@ -17,10 +17,10 @@ use crate::page;
 use crate::prefs::Look;
 use crate::said::{asked, Asked1};
 use crate::said::may_act;
-use crate::view::{retry_after, Ask, Asked, Away, Can, Engine, Opening, Showing, View, FAILS_SAID};
+use crate::view::{retry_after, Ask, Asked, Away, Can, Engine, Step, Opening, Recovery, Showing, View, FAILS_SAID, SPEAKS_WITHIN};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
@@ -213,6 +213,10 @@ struct Win {
     gate: RefCell<Gate>,
     /// Loads of the daemon's page that failed in a row (`retry_after`).
     failed: Cell<u32>,
+    /// What is known of a page whose process ended, or that came back and says nothing (view.rs).
+    rec: RefCell<Recovery>,
+    /// What the window asks of the app (the same closure its handlers hold).
+    ask: Rc<dyn Fn(&Rc<Win>, Ask)>,
     /// The away page's last state, said again once that page has loaded.
     away_js: RefCell<String>,
     title: gtk::Label,
@@ -302,6 +306,8 @@ impl Win {
             me: RefCell::new(Weak::new()),
             gate: RefCell::new(Gate::default()),
             failed: Cell::new(0),
+            rec: RefCell::new(Recovery::default()),
+            ask: ask.clone(),
             away_js: RefCell::new(String::new()),
             title,
             pill,
@@ -349,7 +355,15 @@ impl Win {
                     win.tell(&serde_json::json!({ "copied": { "id": id, "ok": ok } }));
                 }
                 // (This engine's paste keys stay its own: it gives no frame the keyboard it was not given.)
-                Some(Asked1::Can { saving, .. }) => win.gate.borrow_mut().announces(saving),
+                Some(Asked1::Can { paste, saving }) => {
+                    // The page itself speaks: one that was loaded again because its process
+                    // had ended is told so, once, now that it listens.
+                    if paste && win.showing.get() == Showing::App && win.rec.borrow_mut().spoke() {
+                        win.tell(&json!({ "reloaded": "stopped" }));
+                        a(&win, Ask::Note("told-reloaded", json!({ "window": win.id })));
+                    }
+                    win.gate.borrow_mut().announces(saving)
+                }
                 Some(Asked1::PasteThrough) => {}
                 Some(Asked1::Saving(id, url)) => {
                     let ok = links::keepable(&url, &win.origin.borrow()) && win.gate.borrow_mut().announce(&url, Instant::now());
@@ -500,10 +514,21 @@ impl Win {
             true
         });
         let weak = Rc::downgrade(&win);
-        win.view.connect_web_process_terminated(move |v, _| {
-            if weak.upgrade().is_some_and(|w| w.showing.get() == Showing::App) {
-                v.reload();
+        // The page's own process ended: the page is loaded again and told so, a few times; one
+        // that keeps ending, or that comes back and says nothing, is left with the bar's button
+        // (the rule both engines follow: view.rs `Recovery`).
+        win.view.connect_web_process_terminated(move |_, _| {
+            let Some(win) = weak.upgrade() else { return };
+            win.gate.borrow_mut().announces(false);
+            if win.showing.get() != Showing::App {
+                // The app's own page: put back as it is.
+                (win.ask)(&win, Ask::Note("page-stopped", json!({ "window": win.id, "again": true })));
+                win.showing.set(Showing::Nothing);
+                return (win.ask)(&win, Ask::Lost);
             }
+            let next = win.rec.borrow_mut().ended(Instant::now());
+            (win.ask)(&win, Ask::Note("page-stopped", json!({ "window": win.id, "again": next != Step::Leave })));
+            win.follow(next);
         });
 
         // The keys every desktop app uses for text size drive the page's own setting: one scale, not two.
@@ -546,8 +571,17 @@ impl Win {
 
         let (weak, a) = (Rc::downgrade(&win), ask.clone());
         win.pill_start.connect_clicked(move |_| {
-            if let Some(win) = weak.upgrade() {
-                a(&win, Ask::Start);
+            let Some(win) = weak.upgrade() else { return };
+            // The same button, in a window whose page kept stopping: it loads the page again,
+            // watched like any other load.
+            let again = win.rec.borrow_mut().again();
+            match again {
+                Some(watch) => {
+                    win.view.reload();
+                    win.pill_now();
+                    win.expect_word(watch);
+                }
+                None => a(&win, Ask::Start),
             }
         });
 
@@ -611,10 +645,51 @@ impl Win {
         self.view.evaluate_javascript(&js, None, None, gio::Cancellable::NONE, |_| {});
     }
 
-    /// The state beside the controls: the daemon away while its page is up, or the page still coming.
+    /// What the rule says next about this window's page (view.rs `Recovery`).
+    fn follow(self: &Rc<Self>, next: Step) {
+        match next {
+            Step::Renew(watch) => {
+                self.view.reload();
+                self.expect_word(watch);
+            }
+            Step::Leave => {
+                self.pill_now();
+                // The page has nothing to say: the keyboard is the button's.
+                self.pill_start.grab_focus();
+            }
+        }
+    }
+
+    /// A page loaded again is expected to speak: its own first word to the app. One that has
+    /// not within `SPEAKS_WITHIN` is loaded anew, twice at most, then left with the bar's button.
+    fn expect_word(self: &Rc<Self>, watch: u32) {
+        let me = Rc::downgrade(self);
+        glib::timeout_add_local_once(SPEAKS_WITHIN, move || {
+            let Some(win) = me.upgrade().filter(|w| w.showing.get() == Showing::App) else { return };
+            let next = win.rec.borrow_mut().silent(watch);
+            match next {
+                Some(Step::Leave) => (win.ask)(&win, Ask::Note("page-silent", json!({ "window": win.id, "left": true }))),
+                Some(Step::Renew(_)) => (win.ask)(&win, Ask::Note("page-silent", json!({ "window": win.id, "again": win.rec.borrow().renews() }))),
+                None => return,
+            }
+            win.follow(next.expect("matched above"));
+        });
+    }
+
+    /// The state beside the controls: the daemon away while its page is up, the page still
+    /// coming, or a page that kept stopping.
     fn pill_now(&self) {
         let link = self.link.borrow().clone();
         let over_page = self.showing.get() == Showing::App;
+        if over_page && self.rec.borrow().stopped() {
+            self.pill.set_visible(true);
+            self.dot.set_visible(false);
+            self.pill.set_tooltip_text(Some("The page stopped several times, or came back and said nothing. Your sessions went on in Keel."));
+            self.pill_text.set_label("This page keeps stopping");
+            self.pill_start.set_label("Load again");
+            return self.pill_start.set_visible(true);
+        }
+        self.pill_start.set_label("Start");
         let coming = over_page && link == Link::Up && self.loading.get() && self.slow.get();
         self.pill.set_visible(over_page && (link != Link::Up || coming));
         self.pill_start.set_visible(over_page && link == Link::Down);
