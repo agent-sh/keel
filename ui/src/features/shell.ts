@@ -4,7 +4,7 @@
 //   - A path the shell asks for (a keel:// link, a notification's click, the
 //     tray) is shown without a reload, so a draft is never lost to it.
 //   - A session can be opened in a window of its own.
-import { AppWindow } from "lucide-react";
+import { AppWindow, Keyboard } from "lucide-react";
 import { createElement } from "react";
 import { focusApproval } from "../lib/automation.ts";
 import { registerCommand } from "../lib/keys.ts";
@@ -98,5 +98,11 @@ if (host) {
     id: "shell-window", label: "Open in its own window", group: "View", icon: createElement(AppWindow, { className: "size-4" }), words: "desktop window separate detach pop out",
     when: () => !soloWindow && getUI().route.name === "session",
     run: () => { const r = getUI().route; if (r.name === "session") host.post({ t: "window", path: `/s/${encodeURIComponent(r.id)}` }); },
+  });
+  // Keys that reach the app from anywhere on the desktop (show Keel, new session): the desktop
+  // asks for them in a dialog of its own, where they are the owner's to choose and to change.
+  if (host.can.shortcuts) registerCommand({
+    id: "shell-shortcuts", label: "Global shortcuts: show Keel, new session", group: "General", icon: createElement(Keyboard, { className: "size-4" }), words: "desktop hotkey keys summon bring window anywhere system",
+    run: () => host.post({ t: "shortcuts" }),
   });
 }

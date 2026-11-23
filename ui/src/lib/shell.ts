@@ -9,14 +9,16 @@ export type Shell = {
   platform: string;
   // "main": the app's window. "session": one session in a window of its own.
   window: "main" | "session";
-  // (`saving`: the app answers a file the page announces; one from before that keeps files by its own rule.)
-  can: { titlebar: boolean; windows: boolean; links: boolean; notifications: boolean; tray: boolean; saving?: boolean };
+  // (`saving`: the app answers a file the page announces; one from before that keeps files by its own rule.
+  //  `shortcuts`: the desktop has global shortcuts for apps, and the app can ask for its own.)
+  can: { titlebar: boolean; windows: boolean; links: boolean; notifications: boolean; tray: boolean; saving?: boolean; shortcuts?: boolean };
   // To the shell: { t: "look", ... }, { t: "window", path }, { t: "start" }, and the
   // clipboard, which the page reaches only through the app there:
   // { t: "paste", id }, { t: "copying" }, { t: "copy", id, text };
   // { t: "can", paste, saving }: what this page does with the app (below), said as it loads;
   // { t: "paste-through" }: the paste the app handed over is the engine's to make;
-  // { t: "saving", id, url }: a file the page is about to offer.
+  // { t: "saving", id, url }: a file the page is about to offer;
+  // { t: "shortcuts" }: the owner asked for the app's global shortcuts (the desktop shows its dialog).
   post(message: unknown): void;
 };
 

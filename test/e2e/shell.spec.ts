@@ -20,7 +20,7 @@ const shellObject = (kind: "main" | "session") => `
   window.__posted = [];
   Object.defineProperty(window, "keelShell", { value: Object.freeze({
     name: "keel-desktop", version: "test", engine: "webkit", platform: "linux", window: "${kind}",
-    can: Object.freeze({ titlebar: true, windows: true, links: true, notifications: true, tray: true }),
+    can: Object.freeze({ titlebar: true, windows: true, links: true, notifications: true, tray: true, shortcuts: ${kind === "main"} }),
     post: (m) => window.__posted.push(m),
   }) });`;
 const posted = (page: Page, t: string) => page.evaluate((t) => (window as any).__posted.filter((m: any) => m.t === t), t);
@@ -71,6 +71,16 @@ test("shell: the page tells its look, goes where the shell asks without a reload
     await page.keyboard.press("Enter");
     await expect.poll(() => posted(page, "window")).toEqual([{ t: "window", path: `/s/${a.id}` }]);
     await shoot(page, "shell-01-main");
+
+    // The desktop has global shortcuts for apps: the page offers to ask for the app's own, and the app does the asking.
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("global shortcuts");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => posted(page, "shortcuts")).toEqual([{ t: "shortcuts" }]);
+    // And the key every desktop app has for a new one, which a browser tab cannot take.
+    await page.keyboard.press("Control+n");
+    await page.waitForURL((u) => u.pathname === "/");
+    expect(await page.evaluate(() => (window as any).__same)).toBe(true);
   } finally {
     for (const s of [a, b]) await request.delete(`/api/sessions/${s.id}`).catch(() => {});
   }
@@ -295,6 +305,8 @@ test("shell: a browser tab has no shell", async ({ page, request }) => {
     await page.keyboard.press("Control+k");
     await page.getByTestId("palette-input").fill("own window");
     await expect(page.getByText("Open in its own window")).toHaveCount(0);
+    await page.getByTestId("palette-input").fill("global shortcuts");
+    await expect(page.getByText("Global shortcuts: show Keel, new session")).toHaveCount(0);
     // The shell's routes are the desk's own: a call that came through a proxy is refused.
     expect((await request.get("/api/shell", { headers: { "x-forwarded-for": "203.0.113.9" } })).status()).toBe(403);
     expect((await (await request.get("/api/shell")).json()).attached).toBe(false);

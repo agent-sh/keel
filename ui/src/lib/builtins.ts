@@ -7,6 +7,7 @@ import { FolderTree } from "lucide-react";
 import { createElement, lazy } from "react";
 import { panels, slash } from "./extend.ts";
 import { fuzzy, isMac, registerCommand } from "./keys.ts";
+import { shell } from "./shell.ts";
 import { getSafetyModes, safety } from "./safety.ts";
 import { actions, getState, reportError, ensureModels } from "./store.ts";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
@@ -108,7 +109,8 @@ registerCommand(
   { id: "panel-close", label: "Close the side panel", group: "View", keys: "mod+\\", inInput: true, when: () => !!getUI().panel, run: () => savePref("panel", null) },
   { id: "palette", label: "Search sessions and commands", group: "General", keys: "mod+k", inInput: true, over: () => getUI().palette, run: () => setUI({ palette: !getUI().palette }) },
   { id: "shortcuts", label: "Keyboard shortcuts", group: "General", keys: "mod+/", inInput: true, over: () => getUI().shortcuts, run: () => setUI({ shortcuts: !getUI().shortcuts }) },
-  { id: "new-session", label: "New session", group: "Sessions", keys: "mod+shift+o", inInput: true, words: "start create", run: newSession },
+  // (In the desktop app the key every app has for it: a browser tab cannot take that one.)
+  { id: "new-session", label: "New session", group: "Sessions", keys: shell ? "mod+n mod+shift+o" : "mod+shift+o", inInput: true, words: "start create", run: newSession },
   { id: "new-here", label: "New session in this folder", group: "Sessions", words: "clear fresh", when: () => !!current(), run: () => newIn(current()!.workspace) },
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
   { id: "prev-session", label: "Previous session", group: "Sessions", keys: "mod+shift+[", inInput: true, run: () => step(-1) },
