@@ -75,7 +75,8 @@ fun ConnLine() {
     }
 }
 
-data class Row3(val chat: Chat, val state: State, val since: Double?)
+/** `ask`: what it waits on the owner for, in a line (askLine); empty when nothing waits. */
+data class Row3(val chat: Chat, val state: State, val since: Double?, val ask: String = "")
 
 @Composable
 fun SessionsScreen() {
@@ -98,14 +99,7 @@ fun SessionsScreen() {
         }
     }
     val now = nowTick()
-    val pendingBy = cards.values.filter { it.pending }.groupBy { it.chatId }
-    val rows = chats.values.filter { !it.archived }
-        .map { Row3(it, stateOf(it, pendingBy[it.id] != null, it.id in working), working[it.id]) }
-        // A subagent's session shows under its parent's work; it is listed only when it needs the owner.
-        .filter { it.chat.parentId == null || it.state == State.NEEDS }
-    val needs = rows.filter { it.state == State.NEEDS }.sortedByDescending { it.chat.updated }
-    val work = rows.filter { it.state == State.WORKING }.sortedBy { it.since ?: it.chat.updated }
-    val rest = rows.filter { it.state != State.NEEDS && it.state != State.WORKING }.sortedWith(compareByDescending<Row3> { it.chat.pinned }.thenByDescending { it.chat.updated })
+    val rows = sessionRows(chats, cards, working)
 
     Column(Modifier.fillMaxSize()) {
         Head("Sessions", sub = { ConnLine() }) {
@@ -119,17 +113,37 @@ fun SessionsScreen() {
             return
         }
         if (!synced) { Empty("Reaching the daemon", "Sessions appear as soon as the first sync arrives."); return }
-        LazyColumn(Modifier.fillMaxSize()) {
-            fun section(label: String, list: List<Row3>, color: androidx.compose.ui.graphics.Color) {
-                if (list.isEmpty()) return
-                item(key = "h-$label") { SectionLabel(label, list.size, color, Modifier.padding(top = S.sm)) }
-                items(list, key = { it.chat.id }) { r -> SessionRow(r, now) }
-            }
-            section("Needs you", needs, k.need)
-            section("Working", work, k.work)
-            section("Recent", rest, k.muted)
-            item { Spacer(Modifier.height(S.xl)) }
+        SessionList(rows, now)
+    }
+}
+
+/** The rows the list shows: every session not archived with its state, an agent's only while it needs the owner. */
+fun sessionRows(chats: Map<String, Chat>, cards: Map<String, dev.avifenesh.keel.Card>, working: Map<String, Double>): List<Row3> {
+    val pendingBy = cards.values.filter { it.pending }.groupBy { it.chatId }
+    return chats.values.filter { !it.archived }
+        .map { Row3(it, stateOf(it, pendingBy[it.id] != null, it.id in working), working[it.id], dev.avifenesh.keel.askLine(it.id, cards.values, chats)) }
+        // An agent's session shows under the session that started it; it is listed only while a card of its
+        // own waits (the agents between it and the root wait on it, not on the owner: their root says so).
+        .filter { it.chat.parentId == null || pendingBy[it.chat.id] != null }
+}
+
+/** The list: what needs the owner first, then what works, then the rest, pinned first. */
+@Composable
+fun SessionList(rows: List<Row3>, now: Double) {
+    val k = k()
+    val needs = rows.filter { it.state == State.NEEDS }.sortedByDescending { it.chat.updated }
+    val work = rows.filter { it.state == State.WORKING }.sortedBy { it.since ?: it.chat.updated }
+    val rest = rows.filter { it.state != State.NEEDS && it.state != State.WORKING }.sortedWith(compareByDescending<Row3> { it.chat.pinned }.thenByDescending { it.chat.updated })
+    LazyColumn(Modifier.fillMaxSize()) {
+        fun section(label: String, list: List<Row3>, color: androidx.compose.ui.graphics.Color) {
+            if (list.isEmpty()) return
+            item(key = "h-$label") { SectionLabel(label, list.size, color, Modifier.padding(top = S.sm)) }
+            items(list, key = { it.chat.id }) { r -> SessionRow(r, now) }
         }
+        section("Needs you", needs, k.need)
+        section("Working", work, k.work)
+        section("Recent", rest, k.muted)
+        item { Spacer(Modifier.height(S.xl)) }
     }
 }
 
@@ -154,13 +168,16 @@ private fun SessionRow(r: Row3, now: Double) {
             }
             Spacer(Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // What it asks, when it waits on the owner: the reason it is at the top of the list.
+                val asks = r.state == State.NEEDS && r.ask.isNotBlank()
                 val line = when {
+                    asks -> r.ask
                     r.state == State.FAILED -> "Failed: ${c.failure.ifBlank { "the last turn did not finish" }}"
                     c.preview.isBlank() -> "No messages yet"
                     c.lastRole == "user" -> "You: ${c.preview}"
                     else -> c.preview
                 }
-                Txt(line, T.small, if (r.state == State.FAILED) k.fail else k.muted, Modifier.weight(1f), maxLines = 2)
+                Txt(line, T.small, when { asks -> k.ownerInk; r.state == State.FAILED -> k.fail; else -> k.muted }, Modifier.weight(1f).semantics { contentDescription = "line-of-${c.title}" }, maxLines = 2)
                 // Agents at work under it, at any depth: the session is busy even between its own turns.
                 if (c.agents > 0) {
                     Spacer(Modifier.width(S.sm))

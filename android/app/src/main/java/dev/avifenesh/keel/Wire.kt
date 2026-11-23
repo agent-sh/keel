@@ -243,6 +243,26 @@ fun agentTree(chats: Collection<Chat>, root: String): List<AgentRow> {
     return out
 }
 
+/**
+ * What a session waits on the owner for, in a line for the list: the oldest open card of the session or
+ * of an agent under it, said as what it asks ("Allow? Bash: rm -rf build", "Asks: Which database?",
+ * "Plan to approve: Split the store"), the agent named when it is an agent's, and how many more wait.
+ * Empty when nothing waits.
+ */
+fun askLine(sessionId: String, cards: Collection<Card>, chats: Map<String, Chat>): String {
+    val open = cards.filter { it.pending && (it.chatId == sessionId || rootOf(chats, it.chatId) == sessionId) }.sortedBy { it.ts }
+    val c = open.firstOrNull() ?: return ""
+    val what = when {
+        c.plan -> "Plan to approve: ${c.command.ifBlank { "the model's plan" }}"
+        c.question -> "Asks: ${c.questions.firstOrNull()?.question?.ifBlank { null } ?: c.command.lineSequence().firstOrNull().orEmpty()}" +
+            (if (c.questions.size > 1) " (and ${c.questions.size - 1} more question${if (c.questions.size > 2) "s" else ""})" else "")
+        else -> "Allow? ${c.noteLine}"
+    }
+    val who = if (c.chatId != sessionId) chats[c.chatId]?.title?.let { "$it: " }.orEmpty() else ""
+    val more = if (open.size > 1) " · ${open.size - 1} more waiting" else ""
+    return (who + what).replace(Regex("\\s+"), " ").trim() + more
+}
+
 /** The session at the top of the tree a session is in (itself when nobody started it). */
 fun rootOf(chats: Map<String, Chat>, id: String): String {
     var at = id

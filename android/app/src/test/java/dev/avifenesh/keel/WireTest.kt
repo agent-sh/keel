@@ -151,6 +151,24 @@ class WireTest {
         assertEquals("bad signature", reach(ApiError(401, "bad signature")))
     }
 
+    @Test fun aSessionThatNeedsTheOwnerSaysWhatItAsks() {
+        fun chat(id: String, parent: String? = null) = Chat(id, id.replaceFirstChar { it.uppercase() }, "needs_you", 1.0, 0, false, false, "Step 1 of 1.", "agent", parent)
+        val chats = listOf(chat("root"), chat("worker", "root"), chat("other")).associateBy { it.id }
+        fun card(id: String, chat: String, kind: String, ts: Double, command: String = "", line: String = "", qs: List<String> = emptyList()) =
+            Card(id, chat, kind, command, "", emptyList(), "pending", null, ts, qs.mapIndexed { i, q -> Question("q$i", q, listOf("a"), false) }, line = line)
+        val allow = card("apr-1", "root", "permission", 2.0, command = "rm -rf build", line = "Bash: rm -rf build")
+        val ask = card("q-1", "worker", "question", 1.0, qs = listOf("Which database should the cache use?", "Which region?"))
+        val plan = card("plan-other.c1", "other", "plan", 3.0, command = "Split the store")
+        val all = listOf(allow, ask, plan)
+        // The oldest first, an agent's named; what else waits counted.
+        assertEquals("Worker: Asks: Which database should the cache use? (and 1 more question) · 1 more waiting", askLine("root", all, chats))
+        assertEquals("Allow? Bash: rm -rf build", askLine("root", listOf(allow), chats))
+        assertEquals("Plan to approve: Split the store", askLine("other", all, chats))
+        // A line runs on one line; a closed card asks nothing.
+        assertEquals("Allow? Bash: cd /srv && make", askLine("root", listOf(allow.copy(line = "Bash: cd /srv\n  && make")), chats))
+        assertEquals("", askLine("root", listOf(allow.copy(state = "approved")), chats))
+    }
+
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))

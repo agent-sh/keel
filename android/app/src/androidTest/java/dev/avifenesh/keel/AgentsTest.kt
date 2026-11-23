@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import dev.avifenesh.keel.ui.AgentsBar
 import dev.avifenesh.keel.ui.KeelTheme
@@ -46,6 +47,15 @@ class AgentsTest {
         rule.onNodeWithText("2 below").assertIsDisplayed()
         rule.onNodeWithContentDescription("agent-row-Checker").performClick()
         assertEquals(listOf("a1x"), opened)
+    }
+
+    @Test fun onlyTheAgentThatAsksNeedsTheOwnerNotTheOnesAboveIt() {
+        // The daemon says "needs you" of every agent between the one that asks and the root.
+        val asking = chats.mapValues { (id, c) -> if (id in setOf("a", "a1", "a1x")) c.copy(status = "needs_you") else c }
+        rule.setContent { KeelTheme(1) { AgentsBar("root", asking, needs = setOf("a1x"), working = emptyMap(), now = 100.0) {} } }
+        rule.onNodeWithText("1 needs you").assertIsDisplayed()
+        rule.onNodeWithText("2 working").assertIsDisplayed()
+        assertEquals(2, rule.onAllNodesWithText("Waits on an agent below it").fetchSemanticsNodes().size)
     }
 
     @Test fun anAgentThatNeedsTheOwnerOpensTheTreeByItselfAndAnAgentLeadsUp() {

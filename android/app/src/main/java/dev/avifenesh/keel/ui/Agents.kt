@@ -44,7 +44,12 @@ fun AgentsBar(id: String, chats: Map<String, Chat>, needs: Set<String>, working:
     val parent = chats[id]?.parentId?.let { chats[it] }
     val rows = agentTree(chats.values, id)
     if (parent == null && rows.isEmpty()) return
-    val states = rows.associate { it.chat.id to stateOf(it.chat, it.chat.id in needs, it.chat.id in working) }
+    // An agent needs the owner when a card of its own waits. One the daemon calls "needs you" for a card of
+    // an agent below it waits on that agent: it works, and the row of the one that asks says so.
+    val states = rows.associate { r ->
+        val own = r.chat.id in needs
+        r.chat.id to if (!own && r.chat.status == "needs_you") State.WORKING else stateOf(r.chat, own, r.chat.id in working)
+    }
     val need = states.values.count { it == State.NEEDS }
     val work = states.values.count { it == State.WORKING }
     val failed = states.values.count { it == State.FAILED }
@@ -105,6 +110,7 @@ private fun AgentLine(r: AgentRow, s: State, since: Double?, now: Double, onOpen
             Txt(c.title, T.ui, k.fg, maxLines = 1)
             val line = when {
                 s == State.FAILED -> c.failure.ifBlank { "Failed" }
+                s == State.WORKING && c.status == "needs_you" -> "Waits on an agent below it"
                 c.stateWord.isNotBlank() -> c.stateWord
                 else -> s.word
             }
