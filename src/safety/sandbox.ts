@@ -224,7 +224,13 @@ function cloneGitBinds(workspace: string): string[] {
 // commit needs lock files next to what it writes): every ref of the
 // repository. A command can move or delete a branch that another checkout
 // has out, a tag, a stash. The gate compares the refs around each such
-// command and says what changed (src/safety/refwatch.ts).
+// command and says what changed (src/safety/refwatch.ts). One branch cannot
+// be held read-only by a bind of its own: a bind holds the file of the moment
+// the command started (a branch the owner moves since would read as it was),
+// and a branch that is only in packed-refs is written as a new file beside
+// the others. An agent in a worktree Keel made is held off the branches it
+// shares at git's door instead, in the sandbox and out of it
+// (src/safety/ref-guard.ts).
 //
 // The `.git` file that names the directory is read-only for a confined
 // command, and is still not believed by itself (a command the owner let out

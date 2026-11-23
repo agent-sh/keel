@@ -500,3 +500,82 @@ test("a file the line downloads and hands to a program in a here-document is hig
   for (const c of ["env GIT_DIR=/x/.git GIT_WORK_TREE=/x git reset --hard", "env git reset --hard", "nohup git clean -fd"])
     expect([c, how(c, "full-auto")]).toEqual([c, "high:destroys"]);
 });
+
+// An agent in a worktree Keel made for it (on keel/x, made from main) shares the repository's branches with the
+// owner's main checkout (/m, on main) and another agent's (/w/other, on keel/y): a command that moves one of
+// them is refused in every mode and names the landing queue. The owner's own session is not held to it.
+test("an agent in a managed worktree is refused moving a branch another checkout has out, and the owner is not", () => {
+  const shared = { root: "/w/agent", gitDir: "/m/.git/worktrees/agent", common: "/m/.git", branch: "keel/x", base: "main", out: new Map([["main", "/m"], ["keel/y", "/w/other"]]), folders: ["/m", "/w/other"] };
+  const agent = (command: string, mode: Mode = "full-auto") => decide(sh(command, "/w/agent"), facts(mode, { workspace: "/w/agent", shared }));
+  const owner = (command: string, mode: Mode = "full-auto") => decide(sh(command, "/m"), facts(mode, { workspace: "/m" }));
+  const refused = [
+    "git branch -f main HEAD", "git update-ref refs/heads/main HEAD", "git push . HEAD:main", "git -C /m merge keel/x",
+    "git checkout -B main", "git switch -C main origin/main", "cd /m && git reset --hard HEAD~1", "GIT_DIR=/m/.git git reset --hard", "git --git-dir=/m/.git reset --hard",
+    "export GIT_DIR=/m/.git; git reset --hard", "git rebase main keel/y", "git fetch . keel/x:main", "git fetch origin main:main", "git branch -D keel/y", "git branch -m keel/y gone",
+    "git push /m HEAD:refs/heads/main", "git push --delete . keel/y", "git update-ref --stdin", "git symbolic-ref HEAD refs/heads/main", "git checkout --ignore-other-worktrees main", "git switch main", "git checkout main",
+    "git worktree remove --force /w/other", "git -C /w/other commit -am x", "git -C \"$REPO\" commit -m x", "git branch -f \"$B\" HEAD", "bash -c 'git branch -f main HEAD'",
+    "echo $(git update-ref refs/heads/main HEAD)", "timeout 10 git push . +HEAD:main", "git replace HEAD~1 HEAD",
+  ];
+  for (const c of refused) for (const mode of ["full-auto", "auto", "ask"] as Mode[]) {
+    const d = agent(c, mode);
+    expect([c, mode, "deny" in d && d.deny.includes("through Keel's landing queue (keel__landing_queue)")]).toEqual([c, mode, true]);
+  }
+  expect(agent("git branch -f main HEAD")).toEqual({ deny: "Refused: the command moves the branch main, which another checkout has out. This worktree shares the repository's branches with its other checkouts (the owner's and other agents'), so an agent here changes its own branch only (keel/x): commit there, and reset or rebase it as you need. A branch reaches main through Keel's landing queue (keel__landing_queue), which rebases it, runs the repository's checks and lands it. Leave the other branches as they are, even to undo a mistake, and say in your report what you wanted done." });
+  expect((agent("git -C /m merge keel/x") as { deny: string }).deny).toStartWith("Refused: the command runs git merge in /m, another checkout of this repository.");
+  // Its own branch, its own worktree, a remote, a read of another checkout, another repository: as before.
+  const own = ["git commit -am x", "git reset --hard HEAD~1", "git rebase main", "git rebase --onto main HEAD~2", "git merge main", "git checkout -b keel/x-fix", "git branch keel/x-2 main",
+    "git push origin keel/x", "git push origin HEAD:main", "git fetch origin", "git fetch origin main", "git -C /m log --oneline -3", "git -C /m status", "git -C /w/other diff",
+    "git branch -f keel/x-2 HEAD", "git update-ref refs/heads/keel/x-2 HEAD", "git -C /srv/other-repo reset --hard", "cd /srv/other-repo && git branch -f main HEAD~1", "git worktree list", "git replace -l", "git checkout main -- src/a.ts", "git checkout keel/x-2", "git switch -"];
+  for (const c of own) { const d = agent(c); expect([c, "deny" in d]).toEqual([c, false]); }
+  // The owner's own session, in the main checkout: none of it is refused.
+  for (const c of refused) { const d = owner(c); expect([c, "deny" in d && d.deny.includes("landing queue")]).toEqual([c, false]); }
+});
+
+// What a review found the rule above let through, each refused in every mode: a symbolic ref, fast-import and the
+// rewriting tools, braces, the commands git and other programs run as text, env -C, settings that move the work
+// tree or run a command, pushes into this repository under another name, plain writes of git's files, the file
+// tools there. What the agent does in its own worktree, and with another repository, stays as it was.
+test("an agent in a managed worktree is refused the other ways of moving a shared branch", () => {
+  const shared = {
+    root: "/w/agent", gitDir: "/m/.git/worktrees/agent", common: "/m/.git", branch: "keel/x", base: "main", out: new Map([["main", "/m"], ["keel/y", "/w/other"]]), folders: ["/m", "/w/other"],
+    remotes: new Map([["origin", ["https://example.com/r.git"]], ["loc", ["/m"]]]), hosts: ["this-box"],
+  };
+  const agent = (command: string, mode: Mode = "full-auto") => decide(sh(command, "/w/agent"), facts(mode, { workspace: "/w/agent", shared }));
+  const refused = [
+    "git symbolic-ref refs/heads/main refs/heads/keel/x", "git symbolic-ref -m x refs/heads/keel/y refs/heads/keel/x", "git symbolic-ref --delete refs/heads/main",
+    "git fast-import < stream", "git filter-branch -- --all", "git filter-repo --force",
+    "git update-ref refs/heads/{main,keel/x} HEAD", "git update-ref refs/heads/ma{in,} HEAD", "git branch -f {main,keel/x} HEAD", "git update-ref refs/heads/MAIN HEAD",
+    "git rebase -x 'git branch -f main HEAD' HEAD~1", "git rebase --exec='git update-ref refs/heads/main HEAD' HEAD~1", "git bisect run git branch -f main HEAD",
+    "git submodule foreach --recursive 'git -C /m reset --hard'", "bash <<< 'git branch -f main HEAD'", "echo 'git branch -f main HEAD' | bash", "bash <<EOF\ngit branch -f main HEAD\nEOF",
+    "echo main | xargs git branch -f", "xargs -I B git update-ref refs/heads/B HEAD < names", "find . -name x -exec git update-ref refs/heads/{} HEAD \\;",
+    "ssh localhost git -C /m reset --hard", "ssh this-box 'cd /m && git reset --hard'", "script -qc 'git branch -f main HEAD' /dev/null", "watch 'git branch -f main HEAD'",
+    "git config alias.x 'update-ref refs/heads/main HEAD'", "git -c alias.x='!git branch -f main' x", "git config --global alias.y '!sh x'",
+    "env -C /m git reset --hard", "timeout 5 env --chdir=/m git reset --hard", "git -c core.worktree=/m reset --hard",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.worktree GIT_CONFIG_VALUE_0=/m git reset --hard", "GIT_CONFIG_PARAMETERS=\"'core.worktree'='/m'\" git reset --hard",
+    "git -c core.hooksPath=/dev/null commit -m x", "unset GIT_CONFIG_COUNT", "env -u GIT_CONFIG_COUNT git commit -m x", "env -i git commit -m x",
+    "git -c core.fsmonitor='git branch -f main HEAD' status", "git config core.pager 'git update-ref refs/heads/main HEAD'",
+    "git push .git HEAD:main", "git push /m/.git HEAD:main", "git push --repo /m HEAD:main", "git push --repo=. HEAD:main", "git push loc HEAD:main", "git push \"$PWD/.git\" HEAD:main",
+    "git push file:///m HEAD:main", "git remote add here /m", "git remote set-url origin /m/.git", "git subtree push --prefix=a . main",
+    "echo deadbeef > /m/.git/refs/heads/main", "printf x > /m/.git/packed-refs", "cp x /m/.git/HEAD", "tee /m/.git/refs/heads/main < x", "dd if=x of=/m/.git/packed-refs",
+    "ln -sf x /m/.git/refs/heads/main", "rm /m/.git/refs/heads/keel/y", "sed -i s/a/b/ /m/.git/config", "echo 'ref: refs/heads/main' > /m/.git/worktrees/agent/HEAD", "echo gitdir: /m/.git > .git",
+    "git config core.bare true", "git config -f /m/.git/config core.bare true", "git config branch.main.remote .", "git config -f /m/.git/worktrees/other/config.worktree user.name x",
+    "GIT_INDEX_FILE=/m/.git/index git add a", "git worktree add ../w2 main", "git init --separate-git-dir=/m/.git",
+  ];
+  for (const c of refused) for (const mode of ["full-auto", "auto", "ask"] as Mode[]) {
+    const d = agent(c, mode);
+    expect([c, mode, "deny" in d && d.deny.includes("keel__landing_queue")]).toEqual([c, mode, true]);
+  }
+  const own = [
+    "git rebase -x 'bun test' HEAD~3", "git config user.email x@y", "git config --get alias.x", "git -c core.pager=cat log", "git -c color.ui=never diff",
+    "echo hi > notes.md", "rm -f /m/.git/worktrees/agent/index.lock", "git push origin HEAD:main", "git push origin keel/x", "env -C src git status", "env -C /m git log -1",
+    "bash <<< 'echo hi'", "echo 'git status' | bash", "cat > notes.md <<EOF\ngit branch -f main HEAD\nEOF", "git worktree add -b keel/x-3 ../w3 main",
+    "ssh build-box git branch -f main HEAD", "git -C /srv/other-repo -c alias.x=y x", "xargs git add < files", "git config --unset user.email", "cat /m/.git/HEAD",
+  ];
+  for (const c of own) { const d = agent(c); expect([c, "deny" in d && d.deny.includes("keel__landing_queue")]).toEqual([c, false]); }
+  // The file tools: another checkout's git data is not an agent's to edit, in any mode; its own files are.
+  const edit = (path: string, mode: Mode) => decide({ kind: "edit", paths: [path] }, facts(mode, { workspace: "/w/agent", shared, tool: "Write" }));
+  for (const p of ["/m/.git/refs/heads/main", "/m/.git/packed-refs", "/m/.git/HEAD", "/m/.git/hooks/post-commit", "/m/.git/config", "/m/.git/worktrees/other/HEAD", "/m/.git/worktrees/agent/HEAD", "/w/agent/.git", "/w/other/.git"]) {
+    for (const mode of ["full-auto", "auto", "ask"] as Mode[]) { const d = edit(p, mode); expect([p, mode, "deny" in d && d.deny.startsWith("Refused: the edit would change")]).toEqual([p, mode, true]); }
+  }
+  expect("deny" in edit("/w/agent/src/a.ts", "full-auto")).toBe(false);
+});

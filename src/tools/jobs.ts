@@ -112,9 +112,10 @@ const envDrops = new Map<string, (sessionId: string) => readonly string[]>();
 export const registerEnvDrop = (id: string, f: (sessionId: string) => readonly string[]): (() => void) => (envDrops.set(id, f), () => void envDrops.delete(id));
 
 // Variables one tool call adds for the process it starts (a secret a command
-// refers to as $KEEL_SECRET_<id>): taken by the job that call starts.
+// refers to as $KEEL_SECRET_<id>, the git settings of an agent's guard):
+// taken by the job that call starts. Each feature adds its own to the call's.
 const callEnvs = new Map<string, Record<string, string>>();
-export const setCallEnv = (callId: string, env: Record<string, string>) => void callEnvs.set(callId, env);
+export const setCallEnv = (callId: string, env: Record<string, string>) => void callEnvs.set(callId, { ...callEnvs.get(callId), ...env });
 export const dropCallEnv = (callId: string) => void callEnvs.delete(callId);
 
 export function toolEnv(sessionId: string, extra: Record<string, string> = {}): Record<string, string> {

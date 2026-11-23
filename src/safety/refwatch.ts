@@ -12,10 +12,13 @@
 // common one where several sessions work in one repository: a branch that
 // another checkout has out, moved to the commit that checkout's own HEAD log
 // ends at, is that checkout's commit.
-import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { hostname } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { git } from "../core/git.ts";
+import { realOf } from "../core/paths.ts";
 import { linkedWorktree, SCRATCH } from "./sandbox.ts";
+import type { Shared } from "./shared-branches.ts";
 
 // A ref's value: the commit it names, and the ref it points at when it is a symbolic one.
 export type RefState = { refs: Map<string, string>; branch?: string };
@@ -71,6 +74,68 @@ function others(common: string, own: string): Map<string, string | undefined> {
       if (dir !== own) add(dir, join(dir, "logs/HEAD"));
     }
   } catch {} // no linked worktrees left
+  return out;
+}
+
+// The checkouts a linked worktree shares its branches with, for the rule that
+// keeps an agent to its own branch (src/safety/shared-branches.ts): every other
+// checkout's folder and the branch each has out. Read from the files, a few
+// small ones a checkout; undefined when `root` is not a linked worktree.
+//
+// Kept while nothing it was read from changed: the repository's config, its
+// list of worktrees, and each checkout's HEAD (a branch taken out replaces
+// that file), by their marks on the disk.
+const kept = new Map<string, { mark: string; shared: Shared }>();
+const markOf = (p: string) => { try { const st = statSync(p); return `${st.mtimeMs}:${st.ino}:${st.size}`; } catch { return "-"; } };
+export function checkoutsOf(root: string, branch: string, base: string | null): Shared | undefined {
+  const at = linkedWorktree(root);
+  if (!at) return undefined;
+  let names: string[] = [];
+  try { names = readdirSync(join(at.common, "worktrees")); } catch {} // no linked worktrees but this one
+  const key = `${root}\0${branch}\0${base ?? ""}`;
+  const mark = [markOf(join(at.common, "config")), markOf(join(at.common, "HEAD")), ...names.flatMap((n) => [n, markOf(join(at.common, "worktrees", n, "HEAD")), markOf(join(at.common, "worktrees", n, "gitdir"))])].join("|");
+  const was = kept.get(key);
+  if (was && was.mark === mark) return was.shared;
+  const shared = readCheckouts(root, branch, base, at, names);
+  kept.set(key, { mark, shared });
+  if (kept.size > 256) kept.delete(kept.keys().next().value!);
+  return shared;
+}
+function readCheckouts(root: string, branch: string, base: string | null, at: { own: string; common: string }, names: string[]): Shared {
+  const out = new Map<string, string>();
+  const folders: string[] = [];
+  const gitDirs: string[] = [];
+  const add = (gitDir: string, folder: string | undefined) => {
+    gitDirs.push(gitDir);
+    if (!folder) return;
+    folders.push(realOf(folder));
+    const b = branchOf(gitDir);
+    if (b?.startsWith("refs/heads/")) out.set(b.slice(11), realOf(folder));
+  };
+  // The main checkout (none for a bare repository).
+  add(at.common, basename(at.common) === ".git" ? dirname(at.common) : undefined);
+  for (const name of names) {
+    const dir = join(at.common, "worktrees", name);
+    if (dir === at.own) continue;
+    let folder: string | undefined;
+    try { folder = dirname(readFileSync(join(dir, "gitdir"), "utf8").trim()); } catch {}
+    add(dir, folder);
+  }
+  return { root: realOf(root), gitDir: at.own, common: at.common, branch, base, out, folders, gitDirs, remotes: remotesOf(at.common), hosts: [hostname().toLowerCase()], real: realOf };
+}
+
+// The repository's remotes and their URLs, from its config file ([remote "x"] url and pushurl).
+function remotesOf(common: string): Map<string, string[]> | undefined {
+  let text: string;
+  try { text = readFileSync(join(common, "config"), "utf8"); } catch { return undefined; }
+  const out = new Map<string, string[]>();
+  let at: string | undefined;
+  for (const line of text.split("\n")) {
+    const head = /^\s*\[\s*([^\]\s"]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]/.exec(line);
+    if (head) { at = head[1]!.toLowerCase() === "remote" && head[2] !== undefined ? head[2] : undefined; if (at !== undefined && !out.has(at)) out.set(at, []); continue; }
+    const kv = at === undefined ? null : /^\s*(url|pushurl)\s*=\s*(.*?)\s*$/i.exec(line);
+    if (kv) out.get(at!)!.push(kv[2]!.replace(/^"(.*)"$/, "$1"));
+  }
   return out;
 }
 

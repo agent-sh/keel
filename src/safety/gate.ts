@@ -21,7 +21,10 @@ import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
 import { realPrograms } from "./shims.ts";
 import { readOnlyCommand, shimmedPrograms, splitCommand } from "./shell.ts";
-import { report, watch, type Watch } from "./refwatch.ts";
+import { checkoutsOf, report, watch, type Watch } from "./refwatch.ts";
+import { guardEnv } from "./ref-guard.ts";
+import { setCallEnv } from "../tools/jobs.ts";
+import type { Shared } from "./shared-branches.ts";
 import { configDir } from "../providers/config.ts";
 import { artifactsDir, atCwd, contains, realOf } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
@@ -1037,6 +1040,8 @@ export class Gate {
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
       mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
+      // An agent in a worktree Keel made: what it shares with the other checkouts (shared-branches.ts).
+      ...((cls.kind === "shell" || cls.kind === "edit") && session.parent_id && !session.machine ? { shared: this.sharedOf(session) } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
       ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, workspace, this.readOpts(session, "read-only"), this.spills(session), true) }),
       ...(session.machine || cls.kind === "read" ? {} : {
@@ -1056,6 +1061,25 @@ export class Gate {
         land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
       }) }),
     });
+  }
+
+  // The checkouts an agent's worktree shares its branches with, when the agent
+  // works in a worktree Keel made: its own, or the one of the agent it runs
+  // under (the nearest that holds its folder). Read at each command: a checkout
+  // made or gone, or a branch taken out, since the last one counts.
+  private sharedOf(session: Session): Shared | undefined {
+    let row: { path: string; branch: string; base: string } | null;
+    try {
+      row = this.store.db.query<{ path: string; branch: string; base: string }, [string, string]>(
+        "SELECT path, branch, base FROM worktrees WHERE state = 'active' AND (session_id = ?1 OR ?2 = path OR substr(?2, 1, length(path) + 1) = path || '/') ORDER BY session_id = ?1 DESC, length(path) DESC LIMIT 1",
+      ).get(session.id, session.workspace);
+    } catch {
+      return undefined; // (no worktree was ever made: the table is not there)
+    }
+    if (!row) return undefined;
+    // (A worktree made from a commit has no base branch.)
+    const base = /^[0-9a-f]{7,64}$/.test(row.base) || row.base === "HEAD" ? null : row.base.replace(/^refs\/heads\//, "");
+    return timed(() => "reading the checkouts an agent's worktree shares its branches with", () => checkoutsOf(row.path, row.branch, base));
   }
 
   // What stands on this machine under the names of the programs a command's reading forms depend on (node
@@ -1117,6 +1141,13 @@ export class Gate {
     }
     const r = await this.check(session, call);
     if ("deny" in r) return r;
+    // An agent in a worktree Keel made: every git its command starts carries the hook that keeps the branches the
+    // worktree shares where they are (ref-guard.ts).
+    if (r.cls.kind === "shell" && session.parent_id && !session.machine) {
+      const shared = this.sharedOf(session);
+      const env = shared ? timed(() => "making the hook that keeps an agent off the shared branches", () => guardEnv(shared)) : {};
+      if (Object.keys(env).length) setCallEnv(call.id, env);
+    }
     const p = this.perm(session.id);
     let ctx: Partial<ToolCall["ctx"]> | undefined =
       !(r.cls.kind === "shell" && r.cls.escalate) && this.sandboxed(session, p) && p.sandbox !== "off"

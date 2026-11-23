@@ -85,3 +85,50 @@ test("what a confined command ran into gets one sentence each, in the tool's own
   expect(sandboxSaid("fatal: Unable to create '/r/.git/worktrees/wt/index.lock': File exists.", at)).toEqual([]);
   expect(sandboxSaid("fatal: Unable to create '/r/.git/gc.pid.lock': Read-only file system", { ...at, linked: false })).toEqual([]);
 });
+
+// The checkouts a worktree shares its branches with, read from a real repository: the main checkout and another
+// worktree, each with the branch it has out; the worktree's own is not one of them.
+test("the checkouts a worktree shares its branches with are read from the repository's files", async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { realOf } = await import("../core/paths.ts");
+  const { checkoutsOf } = await import("./refwatch.ts");
+  const { sharedRefusal } = await import("./shared-branches.ts");
+  const dir = realOf(mkdtempSync(join(process.env.TMPDIR ?? ".", "shared-")));
+  const git = (cwd: string, ...args: string[]) => {
+    const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd, env: { PATH: process.env.PATH!, HOME: dir, GIT_CONFIG_NOSYSTEM: "1" } });
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+  };
+  try {
+    const main = join(dir, "main"), agent = join(dir, "agent"), other = join(dir, "other");
+    git(dir, "init", "-q", main);
+    writeFileSync(join(main, "a"), "a\n");
+    git(main, "add", "a");
+    git(main, "commit", "-qm", "a");
+    git(main, "worktree", "add", "-q", "-b", "keel/x", agent);
+    git(main, "worktree", "add", "-q", "-b", "keel/y", other);
+    const s = checkoutsOf(agent, "keel/x", "main")!;
+    expect([...s.out].sort()).toEqual([["keel/y", other], ["main", main]]);
+    expect(s.folders.sort()).toEqual([main, other].sort());
+    expect(s.root).toBe(agent);
+    expect(sharedRefusal("git push . HEAD:main", agent, dir, s)).toBe("pushes into the branch main, which another checkout has out");
+    expect(sharedRefusal(`git -C ${main} reset --hard`, agent, dir, s)).toBe(`runs git reset in ${main}, another checkout of this repository`);
+    expect(sharedRefusal(`GIT_DIR=${join(main, ".git")} git reset --hard`, agent, dir, s)).toBe(`runs git reset in ${main}, another checkout of this repository`);
+    expect(sharedRefusal("git commit -qm b", agent, dir, s)).toBeNull();
+    // What a review ran from such a worktree: a symbolic ref over main, env -C, a plain write of the ref.
+    expect(sharedRefusal("git symbolic-ref refs/heads/main refs/heads/keel/x", agent, dir, s)).toBe("makes the branch main, which another checkout has out a link to refs/heads/keel/x");
+    expect(sharedRefusal(`env -C ${main} git reset --hard`, agent, dir, s)).toBe(`runs git reset in ${main}, another checkout of this repository`);
+    expect(sharedRefusal(`echo x > ${main}/.git/refs/heads/main`, agent, dir, s)).toBe(`writes ${main}/.git/refs/heads/main, in the repository's git directory, which every checkout shares`);
+    // A remote is read from the repository's config: one that is this repository is local, a server is not.
+    git(main, "remote", "add", "loc", main);
+    git(main, "remote", "add", "origin", "https://example.com/r.git");
+    const r = checkoutsOf(agent, "keel/x", "main")!;
+    expect([...r.remotes!]).toEqual([["loc", [main]], ["origin", ["https://example.com/r.git"]]]);
+    expect(sharedRefusal("git push loc HEAD:main", agent, dir, r)).toBe("pushes into the branch main, which another checkout has out");
+    expect(sharedRefusal("git push origin HEAD:main", agent, dir, r)).toBeNull();
+    // Not a linked worktree: nothing to share.
+    expect(checkoutsOf(main, "main", null)).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

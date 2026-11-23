@@ -6,6 +6,7 @@ import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import type { Looked } from "./looked.ts";
 import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
+import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains } from "../core/paths.ts";
@@ -514,6 +515,9 @@ export type Facts = {
   keelConfig?: (path: string) => string | null;
   // Whether a file has another name somewhere (a hard link): a write to it lands there too.
   linked?: (path: string) => boolean;
+  // For an agent in a worktree Keel made for it: the checkouts it shares its branches with. A command that moves
+  // one of their branches is refused in every mode (shared-branches.ts). The owner's own sessions have none.
+  shared?: Shared;
 };
 
 // The class of a command that asks to run outside the sandbox.
@@ -578,6 +582,8 @@ export function decide(c: CallClass, f: Facts): Decision {
     // Keel's own state is never a session's tool's to write, in any mode, Full auto included: not a check of the
     // work, but what keeps a session from corrupting the store of the daemon it runs in.
     for (const p of c.paths) { const why = f.keel?.(p); if (why) return { deny: keelRefusal(why) }; }
+    // An agent in a worktree Keel made writes no git data its worktree shares, in any mode (shared-branches.ts).
+    if (f.shared) for (const p of c.paths) { const what = gitStoreOf(p, f.shared); if (what) return { deny: sharedMessage(`would change ${what}`, f.shared, "the edit") }; }
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };
     if (f.mode === "full-auto") {
       // Full auto checks nothing. A sandbox the owner turned on still holds, and it holds the session's file tools
@@ -661,6 +667,9 @@ const never = (why: string, f: Facts): Decision =>
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
   const parts = splitCommand(command);
   const home = f.home ?? homedir();
+  // An agent in a worktree Keel made for it changes its own branch only, in every mode, Full auto included.
+  // (A program of another language is not read as a shell line: the hook holds what git it starts, ref-guard.ts.)
+  if (f.shared && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) { const why = sharedRefusal(command, cwd, home, f.shared); if (why) return { deny: sharedMessage(why, f.shared) }; }
   const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
   const shellRules = f.rules.filter((r) => r.kind === "shell");
   // A standing rule of the owner's that names this command and does not cover it: the card says so.
