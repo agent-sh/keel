@@ -1044,7 +1044,7 @@ export function mobileApi(ctx: MobileCtx) {
         const archived = flag(b.archived), pinned = flag(b.pinned);
         if (title === undefined && archived === undefined && pinned === undefined) return err("no supported fields", 400);
         if (pinned !== undefined) store.mergeSettings(s.id, { pinned_ms: pinned ? (s.settings.pinned_ms ?? Date.now()) : null });
-        const next = title !== undefined || archived !== undefined ? store.updateSession(s.id, { title, archived }) : store.session(s.id)!;
+        const next = title !== undefined || archived !== undefined ? store.updateSession(s.id, { title, ...(title !== undefined ? { title_by: "" as const } : {}), archived }) : store.session(s.id)!;
         bus.emit({ t: "session", session: next });
         return json({ chat: chatFull(next) });
       })),

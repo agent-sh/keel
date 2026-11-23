@@ -388,7 +388,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             if (left.length) return json({ error: `the session was not archived: ${left.length > 1 ? "these commands" : "this command"} would not stop: ${leftText(left)}`, jobs: left.map((j) => ({ id: j.id, command: j.command, pids: j.left })) }, 409);
           }
           const core = body.title !== undefined || body.model !== undefined || body.archived !== undefined || body.settings !== undefined;
-          const patch = { title: body.title?.trim(), archived: body.archived, settings };
+          // A title the owner gives is theirs: no made title replaces it (src/engine/title.ts).
+          const patch = { title: body.title?.trim(), ...(body.title !== undefined ? { title_by: "" as const } : {}), archived: body.archived, settings };
           let next = moving ? await commitSwitch(store, bus, providers, s, moving, patch, { running: engine.isRunning(s.id) }) : core ? store.updateSession(s.id, { ...patch, model: body.model }) : s;
           for (const p of mine) await p.apply(next, body);
           next = store.session(s.id)!;

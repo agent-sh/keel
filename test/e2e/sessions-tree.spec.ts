@@ -7,7 +7,8 @@ import { ask, HAIKU, shoot } from "./shots.ts";
 test("branches, fork, rename, archive, search, delete", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const tag = `zq${Date.now().toString(36)}`;
-  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
+  // Named: the search below is of what was said, not of a title made from it.
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: `Fruit ${tag}` } })).json();
   await page.goto(`/s/${session.id}`);
   const composer = page.getByTestId("composer");
 

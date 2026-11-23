@@ -164,7 +164,7 @@ async function session() {
     return { store, engine };
   };
   let { store, engine } = boot(state1);
-  const id = store.createSession({ model: CLAUDE, workspace: ws }).id;
+  const id = store.createSession({ title: "Fixture", model: CLAUDE, workspace: ws }).id;
   const turn = async (prompt: string, opts: any, ...replies: Reply[]) => { scripts.push(...replies); engine.send(id, prompt, opts); await engine.idle(id); };
   const waitFile = (f: string) => `while [ ! -f ${f} ]; do sleep 0.05; done; echo went`;
   const line = () => engine.lineage(id) as any[];

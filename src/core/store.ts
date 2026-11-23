@@ -782,6 +782,8 @@ export class Store {
     // Bumped by every change of the session row: a reply that carries an older
     // revision than what a page holds does not undo the newer change.
     if (!this.columnExists("sessions", "rev")) this.db.exec("ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
+    // Who wrote the title: a title the owner or the session's maker gave ('') is never replaced by a made one.
+    if (!this.columnExists("sessions", "title_by")) this.db.exec("ALTER TABLE sessions ADD COLUMN title_by TEXT NOT NULL DEFAULT ''");
     for (const [col, type] of [["fingerprint", "TEXT"], ["count", "INTEGER NOT NULL DEFAULT 1"], ["first_ts", "INTEGER"], ["session_id", "TEXT"], ["turn_event", "TEXT"], ["resolved_ts", "INTEGER"], ["span_id", "TEXT"], ["read_ts", "INTEGER"]] as const) {
       if (!this.columnExists("errors", col)) this.db.exec(`ALTER TABLE errors ADD COLUMN ${col} ${type}`);
     }
@@ -901,14 +903,14 @@ export class Store {
   // `updated` is the session's last activity (lists sort by it, "the last
   // session" is the newest by it): a rename or a settings change is not work,
   // so it moves `rev` only.
-  updateSession(id: string, patch: Partial<Pick<Session, "title" | "model" | "phase" | "archived" | "usage" | "workspace" | "head" | "settings">>): Session {
+  updateSession(id: string, patch: Partial<Pick<Session, "title" | "title_by" | "model" | "phase" | "archived" | "usage" | "workspace" | "head" | "settings">>): Session {
     const sets: string[] = ["rev = rev + 1"];
     const vals: (string | number)[] = [];
     let activity = false;
     for (const [k, v] of Object.entries(patch)) {
       if (v === undefined) continue;
       sets.push(`${k} = ?`);
-      if (k !== "title" && k !== "settings") activity = true;
+      if (k !== "title" && k !== "title_by" && k !== "settings") activity = true;
       if (k === "title") { vals.push(this.redact(id, "title", v)); continue; }
       vals.push(k === "usage" || k === "settings" ? JSON.stringify(v) : k === "archived" ? (v ? 1 : 0) : (v as string));
     }

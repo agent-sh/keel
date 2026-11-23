@@ -104,7 +104,7 @@ function Models() {
         <SettingRow label="Default model" hint="New sessions start on it. It comes from the daemon's configuration.">
           <span className="text-ui text-muted">{models.find((m) => m.id === def)?.name ?? (def || "None")}</span>
         </SettingRow>
-        <SettingRow label="Small models" hint="They read long material for every session (files and logs handed to readers, a long page, new mail), best first; the next one reads when one is not listed or fails. Empty: the cheapest model of the session's own provider.">
+        <SettingRow label="Small models" hint="They read long material for every session (files and logs handed to readers, a long page, new mail) and write session titles, best first; the next one reads when one is not listed or fails. Empty: the cheapest model of the session's own provider.">
           <SmallModels />
         </SettingRow>
         <SettingRow label="Listings" hint={`${models.length} models from ${byProvider.length} providers, as each provider lists them.`}>

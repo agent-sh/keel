@@ -382,7 +382,7 @@ for (const restart of [false, true]) test(`a broker wait does not refill counted
     const errors = { capture: (_: string, e: Error) => ({ message: e.message }) };
     const makeEngine = () => new Engine(store, new Bus(), providers, errors as any, join(dir, "spill"));
     let engine = makeEngine();
-    const s = store.createSession({ model: `${p.id}:${model.model}`, workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: `${p.id}:${model.model}`, workspace: dir });
     engine.send(s.id, "hello");
     if (restart) {
       await entered;
@@ -461,7 +461,7 @@ test("healthy first headers can take 12 or 30 seconds without a second model req
     const waiting = new Promise<"wait">((resolve) => { unexpected = () => resolve("wait"); });
     providers.outages.listen({ waiting: (_id, o) => { if (o) unexpected(); } });
     const sessions = [12_000, 30_000].map((delay) => {
-      const s = store.createSession({ model: `${provider.id}:${model.model}`, workspace: dir });
+      const s = store.createSession({ title: "Fixture", model: `${provider.id}:${model.model}`, workspace: dir });
       delays.set(s.id, delay);
       engine.send(s.id, "hello");
       return s.id;
@@ -572,7 +572,7 @@ test("a waiting Bedrock turn follows its broker to a new loopback port", async (
   // Local fixture only, including model discovery.
   providers.catalog.load = async () => {};
   const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
-  const session = store.createSession({ model: `${driver.id}:${model}`, workspace: dir });
+  const session = store.createSession({ title: "Fixture", model: `${driver.id}:${model}`, workspace: dir });
   let entered!: () => void;
   const waiting = new Promise<void>((ok) => { entered = ok; });
   providers.outages.listen({ open: () => entered() });

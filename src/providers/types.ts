@@ -47,7 +47,7 @@ export type ProviderRequest = {
   // the server's own messages). Read by telemetry, and by a driver that keeps
   // a connection per session to keep the turn's apart from the others'.
   // A "warm" request reads the cache beside the history while the session waits (src/engine/cache-plans.ts).
-  purpose?: "turn" | "summary" | "side" | "reader" | "warm" | "sampling";
+  purpose?: "turn" | "summary" | "side" | "reader" | "warm" | "sampling" | "title";
   // false: a one-off request nothing will repeat; no cache breakpoints (a
   // write costs more than plain input when no later request reads it).
   cache?: false;

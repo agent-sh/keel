@@ -6,7 +6,7 @@ import { HAIKU, shoot, openPanel } from "./shots.ts";
 // session totals; the second turn reads the first one's prefix from cache.
 test("tokens panel per turn", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
-  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Tokens per turn" } })).json();
   await page.goto(`/s/${session.id}`);
   const composer = page.getByTestId("composer");
   for (const [i, text] of ["Reply with only the word one.", "Reply with only the word two."].entries()) {

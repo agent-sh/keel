@@ -106,6 +106,11 @@ export type StoredEvent = {
 export type Session = {
   id: string;
   title: string;
+  // Who wrote the title (src/engine/title.ts): "" given (the owner, the
+  // session's maker, or a session from before), "prompt" the first prompt's
+  // words, "model" a small model, "start" a small model from a first prompt
+  // that held no task yet (made again once).
+  title_by?: "" | "prompt" | "model" | "start";
   model: string;
   workspace: string;
   created: number;

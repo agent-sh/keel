@@ -117,7 +117,7 @@ export type Arm = {
 // A request with the arm's tool descriptions in place (one per session, so its prefix holds).
 export function withToolText(req: ProviderRequest, arm: Arm | undefined): ProviderRequest {
   const text = arm?.tool_text;
-  if (!text || req.purpose === "reader") return req;
+  if (!text || req.purpose === "reader" || req.purpose === "title") return req;
   return { ...req, tools: req.tools.map((t) => (typeof text[t.name] === "string" ? { ...t, description: text[t.name]! } : t)) };
 }
 // A guard stops on evidence of any worsening of its metric: no amount is
@@ -507,7 +507,7 @@ export class Experiments {
       sessionSystem: (s) => { const text = this.armFor(s.id)?.system_append ?? ""; return { name: "experiment arm", text, data: text }; },
       beforeRequest: (s, req) => {
         const arm = this.armFor(s.id);
-        const life = req.purpose !== "reader" ? arm?.cache_life : undefined;
+        const life = req.purpose !== "reader" && req.purpose !== "title" ? arm?.cache_life : undefined;
         return withToolText(life && !s.parent_id ? { ...req, cacheLife: life } : req, arm);
       },
     });

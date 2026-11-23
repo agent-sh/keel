@@ -34,7 +34,7 @@ function rig(stream: (req: any, store: Store) => Promise<any>) {
   const providers = { resolve: async () => ({ provider, info: MODEL }), models: async () => [MODEL], current: () => [MODEL] };
   const errors = { capture: (_s: string, e: any) => { failures.push(String(e?.message ?? e)); return { id: "err", message: String(e?.message ?? e) }; } };
   const engine = new Engine(store, new Bus(), providers as any, errors as any, join(dir, "spill"));
-  const id = store.createSession({ model: MODEL.id, workspace: dir }).id;
+  const id = store.createSession({ title: "Fixture", model: MODEL.id, workspace: dir }).id;
   const kinds = () => lineage(store.events(id), store.session(id)!.head).map((e) => (e.kind === "turn_end" ? `turn_end:${e.data.reason}${e.data.stopped_by ? `:${e.data.stopped_by}` : ""}` : e.kind));
   // What the checkpoint thread's owner does when the log is at its ceiling, and when the disk answers again.
   const refuse = (on: boolean) => { store.db.exec(`PRAGMA query_only = ${on ? "ON" : "OFF"}`); store.refuse(on); };

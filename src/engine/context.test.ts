@@ -59,7 +59,7 @@ function rig(reply?: (req: any, sent: Sent[]) => any) {
   const providers = { resolve: async (id: string) => ({ provider, info: info(id) }), models: async () => MODELS, current: () => MODELS };
   const errors = { capture: (_s: string, e: any) => { failures.push(e); return { id: "err", message: String(e?.message ?? e) }; } };
   const engine = new Engine(store, new Bus(), providers as any, errors as any, join(dir, "spill"));
-  const session = (model: string) => store.createSession({ model, workspace: dir }).id;
+  const session = (model: string) => store.createSession({ title: "Fixture", model, workspace: dir }).id;
   // The turn has ended, and so has the summary a long context gets prepared after it.
   const idle = async (id: string) => {
     await engine.idle(id);

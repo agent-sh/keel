@@ -23,7 +23,7 @@ test("Tacit reuses only the retained transcript of the same version", () => {
   try {
     const failures: unknown[] = [];
     const tacit = new Tacit(store, new Bus(), { capture: (_: string, error: unknown) => failures.push(error) } as unknown as ErrorTracker, null);
-    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: "fixture:model", workspace: dir });
     const first = store.append(s.id, "user", { text: "First branch" });
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "Synthetic reply" }] });
     const read = (session = s) => readFileSync(tacit.transcript(session), "utf8");
@@ -109,7 +109,7 @@ test("after a restart a transcript is found as it was left: nothing is written f
   const store = new Store(dir);
   try {
     const errors = { capture: () => ({ message: "" }) } as unknown as ErrorTracker;
-    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: "fixture:model", workspace: dir });
     for (let i = 0; i < 40; i++) {
       store.append(s.id, "user", { text: `Prompt ${i}` });
       store.append(s.id, "assistant", { blocks: [{ type: "text", text: `Reply ${i}` }, { type: "tool_use", id: `t${i}`, name: "Bash", input: { command: "ls" } }] });
@@ -222,7 +222,7 @@ esac
 
     // (The session works in a folder of its own: the owner's hooks file is not loaded from a session's folder.)
     mkdirSync(join(dir, "ws"), { recursive: true });
-    const s = store.createSession({ model: "p:m", workspace: join(dir, "ws") });
+    const s = store.createSession({ title: "Fixture", model: "p:m", workspace: join(dir, "ws") });
     store.updateSession(s.id, { settings: { compact_at: 2_000 } });
     store.append(s.id, "user", { text: "go" });
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(20_000) }], model: "p:m", stop: "end_turn", usage: { ...usage, input: 6_000 } });
@@ -387,7 +387,7 @@ function memoryWorld(dir: string, bin: string) {
   const tacit = new Tacit(store, bus, errors, bin, SPEED);
   tacit.install();
   const session = () => {
-    return store.createSession({ model: "p:m", workspace: dir }).id;
+    return store.createSession({ title: "Fixture", model: "p:m", workspace: dir }).id;
   };
   // Sends an input; answers with how long its first request took to go.
   const say = async (id: string, text: string, meta?: Record<string, unknown>) => {
@@ -938,7 +938,7 @@ test("a long session's transcript is written whole in slices: the same records, 
   const store = new Store(dir);
   try {
     const errors = { capture: () => {} } as unknown as ErrorTracker;
-    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: "fixture:model", workspace: dir });
     const fill = (from: number, to: number) => {
       for (let i = from; i < to; i++) {
         if (i % 3 === 0) store.append(s.id, "user", { text: `prompt ${i}` });
@@ -1011,7 +1011,7 @@ test("a long branch's first transcript is written in parts: the same bytes, the 
   const store = new Store(dir);
   try {
     const errors = { capture: () => ({ message: "" }) } as unknown as ErrorTracker;
-    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: "fixture:model", workspace: dir });
     for (let i = 0; i < 900; i++) {
       store.append(s.id, "user", { text: `Prompt ${i}` });
       store.append(s.id, "assistant", { blocks: [{ type: "thinking", thinking: "t".repeat(200), signature: "sig" }, { type: "text", text: `Reply ${i}` }, { type: "tool_use", id: `t${i}`, name: "Bash", input: { command: `ls ${i}` } }] });
@@ -1050,7 +1050,7 @@ test("a long branch's first transcript is written in parts: the same bytes, the 
     expect(JSON.parse(readFileSync(path, "utf8").trim().split("\n").at(-1)!).message.content).toBe("After the parts");
     expect(readdirSync(join(dir, "transcripts")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
     // A short branch is left to the call itself.
-    const short = store.createSession({ model: "fixture:model", workspace: dir });
+    const short = store.createSession({ title: "Fixture", model: "fixture:model", workspace: dir });
     store.append(short.id, "user", { text: "hi" });
     await parts.transcriptInParts(short);
     expect(existsSync(join(dir, "transcripts", `${short.id}.jsonl`))).toBe(false);

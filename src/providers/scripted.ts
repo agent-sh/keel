@@ -181,7 +181,7 @@ export class ScriptedProvider implements Provider {
     // KEEL_SCRIPTED_CACHE=prefix: the cache is keyed by the prefix, as a real
     // one is. A request whose tools or system differ from the session's last
     // one on this model reads nothing and writes its whole prompt.
-    if (process.env.KEEL_SCRIPTED_CACHE === "prefix" && req.purpose !== "reader") {
+    if (process.env.KEEL_SCRIPTED_CACHE === "prefix" && req.purpose !== "reader" && req.purpose !== "title") {
       const at = `${req.sessionKey}\u0000${req.model}`;
       const prefix = String(Bun.hash(JSON.stringify([req.tools.filter((t) => !t.defer).map((t) => [t.name, t.description, t.input_schema]), req.system])));
       const had = this.prefixes.get(at);
@@ -239,6 +239,15 @@ export class ScriptedProvider implements Provider {
       // A web request judged as a send: refused, and the reason repeats what the judge was shown of it.
       const sent = /^ tool \S+ \(send\)\n([\s\S]*?)(?:\n\nIts (?:input|options):|$)/.exec(action);
       if (sent) return reply(JSON.stringify({ decision: "deny", risk: "high", reason: `The fixture was shown: ${sent[1]!.split("\n").join(" | ")}`.slice(0, 390) }));
+    }
+
+    // A title request (src/engine/title.ts): the words after `script:title` in
+    // the newest prompt that has them, else the first prompt's first line as it
+    // is (the title the session already has, so a spec that reads it is not moved).
+    if (req.purpose === "title") {
+      const prompts = [...lastText.matchAll(/<prompt>\n([\s\S]*?)\n<\/prompt>/g)].map((m) => m[1]!);
+      const named = prompts.map((p) => p.match(/script:title[ \t]+([^\n]+)/)?.[1]?.trim()).filter(Boolean).at(-1);
+      return reply(named ?? (prompts[0] ?? "").split("\n").find((l) => l.trim()) ?? "");
     }
 
     // A reader whose request says `script:quote`: it quotes the first line it

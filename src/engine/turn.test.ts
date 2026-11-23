@@ -51,7 +51,7 @@ test("the kept branch projects the same bytes as a walk of the tree, and a warm 
   const store = new Store(dir);
   const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
   try {
-    const id = store.createSession({ model: "x:y", workspace: dir }).id;
+    const id = store.createSession({ title: "Fixture", model: "x:y", workspace: dir }).id;
     // One long branch, and at every tenth prompt a sibling branch of its own (an edited prompt and its reply).
     const sides: string[] = [];
     for (let n = 0; n < 120; n++) {
@@ -239,7 +239,7 @@ test("a restart cut: questions and open cards wait, approval outcomes are kept, 
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "recover-"));
   const store = new Store(dir);
   const bus = new Bus();
-  const s = store.createSession({ model: "x:y", workspace: dir });
+  const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
   store.updateSession(s.id, { phase: "working" }); // the turn was running when the daemon went down
   store.append(s.id, "user", { text: "go" });
   store.append(s.id, "turn_start", {});
@@ -295,7 +295,7 @@ test("a prompt after a cut turn follows the restart message; a waiting card gets
   const engine = new Engine(store, new Bus(), { resolve: async () => { throw new Error("no model here"); } } as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
   const users = (id: string) => store.events(id).filter((e) => e.kind === "user").map((e) => [e.data.origin ?? "owner", String(e.data.text).slice(0, 40)]);
   const cut = (calls: object[], results: object[] = []) => {
-    const s = store.createSession({ model: "x:y", workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
     store.append(s.id, "user", { text: "go" });
     store.append(s.id, "turn_start", {});
     store.append(s.id, "assistant", { blocks: calls, stop: "tool_use" });
@@ -330,7 +330,7 @@ test("a prompt after a cut turn follows the restart message; a waiting card gets
   expect(users(d).map((u) => u[0])).toEqual(["owner", "restart"]);
   await engine.interrupt(d, "owner");
   // The count of continues after a provider's wait is read through a restart that cut the continued turn.
-  const e = store.createSession({ model: "x:y", workspace: dir }).id;
+  const e = store.createSession({ title: "Fixture", model: "x:y", workspace: dir }).id;
   store.append(e, "user", { text: "go" });
   store.append(e, "turn_start", {});
   store.append(e, "turn_end", { reason: "error" });
@@ -356,7 +356,7 @@ test("idle compaction prepares while warm and applies when the cache went cold",
   const { Engine } = await import("./turn.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "idle-"));
   const store = new Store(dir);
-  const s = store.createSession({ model: "p:m", workspace: dir });
+  const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
   store.updateSession(s.id, { settings: { compact_at: 2_000 } });
   store.append(s.id, "user", { text: "read the big file" });
   store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
@@ -394,7 +394,7 @@ test("idle compaction prepares while warm and applies when the cache went cold",
     expect(JSON.stringify(turn.messages.at(-1))).toContain("and now?");
     expect(store.events(s.id).find((e) => e.kind === "compaction")?.data.trigger).toBe("idle");
     // A context whose cache expired long ago is not summarized while idle: that request would read all of it at the full price.
-    const old = store.createSession({ model: "p:m", workspace: dir });
+    const old = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
     store.updateSession(old.id, { settings: { compact_at: 2_000 } });
     store.append(old.id, "user", { text: "read the big file" });
     store.append(old.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
@@ -447,7 +447,7 @@ test("an idle preparation made obsolete while it is written is stopped and store
   const engine = new Engine(store, bus, providers as any, { capture: (_s: string, e: unknown) => (failures.push(e), { message: String(e) }) } as any, join(dir, "spill"));
   // A long idle context whose cache lifetime is nearly over: its idle timer is due at once.
   const idleSession = async () => {
-    const s = store.createSession({ model: "p:m", workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
     store.updateSession(s.id, { settings: { compact_at: 2_000 } });
     const first = store.append(s.id, "user", { text: "read the big file" });
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
@@ -547,7 +547,7 @@ test("threshold compaction: nothing new is not summarized, an empty summary does
   const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String((e as Error).message) }) } as any, join(dir, "spill"));
   const big = { blocks: [{ type: "text", text: "x".repeat(20_000) }], model: "p:m", stop: "end_turn", usage: { ...usage, input: 6_000 } };
   const session = (after: (id: string) => void) => {
-    const s = store.createSession({ model: "p:m", workspace: dir });
+    const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
     store.updateSession(s.id, { settings: { compact_at: 2_000 } });
     store.append(s.id, "user", { text: "go" });
     store.append(s.id, "assistant", big);
@@ -586,7 +586,7 @@ test("a steer or queued prompt from momentum or a hook keeps its origin", async 
   const { ownerPrompt } = await import("../core/owner.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "queue-meta-"));
   const store = new Store(dir);
-  const s = store.createSession({ model: "p:m", workspace: dir });
+  const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
   const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
   const usage = { input: 1, output: 1, cache_read: 0, cache_write: 0 };
   let calls = 0;
@@ -620,7 +620,7 @@ test("a queue request cannot start a stopped session with an empty queue", async
   const { Engine } = await import("./turn.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "queue-stop-"));
   const store = new Store(dir);
-  const s = store.createSession({ model: "fixture:m", workspace: dir });
+  const s = store.createSession({ title: "Fixture", model: "fixture:m", workspace: dir });
   const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => { throw e; } } as any, dir);
   let running = Promise.withResolvers<void>();
   let pause = true;
@@ -677,7 +677,7 @@ test("a settled tool call leaves no abort listener on the turn's signal", async 
   const { registerHooks } = await import("./hooks.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "listeners-"));
   const store = new Store(dir);
-  const s = store.createSession({ model: "x:y", workspace: dir });
+  const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
   const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
   registerHooks({ beforeTool: (_s, c) => (c.tool.name === "refused" ? { deny: "no" } : undefined) });
   const tool = (name: string, run: () => Promise<any>) => ({ name, description: "", input_schema: { type: "object" }, readOnly: true, run }) as any;
@@ -704,7 +704,7 @@ test("an Auto approval is checked again after hooks and with the executed input"
   const { registerHooks } = await import("./hooks.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "auto-dispatch-"));
   const store = new Store(dir), bus = new Bus();
-  const s = store.createSession({ model: "fixture:m", workspace: dir });
+  const s = store.createSession({ title: "Fixture", model: "fixture:m", workspace: dir });
   const engine = new Engine(store, bus, {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, dir);
   const gate = new Gate(store, bus);
   let judgments = 0, runs = 0;
@@ -865,7 +865,7 @@ test("an external turn's streamed text is all sent before the event that stores 
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "external-order-"));
   const store = new Store(dir);
   const bus = new Bus();
-  const s = store.createSession({ model: "fixture:m", workspace: dir });
+  const s = store.createSession({ title: "Fixture", model: "fixture:m", workspace: dir });
   const engine = new Engine(store, bus, {} as any, { capture: (_s: string, e: unknown) => { throw e; } } as any, dir);
   const seen: string[] = [];
   bus.on((f) => {

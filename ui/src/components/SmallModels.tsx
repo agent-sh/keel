@@ -1,5 +1,6 @@
 // The owner's small models: the models that read long material for every
-// session (readers, a long fetched page, mail triage), best first. A model
+// session (readers, a long fetched page, mail triage) and write session
+// titles (src/engine/title.ts), best first. A model
 // later in the list reads when the one before is not listed, does not hold the
 // part, or fails. Empty: the cheapest model of the session's own provider.
 import { ArrowUp, X } from "lucide-react";

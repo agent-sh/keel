@@ -29,8 +29,9 @@ import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, referenced, refuseDefer, unknownToolHint, withCatalog } from "../tools/defer.ts";
 import { allHooks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
-import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
-import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
+import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./reader.ts";
+import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
+import { cleanTitle, firstReply, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
@@ -761,7 +762,58 @@ export class Engine {
 
   private titleFrom(id: string, text: string) {
     const s = this.store.session(id);
-    if (s && !s.title) this.bus.emit({ t: "session", session: this.store.updateSession(id, { title: firstLineTitle(text) }) });
+    if (s && !s.title) this.bus.emit({ t: "session", session: this.store.updateSession(id, { title: firstLineTitle(text), title_by: "prompt" }) });
+  }
+
+  // Sessions whose title a small model is writing now, and those where no
+  // choice gave one: they keep the title they have until the daemon starts
+  // again (a request a turn after another would fail the same way).
+  private titling = new Set<string>();
+  private untitled = new Set<string>();
+
+  // After a turn's end: the title a small model writes, when one is owed
+  // (src/engine/title.ts). Off the turn: nothing waits for it, it is no part of
+  // any turn's prefix, and a failure keeps the title the session had. An
+  // agent's session keeps the name its parent gave it.
+  private retitle(id: string) {
+    const s = this.store.session(id);
+    if (!s || s.parent_id || s.archived || this.titling.has(id) || this.untitled.has(id)) return;
+    const line = this.lineage(id);
+    if (!titleOwed(s.title_by, line)) return;
+    this.titling.add(id);
+    void this.writeTitle(id, s, line)
+      .catch((e) => { this.untitled.add(id); this.errors.capture("provider", e, { session: id, at: "title" }); })
+      .finally(() => this.titling.delete(id));
+  }
+
+  // One request for the title, through the owner's small models in order (the
+  // readers' choices: src/engine/reader.ts), each at its lowest effort. The
+  // title is saved only if nobody renamed the session meanwhile.
+  private async writeTitle(id: string, s: Session, line: readonly StoredEvent[]) {
+    const prompts = ownerPrompts(line);
+    const prompt = conceal(titlePrompt(prompts, firstReply(line)), id);
+    const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(s.model).then((r) => r.info)]);
+    const choices = readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels());
+    let last: unknown;
+    for (const m of choices) {
+      try {
+        const { provider, info } = await this.providers.resolve(m.id);
+        const effort = ["none", "minimal", "low"].find((e) => info.efforts.includes(e));
+        const st: Step = { provider, info: { ...info, output: Math.min(info.output || TITLE_OUTPUT, TITLE_OUTPUT) }, tools: [], system: TITLE_SYSTEM, systemSplit: 0, effort };
+        const res = await this.call(id, st, [{ role: "user", content: [{ type: "text", text: prompt }] }], AbortSignal.timeout(60_000), new Map(), s, true, "title");
+        this.store.addUsage(id, res.usage);
+        const title = cleanTitle(res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n"));
+        if (!title || res.stop === "refusal") throw new Error(`the title model (${info.name}) ${res.stop === "refusal" ? "refused" : "gave no title"}`);
+        const now = this.store.session(id);
+        if (!now || now.title !== s.title || now.title_by !== s.title_by) return;
+        const by = s.title_by === "prompt" && weakStart(prompts[0] ?? "") ? "start" : "model";
+        this.bus.emit({ t: "session", session: this.store.updateSession(id, { title, title_by: by }) });
+        return;
+      } catch (e) {
+        last = e;
+      }
+    }
+    if (last) throw last;
   }
 
   // Resolves when the session's running turn (if any) has fully ended.
@@ -896,6 +948,11 @@ export class Engine {
       this.release(id);
       // An edited steer is a new turn from the same place, not a live steer: it says what it was.
       const ev = this.accept(id, { text, images: old.data.images, ...(old.data.origin === "steer" ? { edited_from: "steer" } : {}) }, old.parent);
+      // A new version of the first prompt is a new task: the title is its words
+      // until the next reply makes one again. A title the owner gave stays.
+      const s = this.store.session(id);
+      const first = ownerPrompts(this.lineage(id)).length === 1 && !old.data.kind;
+      if (s && first && s.title_by && text.trim()) this.store.updateSession(id, { title: firstLineTitle(text), title_by: "prompt" });
       this.emitSession(id);
       this.start(id);
       this.emitQueue(id);
@@ -1426,19 +1483,20 @@ export class Engine {
     const counted = fit ? { messages: fit.base ?? messages, tools: toolsBytes(st.tools) } : undefined;
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
-    if (st.native && purpose !== "reader") {
+    const bare = purpose === "reader" || purpose === "title";
+    if (st.native && !bare) {
       st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c), id);
       // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
       if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
     }
     let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, systemOwn: st.systemOwn, messages, tools: st.tools, effort: st.effort, maxTokens: purpose === "warm" ? 1 : st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
-    // A reader's request and a server's sampling request are sent once: nothing later reads a cache of them.
-    if (purpose === "reader" || purpose === "sampling") req.cache = false;
-    // A reader's request carries no conversation for the hooks to add to. A
+    // A reader's request, a title's and a server's sampling request are sent once: nothing later reads a cache of them.
+    if (bare || purpose === "sampling") req.cache = false;
+    // A reader's request and a title's carry no conversation for the hooks to add to. A
     // sampling request goes through them (secrets, budget, telemetry); the
     // ones that add to a conversation add only to a turn's.
-    if (purpose !== "reader") for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
-    if (session.parent_id && purpose !== "reader" && purpose !== "sampling") req.cacheLife = this.cacheLife(id, st, purpose);
+    if (!bare) for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+    if (session.parent_id && !bare && purpose !== "sampling") req.cacheLife = this.cacheLife(id, st, purpose);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     const whole = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id);
@@ -2110,6 +2168,8 @@ export class Engine {
         if (this.used(events, st) >= limit * (PREPARE_SHARE / COMPACT_SHARE)) this.prepare(id, st);
         this.scheduleIdle(id, st);
       }
+      // The first reply is in: the session gets a title that says its task.
+      if (!this.parking.has(id)) try { this.retitle(id); } catch (e) { this.errors.capture("server", e, { session: id, at: "title" }); }
       for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
   }

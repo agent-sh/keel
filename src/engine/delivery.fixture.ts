@@ -48,7 +48,8 @@ export function rig(stateDir: string, hooks: RigHooks = {}) {
   const engine = new Engine(store, bus, providers as any, errors as any, join(stateDir, "spill"));
   // The system prompt is not what these tests are about: no files are read for it.
   (engine as any).systemOf = async () => ({ text: "A stand-in system prompt.", split: 0 });
-  const session = () => store.createSession({ model: info.id, workspace: stateDir });
+  // Given a title: no title request follows a first reply (src/engine/title.ts).
+  const session = () => store.createSession({ model: info.id, workspace: stateDir, title: "Delivery" });
   return { store, bus, engine, requests, session };
 }
 

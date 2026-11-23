@@ -186,13 +186,13 @@ export class Telemetry {
         step.attempt++;
         this.steps.set(req, step);
         const line = this.lineageOf(s.id);
-        const turn = purpose === "side" || purpose === "sampling" ? null : openTurn(line);
+        const turn = purpose === "side" || purpose === "sampling" || purpose === "title" ? null : openTurn(line);
         if (purpose === "turn") this.turnOf.set(s.id, turn);
         const p: Pending = {
           t0: now, step0: step.t0, attempt: step.attempt, session: s.id, model: req.route ?? this.store.session(s.id)?.model ?? s.model, purpose,
           turn, compaction: line.findLast((e) => e.kind === "compaction")?.id ?? "", line, bytes,
           prefix: purpose === "turn" ? prefixOf(req, marks) : null, cacheMs: req.cacheMs ?? null,
-          toolset: purpose === "reader" ? null : this.toolset(req.tools.map((t) => t.name)), effort: req.effort ?? null,
+          toolset: purpose === "reader" || purpose === "title" ? null : this.toolset(req.tools.map((t) => t.name)), effort: req.effort ?? null,
         };
         this.pending.set(req, p);
       },
