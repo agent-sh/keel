@@ -182,10 +182,10 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     execInput(s, call) {
       if (call.tool.kind !== "shell" || call.ctx.dispatch || call.tool.peer) return;
       const { value, used, env } = vault.reveal(call.input, s.id, SHELL_FIELDS);
-      if (Object.keys(env).length) setCallEnv(call.id, env);
+      if (Object.keys(env).length) setCallEnv(s.id, call.id, env);
       if (used.length) return value;
     },
-    afterTool: (_s, call) => dropCallEnv(call.id),
+    afterTool: (s, call) => dropCallEnv(s.id, call.id),
   });
 
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;

@@ -579,3 +579,17 @@ test("an agent in a managed worktree is refused the other ways of moving a share
   }
   expect("deny" in edit("/w/agent/src/a.ts", "full-auto")).toBe(false);
 });
+
+// What a second review found: a detached checkout and a fetch into remote-tracking refs move no branch; rm's -f
+// takes no value; a write after a `cd` and `;` in a subshell lands in one of the folders the line names.
+test("an agent in a managed worktree may detach at a shared branch and fetch into remote refs, and is refused writes the line leaves to a subshell", () => {
+  const shared = { root: "/w/agent", gitDir: "/m/.git/worktrees/agent", common: "/m/.git", branch: "keel/x", base: "main", out: new Map([["main", "/m"], ["keel/y", "/w/other"]]), folders: ["/m", "/w/other"] };
+  const refusedBy = (command: string, mode: Mode = "full-auto") => { const d = decide(sh(command, "/w/agent"), facts(mode, { workspace: "/w/agent", shared })); return "deny" in d && d.deny.includes("keel__landing_queue"); };
+  for (const c of ["git checkout --detach main", "git switch --detach main", "git switch -d main", "git checkout --detach keel/y", "git fetch origin +refs/heads/*:refs/remotes/origin/*", "git fetch origin 'refs/heads/*:refs/remotes/origin/*'",
+    "git pull origin refs/heads/*:refs/remotes/origin/*", "rm -f notes.md", "(cd src; echo x > a.txt)", "(cd /m/.git; cat HEAD)", "touch -t 202601010000 a.txt"])
+    expect([c, refusedBy(c)]).toEqual([c, false]);
+  for (const c of ["git fetch origin +refs/heads/*:refs/heads/*", "git fetch origin x:refs/remotes/$X", "git checkout main",
+    "rm -f /m/.git/refs/heads/main", "rm -rf /m/.git/refs", "rm -fv /m/.git/packed-refs", "truncate -s 0 /m/.git/packed-refs", "(cd /m/.git; echo x > HEAD)", "(cd /m/.git; printf x > packed-refs)",
+    "(cd /m; echo x > .git/refs/heads/main)", "(cd /m && cd .git; tee HEAD < x)"])
+    for (const mode of ["full-auto", "auto", "ask"] as Mode[]) expect([c, mode, refusedBy(c, mode)]).toEqual([c, mode, true]);
+});

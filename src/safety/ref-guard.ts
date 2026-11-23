@@ -132,6 +132,19 @@ shared() {
   done
   return 1
 }
+# An entry that moves nothing: packing the refs (pack-refs, and gc and maintenance through it). It writes each
+# branch's value into packed-refs (old zero, new the value the branch has now), then deletes each loose copy in
+# a transaction of its own (old the value, new zero) with packed-refs already holding that value and not locked;
+# a real delete locks packed-refs first.
+# (The branch's value is read from its files, loose first, as git reads it.)
+unmoved() {
+  case "$2" in
+    *[!0]*) if [ -f "$common/$3" ]; then v=; IFS= read -r v < "$common/$3" || :; [ "$v" = "$2" ]
+            else grep -qxF "$2 $3" "$common/packed-refs" 2>/dev/null; fi ;;
+    *) case "$1" in *[!0]*) ;; *) return 1 ;; esac
+       [ ! -e "$common/packed-refs.lock" ] && grep -qxF "$1 $3" "$common/packed-refs" 2>/dev/null ;;
+  esac
+}
 if [ "$1" = prepared ] && [ -n "$input" ]; then
   here=
   while read -r old new ref; do
@@ -146,7 +159,7 @@ if [ "$1" = prepared ] && [ -n "$input" ]; then
         fi
         case "$new" in ref:refs/heads/*) shared "\${new#ref:}" && refuse "puts a checkout on the branch \${new#ref:refs/heads/}, which this worktree shares" ;; esac
         ;;
-      refs/heads/*) shared "$ref" && refuse "moves the branch \${ref#refs/heads/}, which this worktree shares" ;;
+      refs/heads/*) shared "$ref" && ! unmoved "$old" "$new" "$ref" && refuse "moves the branch \${ref#refs/heads/}, which this worktree shares" ;;
     esac
   done <<KEEL_EOF
 $input

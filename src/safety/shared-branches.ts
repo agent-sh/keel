@@ -293,7 +293,12 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
   if (sub === "fetch" || sub === "pull") {
     if (has(args, /^(--update-head-ok|-u)$/)) return "passes --update-head-ok, which lets git move a branch another checkout has out";
     const p = operands(args, /^(--depth|--deepen|--shallow-since|--shallow-exclude|--upload-pack|--negotiation-tip|--server-option|-o|--refmap|-j|--jobs|-s|--strategy|-X|--strategy-option)$/);
-    for (const spec of p.slice(1)) if (spec.includes(":")) { const dst = spec.slice(spec.indexOf(":") + 1); if (dst && named(dst)) return `fetches into ${what(dst)}`; }
+    for (const spec of p.slice(1)) if (spec.includes(":")) {
+      const dst = spec.slice(spec.indexOf(":") + 1);
+      // (Remote-tracking refs, a glob there included, are no branch: refs/remotes/ written out with no expansion but the glob.)
+      if (/^refs\/remotes\/[^$`{}\s]*$/.test(dst) && !dst.includes("..")) continue;
+      if (dst && named(dst)) return `fetches into ${what(dst)}`;
+    }
     return null;
   }
   if (sub === "checkout" || sub === "switch") {
@@ -301,7 +306,9 @@ function movesShared(g: Git, dir: string, home: string, s: Shared): string | nul
     const k = args.findIndex((a) => a === "-B" || (sub === "switch" && (a === "-C" || a === "--force-create")));
     const b = k >= 0 ? args[k + 1] : undefined;
     if (b !== undefined && named(b)) return `resets ${what(b)}`;
-    // Onto a shared branch itself (the base, when no checkout has it out): its commits would move it. Files from it are fine.
+    // Onto a shared branch itself (the base, when no checkout has it out): its commits would move it. Files from it
+    // are fine, and so is its commit detached (--detach; switch's -d): a commit there moves no branch.
+    if (has(args, /^--detach$/) || (sub === "switch" && has(args, /^-d$/))) return null;
     const p = operands(args, /^(-b|-B|-c|-C|--orphan|-t|--track|--conflict|--pathspec-from-file)$/);
     return k < 0 && !args.includes("--") && p.length === 1 && named(p[0]!) && !unread(p[0]!) ? `puts this worktree on ${what(p[0]!)}` : null;
   }
@@ -382,6 +389,16 @@ const WRITES: Record<string, "all" | "last" | "inplace"> = {
   tee: "all", cp: "last", install: "last", ln: "last", rsync: "last", mv: "all", rm: "all", unlink: "all", truncate: "all", shred: "all", touch: "all",
   chmod: "all", chown: "all", sed: "inplace", perl: "inplace",
 };
+// The options of each that take the next word as their value (rm's -f takes none).
+const VALUED: Record<string, RegExp> = {
+  sed: /^(-e|--expression|-f|--file|-l|--line-length)$/, perl: /^(-e|-E)$/,
+  cp: /^(-t|--target-directory|-S|--suffix)$/, mv: /^(-t|--target-directory|-S|--suffix)$/, ln: /^(-t|--target-directory|-S|--suffix)$/,
+  install: /^(-t|--target-directory|-S|--suffix|-o|--owner|-g|--group|-m|--mode)$/, rsync: /^(-e|--rsh|-f|--filter|--exclude|--include|-T|--temp-dir)$/,
+  truncate: /^(-s|--size|-r|--reference)$/, touch: /^(-t|-d|--date|-r|--reference)$/, shred: /^(-n|--iterations|-s|--size)$/,
+  chmod: /^--reference$/, chown: /^--reference$/,
+};
+// The ones whose -t names the folder they write in.
+const TARGETS = new Set(["cp", "mv", "ln", "install"]);
 function writtenPaths(part: Simple, run: Run): string[] {
   const out = redirected(part).map((r) => r.to).filter((t) => !/^(&|\/dev\/)/.test(t));
   const w = run.words, prog = name(w[0]);
@@ -390,8 +407,8 @@ function writtenPaths(part: Simple, run: Run): string[] {
   if (!how) return out;
   const args = w.slice(1);
   if (how === "inplace" && !args.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith("--in-place"))) return out;
-  out.push(...valuesOf(args, ["--target-directory"], "-t"));
-  const p = operands(args, /^(-e|--expression|-f|--file|-t|--target-directory|-S|--suffix|-o|--owner|-g|--group|-m|--mode|--reference|-s|--size)$/);
+  if (TARGETS.has(prog)) out.push(...valuesOf(args, ["--target-directory"], "-t"));
+  const p = operands(args, VALUED[prog] ?? /^$/);
   out.push(...(how === "last" ? p.slice(-1) : p));
   return out;
 }
@@ -406,7 +423,23 @@ const LOCAL_HOSTS = /^(localhost|localhost\.localdomain|127(\.\d+){3}|::1|0\.0\.
 export function sharedRefusal(command: string, cwd: string | null, home: string, s: Shared, depth = 0): string | null {
   const parts = splitCommand(command);
   if (!parts) return /\bgit\b/.test(command) ? "runs git in text the rules cannot read" : null;
-  const { runs, dirs } = laid(parts, depth === 0 && s.real && cwd !== null ? s.real(cwd) : cwd, home);
+  const start = depth === 0 && s.real && cwd !== null ? s.real(cwd) : cwd;
+  const { runs, dirs } = laid(parts, start, home);
+  // The folders a part may run in when the line leaves its folder unknown (a `cd` then `;` in a subshell, whose end
+  // the parts do not show): where the line starts, each folder known for a part before it, and each one a `cd` there
+  // names from those.
+  const maybe = (i: number): string[] => {
+    const out = new Set<string>();
+    if (start !== null) out.add(start);
+    for (let j = 0; j < i; j++) {
+      const d = dirs[j];
+      if (d) out.add(d);
+      const w = runs[j]!.words;
+      const arg = w[0] === "cd" || w[0] === "pushd" ? w.slice(1).find((a) => !a.startsWith("-")) : undefined;
+      if (arg !== undefined) for (const from of [...out]) { const p = pathOf(from, arg, home); if (p !== null) out.add(p); }
+    }
+    return [...out];
+  };
   const inner = (text: string, dir: string | null): string | null =>
     depth >= 4 ? (/\bgit\b/.test(text) ? "runs git nested deeper than the rules read" : null) : sharedRefusal(text, dir, home, s, depth + 1);
   // GIT_DIR and GIT_WORK_TREE given for the rest of the line (`export GIT_DIR=...`, or a line of assignments alone).
@@ -423,8 +456,9 @@ export function sharedRefusal(command: string, cwd: string | null, home: string,
     const env = envRefused([...lead, ...run.set], dirs[i] ?? null, home, s);
     if (env) return env;
     // A plain write of git's own files: a branch moved, or a checkout broken, under git.
-    for (const t of writtenPaths(part, run)) {
-      const p = pathOf(dirs[i] ?? null, t, home);
+    const written = writtenPaths(part, run);
+    for (const t of written) for (const from of dirs[i] != null ? [dirs[i]!] : [null, ...maybe(i)]) {
+      const p = pathOf(from, t, home);
       const what = p === null ? null : gitStoreOf(p, s);
       if (what) return `writes ${what}`;
     }

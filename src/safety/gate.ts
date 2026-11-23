@@ -1146,7 +1146,7 @@ export class Gate {
     if (r.cls.kind === "shell" && session.parent_id && !session.machine) {
       const shared = this.sharedOf(session);
       const env = shared ? timed(() => "making the hook that keeps an agent off the shared branches", () => guardEnv(shared)) : {};
-      if (Object.keys(env).length) setCallEnv(call.id, env);
+      if (Object.keys(env).length) setCallEnv(session.id, call.id, env);
     }
     const p = this.perm(session.id);
     let ctx: Partial<ToolCall["ctx"]> | undefined =

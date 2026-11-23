@@ -114,9 +114,13 @@ export const registerEnvDrop = (id: string, f: (sessionId: string) => readonly s
 // Variables one tool call adds for the process it starts (a secret a command
 // refers to as $KEEL_SECRET_<id>, the git settings of an agent's guard):
 // taken by the job that call starts. Each feature adds its own to the call's.
+// Keyed by the session too: a call's id is its provider's, and two sessions'
+// calls can have the same one (a scripted model's, an agent's first).
 const callEnvs = new Map<string, Record<string, string>>();
-export const setCallEnv = (callId: string, env: Record<string, string>) => void callEnvs.set(callId, { ...callEnvs.get(callId), ...env });
-export const dropCallEnv = (callId: string) => void callEnvs.delete(callId);
+const callKey = (sessionId: string, callId: string) => `${sessionId}\0${callId}`;
+export const setCallEnv = (sessionId: string, callId: string, env: Record<string, string>) => { const k = callKey(sessionId, callId); callEnvs.set(k, { ...callEnvs.get(k), ...env }); };
+export const dropCallEnv = (sessionId: string, callId: string) => void callEnvs.delete(callKey(sessionId, callId));
+export const hasCallEnv = (sessionId: string, callId: string) => callEnvs.has(callKey(sessionId, callId));
 
 export function toolEnv(sessionId: string, extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
@@ -186,8 +190,8 @@ export function startJob(o: StartOpts): Job {
   // A confinement's own scope is taken into the job's (its limits with it).
   const { props, argv } = splitScope(o.wrap ? o.wrap(bare) : bare);
   const box = jobScope();
-  const extra = o.callId ? callEnvs.get(o.callId) : undefined;
-  if (o.callId) callEnvs.delete(o.callId);
+  const extra = o.callId ? callEnvs.get(callKey(o.sessionId, o.callId)) : undefined;
+  if (o.callId) callEnvs.delete(callKey(o.sessionId, o.callId));
   const started = Date.now();
   // Every process of the job carries its mark: one that left the job's group and session (setsid, a
   // double fork) is still found where there is no cgroup to hold it (see members).

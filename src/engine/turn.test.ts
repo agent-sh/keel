@@ -694,6 +694,40 @@ test("a settled tool call leaves no abort listener on the turn's signal", async 
   }
 });
 
+// What a gate adds to a call's process environment (an agent's guard settings) ends with the call, also when the
+// call starts no process: a tool that ran no command, one that threw, a later gate's refusal. It is the session's:
+// another session's call of the same id neither gets it nor loses its own.
+test("a settled tool call leaves no environment of its own behind", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const { registerHooks } = await import("./hooks.ts");
+  const { hasCallEnv, setCallEnv } = await import("../tools/jobs.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "callenv-"));
+  const store = new Store(dir);
+  const s = store.createSession({ title: "Fixture", model: "x:y", workspace: dir });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  registerHooks({ beforeTool: (x, c) => void setCallEnv(x.id, c.id, { GIT_CONFIG_COUNT: "2" }) });
+  registerHooks({ beforeTool: (_s, c) => (c.tool.name === "refused" ? { deny: "no" } : undefined) });
+  const tool = (name: string, run: () => Promise<any>) => ({ name, description: "", input_schema: { type: "object" }, readOnly: true, run }) as any;
+  const tools = [tool("ok", async () => ({ content: "fine" })), tool("boom", async () => { throw new Error("broke"); }), tool("refused", async () => ({ content: "never" }))];
+  const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
+  // Another session's call of the same id (ids are the provider's): its environment is its own and stays.
+  const other = store.createSession({ title: "Other", model: "x:y", workspace: dir });
+  try {
+    for (const name of ["ok", "boom", "refused"]) {
+      setCallEnv(other.id, `env-${name}`, { GIT_CONFIG_COUNT: "4" });
+      await (engine as any).runTool(s, tools, { type: "tool_use", id: `env-${name}`, name, input: {} }, ctx);
+      expect([name, hasCallEnv(s.id, `env-${name}`), hasCallEnv(other.id, `env-${name}`)]).toEqual([name, false, true]);
+    }
+  } finally {
+    allHooks().length -= 2;
+    store.db.close();
+  }
+});
+
 test("an Auto approval is checked again after hooks and with the executed input", async () => {
   const { mkdtempSync } = await import("node:fs");
   const { join } = await import("node:path");

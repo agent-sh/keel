@@ -121,12 +121,12 @@ export async function runHands(q: HandsRequest, spillRoot: string, signal: Abort
     const r = namedSecrets(input, SHELL_FIELDS);
     if ("error" in r) return { content: r.error, is_error: true };
     input = r.value;
-    if (Object.keys(r.env).length) setCallEnv(callId, r.env);
+    if (Object.keys(r.env).length) setCallEnv(q.session, callId, r.env);
   }
   try {
     // Output with a value this daemon knows goes back with its placeholder.
     return vault.mask(await tool.run(input, ctx));
   } finally {
-    dropCallEnv(callId);
+    dropCallEnv(q.session, callId);
   }
 }

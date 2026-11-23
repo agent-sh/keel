@@ -2595,7 +2595,8 @@ export class Engine {
     let result: ToolResultBlock;
     // Measured from dispatch: a call that never ran (denied, stopped at its gate) has no row.
     let t0: number | undefined;
-    let preparedInput = false;
+    // The tool's run, once dispatched: what the call added to its process's environment lives until it settles.
+    let dispatched: Promise<unknown> | undefined;
     const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted", error?: Error) => {
       const ms = Date.now() - t0!;
       this.measure(session.id, (h) => h.toolRan?.(session, call, r, { ms, outcome, error }));
@@ -2658,7 +2659,6 @@ export class Engine {
         if (ctx.signal.aborted) return interrupted();
       }
       let input = call.input;
-      preparedInput = true;
       for (const h of allHooks()) { const x = h.execInput?.(session, call); if (x !== undefined) input = x; }
       const authorizationError = authorizations.length ? () => authorizations.find((a) => !a.valid(call, input))?.deny : undefined;
       const deny = authorizationError?.();
@@ -2667,6 +2667,7 @@ export class Engine {
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       t0 = Date.now();
       const run = runCtx.dispatch ? runCtx.dispatch(tool, input, runCtx) : tool.run(input, runCtx);
+      dispatched = run;
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);
@@ -2692,7 +2693,11 @@ export class Engine {
       result = failed;
       thrown = err;
     } finally {
-      if (preparedInput && t0 === undefined) dropCallEnv(call.id);
+      // What the call added for the process it starts is not kept past the call, whether it started one or not (a
+      // tool that ran no command, one that threw, a later gate's refusal); a run a stop left going keeps it until
+      // it settles, for a command it still starts.
+      if (dispatched) void dispatched.then(() => dropCallEnv(session.id, call.id), () => dropCallEnv(session.id, call.id));
+      else dropCallEnv(session.id, call.id);
       ctx.signal.removeEventListener("abort", onStop);
     }
     if (thrown) {

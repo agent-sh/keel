@@ -69,6 +69,20 @@ test.skipIf(!hasGit)("a git an agent's command starts moves no branch its worktr
     }
     expect([git(main, "rev-parse", "main"), git(main, "rev-parse", "keel/y"), git(main, "symbolic-ref", "HEAD")]).toEqual([mainAt, yAt, "refs/heads/main"]);
     expect(git(agent, "symbolic-ref", "HEAD")).toBe("refs/heads/keel/x");
+    // Packing the refs moves none (pack-refs writes each branch's value into packed-refs, then deletes its loose
+    // copy): it runs, alone and from gc and maintenance; a move or a delete of a packed branch is still refused.
+    for (const line of ["git pack-refs --all", "git gc -q", "git maintenance run --task=pack-refs"]) {
+      // (A loose copy again for the next to pack.)
+      if (line !== "git pack-refs --all") { mkdirSync(join(main, ".git", "refs", "heads", "keel"), { recursive: true }); writeFileSync(join(main, ".git", "refs", "heads", "main"), `${mainAt}\n`); writeFileSync(join(main, ".git", "refs", "heads", "keel", "y"), `${yAt}\n`); }
+      const r = sh(agent, line);
+      expect([line, r.code, r.err]).toEqual([line, 0, ""]);
+    }
+    expect(readFileSync(join(main, ".git", "packed-refs"), "utf8")).toContain(`${mainAt} refs/heads/main`);
+    for (const line of ["git update-ref refs/heads/main HEAD", "git update-ref -d refs/heads/keel/y", `git update-ref -d refs/heads/keel/y ${yAt}`, `git update-ref -d refs/heads/main ${mainAt}`]) {
+      const r = sh(agent, line);
+      expect([line, r.code !== 0, r.err.includes("Refused by Keel")]).toEqual([line, true, true]);
+    }
+    expect([git(main, "rev-parse", "main"), git(main, "rev-parse", "keel/y")]).toEqual([mainAt, yAt]);
     // In the session's sandbox too, where the shared refs are writable: the hook's folder is shown there.
     if (sandboxStatus().available) {
       const line = "git commit -q --allow-empty -m c && git update-ref refs/heads/main HEAD";
