@@ -303,3 +303,21 @@ test("a route with a catalog section takes the reasoning field from its own sect
     expect(r.current().find((m) => m.model === "thinker")!.interleaved).toBe(want);
   }
 });
+
+// A request that asks for less output than the model lists (a title, a reader's part) is sent with
+// what it asked for; one that asks for nothing gets the model's own limit.
+test("a request's own output limit is sent when it is under the model's", async () => {
+  const sent: (number | undefined)[] = [];
+  const p: Provider = {
+    id: "out", family: "other", available: () => true, list: async () => [{ model: "m", context: 100_000, output: 64_000, tools: false }],
+    stream: async (req) => { sent.push(req.maxTokens); return { blocks: [], usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: "m" }; },
+  };
+  const r = new Providers(dir(), { providers: [p], capture: () => {} });
+  r.catalog.load = async () => {};
+  try {
+    const { provider } = await r.resolve("out:m");
+    const req = { model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal } as any;
+    for (const maxTokens of [1024, undefined, 100_000]) await provider.stream({ ...req, maxTokens }, () => {});
+    expect(sent).toEqual([1024, 64_000, 64_000]);
+  } finally { r.shutdown(); }
+});

@@ -551,8 +551,9 @@ export class Providers {
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
-            // (A warm request asks for the least output it can: it is read, not answered.)
-            ...req, onHeaders, onAnswer, efforts: info.efforts, maxTokens: req.purpose === "warm" && req.maxTokens ? req.maxTokens : info.output || undefined, interleaved: info.interleaved,
+            // The output the request asked for, within the model's listed limit (a warm request asks for
+            // the least it can: it is read, not answered; a title or a reader's part asks for a little).
+            ...req, onHeaders, onAnswer, efforts: info.efforts, maxTokens: req.maxTokens && info.output ? Math.min(req.maxTokens, info.output) : req.maxTokens || info.output || undefined, interleaved: info.interleaved,
             extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
           }, (d) => { onAnswer(); onDelta(d); });
