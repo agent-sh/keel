@@ -44,12 +44,13 @@ import dev.avifenesh.keel.ago
 
 private fun closedWords(c: Card): Pair<State, String> = when (c.state) {
     "approved" -> State.DONE to when {
+        c.plan -> if (c.choice == "once") "Approved: each change asks" else "Approved: edits run"
         c.question -> "Answered"
         c.choice == "session" -> "Allowed for this session"
         c.choice == "always" -> "Allowed always"
         else -> "Allowed once"
     }
-    "denied" -> State.FAILED to if (c.question) "Dismissed" else "Denied"
+    "denied" -> State.FAILED to if (c.plan) "Sent back to planning" else if (c.question) "Dismissed" else "Denied"
     "expired" -> State.STOPPED to "Closed without an answer"
     else -> State.IDLE to c.state
 }
@@ -69,9 +70,13 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
     val scroll = rememberScrollState()
     var read by remember(c.id, c.shown) { mutableStateOf(false) }
     LaunchedEffect(c.id, c.shown) { snapshotFlow { scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue }.collect { if (it) read = true } }
+    // A plan sent back: what to change, written under it.
+    var back by remember(c.id) { mutableStateOf(false) }
+    var feedback by remember(c.id) { mutableStateOf("") }
     fun act(choice: String, answers: Map<String, Any>?) {
         busy = true; error = ""
-        Approvals.run(act, c.id, choice, answers, seen = read && !c.question, rule = c.grants.joinToString(", ")) { err ->
+        val prompt = if (c.plan && choice != "deny") (if (choice == "once") "Approve the plan: each change asks" else "Approve the plan: edits run") else null
+        Approvals.run(act, c.id, choice, answers, seen = read && !c.question, rule = c.grants.joinToString(", "), feedback = feedback.takeIf { c.plan && choice == "deny" }, heading = prompt) { err ->
             busy = false
             if (!err.isNullOrEmpty()) error = err
         }
@@ -79,7 +84,7 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
     Panel(accent = if (c.pending) k.need else null, modifier = Modifier.semantics { contentDescription = "card-${c.id}" }) {
         Column(Modifier.padding(start = 16.dp, end = 14.dp, top = 12.dp, bottom = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (c.pending) StateTag(State.NEEDS, if (c.question) "question" else "permission")
+                if (c.pending) StateTag(State.NEEDS, if (c.plan) "plan" else if (c.question) "question" else "permission")
                 else closedWords(c).let { (s, w) -> StateTag(s, w, only = true) }
                 Spacer(Modifier.weight(1f))
                 if (c.ts > 0) Txt(ago(c.ts), T.meta, k.faint)
@@ -91,7 +96,17 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
                 Txt(title, T.uiStrong, k.fg, if (onOpen != null) Modifier.press(onOpen) else Modifier, maxLines = 1)
             }
             Spacer(Modifier.height(10.dp))
-            if (c.question) Questions(c, picks, other, enabled = c.pending && !busy)
+            if (c.plan) {
+                // The plan's title, then the whole plan as the model wrote it, in a box that scrolls.
+                Txt(c.command, T.bodyStrong)
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.sunken).border(1.dp, k.line, RoundedCornerShape(S.r))
+                        .heightIn(max = if (c.pending) 420.dp else 160.dp).verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .semantics { contentDescription = "plan-${c.id}" },
+                ) { Markdown(c.text.ifBlank { c.command }, T.ui) }
+                if (c.pending && !c.mayAllow(read)) { Spacer(Modifier.height(8.dp)); Txt(c.readFirst, T.small, k.muted, Modifier.semantics { contentDescription = "read-first-${c.id}" }) }
+            } else if (c.question) Questions(c, picks, other, enabled = c.pending && !busy)
             else {
                 if (c.description.isNotBlank()) { Txt(c.description, T.small, k.muted); Spacer(Modifier.height(8.dp)) }
                 // Why it is asked, where it runs, what in the text can mislead, that only its start is kept.
@@ -117,13 +132,22 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
                         }, Tone.NEED, enabled = ready && !busy, tag = "answer-${c.id}")
                         Btn("Dismiss", { act("deny", null) }, Tone.QUIET, enabled = !busy, tag = "dismiss-${c.id}")
                     }
+                } else if (c.plan && back) Column(verticalArrangement = Arrangement.spacedBy(S.sm)) {
+                    Field(feedback, { feedback = it }, "What should change? (optional)", singleLine = false, tag = "feedback-${c.id}", minLines = 2)
+                    Row(horizontalArrangement = Arrangement.spacedBy(S.sm)) {
+                        Btn(if (busy) "Sending" else "Send back", { act("deny", null) }, Tone.LINE, enabled = !busy, compact = true, tag = "send-back-${c.id}")
+                        Btn("Cancel", { back = false }, Tone.QUIET, enabled = !busy, compact = true)
+                    }
                 } else FlowRow(horizontalArrangement = Arrangement.spacedBy(S.sm), verticalArrangement = Arrangement.spacedBy(S.sm)) {
                     // The daemon offers the session choice where it is safe; a phone with no screen lock approves once only.
                     for (a in c.actions.filter { !(Prefs.noLock && (it.choice == "session" || it.choice == "always")) }) {
+                        // (A phone with no screen lock approves a plan only into the mode where each change asks.)
                         // (A standing answer's button names the rule it stores.)
                         val label = c.label(a.choice, a.label)
                         // Deny is taken at once; an allow waits for the text to have been read.
-                        Btn(label, { act(a.choice, null) }, when (a.style) { "primary" -> Tone.INK; "danger" -> Tone.DANGER; else -> Tone.LINE },
+                        // Keep planning opens the box for what to change; the rest go at once.
+                        Btn(label, { if (c.plan && a.choice == "deny") back = true else act(a.choice, null) },
+                            when { c.plan && a.choice == "deny" -> Tone.QUIET; a.style == "primary" -> Tone.INK; a.style == "danger" -> Tone.DANGER; else -> Tone.LINE },
                             enabled = !busy && (a.choice == "deny" || c.mayAllow(read)), compact = true, tag = "${a.choice}-${c.id}")
                     }
                 }

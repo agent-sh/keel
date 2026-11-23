@@ -21,6 +21,8 @@ import { mobileApi } from "./v1.ts";
 import { pushData, testMessage } from "./push.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
 import { Gate, type Approval } from "../../safety/gate.ts";
+import { planRoutes } from "../../server/routes/plan.ts";
+import { toolsFor } from "../../tools/registry.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
 // The daemon's config folder is this run's own: what a route reads there (the push files) is what a test put there.
@@ -357,6 +359,88 @@ describe("uploads", () => {
     expect((await upload("c.json", encodeURIComponent("Application/JSON; charset=utf-8"), text("{}"))).mime).toBe("application/json");
     expect((await upload("d.txt", encodeURIComponent("text/plain\r\nx-evil: 1"), text("d"))).mime).toBe("application/octet-stream");
     expect((await upload("e.zip", "application/zip", text("PK"))).mime).toBe("application/octet-stream");
+  });
+});
+
+describe("plans", () => {
+  // The page's plan routes over the same store, and the tool a model in plan mode calls.
+  const planApi: any = planRoutes({ store, bus } as any);
+  const present = toolsFor("other").find((t) => t.name === "present_plan")!;
+  const presents = (sid: string, callId: string, plan: string) => {
+    store.append(sid, "assistant", { blocks: [{ type: "tool_use", id: callId, name: "present_plan", input: { plan, title: "Split the store" } }] });
+    let got: any;
+    present.run({ plan, title: "Split the store" }, { callId, sessionId: sid, signal: new AbortController().signal } as any).then((r: any) => (got = r));
+    return () => got;
+  };
+  const signedApprove = (aid: string, body: any) => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const asig = sign("sha256", Buffer.from(approvalMessage(aid, body.choice, ts, true, "")), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    return call("POST", `/v1/approvals/${aid}`, body, body.choice === "deny" ? {} : { "x-hm-asig": asig, "x-hm-asig-v": "2" });
+  };
+
+  test("a waiting plan is a card on the phone: read whole, approved in a mode, or sent back with what to change", async () => {
+    const s = session("Refactor");
+    const result = presents(s.id, "call-plan-1", "1. Split store.ts.\n2. Move the checkpoint thread.\n3. Run the tests.");
+    await Bun.sleep(0);
+    // The chat needs the owner, and the card says the whole plan; the Needs list has it.
+    const synced = (await call("GET", "/v1/sync")).body;
+    expect(synced.chats.find((c: any) => c.id === s.id).status).toBe("needs_you");
+    const c = synced.approvals.find((a: any) => a.chat_id === s.id);
+    expect(c).toMatchObject({ id: `plan-${s.id}.call-plan-1`, kind: "plan", state: "pending", command: "Split the store", text: "1. Split store.ts.\n2. Move the checkpoint thread.\n3. Run the tests.", lines: 3, hold: ["plan"] });
+    expect(c.actions.map((a: string[]) => a[1])).toEqual(["session", "once", "deny"]);
+    // The chat shows it in place.
+    const page = (await call("GET", `/v1/chats/${s.id}/messages?paged=1`)).body;
+    expect(page.messages.some((m: any) => m.kind === "approval" && m.meta.approval_id === `plan-${s.id}.call-plan-1` && m.meta.card === "plan")).toBe(true);
+    // Approving needs the approval key and the plan read to its end.
+    expect((await call("POST", `/v1/approvals/plan-${s.id}.call-plan-1`, { choice: "session", seen: "whole" })).status).toBe(403);
+    const unread = await signedApprove(`plan-${s.id}.call-plan-1`, { choice: "session" });
+    expect([unread.status, unread.body.error]).toEqual([409, "Read the plan to its end to approve it."]);
+    const ok = await signedApprove(`plan-${s.id}.call-plan-1`, { choice: "session", seen: "whole" });
+    expect(ok.status).toBe(200);
+    expect(ok.body.approval).toMatchObject({ id: `plan-${s.id}.call-plan-1`, state: "approved", choice: "session" });
+    await Bun.sleep(0);
+    expect(result().content).toContain("now in auto-edits mode");
+    expect(JSON.parse(store.db.query<{ data: string }, [string]>("SELECT data FROM plans WHERE session_id = ?").get(s.id)!.data).mode).toBe("auto-edits");
+    // How it ended reaches a phone that was away.
+    expect((await call("GET", "/v1/sync")).body.approvals.find((a: any) => a.id === `plan-${s.id}.call-plan-1`)).toMatchObject({ state: "approved" });
+    expect((await signedApprove(`plan-${s.id}.call-plan-1`, { choice: "once", seen: "whole" })).status).toBe(409);
+
+    // Sent back: what to change goes to the model, and nothing is signed for it.
+    const again = presents(s.id, "call-plan-2", "1. Split store.ts.");
+    await Bun.sleep(0);
+    const back = await call("POST", `/v1/approvals/plan-${s.id}.call-plan-2`, { choice: "deny", feedback: "Keep the checkpoint thread where it is." });
+    expect([back.status, back.body.approval.state]).toEqual([200, "denied"]);
+    await Bun.sleep(0);
+    expect(again().content).toContain("Keep the checkpoint thread where it is.");
+    void planApi;
+  });
+
+  test("two sessions' plans under one call id are two cards: one that closed hides nothing of the other", async () => {
+    const a = session("A"), b = session("B");
+    presents(a.id, "call-same", "1. A.");
+    await Bun.sleep(0);
+    expect((await call("POST", `/v1/approvals/plan-${a.id}.call-same`, { choice: "deny" })).status).toBe(200);
+    presents(b.id, "call-same", "1. B.");
+    await Bun.sleep(0);
+    const cards = (await call("GET", "/v1/sync")).body.approvals.filter((c: any) => c.kind === "plan" && c.id.endsWith(".call-same"));
+    expect(cards.map((c: any) => [c.id, c.state]).sort()).toEqual([[`plan-${a.id}.call-same`, "denied"], [`plan-${b.id}.call-same`, "pending"]].sort());
+    expect((await call("POST", `/v1/approvals/plan-${b.id}.call-same`, { choice: "deny" })).status).toBe(200);
+  });
+
+  test("a plan's push opens the app and allows nothing from the notification", () => {
+    const d = alertPush({ id: "al-1", kind: "question", session_id: "s-1", title: "Plan to approve: Refactor", body: "Split the store", data: { plan_id: "call-9", open_session: "s-1" } } as any).data;
+    expect([d.aid, d.hold, d.opts]).toEqual(["plan-s-1.call-9", "plan", JSON.stringify(["deny"])]);
+  });
+
+  test("a phone with no screen lock approves a plan only into a mode where every change asks", async () => {
+    const s = session("No lock");
+    presents(s.id, "call-plan-3", "1. One step.");
+    await Bun.sleep(0);
+    store.db.query("UPDATE mobile_devices SET nolock = 1 WHERE id = ?").run(dev.device_id);
+    try {
+      expect((await signedApprove(`plan-${s.id}.call-plan-3`, { choice: "session", seen: "whole" })).status).toBe(403);
+      expect((await signedApprove(`plan-${s.id}.call-plan-3`, { choice: "once", seen: "whole" })).status).toBe(200);
+    } finally { store.db.query("UPDATE mobile_devices SET nolock = 0 WHERE id = ?").run(dev.device_id); }
   });
 });
 

@@ -116,8 +116,10 @@ object Wire {
      * request that one line does not show whole only with it; a refusal needs none. via: "notification"
      * for an answer given from a notification, which shows one line and so never says seen.
      */
-    fun answerBody(choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null): JSONObject {
+    fun answerBody(choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, feedback: String? = null): JSONObject {
         val body = JSONObject().put("choice", choice)
+        // A plan sent back carries what to change, when the owner wrote it.
+        if (choice == "deny" && !feedback.isNullOrBlank()) body.put("feedback", feedback.trim())
         if (answers != null && choice != "deny") body.put("answers", JSONObject().apply {
             answers.forEach { (k, v) -> put(k, if (v is List<*>) JSONArray(v) else v.toString()) }
         })
@@ -204,9 +206,13 @@ data class Chat(
     }
 }
 
-/** The state the list shows: a waiting card or a running turn first, then how the last turn ended. */
+/**
+ * The state the list shows: a waiting card first, then the daemon's word that the session waits on the
+ * owner (a plan or a question inside a running turn), then a running turn, then how the last turn ended.
+ */
 fun stateOf(chat: Chat, pendingCard: Boolean, working: Boolean): State = when {
     pendingCard -> State.NEEDS
+    chat.status == "needs_you" -> State.NEEDS
     working -> State.WORKING
     else -> when (chat.status) {
         "needs_you" -> State.NEEDS
@@ -272,6 +278,8 @@ data class Card(
 ) {
     val pending get() = state == "pending"
     val question get() = kind == "question"
+    /** A plan the model presents: approved to start the work in a mode, or sent back to planning. */
+    val plan get() = kind == "plan"
     /** Allow is given only once the whole text was on screen. */
     val held get() = hold.isNotEmpty()
     /** What the card draws of the request: the whole text when the daemon sent it, else the summary. */
@@ -290,7 +298,7 @@ data class Card(
      * A choice's button. A standing answer stores a rule, and the button names it: "Allow echo * for this
      * session", never a bare "Allow for session". A daemon that names no rule gets the plain words.
      */
-    fun label(choice: String, fallback: String) = when (choice) {
+    fun label(choice: String, fallback: String) = if (plan) fallback else when (choice) {
         "once" -> "Allow once"
         "session" -> if (grants.isEmpty()) "Allow for session" else "Allow ${grants.joinToString(", ")} for this session"
         "always" -> if (grants.isEmpty()) "Always allow" else "Always allow ${grants.joinToString(", ")}"
@@ -300,6 +308,7 @@ data class Card(
     /** What stands in the way of Allow, said under the text. */
     val readFirst get() = when {
         !held -> ""
+        plan -> "Scroll to the end of the plan to approve it."
         lines > 1 -> "Scroll to the end of all $lines lines to allow it."
         else -> "Read the whole request to allow it."
     }

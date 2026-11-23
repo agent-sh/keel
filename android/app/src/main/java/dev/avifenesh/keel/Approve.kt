@@ -25,8 +25,8 @@ object Approvals {
      * The prompt carries no text of the request: a prompt's subtitle is cut, and a cut request is not
      * what is allowed. The request stands whole on the screen under it.
      */
-    fun run(act: FragmentActivity, aid: String, choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, rule: String = "", done: (String?) -> Unit) {
-        val body = Wire.answerBody(choice, answers, seen, via)
+    fun run(act: FragmentActivity, aid: String, choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, rule: String = "", feedback: String? = null, heading: String? = null, done: (String?) -> Unit) {
+        val body = Wire.answerBody(choice, answers, seen, via, feedback)
         fun submit(headers: Map<String, String>) {
             Hub.scope.launch {
                 val r = runCatching { Hub.resolve(aid, body, headers) }
@@ -61,6 +61,7 @@ object Approvals {
             }
         })
         val title = when {
+            heading != null -> heading
             answers != null -> "Send the answer"
             choice == "session" -> "Allow for this session"
             choice == "always" -> "Always allow"

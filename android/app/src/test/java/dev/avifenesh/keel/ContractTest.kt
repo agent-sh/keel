@@ -59,7 +59,9 @@ class ContractTest {
         for (answer in examples("answer")) {
             // (`seen`: the card's text was read; `via`: where the answer was given.)
             val via = if (answer.has("via")) answer.getString("via") else null
-            assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf), answer.optString("seen") == "whole", via)))
+            // (`feedback`: what to change, with a plan sent back.)
+            val feedback = if (answer.has("feedback")) answer.getString("feedback") else null
+            assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf), answer.optString("seen") == "whole", via, feedback)))
         }
     }
 

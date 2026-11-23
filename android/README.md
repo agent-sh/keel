@@ -61,6 +61,15 @@ line shows all of it.
   shows the sentence under the card, or as a toast when the answer came from a
   notification.
 
+## Plans
+
+A plan the model presents in plan mode is a card in the session and under
+Needs you. It shows the whole plan and allows an approval only once it was
+scrolled to its end. Approve: edits run starts the work in auto edits;
+Approve: each change asks starts it in ask (the one a phone with no screen
+lock offers). Keep planning opens a box for what to change and sends the plan
+back with it. A plan's notification opens the session; it allows nothing.
+
 ## Photos and files
 
 The paperclip beside the message box offers Photos (the system photo picker,

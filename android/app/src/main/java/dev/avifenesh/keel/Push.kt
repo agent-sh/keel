@@ -59,7 +59,7 @@ object Notify {
 
     /**
      * One alert. A permission card gets Allow (biometric, over the lock screen)
-     * and Deny; a question opens its session. A notification shows one line, so
+     * and Deny; a question or a plan opens its session. A notification shows one line, so
      * Allow sits on it only for a request that line shows whole: a held one
      * (long, cut, marked, high risk) gets Open and Deny, and is read in the app.
      */
@@ -71,7 +71,8 @@ object Notify {
             .setContentIntent(open(c, chat)).setAutoCancel(true)
             .setCategory(if (kind == "approval") NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_STATUS)
             .setPriority(if (high) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
-        if (aid != null && !aid.startsWith("q-") && kind == "approval") {
+        // A question or a plan is answered in the app: its notification opens the session.
+        if (aid != null && !aid.startsWith("q-") && !aid.startsWith("plan-") && kind == "approval") {
             if (!allow) b.addAction(0, "Open", open(c, chat))
             else b.addAction(0, "Allow once", PendingIntent.getActivity(c, idOf("$aid/once"),
                 Intent(c, ApproveActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("aid", aid).putExtra("choice", "once").putExtra("summary", body).putExtra("title", title),

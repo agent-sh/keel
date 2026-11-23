@@ -28,8 +28,10 @@ const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}
 export function alertPush(a: Alert, card?: { hold: string[]; glance: boolean; line: string }): push.PushMessage {
   const kind = a.kind === "question" ? "approval" : a.kind;
   const data: Record<string, string> = { title: a.title, body: card?.line ?? a.body, ek: a.kind, pri: "", reply: a.kind === "finished" || a.kind === "question" ? "1" : "0" };
-  const aid = a.data?.approval_id ?? (a.data?.call_id ? `q-${a.data.call_id}` : undefined);
+  const aid = a.data?.approval_id ?? (a.data?.call_id ? `q-${a.data.call_id}` : a.data?.plan_id ? `plan-${a.data.open_session ?? a.session_id}.${a.data.plan_id}` : undefined);
   if (aid) data.aid = String(aid);
+  // A plan is read whole in the app before it is approved: its notification opens it, and allows nothing.
+  if (a.data?.plan_id) { data.hold = "plan"; data.opts = JSON.stringify(["deny"]); }
   if (a.kind === "approval") {
     // An alert from before cards recorded this says nothing: no Allow.
     const held: string[] = card?.hold ?? (Array.isArray(a.data?.hold) ? a.data.hold : a.data?.risk === "high" ? ["risk"] : []);

@@ -71,6 +71,25 @@ class WireTest {
         assertEquals("/v1/upload?name=file&mime=application%2Foctet-stream", Wire.uploadPath("", ""))
     }
 
+    @Test fun aSessionWhoseTurnWaitsOnTheOwnerNeedsThemThoughItRuns() {
+        val chat = Chat("s-1", "Refactor", "needs_you", 1.0, 0, false, false, "", "agent", null)
+        // A plan waits inside a running turn: the daemon says needs_you, and that is what the list shows.
+        assertEquals(State.NEEDS, stateOf(chat, pendingCard = false, working = true))
+        assertEquals(State.WORKING, stateOf(chat.copy(status = "working"), pendingCard = false, working = true))
+    }
+
+    @Test fun aPlanCardNamesItsWaysOnAndSendsWhatToChange() {
+        val plan = Card.of(JSONObject("""{"id":"plan-c7","chat_id":"s-1","kind":"plan","command":"Split","description":"","actions":[["Approve: edits run","session","primary"],["Approve: each change asks","once",""],["Keep planning","deny","danger"]],"state":"pending","choice":null,"ts":1,"text":"1. a\n2. b","lines":2,"hold":["plan"]}"""))
+        assertEquals(true, plan.plan)
+        // The daemon's words, never a permission's "Allow for session".
+        assertEquals(listOf("Approve: edits run", "Approve: each change asks", "Keep planning"), plan.actions.map { plan.label(it.choice, it.label) })
+        assertEquals(false, plan.mayAllow(read = false))
+        val back = Wire.answerBody("deny", null, feedback = "Keep the thread.")
+        assertEquals("Keep the thread.", back.getString("feedback"))
+        assertEquals(false, Wire.answerBody("deny", null, feedback = " ").has("feedback"))
+        assertEquals(false, Wire.answerBody("session", null, seen = true, feedback = "x").has("feedback"))
+    }
+
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))

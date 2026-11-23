@@ -29,6 +29,7 @@ import {
 import type { Device, MobileStore, SendRecord } from "./store.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { STORE } from "../../providers/image-limits.ts";
+import { decidePlan, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const err = (error: string, status: number) => json({ error }, status);
@@ -270,6 +271,27 @@ export function approvalOf(a: Approval, form?: CardForm) {
   };
 }
 
+// A plan the model presents in plan mode, as a card: its title, the whole plan to read
+// (`text`, `lines`), and the ways on. Approve starts the work in a mode: "session" in auto
+// edits (edits inside the folder run, commands ask), "once" in ask (every change asks: what a
+// phone with no screen lock may start). "deny" sends it back to planning, with `feedback` (what
+// to change) when the owner wrote one. A plan is approved only once all of it was on the
+// screen (`hold`; the app says `seen: "whole"`), and with the approval key, as any allow.
+const PLAN_STATE = { approved: "approved", denied: "denied", expired: "expired" } as const;
+// A plan's card id names its session too: a plan is known by its tool call's id, and two sessions'
+// calls may share one (a card that closed in one must never hide the other's that waits).
+export const planCardId = (sessionId: string, planId: string) => `plan-${sessionId}.${planId}`;
+export function planCardOf(c: PlanCard, end?: PlanEnd) {
+  return {
+    id: planCardId(c.session_id, c.id), chat_id: c.session_id, session_key: c.session_id, kind: "plan",
+    command: c.title || "The model's plan", description: "Approve it to start the work, or keep planning.",
+    text: c.plan, lines: c.plan.split("\n").length, notes: [], hold: end ? [] : ["plan"],
+    actions: end ? [] : [["Approve: edits run", "session", "primary"], ["Approve: each change asks", "once", ""], ["Keep planning", "deny", "danger"]],
+    state: end ? PLAN_STATE[end.how] : "pending", choice: end?.how === "approved" ? (end.mode === "ask" ? "once" : "session") : end ? "deny" : null,
+    ts: secs(c.created),
+  };
+}
+
 // The card's place in the chat. It carries the card's state, so a chat read
 // after the card closed never offers a decision on it.
 const approvalMsg = (a: { id: string; chat_id: string; kind: string; command: string; description: string; state: string; ts: number | null }) => ({
@@ -423,15 +445,18 @@ export function mobileApi(ctx: MobileCtx) {
   }
   // A card with its form while it waits (the gate knows where the session's calls run).
   const cardOf = (a: Approval) => approvalOf(a, a.state === "pending" ? ctx.gate()?.form(a) : undefined);
+  const plans = (sessionId?: string) => plansWaiting().filter((p) => !sessionId || p.session_id === sessionId).map((p) => planCardOf(p));
   const pendingApprovals = (sessionId?: string) => [
     ...(ctx.gate()?.approvals({ session: sessionId, pending: true }) ?? []).map(cardOf),
     ...questions(sessionId),
+    ...plans(sessionId),
   ];
   // Cards that closed after `sinceMs` (answered on the desktop, say): the app
   // keeps cards it saw until it hears they closed, and cancels their notification then.
   const closedCards = (sinceMs: number) => [
     ...(ctx.gate()?.approvals() ?? []).filter((a) => a.state !== "pending" && (a.resolved ?? a.created) >= sinceMs).map(cardOf),
     ...closedQuestions(sinceMs).map((q) => closedQuestion(q)),
+    ...plansEnded(sinceMs).map((e) => planCardOf(e.card, e)),
   ];
 
   // Bearer token, then the request signature over method, raw path and query,
@@ -512,6 +537,22 @@ export function mobileApi(ctx: MobileCtx) {
       const v2 = req.headers.get("x-hm-asig-v")?.trim() === "2";
       if (!(await approvalSigned(req, dev, approvalMessage(aid, choice, req.headers.get("x-hm-ts") ?? "", v2, text), "approval")))
         return err("biometric signature required", 403);
+    }
+    if (aid.startsWith("plan-")) {
+      const rest = aid.slice("plan-".length), dot = rest.indexOf(".");
+      const sid = rest.slice(0, Math.max(0, dot)), id = rest.slice(dot + 1);
+      const p = plansWaiting().find((x) => x.id === id && x.session_id === sid);
+      const ended = plansEnded(0).findLast((e) => e.card.id === id && e.card.session_id === sid);
+      if (!p) return ended ? json({ error: `this plan is already ${ended.how === "approved" ? "approved" : ended.how === "denied" ? "sent back to planning" : "closed"}`, approval: planCardOf(ended.card, ended) }, 409) : err("this plan is no longer waiting", 409);
+      if (text) return err("answer only applies to questions", 400);
+      if (choice === "always") return err("a plan is approved for the work it describes, not always", 400);
+      // Approved only once the whole plan was on the phone's screen.
+      if (choice !== "deny" && b.seen !== "whole") return json({ error: "Read the plan to its end to approve it.", hold: ["plan"], approval: planCardOf(p) }, 409);
+      const feedback = typeof b.feedback === "string" ? b.feedback : undefined;
+      const r = decidePlan(id, choice === "deny" ? { approve: false, feedback } : { approve: true, mode: choice === "session" ? "auto-edits" : "ask" });
+      if (r.status !== 200) return json({ error: r.body.error ?? "the plan was not decided", approval: planCardOf(p) }, r.status);
+      const end = plansEnded(0).findLast((e) => e.card.id === id && e.card.session_id === sid);
+      return json({ approval: planCardOf(p, end ?? { card: p, how: choice === "deny" ? "denied" : "approved", at: Date.now() }), resolved: 1 });
     }
     if (aid.startsWith("q-")) {
       // (By the whole id: a card of a server's earlier question on the same call finds nothing.)
@@ -669,6 +710,14 @@ export function mobileApi(ctx: MobileCtx) {
                 const s = store.session(f.data.data.parent_id);
                 if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
+              else if (f.t === "feature" && f.name === "plan" && f.data?.card) {
+                // A plan presented, or how it ended: its card, its place in the chat, and the chat's row.
+                const a = planCardOf(f.data.card, f.data.end);
+                send({ type: "approval", seq: mobile.globalSeq(), approval: a });
+                if (a.state === "pending") send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(a) });
+                const s = store.session(a.chat_id);
+                if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
+              }
               else if (f.t === "feature" && f.name === "approval") {
                 const a = cardOf(f.data as Approval);
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });
@@ -712,6 +761,8 @@ export function mobileApi(ctx: MobileCtx) {
     const msgs: any[] = line.flatMap((e) => msgsOf(e, mobile.gseqOf(e.id)));
     for (const a of ctx.gate()?.approvals({ session: s.id }) ?? []) msgs.push(approvalMsg(approvalOf(a)));
     for (const q of questions(s.id)) msgs.push(approvalMsg(q));
+    for (const p of plans(s.id)) msgs.push(approvalMsg(p));
+    for (const e of plansEnded(0)) if (e.card.session_id === s.id) msgs.push(approvalMsg(planCardOf(e.card, e)));
     msgs.sort((x, y) => x.ts - y.ts);
     const off = all.filter((e) => !on.has(e.id)).flatMap((e) => msgsOf(e, 0))
       .map((m: any) => ({ ...m, kind: "deleted", content: "", meta: { branch: "not shown" } }));
