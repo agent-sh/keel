@@ -25,7 +25,7 @@ function handle(m: any) {
     case "tools/call": {
       log(`mcp ${harness} ${m.params?.name} ${JSON.stringify(m.params?.arguments ?? {})}`);
       if (m.params?.name === "tacit_search") return reply({ content: [{ type: "text", text: "- code-word: the code word for this test is heron" }] });
-      return reply({ content: [{ type: "text", text: `${m.params?.name} done` }] });
+      return reply({ content: [{ type: "text", text: `${m.params?.name} done as ${harness}` }] });
     }
     default:
       return send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `Method not found: ${m.method}` } });

@@ -69,6 +69,8 @@ export type McpState = "disabled" | "connecting" | "ready" | "error" | "needs_au
 export type BundledServer = {
   label: string;
   config: McpServerConfig | null;   // null: not installed on this machine
+  // The command as it is now, asked at every connect (it can follow a setting).
+  configure?: () => McpServerConfig | null;
   missing?: string;                 // what to install
   tools: McpTool[];
   instructions?: string;
@@ -719,6 +721,7 @@ export class McpManager {
     if (!e.connecting) {
       e.state = "connecting";
       e.error = undefined;
+      if (e.bundled?.configure) e.config = e.bundled.configure() ?? e.config;
       const t = this.transport(e);
       const abort = (e.abort = new AbortController());
       // One connection for every session: a turn that happens to open it does
@@ -1241,6 +1244,22 @@ export class McpManager {
       e.state = "connecting";
       this.ensure(name).catch(() => {});
     }
+  }
+
+  // A server Keel brings whose command changed (a setting it follows): the
+  // running process ends once its calls are done, and the next call starts it
+  // with the new command. Nothing is started now.
+  restartBundled(name: string) {
+    const e = this.entries.get(name);
+    if (!e?.bundled || e.bundled.live) return;
+    if (e.bundled.configure) e.config = e.bundled.configure() ?? e.config;
+    e.abort?.abort();
+    e.abort = undefined;
+    const c = e.client;
+    e.client = undefined;
+    e.connecting = undefined;
+    if (e.state !== "disabled" && e.state !== "missing") { e.state = "idle"; e.error = undefined; }
+    if (c) { c.onClose = undefined; c.retire(); }
   }
 
   async reconnect(name: string) {

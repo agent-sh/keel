@@ -300,6 +300,17 @@ test("tacit's tools reach a session, and a server that fails says so", async ({ 
   expect(missing).toMatch(/Not available now: [^"]*broken \(ENOENT[^"]*keel-e2e-server/);
   expect((await list()).find((s) => s.name === "tacit").state).toBe("ready");
 
+  // The owner names another writer: the running server starts again under it, at the next call.
+  const writerBefore = (await (await request.get("/api/settings")).json()).settings.memory.writer;
+  try {
+    expect((await request.patch("/api/settings", { data: { memory: { writer: "codex" } } })).ok()).toBe(true);
+    await expect.poll(async () => (await list()).find((s) => s.name === "tacit").target).toContain("--harness codex");
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "mcp_call", input: { tool: "tacit__tacit_add", arguments: { name: "n", description: "d", type: "user_standard" } } }]) } });
+    await expect.poll(async () => (await results(id)).at(-1) ?? "", { timeout: 60_000 }).toContain("tacit_add done as codex");
+  } finally {
+    await request.patch("/api/settings", { data: { memory: { writer: writerBefore } } });
+  }
+
   // Memory off in a session: the store's tools are refused there.
   const off = await open(false);
   await request.post(`/api/sessions/${off}/messages`, { data: { text: calls([{ name: "mcp_call", input: { tool: "tacit__tacit_search", arguments: { query: "code word" } } }]) } });
@@ -314,7 +325,10 @@ test("tacit's tools reach a session, and a server that fails says so", async ({ 
   await expect(panel.getByTestId("mcp-error")).toBeVisible();
   await shoot(page, "mcp-09-failed-server");
   await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "Memory (tacit)" }).first().click();
-  await expect(panel.locator('[data-testid="mcp-server"][data-name="tacit"]')).toHaveAttribute("data-state", "ready");
+  // (The writer put back ended its process: it starts at the next call, under the owner's writer.)
+  const tacitRow = panel.locator('[data-testid="mcp-server"][data-name="tacit"]');
+  await expect(tacitRow).toHaveAttribute("data-state", /^(ready|idle)$/);
+  await expect(tacitRow).toContainText(`--harness ${writerBefore}`);
   await shoot(page, "mcp-10-tacit");
   await request.delete("/api/mcp/servers/broken");
 });
