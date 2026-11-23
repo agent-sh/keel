@@ -99,17 +99,27 @@ const linux = process.platform === "linux";
 const until = async (ok: () => boolean) => { for (let i = 0; i < 200 && !ok(); i++) await Bun.sleep(25); return ok(); };
 
 // A process that has ended and stays as a zombie: its parent (a sleep) never reads its end.
-async function zombie() {
-  const parent = Bun.spawn(["sh", "-c", "true & echo $!; exec sleep 60"], { stdout: "pipe", stderr: "ignore" });
-  const pid = Number(new TextDecoder().decode((await parent.stdout.getReader().read()).value).trim());
-  return { pid, parent };
+// The shell prints the child's pid before the child has run, and a loaded machine may not run it for
+// seconds: the zombie is handed over once it is one, however long that takes. A shell that read the
+// child's end itself before it became the sleep leaves no zombie (the pid is gone): it is made again.
+async function zombie(withinMs = 60_000) {
+  const end = Date.now() + withinMs;
+  for (;;) {
+    const parent = Bun.spawn(["sh", "-c", "true & echo $!; exec sleep 60"], { stdout: "pipe", stderr: "ignore" });
+    const pid = Number(new TextDecoder().decode((await parent.stdout.getReader().read()).value).trim());
+    let state = pidState(pid);
+    while (state !== "ended" && state !== "gone" && Date.now() < end) { await Bun.sleep(25); state = pidState(pid); }
+    if (state === "ended") return { pid, parent };
+    parent.kill("SIGKILL");
+    if (Date.now() >= end) throw new Error(`no zombie within ${withinMs} ms: the child was ${state}`);
+  }
 }
 
 test.skipIf(!linux)("a daemon that has ended is replaced while its pid is still there, and a restart does not wait for it", async () => {
   const dir = scratch();
   const z = await zombie();
   try {
-    expect(await until(() => pidState(z.pid) === "ended")).toBe(true);
+    expect(pidState(z.pid)).toBe("ended");
     // Signal 0 still finds it: it is there, and it is no daemon.
     expect(() => process.kill(z.pid, 0)).not.toThrow();
     writeFileSync(join(dir, "daemon.lock"), JSON.stringify({ pid: z.pid, url: "http://127.0.0.1:1" }));
