@@ -80,7 +80,7 @@ export function ReviewFindings({ session }: { session: Session }) {
           onChange={(e) => setFocus(e.target.value)}
           placeholder="Focus (optional): what to look at hardest"
           data-testid="review-focus"
-          className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2.5 text-ui outline-none placeholder:text-faint focus:border-line-strong"
+          className="k-field min-w-0 flex-1"
         />
         <button data-testid="review-start" disabled={busy} onClick={start} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ScanSearch className="size-3.5" />} Review

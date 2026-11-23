@@ -317,7 +317,7 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
                 value={focus}
                 onChange={(e) => setFocus(e.target.value)}
                 placeholder="What the summary should keep (optional)"
-                className="h-8 w-full rounded-lg border border-line bg-sunken px-2.5 text-caption outline-none placeholder:text-faint focus:border-line-strong"
+                className="k-field w-full text-caption"
               />
               <div className="mt-2 flex gap-2">
                 <button

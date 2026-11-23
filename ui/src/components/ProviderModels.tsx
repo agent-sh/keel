@@ -59,7 +59,7 @@ function Editor({ m, provider, onDone }: { m: ListedModel; provider: string; onD
       onDone();
     } catch (e) { setErr(failed(e, { at: "saving a model's details" })); } finally { setBusy(false); }
   };
-  const input = "h-7 w-full rounded-md border border-line-strong bg-raised px-2 text-ui outline-none focus:border-accent";
+  const input = "k-field k-field-sm w-full";
   const tri = (k: "tools" | "images", label: string) => (
     <label className="block"><span className="text-micro text-faint">{label}</span>
       <Select className={input} data-testid={`model-${k}`} value={o[k]} onChange={(e) => setO({ ...o, [k]: e.target.value })}>

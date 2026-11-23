@@ -368,7 +368,7 @@ function CommentForm({ l, side, text, label, onText, onClose, onAdd }: { l: Patc
         onChange={(e) => onText(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Escape" && !text.trim()) onClose(); }}
         placeholder={side === "old" ? "What about this removed line?" : "What should change here?"}
-        className="h-8 min-w-[10rem] flex-1 rounded-lg border border-line bg-bg px-3 text-caption outline-none focus:border-line-strong"
+        className="k-field min-w-[10rem] flex-1 text-caption"
       />
       <span className="ml-auto flex shrink-0 gap-2">
         <button type="submit" data-testid="comment-add" className="h-8 rounded-lg bg-accent px-3 text-caption font-medium text-accent-fg">Add</button>

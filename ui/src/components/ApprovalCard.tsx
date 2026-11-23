@@ -672,7 +672,7 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
         else if (why) nudge.refuse(why, e.currentTarget);
         else onAllow(now);
       }}
-      className="k-allow-all inline-flex h-ctl-lg items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-raised"
+      className="k-btn k-btn-lg k-allow-all whitespace-nowrap aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
     >
       <CheckCheck className="size-3.5 text-st-need" aria-hidden="true" />
       {/* The widest label it can have holds its room, so the bar does not wrap anew when the count changes. */}
@@ -1119,7 +1119,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       {closed ? (
         <div className={cn(FOOT, "flex items-center gap-2", dense ? "basis-full px-3 pb-2" : "px-4 py-3")} data-testid="approval-closed">
           <span className="min-w-0 flex-1 text-caption text-muted">This request is no longer open: {err}</span>
-          <button type="button" data-stop="card" onClick={() => safety.loadSession(a.session_id).catch(reportError)} className="h-8 shrink-0 rounded-lg border border-line px-3 text-ui hover:bg-hover">
+          <button type="button" data-stop="card" onClick={() => safety.loadSession(a.session_id).catch(reportError)} className="k-btn k-btn-lg shrink-0">
             Refresh
           </button>
         </div>
@@ -1136,7 +1136,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             onKeyDown={(e) => { if (e.key === "Escape" && !composing(e)) { e.preventDefault(); e.stopPropagation(); leaveDeny(); } }}
             aria-label="Why you deny it (optional)"
             placeholder="Tell the model why, or what to do instead (optional)"
-            className="h-8 min-w-[min(100%,14rem)] flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong"
+            className="k-field min-w-[min(100%,14rem)] flex-1"
           />
           <button type="submit" disabled={busy} data-testid="deny-send" className="h-8 rounded-lg bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
             Send denial
@@ -1271,7 +1271,7 @@ function AlwaysButton({ a, busy, live, armed, refusal, unread, onGrant }: { a: A
         onMouseDown={pressed.onMouseDown}
         aria-disabled={!live || undefined}
         data-testid="allow-always"
-        className="k-grant inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-line px-3 text-ui hover:bg-hover data-popup-open:bg-hover disabled:opacity-50 aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+        className="k-btn k-btn-lg k-grant shrink-0 gap-1 whitespace-nowrap data-popup-open:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
       >
         Always allow <ChevronDown className="size-3.5 text-faint" />
       </Popover.Trigger>
@@ -1292,7 +1292,7 @@ function AlwaysButton({ a, busy, live, armed, refusal, unread, onGrant }: { a: A
                     data-testid="grant-pattern"
                     value={r.pattern}
                     onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, pattern: e.target.value } : x)))}
-                    className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2.5 font-mono text-caption outline-none focus:border-line-strong"
+                    className="k-field min-w-0 flex-1 font-mono text-caption"
                   />
                 </label>
               ))}
@@ -1308,7 +1308,7 @@ function AlwaysButton({ a, busy, live, armed, refusal, unread, onGrant }: { a: A
               <button
                 data-testid="grant-session"
                 onClick={() => { setOpen(false); onGrant(rules, true); }}
-                className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover"
+                className="k-btn k-btn-lg"
               >
                 This session only
               </button>

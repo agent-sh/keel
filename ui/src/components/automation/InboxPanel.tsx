@@ -192,7 +192,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     {/* The kind stands second in both row forms, so the eye finds it in one place. */}
                     {/* (A column of its own, as wide as the usual words, so the titles after it start at one place.) */}
                     <span className={cn("shrink-0 text-muted", !tight && "min-w-[4.75rem]")} data-testid="inbox-state" title={routeOf(a)}>
-                      <span data-testid="inbox-word" className={tight ? "sr-only" : undefined}>{word}</span>
+                      {/* Said when tight too: the mark is the state's shape, the same for an approval and a plan, so the word tells them apart. */}
+                      <span data-testid="inbox-word">{word}</span>
                       <span className="sr-only">, {a.read ? "read" : "unread"}{a.data?.snoozed ? ", snoozed" : a.data?.held ? ", held by the snooze" : ""}: </span>
                     </span>
                     {alone && title}

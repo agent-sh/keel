@@ -17,7 +17,7 @@ type Bundle = { code: string; public_url: string; pair_link: string; hermes_link
 type Settings = { public_url: string; push: { configured: boolean; path: string } };
 
 const since = (ms: number) => (ago(ms) === "now" ? "just now" : `${ago(ms)} ago`);
-const button = "inline-flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
+const button = "k-btn k-btn-lg";
 
 function Countdown({ until, onEnd }: { until: number; onEnd: () => void }) {
   const [now, setNow] = useState(Date.now());

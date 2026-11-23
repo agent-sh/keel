@@ -163,7 +163,7 @@ function BatchCard({ b, onDone }: { b: Batch; onDone: () => void }) {
         {b.paths.map((p) => <li key={p} className="truncate font-mono text-caption">{p}</li>)}
       </ul>
       <div className="mt-2 flex items-center gap-1.5">
-        <button data-testid="quarantine-restore" onClick={() => act(() => api(`/api/permissions/quarantine/${b.id}/restore`, { method: "POST" }))} className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-line px-2.5 text-caption hover:bg-hover">
+        <button data-testid="quarantine-restore" onClick={() => act(() => api(`/api/permissions/quarantine/${b.id}/restore`, { method: "POST" }))} className="k-btn">
           <RotateCcw className="size-3" /> Put back
         </button>
         <button data-testid="quarantine-discard"

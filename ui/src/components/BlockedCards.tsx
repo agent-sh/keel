@@ -22,7 +22,7 @@ function Retry({ onAllow }: { onAllow: () => void }) {
         onPointerDown={pressed.onPointerDown}
         onMouseDown={pressed.onMouseDown}
         onClick={(e) => { if (pressed.said(e)) onAllow(); else nudge.refuse("Not yet: it appeared a moment ago", e.currentTarget); }}
-        className="k-grant inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line px-3 text-ui hover:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+        className="k-btn k-btn-lg k-grant shrink-0 aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
       >
         <RotateCcw className="size-3.5" /> Allow one retry
       </button>

@@ -195,7 +195,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
   const jobList = seen.in_flight.filter((i) => i.kind === "job");
   const waitable = seen.in_flight.length > jobList.length; // a turn, a call or a subagent: a job alone is not waited for
   const quiet = "h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg disabled:opacity-40";
-  const plain = "inline-flex h-8 items-center gap-1.5 rounded-lg border border-line-strong px-3 text-ui font-medium hover:bg-hover disabled:opacity-40";
+  const plain = "k-btn k-btn-lg";
   const primary = "inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40";
 
   // Ended, and the copy did not finish: what happened, and the copy alone to retry.
@@ -294,7 +294,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
         ) : intent === "now" ? null : intent === "wait" ? (
           <div className="flex flex-wrap items-center gap-2" data-testid="resume-wait-form">
             <span className="text-ui">Wait for at most</span>
-            <Select data-testid="resume-wait-for" value={String(waitMs)} onChange={(e) => setWaitMs(Number(e.target.value))} className="h-8 rounded-md border border-line bg-bg px-2 text-ui text-fg outline-none focus-visible:border-accent">
+            <Select data-testid="resume-wait-for" value={String(waitMs)} onChange={(e) => setWaitMs(Number(e.target.value))} className="k-field">
               {DEADLINES.map((d) => <option key={d.ms} value={d.ms}>{d.label}</option>)}
             </Select>
             <span className="min-w-0 flex-1 text-caption text-muted" data-testid="resume-until">until {clock(now + waitMs)}</span>

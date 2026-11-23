@@ -34,7 +34,7 @@ const langOf = (p: string) => { const e = p.split(".").pop()!.toLowerCase(); ret
 const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 // Where it is, in short: its folder in the session's folder, the artifacts folder, or the path from home.
 const where = (a: Listed) => (a.place === "artifacts" ? ["artifacts", dirOf(a.rel)].filter(Boolean).join("/") : a.place === "folder" ? dirOf(a.rel) : dirOf(a.path).replace(/^\/(home|Users)\/[^/]+/, "~"));
-const button = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg";
+const button = "k-btn shrink-0";
 
 // The artifacts of a session or a project, kept current by "artifacts" frames
 // and read again on a reconnect: one deleted while the page was cut off is a

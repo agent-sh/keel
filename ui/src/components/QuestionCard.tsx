@@ -424,7 +424,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
               aria-label={q.options.length ? `Your own answer to: ${q.question}` : `Your answer to: ${q.question}`}
               placeholder={q.options.length ? "Or type your own answer" : "Type your answer"}
               data-testid="question-other"
-              className="h-8 rounded-md border border-line bg-sunken px-3 text-ui outline-none placeholder:text-faint focus:border-accent"
+              className="k-field"
             />
           </fieldset>
         ))}
@@ -453,7 +453,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
               // (A key on it declines as a key on any answer answers: not as the keyboard arrives, not under a dialog.)
               onClick={(e) => void decline(e.detail === 0 ? keyRefused(e.currentTarget) : "")}
               data-testid="question-decline"
-              className="h-8 rounded-md border border-line px-3.5 text-ui hover:bg-hover disabled:opacity-40"
+              className="k-btn k-btn-lg"
             >
               Decline
             </button>

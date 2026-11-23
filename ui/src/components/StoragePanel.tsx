@@ -28,7 +28,7 @@ type Proposed = { spill_days: number; usage_days: number; due: Due };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number; family_updated_ms: number; subagents: { id: string; title: string }[] };
 
 const count = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
-const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
+const btn = "k-btn k-btn-lg shrink-0";
 
 export const useSettings = () => {
   const [s, setS] = useState<Record<string, any> | null>(null);

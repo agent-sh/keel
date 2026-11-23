@@ -21,7 +21,7 @@ const lastAt = (ts: number) => clock(ts, { seconds: true, date: new Date(ts).toD
 // stays on the list but leaves the badge; it is unread again when it happens
 // again. A kind whose every occurrence a retry healed is Recovered: kept, and
 // out of the open list and the badge until it happens without healing.
-const tool = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
+const tool = "k-btn";
 
 // What the failing request's span says: the route, the attempt, the HTTP status and the provider's request id.
 function Wire({ s }: { s: Span }) {
@@ -157,12 +157,13 @@ function Row({ e }: { e: ErrorRecord }) {
   };
   return (
     <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
-      <summary className="flex cursor-default list-none items-baseline gap-2 text-ui [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-default list-none items-baseline gap-2 text-ui max-sm:flex-wrap max-sm:items-center max-sm:gap-y-0 [&::-webkit-details-marker]:hidden">
         {/* The row opens: a marker of its own says so, and turns when it has. */}
         <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
         {/* The message leads; where it came from is a quiet word after it, not a red tag on every row (the drawer is all failures). */}
-        <span className={cn("min-w-0 flex-1 truncate", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
-        <span className="shrink-0 text-micro text-faint" data-testid="error-source">{e.source}</span>
+        {/* On a phone the message has the line to itself; its source, count and time go under it. */}
+        <span className={cn("min-w-0 flex-1 truncate max-sm:basis-[calc(100%-1.375rem)]", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
+        <span className="shrink-0 text-micro text-faint max-sm:ml-[1.375rem]" data-testid="error-source">{e.source}</span>
         {state === "recovered" && <span className="shrink-0 text-micro text-ok" title={`Every time, a retry of the request passed. Last healed ${when(e.recovered_ts!)}`} data-testid="error-recovered">{ERROR_STATE.recovered}</span>}
         {n > 1 && (
           <span className="k-face-figure shrink-0 text-micro text-muted" data-testid="error-count" title={`${n} times since ${when(e.first_ts ?? e.ts)}${(e.sites?.length ?? 0) > 1 ? `, in ${e.sites!.length} sessions` : ""}`}>
@@ -174,7 +175,7 @@ function Row({ e }: { e: ErrorRecord }) {
         {state === "open" && (
           <button
             type="button"
-            className="grid size-6 shrink-0 place-items-center self-center rounded-md text-faint hover:bg-hover hover:text-fg"
+            className="grid size-6 shrink-0 place-items-center self-center rounded-md text-faint hover:bg-hover hover:text-fg max-sm:ml-auto"
             aria-label={unread ? "Mark read" : "Mark unread"}
             title={unread ? "Mark read: it leaves the badge and stays here" : "Mark unread"}
             onClick={(ev) => { ev.preventDefault(); actions.readError(e.id, unread).catch(reportError); }}
@@ -232,7 +233,7 @@ function Row({ e }: { e: ErrorRecord }) {
             </button>
           )}
           {e.session_id && !sited && (
-            <button type="button" onClick={goTo} className="flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="error-session">
+            <button type="button" onClick={goTo} className="k-btn max-w-80" data-testid="error-session">
               <CornerDownRight className="size-3.5 shrink-0" />
               <span className="truncate">{n > 1 ? "Last in " : ""}{session?.title || (n > 1 ? "its session" : "Open the session")}</span>
               {e.turn_event && <span className="shrink-0 text-faint">at its turn</span>}

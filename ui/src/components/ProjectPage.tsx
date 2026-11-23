@@ -21,7 +21,7 @@ import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { ArtifactBrowser, useArtifacts } from "./ArtifactsPanel.tsx";
 
 const field = "h-8 min-w-0 rounded-md border border-line bg-sunken px-2.5 text-ui outline-none focus:ring-2 focus:ring-ring";
-const button = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
+const button = "k-btn k-btn-lg shrink-0";
 const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
 
 function Block({ title, hint, children, testid, aside, className }: { title: string; hint?: ReactNode; children: ReactNode; testid?: string; aside?: ReactNode; className?: string }) {

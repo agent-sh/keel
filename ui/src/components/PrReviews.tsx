@@ -18,7 +18,7 @@ const TONE: Record<PrReview["state"], string> = {
 const PCLS = ["bg-danger text-accent-fg", "bg-danger-soft text-danger", "bg-warn/15 text-warn", "bg-sunken text-muted"];
 const WHY: Record<PrReview["why"], string> = { opened: "opened", updated: "new push", asked: "asked" };
 const CRED: Record<string, string> = { keel: "the token saved here", env: "GH_TOKEN or GITHUB_TOKEN of the daemon", gh: "your gh login" };
-const button = "inline-flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui hover:bg-hover disabled:opacity-40";
+const button = "k-btn k-btn-lg";
 const primary = "inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40";
 
 function StateChip({ r }: { r: PrReview }) {
@@ -102,7 +102,7 @@ function RepoCard({ w, reload }: { w: Watched; reload: () => void }) {
             onKeyDown={(e) => { if (!composing(e) && e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
             aria-label={`Trigger of ${w.repo}`}
             data-testid="pr-trigger"
-            className="h-8 w-48 rounded-md border border-line bg-bg px-2.5 font-mono text-caption outline-none focus:border-line-strong"
+            className="k-field w-48 font-mono text-caption"
           />
         </SettingRow>
       </div>
@@ -117,7 +117,7 @@ function Token({ source, reload }: { source: Listing["credentials"]; reload: () 
     <SettingRow label="GitHub access" hint={source ? `Keel reads GitHub with ${CRED[source]}. The token is never shown or written to a file.` : "No credentials: sign in with gh (gh auth login), or save a token here. It is kept in the system keyring."}>
       <div className="flex items-center gap-2" data-testid="pr-credentials" data-source={source ?? "none"}>
         <KeyRound className="size-4 text-faint" />
-        <input type="password" value={v} onChange={(e) => setV(e.target.value)} placeholder={source === "keel" ? "Saved: type to replace" : "Token (optional)"} aria-label="GitHub token" className="h-8 w-52 rounded-md border border-line bg-bg px-2.5 text-ui outline-none placeholder:text-faint focus:border-line-strong" />
+        <input type="password" value={v} onChange={(e) => setV(e.target.value)} placeholder={source === "keel" ? "Saved: type to replace" : "Token (optional)"} aria-label="GitHub token" className="k-field w-52" />
         <button type="button" disabled={!v.trim()} onClick={save} className={button}>Save</button>
         {source === "keel" && <button type="button" onClick={() => api("/api/pr-reviews/token", { method: "DELETE" }).then(reload).catch(reportError)} className="h-8 rounded-md px-2 text-caption text-muted hover:text-fg">Remove</button>}
       </div>
@@ -140,7 +140,7 @@ export default function PrReviewSettings() {
       <Card>
         <SettingRow label="Watch a repository" hint="Keel reads its pull requests and comments at the pace GitHub states, with no public address. A change GitHub reports costs one request; an unchanged list costs none against the hourly limit.">
           <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); add(); }}>
-            <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" aria-label="Repository" data-testid="pr-watch-input" className="h-8 w-52 rounded-md border border-line bg-bg px-2.5 font-mono text-ui outline-none placeholder:text-faint focus:border-line-strong" />
+            <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" aria-label="Repository" data-testid="pr-watch-input" className="k-field w-52 font-mono" />
             <button type="submit" disabled={!repo.trim()} data-testid="pr-watch-add" className={primary}>Watch</button>
           </form>
         </SettingRow>

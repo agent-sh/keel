@@ -119,6 +119,8 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
           <SquareTerminal className="k-docket-glyph" />
           <span className="min-w-0 max-w-[40%] shrink-0 truncate text-fg" title={j.id}>{j.description ?? j.command}</span>
           <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" title={j.last} data-testid="dock-job-last">{j.last}</span>
+          {/* Its id is the tooltip of its name at a desk; a phone opens no tooltip, so there it is a word. */}
+          <span className="shrink-0 font-mono text-micro text-faint md:hidden" data-testid="dock-job-id">{j.id}</span>
           <span className="k-face-figure shrink-0 text-micro text-faint">
             {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
               // Its call was cut by a restart and the command went on without it: said as that, not as a bare exit code beside "cut".
@@ -128,7 +130,7 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
           {j.running && (
             <button
               type="button"
-              title="Stop"
+              title={`Stop ${j.id}`}
               data-testid="dock-job-stop"
               onClick={() => actions.stopJob(sessionId, j.id).catch(reportError)}
               className="-mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"

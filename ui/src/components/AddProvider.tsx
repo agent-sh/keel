@@ -89,7 +89,7 @@ export function AddProviderHost() {
   );
 }
 
-const field = "h-8 w-full rounded-md border border-line-strong bg-raised px-2.5 text-ui outline-none placeholder:text-faint focus:border-accent";
+const field = "k-field w-full";
 const label = "k-label mb-1 block";
 
 function Label({ text, hint, children }: { text: string; hint?: string; children: React.ReactNode }) {
@@ -360,7 +360,7 @@ function AddProvider({ edit }: { edit?: string }) {
                     <Select className={cn(field, "w-56 rounded-r-none")} data-testid="provider-test-model" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model to ask">
                       {test.models.slice(0, 500).map((m) => <option key={m.model} value={m.model}>{m.name ?? m.model}</option>)}
                     </Select>
-                    <button type="button" data-testid="provider-test-model-run" onClick={testModel} disabled={!!busy || !model} title="Sends one short request to this model" className="-ml-px inline-flex h-8 shrink-0 items-center gap-1.5 rounded-r-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50">
+                    <button type="button" data-testid="provider-test-model-run" onClick={testModel} disabled={!!busy || !model} title="Sends one short request to this model" className="k-btn k-btn-lg -ml-px shrink-0 rounded-r-md">
                       {busy === "model" && <Loader2 className="size-3.5 animate-spin" />} Ask it
                     </button>
                   </div>

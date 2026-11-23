@@ -180,7 +180,7 @@ export function BranchReview({ session }: { session: Session }) {
             rows={1}
             placeholder="Overall note for the model (optional)"
             data-testid="review-note"
-            className="min-h-8 min-w-[14rem] flex-1 resize-none rounded-lg border border-line bg-bg px-2.5 py-1.5 text-ui outline-none focus:border-line-strong"
+            className="k-field h-auto min-h-8 min-w-[14rem] flex-1 resize-none py-1.5"
           />
           <button
             data-testid="review-send"

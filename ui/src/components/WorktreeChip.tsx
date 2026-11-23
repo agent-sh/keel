@@ -113,9 +113,9 @@ export function WorktreeChip({ session }: { session: Session }) {
                 }}
               >
                 <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Title" data-testid="pr-title"
-                  className="h-8 rounded-lg border border-line bg-bg px-2.5 text-ui outline-none focus:border-line-strong" />
+                  className="k-field" />
                 <textarea value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} placeholder="Description" rows={3}
-                  className="resize-none rounded-lg border border-line bg-bg px-2.5 py-1.5 text-ui outline-none focus:border-line-strong" />
+                  className="k-field h-auto resize-none py-1.5" />
                 <div className="flex items-center gap-2">
                   <label className="flex items-center gap-1.5 text-caption text-muted">
                     <input type="checkbox" checked={form.draft} onChange={(e) => setForm({ ...form, draft: e.target.checked })} className="accent-[var(--accent)]" /> Draft

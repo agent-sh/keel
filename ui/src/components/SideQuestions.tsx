@@ -99,7 +99,7 @@ export function SideQuestions({ session }: { session: Session }) {
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
           }}
           placeholder={current ? "Ask a follow-up" : "Ask a side question"}
-          className="block w-full resize-none rounded-lg border border-line bg-raised px-3 py-2 text-ui outline-none placeholder:text-faint focus:border-line-strong"
+          className="k-field h-auto block w-full resize-none py-2"
         />
       </div>
     </div>

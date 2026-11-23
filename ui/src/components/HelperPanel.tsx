@@ -14,7 +14,7 @@ import { composing } from "../lib/keys.ts";
 
 const KINDS = ["fact", "person", "preference", "decision", "commitment", "reference"];
 const failed = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const field = "min-w-0 rounded-md border border-line bg-sunken px-2 text-ui outline-none placeholder:text-faint focus:border-accent";
+const field = "k-field min-w-0";
 const split = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 // The list shows this many records; the search narrows the rest.
 const SHOWN = 60;

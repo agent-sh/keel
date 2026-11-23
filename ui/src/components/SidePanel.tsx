@@ -101,7 +101,7 @@ function Picker({ list, open, label, testid = "panel-menu", title }: { list: Pan
   return (
     <Popover.Root open={show} onOpenChange={(o) => { setShow(o); if (!o) setQ(""); }}>
       {title ? (
-        <Popover.Trigger className="k-surface-switch" aria-label={`${title}: switch the panel`} title="Switch to another panel" data-testid={testid}>
+        <Popover.Trigger className="k-surface-switch" title="Switch to another panel" data-testid={testid}>
           {title}<ChevronDown className="k-surface-switch-more" />
         </Popover.Trigger>
       ) : (

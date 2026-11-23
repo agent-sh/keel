@@ -162,7 +162,7 @@ export function ChangesPanel({ session }: { session: Session }) {
               <button
                 data-testid="revert-all"
                 onClick={() => ask("Revert all file changes from this session?", { turn: firstTurn })}
-                className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-3 text-ui hover:bg-hover"
+                className="k-btn k-btn-lg ml-auto"
               >
                 <RotateCcw className="size-3.5" /> Revert all
               </button>

@@ -67,7 +67,7 @@ function Host() {
             {error && <p className="mt-2 text-caption text-danger" role="alert">{error}</p>}
           </div>
           <div className="k-dialog-foot px-[var(--k-dialog-pad)] pb-[var(--k-dialog-pad)] pt-3">
-            <Dialog.Close disabled={busy} className="h-8 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover">Cancel</Dialog.Close>
+            <Dialog.Close disabled={busy} className="k-btn k-btn-lg">Cancel</Dialog.Close>
             <button type="button" data-testid="summarize-go" onClick={go} disabled={busy}
               className={cn("h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover", busy && "opacity-60")}>
               {busy ? "Summarizing" : "Summarize"}

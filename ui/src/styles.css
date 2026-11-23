@@ -257,6 +257,8 @@
   --radius-lg: var(--radius-md);
   --radius-xl: 0.5rem;
   --radius-2xl: var(--radius-xl);
+  /* The bare `rounded` class reads this one: without it Tailwind draws its own 0.25rem. */
+  --radius: var(--radius-sm);
 
   /* Motion: one curve and three lengths. quick: a hover, a color, a fade of a control.
      move: something arrives or changes place (a popup, a row, a card). settle: a surface
@@ -314,8 +316,11 @@
 kbd { font-family: var(--font-inst); font-stretch: 75%; }
 /* A shortcut is one chord, not a row of keycaps: its keys sit in one hairline outline, a
    thin space apart, in the quietest ink. It is a hint beside a name, never louder than it. */
-.k-keys { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.125rem; padding: 0 0.3125rem; border-radius: var(--radius-xs); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-micro); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--faint); }
-.k-keys > kbd { font-size: inherit; font-weight: inherit; }
+/* In the components layer, so a page can hide it (no keyboard on a phone: pointer-coarse:hidden). */
+@layer components {
+  .k-keys { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.125rem; padding: 0 0.3125rem; border-radius: var(--radius-xs); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-micro); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--faint); }
+  .k-keys > kbd { font-size: inherit; font-weight: inherit; }
+}
 
 html, body, #root { height: 100%; }
 /* Every length in the interface is a rem: the text size the owner picks
@@ -694,14 +699,17 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    their glyph and a chevron, set on the page, not boxed; pointed at, they take
    the hover well; open or switched on, the sunken well and an ink hairline. One
    look for the four, so the row reads as one sentence of where. */
-.k-chip-pick { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: var(--radius-md); font-size: var(--text-ui); color: var(--muted); white-space: nowrap; transition: background-color var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out); }
-.k-chip-pick:is(button, [role="button"]):hover, .k-chip-pick:has(> button:hover) { background: var(--hover); color: var(--fg); }
-.k-chip-pick:is([data-popup-open], [aria-checked="true"]), .k-chip-pick:has(> [data-popup-open]) { background: var(--sunken); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.k-chip-pick > svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
-.k-chip-pick > svg.k-chip-pick-more { width: 0.75rem; height: 0.75rem; }
-.k-chip-pick[aria-checked="true"] > svg:first-child { color: var(--fg); }
-.k-chip-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: var(--fg); }
-.k-chip-pick-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
+/* In the components layer: a glyph a page colours (a machine out of reach, in brass) keeps its colour. */
+@layer components {
+  .k-chip-pick { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: var(--radius-md); font-size: var(--text-ui); color: var(--muted); white-space: nowrap; transition: background-color var(--dur-quick) var(--ease-out), color var(--dur-quick) var(--ease-out); }
+  .k-chip-pick:is(button, [role="button"]):hover, .k-chip-pick:has(> button:hover) { background: var(--hover); color: var(--fg); }
+  .k-chip-pick:is([data-popup-open], [aria-checked="true"]), .k-chip-pick:has(> [data-popup-open]) { background: var(--sunken); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
+  .k-chip-pick > svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
+  .k-chip-pick > svg.k-chip-pick-more { width: 0.75rem; height: 0.75rem; }
+  .k-chip-pick[aria-checked="true"] > svg:first-child { color: var(--fg); }
+  .k-chip-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: var(--fg); }
+  .k-chip-pick-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
+}
 /* The project's chooser inside its chip is the chip's words, not a field of its own. */
 .k-chip-pick > .k-select { height: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--fg); font-weight: 500; }
 

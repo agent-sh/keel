@@ -216,8 +216,8 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
       {back ? (
         <form ref={footRef} className="k-plan-foot flex items-center gap-2 px-4 py-3" onSubmit={(e) => { e.preventDefault(); send({ approve: false, feedback }); }}>
           <input autoFocus value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="What to change in the plan" data-testid="plan-feedback"
-            className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong" />
-          <button type="submit" className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">Send back</button>
+            className="k-field min-w-0 flex-1" />
+          <button type="submit" className="k-btn k-btn-lg">Send back</button>
           <button type="button" onClick={() => setBack(false)} className="h-8 rounded-lg px-2 text-ui text-faint hover:text-fg">Cancel</button>
         </form>
       ) : (

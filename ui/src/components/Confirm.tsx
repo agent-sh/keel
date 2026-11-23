@@ -103,7 +103,7 @@ export function ConfirmHost() {
           ) : null}
           <div className="k-dialog-foot p-[var(--k-dialog-pad)]">
             {/* A held key cancels nothing either: the dialog stays until the key was let go and pressed again. */}
-            <AlertDialog.Close ref={cancel} onClick={(e) => { if (key(e) && repeating.current) e.preventBaseUIHandler(); }} className="h-8 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover">Cancel</AlertDialog.Close>
+            <AlertDialog.Close ref={cancel} onClick={(e) => { if (key(e) && repeating.current) e.preventBaseUIHandler(); }} className="k-btn k-btn-lg">Cancel</AlertDialog.Close>
             {ask?.alt && (
               <button type="button" data-testid="confirm-alt" data-nudge={refused === "alt" || undefined} style={marked(refused === "alt")} onClick={(e) => { if (answers(e, "alt")) close("alt"); }} className="k-btn k-btn-lg">
                 {ask.alt}

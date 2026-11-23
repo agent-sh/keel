@@ -62,7 +62,7 @@ function day(ts: number, now: number): string {
 }
 // The turn a row sits in: a turn's own row, and what happened inside one.
 const turnOf = (r: TimelineRow | undefined) => r?.turn_event;
-const tool = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
+const tool = "k-btn";
 const flashOn = (el: HTMLElement) => { el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600); };
 // Under 64rem the panel is a sheet over the conversation: what it points at there is behind it.
 const overConversation = () => matchMedia("(max-width: 1023px)").matches;

@@ -221,14 +221,24 @@ test("every text reads in both themes, an earlier turn's stats and a diff's line
     }
     return { texts, stats, numbers, low };
   });
+  // A reply's row (its time, tokens and cost) shows while the reply is pointed at: the
+  // earlier turn's is pointed at, and read once it has faded in.
+  const foot = page.getByTestId("turn-end").first();
+  await foot.hover();
+  await expect.poll(() => foot.evaluate((el) => [...el.children].every((c) => getComputedStyle(c).opacity === "1"))).toBe(true);
+  // Both themes are read before either is judged, so a light failure still says what dark does.
+  const seen: Record<string, Awaited<ReturnType<typeof scan>>> = {};
   for (const theme of ["light", "dark"]) {
     await page.evaluate((t) => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.toggle("dark", t === "dark"); }, theme);
-    const got = await scan();
+    const got = seen[theme] = await scan();
     console.log(`${theme}: ${got.texts} texts, ${got.stats} in turn stats, ${got.numbers} line numbers, ${got.low.length} under the ratio\n${got.low.join("\n")}`);
+  }
+  for (const theme of ["light", "dark"]) {
+    const got = seen[theme]!;
     // The earlier turn's stats and the diff's numbers were on screen and counted.
-    expect(got.stats).toBeGreaterThan(3);
-    expect(got.numbers).toBeGreaterThan(2);
-    expect(got.low).toEqual([]);
+    expect(got.stats, theme).toBeGreaterThan(3);
+    expect(got.numbers, theme).toBeGreaterThan(2);
+    expect(got.low, theme).toEqual([]);
   }
   await page.evaluate(() => document.documentElement.classList.remove("theme-switch"));
   await shoot(page, "contrast-every-text");

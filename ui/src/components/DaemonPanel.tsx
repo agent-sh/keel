@@ -21,7 +21,7 @@ const ENDED: Record<NonNullable<Restart["before"]>["how"] | "unknown", string> =
 const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Resumed", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
 
-const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
+const btn = "k-btn k-btn-lg shrink-0";
 const dur = (ms: number) => (ms < 3600_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : ms < 86_400_000 ? `${(ms / 3600_000).toFixed(1)} h` : `${(ms / 86_400_000).toFixed(1)} days`);
 
 // A number of hours, or no limit when empty or 0.

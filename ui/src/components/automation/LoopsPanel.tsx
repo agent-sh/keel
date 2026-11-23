@@ -187,7 +187,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   }, []);
   const asks = mode === "ask" || mode === "auto-edits" || mode === "plan";
   const isHook = schedule.trim().toLowerCase() === "webhook";
-  const field = "w-full rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none focus:border-line-strong placeholder:text-faint";
+  const field = "k-field h-auto w-full py-2";
   return (
     <form
       className="flex flex-col gap-3 p-5"

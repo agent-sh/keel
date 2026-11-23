@@ -377,7 +377,7 @@ export function ElsewhereSettings() {
         <span className="text-ui font-medium">Agent view program</span>
         <div className="flex gap-2">
           <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/path/to/agent-view" data-testid="elsewhere-path"
-            className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-raised px-3 font-mono text-ui outline-none focus:border-line-strong" />
+            className="k-field min-w-0 flex-1 font-mono" />
           <button onClick={save} disabled={path === saved} data-testid="elsewhere-save" className="h-9 rounded-lg bg-accent px-4 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">Save</button>
         </div>
       </label>

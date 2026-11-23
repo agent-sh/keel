@@ -212,6 +212,37 @@ function twiceDrawn(list: Src[]): string[] {
   return out;
 }
 
+// A component's corner is a step of the scale by its name (rounded-sm, rounded-t-md),
+// the bare rounded (the theme sets it to sm), a pill or none: no corner of
+// Tailwind's own beyond the scale (3xl, 4xl) and no arbitrary one but a token.
+function pageCorners(list: Src[]): string[] {
+  const step = /^rounded(-(t|r|b|l|s|e|tl|tr|br|bl|ss|se|es|ee))?(-(xs|sm|md|lg|xl|2xl|full|none|\[var\(--radius-[a-z0-9]+\)\]))?$/;
+  const out: string[] = [];
+  for (const s of list) for (const { c, line } of classes(s.text)) {
+    const name = c.split(":").at(-1)!.replace(/^!/, "");
+    if (/^rounded(-|$)/.test(name) && !step.test(name)) out.push(at(s, line, c));
+  }
+  return out;
+}
+
+// A secondary button is .k-btn and a line to type in is .k-field: a class list
+// that draws an outlined button of its own (a height, a hairline, the hover well)
+// or a field with a focus colour of its own is refused. A round icon button (a
+// pill) keeps its own look.
+function handMade(list: Src[]): string[] {
+  const out: string[] = [];
+  for (const s of list) for (const v of strings(s.text)) {
+    const w = classList(v.value);
+    if (!w.length || w.includes("k-btn") || w.includes("k-field")) continue;
+    const base = w.map((c) => c.replace(/^!/, ""));
+    const has = (re: RegExp) => base.some((c) => re.test(c));
+    if (has(/^h-(6|7|8|ctl-(sm|md|lg))$/) && has(/^border$/) && has(/^border-line(-strong)?$/) && has(/^hover:bg-hover$/) && !has(/^rounded-full$/)) out.push(at(s, v.line, `a button of its own: ${v.value.slice(0, 60)}`));
+    // (A box that scrolls or holds a column, focusable to be read, is not a field.)
+    else if (has(/^outline-none$/) && has(/^(focus|focus-visible):border-/) && has(/^border$/) && !has(/^(overflow-auto|flex-col)$/)) out.push(at(s, v.line, `a field of its own: ${v.value.slice(0, 60)}`));
+  }
+  return out;
+}
+
 // A component takes its text size from the scale: none of Tailwind's own
 // sizes, no arbitrary size by any spelling, no inline size but a token (the
 // text-size setting's samples show each size).
@@ -479,6 +510,11 @@ test("no component writes a text size of its own", () => expect(pageSizes(page))
 test("no stylesheet writes a corner or a motion length of its own", () => expect(sheetCorners(sheets)).toEqual([]));
 test("no component writes a motion length or a backdrop of its own", () => expect(pageMotion(page)).toEqual([]));
 test("a class is drawn by one stylesheet", () => expect(twiceDrawn(sheets)).toEqual([]));
+test("a button and a field are the shared ones", () => expect(handMade(page)).toEqual([]));
+test("no component writes a corner of its own", () => {
+  expect(pageCorners(page)).toEqual([]);
+  expect(rules(sheets.find((s) => s.file === "styles.css")!.text).flatMap((r) => r.decls).find((d) => d.prop === "--radius")?.value).toBe("var(--radius-sm)");
+});
 test("the instrument face is named by its five roles and nowhere else", () => expect(face(sheets, page)).toEqual({ roles: 5, strays: [] }));
 test("a choice of a few is the one segmented control", () => expect(segmented(page, sheets)).toEqual([]));
 test("steel is the frame and nothing else", () => expect(steel(page, sheets)).toEqual([]));
@@ -505,6 +541,8 @@ test("each check refuses what it is for", () => {
   expect(sheetCorners(css(".k-thing { transition: opacity 120ms var(--ease-out), transform 160ms; }"))).toHaveLength(2);
   expect(pageSizes(tsx('<p className="text-[1.1rem] font-semibold" />'))).toHaveLength(1);
   expect(pageMotion(tsx('<div className="transition-opacity duration-150 data-open:duration-[90ms]" />'))).toHaveLength(2);
+  expect(handMade(tsx('<button className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover" /><input className="h-8 rounded-md border border-line bg-bg outline-none focus:border-accent" /><button className="k-btn k-btn-lg" /><button className="grid h-8 rounded-full border border-line hover:bg-hover" />'))).toHaveLength(2);
+  expect(pageCorners(tsx('<div className="rounded rounded-t-md rounded-3xl md:rounded-[0.4rem] rounded-[var(--radius-xl)]" />'))).toHaveLength(2);
   expect(twiceDrawn([...css(".k-dock { display: none; }"), ...css(".k-dock { display: flex; }\n.k-dock, .k-other { gap: 0; }\n@media (max-width: 767px) { .k-dock { gap: 0; } }", "styles.css")])).toEqual(["styles.css:1: .k-dock (also in bridge.css)"]);
   expect(pageMotion(tsx('<div className="fixed inset-0 bg-black/20 duration-(--dur-move) bg-white" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="[font-size:1.1rem] font-semibold" />'))).toHaveLength(1);

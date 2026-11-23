@@ -16,7 +16,7 @@ const GOAL_LABEL: Record<Goal["status"], string> = {
 const GOAL_TONE: Record<Goal["status"], string> = {
   pursuing: "bg-accent-soft text-accent", paused: "bg-sunken text-muted", achieved: "bg-sunken text-ok", impossible: "bg-danger-soft text-danger", budget: "bg-sunken text-warn", stalled: "bg-sunken text-warn",
 };
-const field = "w-full rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none focus:border-line-strong placeholder:text-faint";
+const field = "k-field h-auto w-full py-2";
 const button = "k-btn";
 
 function NewGoal({ sid, replace }: { sid: string; replace: boolean }) {

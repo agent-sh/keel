@@ -11,7 +11,7 @@ type Agent = { id: string; name: string; description?: string; version?: string;
 type Listing = { agents: Agent[]; error?: string; running: { session: string; agent: string }[] };
 
 const line = (c?: Cmd) => (c ? [c.command.replace(/^\/home\/[^/]+/, "~"), ...c.args].join(" ") : "");
-const btn = "h-7 shrink-0 rounded-md border border-line px-2.5 text-caption font-medium text-fg hover:bg-hover disabled:opacity-40";
+const btn = "k-btn shrink-0";
 
 // The folders the agent's own process may write in the sandbox: a guess by its
 // name until the owner sets the list. A change counts from its next start.

@@ -153,7 +153,7 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
         {done ? (
           <>
             <button type="button" disabled={busy} onClick={() => go("new")} data-testid="import-new" className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">New copy</button>
-            {done.grew && !done.went_on && <button type="button" disabled={busy} onClick={() => go("update")} data-testid="import-update" className="h-8 rounded-lg border border-line-strong px-3 text-ui font-medium hover:bg-hover">Update</button>}
+            {done.grew && !done.went_on && <button type="button" disabled={busy} onClick={() => go("update")} data-testid="import-update" className="k-btn k-btn-lg">Update</button>}
             <button type="button" disabled={busy} onClick={() => open(shown?.links[0]?.session_id ?? done.session_id)} data-testid="import-open" className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90">Open</button>
           </>
         ) : (
@@ -406,7 +406,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             {linked.length > 0 && (
               <label className="flex items-center gap-1.5 text-caption text-faint">
                 On
-                <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="h-7 rounded-md border border-line bg-raised px-1.5 text-caption text-fg outline-none focus-visible:border-accent">
+                <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="k-field k-field-sm">
                   <option value="">this machine</option>
                   {linked.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </Select>

@@ -13,7 +13,7 @@ import { ago, cn, when } from "../lib/utils.ts";
 import { type Gap, turnAccount, turnGaps, waitLabel } from "../../../src/admin/trace-rows.ts";
 
 const tone = (s: Span["status"]) => ({ ok: "bg-ok", error: "bg-danger", running: "bg-accent", interrupted: "bg-line-strong" })[s];
-const btn = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
+const btn = "k-btn";
 const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Subagent turn" : "Turn"} on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.kind === "wait" ? waitLabel(s) : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
 
 export function TracesPanel({ session }: { session: Session }) {

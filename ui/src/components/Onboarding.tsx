@@ -75,7 +75,7 @@ export function FirstSteps() {
             key={s.label}
             type="button"
             onClick={() => seedComposer(s.text, undefined)}
-            className={cn("k-starter h-8 rounded-md border border-line px-3 text-ui text-muted hover:bg-hover hover:text-fg")}
+            className={cn("k-btn k-btn-lg k-starter")}
             data-testid="starter"
           >
             {s.label}

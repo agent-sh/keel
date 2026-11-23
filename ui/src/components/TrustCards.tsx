@@ -19,7 +19,7 @@ export function TrustCards({ sessionId }: { sessionId: string }) {
     <div className="animate-in mb-2 flex items-center gap-2.5 rounded-2xl border border-warn/40 bg-raised px-4 py-2.5 shadow-2" data-testid="trust-card">
       <span className="grid size-6 shrink-0 place-items-center rounded-md bg-warn/15 text-warn"><FileLock2 className="size-3.5" /></span>
       <span className="min-w-0 flex-1 text-ui">{msg}</span>
-      <button data-testid="trust-card-open" onClick={() => { savePref("panel", "trust"); setMsg(null); }} className="h-8 shrink-0 rounded-lg border border-line px-3 text-ui hover:bg-hover">Open Trust panel</button>
+      <button data-testid="trust-card-open" onClick={() => { savePref("panel", "trust"); setMsg(null); }} className="k-btn k-btn-lg shrink-0">Open Trust panel</button>
       <button onClick={() => setMsg(null)} className="grid size-7 shrink-0 place-items-center rounded-lg text-faint hover:bg-hover hover:text-fg" title="Dismiss"><X className="size-4" /></button>
     </div>
   );

@@ -72,7 +72,7 @@ const GIVEN_PART = 40;
 const selectClass = "h-8 max-w-full min-w-0 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg";
 // A fact's name is shown whole: it wraps, it is never cut.
 const nameButton = "min-w-0 rounded-sm text-left font-mono text-caption text-fg underline decoration-line-strong underline-offset-4 [overflow-wrap:anywhere] hover:decoration-accent focus-visible:outline-2 focus-visible:outline-accent";
-const pagerButton = "h-8 rounded-md border border-line-strong px-3 text-ui font-medium text-fg hover:bg-hover disabled:opacity-40";
+const pagerButton = "k-btn k-btn-lg";
 
 // The store's text with what cannot be seen spelled out. `lines`: a text of many lines keeps its breaks and tabs.
 function Shown({ text, lines }: { text: string; lines?: boolean }) {
@@ -473,7 +473,7 @@ export function FactReader({ name, session, onClose, onOpen, onRead }: { name: s
                 <form ref={form} className="mt-1.5 flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); void send(); }}>
                   <input data-testid="memory-correct-text" aria-label="What is right instead" value={text} maxLength={200} onChange={(e) => setText(e.target.value)} placeholder="What is right instead, in one line"
                     className="k-field min-w-40 flex-1" />
-                  <button type="submit" disabled={!text.trim()} aria-busy={busy || undefined} data-testid="memory-correct-send" className={cn("h-8 rounded-md border border-line-strong px-3 text-ui font-medium text-fg hover:bg-hover disabled:opacity-50", busy && "opacity-60")}>{busy ? "Asking the store" : "Send correction"}</button>
+                  <button type="submit" disabled={!text.trim()} aria-busy={busy || undefined} data-testid="memory-correct-send" className={cn("k-btn k-btn-lg", busy && "opacity-60")}>{busy ? "Asking the store" : "Send correction"}</button>
                 </form>
                 {sent && <p className={cn("mt-1.5 text-caption [overflow-wrap:anywhere]", sent.ok ? "text-ok" : sent.ok === null ? "text-muted" : "text-danger")} role="status" data-testid="memory-correct-result"><Shown text={sent.line} /></p>}
               </div>

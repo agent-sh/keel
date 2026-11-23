@@ -52,7 +52,7 @@ export function Toggle({ on, label, onChange, testid }: { on: boolean; label: st
   );
 }
 
-export const button = "h-7 shrink-0 rounded-md border border-line-strong px-2.5 text-ui font-medium hover:bg-hover disabled:opacity-50";
+export const button = "k-btn shrink-0";
 export const field = "h-7 min-w-0 rounded-md border border-line bg-sunken px-2 text-ui outline-none focus:ring-2 focus:ring-ring";
 
 function Tags({ s }: { s: Session }) {
