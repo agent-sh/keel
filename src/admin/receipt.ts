@@ -12,7 +12,7 @@ const reasons = new Set(["end_turn", "error", "interrupted", "restart", "max_ste
   "refusal", "stop_sequence", "tool_use", "pause_turn", "model_context_window_exceeded"]);
 const label = (value: unknown, allowed: Set<string>) => typeof value === "string" && allowed.has(value) ? value : "other";
 const id = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) ? value : null;
-const purposes = new Set(["turn", "summary", "reader"]);
+const purposes = new Set(["turn", "summary", "reader", "sampling"]);
 // What an input is says more than how it arrived: a loop run, another
 // session's message or a pushed event read at the next step (origin steer)
 // or after a Resume (origin queued) is that input, never the owner's. A

@@ -186,7 +186,7 @@ export class Telemetry {
         step.attempt++;
         this.steps.set(req, step);
         const line = this.lineageOf(s.id);
-        const turn = purpose === "side" ? null : openTurn(line);
+        const turn = purpose === "side" || purpose === "sampling" ? null : openTurn(line);
         if (purpose === "turn") this.turnOf.set(s.id, turn);
         const p: Pending = {
           t0: now, step0: step.t0, attempt: step.attempt, session: s.id, model: req.route ?? this.store.session(s.id)?.model ?? s.model, purpose,

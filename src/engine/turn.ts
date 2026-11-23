@@ -1432,10 +1432,13 @@ export class Engine {
       if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
     }
     let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, systemOwn: st.systemOwn, messages, tools: st.tools, effort: st.effort, maxTokens: purpose === "warm" ? 1 : st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
-    // A reader's request carries no conversation for the hooks to add to.
-    if (purpose === "reader") req.cache = false;
-    else for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
-    if (session.parent_id && purpose !== "reader") req.cacheLife = this.cacheLife(id, st, purpose);
+    // A reader's request and a server's sampling request are sent once: nothing later reads a cache of them.
+    if (purpose === "reader" || purpose === "sampling") req.cache = false;
+    // A reader's request carries no conversation for the hooks to add to. A
+    // sampling request goes through them (secrets, budget, telemetry); the
+    // ones that add to a conversation add only to a turn's.
+    if (purpose !== "reader") for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
+    if (session.parent_id && purpose !== "reader" && purpose !== "sampling") req.cacheLife = this.cacheLife(id, st, purpose);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
     const whole = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id);
@@ -3220,7 +3223,7 @@ export class Engine {
     if (!session) throw new Error("the session is gone");
     const { provider, info } = await this.providers.resolve(session.model);
     const st: Step = { provider, info: { ...info, output: Math.min(info.output || req.maxTokens, req.maxTokens) }, tools: [], system: req.system ?? "", systemSplit: 0 };
-    const res = await this.call(id, st, req.messages, signal, new Map(), session, true, "side");
+    const res = await this.call(id, st, req.messages, signal, new Map(), session, true, "sampling");
     this.store.addUsage(id, res.usage);
     this.emitSession(id);
     return { text: res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n"), model: info.model ?? info.id, stop: res.stop };

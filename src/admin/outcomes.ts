@@ -158,7 +158,7 @@ export class Outcomes {
       return bound === null ? rows : rows.filter((r) => r.ts < bound);
     };
     const rowsOf = (table: string, cols: string, more = "") => [...own(table, cols), ...placed(undated(table, cols, more))].sort((x, y) => x.ts - y.ts || x.id - y.id);
-    const calls = rowsOf("telemetry_calls", "r.*", " AND COALESCE(r.purpose, 'turn') != 'side'").filter((c) => (c.purpose ?? "turn") !== "side");
+    const calls = rowsOf("telemetry_calls", "r.*", " AND COALESCE(r.purpose, 'turn') NOT IN ('side', 'sampling')").filter((c) => c.purpose !== "side" && c.purpose !== "sampling");
     const tools: { tool: string; is_error: number }[] = rowsOf("telemetry_tools", "r.id, r.ts, r.tool, r.is_error");
     const ok = calls.filter((c) => c.outcome === "ok");
     const turnCalls = ok.filter((c) => (c.purpose ?? "turn") === "turn");

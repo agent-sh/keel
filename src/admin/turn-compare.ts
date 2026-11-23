@@ -47,7 +47,7 @@ export const TURN_SQL = `SELECT t.turn_event, t.ts, t.ms, t.outcome, t.reason, t
   FROM telemetry_turns t JOIN events e ON e.id = t.turn_event
   LEFT JOIN (SELECT turn_event, SUM(z_tools) AS z_tools, SUM(z_system) AS z_system, SUM(z_history) AS z_history, SUM(z_tail) AS z_tail, COUNT(z_tools) AS measured,
     SUM(latency_ms) AS request_ms, MIN(CASE WHEN COALESCE(attempt, 1) = 1 THEN ttft_ms END) AS ttft_ms
-    FROM telemetry_calls WHERE turn_event = ?1 AND COALESCE(purpose, 'turn') != 'side') c ON c.turn_event = t.turn_event
+    FROM telemetry_calls WHERE turn_event = ?1 AND COALESCE(purpose, 'turn') NOT IN ('side', 'sampling')) c ON c.turn_event = t.turn_event
   WHERE t.turn_event = ?1`;
 // (since, until, limit): the requests that took longest, across sessions.
 export const SLOWEST_SQL = `SELECT c.id, c.session_id, s.title, c.ts, c.model, c.latency_ms, c.ttft_ms, c.outcome, c.error_class, c.turn_event, COALESCE(c.purpose, 'turn') AS purpose, c.attempt, c.output

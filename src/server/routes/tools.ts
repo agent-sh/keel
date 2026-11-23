@@ -70,6 +70,10 @@ export const toolRoutes: RouteModule = (deps) => {
       return text ? { denied: text } : undefined;
     },
     beforeRequest(s, req) {
+      // Only a step of a turn carries the session's notices: a summary, a side
+      // answer, a reader's read or a server's sampling request is not the
+      // session's conversation, and what it would carry is left for the next step.
+      if ((req.purpose ?? "turn") !== "turn") return req;
       // A job's end already stored (a restart came between storing it and
       // marking it reported) is not said twice.
       const said = (job: string) => !!deps.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'note' AND data LIKE ? LIMIT 1").get(s.id, `%"jobs":[%"${job}"%`);
