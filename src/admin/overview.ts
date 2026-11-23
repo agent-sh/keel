@@ -15,6 +15,7 @@ import type { Session } from "../core/types.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
 import { localDay, localTime, zoneLabel } from "../core/clock.ts";
 import { stopSays } from "../core/stoppers.ts";
+import { NEEDS } from "../core/state-words.ts";
 import { CLASS, dur, type Refs, type TimelineNow, type TimelineRow } from "./timeline-rows.ts";
 import { waitingOf } from "./waiting-line.ts";
 
@@ -102,7 +103,8 @@ function nowWords(l: TimelineRow, agents: number, parked = 0): string {
   if (l.kind === "agent" && parked && !agents) return `${parked} agent${parked === 1 ? "" : "s"} parked`;
   switch (l.kind) {
     case "approval": return `an approval waits${inAgent}`;
-    case "question": return `a question waits${inAgent}`;
+    // A plan and a secret are rows of the question kind: each is said by its own name.
+    case "question": return `${l.id.startsWith("now:plan:") ? NEEDS.plan : l.id.startsWith("now:secret:") ? NEEDS.secret : NEEDS.question} waits${inAgent}`;
     case "restart": return "a turn cut by a restart was not resumed";
     // "Running a turn started by the owner: step 2, running Bash" is told as its step.
     case "turn": { const at = l.text.indexOf(": "); return at < 0 ? lower(l.text) : l.text.slice(at + 2); }

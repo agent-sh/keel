@@ -1518,6 +1518,28 @@ describe("client commands against a running daemon", () => {
     expect(one.out).toContain("+one");
     expect((await k(["changes", sender, "7"])).err).toContain("turn 7 of this session changed no files");
   }, 120_000);
+
+  // A plan that waits is a plan in the words, and the two reports of the sessions say their times in one zone: the machine's own.
+  test("status --sessions and --away: a plan waits, and both read in the local zone", async () => {
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const call = async (method: string, path: string, body?: unknown) => (await fetch(url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
+    const { session } = await call("POST", "/api/sessions", { title: "Plan the index swap", workspace: WS });
+    await call("PUT", `/api/sessions/${session.id}/permissions`, { mode: "plan" });
+    await call("POST", `/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "present_plan", input: { plan: "1. Build the new index.\n2. Swap it in." } }])}` });
+    let text = "";
+    for (let i = 0; i < 200 && !text.includes('"Plan the index swap": a plan waits'); i++) { text = (await k(["status", "--sessions"])).out; await Bun.sleep(100); }
+    expect(text).toContain('"Plan the index swap": a plan waits');
+    expect(text).not.toContain('"Plan the index swap": a question waits');
+    const away = (await k(["status", "--away", "--since", "1h"])).out;
+    // One zone in both, the daemon's own (this process may run in another), and the time read is that zone's, to the hour.
+    const zone = (t: string, re: RegExp) => t.match(re)?.[1];
+    const z = zone(text, /^Sessions, read \d{4}-\d\d-\d\d \d\d:\d\d (UTC(?:[+-]\d\d:\d\d)?):/);
+    expect(z).toBeTruthy();
+    expect(zone(away, /^From (?:\d{4}-\d\d-\d\d )?\d\d:\d\d:\d\d to (?:\d{4}-\d\d-\d\d )?\d\d:\d\d:\d\d (UTC(?:[+-]\d\d:\d\d)?) /)).toBe(z);
+    const off = z === "UTC" ? 0 : (z!.slice(3, 4) === "-" ? -1 : 1) * (Number(z!.slice(4, 6)) * 60 + Number(z!.slice(7, 9)));
+    const hour = (ts: number) => new Date(ts + off * 60_000).toISOString().slice(0, 13).replace("T", " ");
+    expect([hour(Date.now() - 3_600_000), hour(Date.now())]).toContain(text.slice("Sessions, read ".length, "Sessions, read ".length + 13));
+  }, 60_000);
 });
 
 // A daemon of its own for a group of tests, and plain calls to its API.
