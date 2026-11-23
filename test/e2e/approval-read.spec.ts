@@ -878,19 +878,21 @@ test("the region stays where a long text was read when the card's own words chan
 test("every way to a waiting session lands the keyboard on its list, then on Allow once after a key's settle time", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   test.setTimeout(240_000);
-  // The page keeps what took the keyboard, and when: the list of requests, a card, an answer.
+  // The page keeps what took the keyboard, and when (the list of requests, a card, an answer), and
+  // when each Enter went down.
   await page.addInitScript(() => {
-    const w = window as unknown as { __f: { at: number; on: string; view: string }[] };
+    const w = window as unknown as { __f: { at: number; on: string; view: string }[]; __k: number[] };
     w.__f = [];
+    w.__k = [];
     addEventListener("focusin", (e) => {
       const el = e.target as HTMLElement;
       if (el.closest?.('[data-testid="approvals"]')) w.__f.push({ at: performance.now(), on: el.dataset.testid ?? el.tagName, view: el.closest<HTMLElement>("[data-view]")?.dataset.view ?? "" });
     }, true);
+    addEventListener("keydown", (e: KeyboardEvent) => { if (e.key === "Enter") w.__k.push(performance.now()); }, true);
   });
   const quiet = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Read: nothing waits here" } })).json()).session as { id: string };
   const other = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Read: a second pane" } })).json()).session as { id: string };
   const made = [quiet.id, other.id];
-  const one = async (word: string) => { const s = await asking(request, `Read: land ${word}`, [bash(`touch ${word}.txt`)]); made.push(s.id); await waits(request, s.id); return s; };
   const panes = async (ids: string[]) => {
     await page.goto("/api/daemon");
     await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: slots.length, slots, sizes: {}, active: 0 })); }, ids);
@@ -901,54 +903,74 @@ test("every way to a waiting session lands the keyboard on its list, then on All
     await expect(page.getByTestId("palette").getByRole("option").first()).toContainText(title);
     await page.keyboard.press("Enter");
   };
-  // What the keyboard did after `act`: where it landed, what an Enter pressed there within the
-  // settle time did, when the Allow took it, and what Enter did then.
-  const lands = async (way: string, id: string, act: () => Promise<void>, view = "") => {
-    await act();
-    const card = page.locator(`[data-testid="approval"]:visible`).first();
-    await expect(card).toBeVisible();
-    await expect.poll(() => page.evaluate(() => (window as unknown as { __f: unknown[] }).__f.length), { message: `${way}: the keyboard came to the list` }).toBeGreaterThan(0);
-    await page.keyboard.press("Enter");
-    await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
-    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
-    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
-    const log = await page.evaluate(() => (window as unknown as { __f: { at: number; on: string; view: string }[] }).__f);
-    // It landed on the list of requests (in the look, where there is one), and stayed off the answers for the settle time.
-    expect(log[0]!.on, way).toBe("approvals");
-    if (view) expect(log[0]!.view, way).toBe(view);
-    const answer = log.find((x) => x.on.startsWith("allow"))!;
-    // (A key's settle time from the paint of the arrival, lib/approvals.ts: KEY_MS, less the frame before that paint.)
-    expect(answer.at - log[0]!.at, `${way}: when its Allow took the keyboard`).toBeGreaterThanOrEqual(280);
-    expect(await states(request, id), `${way}: an Enter on the way in`).toBe("pending");
-    await expect(card).toHaveAttribute("data-live", "true", { timeout: 8000 });
-    await page.keyboard.press("Enter");
-    await expect.poll(() => states(request, id), { message: way }).toBe("allowed/once");
-    table.push(`| ${way} | list of requests, then Allow once ${Math.round(answer.at - log[0]!.at)} ms later | Enter on the way in: pending; Enter after: allowed |`);
-    await page.evaluate(() => { (window as unknown as { __f: unknown[] }).__f.length = 0; });
+  // An Enter this soon after the list took the keyboard is inside its settle time for sure (a key's
+  // settle time counts from the paint of the arrival, lib/approvals.ts: KEY_MS, less the frame before
+  // that paint). One later may be a meant press, which a request that is whole may take.
+  const EARLY_MS = 280;
+  // What the keyboard did after `act` on a session of its own whose request waits: where it landed,
+  // what an Enter pressed there within the settle time did, when the Allow took it, and what Enter
+  // did then. A machine too slow to press inside the settle time proves nothing with that press: the
+  // page's clock says so, and the way is tried again with a new request.
+  const lands = async (way: string, word: string, act: (s: { id: string }, title: string) => Promise<void>, view = "") => {
+    for (let tries = 1; ; tries++) {
+      const title = `Read: land ${word} ${tries}`;
+      const s = await asking(request, title, [bash(`touch ${word}.txt`)]);
+      made.push(s.id);
+      await waits(request, s.id);
+      const id = s.id;
+      await act(s, title);
+      const card = page.locator(`[data-testid="approval"]:visible`).first();
+      await expect(card).toBeVisible();
+      // At the first frame the list has the keyboard (a poll backs off to a second between looks).
+      await page.waitForFunction(() => (window as unknown as { __f: unknown[] }).__f.length > 0, undefined, { timeout: 10_000 });
+      await page.keyboard.press("Enter");
+      const { log, keys } = await page.evaluate(() => { const w = window as unknown as { __f: { at: number; on: string; view: string }[]; __k: number[] }; return { log: w.__f, keys: w.__k }; });
+      const early = keys.at(-1)! - log[0]!.at;
+      if (early >= EARLY_MS) {
+        console.log(`${way}, try ${tries}: the Enter came ${Math.round(early)} ms after the list took the keyboard, not inside its settle time`);
+        expect(tries, `${way}: an Enter inside the settle time in ${tries} tries`).toBeLessThan(6);
+        await drop(request, [id]);
+        continue;
+      }
+      // What the Enter did is known once the request is answered or its Allow once took the keyboard.
+      const allow = card.getByTestId("allow-once");
+      await expect.poll(async () => (await states(request, id)) !== "pending" || (await allow.evaluate((el) => el === document.activeElement).catch(() => false)), { message: `${way}: the Enter at ${Math.round(early)} ms was answered or Allow once took the keyboard`, timeout: 8000 }).toBe(true);
+      expect(await states(request, id), `${way}: an Enter on the way in, ${Math.round(early)} ms after the list took the keyboard`).toBe("pending");
+      await expect(allow).toBeFocused();
+      // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+      await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 5000 });
+      const seen = await page.evaluate(() => (window as unknown as { __f: { at: number; on: string; view: string }[] }).__f);
+      // It landed on the list of requests (in the look, where there is one), and stayed off the answers for the settle time.
+      expect(seen[0]!.on, way).toBe("approvals");
+      if (view) expect(seen[0]!.view, way).toBe(view);
+      const answer = seen.find((x) => x.on.startsWith("allow"))!;
+      expect(answer.at - seen[0]!.at, `${way}: when its Allow took the keyboard`).toBeGreaterThanOrEqual(EARLY_MS);
+      await expect(card).toHaveAttribute("data-live", "true", { timeout: 8000 });
+      await page.keyboard.press("Enter");
+      await expect.poll(() => states(request, id), { message: way }).toBe("allowed/once");
+      table.push(`| ${way} | list of requests, then Allow once ${Math.round(answer.at - seen[0]!.at)} ms later | Enter on the way in (${Math.round(early)} ms): pending; Enter after: allowed |`);
+      await page.evaluate(() => { const w = window as unknown as { __f: unknown[]; __k: unknown[] }; w.__f.length = 0; w.__k.length = 0; });
+      return;
+    }
   };
   try {
     await panes([quiet.id]);
-    let s = await one("rail");
-    await lands("Rail row", s.id, async () => { await page.goto(`/s/${quiet.id}`); await page.getByTestId("sidebar").locator(`[data-session="${s.id}"]`).first().click(); });
-    s = await one("palette");
-    await lands("Palette", s.id, async () => { await page.goto(`/s/${quiet.id}`); await palette("Read: land palette"); });
-    s = await one("home");
-    await lands("Home row's title", s.id, async () => { await page.goto("/"); const r = page.locator(`[data-testid="home-session"][data-session="${s.id}"]`).getByTestId("home-open"); await r.focus(); await page.keyboard.press("Enter"); });
-    s = await one("inbox");
-    await lands("Inbox row", s.id, async () => { await page.goto(`/s/${quiet.id}`); await page.getByTestId("inbox-button").click(); await page.getByTestId("inbox-item").filter({ hasText: "Read: land inbox" }).first().locator("button").first().click(); });
-    s = await one("link");
-    const aid = (await (await request.get(`/api/sessions/${s.id}/approvals`)).json()).approvals[0].id as string;
-    await lands("?approval= link", s.id, async () => { await page.goto(`/s/${s.id}?approval=${aid}`); });
-    s = await one("key");
-    await lands("Alt+A", s.id, async () => { await page.goto(`/s/${quiet.id}`); await expect(page.getByTestId("composer").first()).toBeVisible(); await page.keyboard.press("Alt+a"); });
+    await lands("Rail row", "rail", async (s) => { await page.goto(`/s/${quiet.id}`); await page.getByTestId("sidebar").locator(`[data-session="${s.id}"]`).first().click(); });
+    await lands("Palette", "palette", async (_s, title) => { await page.goto(`/s/${quiet.id}`); await palette(title); });
+    await lands("Home row's title", "home", async (s) => { await page.goto("/"); const r = page.locator(`[data-testid="home-session"][data-session="${s.id}"]`).getByTestId("home-open"); await r.focus(); await page.keyboard.press("Enter"); });
+    await lands("Inbox row", "inbox", async (_s, title) => { await page.goto(`/s/${quiet.id}`); await page.getByTestId("inbox-button").click(); await page.getByTestId("inbox-item").filter({ hasText: title }).first().locator("button").first().click(); });
+    await lands("?approval= link", "link", async (s) => {
+      const aid = (await (await request.get(`/api/sessions/${s.id}/approvals`)).json()).approvals[0].id as string;
+      await page.goto(`/s/${s.id}?approval=${aid}`);
+    });
+    await lands("Alt+A", "key", async () => { await page.goto(`/s/${quiet.id}`); await expect(page.getByTestId("composer").first()).toBeVisible(); await page.keyboard.press("Alt+a"); });
     // Two panes: the palette opens the waiting session as a look over the pane worked in, which
     // keeps its own session underneath. The keyboard is in the look.
     await panes([quiet.id, other.id]);
-    s = await one("look");
-    await lands("Palette, as a look over a pane", s.id, async () => {
+    await lands("Palette, as a look over a pane", "look", async (_s, title) => {
       await page.goto(`/s/${quiet.id}`);
       await expect(page.locator(`section.k-station[data-station="${other.id}"]`)).toBeVisible();
-      await palette("Read: land look");
+      await palette(title);
       await expect(page.locator('.k-view[data-view="look"]')).toBeVisible();
     }, "look");
   } finally {
