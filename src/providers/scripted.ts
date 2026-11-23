@@ -505,6 +505,15 @@ export class ScriptedProvider implements Provider {
         // ignores its signal): a delete waits that long for the turn to end.
         await Bun.sleep(12_000);
         return reply("Answered after not listening.");
+      case "silent": {
+        // `script:silent <path>`: no reply at all until that file exists, the
+        // turn is stopped, or a minute passed: a turn whose reply has not started.
+        // A stop ends the request as a real stream's does.
+        const gate = owner.match(/script:silent\s+(\S+)/)?.[1];
+        for (let i = 0; i < 600 && gate && !existsSync(gate) && !req.signal.aborted; i++) await Bun.sleep(100);
+        if (req.signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
+        return reply("Answered after a silent wait.");
+      }
       case "hold": {
         // `script:hold <path>`: half a reply, then nothing until that file
         // exists (or a minute passed): a draft that stays as it is while a

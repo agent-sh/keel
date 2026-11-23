@@ -26,6 +26,8 @@ const fixed = (enterSends: boolean): [string, string, string][] => [
   // An empty box has no caret to move: the page keys (and End) scroll the conversation from it (Composer.tsx).
   ["Message box", "Conversation up a page, from an empty box", "pageup"],
   ["Message box", "Conversation down a page, from an empty box", "pagedown"],
+  // Before the reply starts or after the turn ends (lib/edit-last.ts); Enter sends it as a new version.
+  ["Message box", "Edit the last prompt, from an empty box", "arrowup"],
 ];
 
 export function ShortcutList() {

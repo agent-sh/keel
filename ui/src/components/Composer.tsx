@@ -15,6 +15,7 @@ import { openFocus } from "../lib/self-focus.ts";
 import { stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
+import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
@@ -918,6 +919,14 @@ const SessionComposer = memo(function SessionComposer({
             // A held key pages at once: a glide started again at each repeat would crawl.
             else view?.scrollBy({ top: (e.key === "PageUp" ? -0.9 : 0.9) * view.clientHeight, behavior: e.repeat ? "instant" : scrollMotion() });
             return;
+          }
+          // Up in an empty box opens the last prompt in its edit box (lib/edit-last.ts): the turn was
+          // stopped, ended or failed, or its reply has not started. Otherwise Up does what it did.
+          if (sid && e.key === "ArrowUp" && !e.currentTarget.value && !draft.current.images.length && !mod && !e.altKey && !e.shiftKey && !e.repeat) {
+            const st = getState(), s = st.sessions[sid];
+            const streaming = Object.values(st.drafts[sid] ?? {}).some((b) => b.text.trim() || b.kind !== "text");
+            const event = s && !previewEvent ? promptToEdit(lineage(st.events[sid] ?? [], s.head ?? null), s.phase === "working", streaming) : null;
+            if (event) { e.preventDefault(); setUI({ editPrompt: { session: sid, event } }); return; }
           }
           // Ctrl Shift Enter queues for after the running turn, whichever key sends; with no
           // turn running it sends (the turn may have ended a moment before the press).

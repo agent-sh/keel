@@ -159,7 +159,15 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
   const text: string = e.data.text ?? "";
   const long = text.length > 1400 || text.split("\n").length > 18;
   const [full, setFull] = useState(false);
-  const [editing, setEditing] = useState(false);
+  // `keys`: opened by Up in the message box, where the keyboard goes back when the edit ends.
+  const [editing, setEditing] = useState<false | "click" | "keys">(false);
+  // Up in an empty message box asked for this prompt's edit box (lib/edit-last.ts).
+  const asked = useUI((s) => s.editPrompt?.session === sid && s.editPrompt.event === e.id);
+  useEffect(() => {
+    if (!asked) return;
+    setUI({ editPrompt: null });
+    setEditing("keys");
+  }, [asked]);
   const at = vs.findIndex((v) => v.id === e.id);
   // Only a prompt with versions shows the turn's state (its arrows wait for the turn).
   const working = useTail((t) => vs.length > 1 && isWorking(t));
@@ -171,7 +179,7 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
     const to = vs[i]!.id;
     if (store.get().reading || !lineage(getState().events[sid] ?? [], r.head).some((x) => x.id === to)) setUI({ focusEvent: to, focusStay: to });
   }).catch(reportError);
-  if (editing) return <EditPrompt e={e} sid={sid} onDone={() => setEditing(false)} />;
+  if (editing) return <EditPrompt e={e} sid={sid} back={editing === "keys"} onDone={() => setEditing(false)} />;
   return (
     <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
       <OwnerWords
@@ -195,7 +203,7 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
       <div className="-mt-0.5 flex h-6 items-center">
         <span className="flex items-center opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 max-md:opacity-100">
           <CopyButton text={() => text} label="Copy the message" testid="copy-message" className="size-7" />
-          <ActionButton label="Edit and send as a new version" testid="edit-message" onClick={() => setEditing(true)}><Pencil className="size-3.5" /></ActionButton>
+          <ActionButton label="Edit and send as a new version" testid="edit-message" onClick={() => setEditing("click")}><Pencil className="size-3.5" /></ActionButton>
           <Extra on="user" e={e} />
         </span>
         {vs.length > 1 && (
@@ -216,16 +224,27 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
 
 // The new version keeps the prompt's attachments, in their order: they are
 // shown here before Send, and only the words change.
-function EditPrompt({ e, sid, onDone }: { e: StoredEvent; sid: string; onDone: () => void }) {
+// `back`: it was opened from the message box by Up, and the keyboard goes back
+// there when it is sent or cancelled.
+function EditPrompt({ e, sid, back, onDone }: { e: StoredEvent; sid: string; back?: boolean; onDone: () => void }) {
   const working = useTail(isWorking);
   const raw: string = e.data.text ?? "";
   const [text, setText] = useState<string>(raw);
   const blocks: PromptBlock[] = e.data.images ?? [];
   const n = blocks.length;
   const ok = !!text.trim() || n > 0;
-  const send = () => ok && actions.edit(sid, e.id, text.trim()).then(onDone, reportError);
+  const root = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLTextAreaElement>(null);
+  // The caret at the end of the words, where a change to them is usually made, and in view.
+  useLayoutEffect(() => { const b = box.current; if (b) { b.setSelectionRange(b.value.length, b.value.length); b.scrollTop = b.scrollHeight; } }, []);
+  const done = () => {
+    const composer = back ? root.current?.closest(".k-session")?.querySelector<HTMLTextAreaElement>("[data-testid=composer]") : null;
+    onDone();
+    composer?.focus();
+  };
+  const send = () => ok && actions.edit(sid, e.id, text.trim()).then(done, reportError);
   return (
-    <div className="flex justify-end animate-in" data-event-id={e.id}>
+    <div ref={root} className="flex justify-end animate-in" data-event-id={e.id}>
       <div className="w-[min(85%,40rem)] rounded-xl border border-line-strong bg-raised p-2 shadow-2">
         {n > 0 && (
           <div className="mb-1.5 flex flex-col gap-1.5 px-1 pt-1" data-testid="edit-attachments">
@@ -233,6 +252,7 @@ function EditPrompt({ e, sid, onDone }: { e: StoredEvent; sid: string; onDone: (
           </div>
         )}
         <textarea
+          ref={box}
           data-testid="edit-box"
           autoFocus
           value={text}
@@ -241,7 +261,7 @@ function EditPrompt({ e, sid, onDone }: { e: StoredEvent; sid: string; onDone: (
           onChange={(x) => setText(x.target.value)}
           onKeyDown={(x) => {
             if (composing(x)) return;
-            if (x.key === "Escape") onDone();
+            if (x.key === "Escape") done();
             if (x.key === "Enter" && !x.shiftKey) { x.preventDefault(); send(); }
           }}
           className="block min-h-16 w-full resize-y bg-transparent px-2 py-1 text-read leading-relaxed outline-none placeholder:text-faint"
@@ -251,7 +271,7 @@ function EditPrompt({ e, sid, onDone }: { e: StoredEvent; sid: string; onDone: (
             {working ? "Stops the turn, then sends this as a new version." : "Sends as a new version; the current one stays as a branch."}
             {n > 0 && ` The ${n === 1 ? "attachment goes" : `${n} attachments go`} with it as before.`}
           </span>
-          <button type="button" onClick={onDone} className="h-7 rounded-md px-2.5 text-ui text-muted hover:bg-hover">Cancel</button>
+          <button type="button" onClick={done} className="h-7 rounded-md px-2.5 text-ui text-muted hover:bg-hover">Cancel</button>
           <button type="button" data-testid="edit-send" disabled={!ok} onClick={send} className="h-7 rounded-md bg-accent px-2.5 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">
             Send
           </button>

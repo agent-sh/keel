@@ -42,6 +42,8 @@ type UIState = {
   // A message opened from search on another branch: shown without moving the
   // session's branch until the owner chooses to continue from it.
   preview: { session: string; event: string } | null;
+  // A prompt whose edit box Up in an empty message box asked to open (lib/edit-last.ts).
+  editPrompt: { session: string; event: string } | null;
   // A file a reply linked, to show in the session's Files panel at its lines.
   fileAt: { session: string; path: string; line?: number; end?: number; n: number } | null;
 };
@@ -95,6 +97,7 @@ let state: UIState = {
   focusStay: null,
   focusCall: null,
   preview: null,
+  editPrompt: null,
   fileAt: null,
 };
 // Once: the panel was kept open for every session (one global choice, and a
