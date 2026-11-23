@@ -217,7 +217,8 @@ export function takeKeys(target: Element | null, own: boolean, advance = true): 
   if (unit.contains(document.activeElement)) {
     // Already in the card. Asked for by the owner, it is an arrival all the same: the settle
     // time runs again. Only a part asked for by name takes the keyboard from another part.
-    if (own) { hold(unit, { at: performance.now(), code: true, take: advance, own: true }); changed(); }
+    // A move that is to rest on the region takes back a move onto the answer the card made for itself.
+    if (own || !advance) { hold(unit, { at: performance.now(), code: true, take: advance, own }); changed(); }
     if (named && named !== document.activeElement) named.focus({ preventScroll: true });
     return true;
   }
@@ -342,6 +343,13 @@ if (typeof window !== "undefined") addEventListener("input", (e) => { if (isBox(
 const answered = new Set<string>();
 export const noteAnswer = (...ids: string[]) => { for (const id of ids) answered.add(id); };
 export const answeredHere = (id: string) => answered.has(id);
+// Of those, the ones one key answered by itself (a question's number, with no Enter after it). The
+// owner may still press the Enter they expect such a key to need: a step of the sequence after one
+// brings the keyboard to the next card's region, not onto its answer, and not as the owner's (no
+// number of theirs is the card's yet). Their own Down or Tab goes on to the answer (focusAsk).
+const bare = new Set<string>();
+export const noteOneKey = (id: string) => { answered.add(id); bare.add(id); };
+export const answeredByOneKey = (id: string) => bare.has(id);
 
 // For a card: how its unit holds the keyboard now ("" not at all, "wait"
 // within the settle time of an arrival by code, "ready" after it), whether
@@ -397,7 +405,7 @@ export function useAskKeys(unit: RefObject<HTMLElement | null>, take = true) {
 // was, and the move goes on (the key answers nothing: the settle time runs
 // from the arrival). `otherwise` is run when the time is up and nothing took
 // the keyboard.
-export function keysWhenShown(find: () => Element | null, own: boolean, otherwise?: () => void) {
+export function keysWhenShown(find: () => Element | null, own: boolean, otherwise?: () => void, advance = true) {
   let raf = 0, seen = 0, taken: Element | null = null, at = 0;
   const stop = () => { cancelAnimationFrame(raf); clearTimeout(t); removeEventListener("keydown", key, true); removeEventListener("pointerdown", stop, true); };
   const key = (e: KeyboardEvent) => {
@@ -410,7 +418,7 @@ export function keysWhenShown(find: () => Element | null, own: boolean, otherwis
     seen = el ? seen + 1 : 0;
     // Taken: watched for the settle time more, in case a card that stands before it is drawn late.
     if (taken && performance.now() - at > SETTLE_MS) return stop();
-    if (el && seen > 2 && unitOf(el) !== taken && takeKeys(el, own)) { taken = unitOf(el); at = performance.now(); }
+    if (el && seen > 2 && unitOf(el) !== taken && takeKeys(el, own, advance)) { taken = unitOf(el); at = performance.now(); }
     raf = requestAnimationFrame(look);
   };
   const t = setTimeout(() => { stop(); if (!taken) otherwise?.(); }, 4000);
@@ -422,4 +430,6 @@ export function keysWhenShown(find: () => Element | null, own: boolean, otherwis
 export const askIn = (session: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] [data-testid="composer-asks"] ${REGION}${ON_TOP}`);
 // The keyboard goes to it (the owner asked: `own`), once it shows. A session
 // that shows nothing to answer in time gets the keyboard in its message box.
-export const focusAsk = (session: string) => keysWhenShown(() => askIn(session), true, () => restInBox(session));
+// `gentle`: the step follows an answer one key gave by itself (noteOneKey): the keyboard rests on
+// the card's region, not as the owner's, and its answer is one deliberate key away (Down, Tab).
+export const focusAsk = (session: string, gentle = false) => keysWhenShown(() => askIn(session), !gentle, () => restInBox(session), !gentle);

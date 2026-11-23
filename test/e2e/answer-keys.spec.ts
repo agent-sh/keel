@@ -653,9 +653,10 @@ test("what waits across sessions is answered in sequence, one key each", async (
 // The same over two panes, with every kind the sequence meets: none of these sessions has a pane, so
 // each is a look over the pane the sequence began in, in the place of the one before it. A long
 // command is opened, read on to its end and allowed (Enter, End, Enter), the question takes its
-// digit, the plan its Enter once it stood whole in view. After the last the pane shows what it held,
-// the keyboard where it was: eight keys, no pointer.
-test("over two panes, three approvals (one long), a question and a plan are answered in eight keys, and the panes are as they were", async ({ page, request }) => {
+// digit. The digit answers by itself, so the plan after it keeps the keyboard on its text (an Enter
+// meant for the digit approves nothing): Tab goes to Approve, and Enter approves. After the last the
+// pane shows what it held, the keyboard where it was: nine keys, no pointer.
+test("over two panes, three approvals (one long), a question and a plan are answered in nine keys, and the panes are as they were", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
   const ws = folder("sequence-kinds");
@@ -712,8 +713,11 @@ test("over two panes, three approvals (one long), a question and a plan are answ
   await press("2");
   await at(p);
   const plan = cardIn(page, p, "plan");
-  await expect(plan.getByTestId("plan-approve")).toBeFocused({ timeout: 8000 });
-  // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+  // (After an answer one key gave by itself: the keyboard rests on the plan's text, not on Approve.)
+  await expect(plan.getByTestId("plan-text")).toBeFocused({ timeout: 8000 });
+  await expect(plan.getByTestId("plan-hint")).toHaveText("Tab goes to Approve");
+  await press("Tab");
+  await expect(plan.getByTestId("plan-approve")).toBeFocused();
   await expect(plan.getByTestId("plan-approve")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
   await shoot(page, "answer-keys-20-sequence-plan");
   await press("Enter");
@@ -724,11 +728,57 @@ test("over two panes, three approvals (one long), a question and a plan are answ
   await expect(slot0.getByTestId("look-bar")).toHaveCount(0);
   await expect(page.getByTestId("bridge").locator(':scope > [data-slot="1"]')).toHaveAttribute("data-station", beside);
   await expect(box).toBeFocused();
-  expect(count).toBe(8);
+  expect(count).toBe(9);
   for (const id of [a, long, b]) await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
   expect(await answersOf(request, q)).toEqual({ "0": { picked: ["Amber"] } });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${p}/plan`)).json()).open.length).toBe(0);
   await drop(request, reader, beside, a, long, b, q, p);
+});
+
+// One number answers a question by itself, with no Enter after it. The Enter the owner may still
+// press for it lands on the next session's card in the same pane: it allows nothing there, however
+// late it comes. The keyboard rests on the card, which says the way to its answer: Down, then Enter.
+test("an Enter after a question answered by one number allows nothing in the next session", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  await watchKeys(page);
+  const ws = folder("sequence-one-key");
+  const quiet = await create(request, "Nothing waits here", ws);
+  const q = await create(request, "Pick a color", ws);
+  await ask(request, q, "question");
+  const next = await asksToRun(request, "Write the step", ws, "step2");
+
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  for (const id of [q, next]) await expect(row(page, id)).toHaveAttribute("data-watch", "need");
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${q}$`));
+  const question = cardIn(page, q, "question");
+  await expect(question).toBeFocused();
+  await expect(question).toHaveAttribute("data-keys", "ready");
+  await expect(question.getByTestId("question-digit")).toHaveCount(3);
+  await page.keyboard.press("2");
+  await mark(page);
+  await expect(page).toHaveURL(new RegExp(`/s/${next}$`));
+  const list = cardIn(page, next, "approval");
+  const card = list.getByTestId("approval");
+  await expect(card).toHaveAttribute("data-live", "true");
+  // Well past the settle time of the arrival: the Enter still answers nothing, and the keyboard is on the list.
+  expect(await since(page, "mark", SETTLE + 300)).toBe(true);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  expect((await approvals(request, next))[0]).toMatchObject({ state: "pending" });
+  await expect(page).toHaveURL(new RegExp(`/s/${next}$`));
+  await expect(list).toBeFocused();
+  await expect(card.getByTestId("approval-arming")).toHaveText("Down, then Enter allows once");
+  await shoot(page, "answer-keys-08-after-one-key");
+  // The owner goes to the answer themselves: Down, then Enter allows once.
+  await page.keyboard.press("ArrowDown");
+  await expect(card.getByTestId("allow-once")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await approvals(request, next))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  expect(await answersOf(request, q)).toEqual({ "0": { picked: ["Amber"] } });
+  await drop(request, quiet, q, next);
 });
 
 test("the sequence stays with the owner: it goes on through a grant, ends when they do something else, and after a quiet minute", async ({ page, request }) => {
@@ -1084,7 +1134,8 @@ test("Enter held through an answer in the sequence allows one card, never the ne
 // KEY_MS) was on its way before the owner saw it. Four panes, a question and the next session's
 // approval in the sequence: the number answers the question, the sequence moves on, and an Enter
 // pressed the moment the approval arrives (meant for the question, the owner never saw the approval)
-// allows nothing. One pressed once the card says it is ready allows it.
+// allows nothing. After an answer one key gave by itself the keyboard rests on the list: the owner's
+// Down goes to Allow once, and Enter there allows once the card says it is ready.
 test("a key pressed as an approval arrives is not taken; one pressed once it is ready is", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
@@ -1106,6 +1157,10 @@ test("a key pressed as an approval arrives is not taken; one pressed once it is 
   await page.keyboard.press("Enter");
   await page.waitForTimeout(500);
   expect((await approvals(request, w))[0], "Enter the moment the approval arrived").toMatchObject({ state: "pending" });
+  // (The digit answered by itself: the list keeps the keyboard, and says the way to the answer.)
+  await expect(cardIn(page, w, "approval").getByTestId("approval-arming")).toHaveText("Down, then Enter allows once");
+  await page.keyboard.press("ArrowDown");
+  await expect(allow).toBeFocused();
   // The card says when it is ready; from then Enter allows.
   await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 3000 });
   await expect(cardIn(page, w, "approval").getByTestId("approval-hint")).toHaveText("Enter allows once, Esc to deny with a reason");

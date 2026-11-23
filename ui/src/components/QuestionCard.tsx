@@ -22,7 +22,7 @@ import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import type { Asked, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
-import { dropRepeats, keyRefused, keysSettled, noteAnswer, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, keysSettled, noteAnswer, noteOneKey, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { actions, failed, getState, useStore } from "../lib/store.ts";
 import { askedQuestions, questions, resultText, type UiQuestion } from "../lib/tools.ts";
@@ -339,7 +339,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
       setNudge("");
       const el = e.currentTarget.querySelector<HTMLElement>(`fieldset[data-q="${CSS.escape(q.id)}"] [data-testid="question-option"][data-n="${e.key}"]`);
       // An option out of view is chosen and brought into view, not sent: what is answered is what the owner can read.
-      if (oneKey && el && inView(el)) void submit(next);
+      if (oneKey && el && inView(el)) { noteOneKey(use.id); void submit(next); }
       else el?.scrollIntoView({ block: "nearest" });
       return;
     }

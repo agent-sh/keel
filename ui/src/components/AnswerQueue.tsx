@@ -46,7 +46,7 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { announce } from "../lib/announce.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
-import { answeredHere, askIn, focusAsk, restInBox, sequenceAt, setSequence } from "../lib/asks.ts";
+import { answeredByOneKey, answeredHere, askIn, focusAsk, restInBox, sequenceAt, setSequence } from "../lib/asks.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
 import { focusBack, leaveLook, movedTo } from "../lib/looks.ts";
 import { getStations, opened, paneOf, stations } from "../lib/stations.ts";
@@ -115,7 +115,9 @@ const putAway = (id: string) => { const st = getStations(); const i = st.over.in
 // none on the way (a session with no card to answer, only a message that did
 // not go, is opened as any other: there the box is where the keyboard goes).
 // `from`: where a sequence that begins here began, when that is not the page on screen.
-function go(id: string, from?: { route: Route; slot: number }) {
+// `gentle`: the step follows an answer one key gave by itself (lib/asks.ts, noteOneKey): an Enter
+// pressed after it was meant for that answer, so the keyboard rests on the card, not on its Allow.
+function go(id: string, from?: { route: Route; slot: number }, gentle = false) {
   const began = !state.on;
   if (began) origin = from ?? { route: getUI().route, slot: getStations().active };
   // Where it goes is known before the page moves: the move is the sequence's own.
@@ -127,7 +129,7 @@ function go(id: string, from?: { route: Route; slot: number }) {
   // One step back in the browser leaves the sequence, however many sessions it went through.
   if (here() !== id) navigate({ name: "session", id }, !began);
   set({});
-  focusAsk(id);
+  focusAsk(id, gentle);
 }
 const end = () => { setSequence(null); origin = null; if (state.on) set({ on: false, at: null }); };
 // Nothing is left to answer: the owner is back where the sequence began, the keyboard where it was there.
@@ -195,6 +197,7 @@ export function AnswerQueue() {
     const before = was.current;
     was.current = { cur, ids };
     const gone = before.cur === cur ? before.ids.filter((id) => !ids.includes(id)) : [];
+    const gentle = gone.some(answeredByOneKey);
     if (!on) {
       // No sequence: the owner came to answer this one, and has answered all it asked. A look is
       // left; from the pane that holds it they are back in the pane they came from.
@@ -203,7 +206,7 @@ export function AnswerQueue() {
         visit = null;
         // On a phone the answers go on: the next session that waits, as a sequence that began where they came from.
         const next = phone() ? order.find((id) => id !== cur) : undefined;
-        if (next) { putAway(cur); return go(next, { route: from, slot }); }
+        if (next) { putAway(cur); return go(next, { route: from, slot }, gentle); }
         if (!leaveLook(cur, true)) backTo(from, slot);
       }
       return;
@@ -216,10 +219,10 @@ export function AnswerQueue() {
     // is, and the keyboard the card held goes to the message box (where Enter sends nothing yet).
     if (!gone.every(answeredHere)) { end(); return restInBox(cur); }
     // More waits here: the keyboard goes to it. Else on to the next session.
-    if (ids.length) return focusAsk(cur);
+    if (ids.length) return focusAsk(cur, gentle);
     const next = order.find((id) => id !== cur);
     // The look that was answered is put away; the next one, if it is a look, takes its place in the same pane.
-    if (next) { putAway(cur); return go(next); }
+    if (next) { putAway(cur); return go(next, undefined, gentle); }
     done(cur);
     say("Nothing else waits for you.");
   }, [on, cur, idsKey, key]);
