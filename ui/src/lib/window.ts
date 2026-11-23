@@ -7,6 +7,7 @@
 //
 // Kept pure: what the transcript measures goes in, which blocks are drawn comes out.
 import type { Row } from "./rows.ts";
+import { sentence, summarize } from "./work.ts";
 
 // A block's place on screen: from its mark (the top of its first row) to the next block's mark.
 export type Span = { key: number; top: number; bottom: number };
@@ -79,6 +80,32 @@ export function wordsOf(row: Row): string {
     case "checkpoint": return String(d.label ?? "");
     default: return String(d.short ?? d.text ?? "");
   }
+}
+
+// The words a held row stands for, as a selection over the drawn row copies them: its words
+// (wordsOf), and also what a drawn row shows beside them. A prompt's attachments, in the order
+// they were sent (an image by the words it is drawn with, a file by its name), and a
+// run of work's lines: each step's line, among what was said between its calls. (Held rows are
+// far from the end: none of their calls is running.)
+export function heldWords(row: Row): string {
+  const d = row.e.data ?? {};
+  if (row.kind === "user") {
+    let n = 0;
+    const kept = ((d.images ?? []) as { type: string; name?: string }[])
+      .map((b) => (b.type === "image" ? `Attached image ${++n}` : b.type === "attachment" ? b.name ?? "" : ""))
+      .filter(Boolean);
+    return [String(d.text ?? ""), ...kept].filter(Boolean).join("\n");
+  }
+  if (row.kind !== "work") return wordsOf(row);
+  const out: string[] = [];
+  for (const step of row.steps ?? []) {
+    let line = false;
+    for (const i of step.items) {
+      if (i.t === "note") out.push(plain(i.text));
+      else if (i.t === "call" && !line) { out.push(sentence(summarize(step, { working: false }))); line = true; }
+    }
+  }
+  return out.join("\n");
 }
 
 // How tall a block stands before it was ever drawn, in px: lines of its words at the column's

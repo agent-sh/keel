@@ -45,6 +45,18 @@ test("copy what a session shows, also without the async clipboard", async ({ pag
   // A code block, the reply as markdown, the prompt as typed.
   await page.locator(".code-block .code-copy").first().click();
   expect(await clip()).toContain("export function parse(input: string): string[] {");
+  // The reply selected and copied as the browser copies it: the code block's words, not its head's
+  // language and its Copy button.
+  await page.evaluate(() => {
+    const block = document.querySelector(".code-block")!.closest('[data-testid="assistant-text"]')!;
+    getSelection()!.selectAllChildren(block);
+  });
+  await page.keyboard.press("Control+c");
+  await expect.poll(clip).toContain("export function parse(input: string): string[] {");
+  const drawn = await clip();
+  expect(drawn).not.toMatch(/^\s*Cop(y|ied)\s*$/m);
+  expect(drawn).not.toMatch(/^\s*ts\s*$/m);
+  await page.evaluate(() => getSelection()!.removeAllRanges());
   await page.getByTestId("copy-reply").last().click();
   const reply = await clip();
   expect(reply).toContain("## The parser, moved");

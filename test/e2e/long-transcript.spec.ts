@@ -643,6 +643,43 @@ test("rows far from the view are held as light boxes that Find, a selection and 
 // a block drawn at its real height above the line, a reply's math set once it is drawn, and an
 // earlier part read in at the top move nothing the reader sees, not even for one frame. (Held
 // in the same task as the change, before the frame is painted, not by the size observer after.)
+// A selection over rows that are not drawn copies what the drawn rows copy: a table's rows as cells
+// and tabs, a prompt's images by the words they are drawn with, a run of work by its lines.
+test("held rows copy as the drawn ones do", async ({ page }) => {
+  const state = join(ROOT, `held-copy-${Date.now()}`);
+  mkdirSync(state, { recursive: true });
+  const [id] = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/mixed-transcript.ts"), state, sessionsFolder(state), "40", "Mixed copy"], { encoding: "utf8", env: specEnv(state) })) as string[];
+  const d = await daemon(state);
+  try {
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${d.url}/s/${id}`);
+    await expect(page.getByTestId("turn-end").last()).toBeInViewport({ timeout: 30_000 });
+    const transcript = page.getByTestId("transcript");
+    await expect.poll(() => transcript.locator(":scope > .k-hold").count()).toBeGreaterThan(3);
+    // From the first held box to the last, read before anything could draw them.
+    const held = await page.evaluate(() => {
+      const boxes = document.querySelectorAll('[data-testid="transcript"] > .k-hold');
+      const r = document.createRange();
+      r.setStartBefore(boxes[0]!);
+      r.setEndAfter(boxes[boxes.length - 1]!);
+      getSelection()!.removeAllRanges();
+      getSelection()!.addRange(r);
+      const text = getSelection()!.toString();
+      getSelection()!.removeAllRanges();
+      return text;
+    });
+    expect(held).toMatch(/^col a\tcol b\tcol c$/m);
+    expect(held).toMatch(/^\d+\tx\ty$/m);
+    expect(held).toMatch(/Marker Zorblax\d*[05]x\nAttached image 1$/m);
+    expect(held).toMatch(/^Ran rg -n "token \d+" src \| head -20$/m);
+    expect(held).not.toContain("**");
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
+  }
+});
+
 test("reading up by the wheel holds the reader's line in every frame", async ({ page }) => {
   test.setTimeout(240_000);
   const state = join(ROOT, `wheel-${Date.now()}`);

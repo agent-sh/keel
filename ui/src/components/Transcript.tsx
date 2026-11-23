@@ -27,7 +27,7 @@ import { STOPPERS } from "../../../src/core/stoppers.ts";
 import type { PaneSwap } from "../lib/looks.ts";
 import { TurnFailure } from "./TurnFailure.tsx";
 import { Markdown, NearView } from "./Markdown.tsx";
-import { estimate, sameKeys, shares, windowOf, wordsOf, type Span } from "../lib/window.ts";
+import { estimate, heldWords, sameKeys, shares, windowOf, type Span } from "../lib/window.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { ToolCall } from "./ToolCall.tsx";
@@ -764,7 +764,7 @@ const Hold = memo(function Hold({ rows, span, gap, rem, width }: { rows: Row[]; 
       {rows.map((r, i) => {
         const h = { height: at[i] };
         if (r.kind === "end") return h.height ? <div key={r.id} style={h} /> : null;
-        const words = wordsOf(r);
+        const words = heldWords(r);
         if (r.kind === "work") return <div key={r.id} style={h} role="group" aria-label="What the model did" data-kind="work" data-events={r.events!.join(" ")}>{words}</div>;
         return <p key={r.id} style={h} id={r.id === r.e.id ? `e-${r.e.id}` : undefined} data-kind={r.kind} data-event-id={r.e.id}>{words}</p>;
       })}

@@ -1,6 +1,9 @@
 // Which blocks of a transcript are drawn, and what a block that is not drawn says.
 import { expect, test } from "bun:test";
-import { plain, windowOf, type Span } from "./window.ts";
+import { lineage } from "../../../src/core/tree.ts";
+import type { StoredEvent } from "../../../src/core/types.ts";
+import { buildRows, nextSiblings } from "./rows.ts";
+import { heldWords, plain, windowOf, type Span } from "./window.ts";
 
 // Ten blocks of 500 px each, the first at 0.
 const spans: Span[] = Array.from({ length: 10 }, (_, i) => ({ key: i, top: i * 500, bottom: (i + 1) * 500 }));
@@ -34,4 +37,22 @@ test("a held reply copies as the drawn one does: list items as their words, tabl
   expect(plain("1. one\n2. two\n- First: **x**")).toBe("one\ntwo\nFirst: x");
   // A pipe in a sentence, and a line of dashes under it, are no table.
   expect(plain("left | right\n---")).toBe("left | right\n---");
+});
+
+test("a held row says what its drawn row copies: a prompt's attachments, a run of work's lines", () => {
+  const list: StoredEvent[] = [];
+  const ev = (kind: StoredEvent["kind"], data: any): StoredEvent => {
+    const e: StoredEvent = { id: `h${list.length + 1}`, session_id: "s", seq: list.length + 1, parent: list.at(-1)?.id ?? null, kind, data, ts: list.length + 1 };
+    list.push(e);
+    return e;
+  };
+  ev("user", { text: "Look at these", images: [{ type: "image", media_type: "image/png", data: "" }, { type: "attachment", id: "a1", name: "notes.txt", media_type: "text/plain", size: 2048 }, { type: "image", media_type: "image/png", data: "" }] });
+  ev("turn_start", {});
+  ev("assistant", { blocks: [{ type: "text", text: "First I **search**." }, { type: "tool_use", id: "c1", name: "Bash", input: { command: "rg -n token src" } }] });
+  ev("tool_result", { results: [{ type: "tool_result", tool_use_id: "c1", content: "src/a.ts:1: token" }] });
+  ev("assistant", { blocks: [{ type: "text", text: "Done." }] });
+  ev("turn_end", { reason: "end_turn", ms: 1 });
+  const rows = buildRows(undefined, lineage(list, list.at(-1)!.id), nextSiblings(undefined, list).map, false, () => false).blocks.flat();
+  expect(heldWords(rows.find((r) => r.kind === "user")!)).toBe("Look at these\nAttached image 1\nnotes.txt\nAttached image 2");
+  expect(heldWords(rows.find((r) => r.kind === "work")!)).toBe("First I search.\nRan rg -n token src");
 });
