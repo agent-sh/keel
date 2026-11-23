@@ -62,7 +62,17 @@ const changed = () => { version++; subs.forEach((f) => f()); };
 const unitOf = (el: Element | null | undefined) => el?.closest(UNIT) ?? null;
 // `run`: the key settle time runs again from a key refused (Hold.key). Not for a key that only opens
 // a way to answer (Escape opens the denial's reason): there the arrival alone counts.
-const settledAt = (h: Hold | undefined | null, run = true) => !h || ((!h.code || (!!h.painted && performance.now() - h.painted >= KEY_MS)) && (!run || !h.key || performance.now() - h.key >= KEY_MS));
+// `at`: when the press went down (keyAt), not when it is handled: a key that went down while the page was busy
+// and is handled later was still on its way before the card stood there.
+const settledAt = (h: Hold | undefined | null, run = true, at = keyAt()) => !h || ((!h.code || (!!h.painted && at - h.painted >= KEY_MS)) && (!run || !h.key || at - h.key >= KEY_MS));
+// The key being pressed: when it went down (the event's own time, from a listener on the window that hears
+// it first), until the task after its key up (Space presses a button on its way up, and that press is judged
+// by when Space went down). A repeat keeps the first press's time. With no key being pressed: now.
+let down: { at: number; code: string } | null = null;
+const keyAt = () => down?.at ?? performance.now();
+// The control the owner's own Tab or arrow put the keyboard on (null: none, or code moved it since).
+let keyed: Element | null = null;
+let stepped = -Infinity; // the owner's last Tab or arrow
 // When the key settle time of a hold ends (0: it has not begun, the arrival is not painted yet).
 const readyAt = (h: Hold) => (h.code && !h.painted ? 0 : Math.max(h.code ? h.painted! + KEY_MS : 0, h.key ? h.key + KEY_MS : 0));
 // Stamps a hold with the paint of the frame that showed it: from a task posted in the frame's
@@ -96,6 +106,8 @@ if (typeof window !== "undefined") {
       if (!place?.matches(UNIT) || theirs || now - tabbed <= ACT_MS || (pressed.box === e.target && now - pressed.at <= ACT_MS)) boxes.delete(e.target);
       else boxes.set(e.target, now);
     }
+    // Brought by the owner's own Tab or arrow: not by code meanwhile (a card that arrived, the page's move onto an answer).
+    keyed = !moving && performance.now() - stepped <= ACT_MS ? (e.target as Element) : null;
     const unit = unitOf(e.target as Element);
     if (!inPopup(e.target as Element)) place = isBox(e.target) ? e.target : unit ?? (e.target as Element);
     const from = (e as FocusEvent).relatedTarget as Node | null;
@@ -122,13 +134,20 @@ if (typeof window !== "undefined") {
     changed();
   }, true);
   addEventListener("keydown", (e: KeyboardEvent) => {
+    if (!e.repeat) down = { at: Math.min(e.timeStamp, performance.now()), code: e.code };
     if (e.key === "Tab") tabbed = performance.now();
+    if (e.key === "Tab" || e.key.startsWith("Arrow")) stepped = performance.now();
     // A key that moves through the card is the owner's: from then on the card is theirs.
     // (Not one pressed as the keyboard arrived: it was on its way somewhere else.)
     const unit = unitOf(e.target as Element);
     const h = unit && holds.get(unit);
     if (h && !h.own && (e.key === "Tab" || e.key.startsWith("Arrow")) && settledAt(h)) { h.own = true; changed(); }
   }, true);
+  addEventListener("keyup", (e: KeyboardEvent) => {
+    const was = down;
+    if (was && e.code === was.code) setTimeout(() => { if (down === was) down = null; });
+  }, true);
+  addEventListener("blur", () => { down = null; });
   addEventListener("pointerdown", (e) => {
     const unit = unitOf(e.target as Element);
     const box = (e.target as Element).closest?.(".k-box")?.querySelector(BOX) ?? null;
@@ -172,11 +191,14 @@ export function restInBox(session: string) {
 }
 
 // The keyboard has been in the element's card for the settle time, or the owner brought it there themselves.
-export const keysSettled = (el: Element | null): boolean => settledAt(holds.get(unitOf(el)!));
+// `at`: when the press went down (a pointer's press passes its own time; a key's is the key's).
+export const keysSettled = (el: Element | null, at = keyAt()): boolean => settledAt(holds.get(unitOf(el)!), true, at);
 // The keyboard's arrival on the unit was painted a key's settle time ago, whatever keys were refused since.
 export const keysArrived = (el: Element | null): boolean => settledAt(holds.get(unitOf(el)!), false);
 // The owner put the keyboard on the element's card.
 export const owned = (el: Element | null): boolean => !!holds.get(unitOf(el)!)?.own;
+// The owner's own Tab or arrow put the keyboard on this control, and code has not moved it since.
+export const keyedTo = (el: Element | null): boolean => !!el && keyed === el && document.activeElement === el;
 
 // Code moves the keyboard to a card: onto `target` when that is a part of the
 // card that answers nothing (it carries tabIndex -1), else onto the card's
@@ -244,7 +266,7 @@ export function keyRefused(control: Element | null, repeat = false): string {
   if (repeat) return "A held key answers nothing";
   if (overlayOver(control)) return "Not while something lies over it";
   const h = holds.get(unitOf(control)!);
-  if (!keysSettled(control)) { const soon = !!h?.key && performance.now() - h.key < KEY_MS; keyTried(control); return soon ? "Not yet: one key at a time" : "Not yet: the keyboard has only just arrived"; }
+  if (!keysSettled(control)) { const soon = !!h?.key && keyAt() - h.key < KEY_MS; keyTried(control); return soon ? "Not yet: one key at a time" : "Not yet: the keyboard has only just arrived"; }
   return "";
 }
 // A key pressed on a card that the card refused (its text not read, its answer not standing yet, the
@@ -252,7 +274,7 @@ export function keyRefused(control: Element | null, repeat = false): string {
 export function keyTried(el: Element | null) {
   const h = holds.get(unitOf(el)!);
   if (!h) return;
-  h.key = performance.now();
+  h.key = keyAt();
   changed();
 }
 // For a card's onKeyDownCapture: a held Enter presses nothing in it, and a held
@@ -338,7 +360,7 @@ export function useHold(unit: RefObject<Element | null>): { keys: "" | "wait" | 
     const t = window.setTimeout(changed, wait + 1);
     return () => window.clearTimeout(t);
   }, [wait > 0, h?.at, h?.key]);
-  return { keys: !held ? "" : settledAt(h) ? "ready" : "wait", own: held && !!h?.own, take: held && !!h?.take, at: h?.at ?? 0, key: h?.key ?? 0 };
+  return { keys: !held ? "" : settledAt(h, true, performance.now()) ? "ready" : "wait", own: held && !!h?.own, take: held && !!h?.take, at: h?.at ?? 0, key: h?.key ?? 0 };
 }
 
 // A card that takes the keyboard as it appears (`take`: it is the first of

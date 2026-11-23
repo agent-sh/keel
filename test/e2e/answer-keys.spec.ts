@@ -1282,6 +1282,96 @@ test("a number meant for the message box answers nothing on a card that took the
   }
 });
 
+// A pointer's press on an Allow once that holds the keyboard counts after a key's settle time only where
+// the owner's own Tab or arrow put the keyboard. A request that comes under a pointer, whose Allow takes
+// the keyboard by itself, waits the second: a click meant for the request before allows nothing.
+test("a request that comes under the pointer takes no click within its second, though its Allow has the keyboard", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const id = await create(request, "Clicks onto the next", folder("click-next"));
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await page.goto(`/s/${id}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await page.evaluate(() => {
+    const w = window as unknown as { seen: { id: string; at: number }[] };
+    w.seen = [];
+    new MutationObserver(() => {
+      for (const c of document.querySelectorAll<HTMLElement>('[data-testid="approval"]')) if (!w.seen.some((x) => x.id === c.dataset.approvalId)) w.seen.push({ id: c.dataset.approvalId!, at: performance.now() });
+    }).observe(document.body, { subtree: true, childList: true });
+  });
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "echo c0 > c0.txt" } }, { name: "Bash", input: { command: "echo c1 > c1.txt" } }]) } });
+  const allow = page.getByTestId("allow-once");
+  await expect(allow).toHaveCount(1, { timeout: 30_000 });
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 8000 });
+  await page.waitForTimeout(1200);
+  const at = (await allow.boundingBox())!;
+  const x = at.x + at.width / 2, y = at.y + at.height / 2;
+  await page.mouse.click(x, y);
+  const waiting = async () => ((await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals as { summary: string }[]).map((a) => a.summary);
+  await expect.poll(waiting, { timeout: 10_000 }).toEqual([expect.stringContaining("c1")]);
+  // The next request is drawn in the same place, and its Allow takes the keyboard by itself.
+  const since = await page.waitForFunction(([x, y]: [number, number]) => {
+    const b = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-testid="allow-once"]');
+    const card = b?.closest<HTMLElement>('[data-testid="approval"]');
+    const w = window as unknown as { seen: { id: string; at: number }[] };
+    const seen = w.seen.find((s) => s.id === card?.dataset.approvalId);
+    return !!b && b === document.activeElement && b.dataset.ready === "true" && w.seen.length === 2 && !!seen && seen === w.seen[1] ? performance.now() - seen.at : 0;
+  }, [x, y] as [number, number], { polling: "raf", timeout: 8000 });
+  expect(await since.jsonValue(), "the click comes within the next request's second").toBeLessThan(800);
+  await page.mouse.click(x, y);
+  await page.waitForTimeout(400);
+  expect(await waiting(), "a click within the second of a request that came under the pointer").toEqual([expect.stringContaining("c1")]);
+  await expect(allow).toHaveAttribute("data-nudge", "true");
+  // Once it stood its second, a click allows it.
+  await page.waitForTimeout(1200);
+  await page.mouse.click(x, y);
+  await expect.poll(waiting).toEqual([]);
+  expect((await approvals(request, id)).map((a) => a.state)).toEqual(["allowed", "allowed"]);
+  await drop(request, id);
+});
+
+// A key is judged by when it went down, not by when the page handled it. A key that went down while the
+// keyboard was arriving, and that a busy page handles only once the card says it is ready, was pressed
+// before the card stood there: it answers nothing. (The key is sent stamped with the time it went down,
+// as the system stamps one; the page takes it later.)
+test("a key that went down as the keyboard arrived answers nothing, however late the page handles it", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const id = await asksToRun(request, "Busy page", folder("busy-page"), "busy");
+  const cdp = await page.context().newCDPSession(page);
+  await page.goto(`/s/${id}`);
+  const list = cardIn(page, id, "approval");
+  await expect(list).toBeFocused();
+  await page.waitForTimeout(1500);
+  // When the list's keys last began to wait (the page's own clock, the one a key is stamped by).
+  await page.evaluate(() => {
+    const w = window as unknown as { waitFrom: number };
+    new MutationObserver(() => { if (document.querySelector('[data-testid="approvals"]')?.getAttribute("data-keys") === "wait") w.waitFrom = Date.now(); })
+      .observe(document.body, { subtree: true, attributes: true, attributeFilter: ["data-keys"] });
+  });
+  const keys = { "1": { key: "1", code: "Digit1", text: "1", windowsVirtualKeyCode: 49 }, Enter: { key: "Enter", code: "Enter", text: "\r", windowsVirtualKeyCode: 13 } };
+  for (const key of ["1", "Enter"] as const) {
+    await page.keyboard.press("Alt+a");
+    await expect(list).toHaveAttribute("data-keys", "wait");
+    if (key === "Enter") { await page.keyboard.press("ArrowDown"); await expect(list.getByTestId("allow-once")).toBeFocused(); }
+    await expect(list).toHaveAttribute("data-keys", "ready");
+    // Down 100 ms into the wait, taken now.
+    const at = (await page.evaluate(() => (window as unknown as { waitFrom: number }).waitFrom)) + 100;
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...keys[key], timestamp: at / 1000 });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: keys[key].key, code: keys[key].code, windowsVirtualKeyCode: keys[key].windowsVirtualKeyCode, timestamp: at / 1000 + 0.05 });
+    await page.waitForTimeout(400);
+    expect((await approvals(request, id))[0], `${key} that went down as the keyboard arrived`).toMatchObject({ state: "pending" });
+    await page.waitForTimeout(1200);
+  }
+  // Pressed once the card says it is ready, it allows.
+  await page.keyboard.press("Alt+a");
+  await expect(list.getByTestId("approval-digit")).toHaveText(["1", "2", "3"], { timeout: 5000 });
+  await page.keyboard.press("1");
+  await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  expect(await said(request, id)).toEqual([]);
+  await drop(request, id);
+});
+
 // After the sequence moves from an approval to a question, numbers pressed at a steady pace are the
 // question's: the first ones, too soon after it showed, do nothing (they never go to the message box),
 // and the next one answers it. No "1" is ever typed or sent.
