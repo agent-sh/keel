@@ -11,7 +11,9 @@ export type Concealer = {
 };
 
 let current: Concealer | null = null;
-export const setConcealer = (c: Concealer) => void (current = c);
+export const setConcealer = (c: Concealer | null) => void (current = c);
+// (A test puts back what was there.)
+export const getConcealer = () => current;
 export const conceal = (s: string, sessionId: string | null = null): string => (current && s ? current.text(s, sessionId) : s);
 // Every string of a JSON value concealed (a record written to disk or sent whole).
 export function concealDeep<T>(v: T, sessionId: string | null = null): T {

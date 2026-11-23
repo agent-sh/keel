@@ -40,9 +40,18 @@ export async function loadSkillCommands(workspace: string) {
   }
 }
 
-type PromptInfo = { server: string; name: string; description: string; arguments: { name: string; required?: boolean }[] };
+// `complete`: its server suggests values for its arguments (completion/complete).
+type PromptInfo = { server: string; name: string; description: string; arguments: { name: string; required?: boolean }[]; complete?: true };
 let promptsLoading: Promise<void> | null = null;
 const promptIds = new Set<string>();
+const promptInfo = new Map<string, PromptInfo>();
+
+// A prompt the slash menu offers, by its command (`server:prompt`, or its `mcp__server__prompt` form), whose server
+// suggests values for its arguments: the composer asks it as they are typed.
+export const completedPrompt = (id: string): PromptInfo | undefined => {
+  const p = promptIds.has(id) ? promptInfo.get(id) : undefined;
+  return p?.complete ? p : undefined;
+};
 
 // The servers' prompts, read again each time the slash menu opens (servers
 // come and go; prompts change). The daemon keeps each server's list until the
@@ -59,6 +68,7 @@ export function loadMcpPrompts(): Promise<void> {
         const alias = `mcp__${p.server.replace(/[^A-Za-z0-9_-]/g, "_")}__${p.name}`;
         now.add(id); now.add(alias);
         if (slash.all().some((i) => i.id === id && i.run && !promptIds.has(id))) continue; // a working built-in keeps its name
+        promptInfo.set(id, p); promptInfo.set(alias, p);
         const run = async (arg: string, { session }: { session?: { id: string } }) => {
           if (!session) throw Object.assign(new Error("Open a session first."), { usage: true });
           if (!promptIds.has(id)) throw Object.assign(new Error(`${p.server} no longer offers ${p.name}.`), { usage: true });

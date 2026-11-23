@@ -158,6 +158,8 @@ export class McpClient {
   onListChanged?: () => void;
   // The prompt list changed (server/prompts, listChanged).
   onPrompts?: () => void;
+  // A line of the server's log (server/utilities/logging: notifications/message), from a server that declared logging.
+  onLog?: (params: { level?: unknown; logger?: unknown; data?: unknown }) => void;
   // The resource list changed, or (after a subscription) one resource's body did.
   onResources?: (change: { list: true } | { uri: string }) => void;
   // An event the server pushed (src/mcp/channel.ts), heard only from a server
@@ -323,6 +325,7 @@ export class McpClient {
     if (msg.method && msg.id !== undefined) return void this.serverRequest(msg, origin);
     if (msg.method === "notifications/tools/list_changed") this.onListChanged?.();
     else if (msg.method === "notifications/prompts/list_changed") this.onPrompts?.();
+    else if (msg.method === "notifications/message" && this.capabilities.logging && msg.params && typeof msg.params === "object") this.onLog?.(msg.params);
     else if (msg.method === "notifications/resources/list_changed") this.onResources?.({ list: true });
     else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
     else if (msg.method === CHANNEL_METHOD && this.channel) this.onChannel?.(msg.params);
@@ -707,7 +710,7 @@ export class McpClient {
     const c = this.capabilities;
     // (The older transport's own event stream carries what the server sends: there is no second one to open.)
     if (this.t.kind !== "http" || this.t.sse || this.era !== "legacy" || this.closed || this.stream) return;
-    if (!c.tools?.listChanged && !c.prompts?.listChanged && !c.resources?.listChanged && !c.resources?.subscribe) return;
+    if (!c.tools?.listChanged && !c.prompts?.listChanged && !c.resources?.listChanged && !c.resources?.subscribe && !c.logging) return;
     const url = this.t.url;
     const ac = (this.stream = new AbortController());
     const st: SseState = { messages: 0 };
@@ -874,6 +877,10 @@ export class McpClient {
   listResources(signal?: AbortSignal, from?: string) { return this.page<any>("resources/list", "resources", signal, from); }
   listResourceTemplates(signal?: AbortSignal, from?: string) { return this.page<any>("resources/templates/list", "resourceTemplates", signal, from); }
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
+  // Suggestions for an argument of a prompt or a resource template (server/utilities/completion).
+  complete(ref: { type: "ref/prompt"; name: string } | { type: "ref/resource"; uri: string }, argument: { name: string; value: string }, context?: Record<string, string>, signal?: AbortSignal) {
+    return this.rpc("completion/complete", { ref, argument, ...(context && Object.keys(context).length ? { context: { arguments: context } } : {}) }, { signal });
+  }
   readResource(uri: string, signal?: AbortSignal) { return this.rounds("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rounds("prompts/get", { name, arguments: args }, { signal }); }
   // `ceilingMs`: the call's longest time however it reports progress (TOOL_CEILING_MS by default).

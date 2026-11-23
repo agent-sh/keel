@@ -1,13 +1,19 @@
 #!/usr/bin/env bun
 // A tiny stdio MCP server (legacy, initialize-based, like most servers today)
 // for the MCP e2e: tools echo and add, one resource, a few prompts. With
-// --learn it says when its prompt list changes, and its tool learn adds the
-// prompt farewell and says so.
+// --extras it says when its prompt list changes, and its tool learn adds the
+// prompt farewell and says so; it sends its log (logging, at the level it is
+// asked for: learn logs a line at info and one at error) and suggests who to
+// greet (completions).
 const tools: { name: string; description: string; annotations?: object; inputSchema: object }[] = [
   { name: "echo", description: "Echo the given text back, prefixed with 'echo:'.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
   { name: "add", description: "Add two numbers.", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } },
 ];
-const learns = process.argv.includes("--learn");
+const learns = process.argv.includes("--extras");
+const LEVELS = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"];
+let level = "warning";
+const log = (at: string, data: unknown) => { if (LEVELS.indexOf(at) >= LEVELS.indexOf(level)) send({ jsonrpc: "2.0", method: "notifications/message", params: { level: at, logger: "echo", data } }); };
+const WHO = ["alice", "alfred", "bob"];
 // (What its server says of it is marked in the MCP panel.)
 if (learns) tools.push({ name: "learn", description: "Add the prompt farewell.", annotations: { destructiveHint: true, openWorldHint: true, idempotentHint: true }, inputSchema: { type: "object", properties: {}, required: [] } });
 let learned = false;
@@ -26,7 +32,7 @@ function handle(m: any) {
     case "initialize":
       return reply({
         protocolVersion: m.params?.protocolVersion ?? "2025-11-25",
-        capabilities: { tools: {}, resources: {}, prompts: learns ? { listChanged: true } : {} },
+        capabilities: { tools: {}, resources: {}, prompts: learns ? { listChanged: true } : {}, ...(learns ? { logging: {}, completions: {} } : {}) },
         serverInfo: { name: "echo-mcp", version: "1.0.0" },
         instructions: "Echo and add, for tests.",
       });
@@ -38,6 +44,8 @@ function handle(m: any) {
       if (m.params?.name === "add") return reply({ content: [{ type: "text", text: String(Number(a.a) + Number(a.b)) }] });
       if (m.params?.name === "learn" && learns) {
         learned = true;
+        log("info", "added the prompt farewell");
+        log("error", { problem: "farewell has no translation", languages: 0 });
         send({ jsonrpc: "2.0", method: "notifications/prompts/list_changed" });
         return reply({ content: [{ type: "text", text: "learned farewell" }] });
       }
@@ -71,6 +79,18 @@ function handle(m: any) {
       const a = m.params?.arguments ?? {};
       if (m.params?.name === "summarize") return reply({ messages: [{ role: "user", content: { type: "text", text: `Summarize.${"tone" in a ? ` Tone: ${a.tone}.` : ""}` } }] });
       return reply({ messages: [{ role: "user", content: { type: "text", text: `Say hello to ${a.who ?? "you"}.` } }] });
+    }
+    case "logging/setLevel":
+      if (!learns) return error(-32601, "Method not found: logging/setLevel");
+      if (!LEVELS.includes(m.params?.level)) return error(-32602, "unknown level");
+      level = m.params.level;
+      reply({});
+      return log("info", `level set to ${level}`);
+    case "completion/complete": {
+      if (!learns) return error(-32601, "Method not found: completion/complete");
+      const p = m.params ?? {};
+      const values = p.ref?.type === "ref/prompt" && p.ref.name === "greet" && p.argument?.name === "who" ? WHO.filter((w) => w.startsWith(String(p.argument.value ?? ""))) : [];
+      return reply({ completion: { values, total: values.length, hasMore: false } });
     }
     default:
       return error(-32601, `Method not found: ${m.method}${ready ? "" : " (not initialized)"}`);

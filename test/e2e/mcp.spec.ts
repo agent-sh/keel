@@ -39,8 +39,8 @@ test("mcp servers", async ({ page, request }) => {
 
   await panel.getByTestId("toolkit-add-+add").click();
   await panel.getByTestId("mcp-add-name").fill("echo");
-  // (--learn: it can add a prompt and say its list changed, below.)
-  await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE} --learn`);
+  // (--extras: it can add a prompt and say its list changed, below.)
+  await panel.getByTestId("mcp-add-target").fill(`bun ${FIXTURE} --extras`);
   await panel.getByTestId("mcp-add-submit").click();
   const row = panel.locator('[data-testid="mcp-server"][data-name="echo"]');
   await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
@@ -189,12 +189,38 @@ test("mcp servers", async ({ page, request }) => {
   await page.getByTestId("composer").fill("/echo:");
   await expect(menu).toContainText("/echo:farewell");
   await shoot(page, "mcp-06b-prompt-added");
+  // An argument the server suggests values for (completion/complete): picked from a menu as it is typed.
+  await page.getByTestId("composer").fill("/echo:greet al");
+  const args = page.getByTestId("arg-menu");
+  await expect(args).toContainText("alice");
+  await expect(args).toContainText("alfred");
+  await expect(args).not.toContainText("bob");
+  await shoot(page, "mcp-06c-prompt-argument");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("composer")).toHaveValue("/echo:greet alice");
+  await expect(args).toHaveCount(0);
   await page.getByTestId("composer").fill("");
   await request.delete(`/api/sessions/${sp.id}`);
 
+  // The server's own log (it declares logging): the lines it sent at info and up, on its row.
+  await page.goto("/");
+  await page.getByTestId("composer").fill("/mcp");
+  await page.keyboard.press("Enter");
+  await panel.locator('[data-testid="mcp-server"][data-name="echo"]').click();
+  await panel.getByTestId("mcp-log-toggle").click();
+  // (Kept across its reconnect above: each connection asked for info, and it said so.)
+  const logged = panel.getByTestId("mcp-log-line");
+  await expect(logged.first()).toContainText("level set to info");
+  await expect(logged.nth(-2)).toContainText("added the prompt farewell");
+  await expect(logged.last()).toHaveAttribute("data-level", "error");
+  await expect(logged.last()).toContainText("farewell has no translation");
+  await shoot(page, "mcp-06d-server-log");
+
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
-  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
-  expect(errorsAfter).toBe(errorsBefore);
+  // The one failure is the error line the server logged, which the Errors panel shows too.
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors as { message: string }[];
+  expect(errorsAfter.length).toBe(errorsBefore + 1);
+  expect(errorsAfter.some((e) => e.message.startsWith("MCP server echo logged an error (echo): "))).toBe(true);
   await request.delete("/api/mcp/servers/echo");
 });
 

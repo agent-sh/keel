@@ -26,6 +26,7 @@ import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { hintsOf, hintWords } from "./hints.ts";
+import { ASKED, LOG_KEPT, logLine, severe, type LogLine } from "./logs.ts";
 import { conceal } from "../core/conceal.ts";
 import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
 import { runMode } from "../core/runmode.ts";
@@ -117,6 +118,9 @@ export type McpServerState = {
   prompts: boolean;   // the connected server offers prompt templates
   resources_rev: number; // goes up when its resource list changed (a list read again shows it)
   prompts_rev: number;   // goes up when its prompt list changed or it connected again
+  logging: boolean;      // the connected server sends its log (src/mcp/logs.ts)
+  log_rev: number;       // goes up with each line of its log
+  completions: boolean;  // the connected server suggests prompt and template arguments (completion/complete)
   resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
   sync?: { source: string; name: string; label: string; gone: boolean }; // follows another agent's entry
   plugin?: string; // the installed plugin it comes with (it goes and stops with the plugin)
@@ -187,6 +191,11 @@ type Entry = {
   promptsRev: number;
   // Its prompts as last listed, for the composer's slash menu.
   prompts?: { client: McpClient; rev: number; at: number; list: any[] };
+  // The latest lines of its own log (src/mcp/logs.ts), kept across its reconnects; `logRev` goes up with each.
+  log: LogLine[];
+  logRev: number;
+  // When a line of it last went to the Errors panel.
+  logCaptured?: number;
   updates: Record<string, number>;
   subscribed: Set<string>;
   // A session's own server (an editor passed it with the session, over ACP):
@@ -696,7 +705,7 @@ export class McpManager {
   }
 
   private addEntry(name: string, config: McpServerConfig, bundled?: BundledServer, own?: Own) {
-    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled, resourcesRev: 0, promptsRev: 0, updates: {}, subscribed: new Set(), ...own };
+    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled, resourcesRev: 0, promptsRev: 0, log: [], logRev: 0, updates: {}, subscribed: new Set(), ...own };
     this.entries.set(name, e);
     if (!own) this.unshadow(name);
     registerCatalog({
@@ -864,6 +873,19 @@ export class McpManager {
           if (this.entries.get(name) !== e || e.state === "disabled") return;
           try { this.onChannel?.(this.channelFrom(e), params); } catch (err) { this.errors.capture("server", err, { mcp: name, at: "mcp channel event" }); }
         };
+        // Its log, from the start too: what it says while it starts is often why it fails.
+        client.onLog = (p) => {
+          if (this.entries.get(name) !== e || e.abort !== abort) return;
+          const line = logLine(p);
+          e.log.push(line);
+          if (e.log.length > LOG_KEPT) e.log.splice(0, e.log.length - LOG_KEPT);
+          e.logRev++;
+          // A failure it logs is the Errors panel's too, one row per logger and level. At most one a second is
+          // written: the row counts them anyway, and a server that logs fast would make a write of every line.
+          if (!severe(line.level) || Date.now() - (e.logCaptured ?? 0) < 1000) return;
+          e.logCaptured = Date.now();
+          this.errors.capture("server", new Error(`MCP server ${e.label ?? name} logged ${line.level === "error" ? "an error" : `a ${line.level} line`}${line.logger ? ` (${line.logger})` : ""}: ${line.text.slice(0, 500)}`), { mcp: name, at: "mcp log", level: line.level, ...(line.logger ? { logger: line.logger } : {}) }, { group: `mcp log\u0000${name}\u0000${line.logger ?? ""}\u0000${line.level}` });
+        };
         // Watched from the start: a server that exits during discovery is not ready.
         let gone: string | undefined;
         client.onClose = (why) => {
@@ -924,6 +946,9 @@ export class McpManager {
           );
         };
         client.onPrompts = () => { if (e.client === client) e.promptsRev++; };
+        // (A modern server is not asked: the 2026-07-28 revision deprecates logging.)
+        if (client.era === "legacy" && client.capabilities.logging)
+          client.rpc("logging/setLevel", { level: ASKED }).catch((err) => { if (e.client === client) this.errors.capture("server", err, { mcp: name, at: "logging/setLevel" }); });
         client.onResources = (c) => {
           if (e.client !== client) return;
           if ("list" in c) e.resourcesRev++;
@@ -1285,6 +1310,9 @@ export class McpManager {
       prompts: !!e.client?.capabilities.prompts,
       resources_rev: e.resourcesRev,
       prompts_rev: e.promptsRev,
+      logging: !!e.client?.capabilities.logging,
+      log_rev: e.logRev,
+      completions: !!e.client?.capabilities.completions,
       resource_updates: e.updates,
       channel: { on: this.channelOn(e), declared: !!e.client?.channel, status: !!e.client?.capabilities.experimental?.[STATUS_CAP] },
     } as McpServerState;
@@ -1667,6 +1695,22 @@ export class McpManager {
     return c.listPrompts(signal);
   }
 
+  // The latest lines of a server's own log, oldest first.
+  log(name: string): LogLine[] {
+    return [...(this.entries.get(name)?.log ?? [])];
+  }
+
+  // What a server suggests for an argument of one of its prompts or resource
+  // templates (server/utilities/completion): at most the spec's 100 values,
+  // strings only. A server that does not declare completions suggests nothing.
+  async complete(name: string, ref: { type: "ref/prompt"; name: string } | { type: "ref/resource"; uri: string }, argument: { name: string; value: string }, context?: Record<string, string>, signal?: AbortSignal): Promise<{ values: string[]; hasMore?: true; total?: number }> {
+    const c = await this.ensure(name, 15_000);
+    if (!c.capabilities.completions) return { values: [] };
+    const r = (await c.complete(ref, argument, context, signal))?.completion ?? {};
+    const values = (Array.isArray(r.values) ? r.values : []).filter((v: unknown): v is string => typeof v === "string").slice(0, 100);
+    return { values, ...(r.hasMore === true ? { hasMore: true as const } : {}), ...(typeof r.total === "number" ? { total: r.total } : {}) };
+  }
+
   async promptMessages(name: string, prompt: string, args: Record<string, string>, signal?: AbortSignal): Promise<PromptMessage[]> {
     const c = await this.ensure(name, 15_000);
     const r = await c.getPrompt(prompt, args, signal);
@@ -1684,7 +1728,8 @@ export class McpManager {
   // A server that says when its list changes (prompts.listChanged) is listed
   // again after it said so, or when it connected again; one that does not is
   // listed again when its list is older than PROMPTS_FRESH_MS.
-  async allPrompts(signal?: AbortSignal): Promise<{ server: string; name: string; description: string; arguments: { name: string; description?: string; required?: boolean }[] }[]> {
+  // `complete`: the server suggests values for the prompt's arguments (completion/complete).
+  async allPrompts(signal?: AbortSignal): Promise<{ server: string; name: string; description: string; arguments: { name: string; description?: string; required?: boolean }[]; complete?: true }[]> {
     const out = await Promise.all(this.ready().map(async (server) => {
       const e = this.entries.get(server);
       const c = e?.client;
@@ -1698,7 +1743,8 @@ export class McpManager {
         // (A list that changed while it was read is read again next time.)
         if (list && e.client === c && e.promptsRev === rev) e.prompts = { client: c, rev, at: Date.now(), list };
       }
-      return (list ?? []).map((p: any) => ({ server, name: String(p.name), description: String(p.description ?? ""), arguments: Array.isArray(p.arguments) ? p.arguments : [] }));
+      const complete = c.capabilities.completions ? { complete: true as const } : {};
+      return (list ?? []).map((p: any) => ({ server, name: String(p.name), description: String(p.description ?? ""), arguments: Array.isArray(p.arguments) ? p.arguments : [], ...complete }));
     }));
     return out.flat();
   }

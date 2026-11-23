@@ -12,7 +12,7 @@ import { api, reportError, failed, useStore } from "../../lib/store.ts";
 import type { Outcome } from "../../../../src/mcp/channel.ts";
 import { ownerStop } from "../../../../src/core/stoppers.ts";
 import { Select } from "../Select.tsx";
-import { ago, cn, when } from "../../lib/utils.ts";
+import { ago, clock, cn, when } from "../../lib/utils.ts";
 import { Connect } from "./McpConnect.tsx";
 import { navigate } from "../../lib/ui.ts";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
@@ -136,6 +136,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         ) : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
         {!s.bundled && <ChannelSection s={s} base={base} act={act} />}
         {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
+        {(s.logging || s.log_rev > 0) && <ServerLog s={s} base={base} />}
         {!offered(s) && !s.error && <p className="text-caption text-faint">Its tools show once it connects.</p>}
       </div>
     </div>
@@ -278,6 +279,43 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
         </div>
       )}
     </div>
+  );
+}
+
+type LogLine = { ts: number; level: string; logger?: string; text: string };
+const LOG_TONE: Record<string, string> = { warning: "text-warn", error: "text-danger", critical: "text-danger", alert: "text-danger", emergency: "text-danger" };
+
+// The server's own log (logging: Keel asks it for info and up), newest last,
+// read when opened and again as lines come. Its errors are in the Errors panel too.
+function ServerLog({ s, base }: { s: McpServerState; base: string }) {
+  const [open, setOpen] = useState(false);
+  const [lines, setLines] = useState<LogLine[] | null>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (open) api<{ lines: LogLine[] }>(`${base}/log`).then((r) => setLines(r.lines)).catch((e) => setErr(failed(e, { at: "Mcp log" })));
+  }, [open, base, s.log_rev]);
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen}>
+      <Collapsible.Trigger data-testid="mcp-log-toggle" className="group/c inline-flex items-center gap-1 text-caption text-muted hover:text-fg">
+        <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]/c:rotate-90" />
+        Its log{s.log_rev > 0 ? `, ${s.log_rev} ${s.log_rev === 1 ? "line" : "lines"}` : ""}
+      </Collapsible.Trigger>
+      <Collapsible.Panel data-testid="mcp-log" className="mt-1.5">
+        {err && <div className="text-micro text-danger">{err}</div>}
+        {lines === null ? <div className="text-micro text-faint">Loading</div> : !lines.length ? <div className="text-micro text-faint">Nothing logged since it connected</div> : (
+          <ol className="max-h-64 space-y-0.5 overflow-y-auto rounded-md border border-line bg-sunken px-2 py-1.5 font-mono text-micro">
+            {lines.map((l, i) => (
+              <li key={i} data-testid="mcp-log-line" data-level={l.level} className="flex items-baseline gap-2">
+                <span className="shrink-0 text-faint" title={when(l.ts)}>{clock(l.ts, { seconds: true })}</span>
+                <span className={cn("w-[4.5rem] shrink-0", LOG_TONE[l.level] ?? "text-muted")}>{l.level}</span>
+                {l.logger && <span className="shrink-0 text-faint">{l.logger}</span>}
+                <span className="min-w-0 whitespace-pre-wrap break-words text-fg">{l.text}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Collapsible.Panel>
+    </Collapsible.Root>
   );
 }
 

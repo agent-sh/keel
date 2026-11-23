@@ -497,6 +497,26 @@ export const mcpRoutes: RouteModule = (deps) => {
         try { return json({ prompts: await m.prompts(req.params.name) }); } catch (e) { return bad((e as Error).message, 409); }
       },
     },
+    // The latest lines of a server's own log (src/mcp/logs.ts).
+    "/api/mcp/servers/:name/log": {
+      GET: (req: any) => known(req.params.name) ?? json({ lines: m.log(req.params.name) }),
+    },
+    // What a server suggests for an argument: {ref: {type: "ref/prompt", name} or {type: "ref/resource", uri},
+    // argument: {name, value}, context?: {name: value}} (completion/complete).
+    "/api/mcp/servers/:name/complete": {
+      POST: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const b = await body(req);
+        const ref = b.ref?.type === "ref/prompt" && typeof b.ref.name === "string" ? { type: "ref/prompt" as const, name: b.ref.name }
+          : b.ref?.type === "ref/resource" && typeof b.ref.uri === "string" ? { type: "ref/resource" as const, uri: b.ref.uri } : null;
+        if (!ref) return bad("ref is a prompt ({type: \"ref/prompt\", name}) or a resource template ({type: \"ref/resource\", uri})");
+        if (typeof b.argument?.name !== "string") return bad("argument.name is required");
+        const context = b.context && typeof b.context === "object" && !Array.isArray(b.context)
+          ? Object.fromEntries(Object.entries(b.context).filter(([, v]) => typeof v === "string") as [string, string][]) : undefined;
+        try { return json(await m.complete(req.params.name, ref, { name: b.argument.name, value: String(b.argument.value ?? "") }, context, req.signal)); } catch (e) { return bad((e as Error).message, 409); }
+      },
+    },
     // Every connected server's prompts, for the slash menu (/server:prompt).
     "/api/mcp/prompts": {
       GET: async (req: Request) => json({ prompts: await m.allPrompts(req.signal) }),

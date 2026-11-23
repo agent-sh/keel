@@ -22,7 +22,7 @@ const ctx = (sessionId: string, cwd: string) => ({ sessionId, cwd, signal: new A
 const text = (o: { content: unknown }) => String(o.content);
 
 test("a server that says its prompts changed is listed again; one that did not is not asked again", async () => {
-  const m = manager("echo", [join(FIXTURES, "echo-mcp.ts"), "--learn"]);
+  const m = manager("echo", [join(FIXTURES, "echo-mcp.ts"), "--extras"]);
   const c = await m.ensure("echo");
   let lists = 0;
   const list = c.listPrompts.bind(c);

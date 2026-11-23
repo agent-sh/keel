@@ -1,8 +1,9 @@
-import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
+import { ArrowUp, CornerDownRight, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
-import { loadMcpPrompts } from "../lib/tools-ui.ts";
+import { completedPrompt, loadMcpPrompts } from "../lib/tools-ui.ts";
+import { promptArgAt, type PromptArg } from "../lib/prompt-args.ts";
 import { fromBlock, MAX_EDGE, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
@@ -39,7 +40,9 @@ const FileInput = memo(function FileInput({ at, take }: { at: { current: HTMLInp
 
 type Menu =
   | { kind: "slash"; query: string; start: number }
-  | { kind: "file"; query: string; start: number };
+  | { kind: "file"; query: string; start: number }
+  // An argument of an MCP prompt whose server suggests values (completion/complete).
+  | ({ kind: "arg"; query: string } & PromptArg);
 
 type Option = { key: string; label: ReactNode; detail?: string; disabled?: boolean; icon: ReactNode; apply: () => void };
 
@@ -137,6 +140,7 @@ const SessionComposer = memo(function SessionComposer({
   const [menu, setMenu] = useState<Menu | null>(null);
   const [sel, setSel] = useState(0);
   const [files, setFiles] = useState<{ path: string; dir: boolean }[]>([]);
+  const [suggested, setSuggested] = useState<{ for: string; values: string[] }>({ for: "", values: [] });
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -515,7 +519,11 @@ const SessionComposer = memo(function SessionComposer({
     const before = value.slice(0, caret);
     const sm = before.match(/^\/([\w:.-]*)$/);
     const fm = sm ? null : before.match(/(^|\s)@([^\s@]*)$/);
-    const next: Menu | null = sm ? { kind: "slash", query: sm[1]!, start: 0 } : fm && workspace ? { kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 } : null;
+    // (Suggested once something is typed of it: an empty argument leaves Enter to send.)
+    const am = sm ? null : promptArgAt(before, completedPrompt);
+    const next: Menu | null = sm ? { kind: "slash", query: sm[1]!, start: 0 }
+      : am && am.value && !/\s/.test(am.value.slice(0, 1)) ? { kind: "arg", query: am.value, ...am }
+      : fm && workspace ? { kind: "file", query: fm[2]!, start: caret - fm[2]!.length - 1 } : null;
     if (!next || closed.current !== `${next.kind} ${next.start}`) closed.current = null;
     if (!next || closed.current) return setMenu(null);
     // (The servers' prompts are read when the menu opens, not at each key typed in it.)
@@ -534,6 +542,20 @@ const SessionComposer = memo(function SessionComposer({
     }, 60);
     return () => { clearTimeout(t); ctl.abort(); };
   }, [menu?.kind, menu?.query, workspace]);
+
+  // What the prompt's server suggests for the argument being typed, asked a moment after the last key.
+  const argKey = menu?.kind === "arg" ? JSON.stringify([menu.server, menu.prompt, menu.arg, menu.query, menu.context]) : "";
+  useEffect(() => {
+    if (menu?.kind !== "arg") return;
+    const ctl = new AbortController();
+    const t = setTimeout(() => {
+      fetch(`/api/mcp/servers/${encodeURIComponent(menu.server)}/complete`, { method: "POST", signal: ctl.signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ ref: { type: "ref/prompt", name: menu.prompt }, argument: { name: menu.arg, value: menu.query }, context: menu.context }) })
+        .then((r) => r.json())
+        .then((r) => setSuggested({ for: argKey, values: Array.isArray(r.values) ? r.values : [] }))
+        .catch((e) => e.name !== "AbortError" && reportError(e, { kind: "mcp-complete" }));
+    }, 120);
+    return () => { clearTimeout(t); ctl.abort(); };
+  }, [argKey]);
 
   // The session as it is when a command asks, not as it was when the box was drawn.
   const ctx = {
@@ -585,6 +607,28 @@ const SessionComposer = memo(function SessionComposer({
           },
         }));
     }
+    if (menu.kind === "arg") {
+      if (suggested.for !== argKey) return [];
+      // A value with a space fills only the last argument; what is typed already is nothing to suggest.
+      return suggested.values.filter((v) => v !== menu.query && (menu.last || !/\s/.test(v))).map((v) => ({
+        key: v,
+        icon: <CornerDownRight className="size-3.5" />,
+        label: <span className="font-mono text-caption text-fg">{v}</span>,
+        detail: menu.arg,
+        apply: () => {
+          const el = ref.current!;
+          const caret = el.selectionStart;
+          const insert = menu.last ? v : `${v} `;
+          const next = text.slice(0, menu.start) + insert + text.slice(caret);
+          setText(next);
+          const pos = menu.start + insert.length;
+          // The last argument stays chosen: its menu does not open again on the same word.
+          if (menu.last) closed.current = `arg ${menu.start}`;
+          requestAnimationFrame(() => { el.focus(); el.setSelectionRange(pos, pos); detect(next, pos); });
+          setMenu(null);
+        },
+      }));
+    }
     return files.map((f) => ({
       key: f.path,
       icon: f.dir ? <Folder className="size-3.5" /> : <FileIcon className="size-3.5" />,
@@ -601,7 +645,7 @@ const SessionComposer = memo(function SessionComposer({
       },
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menu, slashItems, files, text, listed]);
+  }, [menu, slashItems, files, text, listed, suggested, argKey]);
 
   useEffect(() => setSel(0), [menu?.kind, menu?.query]);
   // The list and its options have ids: the box, which keeps the focus, names
@@ -818,10 +862,10 @@ const SessionComposer = memo(function SessionComposer({
       {open && (
         <div
           ref={popup}
-          data-testid={menu.kind === "slash" ? "slash-menu" : "mention-menu"}
+          data-testid={menu.kind === "slash" ? "slash-menu" : menu.kind === "arg" ? "arg-menu" : "mention-menu"}
           className="absolute inset-x-0 bottom-[calc(100%+8px)] z-30 max-h-72 overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-3 animate-pop"
         >
-          <div id={`${listId}-name`} className="px-2 pb-1 pt-1.5 k-label">{menu.kind === "slash" ? "Commands" : `Files in ${workspace?.split("/").pop()}`}</div>
+          <div id={`${listId}-name`} className="px-2 pb-1 pt-1.5 k-label">{menu.kind === "slash" ? "Commands" : menu.kind === "arg" ? `${menu.arg} for /${menu.server}:${menu.prompt}, as ${menu.server} suggests` : `Files in ${workspace?.split("/").pop()}`}</div>
           <div role="listbox" id={listId} aria-labelledby={`${listId}-name`}>
             {options.map((o, i) => (
               <div
