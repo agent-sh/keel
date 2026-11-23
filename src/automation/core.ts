@@ -14,6 +14,7 @@ export const setDeps = (d: Deps) => {
   // A flush that waits under the dependencies before these never runs under these.
   for (const t of timers.values()) clearTimeout(t);
   timers.clear();
+  settling.clear();
   deps = d;
   rider.get = undefined;
 };
@@ -72,14 +73,18 @@ type Input = { text: string; meta: Record<string, unknown> };
 // refresh: the part as it is when sent (its text, and what sending it settles), or nothing when it no
 // longer holds. `parts`: the meta of everything lined up with it, itself included.
 type Parts = Record<string, unknown>[];
-type Delivery = { coalesceMs?: number; hold?: boolean; ride?: boolean; onSent?: (e: StoredEvent) => void; refresh?: (parts: Parts) => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
-export type Pending = Input & Omit<Delivery, "coalesceMs" | "ride">;
+// `settle`: the input waits until no other input came for `quietMs`, and at most `maxMs` after
+// the first that waited, so a burst is one input (a turn per input rereads the whole context).
+type Delivery = { coalesceMs?: number; settle?: { quietMs: number; maxMs: number }; hold?: boolean; ride?: boolean; onSent?: (e: StoredEvent) => void; refresh?: (parts: Parts) => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
+export type Pending = Input & Omit<Delivery, "coalesceMs" | "settle" | "ride">;
 // A part that never starts a turn of its own and goes with whatever is sent
 // next (the failure notice). `parts`: the meta of what is being sent.
 export const rider: { get?: (sessionId: string, parts: Parts) => Pending | undefined } = {};
 const pending = new Map<string, Pending[]>();
 const riding = new Map<string, Pending[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+// When the first input that is settling for a session came.
+const settling = new Map<string, number>();
 
 
 export function hasPending(sessionId: string) {
@@ -96,8 +101,18 @@ export function deliver(sessionId: string, text: string, meta: Record<string, un
   // A session the owner is archiving or deleting right now: kept back, and sent only if it stays (closingOver).
   if (D().engine.isClosing?.(sessionId)) return true;
   if (D().engine.isRunning(sessionId) || opts.hold || opts.ride) return true; // flushed by the turn-end hook, or with the next input
-  if (opts.coalesceMs) {
-    if (!timers.has(sessionId)) timers.set(sessionId, setTimeout(() => { timers.delete(sessionId); flush(sessionId); }, opts.coalesceMs));
+  if (opts.settle) {
+    // Each input that comes moves the end of the settle, never past its most.
+    const now = Date.now();
+    const first = settling.get(sessionId) ?? now;
+    settling.set(sessionId, first);
+    clearTimeout(timers.get(sessionId));
+    const at = Math.min(now + opts.settle.quietMs, first + opts.settle.maxMs);
+    timers.set(sessionId, setTimeout(() => { timers.delete(sessionId); settling.delete(sessionId); flush(sessionId); }, Math.max(0, at - now)));
+  } else if (opts.coalesceMs) {
+    // An input that need not settle ends a settle that runs: they go together, soon.
+    if (settling.delete(sessionId)) { clearTimeout(timers.get(sessionId)); timers.delete(sessionId); }
+    if (!timers.has(sessionId)) timers.set(sessionId, setTimeout(() => { timers.delete(sessionId); settling.delete(sessionId); flush(sessionId); }, opts.coalesceMs));
   } else flush(sessionId);
   return true;
 }
@@ -164,6 +179,8 @@ export function flush(sessionId: string) {
   // input stays owed here, and it goes first when a slot frees (agents.admit).
   if (slotGate.admit && !slotGate.admit(sessionId)) return;
   pending.delete(sessionId);
+  // What waited to settle goes now, with the rest.
+  if (settling.delete(sessionId)) { clearTimeout(timers.get(sessionId)); timers.delete(sessionId); }
   const s = D().store.session(sessionId);
   if (!s || s.archived) return void riding.delete(sessionId);
   let rest: Pending[] = [];

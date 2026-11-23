@@ -203,6 +203,12 @@ under `~/.cache/keel-work/bun/research/`.
   (`src/automation/slots.ts`): none is refused or dropped for a slot, and the
   limit's refusal of a finished agent asked to go on says how many work and
   how many wait.
+- Reports that come while an idle parent has other agents at work are one
+  input: each turn a report starts reads the parent's whole context again. A
+  report waits until no other came for two seconds, at most ten after the
+  first (`REPORT_SETTLE` in `src/automation/agents.ts`); a report that comes
+  when no other agent works ends the wait, and a parent whose turn runs (a
+  `wait_agent` included) is never held by it.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

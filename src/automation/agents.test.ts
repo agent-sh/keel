@@ -1067,3 +1067,23 @@ test("a waiting agent gives its slot back and its wake goes first when one frees
   }
 });
 
+// Reports that come close together while the idle parent has other agents
+// at work are one input: each turn a report starts rereads the parent's context.
+test("reports that come in a burst wake the parent once", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Burst of reports" });
+  store.append(p.id, "assistant", { blocks: [] });
+  const kids = await Promise.all([1, 2, 3].map((i) => agents.spawn(p.id, { prompt: `part ${i}`, isolation: "none", background: true })));
+  const inputs = () => store.events(p.id).filter((e) => e.kind === "user" && (e.data.kind === "subagent" || e.data.kind === "wake"));
+  end(kids[0]!, "end_turn", "one");
+  await Bun.sleep(800);
+  expect(inputs()).toHaveLength(0); // the other two still work: it settles
+  end(kids[1]!, "end_turn", "two");
+  await Bun.sleep(800);
+  end(kids[2]!, "end_turn", "three"); // the last: nothing works any more, it goes at once with the rest
+  for (let i = 0; i < 150 && !inputs().length; i++) await Bun.sleep(20);
+  await Bun.sleep(100);
+  expect(inputs()).toHaveLength(1);
+  const text = String(inputs()[0]!.data.text);
+  for (const w of ["one", "two", "three"]) expect(text).toContain(w);
+  expect(agents.REPORT_SETTLE).toEqual({ quietMs: 2_000, maxMs: 10_000 });
+});

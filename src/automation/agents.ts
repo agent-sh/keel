@@ -1099,6 +1099,17 @@ const isReport = (reportId: string) => (m: Record<string, unknown>) => m.kind ==
 // input of its own (releaseOwed). A wait_agent still returns it.
 // `boot`: sent at a start. A parent whose cut turn the engine is about to
 // continue gets it when that turn ends, not ahead of it, as a wait's wake does.
+// Reports of agents started together often come together (a burst came 0.8 s
+// apart), and each turn a report starts rereads the parent's whole context.
+// While another agent of an idle parent still works, a report waits until no
+// other report came for two seconds, at most ten after the first: a burst is
+// one input, and a lone report is two seconds late on a turn whose first
+// token takes several. A parent whose turn runs (wait_agent included) is not
+// held by it: its reports reach it as they did.
+export const REPORT_SETTLE = { quietMs: 2_000, maxMs: 10_000 };
+const othersWork = (parentId: string, agentId: string) => !D().engine.isRunning(parentId) &&
+  !!D().store.db.query("SELECT 1 FROM agents WHERE parent_id = ? AND id != ? AND status = 'running' LIMIT 1").get(parentId, agentId);
+
 function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, parentId: string, boot = false) {
   if (isPending(parentId, isReport(o.report_id))) return; // already on its way
   const meta = { kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status };
@@ -1106,7 +1117,7 @@ function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, 
   const said = () => `${HANDBACK_PREFACE}\n${withUnread(o.block, o.agent_id)}`;
   const text = said();
   const go = (ride: boolean) => deliver(parentId, text, meta, {
-    ride, ...(boot && waits.cutTurn(parentId) ? { hold: true } : { coalesceMs: 300 }),
+    ride, ...(boot && waits.cutTurn(parentId) ? { hold: true } : othersWork(parentId, o.agent_id) ? { settle: REPORT_SETTLE } : { coalesceMs: 300 }),
     refresh: (parts) => {
       // Lined up to start a turn, and the owner stopped the parent since: it rides instead.
       if (!ride && D().engine.isHeld(parentId)) return void go(true);
