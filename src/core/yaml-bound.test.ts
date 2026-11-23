@@ -32,4 +32,3 @@ test("a long string named by many aliases is refused before it is written out", 
   const prose = `description: ${"word ".repeat(40_000)}\nhooks: []\n`;
   expect("value" in yamlWithin(prose, 400_000)).toBe(true);
 });
-
