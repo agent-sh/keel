@@ -1009,7 +1009,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
 }
 
 // What a reviewer is told of the work board (src/board/rules.ts pickReview): its words are never read as a verdict.
-export const VERDICT_LINE = "The work board takes your review verdict only from the tool keel__verdict: for each commit you judge, call it with the commit, land yes or no, and why in one line. A LAND line in your report is shown as your words only, never as approved or refused.";
+export const VERDICT_LINE = "For each commit you judge, give the work board your verdict with keel__verdict (commit, land yes or no, why), a deferred tool you load with your tool search first, since it reads a LAND line in your report as your words only.";
 
 // The branches an agent reviews, with each one's tip as it starts (what it reviewed), as the work board
 // reads them (src/board/board.ts): the ones its spawn names in `reviews`, else the branches of its tree's

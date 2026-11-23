@@ -64,7 +64,7 @@ function reviewFact(r: BoardRow) {
   if (!v) return <Fact name="Review" tone="none" value="none" testid="board-review" state="none" />;
   const word = v.verdict === "pending" ? "running" : v.verdict === "words" ? "words only" : v.verdict;
   // Approved is the one word the board must never say wrongly: only a structured verdict on this head says it.
-  const tone: Tone = v.verdict === "approved" && v.current === true ? "ok" : v.verdict === "refused" ? "bad" : v.verdict === "pending" ? "wait" : "none";
+  const tone: Tone = v.verdict === "approved" && v.current === true ? "ok" : v.verdict === "refused" || v.verdict === "disputed" ? "bad" : v.verdict === "pending" ? "wait" : "none";
   const who = v.how === "panel" ? "The Review panel" : `${v.title} (agent ${v.by})`;
   const said = v.was ? `; it said ${v.was}${v.of ? ` of ${sha(v.of)}` : ""}${v.verdict === "stale" ? ", not of the head now" : ", of a head not known"}` : "";
   const from = v.source ? `; read from ${SOURCE[v.source] ?? v.source}` : "";
@@ -85,6 +85,19 @@ function liveFact(r: BoardRow) {
   const v = r.live;
   if (!v || v.state === "unknown") return <Fact name="Live" tone="none" value="no deploy record" title={v?.why} testid="board-live" state="unknown" />;
   return <Fact name="Live" tone={v.state === "yes" ? "ok" : "none"} value={`${v.state === "yes" ? "yes" : "not yet"} · ${v.how === "after step passed" ? "after step" : v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
+}
+
+// A reviewer's own words under a card, named as its.
+function Quote({ by, how, title, line, below, testid }: { by: string; how: string; title: string; line: string; below: Board["rows"]; testid: string }) {
+  const agent = below.find((x) => x.id === by);
+  return (
+    <blockquote className="k-quote text-caption text-muted" data-testid={testid}>
+      <span className="block text-micro text-faint" data-testid={testid === "board-verdict" ? "board-reviewer" : undefined}>
+        {how === "panel" ? "The Review panel" : agent ? <button type="button" className="hover:text-accent" onClick={() => openSession(agent.session_id)}>Reviewer {title}</button> : `Reviewer ${title}`} wrote:
+      </span>
+      <span className="line-clamp-2">{line}</span>
+    </blockquote>
+  );
 }
 
 function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
@@ -115,14 +128,8 @@ function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
           {checksFact(r)}{reviewFact(r)}{landedFact(r)}{liveFact(r)}
         </div>
       )}
-      {r.review?.line && (
-        <blockquote className="k-quote text-caption text-muted" data-testid="board-verdict">
-          <span className="block text-micro text-faint" data-testid="board-reviewer">
-            {r.review.how === "panel" ? "The Review panel" : below.some((x) => x.id === r.review!.by) ? <button type="button" className="hover:text-accent" onClick={() => openSession(below.find((x) => x.id === r.review!.by)!.session_id)}>Reviewer {r.review.title}</button> : `Reviewer ${r.review.title}`} wrote:
-          </span>
-          <span className="line-clamp-2">{r.review.line}</span>
-        </blockquote>
-      )}
+      {r.review?.line && <Quote by={r.review.by} how={r.review.how} title={r.review.title} line={r.review.line} below={below} testid="board-verdict" />}
+      {r.review?.against && <Quote by={r.review.against.by} how={r.review.against.how} title={r.review.against.title} line={r.review.against.line || "(no words)"} below={below} testid="board-verdict-against" />}
     </li>
   );
 }

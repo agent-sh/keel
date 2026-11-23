@@ -43,9 +43,21 @@ describe("approved and refused come only from a structured verdict on the head",
   });
   test("a structured yes, then a structured no for the same head: refused (the newest wins)", () => {
     expect(pick([rev({ verdicts: [sv({ at: 5 }), sv({ land: "no", why: "The race in queue.ts is a P1.", at: 9 })] })])).toMatchObject({ verdict: "refused", source: "verdict", line: "The race in queue.ts is a P1.", current: true });
-    // Two reviewers: the newest structured verdict of the head.
-    expect(pick([rev({ by: "r1", verdicts: [sv({ at: 5 })] }), rev({ by: "r2", verdicts: [sv({ land: "no", at: 9 })] })])?.by).toBe("r2");
-    expect(pick([rev({ by: "r1", verdicts: [sv({ at: 12 })] }), rev({ by: "r2", verdicts: [sv({ land: "no", at: 9 })] })])).toMatchObject({ by: "r1", verdict: "approved" });
+  });
+  test("independent reviewers that disagree on the head: disputed, both quoted, whichever came later", () => {
+    const no = rev({ by: "r2", title: "Second", verdicts: [sv({ land: "no", why: "Line 6 lost its number.", at: 9 })] });
+    for (const yesAt of [5, 12]) {
+      const yes = rev({ by: "r1", title: "First", verdicts: [sv({ why: "Looks fine.", at: yesAt })] });
+      expect(pick([yes, no])).toMatchObject({ by: "r2", verdict: "disputed", line: "Line 6 lost its number.", against: { by: "r1", title: "First", line: "Looks fine." } });
+    }
+    // The Review panel is a reviewer of its own too.
+    expect(pick([no, rev({ by: "p1", how: "panel", chain: [], verdicts: [sv({ from: "panel", at: 12 })] })])?.verdict).toBe("disputed");
+    // Reviewers that agree are not disputed: the newest.
+    expect(pick([rev({ by: "r1", verdicts: [sv({ at: 5 })] }), rev({ by: "r2", verdicts: [sv({ at: 9 })] })])).toMatchObject({ by: "r2", verdict: "approved" });
+  });
+  test("a reviewer's own later verdict replaces its own", () => {
+    expect(pick([rev({ verdicts: [sv({ land: "no", at: 5 }), sv({ at: 9 })] })])).toMatchObject({ verdict: "approved" });
+    expect(pick([rev({ verdicts: [sv({ land: "no", at: 5 }), sv({ at: 9 })] }), rev({ by: "r2", verdicts: [sv({ at: 3 })] })])?.verdict).toBe("approved");
   });
   test("a structured verdict wins over words of a later report", () => {
     expect(pick([rev({ by: "r1", verdicts: [sv({ land: "no", at: 5 })] }), rev({ by: "r2", report: `LAND: yes ${h}`, at: 20 })])).toMatchObject({ by: "r1", verdict: "refused" });
@@ -95,5 +107,21 @@ describe("an output_schema answer's verdicts", () => {
     expect(R.outputVerdicts({ verdict: "approve" }, 1)).toEqual([]);
     expect(R.outputVerdicts({ commit: h, land: "yes, after the fix" }, 1)).toEqual([]);
     expect(R.outputVerdicts([{ commit: h, land: "yes" }, { commit: h, land: "no" }], 1).map((v) => v.land)).toEqual(["no"]);
+  });
+  test("one commit written short and long is one commit, a no among them wins in any order", () => {
+    const one = (list: unknown[]) => R.outputVerdicts({ verdicts: list }, 1).map((v) => [v.sha, v.land]);
+    expect(one([{ commit: h, land: "yes" }, { commit: H, land: "no" }])).toEqual([[H, "no"]]);
+    expect(one([{ commit: H, land: "no" }, { commit: h, land: "yes" }])).toEqual([[H, "no"]]);
+    expect(one([{ commit: H.slice(0, 7), land: "yes" }, { commit: h, land: "no" }])).toEqual([[h, "no"]]);
+    expect(one([{ commit: H.toUpperCase(), land: "yes" }, { commit: h, land: "yes" }])).toEqual([[H, "yes"]]);
+    // A short commit that begins two commits makes a no of both.
+    expect(one([{ commit: H, land: "yes" }, { commit: H.slice(0, 8) + "f".repeat(32), land: "yes" }, { commit: H.slice(0, 8), land: "no" }]).map((x) => x[1])).toEqual(["no", "no"]);
+    // A land that is neither word leaves the commit with no verdict.
+    expect(one([{ commit: H, land: "yes" }, { commit: h, land: "maybe" }])).toEqual([]);
+  });
+  test("a closing stop is still the word, and entries under an entry count", () => {
+    expect(R.outputVerdicts({ commit: H, land: "no." }, 1).map((v) => v.land)).toEqual(["no"]);
+    expect(R.outputVerdicts({ commit: H, land: "Yes!" }, 1).map((v) => v.land)).toEqual(["yes"]);
+    expect(R.outputVerdicts({ commit: H, land: "yes", per: [{ commit: H, land: "no" }] }, 1).map((v) => v.land)).toEqual(["no"]);
   });
 });

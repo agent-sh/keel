@@ -14,8 +14,8 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user
 // worktree of its own, names alpha's branch in its task only and approves its head with keel__verdict.
 // At the end gamma starts a child that approves gamma's own branch: that is not gamma's review. Then a
 // reviewer of the coordinator writes only "LAND: yes" (words only, never approved), another gives a
-// structured yes and then a structured no on gamma's head (refused: the newest), and the branch moves
-// on: that verdict reads stale.
+// structured yes and then a structured no on gamma's head (refused: its own newest), a third approves
+// it (disputed: independent reviewers disagree), and the branch moves on: the verdicts read stale.
 // The board (the API, the coordinator's keel__work_board and the Board panel) says of each what git,
 // the check ledger, the landing queue and the agents table say: alpha landed as patches and live,
 // approved; beta not landed, refused with the reviewer's line; gamma working, not landed, no review.
@@ -172,11 +172,23 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 30_000 }).toBe("refused");
   expect(rowOf(await board(), gamma.id).review).toMatchObject({ source: "verdict", line: "Second pass: line 6 lost its number.", current: true });
 
+  // A third reviewer approves the same head: the reviewers disagree, so the row says disputed, with both quoted.
+  await send(coord, ask("Review gamma again.", `script:batch ${JSON.stringify([{ name: "spawn_agent", input: { message: `Review it.\n${calls([verdict(gammaHead, "yes", "Line 6 reads right to me.")])}`, agent_type: "explorer", reviews: gamma.branch } }])}`));
+  await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 30_000 }).toBe("disputed");
+  expect(rowOf(await board(), gamma.id).review).toMatchObject({ line: "Second pass: line 6 lost its number.", against: { line: "Line 6 reads right to me." } });
+  await page.reload();
+  await openPanel(page, "board");
+  await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "disputed");
+  await expect(card(gamma.id).getByTestId("board-verdict")).toContainText("Second pass: line 6 lost its number.");
+  await expect(card(gamma.id).getByTestId("board-verdict-against")).toContainText("Line 6 reads right to me.");
+  await page.mouse.move(0, 0);
+  await shoot(page, "work-board-04-disputed");
+
   // Gamma's branch moves: the verdict is of a head that is no longer the branch's, stale, never refused or approved.
   const wt = (await by("Lane gamma")).worktree as string;
   git(wt, "commit", "-q", "--allow-empty", "-m", "Lane gamma, more");
   await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 15_000 }).toBe("stale");
-  expect(rowOf(await board(), gamma.id).review).toMatchObject({ was: "refused", current: false, of: gammaHead });
+  expect(rowOf(await board(), gamma.id).review).toMatchObject({ current: false, of: gammaHead });
   await page.reload();
   await openPanel(page, "board");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "stale");

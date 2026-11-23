@@ -11,7 +11,8 @@ import type { ChecksOn } from "../automation/landing.ts";
 // output_schema answer, the Review panel's verdict) on the row's head. words: the reviewer wrote a LAND
 // line and gave no structured verdict, quoted and never read as one. stale: a structured verdict of
 // another head than the branch's now, whatever it said (`was`).
-export type Verdict = "approved" | "refused" | "words" | "unclear" | "pending" | "stale";
+// disputed: independent reviewers' structured verdicts on the head disagree (the refusal, `against` the approval).
+export type Verdict = "approved" | "refused" | "disputed" | "words" | "unclear" | "pending" | "stale";
 
 // A review of a branch: an agent whose spawn named the branch it reviews (`reviews`), one whose task named
 // the branch or its head, one that gave a structured verdict on a commit of the branch, or a review the
@@ -29,6 +30,7 @@ export type BoardReview = {
   of: string | null;           // the commit its verdict was said of, when known
   current: boolean | null;     // its verdict is of the branch's head as it is now; null: not known
   at: number;
+  against?: { by: string; title: string; how: BoardReview["how"]; source: BoardReview["source"]; line: string; at: number }; // disputed: the approval
 };
 
 // A structured verdict on one commit: a reviewer's keel__verdict call, its answer to an output_schema, or
@@ -151,30 +153,43 @@ export function quoteFor(lines: readonly LandLine[], o: { head?: string | null; 
 }
 
 const HEX = /^[0-9a-f]{7,40}$/i;
-const landOf = (v: unknown): "yes" | "no" | undefined =>
-  v === true || (typeof v === "string" && /^\s*yes\s*$/i.test(v)) ? "yes" : v === false || (typeof v === "string" && /^\s*no\s*$/i.test(v)) ? "no" : undefined;
+// (A closing stop or mark is still the word: "no.", "yes!".)
+const landOf = (v: unknown): "yes" | "no" | undefined => {
+  if (v === true || v === false) return v ? "yes" : "no";
+  const w = typeof v === "string" ? /^\s*(yes|no)\s*[.!]?\s*$/i.exec(v)?.[1]?.toLowerCase() : undefined;
+  return w === "yes" || w === "no" ? w : undefined;
+};
 
-// The verdicts of an answer to an output_schema: each object (at any of the first levels) with a commit
-// (`commit`, `sha` or `head`, seven or more hex digits) and `land` (or `verdict`) yes or no, or true or
-// false. Two that disagree on one commit are a no.
+// The verdicts of an answer to an output_schema: each object (at any of the first levels, entries under
+// an entry too) with a commit (`commit`, `sha` or `head`, seven or more hex digits) and `land` (or
+// `verdict`) yes or no, or true or false. Entries whose commits are one written short and long are one
+// commit: a no among them makes it a no, and a land that is neither word leaves it with no verdict.
 export function outputVerdicts(value: unknown, at: number): StructuredVerdict[] {
-  const out = new Map<string, StructuredVerdict>();
+  const found: { sha: string; land: "yes" | "no" | "doubt"; why: string }[] = [];
   const walk = (v: unknown, depth: number) => {
-    if (depth > 3 || out.size >= 50 || !v || typeof v !== "object") return;
+    if (depth > 4 || found.length >= 200 || !v || typeof v !== "object") return;
     if (Array.isArray(v)) { for (const x of v.slice(0, 50)) walk(x, depth + 1); return; }
     const o = v as Record<string, unknown>;
     const sha = [o.commit, o.sha, o.head].find((x): x is string => typeof x === "string" && HEX.test(x.trim()))?.trim().toLowerCase();
-    const land = landOf(o.land ?? o.verdict);
-    if (sha && land) {
+    const said = o.land ?? o.verdict;
+    if (sha && said !== undefined) {
       const why = typeof o.why === "string" ? o.why : typeof o.reason === "string" ? o.reason : "";
-      const had = out.get(sha);
-      if (!had || (had.land === "yes" && land === "no")) out.set(sha, { sha, land, why: clip(why.trim()), at, from: "output", branches: null });
-      return;
+      found.push({ sha, land: landOf(said) ?? "doubt", why: clip(why.trim()) });
     }
     for (const x of Object.values(o)) if (x && typeof x === "object") walk(x, depth + 1);
   };
   walk(value, 0);
-  return [...out.values()];
+  // One group per commit as its longest spelling; a short one that begins two is in both.
+  const groups: { sha: string; land: "yes" | "no" | "doubt"; why: string }[] = [];
+  for (const f of [...found].sort((x, y) => y.sha.length - x.sha.length)) {
+    const into = groups.filter((g) => g.sha.startsWith(f.sha));
+    if (!into.length) { groups.push({ ...f }); continue; }
+    for (const g of into) {
+      if (f.land === "no" && g.land !== "no") { g.land = "no"; g.why = f.why || g.why; }
+      else if (f.land === "doubt" && g.land === "yes") g.land = "doubt";
+    }
+  }
+  return groups.filter((g) => g.land !== "doubt").slice(0, 50).map((g) => ({ sha: g.sha, land: g.land as "yes" | "no", why: g.why, at, from: "output" as const, branches: null }));
 }
 
 // The review a row shows, from the reviews of its branch (and verdicts on its head by a reviewer the tree
@@ -188,12 +203,18 @@ export function outputVerdicts(value: unknown, at: number): StructuredVerdict[] 
 export function pickReview(reviews: readonly ReviewFact[], row: { id: string; session_id: string; branch: string | null; head: string | null }): BoardReview | undefined {
   if (!row.branch) return undefined;
   const ofHead = (v: StructuredVerdict) => !!row.head && row.head.startsWith(v.sha);
-  return reviews
+  const judged = reviews
     .filter((x) => x.by !== row.id && (x.how === "panel" || (!!x.chain && !x.chain.includes(row.session_id))))
     .filter((x) => x.branch === row.branch || (x.branch === null && x.verdicts.some(ofHead)))
     .map((x) => judge(x, row, ofHead))
     .filter((j): j is NonNullable<typeof j> => !!j)
-    .sort((a, b) => b.rank - a.rank || b.review.at - a.review.at)[0]?.review;
+    .sort((a, b) => b.rank - a.rank || b.review.at - a.review.at);
+  // Reviewers that disagree on the head: disputed, the newest refusal with the newest approval beside it.
+  // (Only a reviewer's own later verdict replaces its own.)
+  const onHead = judged.filter((j) => j.rank === 3).map((j) => j.review);
+  const no = onHead.find((v) => v.verdict === "refused"), yes = onHead.find((v) => v.verdict === "approved" && v.by !== no?.by);
+  if (no && yes) return { ...no, verdict: "disputed", against: { by: yes.by, title: yes.title, how: yes.how, source: yes.source, line: yes.line, at: yes.at } };
+  return judged[0]?.review;
 }
 
 function judge(x: ReviewFact, row: { branch: string | null; head: string | null }, ofHead: (v: StructuredVerdict) => boolean): { rank: number; review: BoardReview } | undefined {
@@ -335,9 +356,11 @@ function reviewWords(v: BoardReview | null, full: boolean): string {
     : v.verdict === "stale" ? `stale (${v.was ?? "said"} of ${short(v.of ?? v.tip)}, not its head now)`
     : v.verdict === "unclear" && v.was ? `unclear (${v.was} of a head not known)`
     : v.verdict === "words" ? `words only (no structured verdict${full ? ": keel__verdict, an output_schema verdict or the Review panel decides" : ""})`
-    : v.verdict === "unclear" ? "unclear (no verdict)" : v.verdict;
+    : v.verdict === "unclear" ? "unclear (no verdict)"
+    : v.verdict === "disputed" ? "disputed (reviewers disagree on its head): refused" : v.verdict;
   const who = v.how === "panel" ? "the Review panel" : `${v.by} ("${clip(v.title, full ? LINE_MAX : 30)}")`;
-  return `review ${words} by ${who}${head}${v.line ? `, reviewer wrote: "${full ? v.line : clip(v.line, 60)}"` : ""}`;
+  const other = v.against ? `; approved by ${v.against.how === "panel" ? "the Review panel" : `${v.against.by} ("${clip(v.against.title, full ? LINE_MAX : 30)}")`}${v.against.line ? `, who wrote: "${full ? v.against.line : clip(v.against.line, 60)}"` : ""}` : "";
+  return `review ${words} by ${who}${head}${v.line ? `, reviewer wrote: "${full ? v.line : clip(v.line, 60)}"` : ""}${other}`;
 }
 
 function queueWords(q: QueueFact | null, full: boolean): string {
