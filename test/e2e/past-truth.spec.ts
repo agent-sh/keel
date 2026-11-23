@@ -510,9 +510,10 @@ test.describe("after a kill", () => {
     // The window holds a kill and a stop that was asked for: the kill is told as going down, the stop is not.
     await expect.poll(async () => !!(await call("/api/daemon")).last_start?.settled_ms, { timeout: 60_000 }).toBe(true);
     const lines = (await text(`/api/away?since=${since}&format=text`)).split("\n");
-    expect(lines[0]).toMatch(/: the daemon went down and came back after \d+ (ms|s), 2 turns cut; restarted when asked; /);
+    // The stop came as a stop signal from outside: said as one, with its downtime, never as the daemon going down.
+    expect(lines[0]).toMatch(/: the daemon went down and came back after \d+ (ms|s), 2 turns cut; was stopped by a signal, down \d+ (ms|s); /);
     expect(lines[1]).toMatch(/^The daemon went down without stopping /);
-    expect(lines[2]).toMatch(/^It also restarted once when asked \(down [\d.]+ s in all\); no turn was cut\.$/);
+    expect(lines[2]).toMatch(/^The daemon was stopped by a signal at \d\d:\d\d:\d\d and came back at .* \(down \d+ (ms|s)\); no turn was cut\.$/);
     expect(lines.filter((l) => /went down|stopped by itself/.test(l)).length).toBe(2);
   });
 });
