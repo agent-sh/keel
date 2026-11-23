@@ -70,7 +70,7 @@ function shownOf(a: Approval): Shown {
 // there. `whole`: the owner opened it.
 const mustBeOpened = (a: Approval, whole: boolean, cut: boolean, unseen: Unseen | undefined) =>
   !whole && (shownInPart(a) || shownOf(a).hidden > 0 || (cut && (!unseen || unseen.n > 0)));
-type Reading = { born: number; sum?: Stand; once?: Hold; always?: Hold; cut: boolean };
+type Reading = { born: number; sum?: Stand; once?: Hold; always?: Hold; cut: boolean; width: number };
 type Clip = { top: number; bottom: number; left: number; right: number };
 
 // The frame a list's cards show in: the window as it is now (less where an
@@ -219,10 +219,12 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
           sum: sum ? stand(was?.sum, seenAt(sum, text, true).at, now) : undefined,
           once: control(part("allow-once"), was?.once),
           always: control(part("allow-always"), was?.always),
-          // Once cut, cut while it waits: the card says so with lines of its own, which can give the text
-          // the width it fits in, and a cut read again from that would draw the card one way, then the
-          // other, every reading (and no answer on the list would ever stand still long enough to count).
-          cut: !!sum && (!!was?.cut || sum.scrollHeight > sum.clientHeight + 1),
+          // Once cut, cut while the card keeps its width: the card says so with lines of its own, which can
+          // give the text the width it fits in, and a cut read again from that would draw the card one way,
+          // then the other, every reading (and no answer on the list would ever stand still long enough to
+          // count). A card whose own width changed (its pane widened or narrowed) is read again.
+          cut: !!sum && ((!!was?.cut && was.width === el.offsetWidth) || sum.scrollHeight > sum.clientHeight + 1),
+          width: el.offsetWidth,
         });
       }
     }
