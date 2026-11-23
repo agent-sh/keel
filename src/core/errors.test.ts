@@ -131,3 +131,20 @@ test("a request tried again on the same failure is said once on the console, and
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a provider's failure keeps its kind and status with the row, for the acts that fit it", async () => {
+  const { ProviderError } = await import("../providers/http.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-errors-"));
+  const store = new Store(dir);
+  const errors = new ErrorTracker(store, new Bus());
+  try {
+    const billing = errors.capture("provider", new ProviderError("quota", "credit balance is too low", 402), { session: "s1" });
+    expect(billing.context).toEqual({ session: "s1", failure: "quota", status: 402 });
+    // A retry that gave up keeps its cause's; a failure that is not a provider's keeps its context as given.
+    expect(errors.capture("provider", new Error("waited too long", { cause: new ProviderError("rate", "429", 429) })).context).toEqual({ failure: "rate", status: 429 });
+    expect(errors.capture("server", Object.assign(new Error("x"), { status: 500 }), { at: "y" }).context).toEqual({ at: "y" });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

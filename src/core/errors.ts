@@ -42,6 +42,16 @@ function bounded<T extends { message: string; stack?: string; context?: unknown 
 }
 
 // Every failure lands in one table and one live frame, whoever caught it.
+// What a provider's failure was, from the error a driver threw (a ProviderError's
+// kind and status, or its cause's when a retry gave up on it): `failure` the
+// kind, `status` the HTTP status. Nothing when neither is known.
+export function failureFacts(err: unknown): { failure?: string; status?: number } | undefined {
+  const of = (x: any) => ({ ...(typeof x?.kind === "string" && x.kind !== "cancelled" ? { failure: x.kind } : {}), ...(typeof x?.status === "number" ? { status: x.status } : {}) });
+  const own = of(err), cause = of((err as any)?.cause);
+  const out = { ...cause, ...own };
+  return Object.keys(out).length ? out : undefined;
+}
+
 export class ErrorTracker {
   private captures = new Set<(e: ErrorCapture) => void>();
 
@@ -149,7 +159,11 @@ export class ErrorTracker {
     // throws inside a catch or the process's rejection handler turns one
     // failure into another.
     let rec: ErrorRecord;
-    const raw = { source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id };
+    // A provider's failure keeps what it was (its kind and HTTP status) with the row, so the page offers
+    // what fits it (Open billing, Try again, Switch model) as the session's failure box does.
+    const facts = source === "provider" ? failureFacts(err) : undefined;
+    const ctx = facts && (context === undefined || (typeof context === "object" && context !== null && !Array.isArray(context))) ? { ...(context as object | undefined), ...facts } : context;
+    const raw = { source, message: e.message, stack: e.stack, context: ctx, session_id, turn_event, span_id };
     try {
       rec = this.store.recordError(raw, at.group);
     } catch (failed) {

@@ -333,3 +333,88 @@ test("a failure the store could not take is listed, and the panel says it is onl
   await page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasNotText: "the store's disk is full" }).first().locator("summary").click().catch(() => {});
   await expect(page.getByTestId("error-unwritten")).toHaveCount(1);
 });
+
+// A row offers what fits its failure on the row itself, folded or not. A
+// provider's failure gets the acts of its session's own failure box: the page
+// that fixes it (Open billing for a refused billing) and, while the session is
+// stopped on it, Try again and another model. Fix this, which hands the bundle
+// to an agent, goes only where an agent could fix the cause. The raw context
+// and stack fold under Details. The scripted provider plays the refused billing
+// (a 402), the same every run.
+test("a row offers the acts that fit its failure, and Fix this only where an agent can fix it", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "needs the scripted provider (KEEL_SCRIPTED_PROVIDER=1): a refused billing the same every run");
+  const tag = Date.now().toString(36);
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `Nightly report ${tag}` } })).json();
+  const broken = `e2e acts ${tag}: TypeError: the plan is undefined`;
+  try {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Write the nightly report.\nscript:billing" } });
+    const stopped = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.settings.failed_ms ?? 0;
+    await expect.poll(stopped, { timeout: 20_000 }).toBeGreaterThan(0);
+    await request.post("/api/errors", { data: { message: broken } });
+
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/");
+    // The keys the owner uses, counted: the panel, then the act.
+    await page.keyboard.press("Alt+r");
+    const panel = page.getByTestId("errors-panel");
+    const row = panel.getByTestId("error-row").filter({ hasText: "credit balance is too low" }).first();
+    const isOpen = () => row.evaluate((d) => (d as HTMLDetailsElement).open);
+    const acts = row.getByTestId("error-acts");
+    // Folded, the row carries the failure box's acts, and no Fix this: the account's credit is not an agent's to mend.
+    await expect(acts.getByTestId("failure-fix")).toHaveText("Open billing");
+    await expect(acts.getByTestId("failure-fix")).toHaveAttribute("href", "https://example.com/billing");
+    await expect(acts.getByTestId("failure-fix")).toHaveAttribute("target", "_blank");
+    await expect(acts.getByTestId("try-again")).toBeVisible();
+    await expect(acts.getByTestId("failure-switch")).toHaveText("Switch model");
+    await expect(row.getByTestId("error-fix")).toHaveCount(0);
+    expect(await isOpen()).toBe(false);
+    // A failure of the page's own code is an agent's to fix: Fix this on its row, folded.
+    const own = panel.getByTestId("error-row").filter({ hasText: broken });
+    await expect(own.getByTestId("error-fix")).toBeVisible();
+    await expect(own.getByTestId("failure-fix")).toHaveCount(0);
+    await shoot(page, "errors-acts-01-rows");
+
+    // Unfolded: the stack is not shown until Details is pressed.
+    await row.getByTestId("error-marker").click();
+    expect(await isOpen()).toBe(true);
+    await expect(row.getByTestId("error-sites")).toBeVisible();
+    await expect(row.getByTestId("error-stack")).toHaveCount(0);
+    await row.getByTestId("error-details").click();
+    await expect(row.getByTestId("error-details")).toHaveAttribute("aria-expanded", "true");
+    await expect(row.getByTestId("error-stack")).toContainText('"status": 402');
+    await expect(row.getByTestId("error-stack")).toContainText("credit balance is too low");
+    await shoot(page, "errors-acts-02-details");
+    await row.getByTestId("error-details").click();
+    await row.getByTestId("error-marker").click();
+
+    // On a phone the acts wrap inside the panel; nothing runs off its side.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(acts.getByTestId("try-again")).toBeInViewport();
+    expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await shoot(page, "errors-acts-03-narrow");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+
+    // Another model, from the row: the session takes the request again on it, and the row then
+    // offers only the page (the session is no longer stopped on this failure).
+    await acts.getByTestId("failure-switch").click();
+    const pick = acts.getByTestId("failure-models");
+    await pick.getByTestId("model-picker").click();
+    await page.getByPlaceholder("Search models").fill("Scripted backup");
+    await page.getByRole("option", { name: /Scripted backup/ }).first().click();
+    await pick.getByRole("button", { name: "Try on it" }).click();
+    const confirm = page.getByTestId("confirm").getByRole("button", { name: "Switch" });
+    const answered = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "assistant").flatMap((e: any) => e.data.blocks).map((b: any) => b.text ?? "").join(" ");
+    await Promise.race([confirm.click(), expect.poll(answered, { timeout: 30_000 }).toContain("The backup model took the request.")]).catch(() => {});
+    await expect.poll(answered, { timeout: 30_000 }).toContain("The backup model took the request.");
+    expect((await (await request.get(`/api/sessions/${session.id}`)).json()).session.model).toBe("scripted:stand-in-backup");
+    await expect(acts.getByTestId("try-again")).toHaveCount(0);
+    await expect(acts.getByTestId("failure-fix")).toHaveText("Open billing");
+    await shoot(page, "errors-acts-04-after-switch");
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+    const left = (await (await request.get("/api/errors?resolved=0")).json()).errors.filter((e: any) => e.message === broken);
+    for (const e of left) await request.patch(`/api/errors/${e.id}`, { data: { resolved: true } }).catch(() => {});
+  }
+});

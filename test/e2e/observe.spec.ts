@@ -71,7 +71,8 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     await page.getByTestId("errors-button").click();
     const panel = page.getByTestId("errors-panel");
     const row = panel.getByTestId("error-row").filter({ hasText: "credit balance is too low" }).first();
-    await row.locator("summary").click();
+    // (Its marker: the middle of the row holds its acts.)
+    await row.getByTestId("error-marker").click();
     await expect(row.getByTestId("error-wire")).toContainText(`${STAND_IN}  ·  attempt 1  ·  HTTP 402`);
     await expect(row.getByTestId("error-wire")).toContainText("quota");
     await shoot(page, "observe-01-error-actions");
@@ -143,17 +144,21 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     await shoot(page, "observe-06-subagent-trace");
 
     // Fix this: a new session handed the bundle (on the stand-in here; the owner's default model otherwise).
+    // Only for what an agent could fix: the account's credit is the owner's to mend, so the refused
+    // billing has none, and a failure of the page's own code is handed over.
+    const broken = `observe fix check ${Date.now().toString(36)}: TypeError: the plan is undefined`;
+    await request.post("/api/errors", { data: { message: broken, context: { url: `/s/${session.id}` } } });
     await page.route("**/api/debug/fix", (r) => r.continue({ postData: JSON.stringify({ ...JSON.parse(r.request().postData() ?? "{}"), model: STAND_IN }) }));
     await page.getByTestId("errors-button").click();
-    const again = page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: "credit balance is too low" }).first();
-    await again.locator("summary").click();
+    await expect(page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: "credit balance is too low" }).first().getByTestId("error-fix")).toHaveCount(0);
+    const again = page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: broken }).first();
     await again.getByTestId("error-fix").click();
     await expect(page).not.toHaveURL(new RegExp(`/s/${session.id}`));
     const prompt = page.getByTestId("user-message").first();
     await expect(prompt).toContainText("The debug bundle is ");
     const path = (await prompt.innerText()).match(/The debug bundle is (\S+\.md)\./)![1]!;
     expect(existsSync(path)).toBe(true);
-    expect(readFileSync(path, "utf8")).toContain("credit balance is too low");
+    expect(readFileSync(path, "utf8")).toContain(broken);
     await shoot(page, "observe-04-fix-session");
 
     // The daemon log, live, filtered, and the export count.

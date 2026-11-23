@@ -7,38 +7,14 @@
 // resume it now or call it off.
 import { CircleAlert, Clock, ExternalLink, Play, RotateCw } from "lucide-react";
 import { Fragment, useState } from "react";
-import { errorClass } from "../../../src/admin/classes.ts";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
+import { type Failure, failureOf, LEAD, trimUrl, URL_RE } from "../lib/failure.ts";
 import { actions, reportError } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate } from "../lib/ui.ts";
 import { clock, cn, fmtWait } from "../lib/utils.ts";
 import { useNow } from "./Mark.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
-
-type Kind = "auth" | "rate" | "quota" | "overloaded" | "network" | "unreachable" | "invalid" | "context" | "server";
-// What failed, in the owner's words. The provider's own message follows it.
-const LEAD: Record<Kind, string> = {
-  quota: "The provider's account is out of credit or over its quota.",
-  rate: "The provider is limiting how often this account may ask.",
-  auth: "The provider did not accept the credentials.",
-  overloaded: "The provider is overloaded.",
-  network: "The provider's answer broke off or went silent.",
-  // A turn waits for a provider it cannot reach (src/providers/outage.ts): this box is a request made outside that wait, or the wait's end a week on.
-  unreachable: "The provider could not be reached.",
-  server: "The provider failed on its side.",
-  context: "The conversation no longer fits the model's window.",
-  invalid: "The provider refused the request as it was sent.",
-};
-// A failure stored before failures carried their kind is read from its status.
-const kindOf = (kind: unknown, status?: number): Kind | undefined =>
-  typeof kind === "string" && kind in LEAD ? (kind as Kind)
-    : status === 402 ? "quota" : status === 429 ? "rate" : status === 401 || status === 403 ? "auth" : status === 529 || status === 503 ? "overloaded" : status && status >= 500 ? "server" : undefined;
-
-const URL_RE = /https?:\/\/[^\s<>"'`)\]]+/g;
-// An address in running text ends before the sentence's own punctuation.
-const trimUrl = (u: string) => u.replace(/[.,;:!?]+$/, "");
-export const firstUrl = (text: string) => { const m = text.match(URL_RE); return m ? trimUrl(m[0]) : undefined; };
 
 function Linked({ text }: { text: string }) {
   const out: (string | { url: string })[] = [];
@@ -63,25 +39,12 @@ const plain = "border border-line bg-raised text-fg hover:bg-hover";
 
 // `live`: this is the failure the session stopped on, so its actions apply.
 export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: boolean }) {
-  const message = String(e.data.message ?? "The turn failed.");
-  const http = /^HTTP (\d+): /.exec(message);
-  const status = typeof e.data.status === "number" ? e.data.status : http ? Number(http[1]) : undefined;
-  const said = kindOf(e.data.kind, status);
-  const kind = (said === "network" || said === undefined) && errorClass({ message, ...(said ? { kind: said } : {}), ...(status ? { status } : {}) }) === "unreachable" ? "unreachable" : said;
-  const words = http ? message.slice(http[0].length) : message;
-  const url = firstUrl(words);
+  const f = failureOf({ message: String(e.data.message ?? "The turn failed."), kind: e.data.kind, status: e.data.status });
+  const { kind, status, words } = f;
   // Set while the session will go on by itself after this failure, and it is still the last thing in it.
   const due = s.settings.continue_at?.after === e.id ? s.settings.continue_at.at : undefined;
   const now = useNow(due !== undefined);
-  const [picking, setPicking] = useState(false);
-  const [pick, setPick] = useState("");
   const again = () => actions.resume(s.id).catch(reportError);
-  // The fix is somewhere else (the account's billing, the provider's settings):
-  // that page is the first button, and trying again comes after it. Any other
-  // address the provider gave is a plain button after Try again.
-  const fix = kind === "quota" && url ? { label: "Open billing", href: url }
-    : kind === "auth" ? { label: "Open provider settings", run: () => navigate({ name: "settings", section: "providers" }) } : undefined;
-  const page = !fix && url ? url : undefined;
   // It resumed by itself this many times and the provider asked for the wait again each time.
   const gaveUp = typeof e.data.continued === "number" ? e.data.continued : 0;
   const round = s.settings.continue_at?.round ?? 0;
@@ -123,31 +86,48 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
           It resumed by itself {gaveUp} times and the provider asked for the wait each time, so it is not resumed again.
         </p>
       )}
-      {live && due === undefined && (
-        <div className="flex flex-wrap items-center gap-1.5 pl-[1.625rem]" data-testid="failure-actions">
-          {fix && ("href" in fix
-            ? <a href={fix.href} target="_blank" rel="noreferrer noopener" data-testid="failure-fix" className={cn(button, primary)}><ExternalLink className="size-3" /> {fix.label}</a>
-            : <button type="button" data-testid="failure-fix" className={cn(button, primary)} onClick={fix.run}>{fix.label}</button>)}
-          <button type="button" data-testid="try-again" className={cn(button, fix ? plain : primary)} onClick={again}>
-            <RotateCw className="size-3" /> Try again
+      {live && due === undefined && <FailureActions f={f} s={s} className="pl-[1.625rem]" />}
+    </div>
+  );
+}
+
+// What fits the failure, as labelled buttons: the page that fixes it first
+// (billing, the provider's settings) and trying again after it; any other
+// address the provider gave; another model. `retry`: the session stopped on
+// this failure, so trying again and another model apply (else only the pages).
+// The failure box in the transcript and a row of the Errors panel both show it.
+export function FailureActions({ f, s, retry = true, className }: { f: Failure; s?: Session; retry?: boolean; className?: string }) {
+  const [picking, setPicking] = useState(false);
+  const [pick, setPick] = useState("");
+  const on = retry && s ? s : undefined;
+  const again = () => on && actions.resume(on.id).catch(reportError);
+  const { fix, page, kind } = f;
+  if (!on && !fix && !page) return null;
+  return (
+    <div className={cn("flex flex-wrap items-center gap-1.5", className)} data-testid="failure-actions">
+      {fix && ("href" in fix
+        ? <a href={fix.href} target="_blank" rel="noreferrer noopener" data-testid="failure-fix" className={cn(button, primary)}><ExternalLink className="size-3" /> {fix.label}</a>
+        : <button type="button" data-testid="failure-fix" className={cn(button, primary)} onClick={() => navigate({ name: "settings", section: fix.settings })}>{fix.label}</button>)}
+      {on && (
+        <button type="button" data-testid="try-again" className={cn(button, fix ? plain : primary)} onClick={again}>
+          <RotateCw className="size-3" /> Try again
+        </button>
+      )}
+      {page && <a href={page} target="_blank" rel="noreferrer noopener" data-testid="failure-page" className={cn(button, plain)}><ExternalLink className="size-3" /> Open the page</a>}
+      {on && kind && !picking && <button type="button" data-testid="failure-switch" className={cn(button, plain)} onClick={() => setPicking(true)}>Switch model</button>}
+      {on && picking && (
+        <span className="flex items-center gap-1.5" data-testid="failure-models">
+          <span className="rounded-md border border-line bg-raised"><ModelPicker value={pick || on.model} onChange={setPick} /></span>
+          <button
+            type="button"
+            disabled={!pick || pick === on.model}
+            className={cn(button, plain)}
+            // The picker's switch (with its cache warning): Cancel leaves the model and does not try again.
+            onClick={() => switchSession(on.id, { model: pick }).then((ok) => (ok ? actions.resume(on.id) : undefined)).catch(reportError)}
+          >
+            Try on it
           </button>
-          {page && <a href={page} target="_blank" rel="noreferrer noopener" data-testid="failure-page" className={cn(button, plain)}><ExternalLink className="size-3" /> Open the page</a>}
-          {kind && !picking && <button type="button" data-testid="failure-switch" className={cn(button, plain)} onClick={() => setPicking(true)}>Switch model</button>}
-          {picking && (
-            <span className="flex items-center gap-1.5" data-testid="failure-models">
-              <span className="rounded-md border border-line bg-raised"><ModelPicker value={pick || s.model} onChange={setPick} /></span>
-              <button
-                type="button"
-                disabled={!pick || pick === s.model}
-                className={cn(button, plain)}
-                // The picker's switch (with its cache warning): Cancel leaves the model and does not try again.
-                onClick={() => switchSession(s.id, { model: pick }).then((ok) => (ok ? actions.resume(s.id) : undefined)).catch(reportError)}
-              >
-                Try on it
-              </button>
-            </span>
-          )}
-        </div>
+        </span>
       )}
     </div>
   );

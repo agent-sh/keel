@@ -1,6 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Activity, Bug, Check, CheckCheck, ChevronRight, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import { agentCanFix, rowFailure, stoppedOn } from "../lib/failure.ts";
 import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
 import type { ErrorRecord, ErrorSite } from "../../../src/core/types.ts";
 import { elsewhere, ERROR_STATE, errorState, healedWords } from "../../../src/admin/error-rows.ts";
@@ -8,6 +9,7 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { Seg, tabId } from "./Seg.tsx";
+import { FailureActions } from "./TurnFailure.tsx";
 import type { Cause } from "../../../src/admin/stall-cause.ts";
 import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
 
@@ -125,6 +127,15 @@ function Row({ e }: { e: ErrorRecord }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [fixing, setFixing] = useState(false);
+  const [stack, setStack] = useState(false);
+  // What fits the failure is offered on the row, folded or not: a provider's
+  // failure gets the acts of the session's own failure box (the page that fixes
+  // it, and Try again and another model while its session is stopped on it);
+  // Fix this goes only where an agent handed the bundle could fix the cause.
+  const failure = rowFailure(e);
+  const live = useStore((st) => !!e.session_id && stoppedOn(st.errors, e.session_id, st.sessions[e.session_id]?.settings.failed_ms) === e.id);
+  const fixable = agentCanFix(e);
+  const acts = !!failure && !!(live || failure.fix || failure.page);
   const n = e.count ?? 1;
   const unread = !e.read_ts;
   const state = errorState(e);
@@ -157,7 +168,8 @@ function Row({ e }: { e: ErrorRecord }) {
   };
   return (
     <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
-      <summary className="flex cursor-default list-none items-baseline gap-2 text-ui max-sm:flex-wrap max-sm:items-center max-sm:gap-y-0 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-default list-none flex-col gap-1.5 text-ui [&::-webkit-details-marker]:hidden">
+        <span className="flex items-baseline gap-2 max-sm:flex-wrap max-sm:items-center max-sm:gap-y-0">
         {/* The row opens: a marker of its own says so, and turns when it has. */}
         <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
         {/* The message leads; where it came from is a quiet word after it, not a red tag on every row (the drawer is all failures). */}
@@ -184,6 +196,25 @@ function Row({ e }: { e: ErrorRecord }) {
             {unread ? <span className="size-2 rounded-full bg-fg" /> : <Check className="size-3.5" />}
           </button>
         )}
+        </span>
+        {/* The acts of the row, on the row: buttons and links here do not fold or unfold it. */}
+        {(acts || fixable) && (
+          <span className="ml-[1.375rem] flex flex-wrap items-center gap-1.5" data-testid="error-acts">
+            {acts && <FailureActions f={failure!} s={session} retry={live} />}
+            {fixable && (
+              <button
+                type="button"
+                className={cn(tool, "border-line-strong bg-raised font-medium text-fg")}
+                disabled={fixing}
+                title="Starts a session that reads this failure's debug bundle and fixes the cause"
+                onClick={() => { setFixing(true); fixThis(target).catch(reportError).finally(() => setFixing(false)); }}
+                data-testid="error-fix"
+              >
+                <Wrench className="size-3.5 text-accent" /> {fixing ? "Starting" : "Fix this"}
+              </button>
+            )}
+          </span>
+        )}
       </summary>
       <div className="mt-2 ml-[1.375rem] flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted">
@@ -202,16 +233,6 @@ function Row({ e }: { e: ErrorRecord }) {
         <Sites e={e} />
         {e.context?.kind === "stall" && e.context.cause && <StallCause c={e.context.cause as Cause} />}
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className={cn(tool, "border-line-strong bg-raised font-medium text-fg")}
-            disabled={fixing}
-            title="Starts a session that reads this failure's debug bundle and fixes the cause"
-            onClick={() => { setFixing(true); fixThis(target).catch(reportError).finally(() => setFixing(false)); }}
-            data-testid="error-fix"
-          >
-            <Wrench className="size-3.5 text-accent" /> {fixing ? "Starting" : "Fix this"}
-          </button>
           <button
             type="button"
             className={tool}
@@ -248,10 +269,19 @@ function Row({ e }: { e: ErrorRecord }) {
             {e.resolved_ts ? <><RotateCcw className="size-3.5" /> Open again</> : <><Check className="size-3.5 text-ok" /> Resolve</>}
           </button>
         </div>
+        {/* What a program reads (the context and the stack), folded under a disclosure of its own. (Not a
+            nested <details>: the row's own <summary> stays the only one.) */}
         {(e.stack || e.context) && (
-          <pre className="max-h-64 overflow-auto rounded-md border border-line bg-code p-2.5 font-mono text-micro text-muted whitespace-pre-wrap break-all">
-            {e.context ? JSON.stringify(e.context, null, 2) + "\n\n" : ""}{e.stack}
-          </pre>
+          <div className="flex flex-col gap-1.5">
+            <button type="button" aria-expanded={stack} onClick={() => setStack(!stack)} className="flex w-fit items-center gap-1 rounded-sm text-caption text-muted hover:text-fg" data-testid="error-details">
+              <ChevronRight aria-hidden className={cn("size-3.5 transition-transform", stack && "rotate-90")} /> Details
+            </button>
+            {stack && (
+              <pre className="max-h-64 overflow-auto rounded-md border border-line bg-code p-2.5 font-mono text-micro text-muted whitespace-pre-wrap break-all" data-testid="error-stack">
+                {e.context ? JSON.stringify(e.context, null, 2) + "\n\n" : ""}{e.stack}
+              </pre>
+            )}
+          </div>
         )}
       </div>
     </details>

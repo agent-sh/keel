@@ -386,7 +386,7 @@ test.describe("after a kill", () => {
     await page.goto(`${url()}/`);
     await page.getByTestId("errors-button").click();
     const row = page.getByTestId("error-row").filter({ hasText: "credit balance" });
-    await row.locator("summary").click();
+    await row.getByTestId("error-marker").click();
     await expect(row.getByTestId("error-site")).toHaveCount(2);
     await expect(row.getByTestId("error-site").filter({ hasText: "Billing A" }).getByTestId("error-site-count")).toHaveText("2x");
     await expect(page.getByTestId("errors-panel").getByRole("tab", { name: /Recovered/ })).toContainText("1");
