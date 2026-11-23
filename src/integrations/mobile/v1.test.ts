@@ -86,7 +86,7 @@ let fleetStart: (b: any) => Response = () => Response.json({ error: "no fleet in
 const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
   fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b),
   away: () => awayDigest, awaySeen: () => { awayDigest = null; }, ownerSeen: (ms: number) => void seenAt.push(ms),
-  search: (r: Request) => searchGet()(r) } as any);
+  search: (r: Request) => searchGet()(r), live: () => liveStatus([{ title: "Review", running: true, since: 1795195000500, needs: 0 }]) } as any);
 afterAll(() => setSystemTime());
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -438,6 +438,27 @@ describe("search", () => {
     // A limit the search does not understand is said as the search says it.
     const bad = await call("GET", `/v1/search?q=${encodeURIComponent("state:sideways x")}`);
     expect([bad.status, bad.body.limit]).toEqual([400, true]);
+  });
+});
+
+describe("working", () => {
+  test("when a running turn started is read by one seek of the turn index, not a walk of the session", async () => {
+    const s = session("Times");
+    const at = Date.now() - 60_000;
+    store.append(s.id, "turn_start", {}, null, at - 30_000);
+    store.append(s.id, "turn_end", {}, null, at - 20_000);
+    store.append(s.id, "turn_start", {}, null, at);
+    for (let i = 0; i < 20; i++) store.append(s.id, "assistant", { text: String(i) });
+    running.add(s.id);
+    const query = store.db.query.bind(store.db);
+    const asked: string[] = [];
+    store.db.query = ((sql: string) => { if (/session_id = \?/.test(sql) && /turn_(start|end)/.test(sql)) asked.push(sql); return query(sql); }) as any;
+    let body: any;
+    try { body = (await call("GET", "/v1/sync?since=0")).body; } finally { store.db.query = query as any; running.delete(s.id); }
+    expect(body.working.find((w: any) => w.chat_id === s.id).since).toBe(at / 1000);
+    const plan = (sql: string) => JSON.stringify(query("EXPLAIN QUERY PLAN " + sql).all(...Array(sql.split("?").length - 1).fill(s.id)));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.filter((sql) => !plan(sql).includes("events_turn_marks"))).toEqual([]);
   });
 });
 

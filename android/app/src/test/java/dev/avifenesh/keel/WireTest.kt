@@ -183,6 +183,19 @@ class WireTest {
         assertEquals(false, Live.of(emptyMap(), emptyList(), chats).shown)
     }
 
+    @Test fun theAppCountsWhatRunsAsTheDaemonDoes() {
+        // A root whose agents work counts as working (its own turn ended); an archived root counts for nothing.
+        val chats = listOf(
+            Chat("lead", "Leads agents", "idle", 1.0, 0, false, false, "", "", null, agents = 1),
+            Chat("w1", "Worker", "working", 1.0, 0, false, false, "", "", "lead"),
+            Chat("shelf", "Shelved", "working", 1.0, 0, false, true, "", "", null),
+            Chat("runs", "Runs", "working", 1.0, 0, false, false, "", "", null),
+        ).associateBy { it.id }
+        val card = Card("apr-1", "shelf", "approval", "", "", emptyList(), "pending", null, 1.0, emptyList())
+        val l = Live.of(mapOf("w1" to 150.0, "shelf" to 50.0, "runs" to 100.0), listOf(card), chats)
+        assertEquals(Live(2, 0, "2 sessions working", "Runs · Leads agents", 100_000), l)
+    }
+
     @Test fun aSnippetMarksTheWordsFound() {
         assertEquals(listOf("The " to false, "invoice" to true, " " to false, "total" to true, " is off." to false), snippetParts("The \u0001invoice\u0002 \u0001total\u0002 is off."))
         assertEquals(listOf("no marks" to false), snippetParts("no marks"))

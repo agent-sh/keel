@@ -9,7 +9,7 @@ import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { addAllowedHosts } from "../admission.ts";
 import { allPendingQuestions, pendingQuestions } from "../../tools/interact.ts";
-import { liveData, liveStatus, LiveTicker } from "../../integrations/mobile/live.ts";
+import { liveData, LiveTicker, readLive, type LiveStatus } from "../../integrations/mobile/live.ts";
 import { agentCounts } from "../../automation/state.ts";
 import { plansWaiting } from "./plan.ts";
 import { gate } from "./permissions.ts";
@@ -81,30 +81,25 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     const card = a.kind === "approval" && a.data?.approval_id ? gate?.approval(a.data.approval_id) : undefined;
     return alertPush(a, card ? gate!.form(card) : undefined);
   };
-  // The phone's lasting notification while turns run (src/integrations/mobile/live.ts): what runs and
-  // what waits on the owner, per session nobody started (an agent's part is its root's).
-  const rootOf = (id: string) => {
-    let at = id;
-    for (let n = 0, p = store.session(at)?.parent_id; p && n < 32; n++, p = store.session(at)?.parent_id) at = p;
-    return at;
+  // The phone's lasting notification while turns run (src/integrations/mobile/live.ts).
+  const waiting = () => [
+    ...(gate?.approvals({ pending: true }) ?? []).map((a) => a.session_id),
+    ...allPendingQuestions().map((q) => q.session_id),
+    ...plansWaiting().map((p) => p.session_id),
+  ];
+  const nowLive = () => readLive({ store, running: () => deps.engine.runningIds(), waiting, below: () => agentCounts({ store }) });
+  // What the phone was last told is kept in the mobile settings: a daemon that stopped inside a hold
+  // after it said something works leaves this one to say it ended (the poke at the start).
+  const keep = {
+    get: (): LiveStatus | null => { try { return JSON.parse(mobile.setting("live_told") ?? "null"); } catch { return null; } },
+    set: (s: LiveStatus) => mobile.setSetting("live_told", JSON.stringify(s)),
   };
-  const turnStart = (sid: string) => store.db.query<{ ts: number | null }, [string]>("SELECT MAX(ts) AS ts FROM events WHERE session_id = ? AND kind = 'turn_start'").get(sid)?.ts ?? undefined;
-  const readLive = () => {
-    const waits = new Map<string, number>();
-    const add = (sid: string) => { const r = rootOf(sid); waits.set(r, (waits.get(r) ?? 0) + 1); };
-    for (const a of gate?.approvals({ pending: true }) ?? []) add(a.session_id);
-    for (const q of allPendingQuestions()) add(q.session_id);
-    for (const p of plansWaiting()) add(p.session_id);
-    const below = agentCounts({ store });
-    return liveStatus(store.sessions().filter((s) => !s.parent_id).map((s) => {
-      const running = deps.engine.isRunning(s.id) || (below.get(s.id) ?? 0) > 0;
-      return { title: s.title, running, since: running ? turnStart(s.id) : undefined, needs: waits.get(s.id) ?? 0 };
-    }));
-  };
-  const live = new LiveTicker(readLive, async (s) => {
+  const live = new LiveTicker(nowLive, async (s) => {
     const recs = await push.send(mobile, mobile.globalSeq(), { kind: "live", high: false, data: liveData(s) });
     for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { live: true, device: r.device_id });
-  }, 20_000, () => push.configured() && mobile.pushTargets().length > 0);
+    return recs.some((r) => r.ok);
+  }, 20_000, () => push.configured() && mobile.pushTargets().length > 0, keep, (e) => errors.capture("server", e, { live: true }));
+  live.poke();
   bus.on((f) => {
     if (f.t === "session" || (f.t === "feature" && (f.name === "approval" || f.name === "plan" || f.name === "automation"))) live.poke();
   });
@@ -156,7 +151,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
 
   return {
     ...mobileApi({ ...deps, mobile, gate: () => gate, changed, checkpoints: () => checkpoints, fleetMachines: () => fleetMachines?.() ?? Promise.resolve([]), startFleetSession: (b) => (startFleetSession ? startFleetSession(b) : Promise.resolve(Response.json({ error: "this daemon has no machines to start a session on" }, { status: 409 }))),
-      away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms),
+      live: nowLive, away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms),
       search: (r) => (searchSessions ? searchSessions(r) : Promise.resolve(Response.json({ error: "the search is not loaded" }, { status: 409 }))) }),
 
     "/api/mobile/settings": {

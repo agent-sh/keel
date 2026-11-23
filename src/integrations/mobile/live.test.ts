@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { liveData, liveStatus, LiveTicker, type LiveStatus } from "./live.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Store } from "../../core/store.ts";
+import { liveData, liveStatus, LiveTicker, readLive, type LiveStatus } from "./live.ts";
 
 test("the status counts what runs and what waits, the longest-running first", () => {
   const s = liveStatus([
@@ -16,7 +20,7 @@ test("the status counts what runs and what waits, the longest-running first", ()
 test("a change is held and sent once; one that comes and goes inside the hold sends nothing; the end is sent", async () => {
   let now: LiveStatus = { working: 0, needs: 0, titles: [], since: null };
   const sent: LiveStatus[] = [];
-  const t = new LiveTicker(() => now, (s) => void sent.push(s), 30);
+  const t = new LiveTicker(() => now, (s) => { sent.push(s); return true; }, 30);
   // Nothing runs and nothing was told: nothing to say.
   t.poke(); await Bun.sleep(60);
   expect(sent).toEqual([]);
@@ -35,4 +39,63 @@ test("a change is held and sent once; one that comes and goes inside the hold se
   now = { working: 0, needs: 0, titles: [], since: null }; t.poke(); await Bun.sleep(60);
   expect(sent.map((s) => s.working)).toEqual([1, 0]);
   t.stop();
+});
+
+test("what was last told outlives the daemon: the next one takes the notification down when nothing runs", async () => {
+  const working: LiveStatus = { working: 2, needs: 1, titles: ["A", "B"], since: 1 };
+  const idle: LiveStatus = { working: 0, needs: 0, titles: [], since: null };
+  let kept: LiveStatus | null = null;
+  const keep = { get: () => kept, set: (s: LiveStatus) => void (kept = s) };
+  const sent: LiveStatus[] = [];
+  let now = working;
+  const before = new LiveTicker(() => now, (s) => { sent.push(s); return true; }, 10, () => true, keep);
+  before.poke(); await Bun.sleep(40);
+  // The turns end inside the hold, and the daemon stops before it is over.
+  now = idle; before.poke(); before.stop();
+  const after = new LiveTicker(() => now, (s) => { sent.push(s); return true; }, 10, () => true, keep);
+  after.poke(); await Bun.sleep(40);
+  expect(sent.map((s) => s.working)).toEqual([2, 0]);
+  after.stop();
+});
+
+test("a push that did not go is sent again, and a send that throws is no unhandled failure", async () => {
+  const now: LiveStatus = { working: 1, needs: 0, titles: ["A"], since: 1 };
+  let tries = 0;
+  const fails: unknown[] = [];
+  const t = new LiveTicker(() => now, () => { tries++; if (tries === 1) throw new Error("no network"); return tries > 2; }, 5, () => true, undefined, (e) => fails.push(e));
+  t.poke();
+  // A throw, then a refusal, then it goes; after that the same status is not sent again.
+  for (let i = 0; i < 100 && tries < 3; i++) await Bun.sleep(10);
+  t.poke(); await Bun.sleep(30);
+  expect([tries, fails.length]).toEqual([3, 1]);
+  t.stop();
+});
+
+test("the status is read from what runs and waits, never a whole table, and each turn's start is one seek", () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-live-")));
+  const make = (title: string) => store.createSession({ title, model: "fx:m", workspace: "/w" });
+  const runs = make("Runs"), leads = make("Leads agents"), asks = make("Asks"), shelved = make("Shelved");
+  for (let i = 0; i < 40; i++) make(`Idle ${i}`);
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+  const agent = make("An agent");
+  store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(leads.id, agent.id);
+  store.updateSession(shelved.id, { archived: true });
+  store.append(runs.id, "turn_start", {}, null, 5000);
+  for (let i = 0; i < 30; i++) store.append(runs.id, "assistant", { text: String(i) });
+  store.append(leads.id, "turn_start", {}, null, 4000);
+  const running = new Set([runs.id, agent.id, shelved.id]);
+  // What reads it: no list of every session, and each statement over events seeks an index made for it.
+  const all = store.sessions.bind(store);
+  let lists = 0;
+  store.sessions = ((o?: any) => { lists++; return all(o); }) as any;
+  const asked: string[] = [];
+  const query = store.db.query.bind(store.db);
+  store.db.query = ((sql: string) => { if (/\bFROM events\b/.test(sql)) asked.push(sql); return query(sql); }) as any;
+  const s = readLive({ store, running: () => running, waiting: () => [agent.id, asks.id], below: () => new Map([[leads.id, 1]]) });
+  store.db.query = query as any;
+  // The agent's card is its root's: the root waits on the owner, and the archived session is not counted.
+  expect(s).toEqual({ working: 1, needs: 2, titles: ["Runs"], since: 5000 });
+  const plan = (sql: string) => JSON.stringify(query("EXPLAIN QUERY PLAN " + sql).all(...Array(sql.split("?").length - 1).fill(runs.id)));
+  expect(asked.length).toBeGreaterThan(0);
+  expect({ lists, unindexed: asked.filter((sql) => !plan(sql).includes("events_turn_marks")) }).toEqual({ lists: 0, unindexed: [] });
 });

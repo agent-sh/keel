@@ -616,6 +616,11 @@ export class Engine {
     return this.running.has(id);
   }
 
+  // The sessions with a turn running now, from what the engine holds (no read of the store).
+  runningIds(): string[] {
+    return [...this.running.keys()];
+  }
+
   // The turn_start event of the turn running in the session now.
   turnOf(id: string): string | undefined {
     return this.turns.get(id);

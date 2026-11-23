@@ -16,6 +16,13 @@ export function turnMarks(store: Store) {
   made.add(store);
 }
 
+// When a session's newest mark of one kind was stored (its newest turn end, say): one seek.
+export function newestMark(store: Store, sessionId: string, kind: "turn_start" | "turn_end" | "compaction" | "error"): number | null {
+  turnMarks(store);
+  return store.db.query<{ ts: number }, [string, string]>(
+    `SELECT ts FROM events INDEXED BY ${TURN_IX} WHERE session_id = ? AND ${TURN} AND kind = ? ORDER BY ts DESC LIMIT 1`).get(sessionId, kind)?.ts ?? null;
+}
+
 // A session's newest turn: its turn_start event.
 export function newestTurn(store: Store, sessionId: string): { id: string; ts: number; seq: number } | null {
   turnMarks(store);

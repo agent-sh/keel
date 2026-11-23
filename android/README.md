@@ -146,7 +146,10 @@ service holds it and no connection feeds it: the daemon sends a `live` push
 when what runs or waits changed (held 20 seconds, so a turn that starts and
 ends in that time sends nothing; the push service keeps only the newest),
 the app sets it as it goes to the back, and the background check updates it
-when push is off. On Android 16 it asks to be shown as a Live Update.
+when push is off. On Android 16 it asks to be shown as a Live Update. The
+daemon keeps what it last told the phone, so one that restarted takes the
+notification down when nothing runs any more, and a push that did not go
+is sent again.
 
 ## Push
 

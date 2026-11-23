@@ -76,6 +76,13 @@ object Notify {
         runCatching { nm.notify(LIVE, LIVE_ID, b.build()) }
     }
 
+    /**
+     * A "live" push. In front, the app shows what runs itself, and the notification is set as it goes to
+     * the back: none is put up then. One that says nothing runs still takes a shown one down. True when
+     * the notification was set.
+     */
+    fun livePush(c: Context, l: Live): Boolean = (!Ui.inFront || !l.shown).also { if (it) live(c, l) }
+
     private fun idOf(key: String) = key.hashCode()
 
     private fun open(c: Context, chat: String?): PendingIntent = PendingIntent.getActivity(
@@ -147,7 +154,7 @@ class PushService : FirebaseMessagingService() {
         val m = PushMsg.of(message.data)
         when (m.kind) {
             "withdraw" -> m.chat?.let { Notify.cancelChat(this, it) }
-            "live" -> Notify.live(this, Live.of(m))
+            "live" -> Notify.livePush(this, Live.of(m))
             else -> Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.allows)
         }
         m.id?.let { id -> Hub.scope.launch { runCatching { Api.post("/v1/push/ack", JSONObject().put("id", id)) } } }

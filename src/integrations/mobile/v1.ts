@@ -35,6 +35,8 @@ import type { FileChange } from "../../safety/shadow.ts";
 import { readsOf } from "../../server/reads.ts";
 import { digestBrief, digestTotals, hms, type Digest } from "../../admin/away.ts";
 import { dur } from "../../admin/timeline-rows.ts";
+import { newestMark } from "../../admin/marks.ts";
+import { liveData, type LiveStatus } from "./live.ts";
 import { zoneLabel } from "../../core/clock.ts";
 import { decidePlan, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
 
@@ -70,6 +72,8 @@ export type MobileCtx = Deps & {
   away?: () => Digest | null; awaySeen?: () => void; ownerSeen?: (idleMs: number) => void;
   // The search across sessions (src/server/routes/search.ts), asked as the page asks it.
   search?: (req: Request) => Promise<Response>;
+  // The lasting notification's status (src/integrations/mobile/live.ts): the background check reads it in the pulse.
+  live?: () => LiveStatus;
 };
 
 // How many hits the phone is sent: a screen and a half of them; the words narrow it from there.
@@ -374,8 +378,8 @@ export function mobileApi(ctx: MobileCtx) {
   // whatever the turn stored since.
   // A turn that has not stored its start yet (the session just went working)
   // starts now, not at the previous turn's start.
-  const turnBounds = (sid: string) => store.db.query<{ st: number | null; en: number | null }, [string]>(
-    "SELECT MAX(CASE WHEN kind = 'turn_start' THEN ts END) AS st, MAX(CASE WHEN kind = 'turn_end' THEN ts END) AS en FROM events WHERE session_id = ?").get(sid)!;
+  // (Each is one seek of the turn index: this runs for every working session at each hello.)
+  const turnBounds = (sid: string) => ({ st: newestMark(store, sid, "turn_start"), en: newestMark(store, sid, "turn_end") });
   const since = (s: Session) => { const b = turnBounds(s.id); return secs(b.st !== null && (b.en === null || b.st > b.en) ? b.st : s.updated); };
   const working = () => store.sessions().filter((s) => engine.isRunning(s.id)).map((s) => ({ chat_id: s.id, since: since(s) }));
   const msgCtx: MessageCtx = { titleOf: (sid) => store.session(sid)?.title, parentOf: (sid) => store.session(sid)?.parent_id ?? null };
@@ -1325,7 +1329,7 @@ export function mobileApi(ctx: MobileCtx) {
     },
     "/v1/pulse": {
       GET: signed(() => {
-        return json({ ...pulse(), working: working(), live_sessions: store.sessions(), approvals: pendingApprovals() });
+        return json({ ...pulse(), working: working(), live_sessions: store.sessions(), approvals: pendingApprovals(), ...(ctx.live ? { live: liveData(ctx.live()) } : {}) });
       }),
     },
     "/v1/sessions": { GET: signed(() => json({ sessions: store.sessions() })) },

@@ -10,6 +10,9 @@
 // a turn that starts and ends inside it sends nothing, and a session that works for an hour sends
 // one push when it starts and one when it ends.
 
+import type { Store } from "../../core/store.ts";
+import { newestTurn } from "../../admin/marks.ts";
+
 export type LiveStatus = { working: number; needs: number; titles: string[]; since: number | null };
 
 // A session's part in the status: its title, whether its turn runs and since when, and how many
@@ -36,31 +39,92 @@ export function liveData(s: LiveStatus): Record<string, string> {
   return { w: String(s.working), q: String(s.needs), title: what, body: s.titles.join(" · "), ...(s.since ? { since: String(s.since) } : {}) };
 }
 
+// What the status is read from: the store, the sessions whose turns run, the sessions a card waits on
+// the owner in (an approval, a question, a plan), and how many agents work below each session
+// (agentCounts, src/automation/state.ts).
+export type LiveDeps = { store: Store; running(): Iterable<string>; waiting(): Iterable<string>; below(): Map<string, number> };
+
+// The status now, per session nobody started (an agent's part is its root's; an archived one is not
+// counted). Only the sessions that run, lead agents or wait are read, each by its id, and a turn's
+// start is one seek of the turn index: the read runs on the loop at every change.
+export function readLive(d: LiveDeps): LiveStatus {
+  const { store } = d;
+  const rootOf = (id: string) => {
+    let at = id;
+    for (let n = 0, p = store.session(at)?.parent_id; p && n < 32; n++, p = store.session(at)?.parent_id) at = p;
+    return at;
+  };
+  const waits = new Map<string, number>();
+  for (const sid of d.waiting()) { const r = rootOf(sid); waits.set(r, (waits.get(r) ?? 0) + 1); }
+  const below = d.below();
+  const runs = new Set(d.running());
+  const rows: LiveRow[] = [];
+  for (const id of new Set([...runs, ...below.keys(), ...waits.keys()])) {
+    const s = store.session(id);
+    if (!s || s.parent_id || s.archived) continue;
+    const running = runs.has(id) || (below.get(id) ?? 0) > 0;
+    rows.push({ title: s.title, running, since: running ? newestTurn(store, id)?.ts : undefined, needs: waits.get(id) ?? 0 });
+  }
+  return liveStatus(rows);
+}
+
+// What was last told, kept where the next daemon reads it (the mobile settings): a daemon that stops
+// inside a hold, after it told the phone that something works, leaves the next one to say it ended.
+export type LiveKeep = { get(): LiveStatus | null; set(s: LiveStatus): void };
+
+// A push that did not go is tried again after the hold, doubled each time it fails again, up to 32
+// holds (about ten minutes at the daemon's 20 s): a phone that cannot be reached is not tried every
+// hold for hours, and one that comes back is told within minutes.
+const MAX_BACKOFF = 5;
+
 export class LiveTicker {
-  private told: LiveStatus | null = null;
+  private told: LiveStatus | null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private fails = 0;
+  /**
+   * `send` says whether the status reached at least one phone; a status is told only then.
+   * `failed` hears a send that threw.
+   */
   constructor(
     private read: () => LiveStatus,
-    private send: (s: LiveStatus) => Promise<void> | void,
+    private send: (s: LiveStatus) => Promise<boolean> | boolean,
     private quietMs = 20_000,
     private on = () => true,
-  ) {}
+    private keep?: LiveKeep,
+    private failed: (e: unknown) => void = () => {},
+  ) {
+    this.told = keep?.get() ?? null;
+  }
 
   /** Something that can change the status happened. */
   poke() {
     if (this.timer || !this.on()) return;
-    this.timer = setTimeout(() => void this.flush(), this.quietMs);
+    this.later(this.quietMs);
+  }
+
+  private later(ms: number) {
+    this.timer = setTimeout(() => void this.flush(), ms);
     (this.timer as any).unref?.();
   }
 
-  /** Sends the status now when it differs from the last one sent (the first is sent only when something runs or waits). */
+  /** Sends the status now when it differs from the last one told (the first is sent only when something runs or waits). */
   async flush() {
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (!this.on()) return;
     const now = this.read();
-    if (same(this.told, now) || (!this.told && !now.working && !now.needs)) return;
-    this.told = now;
-    await this.send(now);
+    if (same(this.told, now) || (!this.told && !now.working && !now.needs)) { this.fails = 0; return; }
+    let ok = false;
+    try { ok = await this.send(now); } catch (e) { this.failed(e); }
+    if (ok) {
+      this.told = now;
+      this.fails = 0;
+      try { this.keep?.set(now); } catch (e) { this.failed(e); }
+      return;
+    }
+    // Not told: tried again after a longer hold, unless a change already set one.
+    this.fails = Math.min(this.fails + 1, MAX_BACKOFF);
+    if (!this.timer) this.later(this.quietMs * 2 ** this.fails);
   }
 
   stop() { if (this.timer) clearTimeout(this.timer); this.timer = null; }

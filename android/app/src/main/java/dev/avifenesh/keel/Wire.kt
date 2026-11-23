@@ -772,22 +772,30 @@ data class Live(val working: Int, val needs: Int, val title: String, val body: S
     companion object {
         /** A "live" push, as the daemon sends it. */
         fun of(m: PushMsg) = Live(m.working, m.needs, m.title, m.body, m.since)
-        /** What the app holds: the sessions whose turns run (since when), the open cards, the titles. */
+        /**
+         * What the app holds: the sessions whose turns run (since when), the open cards, the titles. Counted
+         * as the daemon counts (live.ts readLive): per root, a root whose agents work works, an archived
+         * root counts for nothing, and a root a card waits in needs the owner instead of working.
+         */
         fun of(working: Map<String, Double>, cards: Collection<Card>, chats: Map<String, Chat>): Live {
-            val open = cards.filter { it.pending }
+            val shelved = { id: String -> chats[id]?.archived == true }
+            val open = cards.filter { it.pending && !shelved(rootOf(chats, it.chatId)) }
             val needs = open.size
-            // A session whose turn waits on the owner (in it or an agent under it) needs them; it does not work.
             val waiting = open.map { rootOf(chats, it.chatId) }.toSet()
-            val roots = working.keys.filter { chats[it]?.parentId == null && it !in waiting }
+            // When each root's work started: its own turn, else the earliest turn below it.
+            val start = mutableMapOf<String, Double>()
+            for ((id, at) in working) { val r = rootOf(chats, id); start[r] = minOf(start[r] ?: at, at) }
+            val roots = (working.keys.map { rootOf(chats, it) } + chats.values.filter { it.agents > 0 }.map { it.id })
+                .filter { chats[it]?.parentId == null && !shelved(it) && it !in waiting }.distinct()
             val what = listOfNotNull(
                 if (roots.isNotEmpty()) "${roots.size} session${if (roots.size == 1) "" else "s"} working" else null,
                 if (needs > 0) "$needs need${if (needs == 1) "s" else ""} you" else null,
             ).joinToString(" · ")
-            val byStart = roots.sortedBy { working[it] ?: 0.0 }
+            val byStart = roots.sortedBy { start[it] ?: 0.0 }
             return Live(roots.size, needs, what, byStart.take(4).joinToString(" · ") { chats[it]?.title ?: "A session" },
-                byStart.firstOrNull()?.let { ((working[it] ?: 0.0) * 1000).toLong() } ?: 0)
+                byStart.mapNotNull { start[it] }.minOrNull()?.let { (it * 1000).toLong() } ?: 0)
         }
-        /** The background check's read (GET /v1/pulse). */
+        /** The background check's read (GET /v1/pulse): the daemon's own status, else made from the pulse (a daemon from before). */
         fun of(p: Pulse): Live {
             val chats = p.sessions.associate { it.id to Chat(it.id, it.title, "working", 0.0, 0, false, false, "", "", null) }
             return of(p.working, p.cards, chats)
@@ -812,6 +820,7 @@ data class Pulse(
                 tz = o.str("tz"), spendToday = if (o.isNull("spend_today")) null else o.optDouble("spend_today"),
                 unpricedToday = o.optInt("spend_today_unpriced"), runsToday = o.optInt("runs_today"), failuresToday = o.optInt("failures_today"),
                 week = o.optJSONArray("spend_7d")?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } }.orEmpty(),
+            p.live?.let { return it }
                 cards = objs("approvals").map(Card::of),
                 sessions = objs("live_sessions").map { s ->
                     val u = s.optJSONObject("usage") ?: JSONObject()
@@ -827,6 +836,8 @@ data class Pulse(
 }
 
 /** GET /v1/chats/:id/usage in a line: the model, the tokens in and out, the cached ones, the spend. */
+    /** The lasting notification's status as the daemon reads it (its "live" push's fields). */
+    val live: Live? = null,
 fun usageLine(o: JSONObject): String {
     val s = o.optJSONObject("session") ?: return "No usage yet"
     fun n(v: Long) = if (v >= 1_000_000) "%.1fM".format(v / 1e6) else if (v >= 1000) "%.1fk".format(v / 1e3) else "$v"
@@ -843,3 +854,4 @@ fun newestTs(held: List<Msg>): Double = held.maxOfOrNull { it.ts } ?: 0.0
  * made. That send is done, and the same words sent again are a new prompt.
  */
 fun sendArrived(held: List<Msg>, text: String, after: Double): Boolean = held.any { it.mine && it.content == text && it.ts > after }
+                live = o.optJSONObject("live")?.let { l -> Live.of(PushMsg.of(l.keys().asSequence().associateWith { l.optString(it) })) },
