@@ -334,6 +334,8 @@ scripts/remote-verify.sh --host build-box [--e2e SPEC...] [COMMIT]
                                # in a folder of its own, then typecheck, unit, ui lib, scripts and the command line e2e
                                # (and the named browser specs through scripts/smoke.sh) at a low priority with a clean
                                # environment; one line a stage, a table at the end, the logs copied back (--out DIR).
+                               # Its last line, a refusal's too, is "remote-verify: Summary: <outcome> (exit N)":
+                               # a wait on its output matches that line.
                                # At most two runs on a host at once, none when its load is over 20; --only unit,cli
                                # runs some stages. The host needs git, Bun and ssh, nothing else of this machine.
 bun scripts/build.ts            # dist/keel, one binary (and dist/keel-ui.tar.gz, its page as a bundle)

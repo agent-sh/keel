@@ -32,7 +32,9 @@
 # every stage passed, 1 when one failed, 2 for a refusal (a tree with changes that are not
 # committed, no host, a tool missing there), 3 when the host is too busy to start (a load
 # over 20, or no free place within the wait: at most four runs are on a host at once; KEEL_VERIFY_MAX_LOAD and
-# KEEL_VERIFY_MAX_RUNS change both).
+# KEEL_VERIFY_MAX_RUNS change both). The last line, a refusal's too, is the outcome with that
+# code: `remote-verify: Summary: every stage passed (exit 0)`, so a wait on the output can
+# match `remote-verify: Summary:` and know the run is over.
 set -euo pipefail
 
 MAX_LOAD=${KEEL_VERIFY_MAX_LOAD:-20}   # the host's one-minute load above which a run does not start
@@ -43,6 +45,22 @@ if [ "${1:-}" != "__remote" ]; then
   # ---- here: what to check, the push, the copy of this script, the logs back ----
   TOP=$(cd "$(dirname "$0")/.." && pwd)
   host=${KEEL_VERIFY_HOST:-}; dir=.cache/keel-verify; out=""; only=""; wait_s=1800; e2e=0; specs=(); commit=""
+  # The outcome as the last line, whichever way the script ends; `started`: the host began the run.
+  started=0
+  summary() {
+    local rc=$? what
+    case "$rc" in
+      0) what="every stage passed" ;;
+      1) if [ "$started" = 1 ]; then what="a stage failed (its FAILED line is above)"; else what="not run: refused"; fi ;;
+      2) what="not run: refused (the reason is above)" ;;
+      3) what="not run: the host is busy" ;;
+      130) what="stopped" ;;
+      255) what="the connection to the host failed" ;;
+      *) what="ended early" ;;
+    esac
+    echo "remote-verify: Summary: $what (exit $rc)"
+  }
+  trap summary EXIT
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --host) host=${2:?--host takes a name ssh reaches}; shift ;;
@@ -51,7 +69,7 @@ if [ "${1:-}" != "__remote" ]; then
       --only) only=${2:?--only takes stages, separated by commas}; shift ;;
       --wait) wait_s=${2:?--wait takes seconds}; shift ;;
       --e2e) e2e=1 ;;
-      -h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -h|--help) trap - EXIT; sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
       -*) echo "remote-verify: unknown option $1 (see --help)" >&2; exit 2 ;;
       *)
         # After --e2e, what names a spec is a spec; anything else is the commit.
@@ -91,7 +109,7 @@ if [ "${1:-}" != "__remote" ]; then
   # signal to this script is acted on at once and takes the connection with it.
   ssh -q -tt -o BatchMode=yes -o ConnectTimeout=15 "$host" \
     "KEEL_VERIFY_MAX_RUNS=$MAX_RUNS KEEL_VERIFY_MAX_LOAD=$MAX_LOAD bash '$dir/runs/$run/remote-verify.sh' __remote '$dir' '$run' '$sha' '$wait_s' '$only' '$e2e' ${specs[*]:-}" < /dev/null &
-  far=$!
+  far=$!; started=1
   trap 'kill "$far" 2> /dev/null || true; wait "$far" 2> /dev/null || true; echo "remote-verify: stopped; the run on $host is ended" >&2; exit 130' INT TERM HUP
   wait "$far" || rc=$?
   trap - INT TERM HUP
