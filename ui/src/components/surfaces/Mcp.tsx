@@ -208,6 +208,15 @@ function ChannelSection({ s, base, act }: { s: McpServerState; base: string; act
 // A server's tools, each one a toggle: a tool the owner counts as a read runs
 // without asking; every other one asks first. What the server itself calls
 // read-only is only its word, shown with a mark, until the owner takes it.
+// What else it says of a tool is marked too (src/mcp/hints.ts): a tool it
+// calls destructive asks with more care, one it calls open-world says so on
+// its card, and one it calls idempotent says so when a call fails midway.
+const HINT_MARK = { destructive: "del", open_world: "net", idempotent: "idem" } as const;
+const HINT_SAYS = {
+  destructive: "The server says it may delete or overwrite data: it asks as high risk, one call at a time.",
+  open_world: "The server says it reaches services outside this machine.",
+  idempotent: "The server says calling it again with the same arguments changes nothing more.",
+} as const;
 function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
   const [all, setAll] = useState(false);
   const reads = new Set(s.read_tools);
@@ -224,14 +233,16 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
         {shown.map((t) => {
           const read = reads.has(t);
           const hint = s.hinted_reads.includes(t);
+          const says = s.tool_hints?.[t] ?? [];
           return (
             <button
               key={t}
               type="button"
               data-testid="mcp-tool-read"
               data-tool={t}
+              data-hints={says.join(" ") || undefined}
               aria-pressed={read}
-              title={`${read ? "Counts as a read: runs without asking. Click to ask first again." : "Asks before it runs. Click to count it as a read."}${hint ? " The server calls it read-only." : ""}`}
+              title={`${read ? "Counts as a read: runs without asking. Click to ask first again." : "Asks before it runs. Click to count it as a read."}${hint ? " The server calls it read-only." : ""}${says.map((w) => ` ${HINT_SAYS[w]}`).join("")}`}
               onClick={() => put(read ? s.read_tools.filter((x) => x !== t) : [...s.read_tools, t])}
               className={cn(
                 "inline-flex items-center gap-1 rounded-md border px-1.5 py-px font-mono text-micro transition-colors",
@@ -241,6 +252,7 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
               {read && <Eye className="size-3" aria-hidden />}
               {t}
               {hint && !read && <span className="text-faint" aria-hidden>·ro</span>}
+              {says.map((w) => <span key={w} className={w === "destructive" ? "text-danger" : "text-faint"} aria-hidden>·{HINT_MARK[w]}</span>)}
             </button>
           );
         })}

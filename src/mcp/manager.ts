@@ -25,6 +25,7 @@ import { OAuthStore } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
+import { hintsOf, hintWords } from "./hints.ts";
 import { conceal } from "../core/conceal.ts";
 import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
 import { runMode } from "../core/runmode.ts";
@@ -103,6 +104,7 @@ export type McpServerState = {
   tool_names: string[];
   read_tools: string[];   // the tools the owner marked as reads (they run without asking)
   hinted_reads: string[]; // the tools the server itself calls read-only (its word, not a read until marked)
+  tool_hints: Record<string, ("destructive" | "open_world" | "idempotent")[]>; // what else the server says of a tool (src/mcp/hints.ts)
   last_connected?: number;
   era?: "modern" | "legacy";
   version?: string;
@@ -733,6 +735,11 @@ export class McpManager {
 
   private catalogTool(e: Entry, t: McpTool): CatalogTool {
     const server = e.label ?? e.name;
+    const readOnly = e.bundled ? e.bundled.reads(t.name) : !!e.config.read_tools?.includes(t.name);
+    // (A server Keel brings is judged by Keel's own word: its `reads` and `judge`.)
+    const hints = e.bundled ? undefined : hintsOf(t.annotations);
+    // A tool the owner marked as a read is a read whatever its server says; any other call carries what raises its care.
+    const careful = !readOnly && (hints?.destructive || hints?.openWorld) ? { ...(hints.destructive ? { destructive: true as const } : {}), ...(hints.openWorld ? { openWorld: true as const } : {}) } : undefined;
     return {
       server,
       name: t.name,
@@ -744,8 +751,9 @@ export class McpManager {
       source: binding(sourced(e.config), this.bindKey),
       description: t.description ?? t.title ?? "",
       input_schema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
-      readOnly: e.bundled ? e.bundled.reads(t.name) : !!e.config.read_tools?.includes(t.name),
-      judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input) : undefined,
+      readOnly,
+      ...(hints ? { hints } : {}),
+      judge: e.bundled?.judge ? (input: any) => e.bundled!.judge!(t.name, input) : careful ? async () => ({ kind: "other" as const, hints: careful }) : undefined,
       run: (input: any, ctx: ToolContext) => this.call(e.name, t.name, input, ctx),
     };
   }
@@ -1021,7 +1029,15 @@ export class McpManager {
       // A call the owner's stop or a daemon stop ended did not fail.
       if (!ctx.signal.aborted) this.errors.capture("tool", err, { mcp: name, tool, session: ctx.sessionId });
       if (err instanceof SessionExpired) return { content: `${shown}__${tool} did not run: ${err.message}. Keel opens a new session; the call was not sent again. Look the tool up again and call it if it is still needed.`, is_error: true };
-      return noted({ content: `${shown}__${tool} failed: ${(err as Error).message}`, is_error: true });
+      // A call that went out and got no answer (a timeout, a connection that ended) may have done its work, or
+      // part of it: what its server says of calling it again is the model's to weigh (src/mcp/hints.ts). A
+      // server's error answer and the owner's stop say nothing of the kind.
+      const again = err instanceof RpcError || ctx.signal.aborted || call.readOnly ? ""
+        : hintsOf(tools?.find((t) => t.name === tool)?.annotations)?.idempotent
+          ? " It may have run before it failed. Its server says a second call with the same arguments changes nothing more (idempotentHint)."
+          : " It may have run, or run in part, before it failed: check what it did before calling it again.";
+      const said = (err as Error).message;
+      return noted({ content: `${shown}__${tool} failed: ${again ? `${said.replace(/[.\s]+$/, "")}.${again}` : said}`, is_error: true });
     }
     this.callEnded(ctx.sessionId, card);
     // The schema of the tool as it was listed when the call went out (a list that changed meanwhile is the next call's).
@@ -1252,6 +1268,7 @@ export class McpManager {
       tool_names: (e.bundled && !e.client ? e.bundled.tools : e.tools).map((t) => t.name),
       read_tools: e.bundled ? [] : (e.config.read_tools ?? []),
       hinted_reads: e.bundled ? [] : e.tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
+      tool_hints: e.bundled ? {} : Object.fromEntries(e.tools.map((t) => [t.name, hintWords(hintsOf(t.annotations))] as const).filter(([, w]) => w.length)),
       last_connected: e.last,
       era: e.client?.era,
       version: e.client?.version,

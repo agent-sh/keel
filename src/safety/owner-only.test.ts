@@ -235,7 +235,7 @@ const everyClass: { [K in CallClass["kind"]]: Required<Extract<CallClass, { kind
   control: { kind: "control" },
   shell: { kind: "shell", command: "make", escalate: true, cwd: "/w/repo/sub", interpreter: "zsh" },
   edit: { kind: "edit", paths: ["/w/repo/tsconfig.json"], names: ["plugins"] },
-  other: { kind: "other", grant: "keel__spawn_on_machine:m", paths: ["/etc/hosts"] },
+  other: { kind: "other", grant: "keel__spawn_on_machine:m", paths: ["/etc/hosts"], hints: { destructive: true, openWorld: true } },
   drive: { kind: "drive", target: "claude:abc", resource: "keel__session_message:claude:abc", shown: "hello", owner: "why" },
   refused: { kind: "refused", why: "names no file" },
 };

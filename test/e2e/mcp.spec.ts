@@ -53,6 +53,11 @@ test("mcp servers", async ({ page, request }) => {
   await row.getByTestId("mcp-reads-hinted").click();
   await expect(add).toHaveAttribute("aria-pressed", "true");
   await expect(row.locator('[data-testid="mcp-tool-read"][data-tool="echo"]')).toHaveAttribute("aria-pressed", "false");
+  // What else the server says of a tool is marked beside its name.
+  const learn = row.locator('[data-testid="mcp-tool-read"][data-tool="learn"]');
+  await expect(learn).toHaveAttribute("data-hints", "destructive open_world idempotent");
+  await expect(learn).toHaveText("learn·del·net·idem");
+  await expect(row.locator('[data-testid="mcp-tool-read"][data-tool="echo"]')).not.toHaveAttribute("data-hints");
   await shoot(page, "mcp-02a-reads");
   await add.click();
   await expect(add).toHaveAttribute("aria-pressed", "false");

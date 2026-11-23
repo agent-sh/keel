@@ -3,7 +3,7 @@
 // so the eager tool list (and the cached request prefix) never changes when an
 // MCP server connects, reloads or goes away.
 import type { WebUse } from "../safety/addresses.ts";
-import type { CallClass } from "../safety/policy.ts";
+import type { CallClass, ToolHints } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "./types.ts";
 
 export type CatalogTool = {
@@ -13,6 +13,8 @@ export type CatalogTool = {
   description: string;
   input_schema: Record<string, unknown>;
   readOnly?: boolean;
+  // What its MCP server says it does, for the gate (policy.ts ToolHints) and for a failure's words (`idempotent`).
+  hints?: ToolHints & { idempotent?: boolean };
   hidden?: boolean;        // not offered by search, still answered by mcp_call (a server turned off says so)
   mcp?: boolean;           // a tool of an MCP server (named mcp__<server>__<tool> where tools load natively)
   // Which source runs it (an MCP server's endpoint or program and a private
@@ -50,7 +52,8 @@ const sources = new Map<string, CatalogSource>();
 // What the gate judged a call as, kept until it runs: the tool's shape and its
 // source. A call whose tool changed while its card waited does not run.
 export type Judged = { shape: string; source?: string };
-export const judgedOf = (t: CatalogTool): Judged => ({ shape: JSON.stringify([t.qualified, t.description, t.input_schema, !!t.readOnly]), source: t.source });
+// (A tool whose hints changed is another tool: they decide how it is judged.)
+export const judgedOf = (t: CatalogTool): Judged => ({ shape: JSON.stringify([t.qualified, t.description, t.input_schema, !!t.readOnly, ...(t.hints ? [t.hints] : [])]), source: t.source });
 // Why the answer given no longer fits the tool found now, or null when it does.
 export function stale(was: Judged | undefined, now: CatalogTool, name: string, again: string): string | null {
   if (!was) return null;

@@ -69,6 +69,10 @@ export function toolCovers(pattern: string, tool: string): boolean {
 const toolRule = (f: Facts, tool: string) => f.rules.some((r) => r.kind === "tool" && toolCovers(r.pattern, tool) && (!r.bind || r.bind === f.bind));
 const toolSuggest = (f: Facts, tool: string): Suggest[] => (tool.includes("*") ? [] : [{ kind: "tool", pattern: tool, ...(f.bind ? { bind: f.bind } : {}) }]);
 
+// What an MCP server says a tool of its does (its annotations), as far as the gate reads it.
+// Untrusted (the server's word, 2025-11-25 server/tools): no hint lets a call run that would ask.
+export type ToolHints = { destructive?: true; openWorld?: true };
+
 export type CallClass =
   // `paths`: the files and folders a read names (readPaths), for the one
   // thing a read is held to: in a sandboxed session it asks before it reads
@@ -88,7 +92,9 @@ export type CallClass =
   // `grant` names the standing answer that covers it when the tool's name is
   // too wide (keel__spawn_on_machine:<machine>: one machine, not all of them).
   // `paths`: the strings of its input that are a path by themselves (pathsNamed).
-  | { kind: "other"; grant?: string; paths?: string[] }
+  // `hints`: what an MCP server says of its tool (2025-11-25 tool annotations), which only ever
+  // makes the gate more careful: a destructive one is high risk, an open-world one says so on its card.
+  | { kind: "other"; grant?: string; paths?: string[]; hints?: ToolHints }
   // A message, answer or model command into another session. `resource` names
   // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
@@ -618,7 +624,12 @@ export function decide(c: CallClass, f: Facts): Decision {
   }
   const grant = (c.kind === "other" && c.grant) || f.tool;
   if (toolRule(f, grant)) return { allow: true };
-  return { ask: { risk: "low", suggest: toolSuggest(f, grant) } };
+  const hints = c.kind === "other" ? c.hints : undefined;
+  const world = hints?.openWorld ? "its server says it reaches services outside this machine (openWorldHint)" : undefined;
+  // A tool its server calls destructive: high risk, so its card is answered once (no standing answer), the
+  // reviewer hands it to the owner and Auto's judge reviews it as high risk. (Full auto checks nothing, above.)
+  if (hints?.destructive) return { ask: { risk: "high", why: ["its server says it may delete or overwrite data (destructiveHint)", world].filter(Boolean).join("; and "), rule: "its server says it may destroy data", suggest: [] } };
+  return { ask: { risk: "low", ...(world ? { why: world } : {}), suggest: toolSuggest(f, grant) } };
 }
 
 // (Said in every mode, Full auto too: it is not a review of the work.)

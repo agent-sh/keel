@@ -198,3 +198,59 @@ test("a reviewer retry covers the refused call's source and shape only", async (
   }
   expect(out).toEqual({ same: { judged: 1, let: true }, endpoint: { judged: 2, let: false }, account: { judged: 2, let: false }, schema: { judged: 2, let: false } });
 });
+
+// A server's annotations only make the gate more careful: a destructive tool is
+// high risk (answered once), an open-world one says so on its card, and a tool
+// the owner marked as a read stays a read whatever its server says.
+test("a tool its server calls destructive or open-world asks with more care, natively and through mcp_call", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Gate } = await import("../safety/gate.ts");
+  const { withCatalog } = await import("../tools/defer.ts");
+  installMcpTools({ configured: () => [] } as any);
+  const m = new McpManager({ capture() {} } as any, mkdtempSync(join(tmpdir(), "keel-mcp-")), "/");
+  const entry = { name: "files", config: { command: "x", read_tools: ["peek"] } };
+  const listed = [
+    { name: "wipe", annotations: { destructiveHint: true, openWorldHint: true } },
+    { name: "fetch", annotations: { openWorldHint: true, idempotentHint: true } },
+    { name: "plain", annotations: { destructiveHint: false } },
+    // Per the spec a destructive hint means nothing beside readOnlyHint: still a write here, and not a destructive one.
+    { name: "both", annotations: { readOnlyHint: true, destructiveHint: true } },
+    { name: "peek", annotations: { destructiveHint: true } },
+  ];
+  const tools = listed.map((t) => ({ ...(m as any).catalogTool(entry, { ...t, inputSchema: { type: "object" } }), run: async () => ({ content: "ran" }) }));
+  registerCatalog({ name: "files", tools: async () => tools, known: () => tools });
+  const dir = mkdtempSync(join(tmpdir(), "keel-mcp-hints-"));
+  const store = new Store(join(dir, "state")), bus = new Bus(), g = new Gate(store, bus);
+  try {
+    const native = await withCatalog([], "claude", []);
+    const dispatcher = toolsFor("gpt").find((t) => t.name === "mcp_call")!;
+    const seen: Record<string, { risk?: string; why?: string; standing?: boolean } | "ran"> = {};
+    for (const profile of ["native", "dispatcher"] as const) {
+      // (A session each: an answer for the session in one is not the other's.)
+      const s = store.createSession({ workspace: dir, model: "fixture", title: "hints" });
+      g.setPerm(s.id, { mode: "ask" });
+      const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, seen: new Map(), spillDir: dir };
+      for (const t of listed) {
+        const tool = profile === "native" ? native.find((x) => x.name === `mcp__files__${t.name}`)! : dispatcher;
+        const input = profile === "native" ? {} : { tool: `files__${t.name}`, arguments: {} };
+        const shown = new Promise<any>((res) => { const off = bus.on((f: any) => { if (f.name === "approval" && f.data?.state === "pending") { off(); res(f.data); } }); });
+        const r = await Promise.race([g.beforeTool(s, { id: crypto.randomUUID(), tool, input, ctx } as any).then(() => "ran" as const), shown]);
+        if (r === "ran") { seen[`${profile}/${t.name}`] = "ran"; continue; }
+        const standing = g.resolve(r.id, s.id, { choice: "session", seen: "whole" }) as any;
+        seen[`${profile}/${t.name}`] = { risk: r.risk, why: r.why, standing: standing.ok === true };
+        if (standing.ok !== true) g.resolve(r.id, s.id, { choice: "deny", seen: "whole" });
+      }
+    }
+    for (const p of ["native", "dispatcher"]) {
+      expect(seen[`${p}/wipe`]).toEqual({ risk: "high", why: "its server says it may delete or overwrite data (destructiveHint); and its server says it reaches services outside this machine (openWorldHint)", standing: false });
+      expect(seen[`${p}/fetch`]).toEqual({ risk: "low", why: "its server says it reaches services outside this machine (openWorldHint)", standing: true });
+      expect(seen[`${p}/plain`]).toEqual({ risk: "low", why: undefined, standing: true });
+      expect(seen[`${p}/both`]).toEqual({ risk: "low", why: undefined, standing: true });
+      expect(seen[`${p}/peek`]).toBe("ran");
+    }
+  } finally {
+    unregisterCatalog("files");
+    store.db.close();
+  }
+});

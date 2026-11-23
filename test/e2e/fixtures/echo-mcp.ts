@@ -8,7 +8,8 @@ const tools: { name: string; description: string; annotations?: object; inputSch
   { name: "add", description: "Add two numbers.", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } },
 ];
 const learns = process.argv.includes("--learn");
-if (learns) tools.push({ name: "learn", description: "Add the prompt farewell.", inputSchema: { type: "object", properties: {}, required: [] } });
+// (What its server says of it is marked in the MCP panel.)
+if (learns) tools.push({ name: "learn", description: "Add the prompt farewell.", annotations: { destructiveHint: true, openWorldHint: true, idempotentHint: true }, inputSchema: { type: "object", properties: {}, required: [] } });
 let learned = false;
 
 const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
