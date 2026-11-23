@@ -335,7 +335,8 @@ function List({ title, rows, most, testid, className }: { title: string; rows: {
 // What needs the owner. On a phone, which has no rail beside the page, the
 // sessions at work are listed too.
 // What finished since the owner last looked: the sessions with a finish not read yet, counted, a press
-// from the Inbox that lists them. With the lists, not the headline: a finish that comes moves no start box.
+// from the Inbox that lists them. With the lists, not the headline: a finish that comes moves no start box;
+// under the rows that need the owner, so it moves none of those either (one answered there often finishes).
 function Finished() {
   const sessions = useStore((x) => x.sessions);
   const done = useAuto((x) => [...new Set(x.alerts.filter((a) => a.kind === "finished" && !a.read && a.session_id).map((a) => a.session_id!))].join(" "));
@@ -356,8 +357,9 @@ export function WatchLists({ className }: { className?: string }) {
   if (!attention.length && !working.length && !finished) return null;
   return (
     <div className={className} data-testid="home-lists">
-      <Finished />
       <List title={STATE_WORD.need} rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" />
+      {/* Under what needs the owner: a finish that comes while they answer moves no row they are pressing. */}
+      <Finished />
       <List title={working.every((r) => r.w === "work") ? STATE_WORD.work : `${STATE_WORD.work} and ${STATE_WORD.wait.toLowerCase()}`} rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />
     </div>
   );
