@@ -1,4 +1,4 @@
-import { Bell, BellOff, ChevronRight, Moon, Repeat } from "lucide-react";
+import { Bell, BellOff, ChevronRight, ListCollapse, Moon, Repeat } from "lucide-react";
 import type React from "react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
@@ -6,7 +6,8 @@ import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.t
 import { COUNTERS, NEW, agentTally, countName } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentMark, AgentNow, agentSaid, ALERT_STATE, StopAgent } from "./bits.tsx";
+import { AgentMark, AgentNow, agentSaid, ALERT_STATE, IconButton, StopAgent } from "./bits.tsx";
+import { AgentLane } from "./Lane.tsx";
 import { scope } from "../../lib/store.ts";
 import { Mark } from "../Mark.tsx";
 import { useToldStates } from "../../lib/watch.ts";
@@ -55,6 +56,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const sum = useMemo(() => agentTally(said.map((x) => x.watch)), [said]);
   const viewing = kids.find((k) => k.session_id === current);
   const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
+  // The rows whose lane is open: its five lines under it (./Lane.tsx).
+  const [lanes, setLanes] = useState<ReadonlySet<string>>(() => new Set());
+  const foldLane = (id: string) => setLanes((was) => { const n = new Set(was); if (!n.delete(id)) n.add(id); return n; });
   // The list leaves out the sessions of agents at rest: their rows (a title the owner gave one) are read once the agents are opened.
   const left = useStore((s) => s.agentsLeft[parentId] ?? 0);
   useEffect(() => { if (expanded && left) actions.loadAgentsOf(parentId).catch(reportError); }, [expanded, left, parentId]);
@@ -110,7 +114,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         const news = endedUnseen(a, seen);
         return (
           // The row opens the agent; Stop is a control of its own over the row's end, never inside the open target.
-          <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-testid="child-row" data-depth={depth} style={depth > 1 ? ({ "--k-indent": `${(depth - 1) * 0.875}rem` } as React.CSSProperties) : undefined}>
+          <div key={a.id} className="k-child-row" data-live={isLive(a) || undefined} data-lane={lanes.has(a.id) || undefined} data-testid="child-row" data-depth={depth} style={depth > 1 ? ({ "--k-indent": `${(depth - 1) * 0.875}rem` } as React.CSSProperties) : undefined}>
             <div
               role="button"
               tabIndex={0}
@@ -144,8 +148,14 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
                 </span>
               ) : null}
             </div>
-            {isLive(a) && <span className="k-child-stop"><StopAgent a={a} title={title} testid="child-stop" /></span>}
+            <span className="k-child-acts">
+              <IconButton title={`${lanes.has(a.id) ? "Hide" : "Show"} what ${title} is doing, waits for, got wrong, changed and does next`} onClick={() => foldLane(a.id)} testid="child-lane-fold">
+                <ListCollapse className={cn("size-3.5", lanes.has(a.id) && "text-fg")} aria-hidden />
+              </IconButton>
+              {isLive(a) && <StopAgent a={a} title={title} testid="child-stop" />}
+            </span>
             <AgentNow a={a} className="k-child-now" />
+            {lanes.has(a.id) && <AgentLane a={a} className="k-child-lane" testid="child-lane" />}
           </div>
         );
       })}

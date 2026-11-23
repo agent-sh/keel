@@ -19,7 +19,7 @@ export { NOW_MS, type NowLine };
 
 const THINK_KEEP = 1_200; // characters of a step's thinking kept: its newest sentence is at the end
 
-type Live = { thinking: string; calls: Map<string, { name: string; input: unknown }>; need: boolean };
+type Live = { thinking: string; calls: Map<string, { name: string; input: unknown; at: number }>; need: boolean };
 const live = new Map<string, Live>(); // agent session -> what its turn is doing
 const told = new Map<string, { at: number; print: string; need?: boolean }>(); // agent session -> its last telling
 const lines = new Map<string, NowLine>(); // agent session -> its newest line
@@ -46,7 +46,7 @@ const isAgent = (s: Pick<Session, "parent_id">) => !!s.parent_id;
 export const track = {
   requestSent: (id: string) => { of(id).thinking = ""; touch(id); },
   thinking: (id: string, text: string) => { const l = of(id); l.thinking = (l.thinking + text).slice(-THINK_KEEP); touch(id); },
-  callStarted: (id: string, callId: string, name: string, input: unknown) => { of(id).calls.set(callId, { name, input }); touch(id); },
+  callStarted: (id: string, callId: string, name: string, input: unknown, at = Date.now()) => { of(id).calls.set(callId, { name, input, at }); touch(id); },
   callEnded: (id: string, callId: string) => { live.get(id)?.calls.delete(callId); touch(id); },
   turnEnded: (id: string) => { const l = live.get(id); if (l) { l.calls.clear(); l.thinking = ""; } touch(id); },
   forget: (id: string) => forget(id),
@@ -55,6 +55,13 @@ export const track = {
 export function seenWords(id: string, more: { waits?: string; cwd?: string } = {}) {
   const l = live.get(id);
   return nowWords({ thinking: l?.thinking, calls: l ? [...l.calls.values()] : [], ...more });
+}
+
+// The oldest call an agent's turn runs now, and since when (an agent's lane: src/automation/lane.ts).
+export function callOf(id: string): { name: string; input: unknown; at: number } | undefined {
+  const l = live.get(id);
+  if (!l?.calls.size) return undefined;
+  return [...l.calls.values()].reduce((a, b) => (b.at < a.at ? b : a));
 }
 
 // The line as it stands now. Two reads of the ledger (usedOf), on its index.
@@ -101,6 +108,10 @@ export function flush(now = Date.now()) {
 }
 
 const forget = (id: string) => { live.delete(id); told.delete(id); lines.delete(id); dirty.delete(id); };
+
+// One live agent's line as it stands now, not as last told (a told line can be NOW_MS old): for a
+// read that asks once, as an agent's lane does.
+export const freshLineOf = (sessionId: string, now = Date.now()): NowLine | null => make(sessionId, now) ?? null;
 
 // One live agent's newest line, made now when it has none yet.
 export const lineOf = (sessionId: string, now = Date.now()): NowLine | null => lines.get(sessionId) ?? make(sessionId, now) ?? null;

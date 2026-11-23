@@ -198,6 +198,23 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-agent-now[data-from="thinking"] .k-agent-now-text { font-style: italic; color: var(--muted); }
 .k-agent-now-meta { flex-shrink: 0; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--faint); }
 .k-agent-now[data-need] .k-agent-now-text { color: var(--st-need-ink); font-style: normal; }
+/* An agent's lane in five lines: a label column and its words, each line at most two rows (the
+   whole line is its tooltip; four on a phone, where a row holds few words). Its own words are set
+   apart, a missing fact steps back, and a line that needs the owner, waits or went wrong takes
+   that state's ink. */
+.k-lane { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 0.75rem; row-gap: 0.125rem; margin: 0; padding: 0.375rem 0.625rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); font-size: var(--text-caption); line-height: 1.45; }
+.k-lane[aria-busy] { min-height: 6.5rem; }
+.k-lane-row { display: contents; }
+.k-lane-label { color: var(--faint); font-weight: 600; white-space: nowrap; }
+.k-lane-text { margin: 0; min-width: 0; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--fg); font-variant-numeric: tabular-nums; }
+@media (max-width: 767px) { .k-lane-text { -webkit-line-clamp: 4; } }
+.k-lane-row[data-from="own"] .k-lane-text { color: var(--muted); font-style: italic; }
+.k-lane-row[data-from="missing"] .k-lane-text { color: var(--faint); }
+.k-lane-row[data-tone="need"] :is(.k-lane-label, .k-lane-text) { color: var(--st-need-ink); }
+.k-lane-row[data-tone="wait"] .k-lane-label { color: var(--st-wait-ink); }
+.k-lane-row[data-tone="fail"] :is(.k-lane-label, .k-lane-text) { color: var(--st-fail-ink); }
+/* Under a row of the sidebar's tree: the same, in the row's small type. */
+.k-child-lane.k-lane { column-gap: 0.5rem; padding: 0.25rem 0.5rem; font-size: var(--text-micro); }
 .k-under { display: flex; flex-direction: column; padding: 0 0.25rem 0.25rem 0.375rem; font-size: var(--text-ui); line-height: 1.45; color: var(--muted); }
 /* (What can be done about it, the one retry, goes to a row of its own before the words are squeezed.) */
 .k-under-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.5rem; min-width: 0; }

@@ -300,6 +300,10 @@ export function onTrees(key: string, trees: string[]): Run[] {
 
 export const run = (id: number): Run | undefined => db()?.query<Run, [number]>(`SELECT ${COLS} FROM check_runs WHERE id = ?`).get(id) ?? undefined;
 
+// The runs of every check on one tree, whoever ran them, the newest first (an agent's lane: src/automation/lane.ts).
+export const ofTree = (tree: string, limit = 100): Run[] =>
+  db()?.query<Run, [string, number]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_tree WHERE tree = ? ORDER BY ended DESC LIMIT ?`).all(tree, limit) ?? [];
+
 // A session's runs since a time, oldest first, at most `limit`.
 export const ofSession = (sessionId: string, since = 0, limit = 500): Run[] =>
   db()?.query<Run, [string, number, number]>(`SELECT * FROM (SELECT ${COLS} FROM check_runs INDEXED BY check_runs_session WHERE session_id = ? AND ended >= ? ORDER BY ended DESC, id DESC LIMIT ?) ORDER BY ended, id`).all(sessionId, since, limit) ?? [];

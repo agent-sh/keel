@@ -40,6 +40,7 @@ import { verifierSession } from "./verify.ts";
 import * as waits from "./waits.ts";
 import * as silent from "./silent.ts";
 import * as now from "./now.ts";
+import * as lane from "./lane.ts";
 import { liveAgents } from "./state.ts";
 import { joinPulse } from "../core/pulse.ts";
 import { runMode } from "../core/runmode.ts";
@@ -450,6 +451,13 @@ export const automationRoutes: RouteModule = (deps) => {
         if (!sid) return json({ stats: now.nowStats });
         if (!session(sid)) return bad("no such session", 404);
         return json({ lines: now.linesOf(sid), text: now.statusText(sid) });
+      },
+    },
+    // An agent's lane in five lines (src/automation/lane.ts): doing, waits for, went wrong, changed, next.
+    "/api/automation/agents/:id/lane": {
+      GET: async (req: any) => {
+        const l = await lane.laneOf(req.params.id);
+        return l ? json(l) : bad("no such agent", 404);
       },
     },
     // --- subagents

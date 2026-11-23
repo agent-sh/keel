@@ -471,15 +471,18 @@
 @container kid (max-width: 12.5rem) { .k-child-state { display: none; } }
 .k-child-dot { display: flex; align-items: center; flex-shrink: 0; }
 .k-child-dot > span:first-child { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--accent); }
-/* Stop lies over the row's end and shows under the pointer or the keyboard, where the word was: no row keeps room for it, so the words line up. */
-.k-child-stop { position: absolute; right: 0.125rem; top: 0; bottom: 0; display: grid; place-items: center; opacity: 0; pointer-events: none; }
-.k-child-row:is(:hover, :focus-within) .k-child-stop { opacity: 1; pointer-events: auto; }
-.k-child-row[data-live]:is(:hover, :focus-within) :is(.k-child-state, .k-child-dot) { visibility: hidden; }
-/* Under a finger nothing hovers: every row keeps Stop's room, and a live one shows it. */
+/* Its controls (its lane, and Stop while it is live) lie over the row's end and show under the pointer or the keyboard, where the word was: no row keeps room for them, so the words line up. */
+.k-child-acts { position: absolute; right: 0.125rem; top: 0; height: 1.5rem; display: flex; align-items: center; opacity: 0; pointer-events: none; }
+.k-child-row:is(:hover, :focus-within) .k-child-acts { opacity: 1; pointer-events: auto; }
+.k-child-row:is(:hover, :focus-within) :is(.k-child-state, .k-child-dot) { visibility: hidden; }
+/* Its lane, open under its row: a step in from its mark, as the line of what it is doing. */
+.k-child-lane { margin: 0.125rem 0.375rem 0.375rem 1.875rem; }
+/* Under a finger nothing hovers: every row keeps its controls' room and shows them. */
 @media (hover: none) {
   .k-child-session { padding-right: 1.875rem; }
-  .k-child-stop { opacity: 1; pointer-events: auto; }
-  .k-child-row[data-live]:is(:hover, :focus-within) :is(.k-child-state, .k-child-dot) { visibility: visible; }
+  .k-child-row[data-live] .k-child-session { padding-right: 3.375rem; }
+  .k-child-acts { opacity: 1; pointer-events: auto; }
+  .k-child-row:is(:hover, :focus-within) :is(.k-child-state, .k-child-dot) { visibility: visible; }
 }
 /* A machine that does not answer: its rows say the last it told, stepped back, the clock's place saying offline.
    A session that left the list while the hand held it still looks the same until the hand has gone. */
@@ -1137,7 +1140,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-tick-kids .k-child-session[data-watch="work"]::before { background: var(--st-work); }
 .k-tick-kids .k-child-session[data-watch="wait"]::before { background: var(--st-wait); }
 .k-tick-kids .k-child-row { display: flex; justify-content: center; }
-.k-tick-kids .k-child-stop { display: none; }
+.k-tick-kids :is(.k-child-acts, .k-child-lane) { display: none; }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
 @media (max-width: 767px) {
   .k-station-meta { display: none; }

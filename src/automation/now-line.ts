@@ -26,6 +26,7 @@ export type NowLine = {
 };
 
 const tidy = (s: string) => s.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim();
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 const cut = (s: string) => (s.length > MAX ? `${s.slice(0, MAX - 1).trimEnd()}…` : s);
 
 // The newest whole sentence of a piece of thinking; the start of the unfinished one when it has
@@ -47,12 +48,25 @@ export type Seen = {
   cwd?: string;
 };
 
+// A call as the line says it. A call whose line names only its tool ("Using WaitFor", "Calling
+// mcp__web__fetch") says what its input is about, from the first of these fields it has: in the
+// measure of the rule over real agents' steps these were the only lines that said nothing.
+const ABOUT = ["description", "note", "question", "query", "url", "path", "file_path", "pattern", "prompt", "message"] as const;
+export function callWords(name: string, input: unknown, cwd?: string): string {
+  const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const line = toolLine(name, i, cwd);
+  if (!/^(Using|Calling) \S+$/.test(line)) return line;
+  const k = ABOUT.find((f) => typeof i[f] === "string" && (i[f] as string).trim());
+  return k ? `${line}: ${oneLine(i[k] as string)}` : line;
+}
+
 // The words of the line, and where they came from.
 export function nowWords(s: Seen): { text: string; from: NowLine["from"] } {
   const t = s.thinking ? newestSentence(s.thinking) : "";
   if (t) return { text: t, from: "thinking" };
   const call = s.calls?.at(-1);
-  if (call) return { text: cut(tidy(toolLine(call.name, (call.input ?? {}) as any, s.cwd))), from: "tool" };
+  // (A call's words are not markdown: a path or a tool name keeps its underscores.)
+  if (call) return { text: cut(oneLine(callWords(call.name, call.input, s.cwd))), from: "tool" };
   if (s.waits) return { text: cut(`Waiting for ${s.waits}`), from: "wait" };
   return { text: "", from: "none" };
 }

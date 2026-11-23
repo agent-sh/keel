@@ -19,6 +19,16 @@ describe("an agent's now line", () => {
     expect(nowWords({})).toEqual({ text: "", from: "none" });
   });
 
+  test("a call whose line names only its tool says what its input is about", () => {
+    expect(nowWords({ calls: [{ name: "WaitFor", input: { kind: "log", note: "the build to finish" } }] })).toEqual({ text: "Using WaitFor: the build to finish", from: "tool" });
+    expect(nowWords({ calls: [{ name: "mcp__web__fetch", input: { url: "https://example.com/a" } }] })).toEqual({ text: "Calling mcp__web__fetch: https://example.com/a", from: "tool" });
+    // A line that already says what it does is kept as it is.
+    expect(nowWords({ calls: [{ name: "Bash", input: { command: "bun test", note: "x" } }] })).toEqual({ text: "Running bun test", from: "tool" });
+    expect(nowWords({ calls: [{ name: "Thing", input: { n: 1 } }] })).toEqual({ text: "Using Thing", from: "tool" });
+    // A call's words are not markdown: a path keeps its underscores.
+    expect(nowWords({ calls: [{ name: "Read", input: { file_path: "/w/src/my_file.ts" } }], cwd: "/w" })).toEqual({ text: "Reading src/my_file.ts", from: "tool" });
+  });
+
   test("a change is told at once the first time and when the owner is needed, else after the interval", () => {
     expect(dueAt(undefined, false, 1000)).toBe(1000);
     expect(dueAt({ at: 1000 }, false, 2000)).toBe(1000 + NOW_MS);

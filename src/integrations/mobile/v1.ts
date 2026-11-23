@@ -21,6 +21,9 @@ import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
 import { sessionState } from "../../automation/state.ts";
 import { lineOf as nowLineOf, type NowLine } from "../../automation/now.ts";
+import { laneOf } from "../../automation/lane.ts";
+import { laneText } from "../../automation/lane-line.ts";
+import { byChild as agentByChild } from "../../automation/agents.ts";
 import { WATCH_LABEL } from "../../core/watch.ts";
 import { stateWords } from "../../core/state-words.ts";
 import { lineage } from "../../core/tree.ts";
@@ -1339,6 +1342,19 @@ export function mobileApi(ctx: MobileCtx) {
         const startAt = line.slice(0, Math.max(0, endAt)).findLastIndex((e) => e.kind === "turn_start");
         const turn = u ? { ...tokens(u), model: answered ?? null, calls: line.slice(startAt + 1, endAt).filter((e) => e.kind === "assistant").length } : undefined;
         return json({ chat_id: s.id, session: sessionUsage(s), ...(turn ? { turn } : {}) });
+      }),
+    },
+    // An agent's chat explained in five lines (src/automation/lane-line.ts): what it is doing, what it
+    // waits for and since when, what went wrong, what it changed, what comes next. Each line says
+    // where it is from: a fact Keel keeps, the agent's own words, or a fact that is missing.
+    "/v1/chats/:cid/lane": {
+      GET: signed(async (req) => {
+        const s = store.session(req.params.cid!);
+        const a = s?.parent_id ? agentByChild(s.id) : undefined;
+        if (!s || !a) return err("not an agent's chat", 404);
+        const l = await laneOf(a.id);
+        if (!l) return err("not an agent's chat", 404);
+        return json({ chat_id: s.id, lines: l.lines.map((x) => ({ ...x, ...(x.at ? { at: secs(x.at) } : {}) })), text: laneText(l.lines), ts: secs(l.at) });
       }),
     },
     "/v1/approvals/:aid": { POST: signed(withBody(approve)) },

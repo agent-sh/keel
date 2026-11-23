@@ -19,6 +19,7 @@ import { AgentMark, AgentNow, agentSaid, IconButton, STATE_INK, StopAgent, useAg
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
 export { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
 import { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
+import { AgentLane } from "./Lane.tsx";
 
 type Report = { id: string; title: string; status: AgentRecord["status"]; said: AgentSaid; text: string; key: string; task?: string };
 
@@ -412,6 +413,8 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
       {agent && !isLive(agent) && why && <div className="k-under"><Under tone={failedAgent ? "fail" : "note"} testid="agent-call-why">{why}</Under></div>}
       {!agent && ended === "error" && <div className="k-under"><Under code tone="fail" testid="agent-call-why">{failureLine(result)}</Under></div>}
       <Collapsible.Panel className="k-tool-panel overflow-hidden">
+        {/* Its lane in five lines, first: what it does, waits for, got wrong, changed and does next. */}
+        {agent && <AgentLane a={agent} className="mx-3 mt-2.5" />}
         <div className="k-label px-3 pt-2.5">Task</div>
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
         <AgentReport agent={agent} out={out} />
