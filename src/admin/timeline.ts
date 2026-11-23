@@ -22,8 +22,8 @@ import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 import { TURN, TURN_IX, TURN_SCHEMA } from "./marks.ts";
 import {
-  activityRow, errorRow, failureRow, isFailure, markRow, NOTE_MARKS, nowLines, outcomeOf, turnRow,
-  type ActivityIn, type Lookups, type NowInput, type Opener, type TimelinePage, type TimelineRow,
+  activityRow, checkRow, errorRow, failureRow, isFailure, markRow, NOTE_MARKS, nowLines, outcomeOf, turnRow,
+  type ActivityIn, type CheckIn, type Lookups, type NowInput, type Opener, type TimelinePage, type TimelineRow,
 } from "./timeline-rows.ts";
 
 // The events that make a row: a turn's start, a compaction, and a note of a
@@ -207,6 +207,7 @@ export class Timeline {
       // A wake or a report that started a turn is told in that turn's row, where the turns are listed with it.
       ...(only === "turns" ? [] : this.activity(sessionId, at, n, only === "agents", since, ctx.look, only === null)),
       ...(only === "turns" || only === "agents" ? [] : this.errors(sessionId, at, n, since, ctx)),
+      ...(only === "turns" || only === "agents" ? [] : this.checks(sessionId, at, n, since)),
     ];
     all.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
     return all.slice(0, n);
@@ -487,6 +488,15 @@ export class Timeline {
     if (!next) return false;
     const o = this.opener(sessionId, next.parent);
     return wait ? o?.kind === "wait" && o.outcome === "fired" && o.wait_id === wait : o?.kind === "subagent" && o.status === "completed" && o.agent_id === agent;
+  }
+
+  // --- the runs of the repository's checks (src/checks), by the session's index of the ledger.
+  private checks(sessionId: string, at: Cursor, n: number, since: number): TimelineRow[] {
+    if (!this.table("check_runs")) return [];
+    // (A row's id is "c:<id>", compared as the other rows' ids are: as text.)
+    return this.store.db.query<CheckIn, [string, number, number, string, number]>(
+      `SELECT id, ended AS ts, name, result, pass, fail, tree, started, by, call_id FROM check_runs INDEXED BY check_runs_session
+       WHERE session_id = ? AND ended >= ? AND (ended, 'c:' || id) < (?, ?) ORDER BY ended DESC, 'c:' || id DESC LIMIT ?`).all(sessionId, since, at.ts, at.id, n).map(checkRow);
   }
 
   // --- what failed. A failed model request is told from the session's own

@@ -2183,6 +2183,8 @@ export class Engine {
         if (ctx.signal.aborted) return interrupted();
         if (!g) continue;
         if ("deny" in g) return denied(g.deny);
+        // (Marked for the transcript: the call did not run, and says so on its line.)
+        if ("answer" in g) { this.shown.set(u.id, { ledger: true }); return told({ type: "tool_result", tool_use_id: u.id, content: g.answer }); }
         if (g.input !== undefined) call.input = g.input;
         if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
         if (g.authorization) authorizations.push(g.authorization);

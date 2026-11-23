@@ -57,16 +57,19 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   if (gone) return { state: "refused", error: gone };
   const dir = logDir(ctx);
   const cwdFile = join(dir, `cwd-${ctx.callId ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  // A check's run: the statuses of the last pipe, read first in the trap (before anything there resets them).
+  const statusFile = ctx.checkRun ? `${cwdFile}.status` : undefined;
+  const status = statusFile ? `printf '%s' "\${PIPESTATUS[*]}" >| ${shq(statusFile)} 2>/dev/null; ` : "";
   // The command is handed to bash as written; the trap records where it ended.
-  // The trap's words are quoted as a whole around the quoted file name, so a
+  // The trap's words are quoted as a whole around the quoted file names, so a
   // state folder with a space, a quote or a `$` in its name stays one word.
-  const trap = `pwd -P >| ${shq(cwdFile)} 2>/dev/null`;
-  const script = track ? `trap ${shq(trap)} EXIT\nexec 2>&1\n${o.command}` : `exec 2>&1\n${o.command}`;
+  const trap = `${status}${track ? `pwd -P >| ${shq(cwdFile)} 2>/dev/null` : ""}`;
+  const script = trap ? `trap ${shq(trap)} EXIT\nexec 2>&1\n${o.command}` : `exec 2>&1\n${o.command}`;
   const job = startJob({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,
     argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, callId: ctx.callId,
     // In the foreground the call stops the command when its turn is stopped (below).
-    handle: o.handle, stops: !o.background,
+    handle: o.handle, stops: !o.background, statusFile,
   });
   if (o.background) return { state: "running", job, output: "" };
 

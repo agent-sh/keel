@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { didLine } from "./report-did.ts";
+import { proofFor } from "../checks/proof.ts";
 import { awaited } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
@@ -1142,6 +1143,10 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // What it did goes with its words: steps, calls, which tools failed, files edited (report-did.ts).
   // A report read as a JSON value by its schema stays the value alone.
   const did = row.output_schema && status === "completed" ? "" : didLine(got.events);
+  // What the check ledger saw of its checks (src/checks/proof.ts), read before an empty worktree goes.
+  const folder = a.worktree ?? D().store.session(a.session_id)?.workspace;
+  const proof = row.output_schema && status === "completed" || a.machine || !folder ? "" : await proofFor(a.session_id, folder, got.events).catch(() => "");
+  const lines = [did, proof].filter(Boolean).join("\n");
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
   // The report is checked against its parent's history and sent into it: a
@@ -1161,7 +1166,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   let grouped = false;
   const rec = D().store.db.transaction(() => {
     if (status === "failed") grouped = failures.agentFailed({ ...a, report: reportId(a) }, cls, cause || got.error || how.note || result, !!cause && !blocked);
-    return update(a.id, { status, ended: Date.now(), result: did ? `${result}${result ? "\n\n" : ""}${did}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
+    return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
   })();
   emit("agent", rec);
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;

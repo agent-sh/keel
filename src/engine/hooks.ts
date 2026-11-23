@@ -34,7 +34,10 @@ export type ToolAuthorization = {
   valid(call: ToolCall, input: any): boolean;
   deny: string;
 };
-export type ToolGate = void | { deny: string } | { input?: any; ctx?: Partial<ToolContext>; authorization?: ToolAuthorization };
+// `answer`: the call is answered without running (the check ledger's answer to
+// a check that already passed on the same files): its result is that text,
+// not an error, and the hooks after this one are not asked.
+export type ToolGate = void | { deny: string } | { answer: string } | { input?: any; ctx?: Partial<ToolContext>; authorization?: ToolAuthorization };
 
 // A block of the system prompt that renders the owner's or the machine's own
 // data (their servers, skills, agent types, files): `data` is that data alone,

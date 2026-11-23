@@ -61,12 +61,14 @@ import { timelineRoutes } from "./timeline.ts";
 import { overviewRoutes } from "./overview.ts";
 import { stateRoutes } from "./state.ts";
 import { shellRoutes } from "./shell.ts";
+import { checkRoutes } from "./checks.ts";
 
 // Each feature module adds one line here.
 // Each is listed under its name: a built binary's functions lose theirs, and a start says by name which module took its time (src/core/start-trace.ts).
 const modules: Record<string, RouteModule> = {
   codeModeRoutes, // refuses run_code for a session on another machine before the gate asks about it
   repeatRoutes, // before the gate: a repeat it refuses needs no approval; it reads a result before others add to it
+  checkRoutes, // before the gate: a check the ledger answers does not run, and needs no approval
   permissionRoutes, // first: its beforeTool gate decides before the others run
   planRoutes,
   trustRoutes, // protected files are watched around calls the gate let through

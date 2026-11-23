@@ -1,0 +1,8 @@
+{
+  "checks": {
+    "typecheck": "bunx tsc --noEmit -p .",
+    "unit": { "run": "bun test", "args": true },
+    "e2e": { "run": "bunx playwright test", "args": true, "cache": false },
+    "smoke": { "run": "scripts/smoke.sh", "args": true, "cache": false }
+  }
+}

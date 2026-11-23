@@ -25,6 +25,10 @@ export type ToolContext = {
   // Set by a beforeTool hook: turns a command's argv into the argv that runs
   // it confined (bubblewrap, a systemd scope). Every tool that spawns uses it.
   wrapSpawn?: (argv: string[]) => string[];
+  // Set by the check ledger's beforeTool hook (src/checks) on a call that runs
+  // one of the repository's checks: the shell writes the statuses of the
+  // command's last pipe, so a check piped into tail is known by its own exit.
+  checkRun?: boolean;
   // The confinement wrapSpawn applies (set with it): a tool that runs its
   // command on another machine asks that machine for the same.
   // `since`: when the confinement was set for the call (what its proxy refused after that is the call's).

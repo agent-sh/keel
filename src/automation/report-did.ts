@@ -36,6 +36,22 @@ const safe = (s: unknown) => { const t = String(s).replace(/[\x00-\x1f\x7f]+/g, 
 // A path as short as it can be said: its last two parts.
 const short = (p: string) => safe(p.split("/").filter(Boolean).slice(-2).join("/"));
 
+// When each edit call that wrote a file ended (its result's time), oldest first: the check ledger's proof line (src/checks/proof.ts).
+export function editTimes(evs: readonly StoredEvent[]): number[] {
+  const calls = new Map<string, { name: string; input: unknown }>();
+  const out: number[] = [];
+  for (const e of evs) {
+    if (e.kind === "assistant") { for (const b of e.data.blocks as any[]) if (b.type === "tool_use") calls.set(b.id, { name: b.name, input: b.input }); }
+    else if (e.kind === "tool_result") {
+      for (const r of e.data.results as any[]) {
+        const c = calls.get(r.tool_use_id);
+        if (c && !r.is_error && filesOf(c.name, c.input).length) out.push(e.ts);
+      }
+    }
+  }
+  return out;
+}
+
 // `evs`: the agent's events since its task. Nothing for an agent that only answered (no call of a tool).
 export function didLine(evs: readonly StoredEvent[]): string {
   const calls = new Map<string, { name: string; input: unknown }>();

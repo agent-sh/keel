@@ -168,6 +168,16 @@ under `~/.cache/keel-work/bun/research/`.
   A message whose session can no longer read it
   (deleted, archived, the row removed) is told to its sender as a failure in
   its scope (`src/automation/undelivered.ts`), never dropped in silence.
+- A run of a check a repository names (`.keel/checks.json` in the tree being
+  checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
+  is kept in the check ledger by the git tree it ran on, uncommitted files
+  included (`src/checks/ledger.ts`). A check that passed on the same tree is
+  answered from the ledger and does not run; sending the same command again
+  runs it. A red run says whether the base is red too, or that the tree is
+  flaky. An agent's report carries a proof line from the ledger, never from a
+  model (`src/checks/proof.ts`). The ledger keeps the newest
+  `checks.keep_runs` rows (20,000 by default) and is read at `/api/checks`
+  and in the session's timeline.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

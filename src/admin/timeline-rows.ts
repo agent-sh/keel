@@ -16,7 +16,7 @@ import { FAIL_WORD, NEEDS, STATE_WORD, failWord, limitWord, unreachableSince } f
 import { ownerStop, stopSays, stopper } from "../core/stoppers.ts";
 
 export type TimelineKind =
-  | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files"
+  | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files" | "check"
   // Only in "now": what is queued, and a session with nothing going on.
   | "queue" | "idle";
 // Color is state: `failed` went wrong, `owner` waits on the owner, `live` runs now.
@@ -356,6 +356,21 @@ export const CLASS: Record<string, string> = FAIL_WORD;
 // A kind of failure that last happened in this session. The errors table folds
 // repeats across every session, so its count is said as that; the message
 // stays in the Errors panel.
+// A run of one of the repository's checks (src/checks): its name, how it
+// ended, its counts and the tree it ran on. The name is the repository's word
+// for it, never the command as the model wrote it.
+export type CheckIn = { id: number; ts: number; name: string; result: string; pass: number | null; fail: number | null; tree: string; started: number; by: string; call_id: string | null };
+const CHECK_SAID: Record<string, string> = { pass: "passed", fail: "failed", stopped: "was stopped", unknown: "ended, its status not known", answered: "answered from the ledger: it passed on these files before" };
+export function checkRow(c: CheckIn): TimelineRow {
+  const counts = [c.pass !== null ? `${c.pass} pass` : "", c.fail !== null ? `${c.fail} fail` : ""].filter(Boolean).join(", ");
+  const name = c.name.replace(/[^\w.:-]/g, "").slice(0, 40) || "?";
+  return clean({
+    id: `c:${c.id}`, ts: c.ts, kind: "check" as const, sub: c.result, tone: (c.result === "fail" ? "failed" : "plain") as Tone,
+    text: `Check ${name} ${CHECK_SAID[c.result] ?? c.result}${counts && c.result !== "answered" ? ` (${counts})` : ""}${c.by === "owner" ? ", run by the owner" : ""}, on tree ${c.tree.slice(0, 9)}`,
+    ms: c.result === "answered" ? undefined : Math.max(0, c.ts - c.started), ...refs({ call_id: c.call_id ?? undefined }),
+  });
+}
+
 export function errorRow(e: Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts" | "recovered_ts">): TimelineRow {
   const cls = e.source === "provider" ? errorClass({ message: e.message }) : null;
   const n = e.count ?? 1;

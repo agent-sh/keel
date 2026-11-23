@@ -9,7 +9,7 @@
 // exit code, and the next daemon adopts it (its output, its stop, the note to
 // the model when it ends). A PTY dies with the daemon that holds its terminal.
 import type { Subprocess } from "bun";
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
@@ -54,6 +54,9 @@ export type Job = {
   swept?: number;        // processes of it that outlived its terminal and were ended at this start
   looked?: number;       // when what a stop left was last looked for
   by?: "owner";          // the owner ran it from the terminal pane
+  // Where the shell writes the statuses of its last pipe (a check's run, src/checks), and what it wrote.
+  statusFile?: string;
+  pipeStatus?: number[];
   pid: number;
   boot?: string;         // its process's start time, read when it started (Linux)
   readOff: number;       // bytes of the log already handed to the model
@@ -158,6 +161,7 @@ export type StartOpts = {
   by?: "owner";
   handle?: Handle;
   stops?: boolean;       // the call stops the command when its turn is stopped
+  statusFile?: string;   // the shell writes its last pipe's statuses here (read when the job ends)
 };
 
 export function startJob(o: StartOpts): Job {
@@ -183,7 +187,7 @@ export function startJob(o: StartOpts): Job {
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
-    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops } as Job;
+    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, statusFile: o.statusFile } as Job;
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
@@ -225,6 +229,7 @@ export function startJob(o: StartOpts): Job {
   });
   jobs.set(id, job);
   if (job.background) jobsChanged.tell?.(job.sessionId);
+  try { jobStarted.tell?.(job); } catch {}
   // Ended jobs are kept for their output and status, the newest MAX_ENDED of
   // them: a long-running daemon does not hold every command it ever ran (the
   // logs stay on disk).
@@ -302,6 +307,11 @@ export function backgrounded(job: Job) {
 // stored, or calls `note` where the end starts no turn (someone stopped the command, the owner
 // stopped the session): it then goes with the session's next request, as a background command's
 // end does. With nobody to deliver it (no daemon: a test, a probe) the end is that note.
+// A job started, and a job ended (its log and status are whole by then): the check ledger
+// (src/checks) records the runs of a repository's checks from these.
+export const jobStarted: { tell?: (job: Job) => void } = {};
+export const jobDone: { tell?: (job: Job) => void } = {};
+
 export const jobEnded: { tell?: (job: Job, text: string, then: { sent: () => void; note: () => void }) => void } = {};
 
 // `at`: when it ended, for one that ended while no daemon watched it (its exit file's time).
@@ -313,6 +323,14 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
   if (job.background) queueMicrotask(() => jobsChanged.tell?.(job.sessionId));
   // A background job's end counts as reported once its note is stored (ackNotices), not before:
   // a restart between the two reports it again.
+  if (job.statusFile) {
+    try {
+      const words = readFileSync(job.statusFile, "utf8").trim().split(/\s+/).map(Number);
+      if (words.length && words.every((n) => Number.isInteger(n))) job.pipeStatus = words;
+    } catch {} // the shell wrote none (it was killed)
+    rmSync(job.statusFile, { force: true });
+  }
+  try { jobDone.tell?.(job); } catch {}
   try {
     writeMeta(job.log, { ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason });
   } catch {}

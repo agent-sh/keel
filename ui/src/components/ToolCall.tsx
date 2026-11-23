@@ -248,6 +248,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // (A plan update that was not applied says so as its verb, with the reason under its line: no state word, no step.)
   const what = rejected ? "" : waits ? `for ${waitsFor}, up to ${fmtWait(Number(input.timeout_ms ?? 300_000))}` : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : whole ? command.trim() : summary(kind, use.name, input, cwd);
   const more = kind === "shell" && !whole ? moreLines(use) : 0;
+  // A check the ledger answered (src/checks): it passed on these same files before, and did not run.
+  const ledger = !!(result as (ToolResultBlock & { shown?: { ledger?: boolean } }) | undefined)?.shown?.ledger;
   const words = kind === "plan" || kind === "skill" || kind === "other" || kind === "mcp" || kind === "stop";
   const verb = rejected ? "Plan update not applied" : state === "unrun" ? NOT_RUN : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
   // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
@@ -260,7 +262,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
         {/* The line's words, as one run of text: the verb, how it stands, why it is marked, what it was made on.
             A marked call's words wrap, so what it was made on is whole on the page. */}
         <span className="k-line-text" data-wrap={isMarked ? "" : undefined}>
-          <span className="k-line-verb">{verb}</span>{" "}
+          <span className="k-line-verb">{ledger ? "Not run" : verb}</span>{" "}
+          {ledger && <><span className="k-line-state" data-tone="idle" data-testid="call-ledger" title="It passed on these same files before: the answer is from the check ledger.">passed before, same files</span>{" "}</>}
           {state === "waiting" && <><span className="k-line-state" data-tone="need" data-testid="call-state">{NEEDS_APPROVAL}</span>{" "}</>}
           {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{noSuchTool(result) ? "no such tool" : shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
           {state === "denied" && <><span className="k-line-state" data-tone="own" data-testid="call-state">denied by you</span>{" "}</>}
