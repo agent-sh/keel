@@ -3,7 +3,9 @@
 // turn that only waits on the owner (an approval, a question, a plan) is not
 // waited for, and still waits for them after the restart.
 import { confirmAction } from "../components/Confirm.tsx";
-import { api } from "./store.ts";
+import { registerCommand } from "./keys.ts";
+import { api, reportError } from "./store.ts";
+import { tipSay } from "./tips.ts";
 
 type Turns = { running: string[]; waiting?: string[] };
 
@@ -23,8 +25,18 @@ export function restartBody(st: Turns): string {
   return `${turns(working.length)} ${working.length === 1 ? "is" : "are"} working. New work waits; working turns get two minutes to finish, and any still working then go on after the restart.${wait ? ` ${wait}` : ""}`;
 }
 
-// Asks, then restarts. `reason`: who asked, a few words for the daemon's log.
+// Asks, then restarts. `reason`: who asked, a few words for the daemon's log. A restart that cuts
+// work (a turn is working) opens on Cancel, as a dialog that costs something does (Confirm.tsx); with
+// no turn working it costs nothing, and Enter restarts.
 export async function askRestart(st: Turns, reason: string) {
-  const ok = await confirmAction({ title: "Restart Keel?", body: restartBody(st), action: "Restart", careful: true });
+  const ok = await confirmAction({ title: "Restart Keel?", body: restartBody(st), action: "Restart", careful: turnsOf(st).working.length > 0 });
   if (ok) await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true, reason }) });
 }
+
+// The same from Search and commands, with the turns as the daemon counts them now.
+registerCommand({
+  id: "restart", label: "Restart Keel", group: "General", words: "restart daemon reload relaunch",
+  run: () => void api<Turns & { draining: unknown }>("/api/daemon")
+    .then((st) => (st.draining ? tipSay(null, "Keel is already restarting or stopping", 2400) : askRestart(st, "asked from Search and commands")))
+    .catch(reportError),
+});

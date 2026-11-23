@@ -5,6 +5,7 @@ import { createElement, lazy } from "react";
 import { settingsSections } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
 import { navigate } from "./ui.ts";
+import "./restart.ts";
 
 settingsSections.add({
   id: "usage",

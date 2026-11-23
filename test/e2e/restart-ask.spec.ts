@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from "./isolate.ts";
+import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { asksToRun, calls, create, drop, folder, scripted, settle } from "./answering.ts";
 import { shoot } from "./shots.ts";
 
@@ -38,4 +38,45 @@ test("the restart question counts the turns that wait on you apart from those th
   await expect(confirm).toContainText("No turn is working. 2 turns wait on you for an answer, and still wait after the restart. The page reconnects by itself.");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await drop(request, one, two, busy);
+});
+
+// A dev daemon's page reloads itself once its reload socket finds the server again after a
+// restart (daemon.spec.ts says why): the test waits for that before it navigates.
+function selfReload(page: Page, hmr: { on: boolean }): () => Promise<void> {
+  if (!hmr.on) return async () => {};
+  const main = page.mainFrame();
+  const done = new Promise<void>((ok) => {
+    const seen = (f: import("@playwright/test").Frame) => { if (f === main) { page.off("framenavigated", seen); ok(); } };
+    page.on("framenavigated", seen);
+  });
+  return async () => {
+    await Promise.race([done, new Promise((_, no) => setTimeout(() => no(new Error("the page did not reload itself within 3 min of the restart")), 180_000))]);
+    await page.waitForLoadState("load");
+  };
+}
+
+// Restart is a command of its own. With no turn working it costs nothing: its question opens with
+// the keyboard on Restart, and Enter restarts.
+test("Restart Keel is a command, and Enter restarts when no turn works", async ({ page, request }) => {
+  test.setTimeout(400_000);
+  await scripted(request);
+  await settle(request);
+  const hmr = { on: false };
+  page.on("websocket", (w) => { if (new URL(w.url()).pathname === "/_bun/hmr") hmr.on = true; });
+  const before = (await (await request.get("/api/daemon")).json()).pid as number;
+  await page.goto("/");
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("restart");
+  await expect(page.getByRole("option").first()).toContainText("Restart Keel");
+  await page.keyboard.press("Enter");
+  const confirm = page.getByTestId("confirm");
+  await expect(confirm).toContainText("No turn is working. The page reconnects by itself.");
+  await expect(confirm.getByTestId("confirm-action")).toBeFocused();
+  await shoot(page, "restart-ask-02-command");
+  const reloaded = selfReload(page, hmr);
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => { try { return (await (await request.get("/api/daemon", { timeout: 2000 })).json()).pid; } catch { return before; } }, { timeout: 300_000, intervals: [1000] }).not.toBe(before);
+  await reloaded();
+  await page.goto("/settings/daemon");
+  await expect(page.getByTestId("daemon-status")).toContainText("pid");
 });
