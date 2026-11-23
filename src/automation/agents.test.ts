@@ -1112,24 +1112,28 @@ test("a Claude Code agent's maxTurns, skills and effort hold; what Keel does not
   const hidden = join(dir, ".claude", "skills", "owner-only");
   mkdirSync(hidden, { recursive: true });
   writeFileSync(join(hidden, "SKILL.md"), "---\nname: owner-only\ndescription: x\ndisable-model-invocation: true\n---\nSecret steps.");
+  const huge = join(dir, ".claude", "skills", "huge");
+  mkdirSync(huge, { recursive: true });
+  writeFileSync(join(huge, "SKILL.md"), `---\nname: huge\ndescription: x\n---\n${"Long rule. ".repeat(agents.PRELOAD_MAX / 8)}`);
   writeFileSync(join(folder, "api-builder.md"), [
     "---", "name: api-builder", "description: Builds endpoints", "maxTurns: 7", "effort: high",
-    "skills:", "  - api-conventions", "  - owner-only", "  - missing-skill",
+    "skills:", "  - api-conventions", "  - owner-only", "  - missing-skill", "  - huge",
     "mcpServers:", "  - github", "  - playwright:", "      type: stdio", "      command: npx", "      args: [\"-y\", \"@playwright/mcp\"]",
     "hooks:", "  PreToolUse:", "    - matcher: Bash", "      hooks:", "        - type: command", "          command: ./check.sh",
     "memory: project", "---", "Build the endpoint.",
   ].join("\n"));
   const def = agents.definitions(dir).find((d) => d.name === "api-builder")!;
-  expect([def.maxTurns, def.skills, def.mcpServers, def.effort]).toEqual([7, ["api-conventions", "owner-only", "missing-skill"], ["github"], "high"]);
+  expect([def.maxTurns, def.skills, def.mcpServers, def.effort]).toEqual([7, ["api-conventions", "owner-only", "missing-skill", "huge"], ["github"], "high"]);
   expect(def.notTaken).toEqual([expect.stringContaining("its own MCP servers (playwright)"), expect.stringContaining("its hooks (PreToolUse)"), expect.stringContaining("its project memory folder")]);
   const r = await tool("Agent").run({ description: "endpoint", prompt: "add /health", subagent_type: "api-builder", run_in_background: true, isolation: "none" }, ctx as any);
   const text = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
-  for (const said of ["playwright", "hooks", "memory folder", "the skill owner-only", "the skill missing-skill", "the MCP server github", "the effort high"]) expect(text).toContain(said);
+  for (const said of ["playwright", "hooks", "memory folder", "the skill owner-only", "the skill missing-skill", "the skill huge: the skills an agent starts with hold 64 KB together at most", "the MCP server github", "the effort high"]) expect(text).toContain(said);
   const a = agents.list(parent.id).find((x) => x.type === "api-builder")!;
   expect(store.session(a.session_id)!.settings?.max_steps).toBe(7);
   const task = sends.find((x) => x.id === a.session_id)!.text;
   expect(task).toContain("Every endpoint returns JSON.");
   expect(task).not.toContain("Secret steps.");
+  expect(task).not.toContain("Long rule.");
   end(a, "end_turn");
   await settled();
 });

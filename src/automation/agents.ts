@@ -782,9 +782,15 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // Its definition's skills, whole, before its task; what of the definition does not run is told to its parent.
   const left = [...(def.notTaken ?? [])];
   const preloaded: string[] = [];
+  let bytes = 0;
   for (const name of def.skills ?? []) {
     const r = preloadSkill(name, placed?.cwd ?? iso?.cwd ?? parent.workspace, child.id);
-    if ("error" in r) left.push(`the skill ${name}: ${r.error}`); else preloaded.push(r.text);
+    if ("error" in r) { left.push(`the skill ${name}: ${r.error}`); continue; }
+    // A definition (a repository's too) cannot fill the agent's context with skills: past the bound one is not preloaded.
+    const n = Buffer.byteLength(r.text);
+    if (bytes + n > PRELOAD_MAX) { left.push(`the skill ${name}: the skills an agent starts with hold ${PRELOAD_MAX / 1024} KB together at most, and it would pass that (the agent can still load it with its skill tool)`); continue; }
+    bytes += n;
+    preloaded.push(r.text);
   }
   const have = catalogSources(child.id).map((x) => x.name.split("@")[0]!);
   for (const name of def.mcpServers ?? []) if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
@@ -868,6 +874,10 @@ async function begin(id: string, input: Pick<SpawnInput, "background">, model: s
   }
   return rec;
 }
+
+// The most a definition's preloaded skills hold together (Claude Code takes
+// the first 32 names whole; a few such skills fill a context).
+export const PRELOAD_MAX = 64 * 1024;
 
 // What an agent's definition asked for that it was started without, by agent
 // id, for the spawn's result to say (kept while the daemon runs).
