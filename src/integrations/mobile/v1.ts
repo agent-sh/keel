@@ -40,6 +40,7 @@ import { newestMark } from "../../admin/marks.ts";
 import { liveData, type LiveStatus } from "./live.ts";
 import { zoneLabel } from "../../core/clock.ts";
 import type { Helper } from "../../helper/helper.ts";
+import { paramKey } from "../../helper/memory.ts";
 import type { MemoryRecord } from "../../helper/records.ts";
 import { decidePlan, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
 
@@ -89,10 +90,13 @@ const HELPER_EVENTS = 20;
 export function helperOf(h: Helper) {
   const v = h.view();
   return {
-    on: v.on, chat_id: v.session_id, memory: h.memory().length,
+    on: v.on, chat_id: v.session_id, memory: h.records.index.size,
     events: v.events.slice(-HELPER_EVENTS).reverse().map((e) => ({ id: e.id, ts: secs(e.ts), chat_id: e.session_id, title: e.title, body: e.body })),
   };
 }
+// How many records the whole memory sends at a time, the newest first, as many as a find answers
+// with; `total` says how many there are, and the words narrow it from there.
+const MEMORY_PAGE = 200;
 const recordOf = (m: MemoryRecord) => ({ key: m.key, value: m.value, topics: m.topics, updated: secs(m.updated) });
 
 // How many hits the phone is sent: a screen and a half of them; the words narrow it from there.
@@ -1399,8 +1403,8 @@ export function mobileApi(ctx: MobileCtx) {
         const h = ctx.helper?.();
         if (!h) return err("this daemon runs no helper", 409);
         const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
-        if (!q) { const all = h.memory(); return json({ items: all.map(recordOf), total: all.length }); }
-        const f = h.records.index.find(q, 200);
+        if (!q) return json({ items: h.memory().slice(0, MEMORY_PAGE).map(recordOf), total: h.records.index.size });
+        const f = h.records.index.find(q, MEMORY_PAGE);
         return json({ items: f.hits.map((x) => h.records.index.byKey.get(x.key)).filter((m): m is MemoryRecord => !!m).map(recordOf), total: f.total });
       }),
     },
@@ -1408,7 +1412,9 @@ export function mobileApi(ctx: MobileCtx) {
       DELETE: signed((req) => {
         const h = ctx.helper?.();
         if (!h) return err("this daemon runs no helper", 409);
-        return h.records.drop([decodeURIComponent(req.params.key!)]).length ? json({ ok: true }) : err("no such record", 404);
+        const key = paramKey(req.params.key!);
+        if (key === null) return err("the key is not a URL-encoded key", 400);
+        return h.records.forget(key) ? json({ ok: true }) : err("no such record", 404);
       }),
     },
     "/v1/sessions": { GET: signed(() => json({ sessions: store.sessions() })) },

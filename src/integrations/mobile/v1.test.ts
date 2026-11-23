@@ -579,6 +579,16 @@ describe("helper", () => {
       expect((await call("DELETE", "/v1/helper/memory/person.dana-levi")).body).toEqual({ ok: true });
       expect((await call("DELETE", "/v1/helper/memory/person.dana-levi")).status).toBe(404);
       expect((await call("GET", "/v1/helper/memory")).body.items.map((m: any) => m.key)).toEqual(["pref.notify"]);
+      // A forget names a record by its key, never by a name another record is known by: a stale key
+      // that is now pref.notify's alias forgets nothing, and a key that is not a key's spelling is refused.
+      helper.records.put([{ key: "pref.notify", value: "Failures only", aliases: ["pref.alerts"] }], "owner");
+      expect((await call("DELETE", "/v1/helper/memory/pref.alerts")).status).toBe(404);
+      expect((await call("DELETE", "/v1/helper/memory/%E0%A4%A")).status).toBe(400);
+      expect((await call("GET", "/v1/helper/memory")).body.items.map((m: any) => m.key)).toEqual(["pref.notify"]);
+      // The whole memory comes a screen at a time: the newest, with how many there are.
+      helper.records.put(Array.from({ length: 205 }, (_, i) => ({ key: `fact.n${i}`, value: `fact ${i}` })), "owner");
+      const all = (await call("GET", "/v1/helper/memory")).body;
+      expect([all.items.length, all.total, (await call("GET", "/v1/helper")).body.memory]).toEqual([200, 206, 206]);
       // Off: the conversation stays where it was.
       expect((await call("PATCH", "/v1/helper", { on: false })).body).toMatchObject({ on: false, chat_id: on.chat_id });
       helper.stop();

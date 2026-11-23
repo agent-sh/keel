@@ -18,6 +18,11 @@ export const IMPORT_RECORDS = 5_000;
 const bad = (m: string) => Object.assign(new Error(m), { status: 400 });
 const fromRow = (r: Row): MemoryRecord => ({ ...r, kind: r.kind as MemoryKind, source: r.source as MemorySource, aliases: JSON.parse(r.aliases), topics: JSON.parse(r.topics) });
 
+/** A record's key as a route's path carries it, decoded; null when its escapes are not valid UTF-8 (a 400, not a 500). */
+export function paramKey(raw: string): string | null {
+  try { return decodeURIComponent(raw); } catch { return null; }
+}
+
 export class Memory {
   readonly index: RecordIndex;
 
@@ -137,6 +142,13 @@ export class Memory {
     }
     if (out.length && notify) this.changed();
     return out;
+  }
+
+  // The owner's forget names a record by its key, never by an alias or a prefix as the model's
+  // references do: a stale key that is now another record's alias forgets nothing.
+  forget(key: string): MemoryRecord | null {
+    const r = this.index.get(key);
+    return r ? (this.drop([r.key])[0] ?? null) : null;
   }
 
   touch(keys: string[]) {

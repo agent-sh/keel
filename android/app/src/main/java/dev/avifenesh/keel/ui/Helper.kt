@@ -112,6 +112,9 @@ fun MemoryScreen(list: suspend (String) -> MemoryList = { Hub.memory(it) }, forg
     var q by remember { mutableStateOf("") }
     var shown by remember { mutableStateOf<MemoryList?>(null) }
     var error by remember { mutableStateOf("") }
+    // What became of the last forget when it did not go as asked; the list is read again either way.
+    var note by remember { mutableStateOf("") }
+    var noteBad by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf<MemoryRecord?>(null) }
     var round by remember { mutableStateOf(0) }
     LaunchedEffect(q, round) {
@@ -123,6 +126,7 @@ fun MemoryScreen(list: suspend (String) -> MemoryList = { Hub.memory(it) }, forg
             Head("Memory", lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = Route.Tabs(3) }) })
             Box(Modifier.padding(horizontal = S.md, vertical = S.sm)) { Field(q, { q = it }, "Find by key, name, topic or words", tag = "memory-q") }
             Rule()
+            if (note.isNotBlank()) Notice(note, if (noteBad) k.danger else k.muted, Modifier.padding(S.md))
             val m = shown
             when {
                 error.isNotBlank() -> Notice(error, modifier = Modifier.padding(S.md))
@@ -140,7 +144,14 @@ fun MemoryScreen(list: suspend (String) -> MemoryList = { Hub.memory(it) }, forg
                 action = "Forget", danger = true, onCancel = { asking = null },
                 onAction = {
                     asking = null
-                    scope.launch { runCatching { forget(r.key) }.onSuccess { round++ }.onFailure { error = dev.avifenesh.keel.reach(it) } }
+                    note = ""
+                    scope.launch {
+                        runCatching { forget(r.key) }.onFailure {
+                            noteBad = !(it is dev.avifenesh.keel.ApiError && it.code == 404)
+                            note = if (it is dev.avifenesh.keel.ApiError && it.code == 404) "${r.key}: it was forgotten already." else "${r.key} was not forgotten: ${dev.avifenesh.keel.reach(it)}"
+                        }
+                        round++
+                    }
                 },
             )
         }

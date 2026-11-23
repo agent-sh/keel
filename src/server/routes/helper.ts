@@ -7,6 +7,7 @@
 //   POST /api/helper/memory          { key?, value, kind?, aliases?, topics? } added by the owner
 //   PATCH/DELETE /api/helper/memory/:key  (PATCH may carry a new key)
 import { Helper } from "../../helper/helper.ts";
+import { paramKey } from "../../helper/memory.ts";
 import { bindHelperTools } from "../../helper/tools.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -46,8 +47,16 @@ export const helperRoutes: RouteModule = (deps) => {
       },
     },
     "/api/helper/memory/:key": {
-      PATCH: async (req: any) => json({ item: h.records.edit(decodeURIComponent(req.params.key), (await req.json().catch(() => ({}))) as any) }),
-      DELETE: (req: any) => (h.records.drop([decodeURIComponent(req.params.key)]).length ? json({ ok: true }) : json({ error: "no such record" }, 404)),
+      PATCH: async (req: any) => {
+        const key = paramKey(req.params.key);
+        if (key === null) return json({ error: "the key is not a URL-encoded key" }, 400);
+        return json({ item: h.records.edit(key, (await req.json().catch(() => ({}))) as any) });
+      },
+      DELETE: (req: any) => {
+        const key = paramKey(req.params.key);
+        if (key === null) return json({ error: "the key is not a URL-encoded key" }, 400);
+        return h.records.forget(key) ? json({ ok: true }) : json({ error: "no such record" }, 404);
+      },
     },
   };
 };
