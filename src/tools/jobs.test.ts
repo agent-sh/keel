@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stopKind } from "../core/stops.ts";
-import { ackNotices, adoptJobs, adoptStats, awaited, cutCommand, drainNotices, jobEnded, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob, registerEnvDrop } from "./jobs.ts";
+import { ackNotices, adoptJobs, adoptStats, awaited, cutCommand, drainNotices, jobEnded, findJob, jobsOf, procfs, running, startJob, stateIdFrom, stateIdOf, stopJob, takeUnread, toolEnv, waitJob, registerEnvDrop } from "./jobs.ts";
 import { ownEnv } from "../../test/env.ts";
 
 // Every test's folder is in this run's own: the commands the tests start run there, and a test
@@ -763,4 +763,40 @@ test("a later start reads only the ended records it keeps", async () => {
     procfs.stat = real;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a copy or a restore of a state folder keeps its ended commands; only what could be signalled is refused", () => {
+  const root = mkdtempSync(join(RUN, "jobs-copied-"));
+  const spill = join(root, "spill");
+  const dir = join(spill, "s-copied", "jobs");
+  mkdirSync(dir, { recursive: true });
+  const id = stateIdOf(spill)!;
+  const at = Date.now() - 60_000;
+  for (let i = 0; i < 3; i++) {
+    writeFileSync(join(dir, `cp-${i}.log`), `out ${i}\n`);
+    writeFileSync(join(dir, `cp-${i}.json`), JSON.stringify({ id: `cp-${i}`, num: 8100 + i, sessionId: "s-copied", command: `echo ${i}`, cwd: root, started: at + i, background: true, pid: 987800000 + i, boot: "100", reported: true, ended: at + i + 5, exit_code: 0, signal: null, read_off: 0, concealed: true, state_id: id }));
+  }
+  const copy = mkdtempSync(join(RUN, "jobs-copy-"));
+  cpSync(spill, join(copy, "spill"), { recursive: true });
+  expect(stateIdOf(join(copy, "spill"))).not.toBe(id);
+  const real = procfs.stat;
+  procfs.stat = (p: number) => { if (p >= 987800000 && p < 987800010) throw new Error("no such process"); return real(p); };
+  const refused: string[] = [];
+  try {
+    adoptJobs(join(copy, "spill"), (_f, why) => refused.push(why));
+    expect(refused).toEqual([]);
+    expect(jobsOf("s-copied").map((j) => j.id).sort()).toEqual(["cp-0", "cp-1", "cp-2"]);
+    expect(findJob("s-copied", "cp-2")?.log).toBe(join(copy, "spill", "s-copied", "jobs", "cp-2.log"));
+  } finally {
+    procfs.stat = real;
+  }
+});
+
+test("a state folder's id is its inode and birth time, not its device, whose number a reboot can change", () => {
+  const dir = mkdtempSync(join(RUN, "jobs-state-id-"));
+  const st = statSync(dir, { bigint: true });
+  expect(stateIdOf(dir)).toBe(stateIdFrom(st));
+  const moved = { ...st, dev: st.dev + 7n };
+  expect(stateIdFrom(moved)).toBe(stateIdFrom(st));
+  expect(stateIdFrom({ ...st, ino: st.ino + 1n })).not.toBe(stateIdFrom(st));
 });

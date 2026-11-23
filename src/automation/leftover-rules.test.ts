@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { branchHolds, leftLine, newSince, ownTreeFate, parseWorktrees, processFate, treeHolds } from "./leftover-rules.ts";
+import { attachedWhy, BUILD_IDLE_MS, branchHolds, buildKind, leftLine, newSince, nextIdle, ownTreeFate, parseWorktrees, processFate, SCOPE_IDLE_MS, scopeFate, sharedKind, treeHolds } from "./leftover-rules.ts";
 
 test("worktree list porcelain: main first, branches, detached and locked", () => {
   const t = parseWorktrees("worktree /r\nHEAD aaa\nbranch refs/heads/main\n\nworktree /r-wt\nHEAD bbb\nbranch refs/heads/feat/x\nlocked\n\nworktree /r-d\nHEAD ccc\ndetached\n");
@@ -61,4 +61,69 @@ test("Keel's own scratch worktrees (a fails-before run's, the landing queue's) a
   const fresh = newSince({ worktrees: ["/r"], branches: {} }, trees, {}, { trees: new Set(), branches: new Set(), under: ["/state/checks/before", "/state/landing/"] });
   // (A folder whose name only starts the same is not under one.)
   expect(fresh.trees.map((t) => t.path)).toEqual(["/state/checks/before-other"]);
+});
+
+test("a job scope left running: stopped once idle when its session ended, its build daemons when the session ends or they idle", () => {
+  const min = 60_000;
+  const base = { clients: 0, ports: [], commandEnded: true, idleMs: 0, builds: [] };
+  const gradle = { pid: 7, kind: "Gradle daemon", idleMs: 0 };
+  // A live session keeps what its commands left, a build daemon until it idles for the bound.
+  expect(scopeFate({ ...base, idleMs: 600 * min })).toEqual({ act: "keep", why: "its session lives" });
+  expect(scopeFate({ ...base, builds: [{ ...gradle, idleMs: BUILD_IDLE_MS - min }] }).act).toBe("keep");
+  expect(scopeFate({ ...base, builds: [{ ...gradle, idleMs: BUILD_IDLE_MS }] })).toEqual({ act: "stop-builds", pids: [7], why: "its Gradle daemon built nothing for 30 min" });
+  // One whose command still runs is the command's: its build daemon is not touched.
+  expect(scopeFate({ ...base, commandEnded: false, builds: [{ ...gradle, idleMs: 10 * BUILD_IDLE_MS }] }).act).toBe("keep");
+  // An ended session: build daemons go at once, the rest once idle.
+  expect(scopeFate({ ...base, ended: "its agent ended", builds: [gradle] })).toEqual({ act: "stop-builds", pids: [7], why: "its agent ended: its Gradle daemon served only its builds" });
+  expect(scopeFate({ ...base, ended: "its agent ended", idleMs: SCOPE_IDLE_MS - min })).toEqual({ act: "keep", why: "its agent ended; it is stopped once idle for 10 min" });
+  expect(scopeFate({ ...base, ended: "its session is archived", idleMs: SCOPE_IDLE_MS })).toEqual({ act: "stop", why: "its session is archived, and it used no processor for 10 min" });
+  // What always stays: the owner's mark, the owner's terminal, a scope this daemon runs in, a server in use.
+  const done = { ...base, ended: "its session is gone", idleMs: 10 * SCOPE_IDLE_MS, builds: [gradle] };
+  expect(scopeFate({ ...done, keep: true })).toEqual({ act: "keep", why: "you keep it" });
+  expect(scopeFate({ ...done, owner: true }).act).toBe("keep");
+  expect(scopeFate({ ...done, self: true })).toEqual({ act: "keep", why: "this daemon runs in it" });
+  expect(scopeFate({ ...done, clients: 1, ports: [5173] })).toEqual({ act: "keep", why: "a connection of another process to port 5173" });
+});
+
+test("build daemons by their command line; idle by the share of a core between samples", () => {
+  expect(buildKind(["/usr/bin/java", "-Xmx2g", "-cp", "x.jar", "org.gradle.launcher.daemon.bootstrap.GradleDaemon", "9.6.1"])).toBe("Gradle daemon");
+  expect(buildKind(["java", "-cp", "k.jar", "org.jetbrains.kotlin.daemon.KotlinCompileDaemon", "--daemon-runFilesPath", "/r"])).toBe("Kotlin daemon");
+  expect(buildKind(["bazel(ws)", "-jar", "/home/u/.cache/bazel/_bazel_u/install/abc/A-server.jar"])).toBe("Bazel server");
+  expect(buildKind(["/home/u/.cargo/bin/sccache"])).toBe("sccache server");
+  expect(buildKind(["sccache", "rustc", "a.rs"])).toBeUndefined();
+  expect(buildKind(["./gradlew", "build"])).toBeUndefined();
+  let m = nextIdle(undefined, 1000, 0);
+  expect(m.since).toBe(0);
+  // 1.2 s of processor in a minute (2% of a core): idle goes on.
+  m = nextIdle(m, 2200, 60_000);
+  expect(m.since).toBe(0);
+  // 30 s in a minute: at work, the count starts again.
+  m = nextIdle(m, 32_200, 120_000);
+  expect(m.since).toBe(120_000);
+  // A counter that went back (another process under the same id) starts again.
+  expect(nextIdle(m, 5, 180_000).since).toBe(180_000);
+});
+
+test("a scope is kept whole when a process in it is someone's: a terminal, or a parent outside that is not the command's", () => {
+  const p = (pid: number, parent: number, o: { tty?: boolean; pty?: boolean } = {}) => ({ pid, parent, start: "9", tty: !!o.tty, pty: !!o.pty });
+  const reapers = new Set([1, 50]);
+  // The command (started by the daemon, 7), what it started, and an orphan the user manager (50) took.
+  expect(attachedWhy([p(10, 7), p(11, 10), p(12, 50)], { pid: 10, start: "9" }, reapers)).toBeUndefined();
+  expect(attachedWhy([p(11, 10), p(12, 1)], { pid: 10, start: "9" }, reapers)).toBeUndefined();
+  // A shell moved in from a terminal emulator (300), an editor holding a terminal's end, a controlling terminal.
+  expect(attachedWhy([p(12, 50), p(13, 300)], { pid: 10 }, reapers)).toBe("process 13 was put in it from outside (its parent 300 is not of the command)");
+  expect(attachedWhy([p(12, 50, { pty: true })], { pid: 10 }, reapers)).toBe("process 12 in it has a terminal");
+  expect(attachedWhy([p(11, 10, { tty: true })], { pid: 10 }, reapers)).toBe("process 11 in it has a terminal");
+  // The command's pid given to another process is not the command.
+  expect(attachedWhy([p(10, 7)], { pid: 10, start: "8" }, reapers)).toBe("process 10 was put in it from outside (its parent 7 is not of the command)");
+});
+
+test("a shared server keeps its scope: adb's, which every device tool talks to", () => {
+  expect(sharedKind(["adb", "-L", "tcp:5037", "fork-server", "server", "--reply-fd", "4"])).toBe("adb server");
+  expect(sharedKind(["/opt/android/platform-tools/adb", "-L", "tcp:5037", "fork-server", "server"])).toBe("adb server");
+  expect(sharedKind(["adb", "devices"])).toBeUndefined();
+  const facts = { ended: "its session is gone", clients: 0, ports: [5037], commandEnded: true, idleMs: SCOPE_IDLE_MS * 3, builds: [] };
+  expect(scopeFate(facts).act).toBe("stop");
+  expect(scopeFate({ ...facts, shared: "adb server" })).toEqual({ act: "keep", why: "its adb server is shared by other tools" });
+  expect(scopeFate({ ...facts, attached: "process 13 in it has a terminal" })).toEqual({ act: "keep", why: "process 13 in it has a terminal: it is kept until you stop it" });
 });

@@ -11,7 +11,8 @@
 import type { Subprocess } from "bun";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { readStat } from "../core/pid.ts";
@@ -67,6 +68,9 @@ export type Job = {
   trace?: string;
   // The heavy-command slot it holds while it runs (src/tools/heavy.ts), given back at its end.
   slot?: { release(): void };
+  // The id of the state folder whose daemon started it (stateIdOf): its record and its processes carry it.
+  stateId?: string;
+  stateTaken?: string;   // an older build's job: the state folder that took it back first (Meta.state_taken)
   pid: number;
   boot?: string;         // its process's start time, read when it started (Linux)
   readOff: number;       // bytes of the log already handed to the model
@@ -82,6 +86,63 @@ export type Handle = "id" | "num" | "pid";
 // The variable every process of a job carries, and its value for one job.
 const MARK = "KEEL_JOB";
 const markOf = (j: { id: string; started: number }) => `${j.id}.${j.started}`;
+// And the id of the state folder whose daemon started it. A record names the job's mark, so a record read
+// from a copy of a state folder (or one written to name another daemon's job) names the same mark as the
+// original: the folder's id is what the copy does not share. It is made from the spill folder itself (its
+// inode and birth time, not its device, whose number can change across a reboot), not kept in a file a copy
+// would carry; a rename keeps it.
+const STATE_MARK = "KEEL_JOB_STATE";
+const stateIds = new Map<string, string>();
+export function stateIdOf(spillRoot: string): string | undefined {
+  const known = stateIds.get(spillRoot);
+  if (known) return known;
+  try {
+    const id = stateIdFrom(statSync(spillRoot, { bigint: true }));
+    stateIds.set(spillRoot, id);
+    return id;
+  } catch { return undefined; }
+}
+export const stateIdFrom = (st: { ino: bigint; birthtimeNs: bigint }) => createHash("sha256").update(`${st.ino}:${st.birthtimeNs}`).digest("hex").slice(0, 16);
+// The state folder a record says it belongs to: the one whose daemon started its job (`state_id`), or for
+// an older build's record the one whose daemon first took it back with its scope running (`state_taken`).
+const folderOf = (m: { state_id?: string; state_taken?: string }) => m.state_id ?? m.state_taken;
+const COPIED = "its record was written over another state folder (a copy of one)";
+// Whether a process's environment (NUL-separated, as /proc/<pid>/environ) holds this exact entry.
+function hasEntry(env: Buffer, entry: string): boolean {
+  const e = Buffer.from(entry);
+  for (let at = env.indexOf(e); at >= 0; at = env.indexOf(e, at + 1)) {
+    if ((at === 0 || env[at - 1] === 0) && (at + e.length === env.length || env[at + e.length] === 0)) return true;
+  }
+  return false;
+}
+// Whether it holds an entry for this variable, whatever its value.
+const hasKey = (env: Buffer, key: string) => env.indexOf(Buffer.from(`${key}=`)) === 0 || env.indexOf(Buffer.from(`\0${key}=`)) >= 0;
+// Why a job scope that runs is not the job of this record, from its live processes' environments:
+// undefined when one of them carries the job's exact mark and, where the record names a state folder,
+// that folder's id, which must be this daemon's (`stateId`). A record that names no folder is an older
+// build's, and so are its processes: its mark says it only while no process in the scope carries a
+// folder's id (a record of a newer build's job written without its id is not the job's). A scope only its
+// name ties to a record (its processes carry no mark of the job, or another folder's) is never this
+// daemon's to stop.
+export function scopeWhy(m: { id: string; started: number; state_id?: string; state_taken?: string }, envs: (Buffer | undefined)[], stateId: string | undefined): string | undefined {
+  if (folderOf(m) !== undefined && folderOf(m) !== stateId) return COPIED;
+  const mark = `${MARK}=${markOf(m)}`, st = m.state_id === undefined ? undefined : `${STATE_MARK}=${m.state_id}`;
+  if (!st && envs.some((e) => !!e && hasKey(e, STATE_MARK))) return "its record names no state folder, and its scope's processes carry one";
+  if (envs.some((e) => !!e && hasEntry(e, mark) && (!st || hasEntry(e, st)))) return undefined;
+  return st ? "no process in its scope carries the job's mark and this state folder's id" : "no process in its scope carries the job's mark";
+}
+const envsIn = (cg: string): (Buffer | undefined)[] => {
+  let pids: number[] = [];
+  try { pids = readFileSync(`${cg}/cgroup.procs`, "utf8").split("\n").filter(Boolean).map(Number); } catch { return []; }
+  return pids.map((pid) => { try { return procfs.environ(pid); } catch { return undefined; } });
+};
+export async function scopeEnvs(cg: string): Promise<(Buffer | undefined)[]> {
+  const pids = (await fsp.readFile(`${cg}/cgroup.procs`, "utf8").catch(() => "")).split("\n").filter(Boolean).map(Number);
+  return Promise.all(pids.map((pid) => fsp.readFile(`/proc/${pid}/environ`).catch(() => undefined)));
+}
+// The jobs this daemon started itself (not taken back from a record): their scopes are theirs without a look.
+const startedHere = new Set<string>();
+export const ownStart = (j: Job) => startedHere.has(j.id);
 export const UNREAD_CAP = 1 << 20;
 const size = (p: string) => { try { return statSync(p).size; } catch { return 0; } };
 const metaPath = (log: string) => log.replace(/\.log$/, ".json");
@@ -203,11 +264,13 @@ export function startJob(o: StartOpts): Job {
   const started = Date.now();
   // Every process of the job carries its mark: one that left the job's group and session (setsid, a
   // double fork) is still found where there is no cgroup to hold it (see members).
-  const env = { ...(o.env ?? toolEnv(o.sessionId)), ...NO_PAGER, ...extra, [MARK]: markOf({ id, started }) };
+  const stateId = stateIdOf(dirname(dirname(o.logDir)));
+  const env = { ...(o.env ?? toolEnv(o.sessionId)), ...NO_PAGER, ...extra, [MARK]: markOf({ id, started }), ...(stateId ? { [STATE_MARK]: stateId } : {}) };
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
-    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, traceFile: o.traceFile, slot: o.slot } as Job;
+    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, traceFile: o.traceFile, slot: o.slot, stateId } as Job;
+  startedHere.add(id);
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
@@ -289,6 +352,23 @@ export function jobScope(): { slice?: string; why?: string } {
   return (scopeAt = slice.startsWith("/") ? { slice } : { why: "the user manager names no cgroup for app.slice" });
 }
 
+// The job scopes that run now in the user manager's app.slice, by the job id their name holds: the
+// cgroup folder of each (`keel-job-<id>-<6 letters>.scope`, as startJob names them). A name alone says
+// nothing of who made it: a scope is this daemon's only when its own record names that exact cgroup
+// (adoptJobs, adoptScopes).
+export const SCOPE_NAME = /^keel-job-(\w+)-[a-z0-9]{1,8}\.scope$/;
+export function scopesNow(): Map<string, string> {
+  const out = new Map<string, string>();
+  if (process.platform !== "linux") return out;
+  const slice = jobScope().slice;
+  if (!slice) return out;
+  const dir = `/sys/fs/cgroup${slice}`;
+  let names: string[] = [];
+  try { names = readdirSync(dir); } catch { return out; }
+  for (const n of names) { const id = SCOPE_NAME.exec(n)?.[1]; if (id) out.set(id, `${dir}/${n}`); }
+  return out;
+}
+
 // The sidecar of a job's log: what adoption needs, and once it ended how it
 // ended, so the terminal pane lists commands of earlier daemons too.
 export type Meta = {
@@ -298,6 +378,10 @@ export type Meta = {
   stopping?: true;   // a stop was under way when this was written: a daemon that went down then left it for the next one
   wake?: true;       // its end starts a turn of its session (a call a restart cut was waiting on it)
   cgroup?: string; contain?: "cgroup" | "group"; contain_why?: string;
+  state_id?: string; // the state folder whose daemon started it (stateIdOf)
+  // An older build's record (no state_id): the state folder whose daemon took it back first, its scope
+  // running with the job's mark. A copy of the folder made after that carries this folder's id.
+  state_taken?: string;
   ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
   read_off?: number; // bytes of the log the model was handed (a later daemon goes on from there)
   concealed?: true;  // written with placeholders for the values the secrets vault knew then
@@ -305,7 +389,7 @@ export type Meta = {
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
   started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, handle: j.handle, trace_file: j.traceFile, stopping: j.stopping || undefined, wake: j.wake || undefined, read_off: j.readOff,
-  cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy,
+  cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy, state_id: j.stateId, state_taken: j.stateTaken,
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
 function writeMeta(log: string, m: Meta) {
@@ -571,23 +655,27 @@ async function pidsOf(j: Job): Promise<number[]> {
 // from a file, and a stop of its job signals the process and empties the cgroup it names, so it is
 // held against what a daemon really started: the process carries the job's mark in its environment
 // (startJob puts it there, and nothing else has it), it started when the record says, and the cgroup
-// is the job's own scope. A record whose process has ended names nothing to signal.
-function notOurs(m: Meta): string | undefined {
+// is the job's own scope. A record whose process has ended names nothing to signal. A record of another
+// state folder (a copy, a restore, the folder moved to another disk) is refused only while something of it
+// could still be signalled: its process alive, or its scope running. Else it is history like any other.
+function notOurs(m: Meta, stateId: string | undefined): string | undefined {
   if (typeof m.id !== "string" || !/^[\w-]+$/.test(m.id) || !Number.isInteger(m.pid) || m.pid <= 1 || typeof m.started !== "number") return "it names no job and process a daemon could have started";
   if (m.cgroup !== undefined && !new RegExp(`^/sys/fs/cgroup/[^\\0]*/keel-job-${m.id}-[a-z0-9]{1,8}\\.scope$`).test(m.cgroup)) return "the cgroup it names is not that job's scope";
   if (m.cgroup?.split("/").includes("..")) return "the cgroup it names is not that job's scope";
-  if (process.platform !== "linux") return undefined;
+  const other = folderOf(m) !== undefined && folderOf(m) !== stateId;
+  const scopeRuns = () => !!m.cgroup && existsSync(m.cgroup);
+  if (process.platform !== "linux") return other && !settled(m) ? COPIED : undefined;
   const now = procStart(m.pid);
-  if (now === undefined) return undefined; // ended: nothing is signalled by pid
+  if (now === undefined) return other && scopeRuns() ? COPIED : undefined; // ended: nothing is signalled by pid
   if (!m.boot) return `it does not say when process ${m.pid} started`;
-  if (now !== m.boot) return undefined; // another process has the number now: the job has ended (alive)
+  if (now !== m.boot) return other && scopeRuns() ? COPIED : undefined; // another process has the number now: the job has ended
+  if (other) return COPIED;
   let env: Buffer;
   try { env = procfs.environ(m.pid); } catch { return `process ${m.pid} cannot be read, so it cannot be told to be the job's`; }
-  const mark = Buffer.from(`${MARK}=${markOf(m)}`);
-  for (let at = env.indexOf(mark); at >= 0; at = env.indexOf(mark, at + 1)) {
-    if ((at === 0 || env[at - 1] === 0) && (at + mark.length === env.length || env[at + mark.length] === 0)) return undefined;
-  }
-  return `process ${m.pid} was not started as that job (it does not carry the job's mark)`;
+  if (!hasEntry(env, `${MARK}=${markOf(m)}`)) return `process ${m.pid} was not started as that job (it does not carry the job's mark)`;
+  if (m.state_id !== undefined && !hasEntry(env, `${STATE_MARK}=${m.state_id}`)) return `process ${m.pid} was not started over this state folder (it does not carry its id)`;
+  if (m.state_id === undefined && hasKey(env, STATE_MARK)) return `its record names no state folder, and process ${m.pid} carries one`;
+  return undefined;
 }
 
 // The trace file a record names, when it is one the shell tool makes in the job's own folder (it is
@@ -598,10 +686,15 @@ function traceIn(dir: string, f: unknown): string | undefined {
 }
 
 // `refused`: told each record that is not adopted, with why.
+// A settled record whose scope still runs (a build daemon or a server its command left) is taken back
+// whatever its age: its processes are this daemon's to list and to stop, not only the newest MAX_ENDED.
 export function adoptJobs(spillRoot: string, refused?: (file: string, why: string) => void): number {
   let n = 0;
   let sessions: string[] = [];
   try { sessions = readdirSync(spillRoot); } catch { return 0; }
+  const scoped = scopesNow();
+  const stateId = stateIdOf(spillRoot);
+  const held: { m?: Meta; dir: string; f: string }[] = [];
   const history: Job[] = [];
   const terminals: Job[] = [];
   // `m`: the record as read; a record its folder's index lists as settled is not read unless it is kept (`m` absent).
@@ -616,6 +709,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
     const listed = settledIn(dir);
     for (const f of files) {
       const known = listed.get(f.slice(0, -5));
+      if (known && scoped.has(f.slice(0, -5))) { held.push({ dir, f }); continue; }
       if (known) { ended.push({ ...known, dir, f }); continue; }
       const m = readRecord(join(dir, f));
       if (!m) continue;
@@ -626,12 +720,21 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
       // each one too, so the folder's index lists the settled ones once
       // written with placeholders, and a later start reads only what it keeps.
       if (settled(m)) {
-        ended.push({ m, started: Number(m.started) || 0, num: Number.isInteger(m.num) ? m.num : 0, dir, f });
         if (typeof m.id === "string" && `${m.id}.json` === f) (unlisted.get(dir) ?? unlisted.set(dir, []).get(dir)!).push({ m, f });
+        if (typeof m.id === "string" && scoped.has(m.id)) { held.push({ m, dir, f }); continue; }
+        ended.push({ m, started: Number(m.started) || 0, num: Number.isInteger(m.num) ? m.num : 0, dir, f });
         continue;
       }
       take(m, dir, f);
     }
+  }
+  // A settled record whose scope runs: taken back whatever its age, when it names that very scope and a
+  // live process in it carries the job's mark (scopeWhy). Else it is history like any other.
+  for (const e of held) {
+    const m = e.m ?? readRecord(join(e.dir, e.f));
+    const why = !m ? undefined : m.cgroup !== scoped.get(m.id) ? "the scope running under its id is not the cgroup its record names" : scopeWhy(m, envsIn(m.cgroup!), stateId);
+    if (m && !why) take(m, e.dir, e.f, true);
+    else if (m) ended.push({ m, started: Number(m.started) || 0, num: Number.isInteger(m.num) ? m.num : 0, dir: e.dir, f: e.f });
   }
   ended.sort((a, b) => b.started - a.started);
   for (const e of ended.slice(0, MAX_ENDED)) {
@@ -647,18 +750,22 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   if (adopted.size) { watchAdopted(); watcher ??= setInterval(watchAdopted, 1000); }
   return n;
 
-  function take(m: Meta, dir: string, f: string) {
-    const why = notOurs(m);
+  // `verified`: its scope runs and a process there carries its mark (scopeWhy).
+  function take(m: Meta, dir: string, f: string, verified = false) {
+    const why = notOurs(m, stateId);
     if (why) { refused?.(join(dir, f), why); return; }
     counter = Math.max(counter, m.num ?? 0);
     if (jobs.has(m.id)) return;
     const log = join(dir, `${m.id}.log`);
+    // An older build's record whose scope runs with its mark is this folder's from now on: a copy made later is told by it.
+    if (stateId && folderOf(m) === undefined && (verified || (!!m.cgroup && scoped.get(m.id) === m.cgroup && !scopeWhy(m, envsIn(m.cgroup), stateId)))) {
+      m = { ...m, state_taken: stateId };
+      patchMeta(log, { state_taken: stateId });
+    }
     // A sidecar an older daemon wrote with a value in it: rewritten with placeholders.
     const shown = concealDeep(m, m.sessionId);
     if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
-    const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
-      pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-      callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
+    const base = baseOf(m, dir);
     // A stop the last daemon began and did not see through (it went down
     // first) is finished here: whoever asked for it was told the command
     // was stopped, and what ignored the first signal still runs.
@@ -674,7 +781,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
     };
     if (m.reported || m.pty) {
       // History: a PTY never outlives its daemon; one with no end ended with it.
-      const j: Job = { ...base, wake: m.wake, readOff: m.read_off ?? size(log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() };
+      const j = historyOf(m, dir);
       history.push(j);
       finishStop(j);
       // A terminal the daemon held is gone with it. What ignored the hangup (the daemon was killed, so
@@ -692,6 +799,60 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
     finishStop(job);
     n++;
   }
+}
+
+// A job as its record names it, and one that ended as history (its log opens under its ID).
+function baseOf(m: Meta, dir: string) {
+  return { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
+    pty: !!m.pty, log: join(dir, `${m.id}.log`), started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
+    callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why, stateId: m.state_id, stateTaken: m.state_taken };
+}
+const historyOf = (m: Meta, dir: string): Job => {
+  const base = baseOf(m, dir);
+  return { ...base, wake: m.wake, readOff: m.read_off ?? size(base.log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() };
+};
+
+// Job scopes that run now and that no job of this daemon holds, taken back when this daemon's own record
+// of the job names that exact cgroup (a scope a start did not see, or one of a job this daemon let go).
+// A scope with no such record (another daemon's, over another state folder) is never taken: it is only
+// counted (`others`). Each unknown id is looked for once. Resolves with what was taken back.
+const lookedFor = new Set<string>();
+export async function adoptScopes(spillRoot: string, refused?: (file: string, why: string) => void): Promise<{ taken: Job[]; others: string[] }> {
+  const out = { taken: [] as Job[], others: [] as string[] };
+  const held = new Set([...jobs.values()].map((j) => j.cgroup).filter(Boolean));
+  const unknown = [...scopesNow()].filter(([, cg]) => !held.has(cg));
+  if (!unknown.length) return out;
+  let sessions: string[] | undefined;
+  for (const [id, cg] of unknown) {
+    if (lookedFor.has(cg)) { out.others.push(cg); continue; }
+    sessions ??= await fsp.readdir(spillRoot).catch(() => [] as string[]);
+    let found: { m: Meta; dir: string; f: string } | undefined;
+    for (const sid of sessions) {
+      const dir = join(spillRoot, sid, "jobs");
+      const f = `${id}.json`;
+      const text = await fsp.readFile(join(dir, f), "utf8").catch(() => undefined);
+      if (text === undefined) continue;
+      try { const m = JSON.parse(text); if (m && typeof m === "object" && m.id === id && m.sessionId === sid) found = { m, dir, f }; } catch {}
+      break;
+    }
+    const why = !found ? undefined : found.m.cgroup !== cg ? "the scope running under its id is not the cgroup its record names"
+      : notOurs(found.m, stateIdOf(spillRoot)) ?? scopeWhy(found.m, await scopeEnvs(cg), stateIdOf(spillRoot));
+    if (!found || why || !settled(found.m) || jobs.has(id)) {
+      if (found && why) refused?.(join(found.dir, found.f), why);
+      lookedFor.add(cg);
+      out.others.push(cg);
+      continue;
+    }
+    // An older build's record, verified by its scope's mark: this folder's from now on (as adoptJobs does).
+    const sid = stateIdOf(spillRoot);
+    if (sid && folderOf(found.m) === undefined) { found.m = { ...found.m, state_taken: sid }; patchMeta(join(found.dir, `${id}.log`), { state_taken: sid }); }
+    const j = historyOf(found.m, found.dir);
+    jobs.set(j.id, j);
+    counter = Math.max(counter, found.m.num ?? 0);
+    out.taken.push(j);
+  }
+  if (lookedFor.size > 4096) lookedFor.clear();
+  return out;
 }
 
 // The settled records a start read that their folder's index does not list.
@@ -1162,6 +1323,9 @@ export async function processesOf(list: Job[]): Promise<Map<string, JobProcess[]
 }
 // Whether anything of a job is alive now: its command, what a stop left, its cgroup, or (with no cgroup) its
 // process group or session after its command ended (a server it started with `&`).
+// Whether this daemon, or a process above it, is in the job's cgroup (a daemon a job started): a stop of the
+// whole scope would end it too.
+export const scopeHoldsSelf = (j: Job): boolean => { const self = selfLine(); return cgroupPids(j).some((p) => self.has(p)); };
 export const jobHasProcesses = (j: Job): boolean => jobLive(j) || members(j).length > 0;
 // The pids alive of a job, as jobHasProcesses finds them (a wait looks at their open files).
 export const jobPidsOf = (j: Job): number[] => members(j).map((m) => m.pid);

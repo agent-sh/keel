@@ -20,6 +20,9 @@ import { collected } from "../../core/collector.ts";
 import { fill } from "./search-fill.ts";
 import { Resources } from "../../admin/resources.ts";
 import { checkpointerOf } from "../../core/checkpoint.ts";
+// `left`: what commands left running in their job scopes hold (src/automation/scopes.ts, its last pass), and
+// the job scopes of other daemons that this one never touches.
+import { heldNow } from "../../automation/scopes.ts";
 import type { RouteModule } from "../app.ts";
 import { heavyChanged, pool } from "../../tools/heavy.ts";
 
@@ -43,7 +46,7 @@ export const resourceRoutes: RouteModule = ({ store, bus }) => {
         // What the daemon holds of its sessions' events: how many sessions, the memory they are charged, and the budget.
         // And what its checkpoint thread did with the store's log (src/core/checkpoint.ts): absent when none works.
         const checkpoint = checkpointerOf(store)?.counts;
-        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, collector: collected, ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
+        return json({ ...report, left: heldNow(), daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, collector: collected, ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
       },
     },
   };

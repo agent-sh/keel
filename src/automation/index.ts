@@ -1,9 +1,10 @@
 import { zoned } from "../core/clock.ts";
 import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { asksLess, isMode } from "../safety/policy.ts";
 import { closedHow } from "../tools/interact.ts";
 import * as leftovers from "./leftovers.ts";
+import * as scopes from "./scopes.ts";
 import { parseSince } from "../admin/timeline.ts";
 import { sessionRef } from "../admin/session-ref.ts";
 import { readsOf } from "../server/reads.ts";
@@ -84,6 +85,17 @@ function init(deps: Deps) {
   agents.migrate();
   writeAsks.init();
   leftovers.migrate(deps.store);
+  // What commands left running in their scopes, this daemon's and the one's before a restart: listed, and
+  // stopped once their session ended and they idle (scopes.ts). Not in a command's own daemon.
+  if (!runMode.client) scopes.start({
+    spillRoot: join(deps.store.stateDir, "spill"),
+    endedOf: (sid) => leftovers.endedOf(deps.store, sid),
+    keeps: () => leftovers.keeps(deps.store),
+    tell: (sid, line, key) => void leftovers.tellLeft(deps.store, sid, line, key, (to, l) => failures.seen(to, "tool", "left running", l)),
+    loadIdle: () => leftovers.loadIdle(deps.store),
+    saveIdle: (m) => leftovers.saveIdle(deps.store, m),
+    refused: (file, why) => deps.errors.capture("tool", new Error(`A job scope was not taken over: ${why}. Nothing was signalled for it. The record: ${file}`), { at: "adopt scopes" }, { group: "a job scope was not taken over" }),
+  });
   waits.migrate();
   loops.migrate();
   alerts.migrate();
@@ -552,7 +564,11 @@ export const automationRoutes: RouteModule = (deps) => {
       GET: () => attempt(async () => json(await leftovers.survey(leftCtx()))),
     },
     "/api/leftovers/stop": {
-      POST: (req: any) => attempt(async () => { const b = await body(req); return json(await leftovers.stopLeft(String(b.session_id ?? ""), String(b.job_id ?? ""))); }),
+      POST: (req: any) => attempt(async () => { const b = await body(req); return json(await leftovers.stopLeft(String(b.session_id ?? ""), String(b.job_id ?? ""), store)); }),
+    },
+    // The owner's mark on a command left running: `keep` true keeps its scope from being stopped by Keel.
+    "/api/leftovers/keep": {
+      POST: (req: any) => attempt(async () => { const b = await body(req); return json(leftovers.keepLeft(store, String(b.session_id ?? ""), String(b.job_id ?? ""), b.keep !== false)); }),
     },
     // Each names the item as it was listed (a worktree's HEAD and ignored count, a branch's tip): one that changed since is refused.
     "/api/leftovers/worktree/remove": {

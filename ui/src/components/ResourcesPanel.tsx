@@ -26,6 +26,8 @@ type Report = {
   processes: { pid: number; name: string; label: string; command: string; kind: string; session_id?: string; rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number }[];
   sessions: { session_id: string; processes: number; rss_bytes: number; cpu_percent: number; total: { cpu_user_ms: number; cpu_system_ms: number; processes: number } }[];
   disk: { path: string; free_bytes: number; total_bytes: number } | null;
+  // What commands left running in their job scopes hold, and the job scopes of other daemons (never touched).
+  left?: { scopes: number; memory_bytes: number; others: { scopes: number; memory_bytes: number }; at: number };
   history: { ts_ms: number; cpu_percent: number; daemon_cpu_percent: number; rss_bytes: number; daemon_rss_bytes: number; processes: number }[];
   heavy?: HeavyView; // absent from a daemon before the heavy-command pool
 };
@@ -83,6 +85,11 @@ export function ResourcesPanel() {
         <Stat testid="tile-memory" label="Memory, all" value={fmtBytes(r.totals.rss_bytes)} sub={`${r.totals.processes} processes, ${r.totals.threads} threads`} />
         <Stat label="Daemon" value={fmtBytes(d.rss_bytes)} sub={d.growth.per_hour_bytes == null ? `peak ${fmtBytes(d.peak_rss_bytes)}` : `${d.growth.per_hour_bytes >= 0 ? "+" : "-"}${fmtBytes(Math.abs(d.growth.per_hour_bytes))} an hour`} />
         <Stat testid="tile-cpu" label="CPU now" value={fmtCpu(r.totals.cpu_percent)} sub={`daemon ${fmtCpu(d.cpu_percent)}, ${fmtMs(d.cpu_user_ms + d.cpu_system_ms)} in all`} />
+        <Stat testid="tile-left" label="Left running" value={r.left?.at ? fmtBytes(r.left.memory_bytes) : "not measured yet"}
+          sub={r.left?.at ? <button type="button" className="k-link truncate hover:underline" data-testid="tile-left-open" onClick={() => navigate({ name: "settings", section: "leftovers" })}
+            title={r.left.others.scopes ? `${fmtBytes(r.left.others.memory_bytes)} more in ${r.left.others.scopes} job scopes of other Keel daemons, which this one leaves alone` : undefined}>
+            {r.left.scopes} {r.left.scopes === 1 ? "command" : "commands"}{r.left.others.scopes ? `, others ${fmtBytes(r.left.others.memory_bytes)}` : ""}
+          </button> : undefined} />
         <Stat testid="tile-disk" label="Disk free" value={r.disk ? fmtBytes(r.disk.free_bytes) : "unknown"} sub={r.disk ? `of ${fmtBytes(r.disk.total_bytes)} under the state folder` : undefined} />
       </Stats>
       {swapped > 0 && (

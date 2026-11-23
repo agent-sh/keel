@@ -25,6 +25,7 @@ import { allJobs, findJob, jobsIn, jobsOf, processesOf, stopJob, type Job } from
 import type { Worktree, Worktrees } from "../worktree/manager.ts";
 import { readsOf } from "../server/reads.ts";
 import * as rules from "./leftover-rules.ts";
+import * as scopes from "./scopes.ts";
 import { checksOnTree, landingLines, type BaseConflict, type ChecksOn } from "./landing.ts";
 import { forecastOf } from "../worktree/overlap-scan.ts";
 import { decidedOn, inputsOf, namedFor, repoOf, treeOf } from "../checks/ledger.ts";
@@ -33,6 +34,9 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agent_git_before (agent_id TEXT NOT NULL, repo TEXT NOT NULL, snap TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (agent_id, repo));
 CREATE TABLE IF NOT EXISTS leftovers (id INTEGER PRIMARY KEY, agent_id TEXT NOT NULL, session_id TEXT NOT NULL, parent_id TEXT NOT NULL, kind TEXT NOT NULL, repo TEXT, path TEXT, name TEXT, fate TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS leftovers_repo ON leftovers(repo, kind);
+CREATE TABLE IF NOT EXISTS scope_keeps (job_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS scope_idle (key TEXT PRIMARY KEY, cpu REAL NOT NULL, at INTEGER NOT NULL, since INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS scope_told (key TEXT PRIMARY KEY, at INTEGER NOT NULL);
 `;
 export function migrate(store: Store) {
   store.migrate(SCHEMA);
@@ -412,7 +416,11 @@ async function checksAt(path: string): Promise<ChecksOn> {
 // ---- the page: what is left across sessions
 
 export type Survey = {
-  processes: { session_id: string; title: string; agent?: { id: string; status: string }; job_id: string; command: string; cwd: string; started: number; running: boolean; pids: number[]; ports: number[]; contain?: string }[];
+  // `scope`: what the last pass over job scopes found of its scope (scopes.ts): its memory, since when it is
+  // idle, its build daemons and what becomes of it. `earlier`: a daemon before this one started it.
+  processes: { session_id: string; title: string; agent?: { id: string; status: string }; job_id: string; command: string; cwd: string; started: number; running: boolean; pids: number[]; ports: number[]; contain?: string; earlier?: boolean; scope?: Omit<scopes.ScopeView, "job_id" | "session_id"> }[];
+  // What the job scopes left running hold, and the job scopes of other daemons (no record here: never touched).
+  held?: scopes.Held;
   worktrees: { repo: string; top: string; path: string; branch?: string; head: string; made?: number; dirty?: number; ignored?: string[]; ahead?: number; base?: string; locked?: boolean; missing?: boolean; by?: By; removable: boolean; why?: string }[];
   branches: { repo: string; top: string; name: string; sha: string; at: number; base?: string; ahead?: number; behind?: number; merged: boolean; by?: By }[];
   repos: string[];
@@ -480,7 +488,10 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
   const ags = await agentsBy(store);
   const live = (sid: string) => { const s = store.session(sid); return !!s && !s.archived && !ended(ags.get(sid)); };
   const title = (sid: string) => store.session(sid)?.title || sid;
-  const out: Survey = { processes: [], worktrees: [], branches: [], repos: [] };
+  // What the job scopes hold, measured within the last 15 seconds (scopes.ts measures once a minute).
+  if (!o.only) await scopes.fresh(15_000);
+  const out: Survey = { processes: [], worktrees: [], branches: [], repos: [], held: scopes.heldNow() };
+  const since = Date.now() - process.uptime() * 1000;
   // Commands with processes alive, except the one a running turn waits on in front and the owner's own.
   const candidates = allJobs().filter((j) => j.by !== "owner" && !(!j.background && j.ended === undefined && c.isRunning(j.sessionId)));
   const found = await processesOf(candidates);
@@ -488,8 +499,10 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
     const pids = (found.get(j.id) ?? []).map((p) => p.pid);
     if (!pids.length) continue;
     const a = ags.get(j.sessionId);
+    const v = scopes.viewOf(j.id);
     out.processes.push({ session_id: j.sessionId, title: title(j.sessionId), ...(a ? { agent: { id: a.id, status: a.status } } : {}), job_id: j.id, command: j.description || j.command, cwd: j.cwd, started: j.started,
-      running: j.ended === undefined, pids, ports: (portsOf(new Map([[j.id, pids]])).get(j.id) ?? []).map((p) => p.port), contain: j.contain });
+      running: j.ended === undefined, pids, ports: (portsOf(new Map([[j.id, pids]])).get(j.id) ?? []).map((p) => p.port), contain: j.contain,
+      ...(j.started < since ? { earlier: true } : {}), ...(v ? { scope: { memory_bytes: v.memory_bytes, idle_since: v.idle_since, command_ended: v.command_ended, builds: v.builds, fate: v.fate, keep: v.keep } } : {}) });
   }
   // Who a worktree or a branch is known by: the session whose managed worktree it is (Keel made it), else the
   // agent at whose end it was found new.
@@ -541,11 +554,56 @@ export async function survey(c: Ctx, o: { extra?: string[]; only?: string } = {}
 
 // The owner's acts on the page, each checked again against the repository as it is now, and against what the
 // owner was shown: an item that changed since it was listed is refused.
-export async function stopLeft(sessionId: string, jobId: string): Promise<{ stopped: boolean; left: number[] }> {
+export async function stopLeft(sessionId: string, jobId: string, store?: Store): Promise<{ stopped: boolean; left: number[] }> {
   const j = findJob(sessionId, jobId);
   if (!j) throw new Error("no such command");
   const left = await stopJob(j, "was stopped by the owner from Leftovers");
+  if (!left.length) store?.db.query("DELETE FROM scope_keeps WHERE job_id = ?").run(jobId);
   return { stopped: !left.length, left };
+}
+
+// The owner's mark on a command left running: kept, its scope is never stopped by Keel (scopes.ts).
+export function keepLeft(store: Store, sessionId: string, jobId: string, keep: boolean): { keep: boolean } {
+  if (!findJob(sessionId, jobId)) throw new Error("no such command");
+  if (keep) store.db.query("INSERT OR REPLACE INTO scope_keeps (job_id, session_id, at) VALUES (?, ?, ?)").run(jobId, sessionId, Date.now());
+  else store.db.query("DELETE FROM scope_keeps WHERE job_id = ?").run(jobId);
+  scopes.marked(jobId, keep);
+  return { keep };
+}
+// The idle marks of job scopes and their build daemons (scopes.ts), kept so a restart goes on counting.
+export const loadIdle = (store: Store) => new Map(store.db.query<{ key: string; cpu: number; at: number; since: number }, []>("SELECT key, cpu, at, since FROM scope_idle").all().map((r) => [r.key, { cpu: r.cpu, at: r.at, since: r.since }]));
+export function saveIdle(store: Store, marks: Map<string, { cpu: number; at: number; since: number }>) {
+  const put = store.db.query("INSERT INTO scope_idle (key, cpu, at, since) VALUES (?, ?, ?, ?)");
+  store.db.transaction(() => {
+    store.db.run("DELETE FROM scope_idle");
+    for (const [k, m] of marks) put.run(k, m.cpu, m.at, m.since);
+  })();
+}
+// What a stop of a job scope is told (scopes.ts): once for its key, across restarts, in the failures scope
+// of the command's session, or when that session is gone, of the session that started its agent. The told
+// keys are kept 30 days. Returns the session told, or nothing when it was told before or nobody can be.
+const TOLD_DAYS = 30;
+export function tellLeft(store: Store, sessionId: string, line: string, key: string, seen: (sid: string, line: string) => void): string | undefined {
+  const parent = () => { try { return store.db.query<{ parent_id: string }, [string]>("SELECT parent_id FROM agents WHERE session_id = ? ORDER BY created DESC LIMIT 1").get(sessionId)?.parent_id; } catch { return undefined; } };
+  const to = store.session(sessionId) ? sessionId : parent();
+  if (!to || !store.session(to)) return undefined;
+  const now = Date.now();
+  if (!store.db.query("INSERT OR IGNORE INTO scope_told (key, at) VALUES (?, ?)").run(key, now).changes) return undefined;
+  store.db.query("DELETE FROM scope_told WHERE at < ?").run(now - TOLD_DAYS * 86_400_000);
+  seen(to, to === sessionId ? line : `Of an agent's session that is gone: ${line}`);
+  return to;
+}
+export const keeps = (store: Store) => new Set(store.db.query<{ job_id: string }, []>("SELECT job_id FROM scope_keeps").all().map((r) => r.job_id));
+
+// How a session ended, for what its commands left running: its row is gone, it is archived, or it is an
+// agent's and the agent ended. Nothing while it lives (an owner's session that is not archived lives).
+export function endedOf(store: Store, sessionId: string): string | undefined {
+  const s = store.db.query<{ archived: number }, [string]>("SELECT archived FROM sessions WHERE id = ?").get(sessionId);
+  if (!s) return "its session is gone";
+  if (s.archived) return "its session is archived";
+  const a = store.columnExists("agents", "status") ? store.db.query<{ status: string }, [string]>("SELECT status FROM agents WHERE session_id = ? ORDER BY created DESC LIMIT 1").get(sessionId) : null;
+  if (a && a.status !== "running" && a.status !== "waiting") return `its agent ${a.status === "failed" ? "failed" : "ended"}`;
+  return undefined;
 }
 
 // A worktree as the owner saw it listed: its HEAD, and how many ignored paths they were told go with it.

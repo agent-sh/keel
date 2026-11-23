@@ -463,3 +463,23 @@ test("the work note says the tip, the commits behind, the conflict with the base
     unbindLedger();
   }
 });
+
+test("a stop of a command's scope is told once for its key, across a restart, and to the parent when its session is gone", () => {
+  const dir = join(root, "told");
+  let store = new Store(dir);
+  leftovers.migrate(store);
+  store.db.run("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, parent_id TEXT, session_id TEXT, created INTEGER)");
+  const parent = store.createSession({ workspace: root, title: "parent", model: "scripted:stand-in" });
+  const told: string[] = [];
+  const seen = (sid: string, line: string) => void told.push(`${sid}: ${line}`);
+  expect(leftovers.tellLeft(store, parent.id, "stopped x", "j1:stop:", seen)).toBe(parent.id);
+  expect(leftovers.tellLeft(store, parent.id, "stopped x", "j1:stop:", seen)).toBeUndefined();
+  store.db.run("INSERT INTO agents VALUES ('ag', ?, 'gone-session', 1)", [parent.id]);
+  expect(leftovers.tellLeft(store, "gone-session", "stopped y", "j2:stop:", seen)).toBe(parent.id);
+  store.db.close();
+  store = new Store(dir);
+  expect(leftovers.tellLeft(store, "gone-session", "stopped y", "j2:stop:", seen)).toBeUndefined();
+  expect(leftovers.tellLeft(store, "nobody", "stopped z", "j3:stop:", seen)).toBeUndefined();
+  expect(told).toEqual([`${parent.id}: stopped x`, `${parent.id}: Of an agent's session that is gone: stopped y`]);
+  store.db.close();
+});

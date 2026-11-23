@@ -125,3 +125,99 @@ export function leftLine(s: Settled): string {
   }
   return parts.length ? `Left behind: ${parts.join("; ")}.` : "";
 }
+
+// ---- job scopes that outlive their command: a build tool's daemon, a server, a shell left waiting.
+//
+// Keel acts only on a scope it made: the name startJob gives (`keel-job-<id>-<6 letters>.scope`) in the
+// user manager's app.slice, and this daemon's own record of that job naming that exact cgroup
+// (src/tools/jobs.ts, adoptJobs and adoptScopes). Pure: the facts are read in scopes.ts.
+
+// A build tool's own server, by its command line: a build starts it for the next build to reuse, and it
+// stays when the build ends, by design (Gradle's for three hours by its own idle timeout).
+const BUILD_DAEMONS: { kind: string; test: (argv: string[]) => boolean }[] = [
+  { kind: "Gradle daemon", test: (a) => a.includes("org.gradle.launcher.daemon.bootstrap.GradleDaemon") },
+  { kind: "Kotlin daemon", test: (a) => a.includes("org.jetbrains.kotlin.daemon.KotlinCompileDaemon") },
+  { kind: "Bazel server", test: (a) => a.some((x) => /(^|\/)A-server\.jar$/.test(x)) },
+  { kind: "sccache server", test: (a) => a.length === 1 && /(^|\/)sccache$/.test(a[0]!) },
+];
+export const buildKind = (argv: string[]): string | undefined => BUILD_DAEMONS.find((b) => b.test(argv))?.kind;
+// A server that other tools share whoever started it: a scope that holds one is never stopped by Keel. adb's
+// (`adb ... fork-server server`) is the one every device tool talks to; a stop drops every device's connection.
+const SHARED: { kind: string; test: (argv: string[]) => boolean }[] = [
+  { kind: "adb server", test: (a) => /(^|\/)adb$/.test(a[0] ?? "") && a.includes("fork-server") && a.includes("server") },
+];
+export const sharedKind = (argv: string[]): string | undefined => SHARED.find((b) => b.test(argv))?.kind;
+
+// A sample (a minute) counts as idle when the scope (or a build daemon, by its own processor time) used less
+// than this share of one core in it. Measured a minute at a time on scopes at rest: a Gradle or Kotlin daemon
+// 0.1% (2% at most), an MCP server 0.2%, a Keel daemon with no turn 5%, a group of 18 shells that each poll for
+// a file once a second 7%; scopes at work (a build, a test run, a browser spec) passed 10% in most minutes.
+export const IDLE_SHARE = 0.1;
+// How long a scope of an ended session is idle before it is stopped. Its session reads nothing of it any
+// more; the bound only lets a command that is still at work finish what it does: one at work stays under
+// the share above for ten minutes in a row only while it waits on something else.
+export const SCOPE_IDLE_MS = 10 * 60_000;
+// How long a build daemon whose command ended is idle before it is stopped while its session lives. Measured
+// on the gaps between one session's build commands: nine in ten come within 19 minutes, so a daemon idle for
+// 30 is reused by most next builds, and the rest start one again (seconds) instead of holding a gigabyte or
+// two for hours.
+export const BUILD_IDLE_MS = 30 * 60_000;
+
+export type ScopeFacts = {
+  ended?: string;          // how its session ended (gone, archived, its agent ended); absent: the session lives
+  keep?: boolean;          // the owner marked it to keep
+  owner?: boolean;         // the owner ran it from the terminal pane
+  self?: boolean;          // this daemon, or a process above it, runs in it
+  shared?: string;         // a server other tools share runs in it (sharedKind)
+  attached?: string;       // a process in it is someone's: it has a terminal, or it was put in from outside
+  clients: number;         // connections to its ports from processes that are not its own
+  ports: number[];
+  commandEnded: boolean;   // its command ended; what is left is what it started
+  idleMs: number;          // how long the whole scope has been idle (IDLE_SHARE)
+  builds: { pid: number; kind: string; idleMs: number }[];
+};
+export type ScopeFate = { act: "stop"; why: string } | { act: "stop-builds"; pids: number[]; why: string } | { act: "keep"; why: string };
+const mins = (ms: number) => `${Math.round(ms / 60_000)} min`;
+const kinds = (b: { kind: string }[]) => [...new Set(b.map((x) => x.kind))].join(" and ");
+
+export function scopeFate(f: ScopeFacts, o: { idleMs?: number; buildIdleMs?: number } = {}): ScopeFate {
+  const idle = o.idleMs ?? SCOPE_IDLE_MS, buildIdle = o.buildIdleMs ?? BUILD_IDLE_MS;
+  if (f.self) return { act: "keep", why: "this daemon runs in it" };
+  if (f.owner) return { act: "keep", why: "you ran it in the terminal" };
+  if (f.keep) return { act: "keep", why: "you keep it" };
+  if (f.attached) return { act: "keep", why: `${f.attached}: it is kept until you stop it` };
+  if (f.shared) return { act: "keep", why: `its ${f.shared} is shared by other tools` };
+  if (f.clients > 0) return { act: "keep", why: `${f.clients === 1 ? "a connection" : `${f.clients} connections`} of another process to port ${f.ports.join(", ")}` };
+  if (f.ended) {
+    if (f.idleMs >= idle) return { act: "stop", why: `${f.ended}, and it used no processor for ${mins(f.idleMs)}` };
+    if (f.commandEnded && f.builds.length) return { act: "stop-builds", pids: f.builds.map((b) => b.pid), why: `${f.ended}: its ${kinds(f.builds)} served only its builds` };
+    return { act: "keep", why: `${f.ended}; it is stopped once idle for ${mins(idle)}` };
+  }
+  const due = f.commandEnded ? f.builds.filter((b) => b.idleMs >= buildIdle) : [];
+  if (due.length) return { act: "stop-builds", pids: due.map((b) => b.pid), why: `its ${kinds(due)} built nothing for ${mins(Math.min(...due.map((b) => b.idleMs)))}` };
+  if (f.commandEnded && f.builds.length) return { act: "keep", why: `its session lives; its ${kinds(f.builds)} ${f.builds.length === 1 ? "is" : "are"} stopped once idle for ${mins(buildIdle)}` };
+  return { act: "keep", why: "its session lives" };
+}
+
+// The next idle mark of a scope or a process from one sample of its processor time (ms): idle since when.
+// A first sample starts the count; a sample over IDLE_SHARE of one core starts it again.
+export type IdleMark = { cpu: number; at: number; since: number };
+export function nextIdle(prev: IdleMark | undefined, cpu: number, at: number): IdleMark {
+  if (!prev || at <= prev.at || cpu < prev.cpu) return { cpu, at, since: at };
+  return { cpu, at, since: (cpu - prev.cpu) / (at - prev.at) >= IDLE_SHARE ? at : prev.since };
+}
+
+// Whether a process in a job's scope is someone's, so the scope is not stopped whole: one with a controlling
+// terminal or a terminal's end open (an editor, tmux, a shell the owner attached), or one whose parent is
+// outside the scope and is neither the job's own command (`job`: its pid and start time) nor where orphans go
+// (`reapers`: the user manager, init). What the job's command started has its parent in the scope, or was
+// orphaned there; a process moved in from outside (`echo $$ > cgroup.procs`) has neither.
+export type ScopeProc = { pid: number; parent: number; start: string; tty: boolean; pty: boolean };
+export function attachedWhy(procs: ScopeProc[], job: { pid: number; start?: string }, reapers: Set<number>): string | undefined {
+  const t = procs.find((p) => p.tty || p.pty);
+  if (t) return `process ${t.pid} in it has a terminal`;
+  const inside = new Set(procs.map((p) => p.pid));
+  const own = (p: ScopeProc) => p.pid === job.pid && (job.start === undefined || p.start === job.start);
+  const o = procs.find((p) => !inside.has(p.parent) && !reapers.has(p.parent) && p.parent !== job.pid && !own(p));
+  return o ? `process ${o.pid} was put in it from outside (its parent ${o.parent} is not of the command)` : undefined;
+}

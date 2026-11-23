@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
@@ -106,5 +106,60 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
     try { git(repo, "worktree", "remove", "--force", wt); } catch {}
     rmSync(repo, { recursive: true, force: true });
     rmSync(wt, { recursive: true, force: true });
+  }
+});
+
+// Feature: what a command leaves running in its job scope after its call ended. A session's command leaves a
+// process in its scope and ends. Settings > Leftovers lists the command with the memory its scope holds and
+// what becomes of it (kept: its session lives); Keep holds it, and the mark stays over a reload. Settings >
+// Resources counts what is left running. (A session cannot be archived with such a command: archiving stops
+// it. That the next daemon takes a scope back after a restart and stops it once its session ended and it
+// idled is src/automation/scopes.test.ts, which kills a daemon; the decision is leftover-rules.test.ts.)
+test("a command's scope left running is listed with its memory and fate, and Keep holds it", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = String(1e9 + Math.floor(Math.random() * 8e9));
+  // The process the command leaves, by the words only it carries (the spec runs on the daemon's machine).
+  const left = () => readdirSync("/proc").filter((n) => { try { return /^\d+$/.test(n) && readFileSync(`/proc/${n}/cmdline`, "utf8").startsWith(`sleep\u0000600.${tag}`); } catch { return false; } }).map(Number);
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Left in its scope" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  try {
+    const calls = [{ name: "Bash", input: { command: `setsid sleep 600.${tag} > /dev/null 2>&1 < /dev/null & echo left` } }];
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+    const job = async () => ((await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs as any[]).find((j) => j.command.includes(tag));
+    await expect.poll(async () => (await job())?.running, { timeout: 60_000 }).toBe(false);
+    const j = await job();
+    test.skip(j.contain !== "cgroup", `needs systemd user scopes: the daemon holds its commands by ${j.contain} (${j.contain_why})`);
+
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/settings/leftovers");
+    const row = page.locator(`[data-testid="leftover-process"][data-job="${j.id}"]`);
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId("leftover-fate")).toHaveText("Kept: its session lives.");
+    await expect(row.getByTestId("leftover-memory")).toHaveText(/^\d+ MB$/);
+    await expect(row).toContainText("command ended");
+    await expect(page.getByText(/One with a terminal in it \(tmux, script, an editor\) or a process put in it from outside is kept until you stop it\./)).toBeVisible();
+    await shoot(page, "leftovers-03-scope");
+
+    await row.getByTestId("leftover-keep").click();
+    await expect(row.getByTestId("leftover-keep")).toHaveAttribute("aria-pressed", "true");
+    await expect(row.getByTestId("leftover-fate")).toHaveText(/^Kept: you keep it\./);
+    await page.reload();
+    await expect(row.getByTestId("leftover-keep")).toHaveAttribute("aria-pressed", "true");
+    await shoot(page, "leftovers-04-kept");
+
+    await page.goto("/settings/resources");
+    await expect(page.getByTestId("tile-left")).toContainText(/\d+(\.\d)? (KB|MB|GB)/);
+    await expect(page.getByTestId("tile-left-open")).toContainText(/\d+ commands?/);
+    await shoot(page, "leftovers-05-resources");
+    expect(left().length).toBe(1);
+
+    // Stopped from the page, the mark goes with it.
+    expect((await request.post("/api/leftovers/stop", { data: { session_id: session.id, job_id: j.id } })).ok()).toBe(true);
+    await expect.poll(() => left().length, { timeout: 10_000 }).toBe(0);
+  } finally {
+    for (const pid of left()) try { process.kill(pid, "SIGKILL"); } catch {}
+    await request.delete(`/api/sessions/${session.id}`);
   }
 });
