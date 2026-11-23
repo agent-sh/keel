@@ -191,8 +191,13 @@ under `~/.cache/keel-work/bun/research/`.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
-  included (`src/checks/ledger.ts`). A check is known behind a wait the
-  repository names and with its output sent to a file and read after; the
+  included (`src/checks/ledger.ts`). A check is known wherever it runs in a
+  command that is read to its end: behind assignments, `cd`s, waits,
+  `timeout` or `nice`, with its output sent to a file or through a filter,
+  beside other commands. The tree is taken before the command when nothing
+  before the check changes a file, else when the command ended when nothing
+  from the check on does; a check whose words hold what the ledger cannot
+  know (a `$` the command does not set, a substitution) is not counted. The
   shell reports each command it runs (`src/tools/shell.ts`), so a check that
   never started (its wait gave up) records nothing and one that ran is
   known by its own status. A check that passed on the same tree is

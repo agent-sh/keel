@@ -13,20 +13,25 @@ import type { Job } from "../tools/jobs.ts";
 import { moveShell } from "../tools/shell.ts";
 import { countsOf } from "./counts.ts";
 import { baseOf, commitTree, fromTop, inputsOf, keyOf, markAnyway, namedFor, onTree, onTrees, owe, owed, record, repoOf, takeAnyway, treeOf, type Repo } from "./ledger.ts";
-import { checkStatus, matchCommand, parseTrace, type Match } from "./named.ts";
+import { checkStatus, firstFolder, matchAll, parseTrace, stoppedByTimeout, type Match } from "./named.ts";
 import { answerText, baseState, baseWords, flakyOn, runNote, type Result, type Run } from "./words.ts";
 
 // A check run on its way, as plain data: kept with the call in the store too (owe), so a run a
 // restart cut whose command the next daemon takes back is still recorded when it ends.
 type Pending = {
-  repo: Repo; name: string; command: string; dir: string; start: string; filters: number;
+  repo: Repo; name: string; command: string; dir: string; start: string; filters: number; timeout?: true; nth?: number;
   tree: string; head: string | null; inputs: string | null; why?: string;
   sessionId: string; by: "agent" | "owner"; callId?: string; traced: boolean;
+  // Its tree is taken when the command ends (something before the check may have changed a file):
+  // where, what the run is known by and the inputs it names.
+  atEnd?: { tree: Match["tree"]; command: string; inputs: string[] };
 };
-// Calls on their way to run a check, by call id; owner's runs by job id; recorded runs by call id.
-const pending = new Map<string, Pending>();
+// Calls on their way to run checks (one call may run several), by call id; owner's runs by job id;
+// recorded runs by call id.
+type Stored = { run: Run; repo: Repo; why?: string };
+const pending = new Map<string, Pending[]>();
 const owners = new Map<string, Promise<Pending | undefined>>();
-const recorded = new Map<string, Promise<{ run: Run; repo: Repo; why?: string } | undefined>>();
+const recorded = new Map<string, Promise<Stored[]>>();
 const MAP_MAX = 512;
 const capped = <K, V>(m: Map<K, V> | Set<K>) => { while (m.size > MAP_MAX) m.delete(m.keys().next().value as K); };
 
@@ -38,32 +43,38 @@ export function commandOf(call: ToolCall): string | undefined {
   return typeof i.command === "string" ? i.command : typeof i.cmd === "string" ? i.cmd : undefined;
 }
 
-// Which check a command run in `folder` runs, with the repository it is of.
-export function checkIn(folder: string, command: string): { repo: Repo; match: Match } | undefined {
-  const repo = repoOf(folder);
+// Which checks a command run in `folder` runs, with the repository they are of: the one its leading
+// `cd`s go to, else the folder's own.
+export function checksIn(folder: string, command: string): { repo: Repo; matches: Match[] } | undefined {
+  const home = homedir();
+  const repo = repoOf(firstFolder(command, folder, home)) ?? repoOf(folder);
   if (!repo) return undefined;
   const named = namedFor(repo);
   if (!named?.checks.length) return undefined;
-  const match = matchCommand(command, named, { cwd: folder, home: homedir(), rel: (d) => fromTop(repo, d) });
-  return match ? { repo, match } : undefined;
+  const matches = matchAll(command, named, { cwd: folder, home, rel: (d) => fromTop(repo, d) });
+  return matches.length ? { repo, matches } : undefined;
+}
+export function checkIn(folder: string, command: string): { repo: Repo; match: Match } | undefined {
+  const got = checksIn(folder, command);
+  return got && { repo: got.repo, match: got.matches[0]! };
 }
 
 // The tree a check runs on, the repository whose work tree it is (its base is compared with), and what
 // the run is known by. A check of a commit names the commit by its last argument, resolved here: a name
 // that is not a commit is an argument of its own, and the check is of HEAD.
 type Target = { repo: Repo; tree: string; head: string | null; why?: string; command: string };
-async function treeFor(repo: Repo, m: Match): Promise<Target | undefined> {
-  if (m.tree.kind === "commit") {
-    const named = m.tree.rev ? await commitTree(repo, m.tree.rev) : undefined;
+async function treeFor(repo: Repo, tree: Match["tree"], command: string): Promise<Target | undefined> {
+  if (tree.kind === "commit") {
+    const named = tree.rev ? await commitTree(repo, tree.rev) : undefined;
     const t = named ?? (await commitTree(repo, "HEAD"));
-    return t && { repo, tree: t.tree, head: t.head, command: named || !m.tree.named ? m.command : m.tree.named };
+    return t && { repo, tree: t.tree, head: t.head, command: named || !tree.named ? command : tree.named };
   }
-  const at = m.tree.kind === "folder" ? repoOf(m.tree.folder) : repo;
+  const at = tree.kind === "folder" ? repoOf(tree.folder) : repo;
   // A folder argument that is not the top of a work tree: the check reads more than one tree.
-  if (!at || (m.tree.kind === "folder" && realOf(at.top) !== realOf(m.tree.folder))) return undefined;
+  if (!at || (tree.kind === "folder" && realOf(at.top) !== realOf(tree.folder))) return undefined;
   const t = await treeOf(at);
   if (!t) return undefined;
-  return t.tree === null ? { repo: at, tree: "", head: t.head, why: t.why, command: m.command } : { repo: at, tree: t.tree, head: t.head, command: m.command };
+  return t.tree === null ? { repo: at, tree: "", head: t.head, why: t.why, command } : { repo: at, tree: t.tree, head: t.head, command };
 }
 
 export async function beforeCall(s: Session, call: ToolCall): Promise<ToolGate> {
@@ -71,15 +82,42 @@ export async function beforeCall(s: Session, call: ToolCall): Promise<ToolGate> 
   const command = commandOf(call);
   if (!command) return;
   const folder = call.tool.cwdOf?.(call.ctx, call.input) ?? call.ctx.cwd;
-  const found = checkIn(folder, command);
+  const found = checksIn(folder, command);
   if (!found) return;
-  const { match } = found;
-  // A tool that cannot say when the check itself started records it only when it is the whole command.
+  // A tool that cannot say when a check itself started records one only when it is the whole command.
   const traced = !!call.tool.tracesChecks;
-  if (!traced && !match.alone) return;
-  const t = await treeFor(found.repo, match);
-  if (!t) return;
-  const inputs = inputsOf(t.repo.top, match.check.inputs) ?? null;
+  const matches = traced ? found.matches : found.matches.slice(0, 1).filter((m) => m.alone);
+  const ps: Pending[] = [];
+  // (Checks of one tree in one call: the tree is looked at once.)
+  const looks = new Map<string, Promise<Target | undefined>>();
+  for (const match of matches) {
+    const base = { name: match.check.name, dir: match.dir, start: match.start, filters: match.filters, ...(match.timeout ? { timeout: true as const } : {}), ...(match.nth ? { nth: match.nth } : {}), sessionId: s.id, by: "agent" as const, callId: call.id, traced };
+    if (match.treeAt === "end") {
+      ps.push({ ...base, repo: found.repo, command: match.command, tree: "", head: null, inputs: null, atEnd: { tree: match.tree, command: match.command, inputs: match.check.inputs } });
+      continue;
+    }
+    const at = JSON.stringify(match.tree);
+    if (!looks.has(at)) looks.set(at, treeFor(found.repo, match.tree, match.command));
+    const look = await looks.get(at)!;
+    if (!look) continue;
+    // (What the run is known by is the match's own; the tree is shared.)
+    const t = match.tree.kind === "commit" ? look : { ...look, command: match.command };
+    const inputs = inputsOf(t.repo.top, match.check.inputs) ?? null;
+    if (match.answers) {
+      const answer = answered(s, call, match, t, inputs);
+      if (answer) return answer;
+    }
+    ps.push({ ...base, repo: t.repo, command: t.command, tree: t.tree, head: t.head, inputs, ...(t.why ? { why: t.why } : {}) });
+  }
+  if (!ps.length) return;
+  pending.set(call.id, ps);
+  capped(pending);
+  owe(call.id, ps);
+  return traced ? { ctx: { checkRun: true } } : undefined;
+}
+
+// The answer from the ledger to a command that stands for one check: it passed on these same files.
+function answered(s: Session, call: ToolCall, match: Match, t: Target, inputs: string | null): ToolGate {
   const key = keyOf(match.dir, t.command);
   // Answered before anything of the command runs: a wait in front of the check is spared too.
   // (Sent again after an answer, it runs: the mark is kept in the store.)
@@ -95,14 +133,7 @@ export async function beforeCall(s: Session, call: ToolCall): Promise<ToolGate> 
       return { answer: answerText(last, { session: s.id, now }) };
     }
   }
-  const p: Pending = {
-    repo: t.repo, name: match.check.name, command: t.command, dir: match.dir, start: match.start, filters: match.filters,
-    tree: t.tree, head: t.head, inputs, ...(t.why ? { why: t.why } : {}), sessionId: s.id, by: "agent", callId: call.id, traced,
-  };
-  pending.set(call.id, p);
-  capped(pending);
-  owe(call.id, p);
-  return traced ? { ctx: { checkRun: true } } : undefined;
+  return undefined;
 }
 
 // The end of a log, where a summary is.
@@ -119,20 +150,28 @@ function logTail(path: string, bytes = 64 * 1024): string {
 
 // A pipe's status when its reader closed it early (SIGPIPE: 128 + 13): what the check found is not known.
 const PIPE_CLOSED = 141;
-function store(p: Pending, job: Job): { run: Run; repo: Repo; why?: string } | undefined {
+async function store(p: Pending, job: Job): Promise<Stored | undefined> {
   // Its own status, from what the shell reported of it: nothing is recorded of a check that never
   // started (a wait before it gave up). Untraced, the check is the whole command: its status is the job's,
   // or the pipe's first, which nothing reported.
   let exit: number | null;
   if (p.traced) {
-    const st = checkStatus(parseTrace(conceal(job.trace ?? "", job.sessionId)), p.start, p.filters);
+    const st = checkStatus(parseTrace(conceal(job.trace ?? "", job.sessionId)), p.start, p.filters, p.nth);
     if (!st) return undefined;
     exit = st.exit;
   } else exit = p.filters ? null : job.exitCode ?? null;
   // Through head, which stops reading after its lines: a check killed by the closed pipe found nothing.
   if (p.filters && exit === PIPE_CLOSED) exit = null;
+  // A tree taken at the end: the files as the command left them, which the check ran on.
+  if (p.atEnd) {
+    // (Not when it ran on in the background: the session went on and may have changed files since.)
+    if (job.background) return undefined;
+    const t = await treeFor(p.repo, p.atEnd.tree, p.atEnd.command);
+    if (!t) return undefined;
+    p = { ...p, repo: t.repo, command: t.command, tree: t.tree, head: t.head, inputs: inputsOf(t.repo.top, p.atEnd.inputs) ?? null, ...(t.why ? { why: t.why } : {}) };
+  }
   // (A command stopped or killed says nothing of the check's result, whatever status it left.)
-  const result: Result = job.stopReason || job.signal ? "stopped" : exit === null ? "unknown" : exit === 0 ? "pass" : "fail";
+  const result: Result = job.stopReason || job.signal || (p.timeout && stoppedByTimeout(exit)) ? "stopped" : exit === null ? "unknown" : exit === 0 ? "pass" : "fail";
   const counts = countsOf(logTail(job.log));
   const run = record({
     name: p.name, command: p.command, dir: p.dir, repo: p.repo.scope, tree: p.tree, head: p.head,
@@ -149,8 +188,8 @@ export function jobStarted(job: Job) {
   if (!found) return;
   if (!found.match.alone) return;
   const m = found.match;
-  owners.set(job.id, treeFor(found.repo, m).then((t): Pending | undefined => (t ? {
-    repo: t.repo, name: m.check.name, command: t.command, dir: m.dir, start: m.start, filters: m.filters, tree: t.tree, head: t.head,
+  owners.set(job.id, treeFor(found.repo, m.tree, m.command).then((t): Pending | undefined => (t ? {
+    repo: t.repo, name: m.check.name, command: t.command, dir: m.dir, start: m.start, filters: m.filters, ...(m.timeout ? { timeout: true as const } : {}), tree: t.tree, head: t.head,
     inputs: inputsOf(t.repo.top, m.check.inputs) ?? null, ...(t.why ? { why: t.why } : {}), sessionId: job.sessionId, by: "owner", traced: false,
   } : undefined)));
   capped(owners);
@@ -158,11 +197,12 @@ export function jobStarted(job: Job) {
 
 export function jobDone(job: Job) {
   // (One a restart cut is in the store: its job was taken back by this daemon.)
-  const p = job.callId ? pending.get(job.callId) ?? owed<Pending>(job.callId) : undefined;
-  if (p) {
+  // (A row an earlier daemon owed holds one run, not a list.)
+  const got = job.callId ? pending.get(job.callId) ?? owed<Pending | Pending[]>(job.callId) : undefined;
+  if (got) {
     pending.delete(job.callId!);
     owed(job.callId!); // (its row in the store goes too)
-    recorded.set(job.callId!, Promise.resolve(store(p, job)));
+    recorded.set(job.callId!, Promise.all((Array.isArray(got) ? got : [got]).map((p) => store(p, job).catch(() => undefined))).then((rs) => rs.filter((r): r is Stored => !!r)));
     capped(recorded);
     return;
   }
@@ -192,10 +232,13 @@ export async function afterCall(_s: Session, call: ToolCall, result: ToolResultB
   const got = recorded.get(call.id);
   if (!got) return;
   recorded.delete(call.id);
-  const r = await got;
-  if (!r) return;
-  const note = r.why ? `Check ledger: ${r.run.name} was recorded with no tree: ${r.why}, so no later run is answered from it.` : await noteFor(r.run, r.repo);
-  if (!note) return;
+  const notes: string[] = [];
+  for (const r of await got) {
+    const note = r.why ? `Check ledger: ${r.run.name} was recorded with no tree: ${r.why}, so no later run is answered from it.` : await noteFor(r.run, r.repo);
+    if (note) notes.push(note);
+  }
+  if (!notes.length) return;
+  const note = notes.join("\n");
   if (typeof result.content === "string") result.content = `${result.content}\n\n${note}`;
   else result.content = [...result.content, { type: "text", text: note }];
 }

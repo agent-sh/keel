@@ -38,17 +38,44 @@
 // (each named by its first words). `env`: variables whose setting on the
 // check's command does not change what it finds.
 //
-// A command runs a check when the check is one of its simple commands, and
-// the others are only of these kinds:
-//   before it: `cd DIR`, assignments (`S=...`, `export S=...`), `mkdir -p`,
-//              `set` of shell options, `true`, and the waits the repository names;
-//   on it:     its output sent to files (`> log 2>&1`) or through `tail`/`head`;
-//   after it:  commands that read (`tail`, `head`, `cat`, `grep`, `wc`, `ls`, `echo`, `printf`).
-// joined by `&&` and `;`, in `( )` or `{ }` groups. Nothing that runs in the
-// background (`&`), a fallback (`||`), a command substitution, a here-document,
-// an input redirection (but from /dev/null) or a `$` left after the command's own assignments,
-// `$PWD` and `$HOME` are put in: a check with a `$` of another kind left in
-// its words is recorded but never answered.
+// A command runs a check when the check is one of its simple commands: its
+// words, after assignments of its own (`S=x check`) and the wrappers that only
+// start it (`timeout N`, `nice`, `ionice`), are the check's command and, when it
+// takes them, more words. Its output may go to files (`> log 2>&1`) and through
+// filters in its pipe (`tail`, `head`, `grep`, `tee`, `sed` without -i, `cut`,
+// `wc`, `sort`, `uniq`, `cat`, `tr`); the shell reports the check's own status
+// (the pipe's first) whatever follows it. A here-document's body is input, not
+// commands, and `cd`s are followed, also into another repository's work tree.
+//
+// The tree it ran on must be known, so the other parts are read for whether
+// they change a file a check reads:
+//   still:  `cd`, assignments and `export`, `set`, `mkdir -p`, `true`, waits
+//           (any `waitfor`, `sleep`), other checks, and commands that only read
+//           (`ls`, `cat`, `grep`, `git log`/`status`/`diff`, `sed -n`, ...) with
+//           their output sent outside the repository;
+//   moves:  anything else (an edit, `git rebase`, `ln -s`, a script).
+// The tree is taken before the command runs when everything before the check
+// is still; else when the command ended, when everything from the check to the
+// end is still, the reading reached the end, and nothing before it ran in the
+// background (`&`); else the run is not counted. The reading stops at what
+// changes the shell in ways it does not follow (`source`, `eval`, `read`,
+// `declare`, control flow such as `if` and `for`) and at a quote or a
+// substitution left open.
+//
+// Never counted, since what ran is not known: a check whose own words, or a
+// variable it is given, hold a `$` the command does not set (`$1`, `$?`,
+// `${X:-y}`, a variable from outside), a command or process substitution, or
+// an exported value of that kind; a check whose input is a pipe, a file or a
+// here-document; one whose output goes into a command that is not a filter;
+// one run in the background. `$PWD`, `$HOME` and `~` are put in.
+//
+// An answer from the ledger stands for the whole command, so only a command of
+// the narrow form is answered: before the check only `cd`, assignments,
+// `mkdir -p`, `set`, `true` and the waits the repository names; after it only
+// commands that read (`tail`, `head`, `cat`, `grep`, `wc`, `ls`, `echo`,
+// `printf`), joined by `&&` and `;` in `( )` or `{ }` groups, all of it read,
+// with no `&` and no `||`; and a check whose words hold a pattern (`*`, `?`,
+// `[`) is recorded but never answered.
 
 import { normalize } from "node:path";
 
@@ -141,76 +168,142 @@ export function overlay(file: Named | undefined, setting: ReturnType<typeof read
 
 // ---- reading a command
 
-type Word = { raw: string; text: string; quoted: boolean };
+// `subst`: it holds a command or process substitution (what it becomes is not known here).
+type Word = { raw: string; text: string; quoted: boolean; subst?: true };
+// `{ op: "?" }`: the line is not read past this point (a quote or a substitution left open, a
+// here-document with no end).
 type Tok = { op: string } | { word: Word } | { redir: string; target?: Word };
-// The tokens of a command line, or why it is not read (a substitution, a here-document).
-export function tokens(line: string): Tok[] | undefined {
+export function tokens(line: string): Tok[] {
   const out: Tok[] = [];
   let i = 0;
   const n = line.length;
   const isSpace = (c: string) => c === " " || c === "\t";
+  const cut = () => { out.push({ op: "?" }); return out; };
+  // Here-documents whose bodies start after this line: their end words, and whether tabs are taken off.
+  let docs: { end: string; tabs: boolean }[] = [];
   while (i < n) {
     const c = line[i]!;
     if (isSpace(c)) { i++; continue; }
-    if (c === "\n") { out.push({ op: ";" }); i++; continue; }
-    if (c === "#" ) break;
+    if (c === "\n") {
+      i++;
+      // A here-document's body is its command's input, not commands: it ends at a line that is its end word.
+      for (const d of docs) {
+        for (;;) {
+          if (i >= n) return cut();
+          const e = line.indexOf("\n", i);
+          const l = line.slice(i, e < 0 ? n : e);
+          i = e < 0 ? n : e + 1;
+          if ((d.tabs ? l.replace(/^\t+/, "") : l) === d.end) break;
+        }
+      }
+      docs = [];
+      out.push({ op: ";" });
+      continue;
+    }
+    if (c === "#") {
+      // (A comment runs to the end of its line.)
+      const e = line.indexOf("\n", i);
+      if (e < 0) break;
+      i = e;
+      continue;
+    }
     const two = line.slice(i, i + 2);
+    if (two === "|&") { out.push({ op: "|" }); i += 2; continue; }
     if (two === "&&" || two === "||") { out.push({ op: two }); i += 2; continue; }
     if (c === ";" || c === "|" || c === "(" || c === ")") { out.push({ op: c }); i++; continue; }
-    if (two === "<<" || two === "<(" || two === ">(") return undefined;
-    // (Input from /dev/null only: nothing is read.)
-    if (c === "<") { const m = /^<\s*\/dev\/null(?=[\s;&|)]|$)/.exec(line.slice(i)); if (!m) return undefined; i += m[0].length; out.push({ redir: "</dev/null" }); continue; }
+    if (line.startsWith("<<<", i)) { i += 3; const t = word(); if (!t) return cut(); out.push({ redir: "<<<", target: t }); continue; }
+    if (two === "<<") {
+      const tabs = line[i + 2] === "-";
+      i += tabs ? 3 : 2;
+      const t = word();
+      if (!t || t.subst) return cut();
+      docs.push({ end: t.text, tabs });
+      out.push({ redir: "<<", target: t });
+      continue;
+    }
+    if (two === "<&" || two === "<>") return cut();
+    if (c === "<" && line[i + 1] !== "(") {
+      i++;
+      const t = word();
+      if (!t) return cut();
+      out.push({ redir: t.text === "/dev/null" ? "</dev/null" : "<", target: t });
+      continue;
+    }
     if (c === "&" && line[i + 1] === ">") {
       const op = line[i + 2] === ">" ? "&>>" : "&>";
       i += op.length;
       const t = word();
-      if (!t) return undefined;
+      if (!t) return cut();
       out.push({ redir: op, target: t });
       continue;
     }
     if (c === "&") { out.push({ op: "&" }); i++; continue; }
-    if (c === ">") {
+    if (c === ">" && line[i + 1] !== "(") {
       const op = line[i + 1] === ">" ? ">>" : ">";
       i += op.length;
-      if (line[i] === "&") { const m = /^&(\d+|-)/.exec(line.slice(i)); if (!m) return undefined; i += m[0].length; out.push({ redir: `${op}${m[0]}` }); continue; }
+      if (line[i] === "&") { const m = /^&(\d+|-)/.exec(line.slice(i)); if (!m) return cut(); i += m[0].length; out.push({ redir: `${op}${m[0]}` }); continue; }
       if (line[i] === "|") i++;
       const t = word();
-      if (!t) return undefined;
+      if (!t) return cut();
       out.push({ redir: op, target: t });
       continue;
     }
     const w = word();
-    if (!w) return undefined;
+    if (!w) return cut();
     // `2>`: a number right before a redirection is its descriptor.
     if (/^\d+$/.test(w.raw) && (line[i] === ">")) {
       const op = line[i + 1] === ">" ? ">>" : ">";
       i += op.length;
-      if (line[i] === "&") { const m = /^&(\d+|-)/.exec(line.slice(i)); if (!m) return undefined; i += m[0].length; out.push({ redir: `${w.raw}${op}${m[0]}` }); continue; }
+      if (line[i] === "&") { const m = /^&(\d+|-)/.exec(line.slice(i)); if (!m) return cut(); i += m[0].length; out.push({ redir: `${w.raw}${op}${m[0]}` }); continue; }
       const t = word();
-      if (!t) return undefined;
+      if (!t) return cut();
       out.push({ redir: `${w.raw}${op}`, target: t });
       continue;
     }
     out.push({ word: w });
   }
-  return out;
+  return docs.length ? cut() : out;
+  // The end of a substitution whose `(` is at `j`, past its `)`; -1 when it does not end.
+  function closeParen(j: number): number {
+    let depth = 0;
+    while (j < n) {
+      const c = line[j]!;
+      if (c === "\\") { j += 2; continue; }
+      if (c === "'") { const e = line.indexOf("'", j + 1); if (e < 0) return -1; j = e + 1; continue; }
+      if (c === '"') { j++; while (j < n && line[j] !== '"') j += line[j] === "\\" ? 2 : 1; if (j >= n) return -1; j++; continue; }
+      if (c === "(") depth++;
+      else if (c === ")" && --depth === 0) return j + 1;
+      j++;
+    }
+    return -1;
+  }
+  function backtick(j: number): number {
+    for (j++; j < n; j++) { if (line[j] === "\\") { j++; continue; } if (line[j] === "`") return j + 1; }
+    return -1;
+  }
   // One word from `i`: quotes taken off in `text`, kept in `raw`.
   function word(): Word | undefined {
     while (i < n && isSpace(line[i]!)) i++;
     const start = i;
-    let text = "", quoted = false;
+    let text = "", quoted = false, subst = false;
     while (i < n) {
       const c = line[i]!;
+      if ((c === "<" || c === ">") && line[i + 1] === "(" && i === start) {
+        const e = closeParen(i + 1);
+        if (e < 0) return undefined;
+        text += line.slice(i, e); i = e; subst = true; continue;
+      }
       if (isSpace(c) || c === "\n" || c === ";" || c === "|" || c === "&" || c === "(" || c === ")" || c === "<" || c === ">") break;
-      if (c === "`") return undefined;
-      if (c === "$" && line[i + 1] === "(") return undefined;
+      if (c === "`") { const e = backtick(i); if (e < 0) return undefined; text += line.slice(i, e); i = e; subst = true; continue; }
+      if (c === "$" && line[i + 1] === "(") { const e = closeParen(i + 1); if (e < 0) return undefined; text += line.slice(i, e); i = e; subst = true; continue; }
       if (c === "\\") { if (i + 1 >= n) return undefined; text += line[i + 1]; i += 2; quoted = true; continue; }
       if (c === "'") { const e = line.indexOf("'", i + 1); if (e < 0) return undefined; text += line.slice(i + 1, e); i = e + 1; quoted = true; continue; }
       if (c === '"') {
         let j = i + 1, t = "";
         while (j < n && line[j] !== '"') {
           if (line[j] === "\\" && j + 1 < n) { t += line[j + 1]; j += 2; continue; }
-          if (line[j] === "`" || (line[j] === "$" && line[j + 1] === "(")) return undefined;
+          if (line[j] === "`") { const e = backtick(j); if (e < 0) return undefined; t += line.slice(j, e); j = e; subst = true; continue; }
+          if (line[j] === "$" && line[j + 1] === "(") { const e = closeParen(j + 1); if (e < 0) return undefined; t += line.slice(j, e); j = e; subst = true; continue; }
           t += line[j]; j++;
         }
         if (j >= n) return undefined;
@@ -218,21 +311,23 @@ export function tokens(line: string): Tok[] | undefined {
       }
       text += c; i++;
     }
-    return i > start ? { raw: line.slice(start, i), text, quoted } : undefined;
+    return i > start ? { raw: line.slice(start, i), text, quoted, ...(subst ? { subst: true as const } : {}) } : undefined;
   }
 }
 
 // `depth`: how many `( )` groups it is in (a `cd` there does not outlast the group).
-type Simple = { words: Word[]; redirs: { redir: string; target?: Word }[]; sep: string; depth: number };
+// `cut`: the line was not read past this command's start, so what it is is not known.
+type Simple = { words: Word[]; redirs: { redir: string; target?: Word }[]; sep: string; depth: number; cut?: true };
 // The simple commands of a line, each with the operator that follows it; the
 // group marks `(` `)` `{` `}` are left out (where their output goes is not what runs).
-function simples(toks: Tok[]): Simple[] | undefined {
+function simples(toks: Tok[]): Simple[] {
   const out: Simple[] = [];
   let depth = 0;
   let cur: Simple = { words: [], redirs: [], sep: "", depth };
   const close = (sep: string) => { if (cur.words.length || cur.redirs.length) { cur.sep = sep; out.push(cur); } else if (out.length && sep) out.at(-1)!.sep = out.at(-1)!.sep === "|" ? "|" : sep; cur = { words: [], redirs: [], sep: "", depth }; };
   for (const t of toks) {
     if ("op" in t) {
+      if (t.op === "?") { cur.cut = true; out.push(cur); return out.filter((s) => s.words.length || s.cut); }
       if (t.op === "(") { close(""); depth++; cur.depth = depth; continue; }
       if (t.op === ")") { close(""); depth = Math.max(0, depth - 1); cur.depth = depth; continue; }
       close(t.op);
@@ -248,8 +343,63 @@ function simples(toks: Tok[]): Simple[] | undefined {
 }
 
 const ASSIGN = /^[A-Za-z_]\w*=/;
+// After a check an answer stands for: commands that read what it left.
 const READERS = new Set(["tail", "head", "cat", "grep", "wc", "ls", "echo", "printf", "true", ":", "date"]);
-const FILTERS = new Set(["tail", "head"]);
+// What its output may go through in its pipe: commands that read their input and write nothing of the
+// tree (its status is still the pipe's first). `sed` only without `-i`.
+const FILTERS = new Set(["tail", "head", "grep", "egrep", "fgrep", "tee", "cut", "wc", "sort", "uniq", "cat", "tr", "sed"]);
+// Commands that read and change no file (their output sent outside the repository), and waits of any
+// kind. A check after them is recorded, never answered (an answer would not show what they print).
+const LOOKS = new Set(["tail", "head", "cat", "grep", "egrep", "fgrep", "rg", "wc", "ls", "echo", "printf", "true", ":", "date", "pwd", "test", "[", "which", "type", "stat", "file", "du", "df", "uptime", "nproc", "free", "sleep", "waitfor", "jq", "diff", "cmp", "sha256sum", "md5sum", "basename", "dirname", "realpath", "readlink", "cut", "sort", "uniq", "tr", "column", "nl"]);
+const GIT_LOOKS = new Set(["log", "status", "show", "diff", "rev-parse", "describe", "ls-files", "blame", "cat-file", "branch", "rev-list", "merge-base", "shortlog", "grep"]);
+// What the reading stops at: commands that change the shell itself in ways not followed here (its
+// folder, its variables), and the shell's own words for control flow (a loop runs its body again).
+const STOPS = new Set(["source", ".", "eval", "exec", "pushd", "popd", "read", "mapfile", "readarray", "declare", "typeset", "local", "readonly", "alias", "unset", "shopt", "trap", "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac", "select", "function", "!", "[[", "((", "coproc", "time"]);
+// `sed -n` and the like: `-i` writes the file it reads.
+const inPlace = (words: string[]) => words.slice(1).some((w) => /^-[a-zA-Z]*i/.test(w) || w.startsWith("--in-place"));
+function looks(words: string[]): boolean {
+  const head = words[0] ?? "";
+  if (head === "sed") return !inPlace(words);
+  if (head === "find") return !words.some((w) => /^-(delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(w));
+  if (head === "git") {
+    let k = 1;
+    while (k < words.length && words[k]!.startsWith("-")) k += words[k] === "-C" || words[k] === "-c" ? 2 : 1;
+    const sub = words[k];
+    if (!sub || !GIT_LOOKS.has(sub)) return false;
+    // (`git branch NAME` makes one, `git diff --output=F` writes one: only their reading forms.)
+    if (sub === "branch" && words.slice(k + 1).some((w) => !w.startsWith("-") || /^-(d|D|m|M|c|C|f)$|^--(delete|move|copy|force|set-upstream|unset-upstream|edit-description)/.test(w))) return false;
+    return !words.some((w) => w.startsWith("--output"));
+  }
+  return LOOKS.has(head);
+}
+
+// Wrappers that start the check and do not change what it finds: `timeout`, `nice`, `ionice`.
+// The words one takes from `k`, or undefined when none starts there. `timeout`'s own statuses say
+// the check was stopped (src/checks/runs.ts).
+function wrapper(words: string[], k: number): { take: number; timeout: boolean } | undefined {
+  const w = words[k];
+  let j = k + 1;
+  if (w === "timeout") {
+    while (j < words.length && words[j]!.startsWith("-")) {
+      const o = words[j]!;
+      if (o === "-s" || o === "-k" || o === "--signal" || o === "--kill-after") j += 2;
+      else if (/^(--signal=|--kill-after=|--foreground$|--preserve-status$|-v$|--verbose$|-s\w|-k\d)/.test(o)) j++;
+      else return undefined;
+    }
+    if (!/^\d+(\.\d+)?[smhd]?$/.test(words[j] ?? "")) return undefined;
+    return { take: j + 1 - k, timeout: true };
+  }
+  if (w === "nice") {
+    if (words[j] === "-n") j += 2;
+    else if (/^(-n-?\d+|-\d+|--adjustment=-?\d+)$/.test(words[j] ?? "")) j++;
+    return { take: j - k, timeout: false };
+  }
+  if (w === "ionice") {
+    while (/^-[cnpPu]$/.test(words[j] ?? "") || /^-[cn]\d+$|^-t$/.test(words[j] ?? "")) j += /^-[cnpPu]$/.test(words[j]!) ? 2 : 1;
+    return { take: j - k, timeout: false };
+  }
+  return undefined;
+}
 
 export type Where = {
   cwd: string;                                  // the folder the command starts in (absolute)
@@ -260,7 +410,11 @@ export type Match = {
   check: Check;
   command: string;   // what the check run is known by: the check's command and the words added to it
   dir: string;       // the folder it ran in, from the top (absolute when it is outside the repository)
-  exact: boolean;    // its words hold no `$` that is not known here: an earlier pass of it can answer it
+  exact: boolean;    // its words hold no pattern (`*`, `?`, `[`) the shell expands: an earlier pass of it can answer it
+  answers: boolean;  // the command stands for the check as a whole (see the head of this file): an answer may replace it
+  // When the tree it ran on is taken: before the command runs (nothing before the check changes a file),
+  // or when it ended (something before it may have, and nothing from the check on does).
+  treeAt: "start" | "end";
   // A check of a commit: `rev` is its last argument when that may name one (it does not follow an
   // option), which the caller resolves; `named` is what the run is known by when it names none.
   tree: { kind: "work"; folder: string } | { kind: "folder"; folder: string } | { kind: "commit"; rev?: string; named?: string };
@@ -268,79 +422,137 @@ export type Match = {
   start: string;     // the check's simple command as the shell reports it (startText)
   filters: number;   // commands its output goes through after it in its pipe (its status is the pipe's first)
   alone: boolean;    // nothing runs before or after it: the command's own status is the check's (with no filter)
+  timeout?: true;    // started by `timeout`: its statuses for a time limit say the check was stopped
+  nth?: number;      // how many simple commands before it read as the same words (the shell reports each)
 };
 
 // The words of a simple command as the shell reports it running ($BASH_COMMAND):
 // its assignments and redirections left out, one space between words.
 export function startText(command: string): string | undefined {
-  const t = tokens(command);
-  if (!t) return undefined;
-  const s = simples(t)?.[0];
-  if (!s) return undefined;
-  let k = 0;
-  while (k < s.words.length && ASSIGN.test(s.words[k]!.raw)) k++;
-  return s.words.slice(k).map((w) => w.raw).join(" ");
+  const s = simples(tokens(command))[0];
+  if (!s || s.cut) return undefined;
+  return s.words.slice(countAssign(s)).map((w) => w.raw).join(" ");
+}
+const rawStart = (s: Simple) => s.words.slice(countAssign(s)).map((w) => w.raw).join(" ");
+const nthOf = (cmds: Simple[], i: number) => cmds.slice(0, i).filter((c) => rawStart(c) === rawStart(cmds[i]!)).length;
+const countAssign = (s: Simple) => { let k = 0; while (k < s.words.length && ASSIGN.test(s.words[k]!.raw)) k++; return k; };
+
+// The first check `command` runs, or nothing.
+export function matchCommand(command: string, named: Pick<Named, "checks" | "wait" | "env">, where: Where): Match | undefined {
+  return matchAll(command, named, where)[0];
 }
 
-// Which check `command` runs, or nothing.
-export function matchCommand(command: string, named: Pick<Named, "checks" | "wait" | "env">, where: Where): Match | undefined {
-  if (!named.checks.length) return;
+// Every check `command` runs, in order (see the head of this file).
+export function matchAll(command: string, named: Pick<Named, "checks" | "wait" | "env">, where: Where): Match[] {
+  if (!named.checks.length) return [];
   const toks = tokens(command);
-  if (!toks || toks.some((t) => "op" in t && (t.op === "||" || t.op === "&"))) return;
+  // An answer stands for the whole command: nothing in the background, no fallback, all of it read.
+  const plain = !toks.some((t) => "op" in t && (t.op === "||" || t.op === "&" || t.op === "?"));
   const cmds = simples(toks);
-  if (!cmds?.length) return;
   const vars = new Map<string, string | undefined>([["HOME", where.home], ["PWD", where.cwd]]);
   // What the command exports for what it runs: part of what the check run is known by (unless the repository
   // says the variable does not change a result). Undefined value: not known here.
   const exported = new Map<string, string | undefined>();
   let allExport = false;
-  let cwd = where.cwd, kept = where.cwd;
-  // `$NAME` and `${NAME}` put in where they are known; `~` at a word's start is the home folder.
-  const expand = (w: Word): string => {
-    if (w.raw.startsWith("'")) return w.text;
+  let cwd = where.cwd;
+  // The folder at each group depth: a `cd` inside `( )` does not outlast it.
+  const at: string[] = [where.cwd];
+  let depth = 0;
+  // `$NAME` and `${NAME}` put in where they are known; `~` at a word's start (and after an assignment's
+  // `=`) is the home folder. `known`: nothing of the shell's is left in it that is not known here.
+  const expand = (w: Word): { text: string; known: boolean } => {
+    if (w.subst) return { text: w.text, known: false };
+    if (/^'[^']*'$/.test(w.raw)) return { text: w.text, known: true };
     let s = w.raw.startsWith("~/") || w.raw === "~" ? where.home + w.text.slice(1) : w.text;
-    s = s.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (m, v: string) => (v === "PWD" ? cwd : vars.get(v) ?? m));
-    return s;
+    if (ASSIGN.test(w.raw)) s = s.replace(/^([A-Za-z_]\w*=)~(?=\/|$)/, `$1${where.home}`);
+    let known = true;
+    s = s.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (m, a?: string, b?: string) => {
+      const v = (a ?? b)!;
+      const val = v === "PWD" ? cwd : vars.get(v);
+      if (val === undefined) { known = false; return m; }
+      return val;
+    });
+    // (`$?`, `$1`, `${X:-y}` and the like: the shell's, not known here. A `$` at a word's end is a `$`.)
+    if (/\$(?:[A-Za-z_{(0-9?#@*!$-])/.test(s)) known = false;
+    return { text: s, known };
   };
   // (As bash's cd reads it: `..` takes off the last part of the path as written.)
   const resolve = (p: string) => normalize(p.startsWith("/") ? p : `${cwd}/${p}`);
+  const ofRepo = (file: string) => { const f = resolve(file); return where.rel(f.slice(0, f.lastIndexOf("/")) || "/") !== undefined; };
   const runWords = (c: Check) => c.run.split(" ").map((r) => (r === "~" || r.startsWith("~/") ? where.home + r.slice(1) : r.replace(/^\$HOME(?=\/|$)/, where.home)));
   const isWait = (words: string[]) => named.wait.some((p) => { const pw = p.split(" "); return pw.every((x, i) => words[i] === x); });
-  for (let i = 0; i < cmds.length; i++) {
+  const head0 = (s: Simple | undefined) => s?.words[0]?.text ?? "";
+  // Output sent to a file of the repository, or to one not known here: a check may read it.
+  const writesInside = (s: Simple) => s.redirs.some((r) => {
+    if (!r.target || r.redir.startsWith("<")) return false;
+    const t = expand(r.target);
+    if (!t.known) return true;
+    if (t.text === "/dev/null" || t.text === "/dev/stdout" || t.text === "/dev/stderr") return false;
+    return ofRepo(t.text);
+  }) || (head0(s) === "tee" && s.words.slice(1).some((w) => { const t = expand(w); return !t.text.startsWith("-") && (!t.known || ofRepo(t.text)); }));
+  // What each part is: a check run (`match`), and whether it changes nothing a check reads (`still`).
+  // `bgBefore`: a part before it ran in the background (it may still be at work). `quiet`: every part
+  // before it is of the kinds an answer stands for (a cd, an assignment, a named wait).
+  type Part = { i: number; end: number; still: boolean; match?: Omit<Match, "treeAt" | "answers">; post?: boolean; bgBefore: boolean; quiet: boolean };
+  const parts: Part[] = [];
+  let bg = false;
+  let quiet = true;
+  let i = 0;
+  for (; i < cmds.length; i++) {
     const s = cmds[i]!;
+    if (s.cut) break; // nothing is read past here
+    // Back out of a group: the folder it was entered from.
+    if (s.depth < depth) cwd = at[s.depth] ?? cwd;
+    for (let d = depth + 1; d <= s.depth; d++) at[d] = cwd;
+    depth = s.depth;
     const sepBefore = i ? cmds[i - 1]!.sep : "";
-    if (sepBefore === "|") return; // a pipe into something before the check
-    const words = s.words.map(expand);
-    // Is it the check?
+    const ex = s.words.map(expand);
+    const words = ex.map((e) => e.text);
+    const part = (still: boolean, end = i, extra: Partial<Part> = {}) => { parts.push({ i, end, still, bgBefore: bg, quiet, ...extra }); if (cmds[end]!.sep === "&") bg = true; };
+    // Is it a check? Its own assignments, then the wrappers that only start it.
     let k = 0;
     const lead: string[] = [];
-    while (k < words.length && ASSIGN.test(s.words[k]!.raw)) { const name = s.words[k]!.raw.split("=")[0]!; if (!named.env.includes(name)) lead.push(words[k]!); k++; }
+    let leadKnown = true;
+    while (k < words.length && ASSIGN.test(s.words[k]!.raw)) {
+      const name = s.words[k]!.raw.split("=")[0]!;
+      if (!named.env.includes(name)) { lead.push(words[k]!); leadKnown &&= ex[k]!.known; }
+      k++;
+    }
+    let timeout = false;
+    for (let w = wrapper(words, k); w; w = wrapper(words, k)) { k += w.take; timeout ||= w.timeout; }
     const body = words.slice(k);
     const rel = where.rel(cwd);
-    for (const check of named.checks) {
-      const rw = runWords(check);
-      if (!rw.every((x, j) => body[j] === x)) continue;
-      if (body.length > rw.length && !check.args) continue;
-      if (check.dir !== "*" && (rel === undefined || rel !== check.dir)) continue;
-      if (s.redirs.some((r) => r.redir.includes("<") && r.redir !== "</dev/null")) return;
-      // What follows: filters in its pipe, then commands that read.
-      let filters = 0, j = i;
-      while (cmds[j]!.sep === "|") { const f = cmds[j + 1]; if (!f || !FILTERS.has(f.words[0]?.text ?? "")) return; filters++; j++; }
-      for (let r = j + 1; r < cmds.length; r++) {
-        if (cmds[r - 1]!.sep === "|" ? !FILTERS.has(cmds[r]!.words[0]?.text ?? "") && !READERS.has(cmds[r]!.words[0]?.text ?? "") : !READERS.has(cmds[r]!.words[0]?.text ?? "")) return;
+    const check = named.checks.find((c) => {
+      const rw = runWords(c);
+      return rw.every((x, j) => body[j] === x) && (body.length === rw.length || c.args) && (c.dir === "*" || (rel !== undefined && rel === c.dir));
+    });
+    if (check) {
+      // Its pipe: the filters its output goes through.
+      let filters = 0, j = i, piped = true;
+      while (cmds[j]!.sep === "|") {
+        const f = cmds[j + 1];
+        if (!f || f.cut || !FILTERS.has(head0(f)) || (head0(f) === "sed" && inPlace(f.words.map((x) => x.text)))) { piped = false; break; }
+        filters++; j++;
       }
+      const still = !cmds.slice(i, j + 1).some(writesInside);
+      // Not a run of the check as named (it still only reads): its input from another command or a
+      // file, its output read by a command that is not a filter, a word the ledger cannot know (a `$`
+      // the command does not set, a substitution), or the check in the background.
+      const counted = sepBefore !== "|" && !s.redirs.some((r) => r.redir === "<" || r.redir === "<<" || r.redir === "<<<")
+        && leadKnown && ex.slice(k).every((e) => e.known) && ![...exported].some(([n, v]) => v === undefined && !named.env.includes(n))
+        && piped && cmds[j]!.sep !== "&";
       // Its arguments: the dropped options out, the tree's argument taken.
+      const rw = runWords(check);
       let args = body.slice(rw.length);
       for (let a = 0; a < args.length; a++) {
         const d = check.drop.find((o) => args[a] === o || args[a]!.startsWith(`${o}=`));
         if (d) { args.splice(a, args[a] === d ? 2 : 1); a--; }
       }
-      let tree: Match["tree"] = { kind: "work", folder: cwd };
+      let tree: Match["tree"] | undefined = { kind: "work", folder: cwd };
       if (check.tree.kind === "folder") {
         const f = args[check.tree.arg - 1];
-        if (!f || f.startsWith("-")) return;
-        tree = { kind: "folder", folder: resolve(f) };
-        args.splice(check.tree.arg - 1, 1);
+        if (!f || f.startsWith("-")) tree = undefined;
+        else { tree = { kind: "folder", folder: resolve(f) }; args.splice(check.tree.arg - 1, 1); }
       } else if (check.tree.kind === "commit") {
         const last = args.at(-1);
         const before = args.at(-2);
@@ -348,49 +560,96 @@ export function matchCommand(command: string, named: Pick<Named, "checks" | "wai
         if (last && !last.startsWith("-") && !before?.startsWith("-")) { tree = { kind: "commit", rev: last }; args = args.slice(0, -1); }
         else tree = { kind: "commit" };
       }
-      const env = [...exported].filter(([n]) => !named.env.includes(n)).sort(([a], [b]) => (a < b ? -1 : 1));
-      const known = [...env.map(([n, v]) => `${n}=${v ?? "$?"}`), ...lead, ...rw, ...args].join(" ");
-      if (tree.kind === "commit" && tree.rev) tree.named = [...env.map(([n, v]) => `${n}=${v ?? "$?"}`), ...lead, ...rw, ...args, tree.rev].join(" ");
-      // (A check that runs anywhere is known by the folder it ran in.)
-      const dir = rel ?? cwd;
-      // Where the shell is left: an answer stands for the command, and the `cd`s before the check
-      // outside a group hold after it (nothing after a check moves: only readers follow it).
-      const shellCwd = s.depth === 0 ? cwd : kept;
-      return {
-        check, command: known, dir, exact: !/[$*?[]/.test(known) && env.every(([, v]) => v !== undefined),
-        tree, start: s.words.slice(k).map((w) => w.raw).join(" "), filters, alone: i === 0 && j === cmds.length - 1, shellCwd,
-      };
+      if (!counted || !tree) { part(still, piped ? j : i); quiet = false; i = piped ? j : i; continue; }
+      // What an answer would stand for: commands that read after it, nothing else.
+      let post = true;
+      for (let r = j + 1; r < cmds.length; r++) {
+        const c = cmds[r]!;
+        if (c.cut || !(cmds[r - 1]!.sep === "|" ? FILTERS.has(head0(c)) || READERS.has(head0(c)) : READERS.has(head0(c)))) { post = false; break; }
+      }
+      const env = [...exported].filter(([n]) => !named.env.includes(n)).sort(([a], [b]) => (a < b ? -1 : 1)).map(([n, v]) => `${n}=${v}`);
+      const known = [...env, ...lead, ...rw, ...args].join(" ");
+      if (tree.kind === "commit" && tree.rev) tree.named = [...env, ...lead, ...rw, ...args, tree.rev].join(" ");
+      part(still, j, {
+        post,
+        match: {
+          check, command: known, dir: rel ?? cwd, exact: !/[*?[]/.test(known), tree, start: s.words.slice(countAssign(s)).map((w) => w.raw).join(" "),
+          // Where the shell is left: an answer stands for the command, and the `cd`s before the check
+          // outside a group hold after it (nothing after a check an answer stands for moves: only readers follow it).
+          filters, alone: i === 0 && j === cmds.length - 1, shellCwd: s.depth === 0 ? cwd : at[0]!, ...(timeout ? { timeout: true as const } : {}),
+          ...(nthOf(cmds, i) ? { nth: nthOf(cmds, i) } : {}),
+        },
+      });
+      // (A check reads the tree: one after it reads the same tree, and is not answered.)
+      quiet = false;
+      i = j;
+      continue;
     }
-    // Else it is a part allowed before a check, or nothing is a check.
-    const head = words[0]!;
+    // Else a part that changes nothing a check reads, one that may, or one the reading cannot follow.
+    if (sepBefore === "|") quiet = false;
+    const head = words[0] ?? "";
+    if (!head || STOPS.has(head)) break;
     if (head === "cd") {
-      if (words.length !== 2) return;
-      const to = words[1]!;
-      if (to.includes("$")) return;
-      cwd = resolve(to).replace(/(?<=.)\/$/, "");
-      if (s.depth === 0) kept = cwd;
+      if (words.length !== 2 || !ex[1]!.known || s.sep === "|" || sepBefore === "|") break;
+      cwd = resolve(words[1]!).replace(/(?<=.)\/$/, "");
+      at[s.depth] = cwd;
+      part(true);
       continue;
     }
     const exporting = head === "export";
-    if (exporting && words.slice(1).some((w) => w.startsWith("-"))) return;
+    if (exporting && words.slice(1).some((w) => w.startsWith("-"))) break;
     if (words.every((_, x) => ASSIGN.test(s.words[x]!.raw)) || (exporting && words.slice(1).every((w, x) => ASSIGN.test(s.words[x + 1]!.raw) || /^[A-Za-z_]\w*$/.test(w)))) {
       for (const [x, w] of words.entries()) {
         if (exporting && x === 0) continue;
         if (!ASSIGN.test(s.words[x]!.raw)) { exported.set(w, vars.has(w) ? vars.get(w) : undefined); continue; } // `export NAME`
-        const at = w.indexOf("=");
-        const name = w.slice(0, at), value = w.slice(at + 1);
-        vars.set(name, value.includes("$") ? undefined : value);
+        const eq = w.indexOf("=");
+        const name = w.slice(0, eq), value = w.slice(eq + 1);
+        vars.set(name, ex[x]!.known ? value : undefined);
         if (exporting || allExport || exported.has(name)) exported.set(name, vars.get(name));
       }
+      part(!s.words.some((w) => w.subst));
       continue;
     }
     // `set -a`: every assignment after it is exported.
     if (head === "set" && words.slice(1).some((w) => /^-[a-zA-Z]*a/.test(w) || w === "allexport")) allExport = true;
-    if ((head === "mkdir" && words[1] === "-p") || head === "true" || head === ":" || (head === "set" && words.slice(1).every((w) => /^[-+][a-zA-Z]+$|^pipefail$/.test(w)))) continue;
-    if (isWait(words)) continue;
-    return;
+    if ((head === "mkdir" && words[1] === "-p") || head === "true" || head === ":" || (head === "set" && words.slice(1).every((w) => /^[-+][a-zA-Z]+$|^pipefail$/.test(w))) || isWait(words)) {
+      part(!writesInside(s) && !s.words.some((w) => w.subst));
+      continue;
+    }
+    quiet = false;
+    // A command whose words run another (a substitution) may change anything.
+    part(looks(words) && !writesInside(s) && !s.words.some((w) => w.subst));
   }
-  return undefined;
+  // The reading followed the command to its end.
+  const whole = i >= cmds.length;
+  // Each check run: on the tree as the command started when everything before it changes nothing, else
+  // on the tree as it ended when nothing from it on changes anything (and nothing before it is still at
+  // work in the background); else what it ran on is not known, and it is not counted.
+  const out: Match[] = [];
+  const first = parts.findIndex((q) => q.match);
+  for (const [x, p] of parts.entries()) {
+    if (!p.match) continue;
+    const before = parts.slice(0, x).every((q) => q.still);
+    const after = whole && !p.bgBefore && parts.slice(x).every((q) => q.still);
+    if (!before && !after) continue;
+    out.push({ ...p.match, treeAt: before ? "start" : "end", answers: plain && before && p.quiet && !!p.post && x === first });
+  }
+  return out;
+}
+
+// The folder a command's leading `cd`s take it to (the repository its checks are of), or `cwd`.
+export function firstFolder(command: string, cwd: string, home: string): string {
+  let at = cwd;
+  for (const s of simples(tokens(command))) {
+    if (s.cut || s.depth || s.words[0]?.text !== "cd" || s.words.length !== 2 || s.redirs.length) break;
+    const w = s.words[1]!;
+    if (w.subst) break;
+    const to = (w.raw.startsWith("~/") || w.raw === "~" ? home + w.text.slice(1) : w.text).replace(/^\$HOME(?=\/|$)/, home);
+    if (to.includes("$")) break;
+    at = normalize(to.startsWith("/") ? to : `${at}/${to}`).replace(/(?<=.)\/$/, "");
+    if (s.sep !== "&&" && s.sep !== ";") break;
+  }
+  return at;
 }
 
 // --- what the shell reports of a check's run (see the trace in src/tools/shell.ts)
@@ -412,9 +671,10 @@ export function parseTrace(text: string): TraceLine[] {
 // end of a group it ended, or of the whole command). Undefined: it never
 // started (a wait before it gave up). `exit` null: it started and no status
 // was seen (it was stopped).
-export function checkStatus(lines: readonly TraceLine[], start: string, filters: number): { exit: number | null } | undefined {
+export function checkStatus(lines: readonly TraceLine[], start: string, filters: number, nth = 0): { exit: number | null } | undefined {
   const norm = (c: string) => startText(c) ?? squash(c);
-  const i = lines.findIndex((l) => "command" in l && norm(l.command) === start);
+  let seen = 0;
+  const i = lines.findIndex((l) => "command" in l && norm(l.command) === start && seen++ === nth);
   if (i < 0) return undefined;
   const at = lines[i] as Extract<TraceLine, { pid: string }>;
   let skip = filters;
@@ -428,3 +688,7 @@ export function checkStatus(lines: readonly TraceLine[], start: string, filters:
   return { exit: null };
 }
 const first = (s: string) => { const n = Number(s.trim().split(/\s+/)[0]); return Number.isInteger(n) ? n : null; };
+
+// What `timeout` leaves when it stopped the check (124, or 128 + the signal with --preserve-status or
+// after -k) or could not start it (125): the check found nothing.
+export const stoppedByTimeout = (exit: number | null) => exit === 124 || exit === 125 || (exit !== null && exit >= 128);
