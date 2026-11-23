@@ -35,8 +35,8 @@
   }, 1000);
   // The paste keys as the app hands them to the page (the Qt engine's window).
   addEventListener("keel-shell", (e) => { if (e.detail && e.detail.paste) say("PASTE-KEY handed to the page"); });
-  // F8: the artifact's frame is shown anew (for a case that is run more than once).
-  addEventListener("keydown", (e) => { if (e.key === "F8") { if (frame) frame.remove(); shown = false; } }, true);
+  // F4: the artifact's frame is shown anew (each run of the paste race has a frame of its own).
+  addEventListener("keydown", (e) => { if (e.key === "F4") { if (frame) frame.remove(); shown = false; } }, true);
   // The review's loop case: on a session titled for it, a content frame (as an artifact's, or as
   // the preview's) whose script asks for the keyboard as fast as it can. What each side got is
   // said twice a second.

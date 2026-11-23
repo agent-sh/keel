@@ -7,7 +7,12 @@
 <h3>artifact</h3>
 <pre id="o"></pre>
 <textarea id="t"></textarea>
-<a id="out" href="https://example.com/from-a-frame">out</a>
+<!-- Links a script clicks with no press of the owner's: one into a frame of this document's own
+     (so this document stays, and what it does later still runs), one at the whole window. The
+     addresses are of no host: nothing is fetched. -->
+<iframe name="kid" hidden></iframe>
+<a id="out" href="https://example.invalid/from-a-frame" target="kid">out</a>
+<a id="top" href="https://example.invalid/from-a-frame-to-the-top" target="_top">top</a>
 <script>
 const o = document.getElementById("o");
 // The engine's channel to the app, whichever engine it is: WebKit's message handlers, or
@@ -22,7 +27,7 @@ const post = (m) => { try { if (handlers.keel) handlers.keel.postMessage(JSON.st
 say("handler=" + !!(handlers.keel || channel) + " keelShell=" + typeof window.keelShell);
 for (let i = 0; i < 3; i++) post({ t: "window", path: "/settings" });
 post({ t: "look", dark: false, bg: "#ff0000", panel: "#ff0000", fg: "#ff0000", muted: "#ff0000", line: "#ff0000", need: "#ff0000", scale: 3 });
-post({ t: "external", url: "https://example.com/?from=artifact" });
+post({ t: "external", url: "https://example.invalid/?from=artifact" });
 post({ t: "start" });
 post({ t: "paste" });
 post({ t: "window", path: "/settings", key: "" });
@@ -60,8 +65,12 @@ lib.src = "qrc:/qtwebchannel/qwebchannel.js";
 lib.onload = () => say("ENGINE-FILE loaded");
 lib.onerror = () => say("ENGINE-FILE refused");
 document.head.append(lib);
-// A click no owner made.
+// Clicks no owner made: neither moves the window, and neither reaches the browser. (This
+// document must outlive them: its click handler above is the race the check runs later. A
+// link that moved this very frame took the document with it, and the race then ran against
+// nothing.)
 document.getElementById("out").click();
-try { window.open("https://example.com/opened-by-a-frame"); } catch (e) {}
+document.getElementById("top").click();
+try { window.open("https://example.invalid/opened-by-a-frame"); } catch (e) {}
 setTimeout(() => say("DONE"), 1500);
 </script>

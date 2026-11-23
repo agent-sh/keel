@@ -299,6 +299,7 @@ check "the artifact's frame ran its script" "wait_for 30 \"said 'ARTIFACT DONE' 
 # (WebKit's channel is open to every frame; Qt's does not reach a frame at all.)
 reach=true; [ "$ENGINE" = qt ] && reach=false
 check "it has the engine's channel ($reach under $ENGINE) but not the app's object, and none of its messages was acted on" "grep -aq '^PROBE ARTIFACT handler=$reach keelShell=undefined' '$D/shell.out' && [ \"\$(grep -c '\"window\":\"session\"' '$D/shell.jsonl' || true)\" = \"$sessions_before\" ] && [ \"\$(windows)\" = 1 ] && ! grep -q '\"what\":\"external\"' '$D/shell.jsonl' && ! grep -qi 'ff0000' '$D/shell/shell.json' && [ \"\$(logged start)\" = 0 ]"
+check "the frame's own clicks on links, with no press of the owner's, did not move the window" "sleep 1; said 'AT ' | grep -q \"^PROBE AT $URL/s/$art \""
 check "it read nothing from the clipboard" "grep -aq '^PROBE ARTIFACT CLIP exec=' '$D/shell.out' && ! grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q 'clipboard-secret' && ! grep -aq '^PROBE ARTIFACT CLIP event=' '$D/shell.out' && grep -aq '^PROBE ARTIFACT CLIP read refused' '$D/shell.out'"
 [ -n "$SECRET" ] || echo "# note: no wl-copy for this backend, so the clipboard held no secret; the refusal itself was still checked"
 
@@ -312,22 +313,25 @@ rows = b"".join(b"\x00" + bytes([18, 128, 153]) * w for _ in range(h))
 open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))' "$D/paste.png"
   (wl-copy -t image/png < "$D/paste.png" > /dev/null 2>&1 &); sleep 1
   # inside the frame (it sits in the lower right corner of the page), then the message box, then the paste key.
-  # KEEL_E2E_5B2_TIMES: how often, each time with the frame shown anew (the race is one of timing).
-  times=${KEEL_E2E_5B2_TIMES:-1}; attached=0
+  # KEEL_E2E_5B2_TIMES: how often (the race is one of timing). Each time the frame is shown
+  # anew and has run its script, and it must have seen the owner's click: a race against a frame
+  # that is gone, or that never saw the click, proves nothing.
+  times=${KEEL_E2E_5B2_TIMES:-1}; attached=0; clicked=0
+  count() { grep -ac "^PROBE $1" "$D/shell.out" || true; }
   for i in $(seq 1 "$times"); do
-    if [ "$i" -gt 1 ]; then
-      shown=$(grep -ac '^PROBE FRAME shown' "$D/shell.out"); done_before=$(grep -ac '^PROBE ARTIFACT DONE' "$D/shell.out")
-      $A key --id "$WS" F8 > /dev/null 2>&1
-      wait_for 20 "[ \"\$(grep -ac '^PROBE FRAME shown' '$D/shell.out')\" -gt $shown ] && [ \"\$(grep -ac '^PROBE ARTIFACT DONE' '$D/shell.out')\" -gt $done_before ]" || true
-      sleep 1
-    fi
+    shown=$(count 'FRAME shown'); done_before=$(count 'ARTIFACT DONE'); clicks=$(count 'ARTIFACT CLICKED')
+    $A key --id "$WS" F4 > /dev/null 2>&1
+    wait_for 20 "[ \"\$(count 'FRAME shown')\" -gt $shown ] && [ \"\$(count 'ARTIFACT DONE')\" -gt $done_before ]" || true
+    sleep 1
     $A click --id "$WS" $((X + W - 16 - 176)) $((Y + H - 16 - 96)) > /dev/null 2>&1; sleep 0.7
     $A click --id "$WS" $((X + 1120)) $((Y + 953)) > /dev/null 2>&1; sleep 0.4
     $A key --id "$WS" ctrl+v > /dev/null 2>&1
     if wait_for 10 "said AT | grep -q 'imgs=$i'"; then attached=$((attached + 1)); fi
     sleep 4
+    [ "$(count 'ARTIFACT CLICKED')" -gt "$clicks" ] && clicked=$((clicked + 1))
   done
-  [ "$times" = 1 ] || echo "# the race of case 5b2, $times times: the picture was attached $attached times, and landed in the frame $(grep -ac '^PROBE ARTIFACT PASTE landed' "$D/shell.out") times"
+  [ "$times" = 1 ] || echo "# the race of case 5b2, $times times: the frame saw the owner's click $clicked times, the picture was attached $attached times, and landed in the frame $(count 'ARTIFACT PASTE landed') times"
+  check "the frame was there for the race: it saw the owner's click each time" "[ $clicked = $times ]"
   check "the owner's paste of a copied picture attaches it" "[ $attached = $times ]"
   # (The Qt engine would hand the clipboard to whatever frame has the keyboard: there the app takes the paste keys and the page decides.)
   if [ "$ENGINE" = qt ]; then check "each paste key was the app's to hand to the page, not the engine's" "[ \"\$(grep -ac '^PROBE PASTE-KEY handed' '$D/shell.out')\" -ge $times ]"; fi
