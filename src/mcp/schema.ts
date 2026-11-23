@@ -22,7 +22,7 @@ const PROBLEMS_MAX = 5;
 const DEPTH_MAX = 64;
 // Schema nodes one check visits at most: a valid result of tens of thousands of values is checked in milliseconds.
 const VISITS_MAX = 10_000;
-const PATTERN_INPUT_MAX = 10_000;
+const PATTERN_INPUT_MAX = 2_000;
 
 class OverBudget extends Error {}
 type Run = { visits: number; active: Map<string, Set<unknown>> };
@@ -51,6 +51,9 @@ const shown = (v: unknown) => {
 export function slowPattern(p: string): boolean {
   if (/\\[1-9]|\\k</.test(p)) return true;
   const stack: { quantified: boolean; alternates: boolean }[] = [];
+  // Two unbounded quantifiers outside a class (.*.*x, a*a*b) already make a failing match polynomial
+  // in its input (each one more is one more power): only a pattern with at most one is run.
+  let unbounded = 0;
   for (let i = 0; i < p.length; i++) {
     const c = p[i]!;
     if (c === "\\") { i++; continue; }
@@ -69,9 +72,10 @@ export function slowPattern(p: string): boolean {
       if (g?.quantified && stack.length) stack[stack.length - 1]!.quantified = true;
       continue;
     }
+    if (c === "+" || c === "*" || (c === "{" && /^\{\d+,\}/.test(p.slice(i)))) unbounded++;
     if (quantifier && stack.length && c !== "?") stack[stack.length - 1]!.quantified = true;
   }
-  return false;
+  return unbounded > 1;
 }
 
 function regex(p: unknown): RegExp | undefined {

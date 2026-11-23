@@ -88,3 +88,13 @@ test("a schema that loops, branches without end or holds a slow pattern is check
   expect(["(a+)+", "(a|aa)*", "(\\w+\\s?){2,}", "(x)\\1"].map(slowPattern)).toEqual([true, true, true, true]);
   expect(["^[a-z]+$", "^(ab)+$", "^\\d{3}-\\d{4}$", "[(+)]+"].map(slowPattern)).toEqual([false, false, false, false]);
 });
+
+// Polynomial patterns: each unbounded quantifier past the first is one more power of the input.
+test("a pattern with two unbounded quantifiers is not run, and a check with one stays fast on a long string", () => {
+  expect([".*.*.*.*x", "a*a*a*a*a*b", "(a*)(a*)(a*)b", ".+.+", "\\w*\\s+x"].map(slowPattern)).toEqual([true, true, true, true, true]);
+  expect(["^[a-z]+$", "^.*x$", "^a{2,5}b*$", "^[*+]+$", "\\*\\+.*"].map(slowPattern)).toEqual([false, false, false, false, false]);
+  const t = performance.now();
+  schemaCheck({ type: "array", items: { type: "string", pattern: ".*.*.*.*x" } }, ["a".repeat(1_500)]);
+  schemaCheck({ type: "array", items: { type: "string", pattern: "^.*x$" } }, Array.from({ length: 50 }, () => "a".repeat(1_900)));
+  expect(performance.now() - t).toBeLessThan(2_000);
+});
