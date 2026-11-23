@@ -13,7 +13,8 @@ import { shoot } from "./shots.ts";
 // its own daemons on a scratch state folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 // The folder a daemon's sessions work in: beside its state folder (a session's commands and tools write nothing into
-// Keel's own state: the gate refuses it without a card, in every mode).
+// Keel's own state: the gate refuses it without a card, in every mode). The pipes a held command reads are made
+// there too: a sandboxed command does not see Keel's own state folder, and its read would end at once.
 const ws = sessionsFolder;
 
 // `bin`: run that compiled binary instead of the source; `bind`: a fixed address
@@ -369,7 +370,7 @@ test("an owner session continues through restarts until its turn stops moving", 
       fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
     // The held tool reads a named pipe: it ends when something is written there
     // (or by itself: a command a crash cut outlives its daemon).
-    const gate = join(state, "release");
+    const gate = join(ws(state), "release");
     spawnSync("mkfifo", [gate]);
     const hold = { name: "Bash", input: { command: `timeout 90 cat ${gate} > /dev/null; echo released` } };
     const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Owner across restarts" });
@@ -436,7 +437,7 @@ test("a background agent is continued across restarts and its record matches wha
     };
     // The held tool reads a named pipe: it ends when something is written there
     // (or by itself: a command a crash cut outlives its daemon).
-    const gate = join(state, "release");
+    const gate = join(ws(state), "release");
     spawnSync("mkfifo", [gate]);
     const hold = { name: "Bash", input: { command: `timeout 90 cat ${gate} > /dev/null; echo released` } };
     const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Agent across restarts" });
@@ -529,7 +530,7 @@ test("a goal's verifier is continued across restarts and gives one verdict", asy
   made.push(state);
   mkdirSync(state, { recursive: true });
   const log = join(state, "requests.jsonl");
-  const pipe = join(state, "hold");
+  const pipe = join(ws(state), "hold");
   spawnSync("mkfifo", [pipe]);
   let d = await daemon(state, { KEEL_SCRIPTED_LOG: log });
   try {
@@ -607,7 +608,7 @@ test("a verifier stopped or gone while its cut turn waited for a slot is not con
 
     const goals: { id: string; child: string; pipe: string }[] = [];
     for (let i = 0; i < 6; i++) {
-      const pipe = join(state, `hold-${i}`);
+      const pipe = join(ws(state), `hold-${i}`);
       spawnSync("mkfifo", [pipe]);
       pipes.push(pipe);
       const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: `Goal ${i}` });
