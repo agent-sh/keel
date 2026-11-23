@@ -233,9 +233,27 @@ export function startJob(o: StartOpts): Job {
   // Ended jobs are kept for their output and status, the newest MAX_ENDED of
   // them: a long-running daemon does not hold every command it ever ran (the
   // logs stay on disk).
-  let ended = 0;
-  for (const j of [...jobs.values()].reverse()) if (!running(j) && ++ended > MAX_ENDED) jobs.delete(j.id);
+  trim();
   return job;
+}
+
+// Ended jobs past the newest MAX_ENDED go, except one that still has processes alive: its group, its
+// session, its cgroup, or (where no cgroup holds it) what carries its mark, which is read off the loop in one
+// pass for all of them. One trim at a time; a start while one reads asks again when it is done.
+let trimming = false, again = false;
+function trim() {
+  if (trimming) { again = true; return; }
+  let ended = 0;
+  const over = [...jobs.values()].reverse().filter((j) => !running(j) && ++ended > MAX_ENDED && !jobHasProcesses(j));
+  if (!over.length) return;
+  const loose = over.filter((j) => j.contain !== "cgroup");
+  trimming = true;
+  void (loose.length ? procfs.marks(loose.map(markOf)) : Promise.resolve(new Map<string, number[]>()))
+    .then((by) => {
+      const self = selfLine();
+      for (const j of over) if (!(by.get(markOf(j)) ?? []).some((pid) => !self.has(pid) && lives(pid))) jobs.delete(j.id);
+    }, () => {})
+    .finally(() => { trimming = false; if (again) { again = false; trim(); } });
 }
 
 // Where jobs' scopes go: the user manager's app.slice, when systemd --user
@@ -444,7 +462,8 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   }
   for (const e of ended.slice(MAX_ENDED)) counter = Math.max(counter, e.num);
   concealLater(unlisted);
-  for (const j of history.sort((a, b) => b.started - a.started).slice(0, MAX_ENDED)) jobs.set(j.id, j);
+  for (const j of history.sort((a, b) => b.started - a.started)) jobs.set(j.id, j);
+  trim();
   // One read of the process table for all of them, however many records an upgrade left without an end.
   if (terminals.length) { const rows = procTable(true); for (const j of terminals) j.swept = sweep(j, rows); }
   if (adopted.size) { watchAdopted(); watcher ??= setInterval(watchAdopted, 1000); }
@@ -667,7 +686,7 @@ export function writeJob(j: Job, chars: string): boolean {
 // so the read and the signal are back to back instead. Resolves with what is
 // still alive (empty when stopped); a job with something left keeps running.
 export async function stopJob(j: Job, reason = "was stopped"): Promise<number[]> {
-  if (!jobLive(j)) {
+  if (!jobLive(j) && !members(j).length && (j.contain === "cgroup" || !(await markedSoon(j)).length)) {
     // Nothing of it is left: a stop that was under way is over.
     if (j.stopping) { j.stopping = false; if (!j.pty) patchMeta(j.log, { stopping: undefined }); }
     return [];
@@ -934,6 +953,37 @@ function gone(j: Job) {
 }
 
 export const jobsOf = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId);
+// Every job this daemon holds: ended ones of the last MAX_ENDED, and older ones that still have processes.
+export const allJobs = () => [...jobs.values()];
+// The processes alive of a job, found by what the daemon holds it by: its cgroup, else its process group, its session
+// and the mark only its own processes carry (a process that clears its environment and leaves the session is found
+// by the cgroup alone). The daemon and what is above it are never in it. `name`: the process's own name.
+export type JobProcess = { pid: number; start: string; name: string };
+export async function jobProcesses(j: Job): Promise<JobProcess[]> {
+  return (await processesOf([j])).get(j.id) ?? [];
+}
+// The same for many jobs at once: one read of the process table, and one pass over the marks for the jobs no
+// cgroup holds (off the loop). Only jobs with something alive are in the answer.
+export async function processesOf(list: Job[]): Promise<Map<string, JobProcess[]>> {
+  const out = new Map<string, JobProcess[]>();
+  if (!list.length) return out;
+  const loose = list.filter((j) => j.contain !== "cgroup");
+  const by = loose.length ? await procfs.marks(loose.map(markOf)).catch(() => new Map<string, number[]>()) : new Map<string, number[]>();
+  const rows = procTable(true);
+  const self = selfLine();
+  for (const j of list) {
+    const seen = new Set<number>();
+    const ps: JobProcess[] = [];
+    const add = (pid: number, start: string) => { if (!seen.has(pid) && !self.has(pid)) { seen.add(pid); ps.push({ pid, start, name: procName(pid) ?? "?" }); } };
+    for (const m of members(j, { rows })) add(m.pid, m.start);
+    for (const pid of by.get(markOf(j)) ?? []) { const r = rows.get(pid) ?? rowOf(pid); if (!dead(r)) add(pid, r!.start); }
+    if (ps.length) out.set(j.id, ps);
+  }
+  return out;
+}
+// Whether anything of a job is alive now: its command, what a stop left, its cgroup, or (with no cgroup) its
+// process group or session after its command ended (a server it started with `&`).
+export const jobHasProcesses = (j: Job): boolean => jobLive(j) || members(j).length > 0;
 // The processes of each session's commands that still run, by what the daemon holds each command by: its cgroup
 // (the scope it was started in), else its process group and session, each with its start time checked (members).
 // Never by what a process says of itself: its environment is its own to set.

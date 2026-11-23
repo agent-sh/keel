@@ -43,6 +43,14 @@ let cache: { at: number; bySession: Map<string, PortInfo[]> } | undefined;
 // Ports each session's processes listen on. `roots`: the processes the daemon holds each session's commands by.
 export function sessionPorts(roots: Map<string, number[]> = sessionRoots()): Map<string, PortInfo[]> {
   if (cache && Date.now() - cache.at < OWNERSHIP_MS) return cache.bySession;
+  const bySession = portsOf(roots);
+  cache = { at: Date.now(), bySession };
+  return bySession;
+}
+
+// The ports the processes under each key listen on, and what they started, read now (no cache): `roots` may be
+// keyed by anything (a session, a command).
+export function portsOf(roots: Map<string, number[]>): Map<string, PortInfo[]> {
   const bySession = new Map<string, PortInfo[]>();
   const mine = (() => { try { return readlinkSync("/proc/self/ns/net"); } catch { return ""; } })();
   const tables = new Map<string, Map<string, number>>([[mine, new Map(listeners().map((l) => [l.inode, l.port]))]]);
@@ -99,11 +107,51 @@ export function sessionPorts(roots: Map<string, number[]> = sessionRoots()): Map
       }
     }
   }
-  cache = { at: Date.now(), bySession };
   return bySession;
 }
 
 export const forgetOwnership = () => void (cache = undefined);
+
+// How many open connections to `port` the processes `pids` hold whose other end is not held by `own` (by
+// default the same processes): a client of another process (the owner's browser, another session's command,
+// the portal) is using the server. A connection whose other end is in no table read here (another network
+// namespace, another machine) counts as another's.
+export function clientsOf(pids: number[], port: number, own: number[] = pids): number {
+  const socketsOf = (list: number[], first?: (pid: number) => void) => {
+    const out = new Set<string>();
+    for (const pid of list) {
+      let fds: string[] = [];
+      try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+      first?.(pid);
+      for (const fd of fds) {
+        try { const ino = readlinkSync(`/proc/${pid}/fd/${fd}`).match(/^socket:\[(\d+)\]$/)?.[1]; if (ino) out.add(ino); } catch {}
+      }
+    }
+    return out;
+  };
+  let ns: string | undefined;
+  const server = socketsOf(pids, (pid) => void (ns ??= String(pid)));
+  const ours = own === pids ? server : socketsOf(own);
+  if (!ns) return 0;
+  type Row = { local: string; remote: string; inode: string };
+  const rows: Row[] = [];
+  for (const t of [`/proc/${ns}/net/tcp`, `/proc/${ns}/net/tcp6`]) {
+    let text: string;
+    try { text = readFileSync(t, "utf8"); } catch { continue; }
+    for (const line of text.split("\n").slice(1)) {
+      const f = line.trim().split(/\s+/);
+      if (f[3] === "01" && f[1] && f[2] && f[9]) rows.push({ local: f[1], remote: f[2], inode: f[9] });
+    }
+  }
+  const byLocal = new Map(rows.map((r) => [r.local, r]));
+  let n = 0;
+  for (const r of rows) {
+    if (!server.has(r.inode) || parseInt(r.local.split(":")[1]!, 16) !== port) continue;
+    const peer = byLocal.get(r.remote);
+    if (!peer || !ours.has(peer.inode)) n++;
+  }
+  return n;
+}
 
 // ---- open portals
 
