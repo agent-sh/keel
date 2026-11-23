@@ -1222,8 +1222,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 :is(.k-alert-icon, .k-inbox-count)[data-watch="done"] { --k-st: var(--st-done); }
 /* An alert's mark: a glyph in its state's color while unread, quiet once read. No box of its own. */
 .k-alert-icon { display: grid; place-items: center; flex-shrink: 0; width: 1rem; height: 1rem; color: var(--k-st); }
-.k-alert-icon svg { width: 0.9375rem; height: 0.9375rem; }
-.k-alert-icon[data-read] { color: color-mix(in oklch, var(--k-st) 45%, var(--faint)); }
+/* It draws its state's mark (Mark.tsx), still: a list of finishes does not spin. Read, it steps back. */
+.k-alert-icon .k-mark { width: 0.5625rem; height: 0.5625rem; animation: none; }
+.k-alert-icon .k-mark[data-watch="work"] { border-width: 1.5px; }
+.k-alert-icon[data-read] .k-mark { opacity: 0.45; }
 .k-inbox-count {
   min-width: 1rem; height: 1rem; padding: 0 0.3125rem; border-radius: 999px;
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);

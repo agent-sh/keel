@@ -1,4 +1,4 @@
-import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, Gauge, GitPullRequest, Hand, MessageCircleQuestion, Repeat, ServerOff, ShieldX, Square, TrendingDown, Ban } from "lucide-react";
+import { Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo } from "react";
 import { auto, autoState, isLive, type AgentRecord, type Alert } from "../../lib/automation.ts";
@@ -58,9 +58,6 @@ export function StopAgent({ a, title, testid }: { a: AgentRecord; title: string;
   return <IconButton title={`Stop agent: ${title}`} danger onClick={() => stopAgentAsking(a, title).catch(reportError)} testid={testid}><StopIcon /></IconButton>;
 }
 
-const ALERT_ICON: Record<Alert["kind"], typeof Bell> = {
-  approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock, regression: TrendingDown, refused: ShieldX, declined: Ban, machine: ServerOff, outage: ServerOff, review: GitPullRequest,
-};
 export const ALERT_LABEL = ALERT_WORD as Record<Alert["kind"], string>;
 
 export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", command: "Command hook", push: "Phone" };
@@ -71,10 +68,12 @@ export const ALERT_STATE: Record<Alert["kind"], Watch> = {
   approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail", refused: "work", declined: "fail", machine: "idle", outage: "wait", review: "done",
 };
 
+// An alert's mark is its state's own shape, the one the rail, the panes and the start page draw:
+// the word beside it says the kind. (A glyph a kind was a second vocabulary of seven pictures.)
 export function AlertIcon({ kind, read, declined }: { kind: Alert["kind"]; read?: boolean; declined?: boolean }) {
-  // (A turn the model declined is filed as a finish until it has a kind of its own: its mark is the failure's.)
-  const Icon = (declined ? ALERT_ICON.failed : (ALERT_ICON as Record<string, typeof Bell>)[kind]) ?? Bell;
-  return <span className="k-alert-icon" data-watch={declined ? "declined" : (ALERT_STATE as Record<string, Watch>)[kind] ?? "idle"} data-read={read || undefined} data-testid="alert-icon"><Icon /></span>;
+  // (A turn the model declined is filed as a finish until it has a kind of its own: it is drawn as declined.)
+  const w: Watch = declined ? "declined" : (ALERT_STATE as Record<string, Watch>)[kind] ?? "idle";
+  return <span className="k-alert-icon" data-watch={w} data-read={read || undefined} data-testid="alert-icon"><Mark w={w} /></span>;
 }
 
 export function IconButton({ title, onClick, children, danger, testid }: { title: string; onClick: () => void; children: ReactNode; danger?: boolean; testid?: string }) {
