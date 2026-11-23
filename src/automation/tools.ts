@@ -39,7 +39,7 @@ function agentLine(a: agents.AgentRecord) {
 
 function waitResult(w: waits.WaitRecord, extra = "") {
   const when = w.kind === "timer" ? `at ${localTime((w.spec as any).at_ms)} ${zoneLabel((w.spec as any).at_ms)}` : `deadline in ${Math.round((w.deadline - Date.now()) / 1000)} s`;
-  return ok(`Scheduled ${w.kind} wait ${w.id} (${when}). It costs no tokens while it waits; the session is woken when it fires, times out or is cancelled. End your turn now unless you have other work.${extra}`);
+  return ok(`Scheduled ${w.kind} wait ${w.id} (${when}). It costs no tokens while it waits; the session is woken when it fires, times out or is cancelled.${waits.carries(w)} End your turn now unless you have other work.${extra}`);
 }
 
 // --- subagents ---------------------------------------------------------------
@@ -355,6 +355,7 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
 
 const waitDesc =
   "Wait without spending tokens: the daemon checks a condition (a timer, a file appearing or containing text, a new log line matching a pattern, an HTTP status, a process ending, every check of a GitHub pull request finishing) and wakes this session with the result when it holds or the timeout passes. " +
+  "A file or log wait's wake carries what the file gained since the wait began (its end, as a tool's output is cut) and what is known of the job that writes it; that job's end without the condition, or a stall of it, wakes you before the deadline. " +
   "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents: their reports wake you by themselves.";
 
 // A pull request wait runs gh with the owner's login against a repository the

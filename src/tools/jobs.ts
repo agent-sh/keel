@@ -241,7 +241,7 @@ export function startJob(o: StartOpts): Job {
 // Where jobs' scopes go: the user manager's app.slice, when systemd --user
 // and cgroup v2 are there (read once).
 let scopeAt: { slice?: string; why?: string } | undefined;
-function jobScope(): { slice?: string; why?: string } {
+export function jobScope(): { slice?: string; why?: string } {
   if (scopeAt) return scopeAt;
   if (!existsSync("/sys/fs/cgroup/cgroup.controllers")) return (scopeAt = { why: "cgroup v2 is not mounted" });
   const st = sandboxStatus();

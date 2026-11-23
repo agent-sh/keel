@@ -379,6 +379,14 @@ export class ScriptedProvider implements Provider {
           return reply(typeof next.say === "string" ? next.say : `Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
         }
         const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
+        // `script:then-find <word> ...` on a later line: an input that comes after the calls (a wait's
+        // wake) is answered from its own text, as a model that read it does: for each word, its line
+        // there, or "Not in the request." (it makes no call to read anything).
+        const thenFind = owner.match(/\nscript:then-find[ \t]+([^\n]+)/)?.[1];
+        if (thenFind && last?.role === "user" && !lastResult) {
+          const lines = (last.content as any[]).flatMap(carried).flatMap((t) => t.split("\n"));
+          return reply(thenFind.split(/\s+/).filter(Boolean).map((w: string) => lines.find((l: string) => l.includes(w))?.trim().slice(0, 240) ?? "Not in the request.").join("\n"));
+        }
         // An image in the result is named by its color, as a model that looked at it would.
         const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.type === "image" ? `an image, ${colorOf(b.data)}` : b.text ?? "").join("\n") ?? "";
         return reply(`Done with ${calls.length} call${calls.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);

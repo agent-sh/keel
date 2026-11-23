@@ -480,3 +480,76 @@ test("a timer due while the daemon was down fires late and says so; a file seen 
   expect(lateOf(file, "fired", down.to + 2000, down).note).toBe("It was seen at the daemon's start: the daemon was down for 43 min before it, so this may have held since then.");
   expect(lateOf(file, "fired", down.to + 5 * 60_000, down)).toEqual({});
 });
+
+test("a file or log wait's wake carries what the file gained since the wait began, secrets hidden as in a tool's output", async () => {
+  const { setConcealer } = await import("../core/conceal.ts");
+  const p = log("carry.log", "before the wait\n");
+  const w = wait(p);
+  appendFileSync(p, "step 1 ok\nkey hunter2 here\nREADY\nafter\n");
+  setConcealer({ text: (t: string) => t.replaceAll("hunter2", "[secret]"), pairs: () => [] } as any);
+  try { await waits.tick(); } finally { setConcealer(undefined as any); }
+  expect(status(w.id)).toBe("fired");
+  const wake = wakes(w.id)[0]!;
+  expect(wake).toContain(`What ${p} gained since the wait began (from byte 16 of`);
+  expect(wake).toContain("step 1 ok\nkey [secret] here\nREADY\nafter");
+  expect(wake).not.toContain("before the wait");
+  expect(wake).not.toContain("hunter2");
+  // A file that appears whole: all of it; a deadline: what it holds then.
+  const q = join(dir, "carry-new.json");
+  const f = waits.create(s.id, waits.normalize({ kind: "file", path: q }, dir), { timeout_seconds: 60 });
+  writeFileSync(q, '{"result":"pass"}\n');
+  await waits.tick();
+  expect(wakes(f.id)[0]).toContain(`${q} (18 bytes):\n{"result":"pass"}`);
+  const t = waits.create(s.id, waits.normalize({ kind: "file", path: q, contains: "never" }, dir), { timeout_seconds: 0.01 });
+  await Bun.sleep(20);
+  await waits.tick();
+  expect([status(t.id), wakes(t.id)[0]]).toEqual(["timeout", expect.stringContaining(`The end of ${q} (nothing was added since the wait began):\n{"result":"pass"}`)]);
+});
+
+// The job's end is judged only when every process of it is known: in a cgroup of its own.
+const { jobScope } = await import("../tools/jobs.ts");
+test.skipIf(!jobScope().slice)(`a wait on the file a job writes says what is known of the job, and the job's end without the condition wakes it before its deadline${jobScope().slice ? "" : ` (needs a job cgroup: ${jobScope().why})`}`, async () => {
+  const { startJob, waitJob } = await import("../tools/jobs.ts");
+  const out = join(dir, "job-out.log");
+  writeFileSync(out, "");
+  const job = startJob({ sessionId: s.id, command: `echo started > ${out}; sleep 0.3; echo finished >> ${out}`, cwd: dir, logDir: join(dir, "jobs") });
+  const w = waits.create(s.id, waits.normalize({ kind: "file", path: out, contains: "PASSED" }, dir), { timeout_seconds: 600 });
+  expect(w.outcome ?? "").toBe("");
+  expect(waits.carries(w)).toContain(`job ${job.id} that writes it`);
+  await waitJob(job, 5000);
+  expect(job.contain).toBe("cgroup");
+  await waits.tick();
+  expect(status(w.id)).toBe("active"); // (a moment after the end, for the last writes)
+  await Bun.sleep(2100);
+  await waits.tick();
+  expect(status(w.id)).toBe("ended");
+  const wake = wakes(w.id)[0]!;
+  expect(wake).toContain(`The job that writes ${out} ended and it does not contain "PASSED".`);
+  expect(wake).toContain("started\nfinished");
+  expect(wake).toMatch(new RegExp(`Job ${job.id} \\(\`echo started .*\`\\) that writes it ended \\d+ s ago \\(exit 0\\)`));
+});
+
+test.skipIf(!jobScope().slice)(`a wait on a job that stopped making progress says it stalled before its deadline${jobScope().slice ? "" : ` (needs a job cgroup: ${jobScope().why})`}`, async () => {
+  const { startJob, stopJob } = await import("../tools/jobs.ts");
+  const out = join(dir, "stall-out.log");
+  // It writes a line, then stops itself: no output and no processor time from then on.
+  const job = startJob({ sessionId: s.id, command: `echo started > ${out}; kill -STOP $$`, cwd: dir, logDir: join(dir, "jobs") });
+  const w = waits.create(s.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 600 });
+  const was = waits.stall.ms;
+  waits.stall.ms = 1500;
+  try {
+    await until(() => existsSync(out) && readFileSync(out, "utf8").includes("started"));
+    await Bun.sleep(300);
+    await waits.tick(); // (the first look: where its progress stands)
+    expect(status(w.id)).toBe("active");
+    await Bun.sleep(1700);
+    await waits.tick();
+    expect(status(w.id)).toBe("ended");
+    expect(wakes(w.id)[0]).toMatch(new RegExp(`Stalled: job ${job.id} that writes ${out} still runs, but it wrote nothing and used no processor time for \\d+ s`));
+    expect(wakes(w.id)[0]).toContain(`Job ${job.id} (`);
+  } finally {
+    waits.stall.ms = was;
+    try { process.kill(job.pid, "SIGCONT"); } catch {}
+    await stopJob(job);
+  }
+});

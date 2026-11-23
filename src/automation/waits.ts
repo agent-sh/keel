@@ -10,6 +10,10 @@ import { lastDown, lateWords, LATE_MS, span } from "../core/late.ts";
 import { sayAt, waitEndLine, waitSetLine } from "../admin/daemon-log.ts";
 import { zonedClock } from "../core/clock.ts";
 import { waitsFor } from "../core/state-words.ts";
+import { homedir } from "node:os";
+import { conceal } from "../core/conceal.ts";
+import { findJob, jobLive, jobsOf, running, type Job } from "../tools/jobs.ts";
+import { CARRY_MAX, WAITERS, carryText, jobLine, stalled, writesPath } from "./wait-carry.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -149,13 +153,15 @@ type LogCursor = { offset: number; ident?: string; skip?: boolean; skipped?: num
 // `probing`: the one probe of the wait that has not answered yet (`late` once
 // it was given up on).
 type Probing = { started: number; abort: AbortController; late?: boolean };
-const live = new Map<string, { offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; probing?: Probing; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
+const live = new Map<string, { cpu?: number; quietSince?: number; grew?: string; offset?: number; ident?: string; skip?: boolean; skipped?: number; lastProbe?: number; probing?: Probing; proc?: Bun.Subprocess; ws?: WebSocket; batch?: string[]; flushAt?: number; tail?: string[]; dropped?: number }>();
 const LOG_READ = 4 << 20; // a probe reads at most this much of a log
 const LINE_MAX = 64 * 1024; // a monitor matches lines up to this long; a longer one is cut there
 const DISPLAY = 2000; // characters of one line shown in an event
 // What is kept of an outcome, and so what its wake says: room for the longest
 // one made here (a monitor's five last lines, each with its marks). A longer
 // one is cut there and says how much went.
+// (A file or log wait's wake carries the file's new content after it, bounded on its own:
+// src/automation/wait-carry.ts.)
 const OUTCOME_MAX = 6 * DISPLAY;
 const kept = (outcome: string) => (outcome.length <= OUTCOME_MAX ? outcome : `${outcome.slice(0, OUTCOME_MAX)}\n[cut here: ${outcome.length - OUTCOME_MAX} more characters are not kept]`);
 
@@ -165,6 +171,108 @@ const identOf = (path: string) => {
 };
 function saveCursor(id: string, c: LogCursor) {
   D().store.db.query("UPDATE waits SET state = json_set(COALESCE(state, '{}'), '$.cursor', json(?)) WHERE id = ?").run(JSON.stringify(c), id);
+}
+
+function setState(id: string, key: string, value: unknown) {
+  D().store.db.query(`UPDATE waits SET state = json_set(COALESCE(state, '{}'), '$.${key}', json(?)) WHERE id = ?`).run(JSON.stringify(value), id);
+}
+function stateOf(id: string): Record<string, any> {
+  const r = D().store.db.query<{ state: string | null }, [string]>("SELECT state FROM waits WHERE id = ?").get(id);
+  try { return r?.state ? JSON.parse(r.state) : {}; } catch { return {}; }
+}
+
+// The Keel job that writes a file or log wait's file: its own log is the file, or its command sends
+// its output there. Kept with the wait once found; looked for again at each probe until then.
+function linkJob(w: WaitRecord): Job | undefined {
+  if (w.kind !== "file" && w.kind !== "log") return undefined;
+  const st = stateOf(w.id);
+  if (st.job) return findJob(w.session_id, st.job);
+  const path = (w.spec as { path: string }).path;
+  const home = homedir();
+  const found = jobsOf(w.session_id).filter((j) => j.started <= Date.now() && (j.log === path || writesPath(j.command, j.cwd, home, path)) && (running(j) || (j.ended ?? 0) >= w.created - 10 * 60_000)).sort((a, b) => b.started - a.started)[0];
+  if (found) setState(w.id, "job", found.id);
+  return found;
+}
+
+// What Keel knows of a job, for its line in a wake.
+function factsOf(j: Job, path: string) {
+  const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return 0; } };
+  const lastOutput = Math.max(mtime(path), mtime(j.log)) || undefined;
+  return { id: j.id, command: j.command, started: j.started, running: running(j), live: jobLive(j), exit: j.exitCode, signal: j.signal, ended: j.ended, stopReason: j.stopReason, lastOutput };
+}
+
+// What a file or log wait's wake carries: the file's new content (src/automation/wait-carry.ts), and
+// what Keel knows of the job that writes it. Secrets in it are hidden as in a tool's output.
+function carried(w: WaitRecord): string {
+  if (w.kind !== "file" && w.kind !== "log") return "";
+  const path = (w.spec as { path: string }).path;
+  const from = (stateOf(w.id).from ?? { offset: 0 }) as { offset: number; ident?: string };
+  const parts: string[] = [];
+  try {
+    const f = identOf(path);
+    const fromStart = !from.ident || from.ident !== f.ident || f.size < from.offset;
+    const start = fromStart ? 0 : from.offset;
+    const unchanged = !fromStart && f.size === start;
+    // Bytes enough for the characters carried (four bytes a character at most), from the end.
+    const begin = unchanged ? Math.max(0, f.size - CARRY_MAX * 4) : Math.max(start, f.size - CARRY_MAX * 4);
+    const len = f.size - begin;
+    const buf = Buffer.alloc(len);
+    const fd = openSync(path, "r");
+    try { readSync(fd, buf, 0, len, begin); } finally { closeSync(fd); }
+    const binary = buf.includes(0);
+    parts.push(carryText({ path, text: binary ? "" : buf.toString("utf8"), from: start, size: f.size, fromStart, unchanged, binary, skipped: begin - (unchanged ? 0 : start) }));
+  } catch { parts.push(`${path} is not there.`); }
+  const j = linkJob(w);
+  if (j) parts.push(jobLine(factsOf(j, path), Date.now()));
+  return conceal(parts.join("\n"), w.session_id);
+}
+
+// What a wait carries, said when it is set (src/automation/tools.ts).
+export function carries(w: WaitRecord): string {
+  if (w.kind !== "file" && w.kind !== "log") return "";
+  const j = linkJob(w);
+  const job = j ? ` and what is known of job ${j.id} that writes it (running or its exit, its last output); that job's end without the condition, or a stall of it (no output and no processor use for ${Math.round(stall.ms / 60_000)} min), wakes you before the deadline` : "";
+  return ` Its wake carries what the file gains from now on (its last ${CARRY_MAX.toLocaleString("en-US")} characters, secrets hidden)${job}: no need to read it again.`;
+}
+
+// How long a job that writes a waited file may go with no output and no processor use before the
+// wait says it stalled. A job at work, or one waiting on another machine, keeps using a little
+// processor time: sampled every 10 s, 93 live jobs went at most 20 s without any (ssh sessions,
+// test runs, scripts). Output alone says little (a tenth of the jobs that went on to pass were
+// silent for over 3 min at their end, as their output went elsewhere). Five minutes of both is
+// far past what a working job shows, and well before a wait's usual deadline (20 min).
+export const stall = { ms: 5 * 60_000 }; // (a test sets it shorter, and puts it back)
+
+// A wait whose job ended without its condition, or stalled: told now, not at the deadline. Only for a
+// job in a cgroup of its own, where every process it started is known.
+function judgeJob(w: WaitRecord, now: number): string | undefined {
+  const j = linkJob(w);
+  if (!j || j.contain !== "cgroup") return undefined;
+  const path = (w.spec as { path: string }).path;
+  const what = w.kind === "log" ? `no line of it matched ${(w.spec as { match: string }).match}` : (w.spec as { contains?: string }).contains ? `it does not contain "${(w.spec as { contains?: string }).contains}"` : "it is not there";
+  if (!running(j) && !jobLive(j)) {
+    // (A moment after the end, for the last writes to land and be probed.)
+    if (now - (j.ended ?? now) < 2000) return undefined;
+    return `The job that writes ${path} ended and ${what}.`;
+  }
+  const st = live.get(w.id);
+  if (!st) return undefined;
+  // Progress: the processor time of everything in its cgroup, the size of the file and of its log.
+  let cpu = -1;
+  try { cpu = Number(/usage_usec (\d+)/.exec(readFileSync(`${j.cgroup}/cpu.stat`, "utf8"))?.[1] ?? -1); } catch {}
+  const size = (p: string) => { try { return statSync(p).size; } catch { return -1; } };
+  const grew = `${size(path)}:${size(j.log)}`;
+  if (cpu < 0) return undefined;
+  if (st.cpu !== cpu || st.grew !== grew || st.quietSince === undefined) { st.cpu = cpu; st.grew = grew; st.quietSince = now; return undefined; }
+  if (now - st.quietSince < stall.ms) return undefined;
+  let waiting = false;
+  try {
+    for (const pid of readFileSync(`${j.cgroup}/cgroup.procs`, "utf8").split("\n").filter(Boolean)) {
+      try { if (WAITERS.has(readFileSync(`/proc/${pid}/comm`, "utf8").trim())) { waiting = true; break; } } catch {}
+    }
+  } catch { return undefined; }
+  if (!stalled({ now, since: st.quietSince, waiting, after: stall.ms })) return undefined;
+  return `Stalled: job ${j.id} that writes ${path} still runs, but it wrote nothing and used no processor time for ${Math.round((now - st.quietSince) / 1000)} s, and none of its processes waits on something else; ${what}.`;
 }
 
 function resolvePath(p: string, cwd: string) {
@@ -303,6 +411,13 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
     try { const f = identOf(spec.path); st.offset = f.size; st.ident = f.ident; } catch { st.offset = 0; }
     saveCursor(rec.id, { offset: st.offset, ident: st.ident });
   }
+  if (spec.kind === "log" || spec.kind === "file") {
+    // Where the file stood: its wake carries what it gained since.
+    let from: { offset: number; ident?: string } = { offset: 0 };
+    try { const f = identOf(spec.path); from = { offset: f.size, ident: f.ident }; } catch {}
+    setState(rec.id, "from", from);
+    linkJob(get(rec.id)!);
+  }
   live.set(rec.id, st);
   if (spec.kind === "monitor") startMonitor(rec);
   if (spec.kind === "websocket") startSocket(rec);
@@ -330,7 +445,7 @@ export function lateOf(w: Pick<WaitRecord, "kind" | "spec" | "created" | "deadli
   return {};
 }
 
-function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true, boot = false): boolean {
+function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true, boot = false, carry = ""): boolean {
   const w = get(id);
   if (!w || w.status !== "active") return false;
   const lateness = lateOf(w, status, Date.now());
@@ -344,7 +459,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   live.delete(id);
   // The status changes only from active, in the same statement that reads it,
   // and the same statement records that the wake is owed.
-  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, kept(outcome), Date.now(), wake ? 1 : 0, id).changes) return false;
+  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, `${kept(outcome)}${carry ? `\n\n${carry}` : ""}`, Date.now(), wake ? 1 : 0, id).changes) return false;
   const rec = get(id)!;
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}${lateness.late ? ` ${lateness.late}` : ""}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id, ...(lateness.late ? { late: lateness.late } : {}) });
@@ -729,8 +844,10 @@ const timedOut = (w: WaitRecord, last?: string | null) => `Timed out after ${Mat
 
 // What a probe said: an outcome fires the wait, nothing at the deadline times it out.
 function probed(w: WaitRecord, hit: string | undefined) {
-  if (hit) settle(w.id, "fired", hit);
-  else if (Date.now() >= w.deadline) settle(w.id, "timeout", timedOut(w, get(w.id)?.last_error));
+  if (hit) { settle(w.id, "fired", hit, true, false, carried(w)); return; }
+  if (Date.now() >= w.deadline) { settle(w.id, "timeout", timedOut(w, get(w.id)?.last_error), true, false, carried(w)); return; }
+  const judged = w.kind === "file" || w.kind === "log" ? judgeJob(w, Date.now()) : undefined;
+  if (judged) settle(w.id, "ended", judged, true, false, carried(w));
 }
 
 function probeFailed(w: WaitRecord, e: unknown) {

@@ -48,6 +48,8 @@ export const URGENT: { tools: Record<string, string>; blocks: Record<string, str
   tools: { Agent: "nested-agents", spawn_agent: "nested-agents", SendMessage: "agent-tree-messages", send_input: "agent-tree-messages",
     // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts).
     Bash: "wait-poll", run_shell_command: "wait-poll", exec_command: "wait-poll", write_stdin: "wait-poll",
+    // A file or log wait's wake carries the file, and its job's end or stall wakes early.
+    WaitFor: "wait-carries-file", wait_for: "wait-carries-file",
     ...testBuild?.urgent?.tools },
   blocks: { ...testBuild?.urgent?.blocks },
 };
