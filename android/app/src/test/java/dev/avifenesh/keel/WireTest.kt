@@ -82,6 +82,8 @@ class WireTest {
         // A real name of digits only (a camera's 20261120143205.jpg, a scan's 0001.png) is not the media id: it stays.
         assertEquals("20261120143205.jpg", Wire.pickedName("20261120143205.jpg", "image/jpeg", "1000000047", taken, zone))
         assertEquals("0001.png", Wire.pickedName("0001.png", "image/png", null, taken, zone))
+        // The photo picker names every photo by an id, whatever its URI ends with.
+        assertEquals("Photo 2026-11-20 at 14.32.05.jpg", Wire.pickedName("1000000048.jpg", "image/jpeg", "48", taken, zone, picker = true))
     }
 
     @Test fun aFileTooLargeIsRefusedBeforeItGoesUp() {

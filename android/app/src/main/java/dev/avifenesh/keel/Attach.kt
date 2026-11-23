@@ -78,7 +78,9 @@ object Attach {
                 ?: "application/octet-stream"
             // A photo the picker names by its media id is named by when it was taken.
             val id = uri.lastPathSegment
-            val name = if (Wire.byMediaId(given, mime, id)) Wire.pickedName(given, mime, id, taken(app, uri)) else given
+            // The photo picker's URIs: content://media/picker/... and content://media/picker_get_content/...
+            val picker = uri.authority == "media" && uri.pathSegments.firstOrNull()?.startsWith("picker") == true
+            val name = if (Wire.byMediaId(given, mime, id, picker)) Wire.pickedName(given, mime, id, taken(app, uri), picker = picker) else given
             val key = UUID.randomUUID().toString()
             put(chat, Picked(key, name, mime, size ?: 0, Up.READING, uri = uri, pickedSize = size))
             Hub.scope.launch { take(app, chat, key, uri, name, mime, size) }
