@@ -153,6 +153,53 @@ test("fleet move: from another machine a session only comes back here, and the p
   }
 });
 
+// A session whose turn is at work: the picker says a move cuts the turn, and offers to move when it
+// ends instead. Asked for then, the turn runs to its end here and the session moves after it, its
+// turn not stopped; one asked for now cuts it, as before. Place only, scripted model.
+test("fleet move: a working turn is said, and the move can wait for its end", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; id: string }[]).find((m) => m.id === "scripted:stand-in")?.id;
+  test.skip(!model, "the daemon runs without the scripted provider");
+  mkdirSync(ROOT, { recursive: true });
+  let { machines } = await (await request.get("/api/fleet/machines")).json();
+  let first = machines.find((m: any) => m.daemon_url === PEER);
+  if (!first) {
+    const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
+    first = r.machines.find((m: any) => m.id === r.id);
+  }
+  const s = (await (await request.post("/api/sessions", { data: { title: "Move after the turn", model } })).json()).session;
+  await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "full-auto" } });
+  const to = page.locator(`[data-testid="move-to"][data-machine="${first.id}"]`);
+  try {
+    await page.goto(`/s/${s.id}`);
+    await page.getByTestId("composer").fill(scriptBash("for i in 1 2 3 4 5 6; do echo tick $i; sleep 1; done"));
+    await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("stop")).toBeVisible();
+    await page.getByTestId("machine-chip").click();
+    await expect(page.getByTestId("move-working")).toContainText("Moving now stops it");
+    await expect(page.getByTestId("move-when-end")).toHaveAttribute("aria-checked", "true");
+    await page.getByRole("radio", { name: "place only" }).click();
+    await shoot(page, "fleet-move-07-working");
+    await to.click();
+    await expect(page.getByTestId("move-waiting")).toContainText(`Moves to ${first.name} when the turn ends`);
+    await expect(to).toBeDisabled();
+    // The turn ends by itself, then the session moves: its turn was not stopped for it.
+    await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
+    await expect(page.getByTestId("move-waiting")).toHaveCount(0);
+    await expect(page.getByTestId("machine-chip")).toContainText(first.name);
+    const { events } = await (await request.get(`/api/sessions/${s.id}`)).json();
+    const end = events.find((e: any) => e.kind === "turn_end");
+    expect(end.data.reason).not.toBe("interrupted");
+    const out = events.filter((e: any) => e.kind === "tool_result").map((e: any) => JSON.stringify(e.data)).join("");
+    expect(out).toContain("tick 6");
+    await shoot(page, "fleet-move-08-moved-after");
+  } finally {
+    await page.goto("about:blank");
+    await request.delete(`/api/sessions/${s.id}`);
+  }
+});
+
 // A queue the owner stopped stays stopped: the move changes where the tools
 // run, not whether the prompts that wait may start. Place only, scripted model.
 test("fleet move: a queue the owner held stays held after the move", async ({ page, request }) => {

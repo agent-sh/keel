@@ -78,6 +78,24 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     return on ? { name: f.row(on)?.name ?? on, far: true } : { name: f.name };
   };
   const moves = new Handoffs(store, bus, engine, f);
+  // A move the owner asked for when the session's turn ends (`when: "turn_end"`): its turn is not cut.
+  // Kept in this daemon's memory: a restart drops it, and the move popup says so.
+  type After = { machine_id: string; machine: string; carry: string; workspace?: string; since: number };
+  const after = new Map<string, After>();
+  const tellAfter = (id: string) => bus.emit({ t: "feature", name: "handoff_waiting", session_id: id, data: after.get(id) ?? null });
+  registerHooks({
+    turnEnd: (s) => {
+      const w = after.get(s.id);
+      if (!w) return;
+      after.delete(s.id);
+      tellAfter(s.id);
+      const now = store.session(s.id);
+      if (!now) return;
+      try { moves.start(now, w); } catch (e) {
+        errors.capture("server", new Error(`the move to ${w.machine} after the turn did not start: ${(e as Error).message}`), { at: "handoff after turn", session_id: s.id });
+      }
+    },
+  });
   const remoteAgents = new RemoteAgents(store, f, errors, (id) => gate?.perm(id).sandbox ?? "off");
   setRemotePlacer(remoteAgents);
   registerSendFiles(() => remoteAgents, (id) => store.session(id), (id) => gate?.perm(id).mode ?? "ask");
@@ -655,16 +673,36 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     },
 
     "/api/sessions/:id/handoff": {
-      GET: (req: any) => (store.session(req.params.id) ? json({ handoff: moves.latest(req.params.id) }) : bad("no such session", 404)),
+      // `waiting`: a move asked for when the turn ends, not started yet.
+      GET: (req: any) => (store.session(req.params.id) ? json({ handoff: moves.latest(req.params.id), waiting: after.get(req.params.id) ?? null }) : bad("no such session", 404)),
+      // `when: "turn_end"`: a session whose turn is at work moves when the turn ends, instead of having it cut now.
       POST: async (req: any) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
         try {
-          return json({ handoff: moves.start(s, await body(req)) });
+          const b = await body(req);
+          if (b.when !== undefined && b.when !== "now" && b.when !== "turn_end") return bad("when is now or turn_end");
+          if (b.when === "turn_end" && engine.isRunning(s.id)) {
+            moves.check(s, b);
+            const to = b.machine_id === "local" ? f.name : f.row(b.machine_id)?.name ?? b.machine_id;
+            after.set(s.id, { machine_id: b.machine_id, machine: to, carry: b.carry ?? "git", ...(b.workspace ? { workspace: b.workspace } : {}), since: Date.now() });
+            tellAfter(s.id);
+            return json({ handoff: moves.latest(s.id), waiting: after.get(s.id) });
+          }
+          const h = moves.start(s, b);
+          if (after.delete(s.id)) tellAfter(s.id);
+          return json({ handoff: h });
         } catch (e) {
           if (e instanceof MoveError) return bad(e.message, e.status);
           throw e;
         }
+      },
+      // Calls off a move that waits for the turn to end.
+      DELETE: (req: any) => {
+        if (!store.session(req.params.id)) return bad("no such session", 404);
+        const had = after.delete(req.params.id);
+        if (had) tellAfter(req.params.id);
+        return json({ ok: true, cancelled: had });
       },
     },
 

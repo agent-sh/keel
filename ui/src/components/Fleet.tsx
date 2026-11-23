@@ -46,6 +46,10 @@ export function MachineChip({ session }: { session: Session }) {
   const [carry, setCarry] = useState<"git" | "none">("git");
   const [h, setH] = useState<Handoff | null>(null);
   const [err, setErr] = useState("");
+  // A turn at work is cut by a move: the owner moves now (it is cut) or when it ends (it is not).
+  const [when, setWhen] = useState<"now" | "turn_end">("turn_end");
+  const [waiting, setWaiting] = useState<{ machine: string; since: number } | null>(null);
+  const working = session.phase === "working";
   const lives = splitId(session.id)?.machine;
   const runs = session.machine ?? undefined;
   const id = lives ?? runs;
@@ -58,12 +62,16 @@ export function MachineChip({ session }: { session: Session }) {
   const where = useWhere({ machine: id });
   useEffect(() => {
     if (lives) return;
-    api<{ handoff: Handoff | null }>(`/api/sessions/${session.id}/handoff`).then((r) => setH(r.handoff)).catch(reportError);
+    api<{ handoff: Handoff | null; waiting?: { machine: string; since: number } | null }>(`/api/sessions/${session.id}/handoff`).then((r) => { setH(r.handoff); setWaiting(r.waiting ?? null); }).catch(reportError);
     // A move's frames come milliseconds apart, with the session's own frame between them, and each
     // resizes the chip or the popup under it. The frame is rendered as it arrives: a state update
     // left pending here is flushed by the popup's positioner inside its ResizeObserver callback,
     // which resizes what the browser is in the middle of reporting ("ResizeObserver loop" notices).
-    return onFeature({ frame: (f) => { if (f.name === "handoff_progress" && f.session_id === session.id) flushSync(() => setH(f.data)); } });
+    return onFeature({ frame: (f) => {
+      if (f.session_id !== session.id) return;
+      if (f.name === "handoff_progress") flushSync(() => setH(f.data));
+      else if (f.name === "handoff_waiting") flushSync(() => setWaiting(f.data));
+    } });
   }, [session.id, lives]);
   if (!id && !others.length) return null;
   const name = id ? machineName(id) : machines.find((m) => m.source === "local")?.name ?? "this machine";
@@ -87,7 +95,8 @@ export function MachineChip({ session }: { session: Session }) {
   const move = async (to: string) => {
     setErr("");
     try {
-      const r = await api<{ handoff: Handoff }>(`/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({ machine_id: to, carry }) });
+      const r = await api<{ handoff: Handoff; waiting?: { machine: string; since: number } }>(`/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({ machine_id: to, carry, when: working ? when : "now" }) });
+      if (r.waiting) return setWaiting(r.waiting);
       // The answer is the move as it started. A quick move's progress frames
       // can be here before it: they are newer and stay.
       setH((cur) => (cur?.started_ms !== undefined && cur.started_ms === r.handoff.started_ms ? cur : r.handoff));
@@ -106,6 +115,20 @@ export function MachineChip({ session }: { session: Session }) {
               <div className="text-ui font-medium">Runs on {name}</div>
               <div className="truncate font-mono text-micro text-faint" title={session.workspace}>{session.workspace}</div>
             </div>
+            {waiting && (
+              <div className="flex items-start gap-2 border-b border-line px-3.5 py-2.5" data-testid="move-waiting">
+                <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brass animate-pulse-dot" />
+                <p className="min-w-0 flex-1 text-caption leading-snug text-fg">Moves to {waiting.machine} when the turn ends.<span className="block text-muted">Until then it works here; a restart of Keel calls the move off.</span></p>
+                <button type="button" data-testid="move-waiting-cancel" onClick={() => api(`/api/sessions/${session.id}/handoff`, { method: "DELETE" }).then(() => setWaiting(null), (e) => setErr(failed(e, { at: "Fleet" })))}
+                  className="h-6 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg">Call off</button>
+              </div>
+            )}
+            {working && !waiting && h?.state !== "running" && dests.length > 0 && (
+              <div className="border-b border-line px-3.5 py-2.5" data-testid="move-working">
+                <p className="text-caption leading-snug text-fg">A turn is at work. Moving now stops it, and it does not go on there by itself.</p>
+                <Seg className="mt-2" label="When it moves" value={when} onChange={setWhen} options={[{ value: "turn_end", label: "when the turn ends", testid: "move-when-end" }, { value: "now", label: "now, stopping the turn", testid: "move-when-now" }]} />
+              </div>
+            )}
             {dests.length > 0 && (
               <div className="p-1.5">
                 <div className="flex items-center px-2 pb-1.5 pt-1 k-label">
@@ -113,7 +136,7 @@ export function MachineChip({ session }: { session: Session }) {
                   <Seg className="ml-auto" label="What travels" value={carry} onChange={setCarry} options={[{ value: "git", label: "with its git state" }, { value: "none", label: "place only" }]} />
                 </div>
                 {dests.map((d) => (
-                  <button key={d.id} type="button" data-testid="move-to" data-machine={d.id} data-offline={d.off || undefined} title={d.off ? `${d.name} does not answer now` : undefined} disabled={h?.state === "running" || d.off} onClick={() => move(d.id)} className="flex h-11 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover disabled:opacity-50 disabled:hover:bg-transparent">
+                  <button key={d.id} type="button" data-testid="move-to" data-machine={d.id} data-offline={d.off || undefined} title={d.off ? `${d.name} does not answer now` : undefined} disabled={h?.state === "running" || !!waiting || d.off} onClick={() => move(d.id)} className="flex h-11 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover disabled:opacity-50 disabled:hover:bg-transparent">
                     {d.id === "local" ? <Cpu className="size-4 shrink-0 text-faint" /> : <Server className="size-4 shrink-0 text-faint" />}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-ui font-medium">{d.name}</span>

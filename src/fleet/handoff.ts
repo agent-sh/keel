@@ -464,21 +464,11 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
 
   // ---- the move
 
+  // Whether the move can start, as start() decides it before anything changes: a refusal is a MoveError.
+  check(s: Session, b: { machine_id?: string; carry?: string }) { this.refusal(s, b); }
+
   start(s: Session, b: { machine_id?: string; carry?: string; workspace?: string }): Handoff {
-    const to = b.machine_id ?? "";
-    const carry = (b.carry ?? "git") as Handoff["carry"];
-    if (!["git", "none"].includes(carry)) throw new MoveError(400, "carry is git or none");
-    if (s.archived) throw new MoveError(409, "the session is archived");
-    if (s.parent_id) throw new MoveError(409, "a subagent moves with its parent");
-    if (this.moving.has(s.id)) throw new MoveError(409, "the session is being moved");
-    const fromId = s.machine ?? "local";
-    const dest = to === "local" ? null : this.fleet.row(to) ?? null;
-    if (to !== "local" && !dest) throw new MoveError(400, "no such machine");
-    if (dest && !dest.workspace_root) throw new MoveError(400, `${dest.name} has no granted directory: Keel cannot run tools there`);
-    if (to === fromId) throw new MoveError(409, "the session is already there");
-    if (fromId !== "local" && to !== "local") throw new MoveError(409, "a session on another machine comes back here before it goes to a third");
-    const src = fromId === "local" ? null : this.fleet.row(fromId) ?? null;
-    if (fromId !== "local" && !src) throw new MoveError(409, "the machine the session is on was removed");
+    const { to, carry, fromId, dest, src } = this.refusal(s, b);
     // What the last move still owes the queue is done first: the hold it left is not read as the owner's.
     this.settle(s.id);
 
@@ -494,6 +484,24 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
     const run = this.run(s, h, src, dest, b.workspace).finally(() => this.moving.delete(s.id));
     this.moving.set(s.id, run.catch(() => {}));
     return h;
+  }
+
+  private refusal(s: Session, b: { machine_id?: string; carry?: string }) {
+    const to = b.machine_id ?? "";
+    const carry = (b.carry ?? "git") as Handoff["carry"];
+    if (!["git", "none"].includes(carry)) throw new MoveError(400, "carry is git or none");
+    if (s.archived) throw new MoveError(409, "the session is archived");
+    if (s.parent_id) throw new MoveError(409, "a subagent moves with its parent");
+    if (this.moving.has(s.id)) throw new MoveError(409, "the session is being moved");
+    const fromId = s.machine ?? "local";
+    const dest = to === "local" ? null : this.fleet.row(to) ?? null;
+    if (to !== "local" && !dest) throw new MoveError(400, "no such machine");
+    if (dest && !dest.workspace_root) throw new MoveError(400, `${dest.name} has no granted directory: Keel cannot run tools there`);
+    if (to === fromId) throw new MoveError(409, "the session is already there");
+    if (fromId !== "local" && to !== "local") throw new MoveError(409, "a session on another machine comes back here before it goes to a third");
+    const src = fromId === "local" ? null : this.fleet.row(fromId) ?? null;
+    if (fromId !== "local" && !src) throw new MoveError(409, "the machine the session is on was removed");
+    return { to, carry, fromId, dest, src };
   }
 
   private record(h: Handoff) {
