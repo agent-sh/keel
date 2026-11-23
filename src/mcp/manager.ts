@@ -13,8 +13,9 @@ import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/c
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
-import { formOf, plain, type ElicitResult } from "./elicit.ts";
-import { samplingOf, stopReason, type SampleRequest } from "./sampling.ts";
+import { formOf, type ElicitResult } from "./elicit.ts";
+import { cardText, samplingOf, stopReason, type SampleRequest } from "./sampling.ts";
+import { withoutHidden } from "../core/hidden-chars.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { askFor, DECLINED } from "../tools/interact.ts";
 import type { Asked } from "../core/types.ts";
@@ -1090,16 +1091,19 @@ export class McpManager {
       if (ctx.signal.aborted) throw new RpcError(-1, "the owner stopped the turn while the model answered");
       throw new RpcError(-32603, `${model} could not answer: ${(e as Error).message}`);
     }
+    // What goes to the server is what the card shows: the reply without the characters a reader cannot see.
+    const text = withoutHidden(r.text);
+    const seen = cardText(text, "The reply");
     const reply = await this.onCard(server, ctx, card, call, `${model} answered ${server}`, {
       from: server,
-      message: `${model} answered. Send this reply to ${server}?\n\n${plain(r.text, 20_000) || "(an empty reply)"}`,
+      message: `${model} answered. Send this reply to ${server}?\n\n${seen.shown || "(an empty reply)"}`,
       questions: [{ id: "reply", question: "Send this reply, or type the reply to send instead", options: [{ label: "Send" }] }],
-      notes: [`It stopped with ${r.stop}.`],
+      notes: [...(seen.note ? [seen.note] : []), `It stopped with ${r.stop}.`],
     });
     if (reply === null) throw new RpcError(-1, "the owner made no choice: the reply was not sent");
     if (reply === DECLINED) { call.declined++; throw new RpcError(-1, "the owner rejected the reply"); }
     const typed = typeof reply.reply?.other === "string" ? reply.reply.other.trim() : "";
-    return { role: "assistant", content: { type: "text", text: typed || r.text }, model: r.model, stopReason: typed ? "endTurn" : stopReason(r.stop) };
+    return { role: "assistant", content: { type: "text", text: typed || text }, model: r.model, stopReason: typed ? "endTurn" : stopReason(r.stop) };
   }
 
   // One card on a call, as a server's question is shown: the owner's answer,
