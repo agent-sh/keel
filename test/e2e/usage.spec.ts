@@ -55,7 +55,12 @@ test("usage dashboard", async ({ page, request }) => {
   await expect(card.getByTestId("driver-turns")).toContainText(`${d.turns.turns.toLocaleString("en-US")} turn`);
   await expect(card.getByTestId("driver-turns").getByTestId("driver-lever")).not.toBeEmpty();
   await expect(card.getByTestId("drivers-bands").locator("tbody tr")).toHaveCount(d.bands.length);
-  await expect(card.getByTestId("drivers-trees")).toContainText(s.title || "");
+  // The dearest trees the daemon names, in its order (this test's session is among them only on a daemon
+  // that has spent little else: a run of specs before it may have spent more).
+  const trees = card.getByTestId("drivers-trees").locator("tbody tr");
+  await expect(trees).toHaveCount(d.trees.length);
+  for (const [k, t] of d.trees.entries()) await expect(trees.nth(k)).toContainText(t.title ?? "a removed session");
+  if (d.trees.some((t: any) => t.root === s.id)) await expect(card.getByTestId("drivers-trees")).toContainText(s.title || "");
   // A rewrite's dollars are an estimate from the models' rates, and say so.
   for (const b of d.breaks) if (b.rewrite_usd !== null) await expect(card.getByTestId("driver-rewrite").filter({ hasText: `${b.calls.toLocaleString("en-US")} request` }).first()).toContainText("about $");
   await card.scrollIntoViewIfNeeded();
