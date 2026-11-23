@@ -694,7 +694,11 @@ data class PushConfig(val enabled: Boolean, val missing: String, val apiKey: Str
 }
 
 /** One push, as its data arrives: the kind, the session, the alert's words, the card it is about, the choices a notification offers, the id to confirm. */
-data class PushMsg(val kind: String, val chat: String?, val title: String, val body: String, val card: String?, val choices: List<String>, val id: String?, val held: Boolean = false) {
+data class PushMsg(
+    val kind: String, val chat: String?, val title: String, val body: String, val card: String?, val choices: List<String>, val id: String?, val held: Boolean = false,
+    /** A "live" push: sessions working, cards waiting, when the longest turn started (ms). */
+    val working: Int = 0, val needs: Int = 0, val since: Long = 0,
+) {
     companion object {
         fun of(d: Map<String, String>) = PushMsg(
             kind = d["t"].orEmpty(), chat = d["c"]?.takeIf { it.isNotBlank() }, title = d["title"].orEmpty(), body = d["body"].orEmpty(),
@@ -703,6 +707,7 @@ data class PushMsg(val kind: String, val chat: String?, val title: String, val b
             id = d["n"]?.takeIf { it.isNotBlank() },
             // The request is opened and read before it is allowed: its notification carries no Allow.
             held = !d["hold"].isNullOrBlank(),
+            working = d["w"]?.toIntOrNull() ?: 0, needs = d["q"]?.toIntOrNull() ?: 0, since = d["since"]?.toLongOrNull() ?: 0,
         )
     }
     /**
@@ -712,6 +717,38 @@ data class PushMsg(val kind: String, val chat: String?, val title: String, val b
     val allows get() = !held && (choices.isEmpty() || "once" in choices)
 }
 
+/**
+ * The lasting notification's state: sessions working, cards waiting on the owner, the words to show,
+ * when the longest turn started (ms, 0 unknown). Nothing working or waiting: no notification.
+ */
+data class Live(val working: Int, val needs: Int, val title: String, val body: String, val since: Long = 0) {
+    val shown get() = working > 0 || needs > 0
+    companion object {
+        /** A "live" push, as the daemon sends it. */
+        fun of(m: PushMsg) = Live(m.working, m.needs, m.title, m.body, m.since)
+        /** What the app holds: the sessions whose turns run (since when), the open cards, the titles. */
+        fun of(working: Map<String, Double>, cards: Collection<Card>, chats: Map<String, Chat>): Live {
+            val open = cards.filter { it.pending }
+            val needs = open.size
+            // A session whose turn waits on the owner (in it or an agent under it) needs them; it does not work.
+            val waiting = open.map { rootOf(chats, it.chatId) }.toSet()
+            val roots = working.keys.filter { chats[it]?.parentId == null && it !in waiting }
+            val what = listOfNotNull(
+                if (roots.isNotEmpty()) "${roots.size} session${if (roots.size == 1) "" else "s"} working" else null,
+                if (needs > 0) "$needs need${if (needs == 1) "s" else ""} you" else null,
+            ).joinToString(" · ")
+            val byStart = roots.sortedBy { working[it] ?: 0.0 }
+            return Live(roots.size, needs, what, byStart.take(4).joinToString(" · ") { chats[it]?.title ?: "A session" },
+                byStart.firstOrNull()?.let { ((working[it] ?: 0.0) * 1000).toLong() } ?: 0)
+        }
+        /** The background check's read (GET /v1/pulse). */
+        fun of(p: Pulse): Live {
+            val chats = p.sessions.associate { it.id to Chat(it.id, it.title, "working", 0.0, 0, false, false, "", "", null) }
+            return of(p.working, p.cards, chats)
+        }
+    }
+}
+
 /** A running session on the Usage screen: every input token, cached or not, and the spend when it is priced. */
 data class PulseSession(val id: String, val title: String, val model: String, val tokensIn: Long, val tokensOut: Long, val cost: Double?)
 
@@ -719,6 +756,8 @@ data class PulseSession(val id: String, val title: String, val model: String, va
 data class Pulse(
     val tz: String, val spendToday: Double?, val unpricedToday: Int, val runsToday: Int, val failuresToday: Int,
     val week: List<Double>, val cards: List<Card>, val sessions: List<PulseSession>,
+    /** The sessions whose turns run, and since when (seconds). */
+    val working: Map<String, Double> = emptyMap(),
 ) {
     companion object {
         fun of(o: JSONObject): Pulse {
@@ -735,6 +774,7 @@ data class Pulse(
                         u.optLong("output"), if (u.isNull("cost")) null else u.optDouble("cost"),
                     )
                 },
+                working = objs("working").associate { it.str("chat_id") to it.optDouble("since", 0.0) },
             )
         }
     }

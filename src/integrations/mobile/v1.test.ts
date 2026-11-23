@@ -19,6 +19,7 @@ import { answersText, approvalMessage, canonicalMessage, sha256Hex } from "./sig
 import { MobileStore } from "./store.ts";
 import { mobileApi } from "./v1.ts";
 import { pushData, testMessage } from "./push.ts";
+import { liveData, liveStatus } from "./live.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
 import { Gate, type Approval } from "../../safety/gate.ts";
 import { planRoutes, plansWaiting } from "../../server/routes/plan.ts";
@@ -1048,6 +1049,7 @@ describe("the wire contract", () => {
     // A push for an approval, as its data leaves for the phone.
     take("push", pushData(alertPush({ id: "al1", ts: Date.now(), kind: "approval", session_id: s.id, title: "Fix the build needs your approval", body: "rm -rf build", read: false, data: { approval_id: "apr_9", hold: [] }, channels: [] } as any), mobile.globalSeq(), "push_1"));
     take("push", pushData(testMessage(), mobile.globalSeq(), "push_2"));
+    take("push", pushData({ kind: "live", high: false, data: liveData(liveStatus([{ title: "Fix the build", running: true, since: 1000, needs: 0 }, { title: "Docs", running: true, since: 2000, needs: 1 }])) }, mobile.globalSeq(), "push_3"));
     // A phone pairs, then unpairs.
     const k3 = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const pairReq: any = new Request("http://x/v1/pair", { method: "POST", body: JSON.stringify({ code: mobile.createPairCode(600), device_name: "p", pub: k3.publicKey.export({ type: "spki", format: "der" }).toString("base64"), apub, lock: true }) });

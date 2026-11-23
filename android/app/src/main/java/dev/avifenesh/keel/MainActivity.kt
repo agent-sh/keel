@@ -53,6 +53,8 @@ object Ui {
     val theme = mutableIntStateOf(0)
     /** The start sheet is open. */
     val starting = mutableStateOf(false)
+    /** The app is on the screen (it shows what runs itself; the lasting notification is for the back). */
+    @Volatile var inFront = false
     fun open(chat: String) { route.value = Route.Session(chat) }
     /** An agent's session (or its starter's) opened from a session: Back returns there. */
     fun openFrom(chat: String, from: Route.Session) { route.value = Route.Session(chat, back = from) }
@@ -102,12 +104,17 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        Ui.inFront = true
+        Notify.live(this, Live(0, 0, "", ""))
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(net)
         if (Prefs.paired) onPaired(first = false)
     }
 
     override fun onStop() {
         super.onStop()
+        Ui.inFront = false
+        // What runs as the app goes to the back stays told: pushes (or the check) carry it on from here.
+        if (Prefs.paired) Notify.live(this, Live.of(Hub.working.value, Hub.cards.value.values, Hub.chats.value))
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(net) }
         Hub.stop()
     }

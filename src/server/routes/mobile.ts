@@ -8,7 +8,10 @@ import { hostOf, MobileStore } from "../../integrations/mobile/store.ts";
 import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { addAllowedHosts } from "../admission.ts";
-import { pendingQuestions } from "../../tools/interact.ts";
+import { allPendingQuestions, pendingQuestions } from "../../tools/interact.ts";
+import { liveData, liveStatus, LiveTicker } from "../../integrations/mobile/live.ts";
+import { agentCounts } from "../../automation/state.ts";
+import { plansWaiting } from "./plan.ts";
 import { gate } from "./permissions.ts";
 import { checkpoints } from "./checkpoints.ts";
 import { fleetMachines, startFleetSession } from "./fleet.ts";
@@ -77,6 +80,34 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     const card = a.kind === "approval" && a.data?.approval_id ? gate?.approval(a.data.approval_id) : undefined;
     return alertPush(a, card ? gate!.form(card) : undefined);
   };
+  // The phone's lasting notification while turns run (src/integrations/mobile/live.ts): what runs and
+  // what waits on the owner, per session nobody started (an agent's part is its root's).
+  const rootOf = (id: string) => {
+    let at = id;
+    for (let n = 0, p = store.session(at)?.parent_id; p && n < 32; n++, p = store.session(at)?.parent_id) at = p;
+    return at;
+  };
+  const turnStart = (sid: string) => store.db.query<{ ts: number | null }, [string]>("SELECT MAX(ts) AS ts FROM events WHERE session_id = ? AND kind = 'turn_start'").get(sid)?.ts ?? undefined;
+  const readLive = () => {
+    const waits = new Map<string, number>();
+    const add = (sid: string) => { const r = rootOf(sid); waits.set(r, (waits.get(r) ?? 0) + 1); };
+    for (const a of gate?.approvals({ pending: true }) ?? []) add(a.session_id);
+    for (const q of allPendingQuestions()) add(q.session_id);
+    for (const p of plansWaiting()) add(p.session_id);
+    const below = agentCounts({ store });
+    return liveStatus(store.sessions().filter((s) => !s.parent_id).map((s) => {
+      const running = deps.engine.isRunning(s.id) || (below.get(s.id) ?? 0) > 0;
+      return { title: s.title, running, since: running ? turnStart(s.id) : undefined, needs: waits.get(s.id) ?? 0 };
+    }));
+  };
+  const live = new LiveTicker(readLive, async (s) => {
+    const recs = await push.send(mobile, mobile.globalSeq(), { kind: "live", high: false, data: liveData(s) });
+    for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { live: true, device: r.device_id });
+  }, 20_000, () => push.configured() && mobile.pushTargets().length > 0);
+  bus.on((f) => {
+    if (f.t === "session" || (f.t === "feature" && (f.name === "approval" || f.name === "plan" || f.name === "automation"))) live.poke();
+  });
+
   // Sessions the phone holds a notification for, so a withdraw goes only there.
   const shown = new Set<string>();
   registerChannel({

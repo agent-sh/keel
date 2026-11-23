@@ -38,6 +38,8 @@ import java.util.concurrent.TimeUnit
 object Notify {
     const val NEEDS = "needs"
     const val UPDATES = "updates"
+    const val LIVE = "live"
+    private const val LIVE_ID = 0x4b31
 
     fun channels(c: Context) {
         val nm = c.getSystemService(NotificationManager::class.java)
@@ -47,6 +49,31 @@ object Notify {
         nm.createNotificationChannel(NotificationChannel(UPDATES, "Finished work", NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = "A session finished its turn"
         })
+        // Low: shown in the shade and on the lock screen, never a sound or a heads-up of its own.
+        nm.createNotificationChannel(NotificationChannel(LIVE, "Running sessions", NotificationManager.IMPORTANCE_LOW).apply {
+            description = "While a session works: how many, and how many need you"
+            setShowBadge(false)
+        })
+    }
+
+    /**
+     * The lasting notification: what works and what waits on the owner, until nothing does (then it goes).
+     * No service holds it and no connection feeds it: a "live" push replaces it (Push), the app sets it
+     * when it goes to the back, and the background check does when push is off. On Android 16 it asks to
+     * be a Live Update: an activity the owner started, with a start and an end.
+     */
+    fun live(c: Context, l: Live) {
+        val nm = c.getSystemService(NotificationManager::class.java)
+        if (!l.shown) { nm.cancel(LIVE, LIVE_ID); return }
+        val b = NotificationCompat.Builder(c, LIVE)
+            .setSmallIcon(R.drawable.ic_stat).setColor(0xFF0E6A80.toInt())
+            .setContentTitle(l.title).setContentText(l.body).setStyle(NotificationCompat.BigTextStyle().bigText(l.body))
+            .setContentIntent(open(c, null)).setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS).setPriority(NotificationCompat.PRIORITY_LOW)
+            .setRequestPromotedOngoing(true)
+        // Its time counts from the longest-running turn's start.
+        if (l.since > 0) b.setWhen(l.since).setUsesChronometer(true).setShowWhen(true)
+        runCatching { nm.notify(LIVE, LIVE_ID, b.build()) }
     }
 
     private fun idOf(key: String) = key.hashCode()
@@ -120,7 +147,7 @@ class PushService : FirebaseMessagingService() {
         val m = PushMsg.of(message.data)
         when (m.kind) {
             "withdraw" -> m.chat?.let { Notify.cancelChat(this, it) }
-            "live" -> {}
+            "live" -> Notify.live(this, Live.of(m))
             else -> Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.allows)
         }
         m.id?.let { id -> Hub.scope.launch { runCatching { Api.post("/v1/push/ack", JSONObject().put("id", id)) } } }
@@ -181,6 +208,8 @@ class CheckWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c, p) {
     override suspend fun doWork(): Result {
         if (!Prefs.paired || Prefs.pushState == "on") return Result.success()
         val pulse = runCatching { Hub.pulse() }.getOrElse { return Result.retry() }
+        // The lasting notification follows the check while the app is in the back (push off).
+        if (!Ui.inFront) Notify.live(applicationContext, Live.of(pulse))
         val seen = Prefs.notified.orEmpty().split('\n').filter { it.isNotBlank() }.toMutableSet()
         val open = pulse.cards.filter { it.pending }
         val titles = pulse.sessions.associate { it.id to it.title }

@@ -39,13 +39,21 @@ import dev.avifenesh.keel.ago
 import dev.avifenesh.keel.elapsed
 import dev.avifenesh.keel.stateOf
 import kotlinx.coroutines.delay
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 
 /** Seconds now, ticking once a second while shown: elapsed times stay current. */
 @Composable
 fun nowTick(): Double {
     var now by remember { mutableDoubleStateOf(System.currentTimeMillis() / 1000.0) }
-    LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() / 1000.0 } }
+    // Only while the app is on the screen: a clock that ticks in the back keeps the phone's main
+    // thread awake once a second for nothing (0.5% of a core, measured over an hour in the back).
+    val life = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(life) {
+        life.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) { now = System.currentTimeMillis() / 1000.0; delay(1000) }
+        }
+    }
     return now
 }
 

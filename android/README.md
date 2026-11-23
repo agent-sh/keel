@@ -128,6 +128,17 @@ the stream from that place, so only what changed since comes over the
 network. Running turns are not kept: a cold start never says a turn runs
 that it cannot see.
 
+## While sessions work
+
+While a session works or waits on you and the app is in the back, one silent
+notification says so ("2 sessions working · 1 needs you", the titles, the
+time since the longest turn started), and goes when nothing does. No
+service holds it and no connection feeds it: the daemon sends a `live` push
+when what runs or waits changed (held 20 seconds, so a turn that starts and
+ends in that time sends nothing; the push service keeps only the newest),
+the app sets it as it goes to the back, and the background check updates it
+when push is off. On Android 16 it asks to be shown as a Live Update.
+
 ## Push
 
 Push is optional. Without it the app keeps a live event stream while it is open
