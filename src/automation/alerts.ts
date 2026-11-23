@@ -2,7 +2,8 @@ import * as activity from "./activity.ts";
 import { D, alertHook, capture, clip, cursor, emit, inboxCounts } from "./core.ts";
 import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
-import { allPendingQuestions, pendingQuestions } from "../tools/interact.ts";
+import { allPendingQuestions, closedQuestions, pendingQuestions } from "../tools/interact.ts";
+import { answerSaid } from "../safety/card.ts";
 import { QUESTION_CUT } from "../core/stops.ts";
 import { planWaits, plansWaiting } from "../server/routes/plan.ts";
 import { sessionState } from "./state.ts";
@@ -48,6 +49,9 @@ export type Alert = {
   kept: boolean;
   // An ask whose card still waits for the owner, read or not (told with a list, not stored).
   open?: boolean;
+  // What became of an ask that waits no more, in words (told with a list): how an approval was
+  // answered (its choice, from where, by a rule), whether a question was answered or declined.
+  outcome?: string;
   // The machine it is about, or the one its session runs on when that is not this one, by its name now.
   machine?: { id: string; name: string };
 };
@@ -259,7 +263,26 @@ export function list(opts: { before?: string; limit?: number; unread?: boolean; 
     for (const r of readAsksWaiting(rows.map(toAlert))) if (!have.has(r.id)) rows.push(r);
     rows.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
   }
-  return rows.map(toAlert).map((a) => (ASK_KINDS.includes(a.kind) && waits(a) ? { ...a, open: true } : a));
+  return rows.map(toAlert).map((a) => {
+    if (!ASK_KINDS.includes(a.kind)) return a;
+    if (waits(a)) return { ...a, open: true };
+    const outcome = outcomeOf(a);
+    return outcome ? { ...a, outcome } : a;
+  });
+}
+
+// What became of an ask that waits no more. An approval is read from its stored record; a question
+// from the answers this daemon took (one answered before it started is not known here).
+function outcomeOf(a: Alert): string | undefined {
+  if (a.kind === "approval" && a.data?.approval_id) {
+    const r = perm.gate?.approval(String(a.data.approval_id));
+    return r ? answerSaid(r) : undefined;
+  }
+  if (a.kind === "question" && a.data?.call_id) {
+    const q = closedQuestions(0).findLast((x) => x.call_id === a.data.call_id);
+    return q ? (q.answered ? "answered" : "declined") : undefined;
+  }
+  return undefined;
 }
 
 // The read alerts of what waits on the owner now that `have` does not hold: each waiting card's

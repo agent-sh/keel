@@ -22,6 +22,7 @@ const actCls = "flex h-ctl-md items-center gap-1.5 rounded-md px-2.5 text-captio
 // Text a model wrote (a reply's first line, what an agent said, a question) is
 // markdown: the row reads it as words. A command or an error is kept as written.
 const WRITTEN = new Set<Alert["kind"]>(["finished", "agent", "question"]);
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 const lineOf = (a: Alert) => (WRITTEN.has(a.kind) ? plainLine(a.body) : a.body.split("\n").find((l) => l.trim())?.trim()) || a.body;
 
 const WIDE = matchMedia("(min-width: 640px)");
@@ -198,6 +199,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     </span>
                     {alone && title}
                     <span dir="auto" className={cn("min-w-[4rem] truncate text-left", "flex-1", a.read && !a.open ? "text-faint" : "text-fg")} data-testid="inbox-line" title={a.body}>{lineOf(a)}</span>
+                    {/* What became of an ask that waits no more: allowed once from the page, denied, closed with no answer (on a phone without where it was given: in its tooltip). */}
+                    {a.outcome && <span className={cn("text-micro", wide ? "min-w-0 max-w-[50%] truncate" : "shrink-0", /^denied|^closed/.test(a.outcome) ? "text-faint" : "text-muted", tight && "sr-only")} title={a.outcome} data-testid="inbox-outcome">{cap(wide ? a.outcome : a.outcome.split(" from ")[0]!.replace("closed with no answer", "not answered"))}</span>}
                     {(a.data?.snoozed || a.data?.held) && <span className="shrink-0 text-micro text-faint" aria-hidden>{a.data?.snoozed ? "snoozed" : "held by the snooze"}</span>}
                     {/* What waits on the owner is answered on its card: the row says it opens one. */}
                     {offers && <span className="shrink-0 text-micro font-medium text-accent-ink" data-testid="inbox-opens">{askAction(a)}</span>}

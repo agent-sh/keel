@@ -218,6 +218,18 @@ export const agoSaid = (ms: number): string => {
   return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
 };
 
+// What became of a request, in words a list can show: "allowed once from the page", "denied from
+// the phone (Pixel)", "allowed by your rule for another request", "closed with no answer" (its turn
+// was stopped). Undefined while it waits.
+const CHOICE_SAID: Record<string, string> = { once: "allowed once", session: "allowed for the session", always: "allowed always", deny: "denied" };
+export function answerSaid(a: { state: string; choice?: string; by?: AnsweredBy }): string | undefined {
+  if (a.state === "pending") return undefined;
+  if (a.state === "cancelled") return "closed with no answer";
+  if (a.state === "allowed" && a.by?.grant) return `allowed by your rule for another request, from ${whereSaid(a.by)}`;
+  const said = CHOICE_SAID[a.choice ?? ""] ?? (a.state === "denied" ? "denied" : "allowed");
+  return a.by ? `${said} from ${whereSaid(a.by)}` : said;
+}
+
 export function fromSaid(by: AnsweredBy | undefined): string {
   if (!by) return "";
   const handed = by.client === "script" || by.client === "acp";
