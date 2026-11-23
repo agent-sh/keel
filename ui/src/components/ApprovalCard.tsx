@@ -476,18 +476,20 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
       const line = parseFloat(getComputedStyle(text).lineHeight) || 1.5 * rem;
       return Math.max(line, Math.floor(bottom - top - line));
     };
+    const more = () => left() > 1 && tray.scrollTop + tray.clientHeight < tray.scrollHeight - 1;
     const go = () => {
-      const rest = left();
-      if (rest <= 1 || tray.scrollTop + tray.clientHeight >= tray.scrollHeight - 1) return false;
+      if (!more()) return false;
       own();
-      tray.scrollTop += Math.min(stepBy(), Math.ceil(rest) + 1);
+      tray.scrollTop += Math.min(stepBy(), Math.ceil(left()) + 1);
       return true;
     };
     // Two frames on: the view the step made has been painted. It is read then, and the next step made.
     const later = (f: () => void) => requestAnimationFrame(() => requestAnimationFrame(f));
     const after = () => later(() => { own(); tick(); if (end && go()) after(); });
-    if (!go()) return false;
-    after();
+    if (!more()) return false;
+    // Not even the first step in the frame of the key: the view the key found (the page may have just
+    // moved it, opening the text) is painted and read first, then left.
+    later(() => { tick(); if (go()) after(); });
     return true;
   };
   const onFocus = (e: ReactFocusEvent<HTMLDivElement>) => {
