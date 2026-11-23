@@ -236,6 +236,16 @@ export class ScriptedProvider implements Provider {
       if (action.includes("judge-allow.txt")) return reply('{"decision":"allow","risk":"low","reason":"The scratch marker is in scope."}');
       if (action.includes("judge-deny.txt") || action.includes("git clean -fn")) return reply('{"decision":"deny","risk":"high","reason":"The fixture refuses this action."}');
       if (action.includes("judge-unavailable.txt")) return reply('{"decision":"allow"}');
+      // A judge that thinks before its verdict, as an adaptive thinking model does: about 1,500
+      // tokens of thought at a high effort (or none named), 300 at a low one. A limit that leaves no
+      // room after the thought ends the reply there, with no verdict.
+      if (action.includes("judge-thinks.txt")) {
+        const thought = req.effort === "low" ? 300 : 1_500;
+        const thinking = { type: "thinking" as const, thinking: "Weighing the action against the owner's messages.", signature: "scripted" };
+        if (req.maxTokens !== undefined && req.maxTokens < thought + 100) return { blocks: [thinking], usage: { ...usage, output: req.maxTokens }, stop: "max_tokens", model: req.model };
+        const verdict = await reply('{"decision":"allow","risk":"low","reason":"The owner asked for this file."}');
+        return { ...verdict, blocks: [thinking, ...verdict.blocks], usage: { ...verdict.usage, output: verdict.usage.output + thought } };
+      }
       // A web request judged as a send: refused, and the reason repeats what the judge was shown of it.
       const sent = /^ tool \S+ \(send\)\n([\s\S]*?)(?:\n\nIts (?:input|options):|$)/.exec(action);
       if (sent) return reply(JSON.stringify({ decision: "deny", risk: "high", reason: `The fixture was shown: ${sent[1]!.split("\n").join(" | ")}`.slice(0, 390) }));

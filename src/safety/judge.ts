@@ -158,9 +158,13 @@ export async function askJudge(providers: Providers, id: string, p: JudgeText, s
   const { provider, info } = await providers.resolve(id);
   const effort = info.efforts.includes("low") ? "low" : undefined;
   const t0 = Date.now();
+  // The model's own output limit: a model that thinks before it answers (Anthropic's adaptive
+  // thinking runs at high effort when the model offers no low one) can spend a small limit on its
+  // thinking and end without a verdict, and the call is then refused. A verdict is short; the
+  // limit costs nothing that is not written, and the timeout bounds the wait.
   const res = await provider.stream({
     model: info.model, system: p.system, messages: [{ role: "user", content: [{ type: "text", text: p.text }] }], tools: [],
-    effort, maxTokens: Math.min(info.output, effort ? 4000 : 600), signal: AbortSignal.timeout(timeout), sessionKey,
+    effort, maxTokens: info.output || undefined, signal: AbortSignal.timeout(timeout), sessionKey,
   }, () => {});
   const out = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n");
   const m = out.match(/\{[\s\S]*\}/);

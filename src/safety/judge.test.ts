@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { askedFor, judgePrompt, PARENT_MESSAGES } from "./judge.ts";
+import { ScriptedProvider } from "../providers/scripted.ts";
+import { askedFor, askJudge, judgePrompt, PARENT_MESSAGES } from "./judge.ts";
 
 // A parent that moves its agent's work in a later message (a scratch folder
 // given after the task) is read by the judge too, the newest few, so a call on
@@ -35,4 +36,18 @@ test("the judge of an agent's call reads its task and the newest messages its pa
 
   // A session of the owner's own has no task and no parent's messages.
   expect(askedFor(store, root.id)).toEqual({ owner: ["- clean up the probe folders when done"] });
+});
+
+// A judge model that thinks before it answers (adaptive thinking runs at a high effort when the
+// model offers no low one) gives its verdict: the request leaves it the model's own output limit.
+test("a judge that thinks before its verdict has the room to give it", async () => {
+  const provider = new ScriptedProvider();
+  const listed = (await provider.list()).find((m) => m.model === "stand-in")!;
+  const text = "The owner's recent messages (oldest first):\n- write the marker\n\nThe action: tool Write (write)\njudge-thinks.txt";
+  for (const efforts of [[], ["low", "high"], ["medium", "high"]]) {
+    const info = { ...listed, id: "scripted:stand-in", provider: "scripted", efforts };
+    const providers = { resolve: async () => ({ provider, info }) } as any;
+    const r = await askJudge(providers, info.id, { system: "Judge the action.", text }, "judge-thinks");
+    expect([efforts, r.v?.decision]).toEqual([efforts, "allow"]);
+  }
 });
