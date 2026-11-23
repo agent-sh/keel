@@ -8,7 +8,11 @@ import type { Database } from "bun:sqlite";
 import type { Restart } from "./life-rows.ts";
 
 export type StallFact = { ts_ms: number; ms: number; what: string; kind: string };
-export type DaemonFacts = { restarts: Restart[]; stalls: StallFact[] };
+// A provider that could not be reached (src/providers/outage.ts), from its two Activity rows:
+// when it began, how long it lasted (null: it still goes on), how many sessions' turns waited in
+// it, and whether they went on when it answered (null while it goes on).
+export type OutageFact = { provider: string; label: string; since: number; ms: number | null; sessions: number; answered: boolean | null };
+export type DaemonFacts = { restarts: Restart[]; stalls: StallFact[]; outages?: OutageFact[] };
 
 const SCHEMA = "CREATE TABLE IF NOT EXISTS daemon_stalls (ts_ms INTEGER NOT NULL, ms INTEGER NOT NULL, what TEXT NOT NULL, kind TEXT NOT NULL); CREATE INDEX IF NOT EXISTS daemon_stalls_ts ON daemon_stalls(ts_ms);";
 // Stalls kept: the digest reads at most a week back.
@@ -36,7 +40,30 @@ export function daemonFacts(db: Database, spans: { from: number; to: number }[])
   const stalls = !has(db, "daemon_stalls") ? [] : db
     .query<StallFact, [number, number]>("SELECT ts_ms, ms, what, kind FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ? ORDER BY ts_ms").all(lo, hi)
     .filter((s) => touches(s.ts_ms, s.ts_ms));
-  return { restarts, stalls };
+  return { restarts, stalls, outages: outageFacts(db, lo, hi, touches) };
+}
+
+// The outages that touch the spans: begun in them, or begun before and still going in them.
+function outageFacts(db: Database, lo: number, hi: number, touches: (a: number, b: number) => boolean): OutageFact[] {
+  if (!has(db, "activity")) return [];
+  type Row = { text: string; data: string };
+  // An outage longer than a day is still told by the day it began in (the read is bounded by it).
+  const began = db.query<Row, [number, number]>("SELECT text, data FROM activity WHERE kind = 'daemon' AND sub = 'outage' AND ts >= ? AND ts <= ? ORDER BY ts").all(lo - 86_400_000, hi);
+  if (!began.length) return [];
+  const over = new Map<string, { ms: number; answered: boolean }>();
+  for (const r of db.query<Row, [number]>("SELECT text, data FROM activity WHERE kind = 'daemon' AND sub = 'outage_over' AND ts >= ? ORDER BY ts").all(lo - 86_400_000)) {
+    const d = JSON.parse(r.data) as { provider: string; since: number; ms: number; answered: boolean };
+    over.set(`${d.provider}:${d.since}`, { ms: d.ms, answered: !!d.answered });
+  }
+  const now = Date.now();
+  return began.flatMap((r) => {
+    const d = JSON.parse(r.data) as { provider: string; since: number; sessions?: number };
+    const end = over.get(`${d.provider}:${d.since}`);
+    if (!touches(d.since, end ? d.since + end.ms : now)) return [];
+    // The row's text names the provider as the page shows it ("Bedrock cannot be reached since ...").
+    const label = r.text.split(" cannot be reached")[0] || d.provider;
+    return [{ provider: d.provider, label, since: d.since, ms: end?.ms ?? null, sessions: d.sessions ?? 0, answered: end ? end.answered : null }];
+  });
 }
 
 // The starts before this one, the newest first, each with the stalls of its own life (from its start

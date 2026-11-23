@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { zoneLabel } from "../core/clock.ts";
 import { ABSENCES, daemonBrief, daemonLines, digest, digestBrief, digestText, Presence, stallCause, stallsLine, TICK_MS, waits } from "./away.ts";
-import type { StallFact } from "./daemon-facts.ts";
+import { Database } from "bun:sqlite";
+import { daemonFacts, type StallFact } from "./daemon-facts.ts";
 import type { Restart } from "./life-rows.ts";
 import { TEXT_TOKENS, tokensOf, type Overview, type OverviewRow } from "./overview.ts";
 
@@ -275,4 +276,30 @@ test("stalls of one kind are one entry, in the words of the longest, without its
   const kids = [{ ts_ms: T0, ms: 4000, what: "4.0 s waiting for a child: sleep 4 (pid 1)", kind: "child" }, { ts_ms: T0 + 1, ms: 2000, what: "2.0 s waiting for a child: git status (pid 2)", kind: "child" }];
   expect(stallsLine(kids)).toBe("The daemon was unresponsive 2 times, 6.0 s in all: 6.0 s (2 times) waiting for a child: sleep 4 and others of that kind.");
   expect(stallCause("2.1 s waiting for a processor (machine load 22, CPU pressure 41%)")).toBe("waiting for a processor");
+});
+
+// A provider that could not be reached while the owner was away is told with the daemon's own
+// account: which provider, when, how long, how many turns waited and whether they went on. Read
+// from the outage's two Activity rows (src/automation/outage.ts writes them).
+test("the digest names a provider outage of the absence, from its Activity rows", () => {
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE activity (id TEXT, ts INTEGER, kind TEXT, sub TEXT, session_id TEXT, text TEXT, data TEXT)");
+  const act = (ts: number, sub: string, text: string, data: object) => db.query("INSERT INTO activity VALUES (?, ?, 'daemon', ?, NULL, ?, ?)").run(`a${ts}${sub}`, ts, sub, text, JSON.stringify(data));
+  const since = T0 + H;
+  act(since, "outage", "Bedrock cannot be reached since 23:00: 3 sessions wait and go on when they answer", { provider: "bedrock", since, sessions: 3 });
+  act(since + 150_000, "outage_over", "Bedrock answers again: it could not be reached for 2 min 30 s", { provider: "bedrock", since, ms: 150_000, answered: true });
+  // One before the absence, over before it began: not told.
+  act(T0 - 2 * H, "outage", "Other cannot be reached since 20:00: 1 session waits", { provider: "other", since: T0 - 2 * H, sessions: 1 });
+  act(T0 - 2 * H + MIN, "outage_over", "Other answers again", { provider: "other", since: T0 - 2 * H, ms: MIN, answered: true });
+  const spans = [{ from: T0, to: T0 + 9 * H }];
+  const facts = daemonFacts(db, spans);
+  expect(facts.outages).toEqual([{ provider: "bedrock", label: "Bedrock", since, ms: 150_000, sessions: 3, answered: true }]);
+  const away = digest(page([row(1, { title: "Build", did: { turns: 1, failed: {}, agents: {}, cost: 0 } })], 0), { spans, present: true }, { daemon: facts })!;
+  expect(away.daemon).toEqual([`Bedrock could not be reached from 23:00:00 to 23:02:30 ${Z} (2 min 30 s): 3 turns waited and went on when it answered.`]);
+  expect(digestBrief(away)).toBe("Bedrock could not be reached for 2 min 30 s, 3 turns waited; 1 turn ended");
+  // Told even when no session did anything else, and while it still goes on.
+  const still = { provider: "bedrock", label: "Bedrock", since, ms: null, sessions: 2, answered: null };
+  expect(daemonLines({ restarts: [], stalls: [], outages: [still] })).toEqual([`Bedrock cannot be reached since 23:00:00 ${Z}: 2 turns wait and go on when it answers.`]);
+  expect(digest(page([], 0), { spans, present: false }, { daemon: { restarts: [], stalls: [], outages: [still] } })).not.toBeNull();
+  expect(daemonBrief({ restarts: [], stalls: [], outages: [still] })).toBe("Bedrock cannot be reached, 2 turns wait");
 });

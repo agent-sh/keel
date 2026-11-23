@@ -17,9 +17,9 @@
 // counted: the time between two absences, when the owner was there, is not.
 // The daemon's own time not running (it was down, or the machine slept) is no
 // absence: nothing happened in it, and no report could arrive.
-import { zoned, zoneLabel } from "../core/clock.ts";
+import { localTime, zoned, zonedPair, zoneLabel } from "../core/clock.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
-import type { DaemonFacts, StallFact } from "./daemon-facts.ts";
+import type { DaemonFacts, OutageFact, StallFact } from "./daemon-facts.ts";
 import { type Restart, restartSummary, tally } from "./life-rows.ts";
 import { agentsText, costText, cutText, failedText, fitted, MAX, name, plural, shortId, SINCE_MAX_MS, titleAt, usd, type Overview, type OverviewRow } from "./overview.ts";
 import { dur } from "./timeline-rows.ts";
@@ -212,7 +212,36 @@ function ownWays(rs: Restart[]): string {
 // Then the stalls in one.
 // Whether what the daemon went through is worth a digest by itself: asked restarts that cut
 // nothing are not (they are told beside whatever else there is to tell).
-export const daemonTold = (f: DaemonFacts | undefined): boolean => !!f && (f.restarts.some((r) => !wasAsked(r)) || f.stalls.length > 0 || cutOf(f.restarts).length > 0);
+export const daemonTold = (f: DaemonFacts | undefined): boolean => !!f && (f.restarts.some((r) => !wasAsked(r)) || f.stalls.length > 0 || cutOf(f.restarts).length > 0 || !!f.outages?.length);
+
+// A provider outage in the absence, in one sentence: the provider, when, how long, the turns that
+// waited in it and whether they went on. "Bedrock could not be reached from 03:12:40 to 03:15:10 CET
+// (2 min 30 s): 3 turns waited and went on when it answered."
+const OUTAGES_TOLD = 3;
+// How long it lasted, to the second under an hour: an outage of minutes is read by its seconds too.
+const lasted = (ms: number) => {
+  const t = Math.round(ms / 1000);
+  return ms < 60_000 || ms >= 3_600_000 ? secs(ms) : `${Math.floor(t / 60)} min${t % 60 ? ` ${t % 60} s` : ""}`;
+};
+const turnsWaited = (n: number, still: boolean) => (n ? `${plural(n, "turn")} ${still ? (n === 1 ? "waits" : "wait") : "waited"}` : still ? "no turn waits" : "no turn waited");
+export function outageLine(o: OutageFact): string {
+  if (o.ms === null) return `${o.label} cannot be reached since ${localTime(o.since)} ${zoneLabel(o.since)}: ${turnsWaited(o.sessions, true)}${o.sessions ? ` and ${o.sessions === 1 ? "goes" : "go"} on when it answers` : ""}.`;
+  const [a, b] = zonedPair(o.since, o.since + o.ms);
+  const what = !o.sessions ? turnsWaited(0, false) : o.answered ? `${turnsWaited(o.sessions, false)} and went on when it answered` : `${turnsWaited(o.sessions, false)}; none waits for it any more`;
+  return `${o.label} could not be reached from ${a} to ${b} (${lasted(o.ms)}): ${what}.`;
+}
+// "Bedrock could not be reached for 2 min 30 s, 3 turns waited"; two or more: "Bedrock could not be reached twice, 4 turns waited".
+function outageBrief(os: OutageFact[] | undefined): string {
+  if (!os?.length) return "";
+  const by = new Map<string, OutageFact[]>();
+  for (const o of os) by.set(o.label, [...(by.get(o.label) ?? []), o]);
+  return [...by].map(([label, list]) => {
+    const open = list.some((o) => o.ms === null);
+    const n = list.reduce((x, o) => x + o.sessions, 0);
+    const how = open ? "cannot be reached" : list.length === 1 ? `could not be reached for ${lasted(list[0]!.ms!)}` : `could not be reached ${times(list.length)}`;
+    return `${label} ${how}${n ? `, ${turnsWaited(n, open)}` : ""}`;
+  }).join("; ");
+}
 // "was stopped by a signal, down 42 min", "was stopped by a signal twice, down 42 min at the longest".
 const signalWords = (rs: Restart[]) => `was stopped by a signal${rs.length > 1 ? ` ${times(rs.length)}` : ""}, down ${dur(longest(rs))}${rs.length > 1 ? " at the longest" : ""}`;
 export function daemonLines(f: DaemonFacts | undefined): string[] {
@@ -231,6 +260,8 @@ export function daemonLines(f: DaemonFacts | undefined): string[] {
     out.push(`${own.length || signalled.length ? "It also restarted" : "The daemon restarted"} ${times(wanted.length)} when asked (down ${secs(downOf(wanted))} in all); ${cut.length ? `${cut.length} turn${cut.length > 1 ? "s were" : " was"} cut: ${tally(cut)}` : "no turn was cut"}.`);
   }
   if (stalls) out.push(stalls);
+  for (const o of (f.outages ?? []).slice(-OUTAGES_TOLD)) out.push(outageLine(o));
+  if ((f.outages?.length ?? 0) > OUTAGES_TOLD) out.push(`${plural(f.outages!.length - OUTAGES_TOLD, "earlier outage")} of a provider, not listed.`);
   return out;
 }
 // "3 turns cut", and what did not go on by itself: "3 turns cut (1 held for the owner)".
@@ -243,7 +274,8 @@ function cutBrief(rs: Restart[]): string {
 const downWords = (r: Restart) => (!r.before ? "started after an end that was not recorded" : `${r.before.how === "killed" ? "went down" : "ended on a failure"} and came back after ${dur(Math.max(0, r.up_ms - r.before.down_ms))}`);
 // "the daemon went down and came back after 29 s, 6 turns cut; restarted 12 times when asked, 71 turns cut; unresponsive twice".
 export function daemonBrief(f: DaemonFacts | undefined): string {
-  if (!f || (!f.restarts.length && !f.stalls.length)) return "";
+  const outages = outageBrief(f?.outages);
+  if (!f || (!f.restarts.length && !f.stalls.length)) return outages;
   const own = f.restarts.filter((r) => !wasAsked(r) && !bySignal(r)), wanted = f.restarts.filter(wasAsked), signalled = f.restarts.filter(bySignal);
   const parts = [
     own.length ? `${own.length === 1 ? downWords(own[0]!) : `stopped by itself ${times(own.length)}`}${cutBrief(own)}` : "",
@@ -251,7 +283,7 @@ export function daemonBrief(f: DaemonFacts | undefined): string {
     wanted.length ? `restarted ${wanted.length === 1 ? "" : `${times(wanted.length)} `}when asked${cutBrief(wanted)}` : "",
     f.stalls.length ? `${own.length || wanted.length || signalled.length ? "" : "was "}unresponsive ${times(f.stalls.length)}` : "",
   ].filter(Boolean);
-  return parts.length ? `the daemon ${parts.join("; ")}` : "";
+  return [parts.length ? `the daemon ${parts.join("; ")}` : "", outages].filter(Boolean).join("; ");
 }
 
 // "1 approval and 2 questions wait", "1 question waits".
