@@ -51,7 +51,7 @@ test("two worktrees that would conflict are told once, and a rebase clears it", 
   // Each is told at its next turn, once: the other branch, its session, the file and the line.
   const notes = async (id: string, words = "would conflict") => {
     const d = await (await request.get(`/api/sessions/${id}`)).json();
-    return d.events.filter((e: any) => e.kind === "user" && e.data.about === "overlap" && String(e.data.text).includes(words)).map((e: any) => String(e.data.text));
+    return d.events.filter((e: any) => e.kind === "note" && e.data.kind === "overlap" && e.data.model && String(e.data.text).includes(words)).map((e: any) => String(e.data.text));
   };
   const say = async (id: string) => {
     await request.post(`/api/sessions/${id}/messages`, { data: { text: ask("Reply with the single word ok.", "script:say ok") } });

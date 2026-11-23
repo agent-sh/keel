@@ -12,11 +12,19 @@
 // are read through an alternate), the reads take no optional lock, and no ref
 // or index of the repository changes.
 //
+// The merge reads no attributes but an empty tree's (`--attr-source`) and no
+// attributes file of the owner's: a .gitattributes a session wrote (in the
+// main checkout or on a branch) names no merge driver of the owner's global
+// config, which would run its program on another session's branch, and no
+// union merge hides a conflict.
+//
 // A new conflict is owed to the sessions on both sides, and to the parent of
-// each that is an agent, as one harness note each; it is told while the
-// session works (a steer at its next step) or at its next turn's start, never
-// by starting a turn. A pair that merges clean says nothing; a conflict that
-// went (a rebase) is told as gone, once, to whoever was told of it.
+// each that is an agent, as one harness note each. It is told inside a turn
+// only: as a note for the model written just before one of the turn's model
+// requests (`noteFor`, from a beforeRequest hook), so it never starts a turn,
+// never wakes an agent after its final answer and never waits in a queue
+// behind the owner's Stop. A pair that merges clean says nothing; a conflict
+// that went (a rebase) is told as gone, once, to whoever was told of it.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { git, locate, type Where } from "../core/git.ts";
@@ -29,6 +37,7 @@ CREATE TABLE IF NOT EXISTS overlap_branches (repo TEXT NOT NULL, branch TEXT NOT
 CREATE TABLE IF NOT EXISTS overlap_pairs (repo TEXT NOT NULL, a TEXT NOT NULL, b TEXT NOT NULL, base INTEGER NOT NULL, a_tip TEXT NOT NULL, b_tip TEXT NOT NULL, conflict INTEGER NOT NULL, error TEXT, files TEXT NOT NULL, checked INTEGER NOT NULL, PRIMARY KEY (repo, a, b));
 CREATE TABLE IF NOT EXISTS overlap_told (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, repo TEXT NOT NULL, a TEXT NOT NULL, b TEXT NOT NULL, told TEXT, owed TEXT, PRIMARY KEY (session_id, repo, a, b));
 CREATE INDEX IF NOT EXISTS overlap_told_owed ON overlap_told(session_id) WHERE owed IS NOT NULL;
+CREATE TABLE IF NOT EXISTS overlap_marks (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, repo TEXT NOT NULL, branch TEXT, tip TEXT, base TEXT);
 `;
 
 type PairRow = { repo: string; a: string; b: string; base: number; a_tip: string; b_tip: string; conflict: number; error: string | null; files: string; checked: number };
@@ -47,7 +56,8 @@ const PLACED = 40;
 // calls of one step (a commit, then a push) make one pass.
 const SETTLE_MS = 750;
 
-export type Teller = { running: (id: string) => boolean; steer: (id: string, text: string, meta: Record<string, unknown>) => boolean; changed: (sessionIds: string[]) => void; failed: (e: unknown, at: string) => void };
+// `changed`: the sessions whose repository's forecast changed (their views read it again).
+export type Teller = { changed: (sessionIds: string[]) => void; failed: (e: unknown, at: string) => void };
 
 export const rootOf = (w: Where) => (w.common.endsWith("/.git") ? dirname(w.common) : w.top ?? dirname(w.common));
 
@@ -81,6 +91,7 @@ export class Overlaps {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private scanning = new Map<string, Promise<void>>();
   private again = new Set<string>();
+  private empty = new Map<string, string>(); // repo → its empty tree's id (sha1 or sha256)
 
   constructor(private store: Store, private teller: Teller) {
     store.migrate(SCHEMA);
@@ -193,7 +204,7 @@ export class Overlaps {
           mkdirSync(join(objects, "info"), { recursive: true });
         }
         const env = { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(w.common, "objects") };
-        const mt = await git(repo, ["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", p.ta, p.tb], { read: true, env });
+        const mt = await git(repo, [...(await this.noAttrs(repo)), "merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", p.ta, p.tb], { read: true, env });
         stat.merges++;
         const r = parseMergeTree(mt.out, mt.code, mt.err);
         const files = "conflict" in r && r.conflict ? await this.place(repo, p.ta, p.tb, r.files, stat) : [];
@@ -214,7 +225,8 @@ export class Overlaps {
 
   // Pairs no longer checked go with what was owed of them (a branch that
   // landed or went is not told as resolved); the sessions of the repository's
-  // branches hear of a change; what is owed to a working session goes now.
+  // branches hear of a change. What is owed waits for a model request of
+  // its session's turn (noteFor).
   private settle(repo: string, keep: Set<string>, owners: Map<string, string>, stat: Pass, t0: number, changed = false) {
     for (const r of this.store.db.query<{ a: string; b: string }, [string]>("SELECT a, b FROM overlap_pairs WHERE repo = ?").all(repo)) {
       if (keep.has(`${r.a}\0${r.b}`)) continue;
@@ -225,8 +237,19 @@ export class Overlaps {
     stat.ms = Math.round(performance.now() - t0);
     this.passes.set(repo, stat);
     if (changed) this.teller.changed([...new Set(owners.values())]);
-    const due = this.store.db.query<{ session_id: string }, [string]>("SELECT DISTINCT session_id FROM overlap_told WHERE repo = ? AND owed IS NOT NULL").all(repo);
-    for (const { session_id } of due) if (this.teller.running(session_id)) this.tell(session_id);
+  }
+
+  // The options that leave every attribute out of a call: an empty tree as
+  // the attribute source, and no attributes file of the owner's.
+  private async noAttrs(repo: string): Promise<string[]> {
+    let tree = this.empty.get(repo);
+    if (!tree) {
+      const r = await git(repo, ["hash-object", "-t", "tree", "--stdin"], { read: true, input: "" });
+      if (r.code !== 0 || !/^[0-9a-f]{40,64}$/.test(r.out.trim())) throw new Error(`git hash-object: ${r.err.trim() || "no empty tree"}`);
+      tree = r.out.trim();
+      this.empty.set(repo, tree);
+    }
+    return ["--attr-source", tree, "-c", "core.attributesFile=/dev/null"];
   }
 
   private async ahead(repo: string, tip: string, baseTip: string): Promise<number> {
@@ -248,7 +271,7 @@ export class Overlaps {
     // One diff a side for all the files; a file whose part is not found there is diffed alone.
     const raw = async (tip: string, paths: string[]) => {
       stat.diffs++;
-      const r = await git(repo, ["-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-renames", mb!, tip, "--", ...paths.map((p) => `:(literal)${p}`)], { read: true });
+      const r = await git(repo, [...(await this.noAttrs(repo)), "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-renames", mb!, tip, "--", ...paths.map((p) => `:(literal)${p}`)], { read: true });
       return r.code === 0 ? r.out : undefined;
     };
     const diff = async (tip: string) => splitDiff((await raw(tip, placed)) ?? "");
@@ -305,12 +328,14 @@ export class Overlaps {
     return s?.parent_id === recipient ? `the branch of your agent ${name}(${owner})` : `the branch of session ${name}(${owner})`;
   }
 
-  // What is owed to a session, as one note steered into its turn. Returns
-  // whether anything was told. Each pair is read as it is now: a conflict
-  // that went before it was told is not told at all.
-  tell(sessionId: string): boolean {
+  // What is owed to a session, as the words of one note for its model, and
+  // what writing it settles: the caller stores the note and calls `settle` in
+  // one write. Nothing when nothing is owed. Each pair is read as it is now:
+  // a conflict that went before it was told is not told at all.
+  noteFor(sessionId: string): { text: string; short: string; pairs: string[]; settle: () => void } | undefined {
     const rows = this.store.db.query<ToldRow, [string]>("SELECT * FROM overlap_told WHERE session_id = ? AND owed IS NOT NULL").all(sessionId);
-    if (!rows.length) return false;
+    if (!rows.length) return undefined;
+    let conflicts = 0, cleared = 0;
     const parts: string[] = [], settled: (() => void)[] = [], pairs: string[] = [];
     for (const row of rows) {
       const p = this.store.db.query<PairRow, [string, string, string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND a = ? AND b = ?").get(row.repo, row.a, row.b);
@@ -326,21 +351,22 @@ export class Overlaps {
       if (row.owed === "conflict" && p.conflict) {
         const told = row.told ? (JSON.parse(row.told) as string[]) : [];
         parts.push(conflictNote(mine, other, files.filter((f) => !told.includes(f.path)), files.length, !!p.base));
+        conflicts++;
         settled.push(() => this.store.db.query("UPDATE overlap_told SET told = ?, owed = NULL WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(JSON.stringify(files.map((f) => f.path)), ...where));
       } else if (row.owed === "cleared" && !p.conflict && !p.error) {
         parts.push(clearedNote(mine, other, !!p.base));
+        cleared++;
         settled.push(() => this.store.db.query("DELETE FROM overlap_told WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(...where));
       } else {
         settled.push(() => this.store.db.query("UPDATE overlap_told SET owed = NULL WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(...where));
       }
       pairs.push(`${p.a} ${p.b}`);
     }
-    // The note and what it settles are one write.
-    return this.store.atomic(sessionId, () => {
-      const sent = parts.length ? this.teller.steer(sessionId, parts.join("\n\n"), { kind: "harness", about: "overlap", pairs }) : true;
-      if (sent) for (const f of settled) f();
-      return sent && parts.length > 0;
-    });
+    const settle = () => { for (const f of settled) f(); };
+    // Rows that owed nothing any more are settled at once; there is no note to write.
+    if (!parts.length) return void this.store.db.transaction(settle)();
+    const said = [conflicts ? `${conflicts === 1 ? "a branch that would conflict" : `${conflicts} branches that would conflict`} when landing` : "", cleared ? `${cleared === 1 ? "a conflict" : `${cleared} conflicts`} gone` : ""].filter(Boolean).join(", and ");
+    return { text: parts.join("\n\n"), short: `Overlap forecast: ${said}.`, pairs, settle };
   }
 
   // ---- what the page reads ----
@@ -379,6 +405,20 @@ export class Overlaps {
 // What a tool call could move, read from the files before and after it: the
 // branch the session's checkout is on with its tip, and the base's tip.
 export type Mark = { repo: string; branch?: string; tip?: string; base?: string };
+type MarkRow = { repo: string; branch: string | null; tip: string | null; base: string | null };
+// The last mark of a session, kept with the session so a start compares a
+// session's first call with what its calls left before the stop.
+export function lastMark(store: Store, sessionId: string): Mark | undefined {
+  const r = store.db.query<MarkRow, [string]>("SELECT repo, branch, tip, base FROM overlap_marks WHERE session_id = ?").get(sessionId);
+  return r ? { repo: r.repo, ...(r.branch ? { branch: r.branch } : {}), ...(r.tip ? { tip: r.tip } : {}), ...(r.base ? { base: r.base } : {}) } : undefined;
+}
+// Written only when it changed (a call that moved nothing writes nothing).
+export function keepMark(store: Store, sessionId: string, m: Mark) {
+  if (!store.session(sessionId)) return;
+  store.db.query("INSERT INTO overlap_marks (session_id, repo, branch, tip, base) VALUES (?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET repo = excluded.repo, branch = excluded.branch, tip = excluded.tip, base = excluded.base")
+    .run(sessionId, m.repo, m.branch ?? null, m.tip ?? null, m.base ?? null);
+}
+export const sameMark = (a: Mark | undefined, b: Mark) => !!a && a.repo === b.repo && a.branch === b.branch && a.tip === b.tip && a.base === b.base;
 const whereCache = new Map<string, { at: number; w: Where | null }>();
 export function markOf(s: Session, baseRef: (repo: string) => string | null | undefined): Mark | undefined {
   if (s.machine) return undefined;
