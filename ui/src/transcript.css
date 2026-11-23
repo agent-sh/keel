@@ -1,10 +1,12 @@
-/* The conversation: three voices, each with its own edge.
-   The owner's words stand behind an ink rule on a tint. The model's reply is
-   plain text at the reading size, with no edge. The work between them is a
-   rail: a steel rule with a line a step, set in the interface size, where
-   the color of a step's part of the rule is its state (amber while it runs,
-   red where it failed). What Keel itself says is the quietest: a label and
-   a line. Unlayered, after the Bridge, so it wins over utilities. */
+/* The conversation: three voices, each drawn one way.
+   The owner's words stand on a tint. The model's reply is plain text at the
+   reading size, with no edge. The work between them is a rail: a steel rule
+   with a line a step, set in the interface size, where the color of a step's
+   part of the rule is its state (amber while it runs, red where it failed).
+   It is the one strong rule in the conversation. What Keel itself says (to the
+   model, from an agent, a wake, a failure notice) is the quietest: a line, and
+   what it holds under a hairline when opened. No card and no shadow. Unlayered,
+   after the Bridge, so it wins over utilities. */
 
 /* ---------- The owner's words ---------- */
 .k-user-message { align-items: stretch; }
@@ -12,12 +14,10 @@
    and on white, a step toward light at night (never darker than the page). */
 .k-owner-words {
   display: flex; flex-direction: column; gap: 0.5rem; padding: 0.625rem 0.875rem;
-  border-left: 0.1875rem solid var(--fg); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  border-radius: var(--radius-md);
   background: color-mix(in oklab, var(--accent-soft) 55%, transparent);
   font-size: var(--text-read); line-height: 1.6; color: var(--fg);
 }
-/* At night the rule is steel: not a white bar per message. */
-.dark .k-owner-words { border-left-color: var(--band); }
 /* In a preview (an imported conversation) the same block, at the interface size. */
 .k-owner-words.k-owner-small { font-size: var(--text-ui); line-height: 1.5; padding: 0.4375rem 0.625rem; }
 .k-owner-attached { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; }
