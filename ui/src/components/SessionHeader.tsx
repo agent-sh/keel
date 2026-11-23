@@ -176,7 +176,9 @@ function MoreTools({ tools, live, list, changed }: { tools: Tool[]; live: boolea
       </Popover.Trigger>
       <Popover.Portal keepMounted>
         <Popover.Positioner data-stow="" sideOffset={6} align="end" className="z-50 outline-none">
-          <Popover.Popup className="k-stow" data-testid="header-more" aria-label="More actions">
+          {/* Kept in the page while closed (it measures its rows), it is a dialog only while open: a closed one
+              is not a second dialog under the one that is (the shortcut sheet). */}
+          <Popover.Popup className="k-stow" data-testid="header-more" aria-label="More actions" role={open && n > 0 ? "dialog" : "none"}>
             <div ref={setEl}>
               {tools.map((t) => t.item ? <div key={t.id} className="k-stow-act">{t.item(() => setOpen(false))}</div> : (
                 <div key={t.id} className="k-stow-row" role="group" aria-label={t.label} data-tool={t.id} onClick={reach}>
