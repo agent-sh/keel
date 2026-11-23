@@ -281,7 +281,7 @@ a click in the message box, the paste key) that many times in the run. With
 the Qt engine it also stops the program that draws
 the windows and expects them back where they were with what was typed a
 moment before, flips the desktop's word on a screen reader ten times and
-times a second launch, ends a page's own process four times, looks at what
+times a second launch against one timed before the flips, ends a page's own process four times, looks at what
 the engine's processes hold of the pipe to the app, asks the environment for
 the debugging port and no sandbox, and starts a Qt that cannot start, one
 that stops before it drew and one that stops soon after each start

@@ -123,22 +123,34 @@ $A key --id "$WS" ctrl+a > /dev/null 2>&1; $A key --id "$WS" BackSpace > /dev/nu
 
 # --- f. the desktop's word on a screen reader flips ten times in a row: the app goes on answering
 flip() { gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status ScreenReaderEnabled "<$1>" > /dev/null 2>&1; }
+# A second launch, timed: the best of three, in ms (it hands its words to the running app and
+# ends; one the app does not answer is ended after ten seconds and counts as 99999).
+launch_ms() {
+  local best=99999 t0 t1 ms rc
+  for _ in 1 2 3; do
+    t0=$(date +%s%N); timeout 10 "$SHELL_BIN" keel://new; rc=$?; t1=$(date +%s%N)
+    ms=$(( (t1 - t0) / 1000000 )); [ "$rc" = 0 ] && [ "$ms" -lt "$best" ] && best=$ms
+    sleep 0.5
+  done
+  echo "$best"
+}
 if flip true; then
+  # How long a second launch takes on this machine now, before anything is flipped: what it
+  # takes after is held against this, not against a number. (A launch is a process that starts,
+  # speaks to the app and ends: under load, or with the windows drawn in software, it alone takes
+  # the hundred ms the case once allowed. The fault the case is for is an app that never answers.)
+  before=$(launch_ms)
   flips=$(logged screen-reader)
   # (Each flip is given the time to be seen: the app starts the drawing program again for each.)
   turned() { local was; was=$(logged screen-reader); flip "$1"; wait_for 8 "[ \"\$(logged screen-reader)\" -gt $was ]" || true; }
   turned false; for _ in 1 2 3 4 5; do turned true; turned false; done
   # (Each flip the app saw started the drawing program again: they are done when their count stands.)
   seen=-1
-  while [ "$seen" != "$(logged screen-reader)" ]; do seen=$(logged screen-reader); sleep 4; done
-  best=99999
-  for _ in 1 2 3; do
-    t0=$(date +%s%N); timeout 10 "$SHELL_BIN" keel://new; rc=$?; t1=$(date +%s%N)
-    ms=$(( (t1 - t0) / 1000000 )); [ "$rc" = 0 ] && [ "$ms" -lt "$best" ] && best=$ms
-    sleep 0.5
-  done
-  echo "# after the flips ($(( $(logged screen-reader) - flips )) restarts of the drawing program) a second launch answered in $best ms"
-  if [ "$best" -le 100 ] && [ "$(( $(logged screen-reader) - flips ))" -ge 10 ] && [ "$(app_pids | wc -l)" = 1 ] && [ "$(win_pid)" != "$(app_pid)" ]; then ok "after ten flips of the screen reader's word the app answers a second launch at once, and its windows are drawn"; else fail "after ten flips of the screen reader's word a second launch took $best ms, or the app or its drawing program is gone"; fi
+  for _ in $(seq 1 15); do [ "$seen" = "$(logged screen-reader)" ] && break; seen=$(logged screen-reader); sleep 4; done
+  after=$(launch_ms)
+  allowed=$(( before * 3 > 100 ? before * 3 : 100 ))
+  echo "# a second launch answered in $before ms before the flips and in $after ms after them ($(( $(logged screen-reader) - flips )) restarts of the drawing program); allowed: $allowed ms"
+  if [ "$after" -le "$allowed" ] && [ "$(( $(logged screen-reader) - flips ))" -ge 10 ] && [ "$(app_pids | wc -l)" = 1 ] && [ "$(win_pid)" != "$(app_pid)" ]; then ok "after ten flips of the screen reader's word the app answers a second launch as fast as before them, and its windows are drawn"; else fail "after ten flips of the screen reader's word a second launch took $after ms (before them $before ms, allowed $allowed), or the app or its drawing program is gone"; fi
   wait_for 20 "[ \"\$(windows)\" -ge 1 ]" || true
 else
   fail "the screen reader's word could not be set on the workspace's bus"
