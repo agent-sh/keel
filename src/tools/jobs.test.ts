@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stopKind } from "../core/stops.ts";
-import { ackNotices, adoptJobs, awaited, cutCommand, drainNotices, jobEnded, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob, registerEnvDrop } from "./jobs.ts";
+import { ackNotices, adoptJobs, adoptStats, awaited, cutCommand, drainNotices, jobEnded, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob, registerEnvDrop } from "./jobs.ts";
 import { ownEnv } from "../../test/env.ts";
 
 // A daemon that starts background commands and exits (a restart); this
@@ -721,8 +721,40 @@ test("a start looks up only the ended commands it keeps, and marks the rest conc
   const shown = jobsOf("s-many").map((j) => j.id);
   expect(shown).toContain(`many-${total - 1}`);
   expect(shown).not.toContain("many-0");
-  // The records it does not keep are written once more with their mark, after the start.
+  // Each record is written once more with its mark after the start, to be listed in the folder's index.
   const marked = () => readdirSync(dir).filter((f) => f.endsWith(".json") && JSON.parse(readFileSync(join(dir, f), "utf8")).concealed === true).length;
-  for (let i = 0; i < 100 && marked() < total - kept; i++) await Bun.sleep(20);
-  expect(marked()).toBe(total - kept);
+  for (let i = 0; i < 100 && marked() < total; i++) await Bun.sleep(20);
+  expect(marked()).toBe(total);
+});
+
+// A later start reads only the settled records it keeps: the rest are listed in their folder's index.
+test("a later start reads only the ended records it keeps", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-index-"));
+  const dir = join(root, "spill", "s-index", "jobs");
+  mkdirSync(dir, { recursive: true });
+  const total = 260, kept = 200, at = Date.now() - 86_400_000;
+  for (let i = 0; i < total; i++) {
+    const id = `idx-${i}`;
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, num: 7000 + i, sessionId: "s-index", command: `echo ${i}`, cwd: root, started: at + i * 1000, background: false, pid: 987700000 + i, boot: "100", reported: true, ended: at + i * 1000 + 10, exit_code: 0, signal: null, read_off: 0, concealed: true }));
+  }
+  const real = procfs.stat;
+  procfs.stat = (p: number) => { if (p >= 987700000 && p < 987700000 + total) throw new Error("no such process"); return real(p); };
+  try {
+    adoptJobs(join(root, "spill"));
+    expect(adoptStats.read).toBe(total);
+    // Listed after the start, a hundred at a time.
+    const listed = () => { try { return readFileSync(join(dir, "settled.tsv"), "utf8").split("\n").filter(Boolean).length; } catch { return 0; } };
+    for (let i = 0; i < 100 && listed() < total; i++) await Bun.sleep(20);
+    expect(listed()).toBe(total);
+    // A line a kill cut short is no line: the record it would list is read.
+    appendFileSync(join(dir, "settled.tsv"), "idx-0\t1");
+    adoptJobs(join(root, "spill"));
+    expect(adoptStats.read).toBe(kept);
+    const shown = jobsOf("s-index").map((j) => j.id);
+    expect(shown).toContain(`idx-${total - 1}`);
+    expect(shown).not.toContain("idx-0");
+  } finally {
+    procfs.stat = real;
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -149,7 +149,7 @@ export class Retention {
   // log). Left alone: a busy session, a pinned one, a folder no session owns
   // (the Leftovers row removes those), and in every folder the record of a
   // command (jobs/<id>.json, a few hundred bytes: the Terminal panel still
-  // lists it) and the note of what was removed. `only`: within these sessions.
+  // lists it), the folder's index of those records (jobs/settled.tsv) and the note of what was removed. `only`: within these sessions.
   private async spillBefore(before: number, only?: Set<string>) {
     const out = { files: [] as { session: string; path: string; bytes: number }[], sessions: new Set<string>(), busy: 0, pinned: 0 };
     let ids: string[] = [];
@@ -168,7 +168,7 @@ export class Retention {
         if (!e.isFile()) continue;
         const path = join(e.parentPath ?? (e as unknown as { path: string }).path, e.name);
         const rel = relative(dir, path);
-        if (rel === REMOVED_NOTE || /^jobs\/[^/]+\.json$/.test(rel)) continue;
+        if (rel === REMOVED_NOTE || /^jobs\/([^/]+\.json|settled\.tsv)$/.test(rel)) continue;
         try {
           const st = await stat(path);
           if (st.mtimeMs < before) { out.files.push({ session: id, path, bytes: st.size }); out.sessions.add(id); }

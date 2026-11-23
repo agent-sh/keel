@@ -408,27 +408,42 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   try { sessions = readdirSync(spillRoot); } catch { return 0; }
   const history: Job[] = [];
   const terminals: Job[] = [];
-  const ended: { m: Meta; dir: string; f: string }[] = [];
+  // `m`: the record as read; a record its folder's index lists as settled is not read unless it is kept (`m` absent).
+  const ended: { m?: Meta; started: number; num: number; dir: string; f: string }[] = [];
+  // The settled records read at this start that their folder's index does not list yet.
+  const unlisted = new Map<string, { m: Meta; f: string }[]>();
+  adoptStats.read = 0;
   for (const sid of sessions) {
     const dir = join(spillRoot, sid, "jobs");
     let files: string[] = [];
     try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { continue; }
+    const listed = settledIn(dir);
     for (const f of files) {
-      let m: Meta;
-      try { m = JSON.parse(readFileSync(join(dir, f), "utf8")); } catch { continue; }
-      if (!m || typeof m !== "object") continue;
+      const known = listed.get(f.slice(0, -5));
+      if (known) { ended.push({ ...known, dir, f }); continue; }
+      const m = readRecord(join(dir, f));
+      if (!m) continue;
       // An end already reported, with no stop to see through and no terminal
       // to sweep, needs nothing at a start but to be listed: only the newest
       // are looked at (below). A state folder keeps every command its sessions
-      // ever ran, and looking at each one held a start for seconds.
-      if ((m.reported || m.pty) && !(m.pty ? m.ended === undefined : m.stopping)) { ended.push({ m, dir, f }); continue; }
+      // ever ran, and looking at each one held a start for seconds; reading
+      // each one too, so the folder's index lists the settled ones once
+      // written with placeholders, and a later start reads only what it keeps.
+      if (settled(m)) {
+        ended.push({ m, started: Number(m.started) || 0, num: Number.isInteger(m.num) ? m.num : 0, dir, f });
+        if (typeof m.id === "string" && `${m.id}.json` === f) (unlisted.get(dir) ?? unlisted.set(dir, []).get(dir)!).push({ m, f });
+        continue;
+      }
       take(m, dir, f);
     }
   }
-  ended.sort((a, b) => (Number(b.m.started) || 0) - (Number(a.m.started) || 0));
-  for (const e of ended.slice(0, MAX_ENDED)) take(e.m, e.dir, e.f);
-  for (const e of ended.slice(MAX_ENDED)) counter = Math.max(counter, Number.isInteger(e.m.num) ? e.m.num : 0);
-  concealLater(ended.slice(MAX_ENDED).filter((e) => e.m.concealed !== true));
+  ended.sort((a, b) => b.started - a.started);
+  for (const e of ended.slice(0, MAX_ENDED)) {
+    const m = e.m ?? readRecord(join(e.dir, e.f));
+    if (m) take(m, e.dir, e.f);
+  }
+  for (const e of ended.slice(MAX_ENDED)) counter = Math.max(counter, e.num);
+  concealLater(unlisted);
   for (const j of history.sort((a, b) => b.started - a.started).slice(0, MAX_ENDED)) jobs.set(j.id, j);
   // One read of the process table for all of them, however many records an upgrade left without an end.
   if (terminals.length) { const rows = procTable(true); for (const j of terminals) j.swept = sweep(j, rows); }
@@ -481,17 +496,58 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
   }
 }
 
-// The ended records a start does not keep are not read again by this daemon.
+// The settled records a start read that their folder's index does not list.
 // One no daemon marked as written with placeholders (an older one wrote it,
 // perhaps with a value in it) is written once more with them, a hundred at a
-// time after the start, and is not looked at by a later start.
-function concealLater(rest: { m: Meta; dir: string; f: string }[]) {
+// time after the start; then each is listed in its folder's index, and a later
+// start does not read it unless it is among the newest it keeps.
+function concealLater(byDir: Map<string, { m: Meta; f: string }[]>) {
+  const rest = [...byDir].flatMap(([dir, list]) => list.map((e) => ({ dir, ...e })));
   const step = () => {
-    for (const e of rest.splice(0, 100)) { try { writeMeta(join(e.dir, e.f.replace(/\.json$/, ".log")), e.m); } catch {} }
+    let written = 0;
+    const lines = new Map<string, string>();
+    while (rest.length && written < 100) {
+      const e = rest.shift()!;
+      if (e.m.concealed !== true) {
+        try { writeMeta(join(e.dir, e.f.replace(/\.json$/, ".log")), e.m); } catch { continue; }
+        written++;
+      }
+      lines.set(e.dir, (lines.get(e.dir) ?? "") + `${e.m.id}\t${Number(e.m.started) || 0}\t${Number.isInteger(e.m.num) ? e.m.num : 0}\n`);
+    }
+    for (const [dir, text] of lines) try { appendFileSync(join(dir, SETTLED), text); } catch {}
     if (rest.length) setTimeout(step, 50);
   };
   if (rest.length) setTimeout(step, 0);
 }
+
+// A job folder's index of its settled records (an end reported, no stop to see through, no terminal
+// left open), each written with placeholders: a line of its id, when it started and its number.
+// Such a record is not written again, so a start lists it from here and reads it only to keep it.
+const SETTLED = "settled.tsv";
+const settled = (m: Meta) => !!(m.reported || m.pty) && !(m.pty ? m.ended === undefined : m.stopping);
+function settledIn(dir: string): Map<string, { started: number; num: number }> {
+  const out = new Map<string, { started: number; num: number }>();
+  let text = "";
+  try { text = readFileSync(join(dir, SETTLED), "utf8"); } catch { return out; }
+  // (A line a kill cut short has no end: the last part, and whatever a later append ran into it.)
+  const lines = text.split("\n");
+  lines.pop();
+  for (const line of lines) {
+    const [id, started, num, more] = line.split("\t");
+    if (more !== undefined || !id || !/^[\w-]+$/.test(id) || !/^\d+$/.test(started ?? "") || !/^\d+$/.test(num ?? "")) continue;
+    out.set(id, { started: Number(started), num: Number(num) });
+  }
+  return out;
+}
+function readRecord(path: string): Meta | undefined {
+  adoptStats.read++;
+  try {
+    const m = JSON.parse(readFileSync(path, "utf8"));
+    return m && typeof m === "object" ? m : undefined;
+  } catch { return undefined; }
+}
+// How many records the last start read (a test reads it).
+export const adoptStats = { read: 0 };
 
 // The exit code a job's wrapper wrote when its command ended by itself, and when (nothing: it has not).
 function exitOf(log: string): { code: number | null; at?: number } | undefined {
