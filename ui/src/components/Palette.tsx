@@ -177,7 +177,8 @@ export function Palette() {
   const [asked, setAsked] = useState<string | null>(null);
   useEffect(() => { if (open) setAsked(null); }, [open]);
   const mayElsewhere = q.trim().length >= 3 && !/\b\w+:\S/.test(q);
-  const localHit = local.some((e) => e.group.startsWith("Sessions") || e.group === "In conversations");
+  // (A command is a hit too: typing one to run it starts no search of other harnesses.)
+  const localHit = local.some((e) => e.group.startsWith("Sessions") || e.group === "In conversations" || e.group === "Actions");
   const wantsElsewhere = mayElsewhere && (asked === q || (!searching && !searchFailed && !localHit));
   useEffect(() => {
     if (!wantsElsewhere) return;

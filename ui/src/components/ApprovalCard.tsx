@@ -1,3 +1,4 @@
+import { runsAt, type Where } from "../lib/runs-at.ts";
 import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
@@ -351,18 +352,6 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
 // the same rule: not within a second of arriving or of moving under the hand.
 // `where`: the folder (and branch) the asker works in, when that is not the folder of the page the
 // cards are answered on: an agent's own worktree. Each card says it.
-export type Where = { folder: string; branch?: string | null };
-// The folder (and branch) an approval's command runs in, as its card names it: the folder it
-// starts in (`at.cwd`, said when it is not the asker's own) wins over the asker's; the asker's
-// branch goes with it only when that folder is the asker's or inside it.
-export function placeOf(at: Approval["at"], where?: Where): Where | null {
-  const cwd = at?.cwd;
-  if (!cwd) return where ?? null;
-  if (!where) return { folder: cwd };
-  const root = where.folder.replace(/\/+$/, "");
-  const inside = cwd === root || cwd.startsWith(`${root}/`);
-  return inside ? { folder: cwd, branch: where.branch } : { folder: cwd };
-}
 export function Approvals({ sessionId, asker, where }: { sessionId: string; asker?: string; where?: Where }) {
   const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
   const list = useRef<HTMLDivElement>(null);
@@ -1140,7 +1129,7 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
   // in its worktree: a command an agent runs in another checkout acts on that checkout's branch, not
   // its own. The same command is another act in another checkout. (Folder and branch names are the
   // model's or the repository's: shown with nothing hidden.)
-  const runsIn = placeOf(a.at, where);
+  const runsIn = runsAt(a.at, where, a.kind === "shell" || !!a.at);
   const place = runsIn && (
     <span className={cn("max-w-full truncate rounded-full border px-2 py-0.5 text-micro font-medium", a.at?.away ? "border-line-strong text-warn" : "border-line text-muted")} dir="ltr" title={`${runsIn.folder}${runsIn.branch ? `, branch ${runsIn.branch}` : ""}`} data-testid="approval-where">
       in <Spelled text={runsIn.folder.split("/").filter(Boolean).at(-1) ?? runsIn.folder} />{runsIn.branch && <>, branch <Spelled text={runsIn.branch} /></>}
