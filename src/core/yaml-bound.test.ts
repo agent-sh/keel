@@ -20,3 +20,16 @@ test("YAML aliases are counted where they are used, and the text before it is pa
   expect(r.problem).toContain("aliases");
   expect(performance.now() - t0).toBeLessThan(1_000);
 });
+
+// One long anchored string named by many aliases: few values, but each use writes the whole string out.
+test("a long string named by many aliases is refused before it is written out", () => {
+  const big = "x".repeat(150_000);
+  const text = `s: &s ${big}\nhooks: [${Array.from({ length: 40_000 }, () => "*s").join(", ")}]\n`;
+  const t = performance.now();
+  expect("problem" in yamlWithin(text, 400_000)).toBe(true);
+  expect(performance.now() - t).toBeLessThan(2_000);
+  // An ordinary frontmatter with long prose still reads.
+  const prose = `description: ${"word ".repeat(40_000)}\nhooks: []\n`;
+  expect("value" in yamlWithin(prose, 400_000)).toBe(true);
+});
+
