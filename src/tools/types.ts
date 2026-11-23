@@ -26,8 +26,9 @@ export type ToolContext = {
   // it confined (bubblewrap, a systemd scope). Every tool that spawns uses it.
   wrapSpawn?: (argv: string[]) => string[];
   // Set by the check ledger's beforeTool hook (src/checks) on a call that runs
-  // one of the repository's checks: the shell writes the statuses of the
-  // command's last pipe, so a check piped into tail is known by its own exit.
+  // one of the repository's checks: the shell reports each command it runs
+  // with the statuses before it, so the check is known to have started (a
+  // wait before it can give up) and by its own status.
   checkRun?: boolean;
   // The confinement wrapSpawn applies (set with it): a tool that runs its
   // command on another machine asks that machine for the same.
@@ -80,6 +81,10 @@ export type ToolKind = "shell" | "edit" | "control" | "remote";
 export type Tool = ToolSpec & {
   readOnly: boolean;
   kind?: ToolKind;
+  // A shell tool whose shell reports each command it runs to the check ledger
+  // when asked (ctx.checkRun, src/tools/shell.ts): a check behind a wait, or
+  // with commands after it, is known to have started and by its own status.
+  tracesChecks?: true;
   // A shell tool that applies an apply_patch invocation in its command itself
   // (no shell runs): the gate judges such a call as the edit it is.
   appliesPatch?: true;

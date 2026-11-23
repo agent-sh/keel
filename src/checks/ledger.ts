@@ -20,7 +20,7 @@ import { settings } from "../admin/settings.ts";
 import { addAll, git, locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { sandboxScope } from "../safety/sandbox-scope.ts";
-import { FILE, normDir, parseChecks, readChecks, type Check } from "./named.ts";
+import { FILE, normDir, overlay, parseChecks, readChecks, type Named as NamedChecks } from "./named.ts";
 import type { Result, Run } from "./words.ts";
 
 export const KEEP = 20_000;
@@ -77,27 +77,34 @@ export function repoOf(folder: string): Repo | undefined {
   } catch { return undefined; }
 }
 
-// The checks for a repository: the owner's setting for it, else the file in
-// its work tree. `source` says which; undefined: nothing names checks there.
-// The file is read again only when it changed on disk.
-const fileCache = new Map<string, { mark: string; checks: Check[]; problems: string[] }>();
-export type Named = { source: "setting" | "file"; checks: Check[]; problems: string[] };
+// The checks for a repository: the file in its work tree with the owner's
+// setting for it laid over (src/checks/named.ts overlay). `source` says
+// where they come from; undefined: nothing names checks there. The file is
+// read again only when it changed on disk.
+const fileCache = new Map<string, { mark: string; named: NamedChecks }>();
+export type Named = NamedChecks & { source: "file" | "setting" | "file and setting" };
 // The owner's setting for a repository (checks.repos, by its main checkout).
 export const settingFor = (scope: string): unknown => (settings().checks?.repos as Record<string, unknown> | undefined)?.[scope];
-export function namedFor(repo: Repo, setting: (scope: string) => unknown = settingFor): Named | undefined {
-  const own = setting(repo.scope);
-  if (own !== undefined) return { source: "setting", ...readChecks(own) };
-  const path = join(repo.top, FILE);
+function fileOf(top: string): NamedChecks | undefined {
+  const path = join(top, FILE);
   let mark: string;
   try { const st = statSync(path); if (!st.isFile()) return undefined; mark = `${st.size}:${st.mtimeMs}:${st.ino}`; } catch { return undefined; }
   const had = fileCache.get(path);
-  if (had?.mark === mark) return { source: "file", checks: had.checks, problems: had.problems };
+  if (had?.mark === mark) return had.named;
   let text = "";
   try { text = readFileSync(path, "utf8"); } catch {}
-  const got = text.length > 64_000 ? { checks: [], problems: ["it is over 64 KB"] } : parseChecks(text);
-  fileCache.set(path, { mark, ...got });
+  const named = text.length > 64_000 ? { checks: [], wait: [], env: [], problems: ["it is over 64 KB"] } : parseChecks(text);
+  fileCache.set(path, { mark, named });
   if (fileCache.size > 256) fileCache.delete(fileCache.keys().next().value!);
-  return { source: "file", ...got };
+  return named;
+}
+export function namedFor(repo: Repo, setting: (scope: string) => unknown = settingFor): Named | undefined {
+  const file = fileOf(repo.top);
+  const raw = setting(repo.scope);
+  const own = raw === undefined ? undefined : readChecks(raw);
+  const got = overlay(file, own);
+  if (!got) return undefined;
+  return { ...got, source: file && own ? "file and setting" : own ? "setting" : "file" };
 }
 
 // A folder from the repository's top, or undefined when it is outside.
@@ -141,6 +148,13 @@ export async function treeOf(repo: Repo): Promise<{ tree: string; head: string |
   indexes.set(index, tail);
   void tail.then(() => { if (indexes.get(index) === tail) indexes.delete(index); });
   try { return await run; } catch { return undefined; }
+}
+
+// The tree of a commit the repository has (a check of a commit, src/checks/named.ts tree).
+export async function commitTree(repo: Repo, rev: string): Promise<{ tree: string; head: string | null } | undefined> {
+  const r = await git(repo.top, ["rev-parse", "-q", "--verify", `${rev}^{commit}`, `${rev}^{tree}`], { read: true, timeout: 10_000 });
+  const [head, tree] = r.out.trim().split("\n");
+  return r.code === 0 && head && tree ? { tree, head } : undefined;
 }
 
 // --- the base: the branch a red check is compared with

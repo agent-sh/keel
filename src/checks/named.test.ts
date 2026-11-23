@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { matchCommand, normDir, parseChecks } from "./named.ts";
+import { checkStatus, matchCommand, normDir, overlay, parseChecks, parseTrace, readChecks, startText, type Where } from "./named.ts";
 
 const FILE = JSON.stringify({
   checks: {
@@ -7,52 +7,105 @@ const FILE = JSON.stringify({
     unit: { run: "bun test", args: true },
     e2e: { run: "bunx playwright test", args: true, cache: false },
     web: { run: "npm test", dir: "./web/" },
+    remote: { run: "scripts/remote-verify.sh", args: true, tree: { commit: "last" }, drop: ["--wait", "--out"] },
+    specs: { run: "~/bin/validate.sh", args: true, dir: "*", tree: { folder: 1 } },
   },
+  wait: ["waitfor --capacity"],
+  env: ["VERIFY_MAX_RUNS"],
 });
-const { checks, problems } = parseChecks(FILE);
+const named = parseChecks(FILE);
+const TOP = "/r/repo";
+const at = (cwd = TOP): Where => ({ cwd, home: "/h", rel: (d) => (d === TOP ? "." : d.startsWith(`${TOP}/`) ? normDir(d.slice(TOP.length + 1)) : undefined) });
+const m = (c: string, cwd?: string) => matchCommand(c, named, at(cwd));
 
-test("a checks file: a string or an object a check, with its defaults", () => {
-  expect(problems).toEqual([]);
-  expect(checks).toEqual([
-    { name: "typecheck", run: "bunx tsc --noEmit -p .", args: false, dir: ".", cache: true },
-    { name: "unit", run: "bun test", args: true, dir: ".", cache: true },
-    { name: "e2e", run: "bunx playwright test", args: true, dir: ".", cache: false },
-    { name: "web", run: "npm test", args: false, dir: "web", cache: true },
+test("a checks file: a string or an object a check, with its defaults, its waits and its variables", () => {
+  expect(named.problems).toEqual([]);
+  expect(named.checks.map((c) => [c.name, c.run, c.args, c.dir, c.cache, c.tree.kind, c.drop.length])).toEqual([
+    ["typecheck", "bunx tsc --noEmit -p .", false, ".", true, "work", 0],
+    ["unit", "bun test", true, ".", true, "work", 0],
+    ["e2e", "bunx playwright test", true, ".", false, "work", 0],
+    ["web", "npm test", false, "web", true, "work", 0],
+    ["remote", "scripts/remote-verify.sh", true, ".", true, "commit", 2],
+    ["specs", "~/bin/validate.sh", true, "*", true, "folder", 0],
   ]);
+  expect([named.wait, named.env]).toEqual([["waitfor --capacity"], ["VERIFY_MAX_RUNS"]]);
 });
 
 test("what is wrong in a file is said, and the rest is kept", () => {
-  const got = parseChecks(JSON.stringify({ checks: { ok: "make", "bad name": "x", empty: "", out: { run: "x", dir: "../up" }, flag: { run: "x", args: "yes" } } }));
+  const got = parseChecks(JSON.stringify({ checks: { ok: "make", "bad name": "x", empty: "", out: { run: "x", dir: "../up" }, flag: { run: "x", args: "yes" }, t: { run: "x", tree: { commit: "last" } } }, wait: [1] }));
   expect(got.checks.map((c) => c.name)).toEqual(["ok"]);
-  expect(got.problems).toHaveLength(4);
+  expect(got.problems).toHaveLength(6);
   expect(parseChecks("{").problems[0]).toStartWith("it is not JSON");
-  expect(parseChecks("[]").problems).toEqual(['it has no "checks" object']);
 });
 
-test("a command is a check as written, with its output filters taken off", () => {
-  expect(matchCommand("bunx tsc --noEmit -p .", checks, ".")?.check.name).toBe("typecheck");
-  expect(matchCommand("  bunx   tsc --noEmit -p . 2>&1 | tail -20", checks, ".")).toMatchObject({ command: "bunx tsc --noEmit -p .", piped: true });
-  expect(matchCommand("bunx tsc --noEmit -p . 2>&1 | head -n 5 | tail -3", checks, ".")?.piped).toBe(true);
-  expect(matchCommand("bunx tsc --noEmit -p .", checks, ".")?.piped).toBe(false);
-  // More words only where the check allows them; each set of words is a check run of its own.
-  expect(matchCommand("bunx tsc --noEmit -p . --watch", checks, ".")).toBeUndefined();
-  expect(matchCommand("bun test ./src/checks", checks, ".")).toMatchObject({ command: "bun test ./src/checks", check: { name: "unit" } });
-  expect(matchCommand("bun testing", checks, ".")).toBeUndefined();
+test("the owner's setting is laid over the file: by name, null removes, its waits add", () => {
+  const own = readChecks({ checks: { unit: { run: "bun test --bail", args: true }, web: null, lint: "make lint" }, wait: ["flock /x"] });
+  const got = overlay(named, own)!;
+  expect(got.checks.map((c) => `${c.name}:${c.run}`)).toEqual(["typecheck:bunx tsc --noEmit -p .", "e2e:bunx playwright test", "remote:scripts/remote-verify.sh", "specs:~/bin/validate.sh", "unit:bun test --bail", "lint:make lint"]);
+  expect(got.wait).toEqual(["waitfor --capacity", "flock /x"]);
+  expect(overlay(undefined, own)!.checks.map((c) => c.name)).toEqual(["unit", "lint"]);
 });
 
-test("a command that runs anything else is not the check", () => {
-  for (const c of ["bun test; rm -rf x", "bun test && echo ok", "bun test || true", "bun test > out.log", "bun test $(cat list)", "bun test `x`", "bun test | grep fail", "bun test\necho"]) {
-    expect(matchCommand(c, checks, ".")).toBeUndefined();
+test("a check as written, with its output shaped, filtered and read after", () => {
+  expect(m("bunx tsc --noEmit -p .")).toMatchObject({ check: { name: "typecheck" }, alone: true, filters: 0, exact: true });
+  expect(m("  bunx   tsc --noEmit -p . 2>&1 | tail -20")).toMatchObject({ command: "bunx tsc --noEmit -p .", filters: 1, alone: true });
+  expect(m("bunx tsc --noEmit -p . > /tmp/x/tsc.log 2>&1; tail -5 /tmp/x/tsc.log; echo rc=$?")).toMatchObject({ check: { name: "typecheck" }, alone: false });
+  expect(m("bun test ./src/checks")).toMatchObject({ command: "bun test ./src/checks", check: { name: "unit" } });
+  expect(m("bunx tsc --noEmit -p . --watch")).toBeUndefined();
+  expect(m("bun testing")).toBeUndefined();
+  expect(m("bun test < /dev/null")?.check.name).toBe("unit");
+});
+
+test("a check behind a wait, a cd, assignments and a mkdir; its variables put in", () => {
+  const c = "cd /r/repo && S=/h/scratch/lane && mkdir -p $S && waitfor --capacity 26,8 --timeout 40m && bun test ./src/checks > $S/unit.log 2>&1; tail -3 $S/unit.log";
+  expect(m(c, "/elsewhere")).toMatchObject({ check: { name: "unit" }, command: "bun test ./src/checks", dir: ".", alone: false, start: "bun test ./src/checks" });
+  expect(m("(waitfor --capacity 20,8 --timeout 10m && bunx tsc --noEmit -p .) > /dev/null 2>&1; echo done")?.check.name).toBe("typecheck");
+  // A variable the command does not set stays: recorded, never answered.
+  expect(m("bun test $DIR")).toMatchObject({ exact: false });
+  expect(m("S=/a && bun test $S/x")).toMatchObject({ exact: true, command: "bun test /a/x" });
+  // A wait the repository does not name is not a wait.
+  expect(m("sleep 5 && bun test")).toBeUndefined();
+});
+
+test("a command that runs anything else, or in the background, is not a check run", () => {
+  for (const c of ["bun test; rm -rf x", "rm -rf x && bun test", "bun test || true", "bun test < in", "bun test $(cat list)", "bun test `x`", "bun test | grep fail", "bun test &", "(bun test) & echo started", "cat <<EOF\nx\nEOF\nbun test", "make && bun test"]) {
+    expect([c, m(c)]).toEqual([c, undefined]);
   }
 });
 
-test("a check runs in its own folder; a leading cd moves there", () => {
-  expect(matchCommand("npm test", checks, ".")).toBeUndefined();
-  expect(matchCommand("npm test", checks, "web")?.check.name).toBe("web");
-  expect(matchCommand("cd web && npm test", checks, ".")).toMatchObject({ dir: "web", check: { name: "web" } });
-  expect(matchCommand("cd 'web' && npm test 2>&1 | tail -5", checks, ".")).toMatchObject({ dir: "web", piped: true });
-  expect(matchCommand("cd .. && bun test", checks, "web")?.dir).toBe(".");
-  expect(matchCommand("cd /elsewhere && bun test", checks, ".", () => undefined)).toBeUndefined();
+test("a check runs in its own folder; a cd moves there", () => {
+  expect(m("npm test")).toBeUndefined();
+  expect(m("npm test", `${TOP}/web`)?.check.name).toBe("web");
+  expect(m("cd web && npm test")).toMatchObject({ dir: "web", check: { name: "web" } });
+  expect(m("cd .. && bun test", `${TOP}/web`)?.dir).toBe(".");
+  expect(m("cd /elsewhere && bun test")).toBeUndefined();
   expect(normDir("a/./b/../c/")).toBe("a/c");
-  expect(normDir("../x")).toBe("..");
+});
+
+test("a check of a commit: its last argument, without it HEAD; dropped options are not part of what it is known by", () => {
+  expect(m("VERIFY_MAX_RUNS=4 scripts/remote-verify.sh --host box --wait 1500 --only unit --out /h/o 5c9eb5eb2")).toMatchObject({ command: "scripts/remote-verify.sh --host box --only unit", tree: { kind: "commit", rev: "5c9eb5eb2" } });
+  expect(m("scripts/remote-verify.sh --only unit")).toMatchObject({ tree: { kind: "commit", rev: "HEAD" } });
+  // Another variable on it is part of it.
+  expect(m("X=1 scripts/remote-verify.sh")?.command).toBe("X=1 scripts/remote-verify.sh");
+});
+
+test("a check of a folder its argument names, run from anywhere; ~ and $PWD put in", () => {
+  expect(m("~/bin/validate.sh $PWD test/e2e/a.spec.ts", "/r/wt")).toMatchObject({ check: { name: "specs" }, dir: "*", command: "/h/bin/validate.sh test/e2e/a.spec.ts", tree: { kind: "folder", folder: "/r/wt" } });
+  expect(m("cd /r/wt && /h/bin/validate.sh . test/e2e/a.spec.ts")?.tree).toEqual({ kind: "folder", folder: "/r/wt/." });
+  expect(m("$HOME/bin/validate.sh /r/wt2 x.spec.ts")?.tree).toEqual({ kind: "folder", folder: "/r/wt2" });
+});
+
+test("the shell's report: a check that never started has no status; one that did has its own", () => {
+  const trace = (rows: string[][]) => parseTrace(rows.map((r) => r.join("\t")).join("\n"));
+  // A wait that gave up: the check's line is not there.
+  expect(checkStatus(trace([["D", "1", "0", "0", "waitfor --capacity 26,8"], ["D", "1", "0", "1", "waitfor --capacity 26,8"], ["E", "1"]]), "bun test", 0)).toBeUndefined();
+  // Piped into tail: the status of the pipe at the next command of its shell, the check's first.
+  expect(checkStatus(trace([["D", "1", "0", "0", "bun test ./x 2>&1"], ["D", "1", "0", "0", "tail -3"], ["D", "1", "0", "4 0", "echo after"], ["E", "0"]]), "bun test ./x", 1)).toEqual({ exit: 4 });
+  // Last in a group: the group's status at the next command of the shell around it.
+  expect(checkStatus(trace([["D", "1", "0", "0", "S=/x"], ["D", "2", "1", "0", "waitfor --capacity 1,1"], ["D", "2", "1", "0", "bun test > /x/log 2>&1"], ["D", "1", "0", "3", "tail -1 /x/log"], ["E", "0"]]), "bun test", 0)).toEqual({ exit: 3 });
+  // Last of all: the end's statuses.
+  expect(checkStatus(trace([["D", "1", "0", "0", "bun test"], ["E", "0"]]), "bun test", 0)).toEqual({ exit: 0 });
+  // Started and stopped before any status: none known.
+  expect(checkStatus(trace([["D", "1", "0", "0", "bun test"]]), "bun test", 0)).toEqual({ exit: null });
+  expect(startText("A=1 bun test ./x > log 2>&1")).toBe("bun test ./x");
 });

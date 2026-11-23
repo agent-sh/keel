@@ -57,19 +57,25 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   if (gone) return { state: "refused", error: gone };
   const dir = logDir(ctx);
   const cwdFile = join(dir, `cwd-${ctx.callId ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
-  // A check's run: the statuses of the last pipe, read first in the trap (before anything there resets them).
-  const statusFile = ctx.checkRun ? `${cwdFile}.status` : undefined;
-  const status = statusFile ? `printf '%s' "\${PIPESTATUS[*]}" >| ${shq(statusFile)} 2>/dev/null; ` : "";
+  // A check's run (src/checks): each simple command the shell runs, in this
+  // shell and its groups (set -T), is reported with its shell's process and
+  // level and the statuses of the pipe before it, read first (anything in the
+  // trap resets them; bash gives the command back its own). At most 200 lines
+  // a shell, 400 characters a command. The last line is the end's statuses.
+  const traceFile = ctx.checkRun ? `${cwdFile}.trace` : undefined;
+  const debug = traceFile ? `__keel_ps="\${PIPESTATUS[*]}"; (( __keel_n++ < 200 )) && printf 'D\\t%s\\t%s\\t%s\\t%s\\n' "$BASHPID" "$BASH_SUBSHELL" "$__keel_ps" "\${BASH_COMMAND:0:400}" >> ${shq(traceFile)} 2>/dev/null` : "";
+  const end = traceFile ? `printf 'E\\t%s\\n' "\${PIPESTATUS[*]}" >> ${shq(traceFile)} 2>/dev/null; ` : "";
   // The command is handed to bash as written; the trap records where it ended.
-  // The trap's words are quoted as a whole around the quoted file names, so a
+  // The traps' words are quoted as a whole around the quoted file names, so a
   // state folder with a space, a quote or a `$` in its name stays one word.
-  const trap = `${status}${track ? `pwd -P >| ${shq(cwdFile)} 2>/dev/null` : ""}`;
-  const script = trap ? `trap ${shq(trap)} EXIT\nexec 2>&1\n${o.command}` : `exec 2>&1\n${o.command}`;
+  const trap = `${end}${track ? `pwd -P >| ${shq(cwdFile)} 2>/dev/null` : ""}`;
+  const head = `${debug ? `set -T\ntrap ${shq(debug)} DEBUG\n` : ""}${trap ? `trap ${shq(trap)} EXIT\n` : ""}`;
+  const script = `${head}exec 2>&1\n${o.command}`;
   const job = startJob({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,
     argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, callId: ctx.callId,
     // In the foreground the call stops the command when its turn is stopped (below).
-    handle: o.handle, stops: !o.background, statusFile,
+    handle: o.handle, stops: !o.background, traceFile,
   });
   if (o.background) return { state: "running", job, output: "" };
 

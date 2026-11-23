@@ -171,9 +171,13 @@ under `~/.cache/keel-work/bun/research/`.
 - A run of a check a repository names (`.keel/checks.json` in the tree being
   checked, or the owner's `checks.repos` setting for it; `src/checks/named.ts`)
   is kept in the check ledger by the git tree it ran on, uncommitted files
-  included (`src/checks/ledger.ts`). A check that passed on the same tree is
-  answered from the ledger and does not run; sending the same command again
-  runs it. A red run says whether the base is red too, or that the tree is
+  included (`src/checks/ledger.ts`). A check is known behind a wait the
+  repository names and with its output sent to a file and read after; the
+  shell reports each command it runs (`src/tools/shell.ts`), so a check that
+  never started (its wait gave up) records nothing and one that ran is
+  known by its own status. A check that passed on the same tree is
+  answered from the ledger before anything of the command runs, its wait
+  included; sending the same command again runs it. A red run says whether the base is red too, or that the tree is
   flaky. An agent's report carries a proof line from the ledger, never from a
   model (`src/checks/proof.ts`). The ledger keeps the newest
   `checks.keep_runs` rows (20,000 by default) and is read at `/api/checks`

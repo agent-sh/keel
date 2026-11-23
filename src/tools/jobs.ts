@@ -54,9 +54,9 @@ export type Job = {
   swept?: number;        // processes of it that outlived its terminal and were ended at this start
   looked?: number;       // when what a stop left was last looked for
   by?: "owner";          // the owner ran it from the terminal pane
-  // Where the shell writes the statuses of its last pipe (a check's run, src/checks), and what it wrote.
-  statusFile?: string;
-  pipeStatus?: number[];
+  // Where the shell reports the commands it runs (a check's run, src/checks), and what it reported.
+  traceFile?: string;
+  trace?: string;
   pid: number;
   boot?: string;         // its process's start time, read when it started (Linux)
   readOff: number;       // bytes of the log already handed to the model
@@ -161,7 +161,7 @@ export type StartOpts = {
   by?: "owner";
   handle?: Handle;
   stops?: boolean;       // the call stops the command when its turn is stopped
-  statusFile?: string;   // the shell writes its last pipe's statuses here (read when the job ends)
+  traceFile?: string;    // the shell reports the commands it runs here (read when the job ends, then removed)
 };
 
 export function startJob(o: StartOpts): Job {
@@ -187,7 +187,7 @@ export function startJob(o: StartOpts): Job {
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
-    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, statusFile: o.statusFile } as Job;
+    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, traceFile: o.traceFile } as Job;
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
@@ -323,12 +323,10 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
   if (job.background) queueMicrotask(() => jobsChanged.tell?.(job.sessionId));
   // A background job's end counts as reported once its note is stored (ackNotices), not before:
   // a restart between the two reports it again.
-  if (job.statusFile) {
-    try {
-      const words = readFileSync(job.statusFile, "utf8").trim().split(/\s+/).map(Number);
-      if (words.length && words.every((n) => Number.isInteger(n))) job.pipeStatus = words;
-    } catch {} // the shell wrote none (it was killed)
-    rmSync(job.statusFile, { force: true });
+  if (job.traceFile) {
+    // (At most its first 64 KB: the shell writes 200 lines of 400 characters at most.)
+    try { job.trace = readFileSync(job.traceFile, "utf8").slice(0, 65_536); } catch {} // the shell wrote none (it was killed)
+    rmSync(job.traceFile, { force: true });
   }
   try { jobDone.tell?.(job); } catch {}
   try {

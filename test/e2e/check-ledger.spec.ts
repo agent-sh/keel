@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openPanel, SCRIPTED, shoot } from "./shots.ts";
 
@@ -20,11 +20,13 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
   const repo = join(DEV, `checks-${Date.now()}`);
   mkdirSync(join(repo, ".keel"), { recursive: true });
   // The unit check counts its runs in an ignored file, so counting does not change the tree.
-  writeFileSync(join(repo, ".gitignore"), "runs.log\n");
+  writeFileSync(join(repo, ".gitignore"), "*.log\n");
   // (The ledger is kept by content: a repository of this run's own content has no runs of an earlier run.)
   writeFileSync(join(repo, "README.md"), `# ${repo}\n`);
-  writeFileSync(join(repo, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "sh unit.sh", args: true }, lint: "sh lint.sh" } }, null, 2));
+  writeFileSync(join(repo, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "sh unit.sh", args: true }, lint: "sh lint.sh" }, wait: ["sh gate.sh"] }, null, 2));
   writeFileSync(join(repo, "unit.sh"), "echo ran >> runs.log\necho ' 3 pass'\necho ' 0 fail'\n");
+  // A wait for room: it notes each time it runs, and gives up with the status it is given.
+  writeFileSync(join(repo, "gate.sh"), "echo waited >> gates.log\nexit \"$1\"\n");
   writeFileSync(join(repo, "lint.sh"), "echo 'a.ts(1,1): error'\necho 'Found 2 errors.'\nexit 1\n");
   git(repo, "init", "-q", "-b", "main");
   git(repo, "add", "-A");
@@ -42,16 +44,23 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
     return !d.running && d.events.at(-1)?.kind === "turn_end";
   };
 
-  // 1. On main itself the lint check is red: recorded on main's tree, piped through tail and still known by its own exit.
-  await page.getByTestId("composer").fill(script([bash("sh lint.sh 2>&1 | tail -5")]));
+  // 1. A wait that gives up: the lint check never starts, and nothing is recorded (never a red).
+  // Then on main itself the lint check is red: recorded on main's tree, behind a wait that let it
+  // through, piped through tail with a command after it, and still known by its own exit.
+  // A check started in the background (the shell tool's own background mode) is recorded when it ends.
+  await page.getByTestId("composer").fill(script([bash("sh gate.sh 1 && sh lint.sh 2>&1 | tail -5"), bash("sh gate.sh 0 && sh lint.sh 2>&1 | tail -5; echo after"), { name: "Bash", input: { command: "sh gate.sh 0 && sh unit.sh --in-background", run_in_background: true } }]));
   await page.keyboard.press("Enter");
   await expect.poll(() => idle(), { timeout: 60_000 }).toBe(true);
-  const onMain = (await (await request.get(`/api/checks?session=${session.id}`)).json()).runs;
-  expect(onMain).toMatchObject([{ name: "lint", result: "fail", exit: 1, fail: 2, tree: mainTree, head: mainCommit }]);
+  const ofMain = async () => (await (await request.get(`/api/checks?session=${session.id}`)).json()).runs;
+  await expect.poll(async () => (await ofMain()).length, { timeout: 30_000 }).toBe(2);
+  expect(await ofMain()).toMatchObject([
+    { name: "unit", command: "sh unit.sh --in-background", result: "pass", pass: 3, tree: mainTree },
+    { name: "lint", result: "fail", exit: 1, fail: 2, tree: mainTree, head: mainCommit },
+  ]);
 
   // 2. An agent in its own worktree: the unit check twice on one tree (the second is answered), an edit,
   // the unit check again (it runs), then the lint check, red on main too. Its report carries the proof.
-  const child = script([bash("sh unit.sh"), bash("sh unit.sh 2>&1 | tail -3"), { name: "Write", input: { file_path: "notes.txt", content: "hello\n" } }, bash("sh unit.sh"), bash("sh lint.sh")]);
+  const child = script([bash("sh unit.sh"), bash("sh gate.sh 0 && sh unit.sh > unit.log 2>&1; tail -3 unit.log"), { name: "Write", input: { file_path: "notes.txt", content: "hello\n" } }, bash("sh unit.sh"), bash("sh lint.sh")]);
   await page.getByTestId("composer").fill(script([{ name: "spawn_agent", input: { message: `Check, edit, check\n${child}` } }]));
   await page.keyboard.press("Enter");
   const agentsOf = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents;
@@ -63,6 +72,9 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
   const agent = (await agentsOf())[0];
   // The unit check ran twice of its three calls (in the agent's worktree): the second was answered from the ledger.
   expect(readFileSync(join(agent.worktree, "runs.log"), "utf8").trim().split("\n")).toHaveLength(2);
+  // The answer came before the wait in front of it ran: the agent's worktree never waited.
+  expect(existsSync(join(agent.worktree, "gates.log"))).toBe(false);
+  expect(readFileSync(join(repo, "gates.log"), "utf8").trim().split("\n")).toHaveLength(3);
   const ledger = await (await request.get(`/api/checks?session=${agent.session_id}`)).json();
   const mine = [...ledger.runs].reverse();
   expect(mine.map((r: any) => `${r.name}:${r.result}`)).toEqual(["unit:pass", "unit:answered", "unit:pass", "lint:fail"]);

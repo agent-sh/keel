@@ -51,11 +51,11 @@ export const checkRoutes: RouteModule = ({ store, errors }) => {
       const checks = named?.checks ?? [];
       const data = JSON.stringify(checks);
       if (!checks.length) return { name: "Checks this repository names", text: "", data };
-      const where = named!.source === "file" ? FILE : "the owner's Keel setting";
+      const where = named!.source === "file" ? FILE : named!.source === "setting" ? "the owner's Keel setting" : `${FILE} and the owner's Keel setting`;
       const lines = checks.map((c) => `- ${c.name}: \`${c.run}\`${c.args ? " (more arguments allowed)" : ""}${c.dir !== "." ? ` in ${c.dir}` : ""}`);
       return {
         name: "Checks this repository names", data,
-        text: `Checks this repository names (${where}):\n${lines.join("\n")}\nKeel records each run of one by the tree it ran on (the files as they are, uncommitted changes included). Run a check as written here: one that already passed on the same files is answered from that record instead of run again, and a red one says whether it is red on the base branch too, or flaky.`,
+        text: `Checks this repository names (${where}):\n${lines.join("\n")}\nKeel records each run of one by the tree it ran on (the files as they are, uncommitted changes included). Run a check as written here, in a call of its own (to send its output to a file and read its end is fine): one that already passed on the same files is answered from that record instead of run again, and a red one says whether it is red on the base branch too, or flaky.${named!.wait.length ? ` Behind a wait it names (${named!.wait.map((w) => `\`${w}\``).join(", ")}) is fine; an answer skips the wait too.` : ""} To run one in the background, use the tool's own background option, not \`&\`: a check started with \`&\`, after an edit in the same call or inside a command substitution is not recorded.`,
       };
     },
   });
@@ -74,7 +74,7 @@ export const checkRoutes: RouteModule = ({ store, errors }) => {
         if (!cwd || !isAbsolute(cwd)) return Response.json({ error: "cwd is an absolute folder" }, { status: 400 });
         const repo = repoOf(cwd);
         const named = repo ? namedFor(repo) : undefined;
-        return Response.json({ repo: repo?.scope ?? null, top: repo?.top ?? null, source: named?.source ?? null, checks: named?.checks ?? [], problems: named?.problems ?? [] });
+        return Response.json({ repo: repo?.scope ?? null, top: repo?.top ?? null, source: named?.source ?? null, checks: named?.checks ?? [], wait: named?.wait ?? [], env: named?.env ?? [], problems: named?.problems ?? [] });
       },
     },
   };
