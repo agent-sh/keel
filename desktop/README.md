@@ -254,6 +254,7 @@ the engine. The page is told which engine draws it (`keelShell.engine`:
 desktop/test/e2e.sh                         # in a hidden X11 desktop, with the engine the app picks
 KEEL_DESKTOP_ENGINE=webkit desktop/test/e2e.sh   # the same checks with the system web view (or qt)
 KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   # in a hidden native Wayland desktop (KWin)
+KEEL_E2E_ROOT=DIR desktop/test/e2e.sh       # the same, of a package unpacked in DIR (below)
 KEEL_URL=... bunx playwright test test/e2e/shell.spec.ts    # the page's side, in Chromium
 ```
 
@@ -299,6 +300,16 @@ app in front it checks focus under Wayland: a launch that carries the
 desktop's activation token brings Keel's window to the front; one without
 it, or with a made-up one, does not where the desktop refuses it (some let an
 app you have just used come forward by itself, and the check notes that).
+
+`KEEL_E2E_ROOT=DIR` checks a package instead of the build in the tree:
+`desktop/build.sh deb --with-keel`, then `dpkg -x dist/keel-desktop_*.deb
+DIR` (nothing is installed on the machine). The app, the Qt engine's
+program and keel are the ones under `DIR/usr/bin`, and the package's own
+files are checked with them: what runs is the package's, its launcher is a
+valid desktop entry that takes `keel://` links, its icons are found by the
+app's name, and a `keel://` link opened the way a desktop opens one (the
+launcher looked up for the link's kind, with the package's files and the
+system's and none of your account's) shows its session in the app.
 
 `KEEL_DESKTOP_INSTANCE=Name` runs an app of another name beside yours: it
 owns `io.github.agent_sh.Keel.Name` on the session bus, so its launches never

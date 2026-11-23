@@ -17,6 +17,7 @@
 # was given to another process, and an address that is not this machine's.
 #
 #   desktop/test/e2e.sh                         an X11 workspace
+#   KEEL_E2E_ROOT=DIR desktop/test/e2e.sh       the same, of a package unpacked in DIR (see below)
 #   KEEL_E2E_BACKEND=kwin desktop/test/e2e.sh   a native Wayland workspace (KWin): also the clipboard's
 #                                               picture and the focus a launch's activation token gives
 #
@@ -37,8 +38,14 @@ export KEEL_DESKTOP_INSTANCE="Check$$"
 BUS="$ID.$KEEL_DESKTOP_INSTANCE"
 BACKEND=${KEEL_E2E_BACKEND:-x11}
 case "$BACKEND" in x11|kwin) ;; *) echo "KEEL_E2E_BACKEND is x11 or kwin (see the top of this file)"; exit 2 ;; esac
-SHELL_BIN=${KEEL_DESKTOP_BIN:-$REPO/desktop/dist/keel-desktop}
-KEEL=${KEEL_BIN:-$REPO/dist/keel}
+# KEEL_E2E_ROOT=DIR: the check of a package, unpacked in DIR (`dpkg -x keel-desktop_*.deb DIR`,
+# built with `desktop/build.sh deb --with-keel`): the app, the other engine's program and keel
+# are the ones under DIR/usr/bin, and the package's own files are checked with them.
+ROOT=${KEEL_E2E_ROOT:-}
+SHELL_BIN=${KEEL_DESKTOP_BIN:-${ROOT:+$ROOT/usr/bin/keel-desktop}}
+SHELL_BIN=${SHELL_BIN:-$REPO/desktop/dist/keel-desktop}
+KEEL=${KEEL_BIN:-${ROOT:+$ROOT/usr/bin/keel}}
+KEEL=${KEEL:-$REPO/dist/keel}
 D=${KEEL_E2E_DIR:-$(mktemp -d -t keel-desktop-e2e.XXXXXX)}
 WS=keel-desktop-e2e-$$
 HOST_RUNTIME=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
@@ -215,6 +222,17 @@ if command -v convert > /dev/null; then
 else
   echo "# note: no ImageMagick here, so the window's picture was not read (whether the page is drawn was not checked)"
 fi
+# --- 1a. the package (KEEL_E2E_ROOT): what runs is what it holds, and the desktop finds its files
+if [ -n "$ROOT" ]; then
+  check "the app that runs is the package's" "[ \"\$(readlink /proc/\$(app_pid)/exe)\" = '$ROOT/usr/bin/keel-desktop' ]"
+  if [ "$ENGINE" = qt ]; then check "it found the other engine's program beside itself, in the package" "[ \"\$(readlink /proc/\$(win_pid)/exe)\" = '$ROOT/usr/bin/keel-desktop-qt' ]"; fi
+  entry="$ROOT/usr/share/applications/$ID.desktop"
+  if command -v desktop-file-validate > /dev/null; then check "the package's launcher is a valid desktop entry" "desktop-file-validate '$entry'"; else echo "# note: no desktop-file-validate here, so the launcher's form was not checked"; fi
+  check "the launcher starts the app, takes keel:// links and names the app's icon and windows" "grep -qx 'Exec=keel-desktop %u' '$entry' && grep -q '^MimeType=.*x-scheme-handler/keel;' '$entry' && grep -qx 'Icon=$ID' '$entry' && grep -qx 'StartupWMClass=$ID' '$entry'"
+  # (The icon by its name, as a panel or a notification looks it up: in the package's own folder of the icon theme.)
+  check "the package's icons are found by the app's name" "XDG_DATA_DIRS='$ROOT/usr/share:/usr/share' gjs -c 'imports.gi.versions.Gtk = \"4.0\"; const { Gtk, Gdk } = imports.gi; Gtk.init(); const t = Gtk.IconTheme.get_for_display(Gdk.Display.get_default()); imports.system.exit(t.has_icon(ARGV[0]) && t.has_icon(ARGV[0] + \"-symbolic\") ? 0 : 1);' '$ID' 2> /dev/null"
+fi
+
 # --- 1b. another keel-desktop on the same desktop and the same session bus, under the app's own
 # name, started after the check's (so its pid is the higher one): the owner's own app, as far as
 # the check can tell. Nothing the check launches may reach it.
@@ -319,6 +337,19 @@ sleep 2; shot 05-link-approval-light
 # The link raised the window on a session with a request waiting: a Return on its way answers nothing.
 $A key --id "$WS" Return > /dev/null 2>&1; sleep 3
 check "Return after a link does not answer the waiting request" "[ ! -e '$MARK' ] && api /api/approvals | grep -q '$ask' && ! said AT | grep -q 'active=allow'"
+
+# --- 5a. the package: a keel:// link opened the way the desktop opens one reaches the app
+if [ -n "$ROOT" ] && command -v gio > /dev/null && command -v update-desktop-database > /dev/null; then
+  # (What the package's trigger does at an install: the list of which launcher takes which kind of link.)
+  update-desktop-database "$ROOT/usr/share/applications" 2> /dev/null
+  # A desktop of its own: the package's files and the system's, none of this account's.
+  desk() { env HOME="$D/apphome" XDG_CONFIG_HOME="$D/apphome/.config" XDG_DATA_HOME="$D/apphome/.local/share" XDG_DATA_DIRS="$ROOT/usr/share:/usr/share" PATH="$ROOT/usr/bin:$PATH" "$@"; }
+  check "the desktop names the package's launcher for keel:// links" "desk gio mime x-scheme-handler/keel | grep -q '$ID.desktop'"
+  desk gio open "keel://session/$other" > /dev/null 2>&1
+  check "a keel:// link opened by the desktop shows its session in the app" "wait_for 15 \"last present | grep -q '/s/$other'\" && wait_for 10 \"said 'AT ' | grep -q 'AT $URL/s/$other '\" && [ \"\$(app_pids | wc -l)\" = 1 ]"
+elif [ -n "$ROOT" ]; then
+  echo "# note: no gio or update-desktop-database here, so a link opened by the desktop was not tried"
+fi
 
 # --- 5b. HTML a session wrote, shown in the sandboxed frame of the Artifacts panel: it drives nothing and reads nothing
 art=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: a page the model wrote","text":"One line."}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
