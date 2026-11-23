@@ -29,13 +29,15 @@ use webkit::prelude::*;
 /// How a page of this engine posts the string `s` to the app.
 const POST: &str = "window.webkit.messageHandlers.keel.postMessage(s)";
 
+// The bar is the rail's colour and runs into it with no line between: a hairline under it read
+// as a short white line at the top of the session list in the dark theme.
 fn style(l: &Look) -> String {
     let px = |n: f64| format!("{:.0}px", (n * l.scale).round());
     format!(
         r#"
 window.keel {{ background: {bg}; }}
 window.keel .titlebar {{ min-height: 0; padding: 0; margin: 0; border: none; background: transparent; box-shadow: none; }}
-.keel-bar {{ background: {panel}; color: {muted}; min-height: {h}; padding: 0 {pad}; border-bottom: 1px solid {line}; box-shadow: none; }}
+.keel-bar {{ background: {panel}; color: {muted}; min-height: {h}; padding: 0 {pad}; border: none; box-shadow: none; }}
 .keel-bar .keel-title {{ font-size: {font}; font-weight: 500; color: {muted}; }}
 .keel-bar windowcontrols {{ border-spacing: {gap}; }}
 .keel-bar windowcontrols button {{ min-width: {btn}; min-height: {btn}; padding: 0; margin: 0; border: none; border-radius: {radius}; background: transparent; color: {muted}; box-shadow: none; outline-offset: -2px; transition: background 120ms ease, color 120ms ease; }}

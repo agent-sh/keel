@@ -1086,7 +1086,7 @@ function Index({ current }: { current: string | null }) {
       {/* What scrolls: on a phone the tabs, the tags and the counts go with the rows (the find stays),
           and below it the list's foot, which never covers a row it names. Elsewhere both are no box. */}
       <div className="k-list-scroll">
-      <Seg kind="tabs" panel={panel} fill className="k-list-tabs mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
+      <Seg kind="tabs" panel={panel} bare className="k-list-tabs mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
       <Find q={q} setQ={setQ} narrow={narrow} />
       {tags.length > 0 && !narrow && (
         <div className="k-tag-row" role="group" aria-label="Filter by tag" data-testid="tag-filter">

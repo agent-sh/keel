@@ -38,7 +38,8 @@
 .k-rail-wrap[data-over] .k-rail { position: absolute; inset: 0 auto 0 0; box-shadow: var(--shadow-3); animation: k-list-over var(--dur-move) var(--ease-out); }
 @keyframes k-list-over { from { opacity: 0.6; transform: translateX(-0.875rem); } }
 .k-scrim[data-over] { display: block; position: fixed; inset: 0; z-index: 35; background: color-mix(in oklch, var(--overlay) 45%, transparent); }
-.k-rail-brand { display: flex; align-items: center; justify-content: center; gap: 0.5625rem; height: 3.25rem; flex-shrink: 0; }
+/* The brand row is the top bar's height, and its middle is the bar's below the band: the name and a pane's title stand on one line. */
+.k-rail-brand { display: flex; align-items: center; justify-content: center; gap: 0.5625rem; height: var(--spacing-bar); padding-top: var(--spacing-band); flex-shrink: 0; }
 .k-rail[data-open] .k-rail-brand { justify-content: flex-start; padding: 0 0.5rem 0 1.125rem; }
 .k-logo { display: grid; place-items: center; color: var(--fg); }
 .k-logo:not([data-live]) { opacity: 0.4; }
@@ -51,6 +52,8 @@
 .k-rail-foot { padding-block: 0.5rem max(0.5rem, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 .k-rail[data-open] .k-rail-foot { flex-direction: row; padding-inline: 0.5rem; }
 .k-rail[data-open] .k-rail-foot .k-theme-toggle { margin-left: auto; }
+/* The foot is a row of glyphs, each named by its tip: a word cut to "Settin..." beside four glyphs said less than the gear. */
+.k-rail[data-open] .k-rail-foot .k-act-word .k-act-label { display: none; }
 .k-act {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 0.5625rem;
   min-width: 2.5rem; height: var(--spacing-ctl-xl); padding: 0 0.5625rem; border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-ui);
@@ -109,7 +112,7 @@
 /* A list narrower than its pane count with the fold beside it (four panes and more in a squeezed list):
    the count takes a line of its own under the brand, every option whole, none scrolled out of sight. */
 @container rail (max-width: 13rem) {
-  .k-rail[data-open] .k-rail-brand { flex-wrap: wrap; height: auto; min-height: 3.25rem; row-gap: 0.375rem; padding-top: 0.625rem; padding-bottom: 0.5rem; }
+  .k-rail[data-open] .k-rail-brand { flex-wrap: wrap; height: auto; min-height: var(--spacing-bar); row-gap: 0.375rem; padding-top: 0.625rem; padding-bottom: 0.5rem; }
   .k-rail[data-open] .k-rail-brand .k-panes { order: 3; flex: 1 0 100%; margin-left: 0; justify-content: space-between; }
   .k-rail[data-open] .k-rail-brand .k-panes + .k-fold { margin-left: auto; }
 }
@@ -281,10 +284,11 @@
   .k-rail:has(.k-find:focus-within) > .k-rail-brand, .k-rail:has(.k-find:focus-within) > .k-rail-acts,
   .k-rail:has(.k-find:focus-within) > .k-rail-top, .k-rail:has(.k-find:focus-within) > .k-rail-foot { display: none; }
 }
-.k-group { margin-top: 0.75rem; }
+.k-group { margin-top: 1rem; }
 .k-group:first-child { margin-top: 0.25rem; }
-.k-group-head { display: flex; align-items: center; gap: 0.375rem; height: var(--spacing-ctl-md); padding: 0 0.5rem; font-size: var(--text-caption); font-weight: 500; color: var(--faint); }
-.k-group-head svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
+/* A folder's head is a label over its rows, not a row: the small size at the label's weight, its glyph on the column of the rows' marks. */
+.k-group-head { display: flex; align-items: center; gap: 0.5rem; height: var(--spacing-ctl-sm); padding: 0 0.5rem; font-size: var(--text-micro); font-weight: 600; color: var(--faint); }
+.k-group-head svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; }
 /* A row is one line: the mark, the title, and the line's end (the tag, the
    marks, the time; under the pointer the row's actions in the time's place).
    The state with why follows the title where the title leaves it room, and
@@ -294,7 +298,7 @@
    that changes moves no row under it. Two lines a row is the owner's choice
    (the Arrange menu): the state with why is then the second line, always
    there, and a row is as high with words in it as without. */
-.k-row { position: relative; display: flex; align-items: center; gap: 0.5625rem; height: 1.75rem; padding: 0 0.375rem 0 0.5625rem; border-radius: var(--radius-md); font-size: var(--text-ui); line-height: 1.25rem; color: var(--muted); user-select: none; }
+.k-row { position: relative; display: flex; align-items: center; gap: 0.5625rem; height: var(--spacing-ctl-md); padding: 0 0.375rem 0 0.5625rem; border-radius: var(--radius-md); font-size: var(--text-ui); line-height: 1.25rem; color: var(--muted); user-select: none; }
 .k-row-main { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; column-gap: 0.5rem; height: 1.25rem; overflow: hidden; }
 .k-row-end { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: 1.25rem; }
 /* Two lines: the title over its line, the line as wide as the row (the time column is the first line's). */
@@ -320,7 +324,9 @@
 .k-row[data-watch="fail"] .k-row-state { color: var(--st-fail-ink); }
 .k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-row:hover { background: var(--hover); color: var(--fg); }
-.k-row[aria-current] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+/* The session open here: lifted onto the paper, no outline (a ringed white box read as a field). */
+.k-row[aria-current] { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-1); }
+.k-row[aria-current] .k-row-title { color: var(--fg); font-weight: 500; }
 .k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.3125rem; bottom: 0.3125rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
 .k-row-title { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -328,7 +334,10 @@
 .k-row:not([data-watch="done"], [data-watch="idle"]) .k-row-title { color: var(--fg); }
 /* Unread: the title in ink and a little heavier, and the dot the count above the list wears.
    A row that needs them or failed says more already and has none. */
-.k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 550; }
+/* (One step of weight: eighteen semibold titles in a list read as no title stood out.) */
+.k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 500; }
+/* Done and read: the mark steps back to a small steel dot. Green is news (done and not yet read), not every row's colour. */
+.k-row[data-watch="done"]:not([data-unread], [aria-current]) > .k-mark { background: var(--st-idle); transform: scale(0.7); }
 .k-row .k-unread-dot { width: 0.375rem; height: 0.375rem; background: var(--accent-ink); }
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"], [data-gone]) .k-unread-dot { display: none; }
 .k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); line-height: 1.25rem; color: var(--faint); }
@@ -360,10 +369,12 @@
 /* Between machines in the list: this machine's sessions, then each other
    machine's under a rule in its colour, its name, whether it answers, and how
    many sessions run there. */
-.k-machine-sep { --where: var(--faint); display: flex; align-items: center; gap: 0.4375rem; margin: 0.875rem 0.375rem 0.25rem; padding-top: 0.5rem; border-top: 1px solid var(--line-strong); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; color: var(--where); }
+/* A machine's part of the list: a hairline across the list, then its glyph in its colour, its name in ink and its count. */
+.k-machine-sep { --where: var(--faint); display: flex; align-items: center; gap: 0.5rem; margin: 1.25rem 0 0.25rem; padding: 0.625rem 0.5rem 0; border-top: 1px solid var(--line); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; color: var(--muted); }
+.k-machine-sep svg { color: var(--where); }
 .k-machine-sep:first-child { margin-top: 0.125rem; }
 .k-machine-sep[data-machine]:not([data-machine="local"]) { border-top-color: color-mix(in oklab, var(--where) 55%, transparent); }
-.k-machine-sep svg { width: 0.8125rem; height: 0.8125rem; flex-shrink: 0; }
+.k-machine-sep svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; }
 .k-machine-sep-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-machine-sep-reach { color: var(--st-fail-ink); }
 .k-machine-sep[data-reach="offline"] { --where: var(--faint); }
@@ -407,6 +418,7 @@
 .k-need-more { font-weight: 700; font-size: var(--text-micro); color: var(--muted); }
 .k-rail[data-narrow] .k-need-strip { margin-inline: 0.375rem; flex-direction: column; }
 .k-rail[data-narrow] .k-need-title { max-width: none; }
+.k-machines-below { display: flex; flex-direction: column; flex-shrink: 0; }
 .k-late-line { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); margin: 0 0.625rem; padding: 0 0.5rem; border-top: 1px solid var(--line); font-size: var(--text-caption); color: var(--muted); text-align: left; }
 .k-late-line:hover { color: var(--fg); }
 .k-late-line svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
@@ -575,7 +587,7 @@
 
 /* ---------- Stations ---------- */
 .k-stations { flex: 1; min-width: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; }
-.k-station { --k-band-h: 0.3125rem; position: relative; flex: 1 1 0; min-width: 26rem; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
+.k-station { --k-band-h: var(--spacing-band); position: relative; flex: 1 1 0; min-width: 26rem; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
 .k-station[data-helm] { background: var(--raised); }
 /* The paper under a pane's header (tools that lie over the header fade into it). */
 .k-station { --k-head-bg: var(--bg); }
@@ -743,7 +755,8 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Failed: a red band and a red edge down the head. */
 .k-station[data-watch="fail"] .k-station-head { box-shadow: inset 3px 0 0 var(--st-fail); }
 
-.k-station-head { position: relative; padding: 0.75rem 1.125rem 0.6875rem 1.375rem; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+/* At least the top bar's height under the band, whatever the band's: its hairline is on the line where the rail's brand row ends. */
+.k-station-head { position: relative; display: flex; flex-direction: column; justify-content: center; min-height: calc(var(--spacing-bar) - var(--k-band-h)); padding: 0.75rem 1.125rem 0.6875rem 1.375rem; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .k-station-row { display: flex; align-items: center; gap: 0.75rem; min-height: 1.625rem; }
 .k-station-word { display: inline-flex; align-items: center; gap: 0.4375rem; font-weight: 700; font-size: var(--text-caption); letter-spacing: 0; color: var(--st-done-ink); }
 .k-station-word .k-mark { width: 0.5625rem; height: 0.5625rem; }
@@ -827,8 +840,27 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-station[data-helm] .k-station-rest { container: k-rest / inline-size; }
   @container k-rest (max-width: 27.5rem) { .k-station-identity .k-tool-move { display: none; } }
 }
-/* Pinned: a tab hanging from the band. */
-.k-pin-mark { position: absolute; left: 0; top: 0; width: 0.1875rem; height: 1.375rem; background: var(--fg); }
+
+/* ---------- The top bar ----------
+   A pane's head and, in the pane worked in, the session's tools. Where that pane is wide they are
+   one bar of the top edge's height: the title, the state and its reason at the left, the tools at
+   the right, one hairline under both, the tint of a state that calls the owner across the whole
+   of it, and the working line too. Narrower (panes side by side, a phone) the tools are a row
+   under the head, where their fit and the head's are measured on a row each. */
+.k-top { flex-shrink: 0; container: k-top / inline-size; }
+.k-top-in { position: relative; display: flex; flex-direction: column; }
+@container k-top (min-width: 62rem) {
+  .k-top-in { flex-direction: row; align-items: stretch; }
+  .k-top-in > .k-station-head { flex: 1 1 0; min-width: 0; padding-right: 0.5rem; }
+  /* (A share of the bar that does not follow what is in it: the row folds its tools by its own width.) */
+  .k-station .k-top-in > .k-session-header { position: static; flex: 0 1 min(44rem, 50%); min-width: 0; height: auto; padding-left: 0; }
+  .k-station[data-watch="need"] .k-top-in > .k-session-header { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
+}
+/* With the bar this wide its tools have their whole share: the panels' chooser keeps its name. */
+@container k-top (min-width: 88rem) {
+  .k-station .k-top-in > .k-session-header .k-hand:not([data-words]) { gap: 0.375rem; padding: 0 0.5rem; }
+  .k-station .k-top-in > .k-session-header .k-hand:not([data-words]) .k-hand-word { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+}
 
 /* The helm's full header: the tools row only (its title is in the head above). */
 .k-station .k-session-header { height: 2.375rem; background: transparent; backdrop-filter: none; border-bottom-color: var(--line); }

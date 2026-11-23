@@ -159,7 +159,6 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         </div>
       </div>
       {!helm && <p className="k-station-line truncate">{line || " "}</p>}
-      {pinned && <span className="k-pin-mark" aria-hidden="true" />}
     </header>
   );
 }
@@ -307,7 +306,9 @@ function Swap({ session, slot, covered }: { session: string; slot: number; cover
   return null;
 }
 
-const head = (x: Session, on: boolean) => <><StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} />}</>;
+// The pane's top bar: its head and, in the pane worked in, the session's tools. Where the pane is
+// wide the two are one bar of one height (bridge.css, .k-top); narrower, the tools are a row under it.
+const head = (x: Session, on: boolean) => <div className="k-top"><div className="k-top-in"><StationHead s={x} helm={on} pinned={isPinned(x)} />{on && <SessionHeader session={x} />}</div></div>;
 
 // One session's view in a pane: the pane's own, or a look over it (`back` leads out of that).
 // The same component in both places, so a look that is kept goes on as the pane's session

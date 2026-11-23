@@ -35,7 +35,7 @@ export type SegOption<T> = {
 // The id of a tab, for the panel it shows to name it (aria-labelledby).
 export const tabId = (panel: string, value: string | number) => `${panel}-tab-${value}`;
 
-export function Seg<T extends string | number>({ value, options, onChange, label, kind = "choice", rows, manual, again, panel, fill, wrap, className, testid, title }: {
+export function Seg<T extends string | number>({ value, options, onChange, label, kind = "choice", rows, manual, again, panel, fill, wrap, bare, className, testid, title }: {
   value: T;
   options: SegOption<T>[];
   onChange: (v: T) => void;
@@ -55,6 +55,8 @@ export function Seg<T extends string | number>({ value, options, onChange, label
   fill?: boolean;
   // Too many options for one line go on to the next instead of scrolling sideways (a filter with a count on each).
   wrap?: boolean;
+  // Words that head what they switch (a list's tabs): no track, the chosen one on a faint well.
+  bare?: boolean;
   className?: string;
   testid?: string;
   title?: string;
@@ -99,7 +101,7 @@ export function Seg<T extends string | number>({ value, options, onChange, label
 
   const tabs = kind === "tabs";
   return (
-    <div ref={track} role={tabs ? "tablist" : "radiogroup"} aria-label={label} aria-orientation={rows ? "vertical" : tabs ? "horizontal" : undefined} title={title} data-testid={testid} data-fill={fill || undefined} data-wrap={wrap || undefined} className={cn(rows ? "flex flex-col" : "k-seg", className)} onKeyDown={keys}>
+    <div ref={track} role={tabs ? "tablist" : "radiogroup"} aria-label={label} aria-orientation={rows ? "vertical" : tabs ? "horizontal" : undefined} title={title} data-testid={testid} data-fill={fill || undefined} data-wrap={wrap || undefined} data-bare={bare || undefined} className={cn(rows ? "flex flex-col" : "k-seg", className)} onKeyDown={keys}>
       {options.map((o, i) => [
         o.before && <div key={`before ${String(o.value)}`} role="presentation">{o.before}</div>,
         <button

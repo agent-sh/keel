@@ -623,8 +623,9 @@ protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
+        // The bar is the rail's colour and runs into it, with no line between them: a hairline there
+        // read as a short white line at the top of the list in the dark theme.
         p.fillRect(rect(), QColor(look->panel));
-        p.fillRect(0, height() - 1, width(), 1, QColor(look->line));
     }
     void mousePressEvent(QMouseEvent *e) override
     {

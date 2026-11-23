@@ -270,6 +270,11 @@
   --spacing-ctl-xl: 2.25rem;
   /* A finger's target on a phone: 44 px at the default text size (see "A finger's target" below). */
   --spacing-tap: 2.75rem;
+  /* The top edge of the window: the rail's brand row and a pane's top bar (its band included) are
+     one height, so what is under each starts on one line across the window. The band is the
+     state's strip across a pane's top at rest (a state that calls the owner draws it thicker). */
+  --spacing-bar: 3.5rem;
+  --spacing-band: 0.3125rem;
 
   /* Instrument corners: three steps and a hairline, each a size a reader tells apart.
      xs: a mark or a key. sm: what sits inside a control (a chosen option, a chip).
@@ -392,6 +397,12 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .k-seg[data-wrap] { flex-wrap: wrap; overflow: visible; }
 .k-seg[data-fill] { display: flex; }
 .k-seg[data-fill] > button { flex: 1 1 0; min-width: 0; padding: 0 0.25rem; }
+/* Bare: words that head what they switch (the session list's two tabs), set on the surface under
+   them with no track, so they are not a second box over the field below; the chosen one is in ink
+   on a faint well. */
+.k-seg[data-bare] { gap: 0.125rem; padding: 0; background: transparent; box-shadow: none; }
+.k-seg[data-bare] > button { padding: 0 0.5rem; color: var(--faint); }
+.k-seg[data-bare] > button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--hover); box-shadow: none; color: var(--fg); }
 @media (hover: none) { .k-seg > button { height: var(--spacing-ctl-lg); min-width: var(--spacing-ctl-lg); } }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
