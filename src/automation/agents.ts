@@ -571,7 +571,7 @@ export function admit(sessionId: string): boolean {
     return true;
   }
   if (line.join({ key, at, go: () => { admitting.add(sessionId); try { flush(sessionId); } finally { admitting.delete(sessionId); } } })) {
-    emit("agent", get(a.id));
+    { const rec = get(a.id); if (rec) emit("agent", brief(rec)); }
     activity.record("agent", "slot_wait", a.parent_id, `Agent "${a.title}" was woken while every agent slot of this session works: it goes on, first in line, when one frees`, { agent_id: a.id, child_session: a.session_id });
   }
   return false;
@@ -835,7 +835,7 @@ function lineUp(a: AgentRecord) {
     activity.record("agent", "started", a.parent_id, `Started agent "${a.title}" (${a.type} on ${a.model}) when a slot freed${leftLine(a.id)}`, { agent_id: a.id, child_session: a.session_id });
     begin(a.id, { background: true }, a.model).catch((e) => capture(e, { at: "queued agent start", agent: a.id }));
   } });
-  emit("agent", get(a.id));
+  { const rec = get(a.id); if (rec) emit("agent", brief(rec)); }
   wakeSlots(a.parent_id); // a slot freed while it was made
 }
 const queuedTask = (id: string) => !!D().store.db.query<{ task: string | null }, [string]>("SELECT task FROM agents WHERE id = ?").get(id)?.task;
