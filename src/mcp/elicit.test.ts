@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { formOf, looksSecret, MUST_NOT, plain } from "./elicit.ts";
+import { formOf, linkOf, linksRequired, looksSecret, MUST_NOT, plain } from "./elicit.ts";
 import { withoutHidden } from "../core/hidden-chars.ts";
 
 test("a server's words become plain bounded text", () => {
@@ -144,4 +144,33 @@ test("a form is parsed in time linear in its size, and one over the size it take
   const vast = { message: "m", requestedSchema: { type: "object", properties: Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`f${i}`, { type: "string", enum: Array.from({ length: 50 }, (_, j) => `o${j}`) }])) } };
   const refused = timed(vast);
   expect([refused.f.unanswerable, refused.ms < 50]).toEqual(["it is larger than 64 KB, the most a form is", true]);
+});
+
+test("a page a server sends the owner to is shown whole, its site apart, with what to know first", () => {
+  expect(linkOf({ mode: "url", elicitationId: "e-1", url: "https://mcp.example.com/ui/set_api_key", message: "Please provide your API key.\u202e" }))
+    .toEqual({ message: "Please provide your API key.", url: "https://mcp.example.com/ui/set_api_key", host: "mcp.example.com", id: "e-1", notes: [] });
+  // What is shown is what the browser opens: the address as the parser writes it.
+  expect((linkOf({ url: " HTTPS://Mcp.Example.COM/a b" }) as any).url).toBe("https://mcp.example.com/a%20b");
+  // A name of other letters, a name before an @ sign, a page not on HTTPS: each is said.
+  const spoof = linkOf({ url: "http://paypal.com@xn--pypal-4ve.com/login" }) as any;
+  expect(spoof.host).toBe("xn--pypal-4ve.com");
+  expect(spoof.notes).toEqual([
+    "The site's name is written in Punycode, and reads as pаypal.com: letters of another alphabet can imitate a known site's name.",
+    "The address has a name before an @ sign: the site is xn--pypal-4ve.com, whatever comes before the @.",
+    "The page is not on HTTPS: what is typed there travels unencrypted.",
+  ]);
+  expect((linkOf({ url: "http://localhost:3000/cb" }) as any).notes).toEqual([]);
+  // Only a web page is a place to send the owner; anything else is refused.
+  expect(linkOf({ url: "javascript:alert(1)" })).toEqual({ refuse: "keel sends the owner only to http and https pages, not javascript: addresses" });
+  expect(linkOf({ url: "file:///etc/passwd" })).toMatchObject({ refuse: expect.stringContaining("not file:") });
+  expect(linkOf({ url: "not a url" })).toEqual({ refuse: "its url is not a valid URL" });
+  expect(linkOf({})).toEqual({ refuse: "its url is not a valid URL" });
+  expect(linkOf({ url: "https://a.test/" + "x".repeat(70_000) })).toMatchObject({ refuse: expect.stringContaining("larger than") });
+});
+
+test("the pages a URLElicitationRequiredError names are its URL elicitations with an id", () => {
+  const page = { mode: "url", elicitationId: "e-1", url: "https://a.test/", message: "Sign in" };
+  expect(linksRequired({ elicitations: [page, { mode: "form", elicitationId: "e-2" }, { mode: "url", url: "https://b.test/" }, null, "x"] })).toEqual([page]);
+  expect(linksRequired({})).toEqual([]);
+  expect(linksRequired(undefined)).toEqual([]);
 });

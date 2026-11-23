@@ -13,7 +13,7 @@ import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/c
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
-import { formOf, type ElicitResult } from "./elicit.ts";
+import { formOf, linkOf, linksRequired, plain, URL_REQUIRED, type ElicitResult } from "./elicit.ts";
 import { cardText, samplingOf, stopReason, type SampleRequest } from "./sampling.ts";
 import { withoutHidden } from "../core/hidden-chars.ts";
 import { allHooks } from "../engine/hooks.ts";
@@ -47,7 +47,8 @@ const SELF_MAX = 10;
 // The questions that wait behind the one on the card.
 const QUEUED_MAX = 5;
 // `end`: stops the call (its request is cancelled); `ended`: why it was.
-type CallAsks = { asked: number; declined: number; queued: number; self: number; roots: number; notes: Set<string>; readOnly: boolean; end?: () => void; ended?: string };
+// `client`: the connection the call runs on (a page's completion is said on it).
+type CallAsks = { asked: number; declined: number; queued: number; self: number; roots: number; notes: Set<string>; readOnly: boolean; client?: McpClient; end?: () => void; ended?: string };
 // Declines are counted when the owner answers, so that bound is looked at
 // again when a queued question's turn comes; the count of questions is
 // looked at once, before the question is counted (the twentieth is shown).
@@ -1024,7 +1025,7 @@ export class McpManager {
       // question would reach this session's next call on it. The connection
       // goes with the call; the next call starts the server again.
       if (client.era === "legacy" && client.unnamedRequests) client.drop(`a call of ${shown}__${tool} was ended because of the questions it asked, and the server may still be asking`);
-    }, readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
+    }, client, readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
     // What the model is told besides the result: what the server asked that got no answer, and why.
     const noted = (out: ToolOutput): ToolOutput => {
       if (!call.notes.size) return out;
@@ -1033,15 +1034,24 @@ export class McpManager {
     };
     // A server that keeps the folders it was told is told they changed when this call's session has others.
     client.rootsChange(this.rootsFor(ctx), ctx.sessionId);
-    let r: McpCallResult;
-    try {
+    let r: McpCallResult | undefined;
+    const taskSupport = tools?.find((t) => t.name === tool)?.execution?.taskSupport;
+    // (Again after the owner finished a step a server asked for in its browser: see firstSteps.)
+    while (!r) try {
       r = await client.callTool(tool, input, signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
         session: ctx.sessionId,
         // (By the name the session knows the server by: the card and the notes show it.)
         ask: (q) => this.input(shown, q, ctx, card, call),
         dropped: (method, why) => call.notes.add(`${shown} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other call is using ${shown}.`),
-      }, e?.config.tool_max_secs ? e.config.tool_max_secs * 1000 : undefined);
+      }, e?.config.tool_max_secs ? e.config.tool_max_secs * 1000 : undefined, taskSupport);
     } catch (err) {
+      const steps = err instanceof RpcError && err.code === URL_REQUIRED && !call.ended && !ctx.signal.aborted ? linksRequired(err.data) : [];
+      if (steps.length) {
+        const why = await this.firstSteps(shown, tool, steps, ctx, card, call);
+        if (!why) continue;
+        this.callEnded(ctx.sessionId, card);
+        return noted({ content: why, is_error: true });
+      }
       this.callEnded(ctx.sessionId, card);
       // Ended for a bound on its questions: the result says which, and that the call did not finish.
       if (call.ended) return noted({ content: `${shown}__${tool} was ended: ${call.ended} Its work may be half done: check before calling it again.`, is_error: true });
@@ -1112,7 +1122,7 @@ export class McpManager {
     if (q.method !== "elicitation/create" && !sampling) throw new RpcError(-32601, `keel does not support ${q.method}`);
     const mode = q.params?.mode ?? "form";
     // 2025-11-25 elicitation, Error Handling: a mode the client did not declare is invalid params.
-    if (!sampling && mode !== "form") throw new RpcError(-32602, `keel offers form elicitation only, not ${mode} mode`);
+    if (!sampling && mode !== "form" && mode !== "url") throw new RpcError(-32602, `keel offers form and url elicitation, not ${plain(mode, 40)} mode`);
     // Past a bound: the call ends, here and for every question it still sends.
     const end = (why: string): never => {
       call.ended ??= why;
@@ -1137,7 +1147,7 @@ export class McpManager {
     // One card per call: a second question waits for the first.
     const run = (this.queue.get(card) ?? Promise.resolve()).then(() => {
       const out = call.ended ?? declinedOut(server, call);
-      return out ? end(out) : sampling ? this.sample(server, q.params, ctx, card, call) : this.elicit(server, q.params, ctx, card, call, unasked);
+      return out ? end(out) : sampling ? this.sample(server, q.params, ctx, card, call) : mode === "url" ? this.elicitLink(server, q.params, ctx, card, call) : this.elicit(server, q.params, ctx, card, call, unasked);
     }).finally(() => { call.queued--; });
     const tail = run.catch(() => {});
     this.queue.set(card, tail);
@@ -1269,6 +1279,69 @@ export class McpManager {
       if (!this.parked.has(ctx.sessionId) && this.asked.delete(card)) this.keepAsked();
       tell((h) => h.ownerAnswered?.(ctx.sessionId, ctx.callId!, answered, id));
     }
+  }
+
+  // A server sends the owner to a page (URL mode). The card shows the
+  // server's words, the whole address and its site, and what to know before
+  // opening it; the owner opens it from the card in their own browser, which
+  // is the protocol's accept, or declines. A stopped turn is its cancel.
+  // Nothing of Keel's opens or fetches the address. A server that says the
+  // step is done while the card is still open closes the card: the owner
+  // went there another way.
+  private async elicitLink(server: string, params: unknown, ctx: ToolContext, card: string, call: CallAsks): Promise<ElicitResult> {
+    const link = linkOf(params);
+    if ("refuse" in link) throw new RpcError(-32602, `keel did not show the page: ${link.refuse}`);
+    const watch = link.id ? call.client?.watchLink(link.id) : undefined;
+    try {
+      const a = await this.onCard(server, watch ? { ...ctx, signal: AbortSignal.any([ctx.signal, watch.signal]) } : ctx, card, call, `${server} asks you to open a page at ${link.host}`, {
+        from: server, message: link.message, questions: [], link: { url: link.url, host: link.host },
+        ...(link.notes.length ? { notes: link.notes } : {}),
+      });
+      if (watch?.signal.aborted && !ctx.signal.aborted) return { action: "accept" };
+      if (a === null) return { action: "cancel" };
+      if (a === DECLINED) { call.declined++; return { action: "decline" }; }
+      return { action: "accept" };
+    } finally {
+      watch?.drop();
+    }
+  }
+
+  // A server answered a call with -32042: it runs only after the owner
+  // finished a step on each page it names (2025-11-25 elicitation, URL
+  // Elicitation Required Error). Each page is put to the owner as a server's
+  // question is, with its bounds. After the owner went to a page, the card
+  // waits for the step: it closes when the server says the step is done
+  // (notifications/elicitation/complete), or when the owner says so (I finished),
+  // and the call is made again. Says why the call did not run, or nothing
+  // when it is to be made again.
+  private async firstSteps(server: string, tool: string, steps: Record<string, unknown>[], ctx: ToolContext, card: string | undefined, call: CallAsks): Promise<string | undefined> {
+    const name = `${server}__${tool}`;
+    for (const step of steps) {
+      const link = linkOf(step);
+      const host = "refuse" in link ? "a page" : link.host;
+      const said = (what: string) => `${name} did not run: ${server} needs the owner to finish a step at ${host} in their browser first (an MCP URL elicitation), and ${what} Ask the owner before calling it again.`;
+      const watch = "refuse" in link ? undefined : call.client?.watchLink(link.id!);
+      try {
+        let a: ElicitResult;
+        try {
+          a = (await this.input(server, { method: "elicitation/create", params: { ...step, mode: "url" } }, ctx, card, call)) as ElicitResult;
+        } catch (e) {
+          return said(`the page could not be put to the owner: ${(e as Error).message}`);
+        }
+        if (a.action === "decline") return said("the owner declined it.");
+        if (a.action !== "accept" || "refuse" in link) return said(call.notes.size ? "it was not put to the owner." : "the owner made no choice.");
+        if (watch?.signal.aborted) continue;
+        const done = await this.onCard(server, watch ? { ...ctx, signal: AbortSignal.any([ctx.signal, watch.signal]) } : ctx, card!, call, `${server} waits for you to finish at ${link.host}`, {
+          from: server, message: link.message, questions: [], link: { url: link.url, host: link.host, waiting: true },
+        });
+        if (watch?.signal.aborted && !ctx.signal.aborted) continue;
+        if (done === null) return said("the owner made no choice.");
+        if (done === DECLINED) { call.declined++; return said("the owner cancelled it."); }
+      } finally {
+        watch?.drop();
+      }
+    }
+    return undefined;
   }
 
   // ---- owner actions ----

@@ -180,7 +180,12 @@ export type QueueItem = { id: string; session_id: string; text: string; images?:
 // `secret` (a question): its answer is typed masked.
 export type AskedQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multiSelect?: boolean; optional?: boolean; secret?: boolean };
 // `label`: what the card says the message is (default: the server's own words).
-export type Asked = { id: string; from: string; label?: string; message: string; questions: AskedQuestion[]; notes?: string[]; note?: string; round?: number; sensitive?: boolean };
+// `link`: a page the server sends the owner to (MCP URL elicitation). The page
+// shows it and the owner opens it in their own browser; nothing of Keel's
+// opens or fetches it. `waiting`: the owner went to it, and the card waits for
+// the step there to be done.
+export type AskedLink = { url: string; host: string; waiting?: boolean };
+export type Asked = { id: string; from: string; label?: string; message: string; questions: AskedQuestion[]; notes?: string[]; note?: string; round?: number; sensitive?: boolean; link?: AskedLink };
 export type PendingQuestion = { session_id: string; call_id: string; parent_id?: string; asked?: Asked };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);

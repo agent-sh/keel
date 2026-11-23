@@ -402,7 +402,7 @@ const approve = command("approve", APPROVE_USAGE, {
     const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);
     const use = events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks : [])).find((b: any) => b.type === "tool_use" && b.id === q.call_id);
     // A question an MCP server asked is in the state, not in the call's input.
-    const asked = q.asked ? [{ id: "", question: `MCP server ${q.asked.from} asks: ${q.asked.message}`, options: [] }, ...q.asked.questions.map((x: any) => ({ id: x.id, question: x.question, options: (x.options ?? []).map((o: any) => o.label) }))] : undefined;
+    const asked = q.asked ? [{ id: "", question: `MCP server ${q.asked.from} asks: ${q.asked.message}${q.asked.link ? ` (page: ${q.asked.link.url})` : ""}`, options: [] }, ...q.asked.questions.map((x: any) => ({ id: x.id, question: x.question, options: (x.options ?? []).map((o: any) => o.label) }))] : undefined;
     questions.push({ ...q, questions: asked ?? (use?.input?.questions ?? []).map((x: any, i: number) => ({ id: x.id ?? String(i), question: x.question, options: (x.options ?? []).map((o: any) => o.label) })) });
   }
   // Each card as the daemon gives it to every client: its whole text, its marks, why it is read first.
@@ -570,6 +570,8 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
           // A question an MCP server asked: it is in the state, not in the call's input.
           qs = q.asked.questions.map((x: any) => ({ id: x.id, question: x.question, options: x.options ?? [], multi: !!x.multiSelect }));
           console.log(`?? MCP server ${line(q.asked.from)} asks: ${line(q.asked.message)}${qs.length ? "" : "   (nothing to choose: answer it in the workbench)"}`);
+          // (A page the server sends the owner to: shown whole, for the owner to open in their browser.)
+          if (q.asked.link) console.log(`   ${q.asked.link.waiting ? "finish the step at" : "the page to open"}: ${line(q.asked.link.url)}`);
           for (const n of q.asked.notes ?? []) console.log(`   ${line(n)}`);
         } else {
           const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);

@@ -10,10 +10,24 @@
 // `{ action: "decline" }` (the owner said no) or `{ action: "cancel" }` (the
 // owner made no choice). A client shows which server asks, lets the owner
 // decline, and should check the answer against the schema before sending it.
+//
+// URL mode (2025-11-25, the same page): the server names a page the owner
+// opens in their own browser (`mode: "url"`, `url`, `elicitationId`), for
+// what must not pass through the client: a sign-in to another service, a
+// key, a payment. The client shows the whole address with its site set
+// apart, asks before anything opens it, never fetches it, and answers
+// `accept` (the owner went to the page), `decline` or `cancel`. The server
+// may say the step is done (`notifications/elicitation/complete`), and may
+// refuse a request until it is (error -32042, URLElicitationRequiredError,
+// with the pages in `data.elicitations`). The 2026-07-28 revision keeps the
+// mode without the id, the notification and the error: the page comes as
+// an input request of a call (basic/patterns/mrtr).
+import { domainToUnicode } from "node:url";
 import { withoutHidden } from "../core/hidden-chars.ts";
 import type { Answers, Question } from "../tools/interact.ts";
 
-export type ElicitResult = { action: "accept"; content: Record<string, unknown> } | { action: "decline" } | { action: "cancel" };
+// (An accepted URL elicitation has no content: the owner's answer is the page's, not the client's.)
+export type ElicitResult = { action: "accept"; content?: Record<string, unknown> } | { action: "decline" } | { action: "cancel" };
 
 // A server's words as plain text for the card: nothing a reader cannot see or
 // that reorders what is seen (src/core/hidden-chars.ts), and a bound on the
@@ -272,4 +286,52 @@ export function formOf(params: any): Form {
     ...(odd ? { unanswerable: `its field ${plain(odd.name, 60)} is ${odd.schema.type === "object" ? "an object" : "a list of free text"}, which a form does not have` } : {}),
     ...(!odd && stuck.length ? { unanswerable: `it needs ${stuck.length === 1 ? "a field" : `${stuck.length} fields`} beyond the ${FIELDS_MAX} a card shows (${plain(stuck[0]!.name, 60)}${stuck.length > 1 ? " and more" : ""})` } : {}),
   };
+}
+
+// The error a server answers with when a request needs a page opened first.
+export const URL_REQUIRED = -32042;
+
+export type Link = {
+  message: string;
+  // The address as the browser opens it (parsed and written again, so what is shown is what opens).
+  url: string;
+  // The site: what the card sets apart in the address.
+  host: string;
+  // The server's id for it, when it gave one (2025-11-25): its completion names it.
+  id?: string;
+  // What the owner should know before opening it.
+  notes: string[];
+};
+
+const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
+
+// A URL elicitation as the card shows it, or why it is refused (invalid
+// params, -32602). Only a web page is a URL the owner is sent to: any other
+// scheme (javascript:, file:, data:) would do something of its own when opened.
+export function linkOf(params: any): Link | { refuse: string } {
+  if (over(params, SCHEMA_MAX)) return { refuse: `the request is larger than ${SCHEMA_MAX / 1000} KB` };
+  const raw = own(params, "url");
+  let u: URL;
+  try { u = new URL(typeof raw === "string" ? raw.trim() : ""); } catch { return { refuse: "its url is not a valid URL" }; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return { refuse: `keel sends the owner only to http and https pages, not ${plain(u.protocol, 40)} addresses` };
+  if (!u.hostname) return { refuse: "its url names no site" };
+  const host = u.hostname;
+  const notes: string[] = [];
+  // (The parser writes a name of other letters as Punycode: its labels start with xn--.)
+  if (host.split(".").some((l) => l.startsWith("xn--"))) {
+    const reads = domainToUnicode(host);
+    notes.push(`The site's name is written in Punycode${reads && reads !== host ? `, and reads as ${plain(reads, LABEL_MAX)}` : ""}: letters of another alphabet can imitate a known site's name.`);
+  }
+  if (u.username || u.password) notes.push(`The address has a name before an @ sign: the site is ${host}, whatever comes before the @.`);
+  if (u.protocol === "http:" && !LOOPBACK.test(host)) notes.push("The page is not on HTTPS: what is typed there travels unencrypted.");
+  const id = own(params, "elicitationId");
+  return { message: plain(own(params, "message"), MESSAGE_MAX), url: u.href, host, ...(typeof id === "string" && id ? { id } : {}), notes };
+}
+
+// The pages a -32042 error names (`data.elicitations`): URL elicitations
+// with an id, as the specification says each one is. None when it names none.
+export function linksRequired(data: unknown): Record<string, unknown>[] {
+  const list = own(data, "elicitations");
+  if (!Array.isArray(list)) return [];
+  return list.filter((e): e is Record<string, unknown> => !!e && typeof e === "object" && own(e, "mode") === "url" && typeof own(e, "elicitationId") === "string");
 }

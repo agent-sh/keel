@@ -24,6 +24,18 @@ export type UiQuestion = { id: string; header?: string; question: string; option
 export const askedQuestions = (asked: Asked): UiQuestion[] =>
   asked.questions.map((q) => ({ id: q.id, header: q.header, question: q.question, options: q.options, multi: !!q.multiSelect, optional: !!q.optional, secret: !!q.secret }));
 
+// A page a server sends the owner to, split at its site: what comes before
+// it, the site, the rest. The site is the host after any name and @ sign,
+// which is where the browser goes, so that is the part the card sets apart.
+export function siteOf(url: string, host: string): [string, string, string] {
+  const from = url.indexOf("//") + 2;
+  const tail = url.slice(from).search(/[/?#]/);
+  const end = tail < 0 ? url.length : from + tail;
+  const at = url.lastIndexOf("@", end - 1);
+  const i = host ? url.indexOf(host, at >= from ? at + 1 : from) : -1;
+  return i < 0 || i >= end ? [url, "", ""] : [url.slice(0, i), host, url.slice(i + host.length)];
+}
+
 export function questions(name: string, input: any): UiQuestion[] {
   return (input?.questions ?? []).map((q: any, i: number) => ({
     id: name === "request_user_input" ? String(q.id ?? i) : String(i),

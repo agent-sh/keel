@@ -7,7 +7,8 @@ import { sessionsFolder, specEnv } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: an MCP server that asks the owner a question while it works on a
-// call (elicitation, form mode). The question is a card under the call: it
+// call (elicitation, form mode), or sends the owner to a page (URL mode), and
+// a tool that runs as a task. The question is a card under the call: it
 // names the server, shows the server's words as plain text, takes an answer
 // checked against the server's schema, and can be declined. A stopped turn is
 // the protocol's cancel. Both protocol eras: a legacy server asks with a
@@ -156,11 +157,11 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
     await ends(4);
     expect(k.answers().at(-1)).toEqual({ tool: "ask", era: "modern", answer: { action: "accept", content: { account: "Brook and Sons", size: "s", copies: 1 } }, requestState: "state-1" });
 
-    // 7. Both servers were told what Keel offers.
+    // 7. Both servers were told what Keel offers: both modes of elicitation.
     for (const [tool, n] of [["asker__caps", 5], ["modern__caps", 6]] as const) {
       await run(page, tool);
       await ends(n);
-      await expect(last).toContainText('"elicitation":{"form":{}}');
+      await expect(last).toContainText('"elicitation":{"form":{},"url":{}}');
     }
 
     // 8. Two questions in one call, one after the other: the second is a card
@@ -499,6 +500,177 @@ test("a server's sampling request is the owner's to allow, and its reply the own
     await run(page, "asker__caps");
     await ends(5);
     await expect(last).toContainText('"sampling":{}');
+    expect(await k.errors()).toEqual([]);
+  } finally {
+    await k.stop();
+  }
+});
+
+// URL mode: the card shows the page's whole address with its site apart; the
+// owner opens it in their own browser, which is the answer, and nothing of
+// Keel's opens or fetches it. A call the server refuses until a step on a page
+// is done (-32042) waits on a card for the step, and runs again when the
+// server says it is done.
+test("an MCP server sends the owner to a page, which only the owner's browser opens", async ({ page }) => {
+  const k = await setup("link");
+  try {
+    const id = await k.session("A server sends the owner to a page");
+    const last = page.getByTestId("assistant-text").last();
+    const ends = (n: number) => expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    // The payment page, as the owner's browser would get it: only a request from the page's own tab reaches it.
+    const paid: string[] = [];
+    await page.context().route("https://pay.example.test/**", (r) => { paid.push(r.request().url()); return r.fulfill({ contentType: "text/html", body: "<title>Pay</title><p>Paid.</p>" }); });
+    await page.goto(`${k.at.d.url}/s/${id}`);
+
+    // 1. The card: the server's words, the site set apart, the whole address,
+    // and a link that opens it in a tab of its own. Enter on the card opens nothing.
+    await run(page, "asker__link");
+    const card = page.getByTestId("question");
+    await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
+    await expect(card.getByTestId("question-from")).toHaveText("MCP server asker is asking");
+    await expect(card.getByTestId("question-message")).toContainText("Pay for order 7 on the payment page.");
+    await expect(card.getByTestId("question-host")).toHaveText("pay.example.test");
+    await expect(card.getByTestId("question-url")).toHaveText("https://pay.example.test/checkout?order=7");
+    const open = card.getByTestId("question-open");
+    await expect(open).toHaveText("Open pay.example.test");
+    await expect(open).toHaveAttribute("href", "https://pay.example.test/checkout?order=7");
+    await expect(open).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(card.getByTestId("question-submit")).toHaveCount(0);
+    await expect(page.getByTestId("station-word")).toHaveText("Needs you");
+    await shoot(page, "mcp-elicit-10-link");
+    const [asked] = await k.pending(id);
+    await card.getByTestId("question-from").click();
+    await page.waitForTimeout(400);
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("question-nudge")).toHaveText("Open the page with its link, or decline");
+    expect(await k.pending(id)).toEqual([asked]);
+    expect(paid).toEqual([]);
+
+    // 2. Open: the owner's browser opens the page in a tab that cannot reach this one, and the server is told the owner went.
+    const popup = page.waitForEvent("popup");
+    await open.click();
+    const tab = await popup;
+    await expect.poll(() => paid).toEqual(["https://pay.example.test/checkout?order=7"]);
+    expect(await tab.evaluate(() => window.opener)).toBeNull();
+    await tab.close();
+    await ends(1);
+    await expect(last).toContainText('link: {"action":"accept"}');
+    await expect(card).toHaveCount(0);
+
+    // 3. An address that imitates another site's: the site is the one after the @, and the card says what to know.
+    await run(page, "asker__spoof");
+    await expect(card.getByTestId("question-host")).toHaveText("xn--pypal-4ve.com", { timeout: 30_000 });
+    await expect(card.getByTestId("question-notes")).toHaveText([
+      "The site's name is written in Punycode, and reads as p\u0430ypal.com: letters of another alphabet can imitate a known site's name.",
+      "The address has a name before an @ sign: the site is xn--pypal-4ve.com, whatever comes before the @.",
+      "The page is not on HTTPS: what is typed there travels unencrypted.",
+    ]);
+    await shoot(page, "mcp-elicit-11-link-spoof");
+    await card.getByTestId("question-decline").click();
+    await ends(2);
+    await expect(last).toContainText('spoof: {"action":"decline"}');
+
+    // 4. An address that is no web page is not shown: the server is told why.
+    await run(page, "asker__badlink");
+    await ends(3);
+    await expect(card).toHaveCount(0);
+    await expect(last).toContainText("keel did not show the page: keel sends the owner only to http and https pages, not javascript: addresses");
+
+    // 5. A call the server refuses until a step on its page is done (-32042):
+    // the page, then a card that waits. Cancelled there, the model is told
+    // the call did not run, and nothing opened the page but the owner's tab.
+    // (The tab gets a page of the test's own this time: the server never hears of it.)
+    const held: string[] = [];
+    await page.context().route("**/connect?elicitationId=*", (r) => { held.push(r.request().url()); return r.fulfill({ contentType: "text/html", body: "<title>Connect</title><p>Not yet.</p>" }); });
+    const opened = () => k.answers().filter((a) => a.page);
+    await run(page, "asker__gate");
+    await expect(card.getByTestId("question-message")).toContainText("Connect your Example Co account to list its files.", { timeout: 30_000 });
+    await expect(card.getByTestId("question-host")).toHaveText("127.0.0.1");
+    let tabs = page.waitForEvent("popup");
+    await open.click();
+    let gateTab = await tabs;
+    await expect(card.getByTestId("question-waiting")).toHaveText("The call runs again when asker says the step is done, or when you press I finished.");
+    await expect(card.getByTestId("question-submit")).toHaveText("I finished");
+    await expect(open).toHaveText("Open again");
+    await expect(card.getByTestId("question-decline")).toHaveText("Cancel");
+    await expect.poll(() => held.length).toBe(1);
+    await shoot(page, "mcp-elicit-12-link-waiting");
+    await card.getByTestId("question-decline").click();
+    await ends(4);
+    const cancelled = (await k.results(id)).at(-1)!;
+    expect(cancelled).toContain("asker__gate did not run: asker needs the owner to finish a step at 127.0.0.1 in their browser first (an MCP URL elicitation), and the owner cancelled it.");
+    await gateTab.close();
+    expect(opened()).toEqual([]);
+
+    // 6. Again, and this time the page loads: the server says the step is done, the card closes by itself, and the call runs.
+    await page.context().unroute("**/connect?elicitationId=*");
+    await run(page, "asker__gate");
+    await expect(card.getByTestId("question-host")).toHaveText("127.0.0.1", { timeout: 30_000 });
+    tabs = page.waitForEvent("popup");
+    await open.click();
+    gateTab = await tabs;
+    await ends(5);
+    await expect(last).toContainText("gate: connected, 3 files listed");
+    expect(opened()).toEqual([{ page: "opened", id: "gate-2" }]);
+    await gateTab.close();
+    await expect(card).toHaveCount(0);
+    expect(await k.errors()).toEqual([]);
+  } finally {
+    await k.stop();
+  }
+});
+
+// Tasks: a legacy server's tool that requires a task is called as one; a
+// modern server answers with a task by itself. Keel follows the task to its
+// result, puts what the task asks to the owner, and cancels a task whose turn
+// the owner stopped.
+test("a tool that runs as a task is followed to its result, asks through it, and is cancelled with its turn", async ({ page }) => {
+  const k = await setup("tasks");
+  try {
+    const id = await k.session("Tools that run as tasks");
+    const last = page.getByTestId("assistant-text").last();
+    const ends = (n: number) => expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 30_000 });
+    const tasks = () => k.answers().filter((a) => a.task);
+    await page.goto(`${k.at.d.url}/s/${id}`);
+
+    // 1. Legacy: the call asks for a task, Keel looks at it until it ends and takes its result.
+    await run(page, "asker__job");
+    await ends(1);
+    await expect(last).toContainText("job: done as task job-1");
+    const legacy = tasks().filter((a) => a.id === "job-1").map((a) => a.task);
+    expect(legacy[0]).toBe("created");
+    expect(legacy).toContain("tasks/get");
+    expect(legacy.at(-1)).toBe("tasks/result");
+
+    // 2. Modern: the server's own task; the result comes with the task.
+    await run(page, "modern__job");
+    await ends(2);
+    await expect(last).toContainText("job: done as task job-1");
+
+    // 3. A legacy task that asks: the question comes while Keel waits for the result, on the call's card.
+    const card = page.getByTestId("question");
+    await run(page, "asker__job_ask");
+    await expect(card.getByTestId("question-message")).toContainText("The task needs your word: go on?", { timeout: 30_000 });
+    await card.getByTestId("question-option").filter({ hasText: "Yes" }).click();
+    await card.getByTestId("question-submit").click();
+    await ends(3);
+    await expect(last).toContainText('job_ask: {"action":"accept","content":{"ok":true}} as task job_ask-2');
+
+    // 4. A modern task that asks: its question is in the task, the answer goes back with tasks/update.
+    await run(page, "modern__job_ask");
+    await expect(card.getByTestId("question-message")).toContainText("The task needs your word: go on?", { timeout: 30_000 });
+    await card.getByTestId("question-option").filter({ hasText: "No" }).click();
+    await card.getByTestId("question-submit").click();
+    await ends(4);
+    await expect(last).toContainText('job_ask: {"action":"accept","content":{"ok":false}} as task job_ask-2');
+    expect(tasks().filter((a) => a.task === "tasks/update")).toEqual([{ task: "tasks/update", id: "job_ask-2", answers: { q: { action: "accept", content: { ok: false } } } }]);
+
+    // 5. The owner stops a turn whose task never ends: the task is cancelled.
+    await run(page, "asker__job_long");
+    await expect.poll(() => tasks().some((a) => a.task === "tasks/get" && a.id === "job_long-3"), { timeout: 30_000 }).toBe(true);
+    await k.call(`/api/sessions/${id}/interrupt`, { by: "owner" });
+    await ends(5);
+    await expect.poll(() => tasks().filter((a) => a.task === "tasks/cancel").map((a) => a.id)).toEqual(["job_long-3"]);
     expect(await k.errors()).toEqual([]);
   } finally {
     await k.stop();

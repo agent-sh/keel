@@ -13,19 +13,25 @@
 // secret is sent only once the owner ticked "send anyway", by whatever key
 // or press the answer comes; what is typed on such a card never goes on to
 // the message box.
+//
+// A server can send the owner to a page instead (URL mode): the card shows the
+// whole address with its site set apart and what to know before opening it.
+// The owner opens it from the card, in their own browser and in a tab of its
+// own that cannot reach this one; that is the answer. No key opens it but one
+// on the Open link itself, and nothing else opens or fetches it.
 import { Collapsible } from "@base-ui/react/collapsible";
-import { MessageCircleQuestion } from "lucide-react";
+import { ExternalLink, MessageCircleQuestion } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Under } from "./ToolCall.tsx";
 import { CALL_STOPPED, NEEDS_ANSWER } from "../lib/work.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { stopKind } from "../../../src/core/stops.ts";
-import type { Asked, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
+import type { Asked, AskedLink, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, keysSettled, noteAnswer, noteOneKey, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { actions, failed, getState, useStore } from "../lib/store.ts";
-import { askedQuestions, questions, resultText, type UiQuestion } from "../lib/tools.ts";
+import { askedQuestions, questions, resultText, siteOf, type UiQuestion } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
 
 type Picked = Record<string, string[]>;
@@ -50,6 +56,21 @@ const Legend = ({ q }: { q: UiQuestion }) => (
     <span className="text-read font-medium leading-snug">{q.question}</span>
   </legend>
 );
+
+// The page a server sends the owner to: the site, then the whole address.
+const LinkShown = ({ link, from }: { link: AskedLink; from: string }) => {
+  const [before, site, after] = siteOf(link.url, link.host);
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-line bg-sunken px-3 py-2.5" data-testid="question-link">
+      <span className="k-label">{link.waiting ? "Finish the step at" : "Opens in your browser"}</span>
+      <span className="text-read font-medium leading-snug break-all" data-testid="question-host">{link.host}</span>
+      <span className="font-mono text-caption leading-snug break-all text-muted" data-testid="question-url">
+        {before}<span className="font-semibold text-fg">{site}</span>{after}
+      </span>
+      {link.waiting && <span className="text-caption text-muted" data-testid="question-waiting">The call runs again when {from} says the step is done, or when you press I finished.</span>}
+    </div>
+  );
+};
 
 // In the conversation a question is a line of the rail, as every call is. One
 // that waits says so in the owner's color (its card is above the message box);
@@ -223,6 +244,9 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
   const complete = (p: Picked) => qs.every((q) => q.optional || has(p, q));
   // The gate of a form that asks for what looks like a secret: no key and no press sends it unticked.
   const gated = !!asked?.sensitive && !sendAnyway;
+  // A page to open, and whether the owner already went to it.
+  const link = asked?.link;
+  const toOpen = !!link && !link.waiting;
   const ready = !gated && complete(picked);
   const toggled = (p: Picked, q: UiQuestion, label: string): Picked => {
     const cur = at(p, q.id) ?? [];
@@ -280,7 +304,8 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
   // what is typed (so that all of it gets there, or none), and no number is drawn on the options:
   // the card shows a key only while that key answers, and the hint says what the keys do now.
   const digitsOn = hold.own && hold.keys === "ready";
-  const hint = !most ? "Tab goes to the field, Enter sends"
+  const hint = link ? (toOpen ? "Tab goes to Open, Enter there opens the page" : "Enter says you finished")
+    : !most ? "Tab goes to the field, Enter sends"
     : !digitsOn ? "Up and Down choose, Enter sends"
     : oneKey ? `Press ${digits} to answer, or Up and Down then Enter`
     : `${digits} or Up and Down choose, Enter sends`;
@@ -298,7 +323,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
     const field = t.tagName === "INPUT";
     // Up and Down move through the options, the own-answer fields and Answer, from any of them.
     if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.shiftKey) {
-      const stops = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-testid="question-option"], [data-testid="question-other"], [data-testid="question-send-anyway"], [data-testid="question-submit"]:not(:disabled), [data-testid="question-decline"]')];
+      const stops = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-testid="question-option"], [data-testid="question-other"], [data-testid="question-send-anyway"], [data-testid="question-submit"]:not(:disabled), [data-testid="question-open"], [data-testid="question-decline"]')];
       const i = stops.indexOf(t);
       const to = i < 0 ? (e.key === "ArrowDown" ? stops[0] : stops.at(-1)) : stops[i + (e.key === "ArrowDown" ? 1 : -1)];
       if (!to) return;
@@ -310,8 +335,10 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
     const at = t.closest<HTMLElement>("fieldset[data-q]")?.dataset.q;
     const q = qs.find((x) => x.id === at) ?? qs[0];
     if (e.key === "Enter") {
-      if (t.dataset.testid === "question-submit" || t.dataset.testid === "question-decline") return; // the button's own press
+      if (t.dataset.testid === "question-submit" || t.dataset.testid === "question-decline" || t.dataset.testid === "question-open") return; // the button's own press
       e.preventDefault();
+      // Only the Open link opens the page: Enter elsewhere on the card does not send the owner anywhere.
+      if (toOpen) return setNudge("Open the page with its link, or decline");
       // On an option of a part that has no choice yet, Enter takes it. What is sent is what the card shows chosen.
       const label = t.closest<HTMLElement>('[data-testid="question-option"]')?.dataset.label;
       const own = qs.find((x) => x.id === at);
@@ -387,6 +414,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
             <p className="whitespace-pre-wrap break-words text-read leading-snug">{asked.message || "The server gave no message."}</p>
           </div>
         )}
+        {link && <LinkShown link={link} from={asked!.from} />}
         {asked?.notes?.map((n) => <p key={n} className="text-caption text-warn" data-testid="question-notes">{n}</p>)}
         {asked?.note && <p className="text-caption text-warn" data-testid="question-note">{asked.note}</p>}
         {qs.map((q) => (
@@ -449,16 +477,41 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
         )}
         {/* Answer stays at the card's lower edge while a long question scrolls under it. */}
         <div className="sticky bottom-0 -mx-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-b-lg border-t border-line bg-raised px-3.5 py-2.5" data-testid="question-foot">
-          <button
-            type="button"
-            disabled={!ready || sending}
-            // A key on the button answers as Enter does: not as the keyboard arrives, not under a dialog.
-            onClick={(e) => send(picked, e.detail === 0 ? keyRefused(e.currentTarget) : "")}
-            data-testid="question-submit"
-            className="h-8 rounded-md bg-accent px-3.5 text-ui font-medium text-accent-fg transition-opacity hover:bg-accent-hover disabled:opacity-40"
-          >
-            {sending ? "Sending" : asked && !qs.length ? "Confirm" : "Answer"}
-          </button>
+          {!toOpen && (
+            <button
+              type="button"
+              disabled={!ready || sending}
+              // A key on the button answers as Enter does: not as the keyboard arrives, not under a dialog.
+              onClick={(e) => send(picked, e.detail === 0 ? keyRefused(e.currentTarget) : "")}
+              data-testid="question-submit"
+              className="h-8 rounded-md bg-accent px-3.5 text-ui font-medium text-accent-fg transition-opacity hover:bg-accent-hover disabled:opacity-40"
+            >
+              {sending ? "Sending" : link ? "I finished" : asked && !qs.length ? "Confirm" : "Answer"}
+            </button>
+          )}
+          {link && (
+            // The owner's own browser opens it, in a tab that cannot reach this page and is not told where it came
+            // from. Going there is the answer; the same link on a card that waits opens it again and answers nothing.
+            <a
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              referrerPolicy="no-referrer"
+              aria-disabled={sending || undefined}
+              onClick={(e) => {
+                const no = e.detail === 0 ? keyRefused(e.currentTarget) : "";
+                if (sending || no) { e.preventDefault(); if (no) setNudge(no); return; }
+                if (toOpen) void submit({});
+              }}
+              data-testid="question-open"
+              className={toOpen
+                ? "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-md bg-accent px-3.5 text-ui font-medium text-accent-fg transition-opacity hover:bg-accent-hover aria-disabled:opacity-40 outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                : "k-btn k-btn-lg"}
+            >
+              <span className="truncate">{toOpen ? `Open ${link.host}` : "Open again"}</span>
+              <ExternalLink aria-hidden="true" className="size-3.5 shrink-0" />
+            </a>
+          )}
           {asked && (
             <button
               type="button"
@@ -468,7 +521,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
               data-testid="question-decline"
               className="k-btn k-btn-lg"
             >
-              Decline
+              {link?.waiting ? "Cancel" : "Decline"}
             </button>
           )}
           {err && <span className="text-caption text-danger" role="alert">{err}</span>}

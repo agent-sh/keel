@@ -530,7 +530,8 @@ export function mobileApi(ctx: MobileCtx) {
     const options = qs.flatMap((q) => q.options.map((o) => o.label));
     return {
       id: questionId(s.id, callId, asked?.id), chat_id: s.id, session_key: s.id, kind: "question",
-      command: asked ? [`${asked.from} asks: ${asked.message}`, ...(asked.notes ?? []), ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
+      // (A page a server sends the owner to is shown whole: the owner opens it on the phone, and says so.)
+      command: asked ? [`${asked.from} asks: ${asked.message}`, ...(asked.link ? [`${asked.link.waiting ? "Finish the step at" : "Page to open"}: ${asked.link.url}`] : []), ...(asked.notes ?? []), ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
       description: options.join(" / "), options, unavailable: !tu,
       // One entry per question, by id: a card of several takes one answer each.
       // What each choice means, as the model wrote it beside its label (`details`, one per option, "" for
@@ -541,7 +542,7 @@ export function mobileApi(ctx: MobileCtx) {
         ...(q.header ? { header: q.header } : {}),
       })),
       // Just after its tool call's row in the chat (traceOf), not before the words of the reply that asks.
-      actions: [["Answer", "once", "primary"], ["Dismiss", "deny", "danger"]], state: "pending", choice: null, ts: e ? (e.ts + (e.seq % 1000) / 1000 + 0.0008) / 1000 : null,
+      actions: [[asked?.link ? (asked.link.waiting ? "I finished" : "I opened it") : "Answer", "once", "primary"], [asked?.link?.waiting ? "Cancel" : "Dismiss", "deny", "danger"]], state: "pending", choice: null, ts: e ? (e.ts + (e.seq % 1000) / 1000 + 0.0008) / 1000 : null,
     };
   }
   // A question that stopped waiting, with what was picked (by question id), as

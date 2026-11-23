@@ -24,6 +24,16 @@
 // - `later` asks after two seconds, `hold` only waits (ASK_MCP_HOLD ms);
 // - `sample` asks for a reply of the client's model (sampling/createMessage);
 //   `sample_big` asks with a message no model's window of the stand-ins holds.
+// - `link` sends the owner to a page (URL mode) and says the step is done once
+//   accepted; `spoof` to a page whose address imitates another site's;
+//   `badlink` to an address that is no web page;
+// - `gate` answers -32042 (URLElicitationRequiredError) until the page it names,
+//   served by this process, was opened: then it says the step is done, and the
+//   call runs;
+// - `job` runs as a task (execution.taskSupport "required"), `job_ask` asks
+//   the owner while it runs as one, `job_long` never ends.
+// Modern too: `job` and `job_ask`, as the tasks extension has them (a task in
+// place of the result, its questions in tasks/get, answered with tasks/update).
 // ASK_MCP_LOG: a file that gets one JSON line per answer the server received.
 import { appendFileSync } from "node:fs";
 
@@ -48,6 +58,7 @@ const FORM = form(
 );
 const YESNO = (message: string) => form(message, { ok: { type: "boolean", title: "Go on" } }, ["ok"]);
 const tool = (name: string, description: string, annotations?: object) => ({ name, description, inputSchema: { type: "object" }, ...(annotations ? { annotations } : {}) });
+const asTask = (name: string, description: string) => ({ ...tool(name, description), execution: { taskSupport: "required" } });
 const TOOLS = [
   tool("ask", "Asks the owner which account to use"),
   tool("roots", "Returns the folders the client offers"),
@@ -73,8 +84,54 @@ const TOOLS = [
     tool("hold", "Waits"),
     tool("sample", "Asks the client's model for a reply"),
     tool("sample_big", "Asks the client's model to read a very long message"),
+    tool("link", "Sends the owner to a payment page"),
+    tool("spoof", "Sends the owner to a page whose address imitates another site"),
+    tool("badlink", "Sends the owner to an address that is no web page"),
+    tool("gate", "Needs the owner to connect an account first"),
+    asTask("job_long", "Runs as a task that never ends"),
   ]),
+  asTask("job", "Runs as a task"),
+  asTask("job_ask", "Asks the owner while it runs as a task"),
 ];
+
+// The page `gate` names, served here: opening it is the step the call waits for.
+let connected = false;
+const pages = Bun.serve({
+  hostname: "127.0.0.1", port: 0,
+  fetch(req) {
+    const id = new URL(req.url).searchParams.get("elicitationId") ?? "";
+    log({ page: "opened", id });
+    connected = true;
+    send({ jsonrpc: "2.0", method: "notifications/elicitation/complete", params: { elicitationId: id } });
+    return new Response("<title>Connected</title><p>Your Example Co account is connected. You can close this tab.</p>", { headers: { "content-type": "text/html" } });
+  },
+});
+let gates = 0;
+
+// Tasks, by id: their state, and what each waits on.
+type Job = { taskId: string; status: string; statusMessage?: string; createdAt: string; lastUpdatedAt: string; result?: unknown; asked?: unknown; ended: Promise<void>; end: () => void };
+const jobs = new Map<string, Job>();
+let jobN = 0;
+const shape = (j: Job) => {
+  const { taskId, status, statusMessage, createdAt, lastUpdatedAt } = j;
+  return modern ? { taskId, status, ...(statusMessage ? { statusMessage } : {}), createdAt, lastUpdatedAt, ttlMs: 60_000, pollIntervalMs: 200 } : { taskId, status, ...(statusMessage ? { statusMessage } : {}), createdAt, lastUpdatedAt, ttl: 60_000, pollInterval: 200 };
+};
+const move = (j: Job, status: string, more: Partial<Job> = {}) => {
+  Object.assign(j, { status, lastUpdatedAt: new Date().toISOString(), ...more });
+  if (["completed", "failed", "cancelled"].includes(status)) j.end();
+  if (!modern) send({ jsonrpc: "2.0", method: "notifications/tasks/status", params: shape(j) });
+};
+function startJob(name: string): Job {
+  let end = () => {};
+  const ended = new Promise<void>((r) => (end = r));
+  const now = new Date().toISOString();
+  const j: Job = { taskId: `${name}-${++jobN}`, status: "working", createdAt: now, lastUpdatedAt: now, ended, end };
+  jobs.set(j.taskId, j);
+  log({ task: "created", id: j.taskId, tool: name });
+  if (name === "job") setTimeout(() => { if (j.status === "working") move(j, "completed", { result: text(`job: done as task ${j.taskId}`) }); }, 600);
+  if (name === "job_ask") setTimeout(() => move(j, "input_required", { asked: YESNO("The task needs your word: go on?") }), 300);
+  return j;
+}
 
 let caps: unknown = null;
 let atStart: unknown = null;
@@ -173,12 +230,42 @@ async function handle(m: any) {
     caps = meta["io.modelcontextprotocol/clientCapabilities"] ?? null;
   }
   switch (m.method) {
+    // Tasks (2025-11-25 basic/utilities/tasks; the extension for a modern server).
+    case "tasks/get": case "tasks/result": case "tasks/cancel": case "tasks/update": {
+      const j = jobs.get(m.params?.taskId);
+      log({ task: m.method, id: m.params?.taskId, ...(m.method === "tasks/update" ? { answers: m.params?.inputResponses } : {}) });
+      if (!j) return fail(-32602, "no such task");
+      if (m.method === "tasks/cancel") {
+        if (["completed", "failed", "cancelled"].includes(j.status)) return fail(-32602, "the task already ended");
+        move(j, "cancelled", { statusMessage: "Cancelled on request." });
+        return reply(modern ? { resultType: "complete" } : shape(j));
+      }
+      if (m.method === "tasks/update") {
+        const a: any = m.params?.inputResponses?.q;
+        move(j, "completed", { result: text(`job_ask: ${JSON.stringify(a)} as task ${j.taskId}`) });
+        return reply({ resultType: "complete" });
+      }
+      if (m.method === "tasks/get") {
+        if (modern && j.status === "completed") return reply({ resultType: "complete", ...shape(j), result: j.result });
+        if (modern && j.status === "input_required") return reply({ resultType: "complete", ...shape(j), inputRequests: { q: { method: "elicitation/create", params: j.asked } } });
+        return reply(modern ? { resultType: "complete", ...shape(j) } : shape(j));
+      }
+      // tasks/result (legacy): what the task needs is asked on this request, and it answers when the task ends.
+      if (j.status === "input_required") {
+        const r = await request("elicitation/create", { ...(j.asked as object), _meta: { "io.modelcontextprotocol/related-task": { taskId: j.taskId } } });
+        log({ tool: "job_ask", era: "legacy", answer: r.result });
+        move(j, "working");
+        setTimeout(() => move(j, "completed", { result: text(`job_ask: ${JSON.stringify(r.result ?? r.error)} as task ${j.taskId}`) }), 200);
+      }
+      await j.ended;
+      return j.status === "completed" ? reply({ ...(j.result as object), _meta: { "io.modelcontextprotocol/related-task": { taskId: j.taskId } } }) : fail(-32603, `the task was ${j.status}`);
+    }
     case "server/discover":
-      return modern ? reply({ supportedVersions: ["2026-07-28"], capabilities: { tools: {} }, _meta: { "io.modelcontextprotocol/serverInfo": { name: "ask-mcp", version: "1.0.0" } } }) : fail(-32601, "Method not found");
+      return modern ? reply({ supportedVersions: ["2026-07-28"], capabilities: { tools: {}, extensions: { "io.modelcontextprotocol/tasks": {} } }, _meta: { "io.modelcontextprotocol/serverInfo": { name: "ask-mcp", version: "1.0.0" } } }) : fail(-32601, "Method not found");
     case "initialize":
       if (modern) return fail(-32601, "Method not found");
       caps = m.params?.capabilities ?? null;
-      return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "ask-mcp", version: "1.0.0" } });
+      return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {}, tasks: { cancel: {}, requests: { tools: { call: {} } } } }, serverInfo: { name: "ask-mcp", version: "1.0.0" } });
     case "tools/list":
       return reply({ tools: TOOLS });
     case "tools/call": {
@@ -186,6 +273,24 @@ async function handle(m: any) {
       if (!TOOLS.some((t) => t.name === name)) return fail(-32602, `no tool ${name}`);
       if (name === "caps") return reply(text(JSON.stringify(caps)));
       if (name === "start") return reply(text(`start: ${JSON.stringify(atStart)}`));
+      if (name === "job" || name === "job_ask" || name === "job_long") {
+        // A legacy client asks for the task (the tool requires one); a modern server decides by itself.
+        if (!modern && !m.params?.task) return fail(-32601, `${name} runs only as a task`);
+        if (modern && !(caps as any)?.extensions?.["io.modelcontextprotocol/tasks"]) return fail(-32021, "Missing required client capability");
+        const j = startJob(name);
+        return reply(modern ? { resultType: "task", ...shape(j) } : { task: shape(j) });
+      }
+      if (name === "gate") {
+        if (!connected) return send({ jsonrpc: "2.0", id: m.id, error: { code: -32042, message: "This request requires more information.", data: { elicitations: [{ mode: "url", elicitationId: `gate-${++gates}`, url: `http://127.0.0.1:${pages.port}/connect?elicitationId=gate-${gates}`, message: "Connect your Example Co account to list its files." }] } } });
+        return reply(text("gate: connected, 3 files listed"));
+      }
+      if (name === "link" || name === "spoof" || name === "badlink") {
+        const url = name === "link" ? "https://pay.example.test/checkout?order=7" : name === "spoof" ? "http://paypal.com@xn--pypal-4ve.com/login" : "javascript:alert(1)";
+        const r = await request("elicitation/create", { mode: "url", elicitationId: `${name}-1`, url, message: name === "link" ? "Pay for order 7 on the payment page. Your card details go to the payment page only." : "Sign in to continue." });
+        if (r.result?.action === "accept") send({ jsonrpc: "2.0", method: "notifications/elicitation/complete", params: { elicitationId: `${name}-1` } });
+        log({ tool: name, era: "legacy", answer: r.result, error: r.error });
+        return reply(text(`${name}: ${JSON.stringify(r.result ?? r.error)}`));
+      }
       // (Answered after the answers already read are taken in: one read with this call is in a line before it.)
       if (name === "latest") return void setTimeout(() => reply(text(`latest after ${changes} changes: ${JSON.stringify(latest)}`)), 0);
       if (modern && (name === "loop" || name === "blind" || name === "folders" || name === "slowly")) {
@@ -226,3 +331,5 @@ for await (const chunk of Bun.stdin.stream()) {
     if (line) void handle(JSON.parse(line));
   }
 }
+// The client went away: so does this server (its page server would keep it running).
+process.exit(0);

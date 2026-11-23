@@ -16,9 +16,16 @@ export const LEGACY_VERSION = "2025-11-25";
 const CLIENT_INFO = { name: "keel", version: "0.1.0" };
 // What Keel offers a server. Declared in initialize to a legacy server
 // (2025-11-25 lifecycle, capability negotiation) and in the _meta of every
-// request to a modern one (2026-07-28). Elicitation in form mode only: the
-// owner answers on a card. URL mode is not offered, so a server must not
-// send one.
+// request to a modern one (2026-07-28). Elicitation in both modes: the owner
+// answers a form on a card, or is shown a page to open in their own browser
+// (src/mcp/elicit.ts).
+//
+// Tasks: a legacy server's tool that requires a task is called as one
+// (2025-11-25 basic/utilities/tasks), and a modern server is told Keel takes
+// a task in place of a result (the io.modelcontextprotocol/tasks extension,
+// in the per-request capabilities). Keel only sends task-augmented requests:
+// it offers no `tasks` capability of its own, which is for a client that
+// runs a server's requests as tasks.
 //
 // Roots (roots/list: the folders the client works in, as file URIs) go to a
 // legacy server that is a local command only. The 2026-07-28 revision
@@ -30,9 +37,24 @@ const CLIENT_INFO = { name: "keel", version: "0.1.0" };
 // Sampling (client/sampling): a server may ask for a reply of the session's
 // model; each request is put to the owner first (manager.ts sample). Neither
 // tool use nor the servers' context is offered with it.
-const ELICITATION = { elicitation: { form: {} }, sampling: {} };
+const ELICITATION = { elicitation: { form: {}, url: {} }, sampling: {} };
+export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object> =>
-  t.kind === "stdio" && era === "legacy" ? { ...ELICITATION, roots: { listChanged: true } } : ELICITATION;
+  era === "modern" ? { ...ELICITATION, extensions: { [TASKS_EXTENSION]: {} } }
+  : t.kind === "stdio" ? { ...ELICITATION, roots: { listChanged: true } } : ELICITATION;
+// How long Keel waits between two looks at a task whose server suggests no
+// interval: the reference TypeScript SDK's default (shared/protocol.ts,
+// `task.pollInterval ?? defaultTaskPollInterval ?? 1000`).
+const TASK_POLL_MS = 1000;
+// The least time between two looks at a task, whatever the server suggests or
+// how often it says the task changed. The spec (2025-11-25 basic/utilities/
+// tasks, and its 2026-07-28 extension) gives no floor: requestors SHOULD
+// respect pollInterval and receivers SHOULD rate-limit task operations. A
+// server that suggests 0, or sends status notifications without end, would
+// otherwise have Keel ask hundreds of times a second; 250 ms keeps a task
+// that ends at once answered within a quarter second.
+export const TASK_POLL_FLOOR_MS = 250;
+const TASK_DONE = new Set(["completed", "failed", "cancelled"]);
 
 // What a server asks of the client while it works on a call, and the handler
 // a call gives for it. The handler resolves to the result the method names
@@ -63,7 +85,8 @@ const LOOSE_MAX = 120;
 const MODERN_ERRORS = new Set([-32020, -32021, -32022]);
 
 // `outputSchema`: the JSON Schema its structured content conforms to (2025-11-25 server/tools; src/mcp/result.ts checks it).
-export type McpTool = { name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; annotations?: Record<string, unknown> };
+// `execution.taskSupport`: whether the tool runs as a task (2025-11-25 server/tools and basic/utilities/tasks).
+export type McpTool = { name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; annotations?: Record<string, unknown>; execution?: { taskSupport?: unknown } };
 export type McpContent =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string }
@@ -331,7 +354,27 @@ export class McpClient {
     else if (msg.method === CHANNEL_METHOD && this.channel) this.onChannel?.(msg.params);
     // Progress on a request that asked for it (basic/utilities/progress): its timeout starts again.
     else if (msg.method === "notifications/progress" && msg.params?.progressToken !== undefined) this.pending.get(msg.params.progressToken)?.progressed?.(msg.params.progress);
+    // The step on a page the owner was sent to is done; an id nothing waits on is ignored, as the specification says.
+    else if (msg.method === "notifications/elicitation/complete" && typeof msg.params?.elicitationId === "string") this.links.get(msg.params.elicitationId)?.ac.abort();
+    // A task Keel waits on changed (2025-11-25 notifications/tasks/status; notifications/tasks of the extension): it is looked at now.
+    else if ((msg.method === "notifications/tasks/status" || msg.method === "notifications/tasks") && typeof msg.params?.taskId === "string") this.tasks.get(msg.params.taskId)?.();
   }
+
+  // The pages the owner was sent to whose completion is waited on, by elicitationId.
+  // `ac` is aborted when the server says the step is done.
+  private links = new Map<string, { ac: AbortController; n: number }>();
+  // Waits for the server to say the step at a page is done: `signal` is
+  // aborted then. One id may be watched by more than one waiter; `drop` ends this one's watch.
+  watchLink(id: string): { signal: AbortSignal; drop: () => void } {
+    let w = this.links.get(id);
+    if (!w) this.links.set(id, (w = { ac: new AbortController(), n: 0 }));
+    w.n++;
+    let dropped = false;
+    const entry = w;
+    return { signal: w.ac.signal, drop: () => { if (dropped) return; dropped = true; if (--entry.n === 0 && this.links.get(id) === entry) this.links.delete(id); } };
+  }
+  // The tasks Keel waits on: what wakes the wait for each.
+  private tasks = new Map<string, () => void>();
 
   // A legacy server's own request (2025-11-25: elicitation/create is sent
   // while the server works on a client request; roots/list at any time). It
@@ -582,8 +625,10 @@ export class McpClient {
       ...(method ? { "mcp-method": method } : {}), // a response Keel posts names none
       ...t.headers,
     };
-    const name = params?.name ?? params?.uri;
-    if (typeof name === "string" && (method === "tools/call" || method === "resources/read" || method === "prompts/get")) {
+    // (A task's requests name the task: the extension's Streamable HTTP binding.)
+    const task = method === "tasks/get" || method === "tasks/update" || method === "tasks/cancel";
+    const name = task ? params?.taskId : params?.name ?? params?.uri;
+    if (typeof name === "string" && (task || method === "tools/call" || method === "resources/read" || method === "prompts/get")) {
       h["mcp-name"] = /^[\x20-\x7e]*$/.test(name) ? name : `=?base64?${Buffer.from(name).toString("base64")}?=`;
     }
     if (this.sessionId) h["mcp-session-id"] = this.sessionId;
@@ -884,8 +929,15 @@ export class McpClient {
   readResource(uri: string, signal?: AbortSignal) { return this.rounds("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rounds("prompts/get", { name, arguments: args }, { signal }); }
   // `ceilingMs`: the call's longest time however it reports progress (TOOL_CEILING_MS by default).
-  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, input?: CallInput, ceilingMs = TOOL_CEILING_MS): Promise<McpCallResult> {
-    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, input, progress: () => {}, ceilingMs });
+  // `taskSupport`: the tool's `execution.taskSupport` as it was listed.
+  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, input?: CallInput, ceilingMs = TOOL_CEILING_MS, taskSupport?: unknown): Promise<McpCallResult> {
+    // 2025-11-25 tasks, Tool-Level Negotiation: a tool that requires a task is
+    // called as one on a server that takes task-augmented calls. One that
+    // only allows it is called plainly: Keel waits for the result either way,
+    // and a plain call takes one request where a task takes three or more.
+    // The server picks the task's lifetime (no `ttl`).
+    const asTask = this.era === "legacy" && taskSupport === "required" && !!this.capabilities.tasks?.requests?.tools?.call;
+    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(asTask ? { task: {} } : {}), ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, input, progress: () => {}, ceilingMs }, asTask);
   }
 
   // A modern server asks for input by answering the request with
@@ -894,7 +946,8 @@ export class McpClient {
   // again, as a new one, with `inputResponses` and the state exactly as it
   // came (2026-07-28 basic/patterns/mrtr). A legacy server sends its
   // questions as requests of its own while the call is open (serverRequest).
-  private async rounds(method: string, params: Record<string, unknown>, opt: NonNullable<Parameters<McpClient["rpc"]>[2]>): Promise<any> {
+  // `asTask`: the request asked a legacy server for a task (callTool).
+  private async rounds(method: string, params: Record<string, unknown>, opt: NonNullable<Parameters<McpClient["rpc"]>[2]>, asTask = false): Promise<any> {
     let next = params;
     // One timeout for the whole call, however many rounds it takes: the time
     // the server works counts, the time the owner takes to answer does not.
@@ -912,6 +965,10 @@ export class McpClient {
       const r = await this.rpc(method, next, { ...opt, progress, timeoutMs: left, ...(ceiling !== undefined ? { ceilingMs: ceiling, ceilingText: `${method} ran past its longest time, ${Math.round(opt.ceilingMs! / 1000)}s, while it reported progress` } : {}), ...(round > 1 ? { timeoutText: `${method} timed out after ${Math.round(whole / 1000)}s, in round ${round} of the call` } : {}) });
       left -= Date.now() - began;
       if (ceiling !== undefined) ceiling -= Date.now() - start;
+      // A task in place of the result: a modern server's CreateTaskResult is
+      // the task itself, a legacy one's holds it under `task`.
+      if (r?.resultType === "task") return this.awaitTask(r, method, opt, ceiling);
+      if (asTask && r?.task && typeof r.task === "object" && r.content === undefined) return this.awaitTask(r.task, method, opt, ceiling);
       if (r?.resultType !== "input_required") return r;
       const asked = Object.entries((r.inputRequests ?? {}) as Record<string, InputRequest>);
       if (!asked.length && ++quiet > QUIET_ROUNDS) throw new Error("the server kept asking to be called again without asking for anything");
@@ -920,6 +977,83 @@ export class McpClient {
       const inputResponses: Record<string, unknown> = {};
       for (const [key, q] of asked) inputResponses[key] = await opt.input!.ask({ method: String(q?.method), params: q?.params });
       next = { ...params, ...(asked.length ? { inputResponses } : {}), ...(r.requestState !== undefined ? { requestState: r.requestState } : {}) };
+    }
+  }
+
+  // A task the server runs for a request, followed to its result (2025-11-25
+  // basic/utilities/tasks; the io.modelcontextprotocol/tasks extension for a
+  // modern server). Keel looks at it with tasks/get at the interval the
+  // server suggests (pollInterval, or the extension's pollIntervalMs), and
+  // at once when the server says it changed. Each request has the call's
+  // timeout; the whole wait has the call's ceiling, as a call that reports
+  // progress does, and ends at the owner's stop. A task Keel stops waiting
+  // on before it ended is cancelled (tasks/cancel), as far as the server
+  // takes that. Two looks are TASK_POLL_FLOOR_MS apart at least. A task that
+  // keeps working is waited on up to the call's ceiling: the server's
+  // tool_max_secs, else TOOL_CEILING_MS (its config says so).
+  // Input the task needs: a legacy server sends its questions on the
+  // tasks/result request, which Keel opens when the task asks for input
+  // and which answers when the task ends (as the reference SDK does). A
+  // modern one lists them in the task (`inputRequests`), and the answers go
+  // back with tasks/update, each request once.
+  private async awaitTask(seed: any, method: string, opt: NonNullable<Parameters<McpClient["rpc"]>[2]>, ceilingMs?: number): Promise<any> {
+    const id = seed?.taskId;
+    if (typeof id !== "string" || !id) throw new Error(`${method}: the server answered with a task that has no id`);
+    const modern = this.era === "modern";
+    const start = Date.now();
+    const ceiling = ceilingMs ?? opt.ceilingMs ?? Infinity;
+    const each = { signal: opt.signal, timeoutMs: opt.timeoutMs, authorize: opt.authorize };
+    let wake = () => {};
+    this.tasks.set(id, () => wake());
+    const answered = new Set<string>();
+    let t = seed, ended = false;
+    let looked = Date.now();
+    try {
+      for (;;) {
+        if (TASK_DONE.has(t?.status)) break;
+        const left = ceiling - (Date.now() - start);
+        if (left <= 0) throw new Error(`${method} ran past its longest time, ${Math.round(ceiling / 1000)}s, as a task its server worked on (the server's tool_max_secs sets it)`);
+        if (t?.status === "input_required" && !modern) {
+          const r = await this.rpc("tasks/result", { taskId: id }, { ...each, input: opt.input, ceilingMs: left });
+          ended = true;
+          return r;
+        }
+        if (t?.status === "input_required") {
+          const asked = Object.entries((t.inputRequests ?? {}) as Record<string, InputRequest>).filter(([k]) => !answered.has(k));
+          if (asked.length && !opt.input) throw new Error(`the task asked for input (${asked.map(([, q]) => q?.method).join(", ")}), which only a tool call can gather`);
+          if (asked.length) {
+            const inputResponses: Record<string, unknown> = {};
+            for (const [k, q] of asked) { inputResponses[k] = await opt.input!.ask({ method: String(q?.method), params: q?.params }); answered.add(k); }
+            await this.rpc("tasks/update", { taskId: id, inputResponses }, each);
+          }
+        }
+        const every = Number(t?.pollInterval ?? t?.pollIntervalMs);
+        const wait = Math.max(TASK_POLL_FLOOR_MS, Number.isFinite(every) && every >= 0 ? every : TASK_POLL_MS);
+        await new Promise<void>((res) => {
+          let timer: ReturnType<typeof setTimeout>;
+          const end = () => { clearTimeout(timer); opt.signal?.removeEventListener("abort", end); res(); };
+          const at = (ms: number) => { clearTimeout(timer); timer = setTimeout(end, Math.max(0, Math.min(ms, left, 2 ** 31 - 1))); };
+          at(wait - (Date.now() - looked));
+          // A status notification looks at once, but never sooner than the floor after the last look.
+          wake = () => at(TASK_POLL_FLOOR_MS - (Date.now() - looked));
+          opt.signal?.addEventListener("abort", end, { once: true });
+        });
+        wake = () => {};
+        if (opt.signal?.aborted) throw new Error("cancelled");
+        looked = Date.now();
+        t = await this.rpc("tasks/get", { taskId: id }, each);
+      }
+      ended = true;
+      if (!modern) return await this.rpc("tasks/result", { taskId: id }, each);
+      if (t.status === "completed") return t.result;
+      if (t.status === "failed") throw new RpcError(typeof t.error?.code === "number" ? t.error.code : -32603, String(t.error?.message ?? t.statusMessage ?? "the task failed"), t.error?.data);
+      throw new Error(`the server cancelled the task${t.statusMessage ? `: ${String(t.statusMessage)}` : ""}`);
+    } catch (e) {
+      // (A legacy server takes tasks/cancel only when it says so.)
+      if (!ended && !this.closed && (modern || this.capabilities.tasks?.cancel)) this.rpc("tasks/cancel", { taskId: id }).catch(() => {});
+      throw e;
+    } finally {
+      this.tasks.delete(id);
     }
   }
 
