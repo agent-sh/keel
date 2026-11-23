@@ -304,8 +304,9 @@ export class Gate {
         if (this.books.size >= 1024) this.books.delete(this.books.keys().next().value!);
         this.books.set(id, (b = new AddressBook((name, input) => this.webCall(name, input), ownerPrompt)));
       }
-      // A session not in memory is brought in off the loop before its events are read (a parent at rest).
-      if (!this.store.isKept(id) && this.store.session(id)) await this.store.warm(id);
+      // A session not in memory is brought in, and the bodies of the events this book has not read are read, off the
+      // loop (a long session's first read would otherwise read them a run at a time on it).
+      if (this.store.session(id)) await this.store.warmBodies(id, b.seq + 1);
       const book = b;
       timed(() => `reading the web addresses session ${id} has seen`, () => book.take(this.store.events(id, book.seq)));
       books.push(b);

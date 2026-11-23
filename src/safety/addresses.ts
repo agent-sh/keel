@@ -28,6 +28,7 @@
 // with none is fetched as before and recorded.
 //
 // Pure: the gate gives it the stored events and how to read each tool.
+import { domainToUnicode } from "node:url";
 
 // What a tool does on the web, declared by the tool. `fetches`: the addresses
 // one call fetches, from its input. `links`: its result is the page's text
@@ -59,30 +60,74 @@ export const fold = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}
 // The shortest run of folded characters in a path that makes it the session's text. An AWS
 // key id has twenty; a phrase of four words has about as many and does not recur in a path by chance.
 export const WINDOW = 20;
-// What of a path is looked at, folded: a longer path is read to this and no further.
-const PATH_READ = 512;
+// What of a path is looked at, folded. A path longer than this carries data: it is
+// longer than any page's address and room for anything, and scanning it window by window
+// against a session's text would cost a pass over that text for each window (a rolling hash
+// of the text would scan it once, and cost memory a session's text does not earn).
+export const PATH_READ = 512;
+
+// A text percent-decoded until it stops changing, at most three rounds (`%2561` is `%61` is `a`).
+export function decoded(s: string): string {
+  let out = s;
+  for (let i = 0; i < 3; i++) {
+    let next: string;
+    try { next = decodeURIComponent(out); } catch { break; }
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+// The host as written, with its case: the URL parser lowercases it, and a key's case is part of it.
+const writtenHost = (raw: string): string => /^[a-z][a-z0-9+.-]*:\/\/(?:[^/?#@]*@)?([^/?#]*)/i.exec(raw.trim())?.[1]?.replace(/:\d*$/, "") ?? "";
+
+// Some run of `WINDOW` characters of the folded text is in the session's text.
+const windowIn = (f: string, inSession: (folded: string) => boolean): boolean => {
+  for (let i = 0; i + WINDOW <= f.length; i++) if (inSession(f.slice(i, i + WINDOW))) return true;
+  return false;
+};
 
 // What an address carries that the owner should see before it is fetched, as a
-// few words for the card, or null. An address carries data when (the whole test):
-// - its query string or its fragment is not empty; or
-// - its path, percent-decoded, holds a secret (`secret`: the vault's known
-//   values, a value shaped like a key, a placeholder); or
+// few words for the card, or null. Called for an address the session has not
+// seen. An address carries data when (the whole test):
+// - its query string is not empty; or
+// - it has a user name or a password (`https://KEY@host/`), or a port of its own
+//   (not the scheme's default); or
+// - its fragment holds a secret or session text (below). A fragment is not sent by the
+//   fetch tools, and an anchor of a docs page is most of the addresses a model makes
+//   with one: it runs. One that holds a secret or the session's text is held all the same,
+//   for a tool that does send it; or
+// - its path or its host holds a secret (`secret`: the vault's known values, a value shaped
+//   like a key, a placeholder), the path percent-decoded until it stops changing (three
+//   rounds), the host as written and as an internationalized name reads; or
 // - its path holds text the session read or ran: `WINDOW` characters in a row, folded,
-//   found in the folded text of a tool result (`inSession`), unless the address
-//   stands whole in that text, in which case it was copied and carries nothing the
-//   session did not already have (a link in a README).
+//   found in the folded text of what the session was given (`inSession`: tool results
+//   and messages that are not the owner's), unless the address stands whole in that text,
+//   in which case it was copied and carries nothing the session did not already have (a
+//   link in a README). So does a host label of `WINDOW` characters or more; a shorter
+//   label (`data.attacker.example`) is not looked at; or
+// - its path is longer than `PATH_READ` folded characters.
 export function dataIn(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean): string | null {
   let u: URL;
   try { u = new URL(String(raw).trim()); } catch { return null; }
+  // The port is read as the fetch reads the address: http is fetched as https.
+  if (u.protocol === "http:") u.protocol = "https:";
   if (u.search.length > 1) return "a query string";
-  if (u.hash.length > 1) return "a fragment";
-  let path = u.pathname;
-  try { path = decodeURIComponent(path); } catch {}
+  if (u.username || u.password) return "a user name or password";
+  if (u.port) return "a port of its own";
+  const fragment = decoded(u.hash.slice(1));
+  if (fragment && (secret(fragment) || windowIn(fold(fragment), inSession))) return "a secret or text from this session in its fragment";
+  const host = domainToUnicode(u.hostname) || u.hostname;
+  if (secret(writtenHost(String(raw))) || secret(host)) return "a secret in its host";
+  const path = decoded(u.pathname);
   if (secret(path)) return "a secret in its path";
-  const f = fold(path).slice(0, PATH_READ);
+  const f = fold(path);
+  const whole = fold(host + path);
+  if (whole.length >= WINDOW && inSession(whole)) return null;
+  for (const label of host.split(".")) if (fold(label).length >= WINDOW && windowIn(fold(label), inSession)) return "text from this session in its host";
+  if (f.length > PATH_READ) return "a very long path";
   if (f.length < WINDOW) return null;
-  if (inSession(fold(u.host + path))) return null;
-  for (let i = 0; i + WINDOW <= f.length; i++) if (inSession(f.slice(i, i + WINDOW))) return "text from this session in its path";
+  if (windowIn(f, inSession)) return "text from this session in its path";
   return null;
 }
 
@@ -165,7 +210,7 @@ export type BookEvent = { seq: number; kind: string; data: any };
 // One session's addresses, read from its events in order, a part at a time:
 // `take` reads the events after the last it read. A call is matched to its
 // result by id; the calls whose result has not come yet are kept for it.
-// The folded text of the tool results one session has had, the newest kept
+// The folded text of what one session was given (tool results, and messages that are not the owner's: a subagent's report), the newest kept
 // when it holds more than this many characters (one result is cut to its start).
 const CORPUS_MAX = 1 << 20;
 
@@ -187,7 +232,7 @@ export class AddressBook {
     return a === null || this.known.has(a);
   }
   get size() { return this.known.size; }
-  // Whether some tool result of the session holds this folded text.
+  // Whether some text the session was given holds this folded text.
   inResults(folded: string): boolean { return this.corpus.some((c) => c.includes(folded)); }
 
   private keep(text: string) {
@@ -208,6 +253,8 @@ export class AddressBook {
       if (!d) continue;
       if (e.kind === "user") {
         if (this.owner(d)) this.add(ownerAddresses(String(d.text ?? "")));
+        // What is not the owner's (a subagent's report, a harness notice) is text the session was given: a path may copy it.
+        else if (typeof d.text === "string") this.keep(d.text);
       } else if (e.kind === "assistant") {
         for (const b of d.blocks ?? []) {
           if (b?.type === "tool_use" && typeof b.id === "string" && this.use(String(b.name), b.input)) this.calls.set(b.id, { name: String(b.name), input: b.input });
