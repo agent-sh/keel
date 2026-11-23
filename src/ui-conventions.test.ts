@@ -167,6 +167,20 @@ function sheetSizes(list: Src[]): string[] {
   return out;
 }
 
+// A corner in a stylesheet is a step of the scale (--radius-*), a pill (999px, 50%, or as
+// tall as a control: a switch's track), a hairline (1px, 2px) or none. A motion's length is a
+// step of its own (--dur-*), the reduced-motion stop (1ms) or a length that waits on purpose
+// (400 ms and longer).
+function sheetCorners(list: Src[]): string[] {
+  const corner = /^(var\(--radius-[a-z0-9]+\)|var\(--spacing-ctl-[a-z]+\)|999px|50%|0|1px|2px)$/;
+  const out: string[] = [];
+  for (const s of list) for (const r of rules(s.text)) for (const d of r.decls) {
+    if (/^border(-[a-z]+)*-radius$/.test(d.prop) && !d.value.replace(/\s*!important$/, "").split(/\s+(?![^(]*\))/).every((v) => corner.test(v))) out.push(at(s, d.line, `${d.prop}: ${d.value}`));
+    if (/^(transition|animation)(-duration)?$/.test(d.prop)) for (const m of d.value.matchAll(/(?<![\w.-])(\d+)ms\b/g)) if (Number(m[1]) > 1 && Number(m[1]) < 400) out.push(at(s, d.line, `${d.prop}: ${m[0]}`));
+  }
+  return out;
+}
+
 // A component takes its text size from the scale: none of Tailwind's own
 // sizes, no arbitrary size by any spelling, no inline size but a token (the
 // text-size setting's samples show each size).
@@ -431,6 +445,7 @@ test("the type scale has eight sizes, written once", () => {
 
 test("no stylesheet writes a text size of its own", () => expect(sheetSizes(sheets)).toEqual([]));
 test("no component writes a text size of its own", () => expect(pageSizes(page)).toEqual([]));
+test("no stylesheet writes a corner or a motion length of its own", () => expect(sheetCorners(sheets)).toEqual([]));
 test("the instrument face is named by its five roles and nowhere else", () => expect(face(sheets, page)).toEqual({ roles: 5, strays: [] }));
 test("a choice of a few is the one segmented control", () => expect(segmented(page, sheets)).toEqual([]));
 test("steel is the frame and nothing else", () => expect(steel(page, sheets)).toEqual([]));
@@ -453,6 +468,8 @@ test("each check refuses what it is for", () => {
   expect(sheetSizes(css(".k-thing { font-size: 0.9rem; }"))).toHaveLength(1);
   expect(sheetSizes(css(".k-thing {\n  color: red;\n  font:\n    bold 0.9rem/1 var(--font-sans);\n}"))).toEqual(["bridge.css:3: font: bold 0.9rem/1 var(--font-sans)"]);
   expect(sheetSizes(css(".k-thing { font-size: 0.75em; }"))).toHaveLength(1);
+  expect(sheetCorners(css(".k-thing { border-radius: 0.25rem; }\n.k-other { border-radius: 0 0 0.3125rem var(--radius-md); }"))).toHaveLength(2);
+  expect(sheetCorners(css(".k-thing { transition: opacity 120ms var(--ease-out), transform 160ms; }"))).toHaveLength(2);
   expect(pageSizes(tsx('<p className="text-[1.1rem] font-semibold" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="[font-size:1.1rem] font-semibold" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="text-[length:1.1rem]" />'))).toHaveLength(1);
@@ -503,6 +520,7 @@ test("each check lets ordinary edits through", () => {
   expect(stateLiterals(tsx('const SERVER = { error: "Failed" };', "components/surfaces/Mcp.tsx"))).toEqual([]);
   expect(shoutedStates(css(".k-stuck-head { text-transform: uppercase; }\n.k-station-identity .k-station-word { text-transform: none; }\n.k-aim.k-face-state { text-transform: uppercase; }"))).toEqual([]);
   expect(stateLiterals(tsx('<span>{n} failed</span>', "components/CodeCall.tsx"))).toEqual([]);
+  expect(sheetCorners(css(".k-pill { border-radius: 999px; }\n.k-tab { border-radius: var(--radius-sm) var(--radius-sm) 0 0; }\n.k-flip { transition: opacity var(--dur-quick) var(--ease-out); }\n.k-wait { animation: fade 480ms; }"))).toEqual([]);
   expect(sheetSizes(css(".k-thing { font-size: var(--text-caption); height: var(--spacing-ctl-md); }\n.prose-keel sup { font-size: 0.75em; }\n/* font-size: 3rem */"))).toEqual([]);
   expect(pageSizes(tsx('// Tailwind text-sm is not used here.\n/* nor text-[1.1rem] */\nconst tick = { fontSize: "var(--text-micro)" };\n<p className="text-ui text-[color:var(--x)] text-[var(--c)]" />'))).toEqual([]);
   expect(segmented(tsx('<Seg kind="tabs" label="View" value={v} onChange={set} options={o} />\n// role="tablist" is the Seg component\'s'), [])).toEqual([]);

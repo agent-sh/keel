@@ -59,7 +59,7 @@ export function AdminBand() {
     const note = "What it was doing is not known until it is back. Messages you send wait and go out then.";
     return (
       <div role="status" data-testid="daemon-away" title={note}
-        className="fixed top-0 left-1/2 z-50 flex h-7 max-w-[calc(100vw-1rem)] -translate-x-1/2 items-center gap-2 rounded-b-md border border-t-0 border-warn/40 bg-brass-soft px-3 text-caption shadow-md animate-in max-md:h-[1.125rem] max-md:gap-1.5 max-md:px-2 max-md:text-micro max-md:leading-none">
+        className="fixed top-0 left-1/2 z-50 flex h-7 max-w-[calc(100vw-1rem)] -translate-x-1/2 items-center gap-2 rounded-b-md border border-t-0 border-warn/40 bg-brass-soft px-3 text-caption shadow-2 animate-in max-md:h-[1.125rem] max-md:gap-1.5 max-md:px-2 max-md:text-micro max-md:leading-none">
         <Unplug className="size-3.5 shrink-0 text-warn max-md:size-3" />
         <span className="inline-block whitespace-nowrap font-medium max-md:first-letter:uppercase"><span className="max-md:sr-only">Keel is </span>not reachable since {clock(away)}<span className="max-md:sr-only">. Reconnecting.</span></span>
         <span className="sr-only" data-testid="daemon-away-note">{note}</span>

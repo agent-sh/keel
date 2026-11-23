@@ -35,7 +35,7 @@
 /* No room for the list beside the stations: asked for, it lays over them and
    the marks' column keeps its place underneath. */
 .k-rail-wrap[data-over] { width: 4rem; }
-.k-rail-wrap[data-over] .k-rail { position: absolute; inset: 0 auto 0 0; box-shadow: var(--shadow-3); animation: k-list-over 160ms var(--ease-out); }
+.k-rail-wrap[data-over] .k-rail { position: absolute; inset: 0 auto 0 0; box-shadow: var(--shadow-3); animation: k-list-over var(--dur-move) var(--ease-out); }
 @keyframes k-list-over { from { opacity: 0.6; transform: translateX(-0.875rem); } }
 .k-scrim[data-over] { display: block; position: fixed; inset: 0; z-index: 35; background: color-mix(in oklch, var(--overlay) 45%, transparent); }
 .k-rail-brand { display: flex; align-items: center; justify-content: center; gap: 0.5625rem; height: 3.25rem; flex-shrink: 0; }
@@ -53,7 +53,7 @@
 .k-rail[data-open] .k-rail-foot .k-theme-toggle { margin-left: auto; }
 .k-act {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 0.5625rem;
-  min-width: 2.5rem; height: var(--spacing-ctl-xl); padding: 0 0.5625rem; border-radius: 0.25rem; color: var(--muted); font-size: var(--text-ui);
+  min-width: 2.5rem; height: var(--spacing-ctl-xl); padding: 0 0.5625rem; border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-ui);
 }
 .k-act svg { width: 1.0625rem; height: 1.0625rem; flex-shrink: 0; }
 .k-act:hover { background: var(--hover); color: var(--fg); }
@@ -64,12 +64,12 @@
 .k-rail[data-open] .k-act-label { display: inline; }
 .k-rail[data-open] .k-new-session { color: var(--fg); font-weight: 600; }
 .k-act-count {
-  position: absolute; right: 1px; top: 1px; min-width: 1rem; height: 1rem; padding: 0 0.25rem; border-radius: 0.5rem;
+  position: absolute; right: 1px; top: 1px; min-width: 1rem; height: 1rem; padding: 0 0.25rem; border-radius: 999px;
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need);
 }
 .k-rail[data-open] .k-act-count { position: static; margin-left: auto; }
 /* The New session button's word for a message kept in its box; folded, a dot at the button's corner. */
-.k-act-mark { flex-shrink: 0; padding: 0 0.375rem; border-radius: 0.5rem; font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need); }
+.k-act-mark { flex-shrink: 0; padding: 0 0.375rem; border-radius: var(--radius-xl); font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need); }
 .k-rail[data-open] .k-act-mark { margin-left: auto; }
 /* A word of a button is one line: cut with an ellipsis where the bar is narrower than it. */
 .k-rail[data-open] .k-act-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -118,7 +118,7 @@
 
 /* "Is anything stuck": the steps that made no progress for too long, above the
    sessions, in the working ink. There only while something is stuck. */
-.k-stuck { flex-shrink: 0; margin: 0 0.625rem 0.5rem; padding: 0.25rem 0 0.3125rem; border-radius: 0.25rem; background: color-mix(in oklch, var(--st-work) 11%, transparent); box-shadow: inset 0.1875rem 0 0 var(--st-work); }
+.k-stuck { flex-shrink: 0; margin: 0 0.625rem 0.5rem; padding: 0.25rem 0 0.3125rem; border-radius: var(--radius-md); background: color-mix(in oklch, var(--st-work) 11%, transparent); box-shadow: inset 0.1875rem 0 0 var(--st-work); }
 .k-stuck-head { display: flex; align-items: center; gap: 0.375rem; height: 1.375rem; padding: 0 0.5rem 0 0.6875rem; font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.05em; text-transform: uppercase; color: var(--st-work-ink); }
 .k-stuck-head svg { width: 0.75rem; height: 0.75rem; }
 .k-stuck-head span:last-child { margin-left: auto; }
@@ -128,7 +128,7 @@
 .k-stuck-of { color: var(--muted); }
 .k-stuck-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
 .k-stuck-time { font-weight: 600; font-size: var(--text-micro); line-height: 1.125rem; color: var(--st-work-ink); }
-.k-stuck-chip { display: flex; align-items: center; justify-content: center; gap: 0.25rem; flex-shrink: 0; width: 3.125rem; height: var(--spacing-ctl-sm); margin: 0.375rem auto 0; border-radius: 0.25rem; background: color-mix(in oklch, var(--st-work) 14%, transparent); font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--st-work-ink); }
+.k-stuck-chip { display: flex; align-items: center; justify-content: center; gap: 0.25rem; flex-shrink: 0; width: 3.125rem; height: var(--spacing-ctl-sm); margin: 0.375rem auto 0; border-radius: var(--radius-md); background: color-mix(in oklch, var(--st-work) 14%, transparent); font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--st-work-ink); }
 .k-stuck-chip svg { width: 0.8125rem; height: 0.8125rem; }
 .k-stuck-chip:hover { background: color-mix(in oklch, var(--st-work) 24%, transparent); }
 
@@ -151,7 +151,7 @@
 .k-marks[data-watch="wait"] .k-marks-head { color: var(--st-wait-ink); }
 .k-marks[data-watch="fail"] .k-marks-head { color: var(--st-fail-ink); }
 /* A mark is the session's state and a short code of its title, so no two read alike. */
-.k-tick { position: relative; display: flex; align-items: center; gap: 0.375rem; width: 3.125rem; height: var(--spacing-ctl-md); padding-left: 0.5rem; border-radius: 0.25rem; }
+.k-tick { position: relative; display: flex; align-items: center; gap: 0.375rem; width: 3.125rem; height: var(--spacing-ctl-md); padding-left: 0.5rem; border-radius: var(--radius-md); }
 .k-tick:hover, .k-tick:focus-visible { background: var(--hover); }
 .k-tick .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-tick-code { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.03em; color: var(--fg); }
@@ -175,8 +175,8 @@
    where it runs and when it last moved. */
 .k-rail-card {
   position: fixed; z-index: 50; width: 21.25rem; transform: translateY(-50%); pointer-events: none;
-  padding: 0.6875rem 0.875rem 0.625rem; border-radius: 0.3125rem; border: 1px solid var(--line-strong); border-left: 0.1875rem solid var(--st-done);
-  background: var(--raised); box-shadow: var(--shadow-3); animation: k-card-in 110ms var(--ease-out);
+  padding: 0.6875rem 0.875rem 0.625rem; border-radius: var(--radius-md); border: 1px solid var(--line-strong); border-left: 0.1875rem solid var(--st-done);
+  background: var(--raised); box-shadow: var(--shadow-3); animation: k-card-in var(--dur-quick) var(--ease-out);
 }
 @keyframes k-card-in { from { opacity: 0; transform: translate(-0.3125rem, -50%); } }
 .k-rail-card[data-watch="need"] { border-left-color: var(--st-need); }
@@ -217,12 +217,12 @@
 
 /* Open: the full index. */
 /* The list's filter and its arrangement: one field, the menu at its end. */
-.k-find { display: flex; align-items: center; gap: 0.125rem; height: var(--spacing-ctl-lg); margin: 0.25rem 0.625rem 0.5rem; padding: 0 0.1875rem 0 0.5rem; border: 1px solid var(--line); border-radius: 0.25rem; color: var(--faint); transition: border-color 120ms; }
+.k-find { display: flex; align-items: center; gap: 0.125rem; height: var(--spacing-ctl-lg); margin: 0.25rem 0.625rem 0.5rem; padding: 0 0.1875rem 0 0.5rem; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--faint); transition: border-color var(--dur-quick); }
 .k-find:focus-within { border-color: var(--line-strong); }
 .k-find-icon { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
 .k-find input { flex: 1; min-width: 0; height: 100%; padding: 0 0.25rem; background: transparent; font-size: var(--text-caption); color: var(--fg); outline: none; }
 .k-find input::placeholder { color: var(--faint); }
-.k-find-btn { position: relative; display: grid; place-items: center; width: 1.5rem; height: var(--spacing-ctl-sm); flex-shrink: 0; border-radius: 0.1875rem; color: var(--faint); }
+.k-find-btn { position: relative; display: grid; place-items: center; width: 1.5rem; height: var(--spacing-ctl-sm); flex-shrink: 0; border-radius: var(--radius-sm); color: var(--faint); }
 .k-find-btn:hover, .k-find-btn[data-popup-open] { background: var(--hover); color: var(--fg); }
 .k-find-btn svg { width: 0.875rem; height: 0.875rem; }
 /* A list arranged away from the default says so with a dot on the menu. */
@@ -243,7 +243,7 @@
    that changes moves no row under it. Two lines a row is the owner's choice
    (the Arrange menu): the state with why is then the second line, always
    there, and a row is as high with words in it as without. */
-.k-row { position: relative; display: flex; align-items: center; gap: 0.5625rem; height: 1.75rem; padding: 0 0.375rem 0 0.5625rem; border-radius: 0.25rem; font-size: var(--text-ui); line-height: 1.25rem; color: var(--muted); user-select: none; }
+.k-row { position: relative; display: flex; align-items: center; gap: 0.5625rem; height: 1.75rem; padding: 0 0.375rem 0 0.5625rem; border-radius: var(--radius-md); font-size: var(--text-ui); line-height: 1.25rem; color: var(--muted); user-select: none; }
 .k-row-main { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; column-gap: 0.5rem; height: 1.25rem; overflow: hidden; }
 .k-row-end { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: 1.25rem; }
 /* Two lines: the title over its line, the line as wide as the row (the time column is the first line's). */
@@ -260,7 +260,7 @@
 .k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
 .k-row[data-watch="wait"] .k-row-state { color: var(--st-wait-ink); }
 /* A failure's class beside the word, in its colour: rate limit, billing, sign-in. */
-.k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--st-fail-ink); }
+.k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--st-fail-ink); }
 /* The state line reads as one sentence on one line: the word, then why, cut at the row's edge.
    The card beside the row has the reason in full. */
 .k-row-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
@@ -347,7 +347,7 @@
 /* The names of what calls the owner and is out of the list's view, at its foot. */
 /* It never takes the list's own room: at most a quarter of it, and it scrolls past that. */
 .k-need-strip { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 0.125rem 0.25rem; flex-shrink: 0; max-height: 25%; overflow-y: auto; scrollbar-width: thin; margin: 0 0.625rem; padding: 0.375rem 0 0.25rem; border-top: 1px solid var(--line); }
-.k-need-name { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: 0.1875rem; font-size: var(--text-caption); color: var(--fg); }
+.k-need-name { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-size: var(--text-caption); color: var(--fg); }
 .k-need-name:hover { background: var(--hover); }
 .k-need-name:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-need-name .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; }
@@ -369,11 +369,11 @@
 .k-session-children { margin-left: 0.75rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
 /* A count is never cut. What is not a count (how many are new, which one is on screen) has the room the counts leave on
    their line and goes whole when that is too little; counts that cannot share one line (a list dragged narrow) take a second. */
-.k-kids-sum { display: flex; align-items: flex-start; column-gap: 0.4375rem; width: 100%; min-width: 0; min-height: 1.5rem; padding: 0 0.375rem; border-radius: 0.375rem; white-space: nowrap; text-align: left; font-size: var(--text-caption); color: var(--faint); }
+.k-kids-sum { display: flex; align-items: flex-start; column-gap: 0.4375rem; width: 100%; min-width: 0; min-height: 1.5rem; padding: 0 0.375rem; border-radius: var(--radius-md); white-space: nowrap; text-align: left; font-size: var(--text-caption); color: var(--faint); }
 .k-kids-counts { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0.4375rem; row-gap: 0; flex: 0 1 auto; min-width: 0; }
 .k-kids-sum:hover { color: var(--muted); }
 .k-kids-sum:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
-.k-kids-fold { width: 0.75rem; height: 0.75rem; margin-block: 0.375rem; flex-shrink: 0; transition: transform 120ms var(--ease-out); }
+.k-kids-fold { width: 0.75rem; height: 0.75rem; margin-block: 0.375rem; flex-shrink: 0; transition: transform var(--dur-quick) var(--ease-out); }
 .k-kids-total { flex-shrink: 0; line-height: 1.5rem; }
 .k-kids-parts { display: contents; }
 .k-kids-part { display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0; min-height: 1.5rem; }
@@ -396,7 +396,7 @@
 .k-kids-new { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); color: var(--accent-ink); }
 .k-kids-viewing { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
 .k-child-row { position: relative; container: kid / inline-size; }
-.k-child-session { display: flex; align-items: center; gap: 0.5rem; min-width: 0; height: 1.5rem; padding: 0 0.375rem; border-radius: 0.375rem; font-size: var(--text-caption); cursor: default; outline: none; }
+.k-child-session { display: flex; align-items: center; gap: 0.5rem; min-width: 0; height: 1.5rem; padding: 0 0.375rem; border-radius: var(--radius-md); font-size: var(--text-caption); cursor: default; outline: none; }
 .k-child-session:hover, .k-child-session[data-current] { background: var(--raised); }
 .k-child-session[data-current] { box-shadow: var(--shadow-1); }
 .k-child-session:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
@@ -440,10 +440,10 @@
 .k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }
 .k-row-sub .k-where { flex-shrink: 1; }
 /* A row's actions take the time's place under the pointer and its line's height (1.25rem): the row is as high as at rest, and the rows under it stay where they are. */
-.k-row-act { flex-shrink: 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: 0.1875rem; color: var(--faint); }
+.k-row-act { flex-shrink: 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: var(--radius-sm); color: var(--faint); }
 .k-row-act:hover { background: var(--hover); color: var(--fg); }
 .k-row-act svg { width: 0.875rem; height: 0.875rem; }
-.k-more { height: var(--spacing-ctl-md); padding-left: 1.75rem; border-radius: 0.25rem; text-align: left; font-size: var(--text-caption); color: var(--faint); }
+.k-more { height: var(--spacing-ctl-md); padding-left: 1.75rem; border-radius: var(--radius-md); text-align: left; font-size: var(--text-caption); color: var(--faint); }
 .k-more:hover { background: var(--hover); color: var(--muted); }
 /* The line above the list: how many need the owner, failed, work, have something new or sit on a
    machine that does not answer; a press on a count goes to the next row it names. One line, always
@@ -451,7 +451,7 @@
    by measure (Sidebar.tsx): a word that does not fit goes (data-bare), then the room between the
    counts (data-tight), and a figure is never cut. */
 .k-sum { display: flex; align-items: center; gap: 0.0625rem; flex-shrink: 0; height: 1.75rem; margin: 0 0.625rem 0.125rem; overflow: hidden; border-bottom: 1px solid var(--line); }
-.k-sum-chip { display: inline-flex; align-items: center; gap: 0.3125rem; flex-shrink: 0; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: 0.1875rem; white-space: nowrap; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-sum-chip { display: inline-flex; align-items: center; gap: 0.3125rem; flex-shrink: 0; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); white-space: nowrap; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
 .k-sum-chip[hidden], .k-sum-calm[hidden], .k-sum-chip[data-bare] .k-sum-word { display: none; }
 .k-sum[data-tight] { gap: 0; }
 .k-sum[data-tight] .k-sum-chip { gap: 0.1875rem; padding: 0 0.1875rem; }
@@ -566,8 +566,8 @@
 .k-look-state { flex-shrink: 0; margin-left: 0.25em; font-weight: 600; color: var(--st-need-ink); }
 .k-look-bar:is([data-under="fail"], [data-under="declined"]) .k-look-state { color: var(--st-fail-ink); }
 /* What a click on the row aimed at this pane will do, in place of the sentences while it is aimed. */
-.k-aim-in { flex: 0 1 auto; min-width: 0; height: 1.0625rem; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; border-radius: 0.1875rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--bg); }
-.k-look-act { display: inline-flex; align-items: center; gap: 0.4375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-aim-in { flex: 0 1 auto; min-width: 0; height: 1.0625rem; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; border-radius: var(--radius-sm); background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--bg); }
+.k-look-act { display: inline-flex; align-items: center; gap: 0.4375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 500; white-space: nowrap; color: var(--fg); }
 .k-look-act:hover { background: var(--hover); }
 .k-look-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .k-look-act svg { flex-shrink: 0; width: 0.875rem; height: 0.875rem; color: var(--muted); }
@@ -582,7 +582,7 @@
 .k-look-bar[data-esc-off] .k-look-esc { display: none; }
 /* A line at the pane's foot for a few seconds: what left the pane, and where it is. It lies
    in the room under the message box and leaves air between the two. */
-.k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in 160ms var(--ease-out); }
+.k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in var(--dur-move) var(--ease-out); }
 @keyframes k-note-in { from { opacity: 0; } }
 /* Before the click: the pane a row of the list will change, while the pointer or the keys
    are on that row. Its band goes to ink and a tab hangs from it that says what the click
@@ -593,10 +593,10 @@
 /* (From the row of panes: over a band's state colour, whichever state it is.) */
 .k-stations > .k-station[data-aimed] .k-band { background-color: var(--fg); }
 .k-stations > .k-station[data-aimed] .k-band::after { content: none; }
-.k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 0.3125rem 0.3125rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
+.k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
 .k-station[data-drop] .k-aim { display: none; }
-.k-aim-edge { position: fixed; z-index: 46; left: auto; transform: none; border-radius: 0 0 0 0.3125rem; }
-.k-aim-edge[data-side="left"] { border-radius: 0 0 0.3125rem 0; }
+.k-aim-edge { position: fixed; z-index: 46; left: auto; transform: none; border-radius: 0 0 0 var(--radius-md); }
+.k-aim-edge[data-side="left"] { border-radius: 0 0 var(--radius-md) 0; }
 .k-aim-edge svg { width: 0.75rem; height: 0.75rem; }
 .k-station:has(+ .k-grip) { border-right: 0; }
 /* A header is the pane's handle: drag it onto another pane to trade places. */
@@ -605,7 +605,7 @@
 /* A pane a dragged session is over: it says the drop lands here. */
 .k-station[data-drop]::after {
   content: "Drop to open here"; position: absolute; inset: 0.375rem; z-index: 30; display: grid; place-items: center; pointer-events: none;
-  border: 2px dashed var(--fg); border-radius: 0.375rem; background: color-mix(in oklch, var(--raised) 72%, transparent);
+  border: 2px dashed var(--fg); border-radius: var(--radius-md); background: color-mix(in oklch, var(--raised) 72%, transparent);
   font-weight: 600; font-size: var(--text-ui); line-height: 1.0625rem; color: var(--fg);
 }
 /* Its left or right edge: a new pane opens on that side. */
@@ -616,7 +616,7 @@
 /* ---------- Dividers: the list's edge and the line between two panes ---------- */
 .k-grip { position: relative; z-index: 45; flex: 0 0 1px; align-self: stretch; background: var(--line); cursor: col-resize; touch-action: none; outline: none; }
 .k-grip::before { content: ""; position: absolute; inset: 0 -0.3125rem; }
-.k-grip::after { content: ""; position: absolute; inset: 0 -1px; background: var(--fg); opacity: 0; transition: opacity 120ms; }
+.k-grip::after { content: ""; position: absolute; inset: 0 -1px; background: var(--fg); opacity: 0; transition: opacity var(--dur-quick); }
 .k-grip:hover::after, .k-grip:focus-visible::after, .k-grip[data-drag]::after { opacity: 1; }
 .k-grip:focus-visible { outline: none; border-radius: 0; }
 .k-rail-grip { position: absolute; inset: 0 -1px 0 auto; width: 1px; background: transparent; }
@@ -640,7 +640,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; width: 100%; max-width: 38rem; margin: 0 auto; padding: 11vh 2rem 2rem; }
 .k-pane-empty-word { display: flex; align-items: baseline; gap: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0; color: var(--muted); }
 .k-pane-empty-word span { font-weight: 500; color: var(--faint); }
-.k-pane-empty-close { display: grid; place-items: center; width: 1.5rem; height: var(--spacing-ctl-sm); margin: -0.25rem -0.25rem -0.25rem auto; align-self: center; border-radius: 0.25rem; color: var(--faint); }
+.k-pane-empty-close { display: grid; place-items: center; width: 1.5rem; height: var(--spacing-ctl-sm); margin: -0.25rem -0.25rem -0.25rem auto; align-self: center; border-radius: var(--radius-md); color: var(--faint); }
 .k-pane-empty-close:hover { background: var(--hover); color: var(--fg); }
 .k-pane-empty-close svg { width: 0.875rem; height: 0.875rem; }
 /* What needs the owner, as the start page says it: the headline, then the rows, in the pane's width. */
@@ -652,7 +652,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty-list .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-pane-empty-in { flex-shrink: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--faint); }
 .k-pane-empty-time { flex-shrink: 0; min-width: 1.5rem; text-align: right; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--faint); }
-.k-pane-empty-new { align-self: flex-start; display: inline-flex; align-items: center; gap: 0.5rem; height: 2.125rem; margin-top: 1.375rem; padding: 0 0.75rem 0 0.625rem; border-radius: 0.25rem; border: 1px solid var(--line-strong); font-size: var(--text-ui); font-weight: 500; color: var(--fg); }
+.k-pane-empty-new { align-self: flex-start; display: inline-flex; align-items: center; gap: 0.5rem; height: 2.125rem; margin-top: 1.375rem; padding: 0 0.75rem 0 0.625rem; border-radius: var(--radius-md); border: 1px solid var(--line-strong); font-size: var(--text-ui); font-weight: 500; color: var(--fg); }
 .k-pane-empty-new:hover { background: var(--hover); }
 .k-pane-empty-new svg { width: 0.9375rem; height: 0.9375rem; }
 .k-station:last-child { border-right: 0; }
@@ -699,13 +699,13 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station:is([data-watch="stop"], [data-watch="resume"]) .k-station-word { color: var(--muted); }
 .k-station-clock { font-size: var(--text-ui); color: var(--fg); }
 /* Another machine's name beside the title, in that machine's colour: kept at every width of the pane. */
-.k-station-machine { --where: var(--faint); flex: 0 1 auto; min-width: 2.5rem; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.375rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--where) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1.125rem; color: var(--where); }
+.k-station-machine { --where: var(--faint); flex: 0 1 auto; min-width: 2.5rem; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.375rem; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--where) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1.125rem; color: var(--where); }
 .k-station-machine[data-reach="offline"] { color: var(--faint); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-station-meta { margin-left: auto; min-width: 0; font-size: var(--text-micro); color: var(--faint); white-space: pre; }
 .k-gone { color: var(--st-fail-ink); }
-.k-station-tools { display: flex; gap: 1px; opacity: 0; transition: opacity 120ms; }
+.k-station-tools { display: flex; gap: 1px; opacity: 0; transition: opacity var(--dur-quick); }
 .k-station:hover .k-station-tools, .k-station:focus-within .k-station-tools, .k-station[data-helm] .k-station-tools { opacity: 1; }
-.k-tool { display: grid; place-items: center; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: 0.1875rem; color: var(--faint); }
+.k-tool { display: grid; place-items: center; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-sm); color: var(--faint); }
 .k-tool:hover { background: var(--hover); color: var(--fg); }
 .k-tool[aria-pressed="true"] { color: var(--fg); }
 .k-tool svg { width: 0.875rem; height: 0.875rem; }
@@ -742,7 +742,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-identity .k-station-why { flex: 0 1 auto; max-width: none; }
 .k-station-head:has(.k-station-tools :focus-visible) { z-index: 6; }
 .k-station-head:has(.k-station-tools :focus-visible)::after {
-  content: attr(data-whole); position: absolute; z-index: 1; top: calc(100% + 0.25rem); left: 1rem; right: 1rem; padding: 0.5rem 0.75rem; border: 1px solid var(--line-strong); border-radius: 0.3125rem;
+  content: attr(data-whole); position: absolute; z-index: 1; top: calc(100% + 0.25rem); left: 1rem; right: 1rem; padding: 0.5rem 0.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-md);
   background: var(--raised); box-shadow: var(--shadow-2); font-size: var(--text-caption); line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; color: var(--fg); pointer-events: none;
 }
 .k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; word-spacing: normal; }
@@ -788,14 +788,14 @@ html[data-resizing] iframe { pointer-events: none; }
 /* The panel shortcuts are a group of their own, set off from the session's tools. */
 .k-head-tool[data-tool="hand"] { padding-left: 0.75rem; }
 /* More: how many tools are behind it, in the instrument face. */
-.k-head-more { display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-md); padding: 0 0.4375rem 0 0.5625rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line); font-weight: 500; font-size: var(--text-caption); letter-spacing: 0.02em; white-space: nowrap; color: var(--muted); }
+.k-head-more { display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-md); padding: 0 0.4375rem 0 0.5625rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line); font-weight: 500; font-size: var(--text-caption); letter-spacing: 0.02em; white-space: nowrap; color: var(--muted); }
 .k-head-more:hover, .k-head-more[data-popup-open] { background: var(--hover); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.k-head-more svg { width: 0.75rem; height: 0.75rem; opacity: 0.7; transition: transform 150ms var(--ease-out); }
+.k-head-more svg { width: 0.75rem; height: 0.75rem; opacity: 0.7; transition: transform var(--dur-quick) var(--ease-out); }
 .k-head-more[data-popup-open] svg { transform: rotate(180deg); }
 /* Its list: a name on the left, the control itself on the right. */
-.k-stow { width: min(20rem, calc(100vw - 1rem)); padding: 0.25rem; border-radius: 0.375rem; border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); outline: none; transform-origin: var(--transform-origin); transition: scale 150ms, opacity 150ms; }
+.k-stow { width: min(20rem, calc(100vw - 1rem)); padding: 0.25rem; border-radius: var(--radius-xl); border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); outline: none; transform-origin: var(--transform-origin); transition: scale var(--dur-quick), opacity var(--dur-quick); }
 .k-stow[data-starting-style], .k-stow[data-ending-style] { scale: 0.97; opacity: 0; }
-.k-stow-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 2.5rem; padding: 0 0.375rem 0 0.625rem; border-radius: 0.25rem; cursor: default; }
+.k-stow-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 2.5rem; padding: 0 0.375rem 0 0.625rem; border-radius: var(--radius-md); cursor: default; }
 .k-stow-row:has(> .k-stow-slot:empty) { display: none; }
 /* Only a row whose control can be pressed lights up. */
 .k-stow-row:has(> .k-stow-slot button):hover, .k-stow-row:focus-within, .k-stow-item:hover, .k-stow-item:focus-visible { background: var(--hover); }
@@ -804,7 +804,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-stow-row { flex-wrap: wrap; row-gap: 0.125rem; padding-block: 0.25rem; }
 .k-stow-slot { display: flex; min-width: 0; max-width: 100%; margin-left: auto; justify-content: flex-end; }
 .k-stow-slot > * { min-width: 0; max-width: 100%; white-space: nowrap; }
-.k-stow-item { display: flex; width: 100%; align-items: center; min-height: 2.5rem; padding: 0 0.625rem; border-radius: 0.25rem; text-align: left; font-size: var(--text-ui); color: var(--fg); outline: none; }
+.k-stow-item { display: flex; width: 100%; align-items: center; min-height: 2.5rem; padding: 0 0.625rem; border-radius: var(--radius-md); text-align: left; font-size: var(--text-ui); color: var(--fg); outline: none; }
 /* One right edge: the bare branch name ends where the pills do. The list has room for the mode's name at any width. */
 .k-stow-slot .k-worktree-chip { padding-right: 0; }
 .k-stow-slot .k-permission-mode { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; white-space: nowrap; }
@@ -845,7 +845,7 @@ html[data-resizing] iframe { pointer-events: none; }
    mark, a title, the state word and one line. */
 .k-home-state { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 1.5rem; row-gap: 0.125rem; margin-bottom: 0.5rem; font-family: var(--font-sans); font-size: var(--text-title); font-weight: 600; line-height: 1.25; letter-spacing: -0.018em; color: var(--fg); }
 .k-home-finished { margin-bottom: 0.75rem; font-size: var(--text-ui); font-weight: 600; }
-.k-home-count { display: inline-flex; align-items: center; gap: 0.5625rem; border-radius: 0.25rem; color: var(--muted); }
+.k-home-count { display: inline-flex; align-items: center; gap: 0.5625rem; border-radius: var(--radius-md); color: var(--muted); }
 .k-home-count .k-mark { width: 0.6875rem; height: 0.6875rem; }
 .k-home-count[data-watch="need"] { color: var(--st-need); }
 .k-home-count[data-watch="work"] { color: var(--st-work-ink); }
@@ -863,7 +863,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-kept { flex-direction: row; align-items: center; gap: 0.75rem; padding-left: 1.75rem; }
 .k-home-kept .k-home-row-title { color: var(--faint); font-weight: 400; }
 .k-home-kept-word { flex-shrink: 0; font-size: var(--text-micro); font-weight: 600; color: var(--muted); }
-.k-home-row-main { display: flex; align-items: baseline; gap: 0.75rem; min-width: 0; text-align: left; border-radius: 0.25rem; }
+.k-home-row-main { display: flex; align-items: baseline; gap: 0.75rem; min-width: 0; text-align: left; border-radius: var(--radius-md); }
 .k-home-row-main:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .k-home-row-mark { display: grid; place-items: center; align-self: center; flex-shrink: 0; width: 1rem; height: 1.3125rem; }
 .k-home-row-mark .k-mark { width: 0.5rem; height: 0.5rem; }
@@ -882,18 +882,18 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-row:is([data-watch="fail"], [data-watch="declined"]) .k-home-row-word { color: var(--st-fail); }
 .k-home-row:is([data-watch="wait"], [data-watch="resume"]) .k-home-row-word { color: var(--st-wait-ink); }
 /* A request the gate rates high risk says so beside its kind. */
-.k-home-row-risk { flex-shrink: 0; padding: 0.125rem 0.375rem; border-radius: 0.1875rem; background: var(--danger-soft); font-weight: 600; color: var(--danger); }
+.k-home-row-risk { flex-shrink: 0; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); background: var(--danger-soft); font-weight: 600; color: var(--danger); }
 .k-home-row-line { flex: 1 1 8rem; min-width: 0; padding: 0.125rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--muted); }
 /* A command the owner may allow from here: all of it, wrapped, never cut. */
-.k-home-row-cmd { flex: 0 1 auto; min-width: 0; max-width: 100%; padding: 0.125rem 0.375rem; border-radius: 0.1875rem; background: var(--sunken); font-family: var(--font-mono); font-size: var(--text-caption); white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; color: var(--fg); }
+.k-home-row-cmd { flex: 0 1 auto; min-width: 0; max-width: 100%; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); font-family: var(--font-mono); font-size: var(--text-caption); white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; color: var(--fg); }
 .k-home-acts { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; margin-left: auto; }
 /* One action leads the screen (the first row's); the others are outlined, a way out is plain words. */
-.k-home-act { height: var(--spacing-ctl-md); padding: 0 0.625rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line-strong); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-home-act { height: var(--spacing-ctl-md); padding: 0 0.625rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line-strong); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; color: var(--fg); }
 .k-home-act:hover:not(:disabled) { background: var(--hover); }
 .k-home-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .k-home-act:disabled, .k-home-act[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 /* A press that did nothing yet: the ring the approval card uses closes on the button (it does not move: a move would start its wait again). */
-.k-home-act[data-nudge] { opacity: 1; outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge 320ms var(--ease-out); }
+.k-home-act[data-nudge] { opacity: 1; outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge var(--dur-settle) var(--ease-out); }
 .k-home-act-lead { box-shadow: none; background: var(--accent); color: var(--accent-fg); }
 .k-home-act-lead:hover:not(:disabled) { background: var(--accent-hover); }
 .k-home-act[data-quiet] { padding: 0 0.375rem; box-shadow: none; color: var(--muted); }
@@ -912,11 +912,11 @@ html[data-resizing] iframe { pointer-events: none; }
 .prose-keel { font-size: var(--text-read); line-height: 1.65; }
 .k-turn-end, .k-session-usage { font-size: var(--text-micro); }
 /* Composer: a flat console field; violet ring when it has the keyboard. */
-.k-composer-box { border-radius: 0.3125rem; box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
+.k-composer-box { border-radius: var(--radius-md); box-shadow: none; border-color: var(--line-strong); background: var(--raised); }
 .k-composer-box:focus-within { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
-.k-send { border-radius: 0.25rem; }
+.k-send { border-radius: var(--radius-md); }
 /* Approvals and open questions: the one thing in violet. */
-.k-approval, .k-question[data-state="open"] { border-radius: 0.3125rem; border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 13%, transparent); }
+.k-approval, .k-question[data-state="open"] { border-radius: var(--radius-md); border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 13%, transparent); }
 .k-approval[data-risk="high"] { border-color: var(--st-fail); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-fail) 13%, transparent); }
 /* Several requests: the violet frame is on the one that has the keyboard (Enter answers it) and on
    the ones a pointed "allow all" covers. The rest step back to a violet edge, and only the one with
@@ -928,7 +928,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-approval[data-many]:is(:focus-within, [data-hot]) { box-shadow: 0 0 0 3px color-mix(in oklch, var(--st-need) 13%, transparent); }
 /* What waits, over a list of requests: a state word (its face is the state role's, styles.css). */
 .k-ask-count { font-weight: 700; font-size: var(--text-micro); line-height: 1.25rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-need-ink); }
-.k-allow-all { border-radius: 0.25rem; }
+.k-allow-all { border-radius: var(--radius-md); }
 /* A list's bar stays at the top of the region while the list scrolls under it, where a whole row
    still shows under it (the list says so): it is opaque, and no fade lies over it. */
 .k-ask-bar { background: var(--bg); }
@@ -962,15 +962,15 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-ask-open::after { content: attr(data-wide); grid-area: 1 / 1; visibility: hidden; }
 /* A press that did nothing yet: a ring in the working color closes on the control and stays for a moment.
    The control itself does not move: a move would start its wait again. */
-:is(.k-allow, .k-allow-all, .k-grant)[data-nudge] { outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge 320ms var(--ease-out); }
+:is(.k-allow, .k-allow-all, .k-grant)[data-nudge] { outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge var(--dur-settle) var(--ease-out); }
 @keyframes k-nudge { from { outline-offset: 0.4375rem; outline-color: transparent; } }
 /* Rows brought into view stop under their list's bar, not behind it (its height is set by the list). */
 .k-ask-list > .k-approval, .k-ask-list > .k-approval * { scroll-margin-top: var(--k-ask-bar, 0px); }
-.k-question { border-radius: 0.3125rem; box-shadow: none; }
+.k-question { border-radius: var(--radius-md); box-shadow: none; }
 /* A waiting question keeps its Answer row at the tray's lower edge while it scrolls: that edge is not faded. */
 .k-tray:has(.k-question[data-state="open"])[data-more="down"] { mask-image: none; }
 .k-tray:has(.k-question[data-state="open"])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
-.k-turn-error { border-radius: 0.25rem; border-left: 0.1875rem solid var(--st-fail); }
+.k-turn-error { border-radius: var(--radius-md); border-left: 0.1875rem solid var(--st-fail); }
 /* Popups and dialogs: an ink band on top, like a station. */
 [role="dialog"], [role="menu"], [role="listbox"] { box-shadow: var(--shadow-3); }
 [role="dialog"] { border-top: 0.1875rem solid var(--band) !important; }
@@ -978,7 +978,7 @@ html[data-resizing] iframe { pointer-events: none; }
 /* ---------- Phone: the stations are pages, the dock their marks ---------- */
 .k-dock { display: none; }
 @media (max-width: 767px) {
-  .k-rail-wrap { position: fixed; inset: 0 auto 0 0; transform: translateX(-100%); visibility: hidden; transition: transform 200ms var(--ease-out), visibility 200ms; box-shadow: var(--shadow-3); }
+  .k-rail-wrap { position: fixed; inset: 0 auto 0 0; transform: translateX(-100%); visibility: hidden; transition: transform var(--dur-move) var(--ease-out), visibility var(--dur-move); box-shadow: var(--shadow-3); }
   .k-rail-wrap[data-drawer] { transform: none; visibility: visible; }
   .k-rail-wrap .k-rail { width: min(86vw, 20rem); }
   .k-scrim { display: block; position: fixed; inset: 0; z-index: 30; background: var(--overlay); }
@@ -1005,18 +1005,18 @@ html[data-resizing] iframe { pointer-events: none; }
     height: calc(3.25rem + env(safe-area-inset-bottom)); padding: 0 0.375rem env(safe-area-inset-bottom);
     background: var(--panel); border-top: 1px solid var(--line);
   }
-  .k-dock-btn { display: grid; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: 0.3125rem; color: var(--muted); }
+  .k-dock-btn { display: grid; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: var(--radius-md); color: var(--muted); }
   .k-dock-btn svg { width: 1.1875rem; height: 1.1875rem; }
   .k-dock-btn[aria-current] { color: var(--fg); background: var(--raised); }
   .k-dock-list { flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
   /* A mark and the session's short code under it: no two read alike. */
-  .k-dock-mark { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; width: 2.5rem; height: 2.75rem; padding-bottom: 0.25rem; border-radius: 0.3125rem; }
+  .k-dock-mark { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; width: 2.5rem; height: 2.75rem; padding-bottom: 0.25rem; border-radius: var(--radius-md); }
   .k-dock-mark .k-mark { width: 0.5625rem; height: 0.5625rem; }
   .k-dock-code { font-weight: 700; font-size: var(--text-micro); line-height: 1; letter-spacing: 0.03em; color: var(--muted); }
   .k-dock-mark[aria-current] .k-dock-code, .k-dock-mark[data-watch="need"] .k-dock-code { color: var(--fg); }
   .k-dock-mark[aria-current] { background: var(--raised); }
   .k-dock-mark[aria-current]::after { content: ""; position: absolute; left: 0.5rem; right: 0.5rem; bottom: 0.125rem; height: 0.125rem; border-radius: 2px; background: var(--fg); }
-  .k-dock-need { flex-shrink: 0; padding: 0 0.5rem; border-radius: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; color: var(--accent-fg); background: var(--st-need); }
+  .k-dock-need { flex-shrink: 0; padding: 0 0.5rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; color: var(--accent-fg); background: var(--st-need); }
 }
 
 /* The station head already names the folder: the helm header drops its folder chip. */
@@ -1056,20 +1056,20 @@ html[data-resizing] iframe { pointer-events: none; }
 /* The container itself is k-surface (styles.css); here is only where it stands. */
 
 /* The Panels picker: search on top, grouped rows, a pin keeps one at hand. */
-.k-picker { width: min(24rem, calc(100vw - 1.5rem)); max-height: min(var(--available-height, 100dvh) - 0.5rem, 46rem); display: flex; flex-direction: column; overflow: hidden; border-radius: 0.375rem; border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
+.k-picker { width: min(24rem, calc(100vw - 1.5rem)); max-height: min(var(--available-height, 100dvh) - 0.5rem, 46rem); display: flex; flex-direction: column; overflow: hidden; border-radius: var(--radius-xl); border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
 .k-picker-search { display: flex; align-items: center; gap: 0.5rem; height: 2.625rem; padding: 0 0.75rem; border-bottom: 1px solid var(--line); color: var(--faint); }
 .k-picker-search input { flex: 1; min-width: 0; background: transparent; outline: none; font-size: var(--text-base); color: var(--fg); }
 .k-picker-search input::placeholder { color: var(--faint); }
 .k-picker-list { overflow-y: auto; padding: 0.25rem 0.375rem 0.5rem; }
 .k-picker-group { padding: 0.625rem 0.5rem 0.25rem; }
-.k-picker-row { display: flex; align-items: center; border-radius: 0.25rem; }
+.k-picker-row { display: flex; align-items: center; border-radius: var(--radius-md); }
 .k-picker-row:hover, .k-picker-row:focus-within { background: var(--hover); }
 .k-picker-pick { flex: 1; display: flex; align-items: center; gap: 0.625rem; height: var(--spacing-ctl-lg); padding: 0 0.5rem; text-align: left; font-size: var(--text-ui); color: var(--fg); }
 .k-picker-pick svg { width: 1rem; height: 1rem; color: var(--muted); }
 .k-picker-pick { min-width: 0; }
 .k-picker-pick > span:first-of-type { flex-shrink: 0; }
 .k-picker-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--faint); }
-.k-picker-keep { display: grid; place-items: center; width: 1.75rem; height: var(--spacing-ctl-md); margin-right: 2px; border-radius: 0.1875rem; color: var(--faint); opacity: 0; }
+.k-picker-keep { display: grid; place-items: center; width: 1.75rem; height: var(--spacing-ctl-md); margin-right: 2px; border-radius: var(--radius-sm); color: var(--faint); opacity: 0; }
 .k-picker-row:hover .k-picker-keep, .k-picker-keep:focus-visible, .k-picker-keep[aria-pressed="true"] { opacity: 1; }
 .k-picker-keep[aria-pressed="true"] { color: var(--fg); }
 /* Beside the conversation when the helm has room for both columns (rail.ts
@@ -1096,12 +1096,12 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-settings-jump { display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.625rem 1rem; text-align: left; }
 .k-settings-jump:hover { background: var(--hover); }
 .k-settings-jump:focus-visible { outline-offset: -2px; }
-.k-settings-jump-icon { display: grid; place-items: center; flex-shrink: 0; width: 2rem; height: var(--spacing-ctl-lg); border-radius: 0.25rem; background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg); }
+.k-settings-jump-icon { display: grid; place-items: center; flex-shrink: 0; width: 2rem; height: var(--spacing-ctl-lg); border-radius: var(--radius-md); background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg); }
 .k-settings-jump-group, .k-settings-jump-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k-settings-jump-group { line-height: 1.2; }
 .k-settings-jump-label { font-weight: 700; font-size: var(--text-head); line-height: 1.25; letter-spacing: -0.02em; color: var(--fg); }
 .k-settings-jump-hint { flex-shrink: 0; font-size: var(--text-caption); color: var(--muted); }
-.k-settings-jump-mark { flex-shrink: 0; width: 1rem; height: 1rem; color: var(--muted); transition: transform 160ms var(--ease-out); }
+.k-settings-jump-mark { flex-shrink: 0; width: 1rem; height: 1rem; color: var(--muted); transition: transform var(--dur-move) var(--ease-out); }
 .k-settings-jump[aria-expanded="true"] .k-settings-jump-mark { transform: rotate(180deg); }
 /* A page too narrow for the head's words keeps the title whole: Back is its arrow. */
 @container settings (max-width: 16rem) { .k-settings-back-word { display: none; } }
@@ -1109,14 +1109,14 @@ html[data-resizing] iframe { pointer-events: none; }
 @container settings (max-width: 22rem) { .k-settings-jump-hint { display: none; } }
 .k-settings-sections { display: none; flex-direction: column; flex: 1; min-height: 0; border-top: 1px solid var(--line); }
 .k-settings-rail[data-open] .k-settings-sections { display: flex; }
-.k-settings-find { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; height: 2.5rem; margin: 0.75rem 0.75rem 0.25rem; padding: 0 0.625rem; border: 1px solid var(--line); border-radius: 0.25rem; background: var(--raised); font-size: var(--text-ui); }
+.k-settings-find { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; height: 2.5rem; margin: 0.75rem 0.75rem 0.25rem; padding: 0 0.625rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); font-size: var(--text-ui); }
 /* The field takes the press over its whole height. */
 .k-settings-find input { height: 100%; }
 /* Under the keyboard the field wears the focus ring of the theme. */
 .k-settings-find:focus-within { border-color: transparent; box-shadow: 0 0 0 2px var(--ring); }
 .k-settings-nav { display: flex; flex-direction: column; gap: 1px; flex: 1; min-height: 0; overflow-y: auto; padding: 0 0.75rem 1rem; }
 .k-settings-group { padding: 0.875rem 0.625rem 0.25rem; }
-.k-settings-nav > button { height: 2.5rem; border-radius: 0.25rem; scroll-margin-block: 1rem; }
+.k-settings-nav > button { height: 2.5rem; border-radius: var(--radius-md); scroll-margin-block: 1rem; }
 .k-settings-nav > button[aria-current] > span { color: var(--fg); }
 .k-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .k-settings-rail[data-open] + .k-settings-scroll { display: none; }
@@ -1139,7 +1139,7 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-settings-body > h2 { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; font-size: var(--text-display); font-weight: 700; }
 }
 /* Cards are flat instrument panels; a row's label leads, its hint is quiet. */
-.k-card { border-radius: 0.3125rem; box-shadow: none; border-color: var(--line); }
+.k-card { border-radius: var(--radius-md); box-shadow: none; border-color: var(--line); }
 /* A gap above a card that is not the first, and above what follows a card.
    What follows one says so itself (k-after-card): ".k-card + *" would do it
    for anything, at the cost the note on sibling rules in styles.css tells. */
@@ -1166,9 +1166,9 @@ html[data-resizing] iframe { pointer-events: none; }
 /* ---------- Turn notes: memory, hooks, restarts, folded onto the footer ---------- */
 .k-notes { display: inline-flex; align-items: center; gap: 0.25rem; margin-left: 0.5rem; }
 .k-note-chip-wrap { display: inline-flex; }
-.k-note-chip { display: inline-flex; align-items: center; gap: 0.25rem; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: 0.1875rem; font-weight: 500; font-size: var(--text-micro); line-height: 1; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
+.k-note-chip { display: inline-flex; align-items: center; gap: 0.25rem; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 500; font-size: var(--text-micro); line-height: 1; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
 button.k-note-chip:hover, button.k-note-chip[data-popup-open] { color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.k-note-pop { width: min(36rem, 90vw); max-height: 50vh; overflow: auto; padding: 0.625rem 0.75rem; border-radius: 0.3125rem; border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
+.k-note-pop { width: min(36rem, 90vw); max-height: 50vh; overflow: auto; padding: 0.625rem 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
 .k-note-pop-head { margin-bottom: 0.375rem; }
 /* A turn's footer wraps whole items on a narrow station instead of breaking words. */
 div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row-gap: 2px; }
@@ -1177,32 +1177,32 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 
 /* ---------- Cards, each saying what it wants from the owner ---------- */
 /* A secret the model asks for: it waits on them, so it is violet like an approval; the value is set in mono. */
-.k-secret-request { border-radius: 0.3125rem; border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 12%, transparent); background: var(--raised); }
-.k-secret-request input { font-family: var(--font-mono); letter-spacing: 0.08em; border-radius: 0.1875rem; }
-.k-secret-give { border-radius: 0.1875rem; }
+.k-secret-request { border-radius: var(--radius-md); border: 1.5px solid var(--st-need); box-shadow: 0 0 0 4px color-mix(in oklch, var(--st-need) 12%, transparent); background: var(--raised); }
+.k-secret-request input { font-family: var(--font-mono); letter-spacing: 0.08em; border-radius: var(--radius-sm); }
+.k-secret-give { border-radius: var(--radius-sm); }
 /* A secret caught in a message: handled already, worth a look. An amber edge, no alarm. */
-.k-secret-found { border-radius: 0.25rem; box-shadow: none; border-left: 0.1875rem solid var(--st-work); }
+.k-secret-found { border-radius: var(--radius-md); box-shadow: none; border-left: 0.1875rem solid var(--st-work); }
 /* No provider yet: an unconnected instrument. Dashed frame, amber edge, the failing provider's name in mono. */
-.k-setup-providers { border-radius: 0.3125rem; border: 1px dashed var(--line-strong); border-left: 0.1875rem solid var(--st-work); background: var(--raised); box-shadow: none; }
+.k-setup-providers { border-radius: var(--radius-md); border: 1px dashed var(--line-strong); border-left: 0.1875rem solid var(--st-work); background: var(--raised); box-shadow: none; }
 .k-setup-failing { font-size: var(--text-caption); }
 /* Starters: four plain switches, not pills. */
-.k-starter { border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-ui); }
+.k-starter { border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-ui); }
 .k-starter:hover { box-shadow: inset 0 0 0 1px var(--line-strong), inset 3px 0 0 var(--fg); }
 .k-first-steps { color: var(--muted); }
 /* Plan: done steps take the done color, the one in progress the work color. */
 .k-plan [data-status="completed"] svg { color: var(--st-done); }
 .k-plan [data-status="in_progress"] svg { color: var(--st-work); }
 /* Review: the reviewer's report is an instrument panel; each finding has an edge, one to act on is stronger. */
-.k-review, .k-reviewer { border-radius: 0.25rem; box-shadow: none; }
-.k-finding { border-radius: 0.1875rem; box-shadow: inset 3px 0 0 var(--line-strong); padding-left: 0.625rem; }
+.k-review, .k-reviewer { border-radius: var(--radius-md); box-shadow: none; }
+.k-finding { border-radius: var(--radius-sm); box-shadow: inset 3px 0 0 var(--line-strong); padding-left: 0.625rem; }
 .k-finding:has(input:checked) { box-shadow: inset 3px 0 0 var(--st-need); }
-.k-findings-fix { border-radius: 0.1875rem; }
+.k-findings-fix { border-radius: var(--radius-sm); }
 /* Trust: a held file waits on them (violet); quarantine is a safety catch (red); trusted files are quiet. */
-.k-held-file { border-radius: 0.25rem; box-shadow: inset 3px 0 0 var(--st-need); }
-.k-quarantine-batch { border-radius: 0.25rem; box-shadow: inset 3px 0 0 var(--st-fail); }
+.k-held-file { border-radius: var(--radius-md); box-shadow: inset 3px 0 0 var(--st-need); }
+.k-quarantine-batch { border-radius: var(--radius-md); box-shadow: inset 3px 0 0 var(--st-fail); }
 .k-trusted-files { color: var(--muted); }
 /* Approvals a subagent waits on, in the parent's station: the same violet. */
-.k-child-approvals > * { border-radius: 0.3125rem; }
+.k-child-approvals > * { border-radius: var(--radius-md); }
 /* An agent's report row: after the title and the state word, what is left of the line. It is cut at its
    end while its first words have room, and goes whole where they have not (an empty first item lets it wrap out of sight). */
 .k-report-rest { display: flex; flex-wrap: wrap; flex: 1 1 0; min-width: 0; height: 1.25rem; overflow: hidden; }
@@ -1221,7 +1221,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-alert-icon svg { width: 0.9375rem; height: 0.9375rem; }
 .k-alert-icon[data-read] { color: color-mix(in oklch, var(--k-st) 45%, var(--faint)); }
 .k-inbox-count {
-  min-width: 1rem; height: 1rem; padding: 0 0.3125rem; border-radius: 0.5rem;
+  min-width: 1rem; height: 1rem; padding: 0 0.3125rem; border-radius: 999px;
   font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--k-st);
 }
 .k-inbox-count[data-watch="idle"] { background: var(--accent); }

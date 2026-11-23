@@ -99,6 +99,11 @@
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --series-3: #1baf7a;
+
+  /* Motion lengths (the curve and their jobs are with the theme below). */
+  --dur-quick: 120ms;
+  --dur-move: 180ms;
+  --dur-settle: 320ms;
 }
 .dark {
   --bg: oklch(0.205 0.016 255);
@@ -240,18 +245,29 @@
   /* A finger's target on a phone: 44 px at the default text size (see "A finger's target" below). */
   --spacing-tap: 2.75rem;
 
-  /* Instrument corners: small and few. */
+  /* Instrument corners: three steps and a hairline, each a size a reader tells apart.
+     xs: a mark or a key. sm: what sits inside a control (a chosen option, a chip).
+     md: a control, a field, a card, a block. xl: what floats (a menu, a dialog, a toast).
+     lg and 2xl are the names classes already use for md and xl: one corner per job, not
+     two that differ by a pixel. No stylesheet writes a corner of its own
+     (src/ui-conventions.test.ts). */
   --radius-xs: 2px;
   --radius-sm: 0.1875rem;
-  --radius-md: 0.25rem;
-  --radius-lg: 0.3125rem;
-  --radius-xl: 0.4375rem;
-  --radius-2xl: 0.5rem;
+  --radius-md: 0.3125rem;
+  --radius-lg: var(--radius-md);
+  --radius-xl: 0.5rem;
+  --radius-2xl: var(--radius-xl);
 
+  /* Motion: one curve and three lengths. quick: a hover, a color, a fade of a control.
+     move: something arrives or changes place (a popup, a row, a card). settle: a surface
+     slides or a notice fades out of the way (the lengths are in :root). Utilities without a
+     length take quick. */
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-spring: cubic-bezier(0.3, 1.3, 0.5, 1);
-  --animate-in: fade-up 180ms var(--ease-out);
-  --animate-pop: pop 160ms var(--ease-out);
+  --default-transition-duration: var(--dur-quick);
+  --default-transition-timing-function: var(--ease-out);
+  --animate-in: fade-up var(--dur-move) var(--ease-out);
+  --animate-pop: pop var(--dur-move) var(--ease-out);
   --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
 }
 
@@ -291,8 +307,15 @@
 .k-face-title, .text-display, .text-title, .k-page h1, .k-brand-name, .k-surface-title, .k-settings-jump-label, .k-reader-title h3 {
   font-family: var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.02em;
 }
+/* At a page's size the narrow face is drawn at a book weight: bold it read as a stamp. A surface's
+   head (.k-surface-title) keeps the one weight every surface shares. */
+:is(.text-display, .text-title, .k-page h1):not(.k-surface-title) { font-weight: 500; }
 /* 5. A key of the keyboard. */
 kbd { font-family: var(--font-inst); font-stretch: 75%; }
+/* A shortcut is one chord, not a row of keycaps: its keys sit in one hairline outline, a
+   thin space apart, in the quietest ink. It is a hint beside a name, never louder than it. */
+.k-keys { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.125rem; padding: 0 0.3125rem; border-radius: var(--radius-xs); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--text-micro); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--faint); }
+.k-keys > kbd { font-size: inherit; font-weight: inherit; }
 
 html, body, #root { height: 100%; }
 /* Every length in the interface is a rem: the text size the owner picks
@@ -322,7 +345,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .k-seg > button {
   display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 0.375rem; height: var(--spacing-ctl-sm); min-width: var(--spacing-ctl-sm); padding: 0 0.625rem;
   border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--muted); cursor: default;
-  transition: color 120ms var(--ease-out), background-color 120ms var(--ease-out);
+  transition: color var(--dur-quick) var(--ease-out), background-color var(--dur-quick) var(--ease-out);
 }
 .k-seg > button:hover { color: var(--fg); }
 .k-seg > button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-strong); }
@@ -357,7 +380,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .k-diff-fold:hover { color: var(--fg); background: color-mix(in oklab, var(--accent-soft) 70%, transparent); }
 /* Under a call's line the block has no head: what the head offers sits in its corner, shown when pointed at. */
 .k-diff-file[data-bare] { position: relative; }
-.k-diff-corner { position: absolute; top: 0.125rem; right: 0.125rem; z-index: 2; display: flex; border-radius: var(--radius-sm); background: var(--raised); opacity: 0; transition: opacity 120ms; }
+.k-diff-corner { position: absolute; top: 0.125rem; right: 0.125rem; z-index: 2; display: flex; border-radius: var(--radius-sm); background: var(--raised); opacity: 0; transition: opacity var(--dur-quick); }
 .k-diff-file[data-bare]:is(:hover, :focus-within) > .k-diff-corner, .k-diff-corner:has([data-copied], [data-failed]) { opacity: 1; }
 @media (hover: none) { .k-diff-corner { opacity: 1; } }
 table[data-plain] .k-diff-no { display: none; }
@@ -599,7 +622,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .k-copy[data-copied] { color: var(--ok); }
 .k-copy[data-failed], .k-copy[data-failed]:hover { color: var(--danger); background: var(--danger-soft); }
 .k-copyable { position: relative; }
-.k-copy-corner { position: absolute; top: 0.25rem; right: 0.25rem; z-index: 1; background: var(--code-bg); opacity: 0; transition: opacity 120ms; }
+.k-copy-corner { position: absolute; top: 0.25rem; right: 0.25rem; z-index: 1; background: var(--code-bg); opacity: 0; transition: opacity var(--dur-quick); }
 .k-copyable:hover > .k-copy-corner, .k-copy-corner:focus-visible, .k-copy-corner[data-copied], .k-copy-corner[data-failed] { opacity: 1; }
 @media (hover: none) { .k-copy-corner { opacity: 1; } }
 .code-block pre { margin: 0; padding: 0.75rem 0.875rem; overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-ui); line-height: 1.6; tab-size: 2; }
@@ -623,7 +646,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    failed, waits) and Resume stay. The row keeps its height, so nothing moves when it shows. */
 .row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
 .row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason) { opacity: 0; }
-.k-turn-foot > *, .k-turn-end > * { transition: opacity 120ms var(--ease-out); }
+.k-turn-foot > *, .k-turn-end > * { transition: opacity var(--dur-quick) var(--ease-out); }
 @media (hover: none) { .k-turn-foot > *, .k-turn-end > * { opacity: 1 !important; } }
 
 /* The cards above the message box (Composer's Tray): an edge fades where more is scrolled out of view. */
