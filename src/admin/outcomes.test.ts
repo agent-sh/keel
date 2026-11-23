@@ -129,7 +129,7 @@ test("a turn's end reads rows without an id by its time range, and the next turn
     const noId = seen.filter((q) => /turn_event IS NULL/.test(q));
     const [tools, calls] = [noId.find((q) => q.includes("telemetry_tools"))!, noId.find((q) => q.includes("telemetry_calls"))!];
     // The time range and the session's own rows, never every row without an id; no look at the events per row.
-    expect(plan(tools)).toContain("telemetry_tools_ts");
+    expect(plan(tools)).toContain("telemetry_tools_session");
     expect(plan(tools)).not.toContain("telemetry_tools_turn");
     expect(plan(calls)).toContain("telemetry_calls_session");
     expect(plan(calls)).not.toContain("telemetry_calls_turn");

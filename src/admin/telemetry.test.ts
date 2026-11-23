@@ -364,3 +364,11 @@ test("a report is answered from the kept one while the ledger is read again, and
   const quick = await t.report(q());
   expect([quick.refreshing, quick.total.calls]).toEqual([undefined, 6_660]);
 }));
+
+test("a session's last runs of one tool are read by an index, not by a walk of every tool run", () => withStore((store) => {
+  new Telemetry(store, new Bus());
+  // The statement each tool step of a turn runs on the loop (src/engine/turn.ts toolShape).
+  const plan = store.db.query<{ detail: string }, [string, string]>("EXPLAIN QUERY PLAN SELECT ms FROM telemetry_tools WHERE session_id = ? AND tool = ? AND ms IS NOT NULL ORDER BY ts DESC LIMIT 20").all("s", "Bash").map((r) => r.detail).join("; ");
+  expect(plan).toContain("USING INDEX telemetry_tools_session (session_id=?)");
+  expect(plan).not.toContain("TEMP B-TREE");
+}));

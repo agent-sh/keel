@@ -166,6 +166,10 @@ export class Telemetry {
     store.migrate("CREATE INDEX IF NOT EXISTS telemetry_calls_session ON telemetry_calls(session_id, ts)");
     // A turn's rollup reads its own requests and tool runs by the turn's id.
     store.migrate("CREATE INDEX IF NOT EXISTS telemetry_calls_turn ON telemetry_calls(turn_event); CREATE INDEX IF NOT EXISTS telemetry_tools_turn ON telemetry_tools(turn_event)");
+    // Each tool step reads the session's last runs of that tool on the loop (src/engine/turn.ts
+    // toolShape): without a session index it walks every tool run back from the newest (a 2.2 s
+    // stall live). A turn's rollup reads the session's rows of its time range by it too (outcomes.ts).
+    store.migrate("CREATE INDEX IF NOT EXISTS telemetry_tools_session ON telemetry_tools(session_id, ts)");
     this.backfill();
     void bus;
     registerHooks({
