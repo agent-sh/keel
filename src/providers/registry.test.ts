@@ -267,3 +267,23 @@ test("a provider with no key is not set up: nothing failed and no key was refuse
     delete process.env[env];
   }
 });
+
+// The catalog's interleaved field is a fact of the model: it reaches the
+// request the driver gets, where the Chat Completions wire reads it.
+test("the field a model reads its earlier reasoning from reaches the driver's request", async () => {
+  const f = fake("plug");
+  let seen: any;
+  f.p.stream = async (req) => { seen = req; return { blocks: [], usage: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: req.model } as any; };
+  const r = make(dir(), [f.p]);
+  (r.catalog as any).byId.set("thinker", { id: "thinker", name: "Thinker", interleaved: "reasoning_content" });
+  const a = r.refresh("plug");
+  await Bun.sleep(0);
+  f.calls[0]!.resolve([{ model: "thinker" }, { model: "plain" }]);
+  await a;
+  for (const [model, want] of [["thinker", "reasoning_content"], ["plain", undefined]] as const) {
+    const { provider, info } = await r.resolve(`plug:${model}`);
+    expect(info.interleaved).toBe(want);
+    await provider.stream({ model, system: "", messages: [], tools: [], signal: new AbortController().signal }, () => {});
+    expect(seen.interleaved).toBe(want);
+  }
+});

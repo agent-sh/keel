@@ -21,6 +21,10 @@ export type CatalogEntry = {
   pdf?: boolean;
   price?: Price;
   speeds?: SpeedOffer[];
+  // The message field the model reads its earlier reasoning from when it
+  // reasons between tool calls (models.dev `interleaved.field`), e.g.
+  // reasoning_content.
+  interleaved?: string;
 };
 
 const num = (x: any) => typeof x === "number";
@@ -72,6 +76,7 @@ function entry(id: string, m: any): CatalogEntry {
     pdf: m.modalities?.input?.includes("pdf"),
     price: priceOf(c),
     speeds: speedsOf(m),
+    interleaved: typeof m.interleaved?.field === "string" ? m.interleaved.field : undefined,
   };
 }
 

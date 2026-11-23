@@ -13,6 +13,7 @@ export type ChatOpts = {
   effortField?: "reasoning_effort" | "reasoning";
   // Thinking text replayed as `reasoning_content` on the assistant message
   // that wrote it (Kimi, GLM and DeepSeek ask for it on tool-call steps).
+  // Also when the model's catalog entry names the field (req.interleaved).
   replayReasoning?: boolean;
   extraBody?: Record<string, unknown>;
   sendMaxTokens?: boolean;
@@ -46,9 +47,15 @@ export function chatBody(req: ProviderRequest, ctx: WireCtx, o: ChatOpts = {}, s
       }));
       const msg: any = { role: "assistant", content: text || null };
       if (calls.length) msg.tool_calls = calls;
-      if (o.replayReasoning) {
-        const r = m.content.filter((b) => b.type === "thinking").map((b: any) => b.thinking).join("");
-        if (r) msg.reasoning_content = r;
+      // An assistant message with no thinking of this model's (another model
+      // wrote it, or a compaction did) still carries the field, empty: with
+      // thinking on, Moonshot refuses a tool-call message without it ("thinking
+      // is enabled but reasoning_content is missing in assistant tool call
+      // message at index N"), and DeepSeek wants it on every earlier message
+      // of a request with tools, else a 400 (api-docs.deepseek.com, Thinking
+      // Mode, Tool Calls).
+      if (o.replayReasoning || req.interleaved === "reasoning_content") {
+        msg.reasoning_content = m.content.filter((b) => b.type === "thinking").map((b: any) => b.thinking).join("");
       }
       if (msg.content !== null || calls.length) messages.push(msg);
       continue;

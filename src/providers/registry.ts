@@ -369,6 +369,8 @@ export class Providers {
       ...(Object.keys(known_from).length ? { known_from } : {}),
       // The listing's own offers win; else the route's catalog section's.
       speeds: m.speeds ?? own?.speeds,
+      // A fact of the model, so another route's entry of it holds too.
+      interleaved: (own ?? c)?.interleaved,
     };
   }
 
@@ -545,7 +547,7 @@ export class Providers {
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
-            ...req, onHeaders, onAnswer, efforts: info.efforts, maxTokens: info.output || undefined,
+            ...req, onHeaders, onAnswer, efforts: info.efforts, maxTokens: info.output || undefined, interleaved: info.interleaved,
             extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
           }, (d) => { onAnswer(); onDelta(d); });

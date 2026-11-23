@@ -61,6 +61,8 @@ export type ProviderRequest = {
   route?: string;
   // Filled by the registry from the listing: the levels the model takes.
   efforts?: string[];
+  // Filled by the registry from the catalog: ModelInfo.interleaved.
+  interleaved?: string;
   // The session's speed choice (a SpeedOffer id); the registry turns it into
   // the body fields and headers of that offer.
   speed?: string;
@@ -175,6 +177,10 @@ export type ModelInfo = {
   // Where each known capability came from.
   known_from?: Partial<Record<"tools" | "images" | "reasoning" | "caching", "owner" | "probe" | "listing" | "catalog">>;
   speeds?: SpeedOffer[];
+  // The message field the model reads its earlier reasoning from (the
+  // catalog's `interleaved.field`): a Chat Completions request carries it on
+  // every assistant message (src/providers/wires/chat.ts).
+  interleaved?: string;
 };
 
 export type ProviderStatus = {
