@@ -137,6 +137,20 @@ class WireTest {
         assertTrue(rootOf(byId, "x") in setOf("x", "y"))
     }
 
+    @Test fun whenThePhoneWasLastLevelIsSaidInItsOwnTime() {
+        val z = java.time.ZoneId.of("Asia/Jerusalem")
+        val now = java.time.ZonedDateTime.of(2026, 11, 23, 18, 5, 0, 0, z).toInstant().toEpochMilli()
+        fun at(d: Int, h: Int, m: Int) = java.time.ZonedDateTime.of(2026, 11, d, h, m, 0, 0, z).toInstant().toEpochMilli()
+        assertEquals("14:32", syncedAt(at(23, 14, 32), now, z))
+        assertEquals("Sat 09:05", syncedAt(at(21, 9, 5), now, z))
+        assertEquals("2 Nov 23:59", syncedAt(at(2, 23, 59), now, z))
+        // Out of reach is said once, in words; anything else as it came.
+        assertEquals(OUT_OF_REACH, reach(java.net.ConnectException("Failed to connect to /10.0.2.2:49085")))
+        assertEquals(OUT_OF_REACH, reach(java.net.UnknownHostException("desk.example")))
+        assertEquals(OUT_OF_REACH, reach(java.net.SocketTimeoutException("timeout")))
+        assertEquals("bad signature", reach(ApiError(401, "bad signature")))
+    }
+
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))

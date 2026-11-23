@@ -466,6 +466,57 @@ fun diffLines(diff: String): List<DiffLine> {
     return out
 }
 
+// --- what the phone keeps of the daemon, written back in the daemon's own shapes -----------
+// The last sync is kept on the phone (Feed.snapshot) as a sync answer: each value written here is
+// read again by its own `of`, so what is kept and what is read are one contract (WireTest checks
+// every example of the wire round trip).
+
+private fun JSONObject.opt(k: String, v: String) = apply { if (v.isNotEmpty()) put(k, v) }
+
+fun Chat.json(): JSONObject = JSONObject().put("id", id).put("title", title).put("status", status).put("updated", updated).put("unread", unread)
+    .put("pinned", if (pinned) 1 else 0).put("archived", if (archived) 1 else 0).put("preview", preview).put("last_role", lastRole)
+    .put("parent_id", parentId ?: JSONObject.NULL).opt("failure", failure).put("created", created).put("agents", agents).opt("state_word", stateWord)
+
+fun Attachment.json(): JSONObject = JSONObject().put("kind", kind).put("media", media).put("mime", mime).opt("file_name", fileName).apply { if (size > 0) put("size", size) }
+
+fun Msg.json(): JSONObject {
+    val meta = JSONObject().opt("model", model).opt("outcome", outcome).opt("card", cardKind).opt("command", cardCommand).opt("state", cardState).opt("origin", origin)
+    if (steps.isNotEmpty()) meta.put("steps", JSONArray(steps.map { JSONObject().put("tool", it.tool).put("what", it.what) }))
+    if (approvalId != null) meta.put("approval_id", approvalId)
+    if (attachments.isNotEmpty()) meta.put("attachments", JSONArray(attachments.map { it.json() }))
+    return JSONObject().put("id", id).put("chat_id", chatId).put("role", role).put("kind", kind).put("content", content).put("ts", ts).put("meta", meta)
+}
+
+fun Card.json(): JSONObject = JSONObject().put("id", id).put("chat_id", chatId).put("kind", kind).put("command", command).put("description", description)
+    .put("actions", JSONArray(actions.map { JSONArray(listOf(it.label, it.choice, it.style)) })).put("state", state).put("choice", choice ?: JSONObject.NULL).put("ts", ts)
+    .put("questions", JSONArray(questions.map { q -> JSONObject().put("id", q.id).put("question", q.question).put("options", JSONArray(q.options)).put("multi", q.multi) }))
+    .apply { if (answers.isNotEmpty()) put("answers", JSONObject().apply { answers.forEach { (k, v) -> put(k, JSONObject().put("picked", JSONArray(v))) } }) }
+    .opt("text", text).apply { if (notes.isNotEmpty()) put("notes", JSONArray(notes)) }.put("cut", cut).put("total", total ?: JSONObject.NULL).put("lines", lines)
+    .apply { if (hold.isNotEmpty()) put("hold", JSONArray(hold)) }.put("rtl", rtl).opt("machine", machine).opt("from", from).opt("line", line).put("glance", glance)
+    .apply { if (grants.isNotEmpty()) put("grants", JSONArray(grants)) }
+
+/** "14:32" today, "Mon 14:32" this week, else "23 Nov 14:32": when the phone was last level with the computer, in its own time. */
+fun syncedAt(ms: Long, now: Long = System.currentTimeMillis(), zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
+    val t = java.time.Instant.ofEpochMilli(ms).atZone(zone)
+    val today = java.time.Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+    val hm = "%02d:%02d".format(t.hour, t.minute)
+    return when {
+        t.toLocalDate() == today -> hm
+        t.toLocalDate().isAfter(today.minusDays(7)) -> "${t.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.ENGLISH)} $hm"
+        else -> "${t.dayOfMonth} ${t.month.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.ENGLISH)} $hm"
+    }
+}
+
+/**
+ * What a failed request means to the owner: the computer cannot be reached from here (no network, the
+ * address does not answer, it took too long), said once in plain words; anything else as it came.
+ */
+const val OUT_OF_REACH = "The computer is out of reach"
+fun reach(e: Throwable): String = when (e) {
+    is java.net.UnknownHostException, is java.net.ConnectException, is java.net.NoRouteToHostException, is java.io.InterruptedIOException -> OUT_OF_REACH
+    else -> if (e.message?.contains("Failed to connect", ignoreCase = true) == true || e.message?.contains("Unable to resolve host") == true) OUT_OF_REACH else e.message ?: e.javaClass.simpleName
+}
+
 /** How an unpairing ended: whether the daemon revoked this phone, and what the owner is told. */
 data class Unpaired(val revoked: Boolean, val note: String)
 

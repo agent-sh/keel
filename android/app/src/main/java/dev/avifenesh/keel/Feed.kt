@@ -63,6 +63,29 @@ class Feed {
         working.value = emptyMap(); drafts.value = emptyMap(); synced.value = false
     }
 
+    /**
+     * What the phone keeps of the daemon between runs, as a sync answer: every chat's row, the open and
+     * recent cards, and the newest messages of the chats most recently active (and of every chat a card
+     * waits in), with the cursor they are level at. Read back by `sync`, so a cold start shows it at once
+     * and its stream opens from that cursor. Null until the phone has been level once.
+     */
+    @Synchronized fun snapshot(chatsKept: Int = 30, perChat: Int = 60): JSONObject? {
+        if (!synced.value || cursor == 0L) return null
+        val keep = chats.value.values.sortedByDescending { it.updated }.take(chatsKept).map { it.id }.toSet() + cards.value.values.filter { it.pending }.map { it.chatId }
+        val kept = msgs.value.filterKeys { it in keep }.values.flatMap { it.takeLast(perChat) }
+        return JSONObject().put("seq", cursor).put("complete", true)
+            .put("chats", JSONArray(chats.value.values.map { it.json() }))
+            .put("messages", JSONArray(kept.map { it.json() }))
+            .put("approvals", JSONArray(cards.value.values.map { it.json() }))
+    }
+
+    /** The kept snapshot, read into an empty feed; nothing when the feed holds anything already. */
+    @Synchronized fun restore(o: JSONObject): Boolean {
+        if (cursor != 0L || chats.value.isNotEmpty()) return false
+        sync(o)
+        return true
+    }
+
     /** A stream closed: what waited for its catch-up is dropped with it; the next stream starts from the cursor. */
     @Synchronized fun closed() { catching = false; held.clear(); streamSyncs = false; broken = null }
 

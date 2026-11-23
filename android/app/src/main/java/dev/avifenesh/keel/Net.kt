@@ -64,6 +64,19 @@ object Prefs {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         return g.generateKey()
     }
+    /** Bytes sealed with the same non-exportable key as the token: the IV, then the AES-GCM ciphertext. */
+    @Synchronized fun seal(plain: ByteArray): ByteArray {
+        val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, aes()) }
+        return c.iv + c.doFinal(plain)
+    }
+    /** What `seal` sealed, or null when it cannot be opened (another key, damaged bytes). */
+    @Synchronized fun unseal(b: ByteArray): ByteArray? = runCatching {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE, aes(), GCMParameterSpec(128, b, 0, 12))
+        c.doFinal(b, 12, b.size - 12)
+    }.getOrNull()
+    /** When the phone was last level with the computer (ms), kept with the last sync. */
+    var levelAt: Long get() = sp.getLong("level_at", 0L); set(v) { sp.edit().putLong("level_at", v).apply() }
     @Synchronized private fun setSec(k: String, v: String?) {
         val sealed = v?.let {
             val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, aes()) }

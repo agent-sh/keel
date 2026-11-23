@@ -99,6 +99,18 @@ read (HEIC, AVIF), is written as JPEG at that edge first; a PNG stays PNG.
 Send waits for every pick to be stored. The sent message shows its photos as
 pictures (a tap opens one whole) and its files by name and size.
 
+## Offline
+
+The phone keeps its last sync: every session's row, the open cards, and the
+newest messages of the recent sessions, with the place in the daemon's events
+it is level at. It sits in the app's private files, sealed with the same
+Keystore key as the token, excluded from backup and device transfer, and is
+deleted on unpairing. A cold start shows it at once, says
+"Offline · last synced 14:32" while the computer is out of reach, and opens
+the stream from that place, so only what changed since comes over the
+network. Running turns are not kept: a cold start never says a turn runs
+that it cannot see.
+
 ## Push
 
 Push is optional. Without it the app keeps a live event stream while it is open
@@ -179,6 +191,7 @@ so it proves nothing about who built it.
 | `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
 | `ui/Agents.kt` | a session's agents, as a tree |
 | `ui/Changes.kt` | a session's changes and one file's diff |
+| `Cache.kt` | the last sync kept on the phone, sealed |
 | `Attach.kt` | what is picked for the next message: read, fitted, uploaded; the transcript's images |
 | `Approve.kt` | the biometric approval and the lock-screen approve activity |
 | `Push.kt` | notifications, Firebase push, the background check |

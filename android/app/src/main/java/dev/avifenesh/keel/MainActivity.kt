@@ -22,6 +22,7 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         Prefs.init(this)
+        Cache.init(this)
         Notify.channels(this)
         if (Prefs.paired && Prefs.pushState != "on") Push.schedule(this)
     }
@@ -66,6 +67,8 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         Ui.paired.value = Prefs.paired
         Ui.theme.intValue = Prefs.theme
+        // What the phone last held, at once: the stream catches up from there.
+        Hub.scope.launch { Hub.restore() }
         handle(intent)
         setContent { KeelTheme(Ui.theme.intValue) { Root(this) } }
     }

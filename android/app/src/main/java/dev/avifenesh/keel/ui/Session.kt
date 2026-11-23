@@ -104,7 +104,16 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
     val draft = drafts[id].orEmpty()
 
     // Again when the app dropped what it held and read the daemon whole (its cursor could not be caught up from).
-    LaunchedEffect(id, reloads) { runCatching { Hub.open(id) }.onFailure { error = it.message ?: "Could not load the session" } }
+    // Offline, what the phone last synced of it stays, and says it is that.
+    LaunchedEffect(id, reloads) {
+        runCatching { Hub.open(id) }.onSuccess { error = "" }.onFailure {
+            val why = dev.avifenesh.keel.reach(it)
+            error = if (why == dev.avifenesh.keel.OUT_OF_REACH && Hub.msgs.value[id].orEmpty().isNotEmpty()) "Offline. This is what the phone last synced; it catches up when the computer is in reach." else why
+        }
+    }
+    // Back in reach: read it again.
+    val c by Hub.conn.collectAsState()
+    LaunchedEffect(id, c) { if (c == dev.avifenesh.keel.Conn.LIVE && error.isNotBlank()) runCatching { Hub.open(id) }.onSuccess { error = "" } }
     // Read as it arrives while open.
     LaunchedEffect(id, msgs.size) { if (msgs.isNotEmpty()) runCatching { dev.avifenesh.keel.Api.post("/v1/chats/$id/read") } }
 
@@ -123,7 +132,8 @@ fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
         // Its agents, and its starter when it is one: one line until opened.
         AgentsBar(id, chats, cards.values.filter { it.pending }.map { it.chatId }.toSet(), working, now) { Ui.openFrom(it, Route.Session(id, back)) }
         usage?.let { Txt(it, T.meta, k.muted, Modifier.fillMaxWidth().background(k.panel).padding(horizontal = S.lg, vertical = 8.dp)) }
-        if (error.isNotBlank()) Notice(error, modifier = Modifier.padding(S.md))
+        // Offline is a state, not a failure: said in the quiet color.
+        if (error.isNotBlank()) Notice(error, color = if (error.startsWith("Offline.")) k.muted else k.danger, modifier = Modifier.padding(S.md))
         val items = msgs.filter { it.kind != "deleted" }
         val newest = items.lastOrNull()
         FollowingList(newest?.id, newest?.mine == true, draft.length, Modifier.weight(1f).fillMaxWidth()) {
@@ -327,7 +337,7 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
                 .onSuccess {
                     text = ""; keptId = ""; keptText = ""; keptKey = ""; onError("")
                     Attach.sent(id, sending)
-                }.onFailure { onError(it.message ?: "Not sent") }
+                }.onFailure { onError(dev.avifenesh.keel.reach(it).let { w -> if (w == dev.avifenesh.keel.OUT_OF_REACH) "Not sent: the computer is out of reach. Send it again when it is." else w }) }
             busy = false
         }
     }

@@ -45,17 +45,49 @@ object Hub {
     // Why this app closed the stream itself (a frame it could not apply): shown while it reconnects.
     @Volatile private var broke: String? = null
     private val kick = Channel<Unit>(Channel.CONFLATED)
+    /** When the phone was last level with the computer (ms, 0: never): said while it is not. */
+    val levelAt = MutableStateFlow(0L)
+    // The last sync kept on the phone (Cache): read once into an empty feed, written a few seconds after
+    // what is held changed, and when the app goes to the back.
+    @Volatile private var restored = false
+    @Volatile private var dirty = false
+    private var saver: Job? = null
+
+    /** The kept last sync, shown at once on a cold start; the stream then opens from its cursor. */
+    fun restore() {
+        if (restored || !Prefs.paired) return
+        restored = true
+        levelAt.value = Prefs.levelAt
+        runCatching { Cache.load()?.let { feed.restore(it) } }
+    }
+
+    /** What is held now, kept for the next cold start. */
+    fun keep() {
+        if (!dirty) return
+        dirty = false
+        runCatching { feed.snapshot()?.let { Cache.save(it); Prefs.levelAt = levelAt.value } }
+    }
+    private fun changed() {
+        dirty = true
+        levelAt.value = System.currentTimeMillis()
+        if (saver?.isActive == true) return
+        saver = scope.launch { kotlinx.coroutines.delay(5_000); keep() }
+    }
 
     fun start() {
         if (!Prefs.paired || live?.isActive == true) return
-        live = scope.launch { loop() }
+        live = scope.launch { restore(); loop() }
     }
-    fun stop() { live?.cancel(); live = null; if (conn.value != Conn.REVOKED) conn.value = Conn.OFF }
+    fun stop() {
+        live?.cancel(); live = null; if (conn.value != Conn.REVOKED) conn.value = Conn.OFF
+        scope.launch { keep() }
+    }
     /** The network came back or the app came to the front: retry now. */
     fun nudge() { kick.trySend(Unit) }
 
     fun reset() {
-        stop(); feed.clear()
+        live?.cancel(); live = null; saver?.cancel(); dirty = false
+        feed.clear(); runCatching { Cache.clear() }; levelAt.value = 0L
         note.value = ""; conn.value = Conn.OFF
     }
 
@@ -73,7 +105,7 @@ object Hub {
                 if (e.code == 401) { conn.value = Conn.REVOKED; note.value = "This phone is no longer paired with the daemon."; return }
                 note.value = e.message ?: "The daemon refused the request"
             } catch (e: Exception) {
-                note.value = broke ?: e.message ?: e.javaClass.simpleName
+                note.value = broke ?: reach(e)
             } finally {
                 catching?.cancel()
                 feed.closed()
@@ -90,7 +122,7 @@ object Hub {
             override fun onOpen(eventSource: EventSource, response: Response) { conn.value = Conn.LIVE; opened() }
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 when (val step = feed.take(data)) {
-                    is Took.Applied -> if (step.synced) note.value = ""
+                    is Took.Applied -> { if (step.synced) note.value = ""; changed() }
                     is Took.CatchUp -> catchUp(eventSource)
                     // What the frame carried was not applied: the stream ends here and the next one opens from the cursor.
                     is Took.Broken -> { broke = step.reason; note.value = step.reason; eventSource.cancel() }
@@ -119,7 +151,7 @@ object Hub {
                 } while (step is Took.CatchUp)
                 if (step is Took.Broken) { broke = step.reason; note.value = step.reason; src.cancel() }
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                note.value = e.message ?: e.javaClass.simpleName
+                note.value = reach(e)
                 src.cancel()
             }
         }

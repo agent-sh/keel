@@ -187,6 +187,24 @@ class ContractTest {
         }
     }
 
+    @Test fun whatThePhoneKeepsReadsBackAsItWasRead() {
+        // Each value written in the daemon's shape and read again is the value it was.
+        for (ex in examples("chat")) assertEquals(Chat.of(ex), Chat.of(Chat.of(ex).json()))
+        for (ex in examples("message")) assertEquals(Msg.of(ex), Msg.of(Msg.of(ex).json()))
+        for (ex in examples("card")) assertEquals(Card.of(ex), Card.of(Card.of(ex).json()))
+        // The whole: a phone level with the first frame, kept and read into a new feed on a cold start.
+        val f = level()
+        val kept = Feed().also { assertTrue(it.restore(JSONObject(f.snapshot()!!.toString()))) }
+        assertEquals(listOf(f.cursor, f.chats.value, f.msgs.value, f.cards.value), listOf(kept.cursor, kept.chats.value, kept.msgs.value, kept.cards.value))
+        assertTrue(kept.synced.value)
+        // What runs now is not kept: a turn that ran then is not said to run on a cold start.
+        assertEquals(emptyMap<String, Double>(), kept.working.value)
+        assertEquals(emptyMap<String, String>(), kept.drafts.value)
+        // A feed that holds anything takes no snapshot over it; one never level has none to keep.
+        assertEquals(false, f.restore(f.snapshot()!!))
+        assertEquals(null, Feed().snapshot())
+    }
+
     @Test fun theFirstFrameOfTheStreamMakesThePhoneLevel() {
         val f = level()
         assertEquals(42L, f.cursor)

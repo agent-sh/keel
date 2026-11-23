@@ -55,18 +55,23 @@ fun ConnLine() {
     val k = k()
     val c by Hub.conn.collectAsState()
     val note by Hub.note.collectAsState()
+    val level by Hub.levelAt.collectAsState()
     val name = Prefs.server ?: "Keel"
-    val (s, word) = when (c) {
-        Conn.LIVE -> State.DONE to "Live"
-        Conn.CONNECTING, Conn.OFF -> State.WORKING to "Connecting"
-        Conn.RETRYING -> State.STOPPED to "Reconnecting"
-        Conn.REVOKED -> State.FAILED to "Unpaired by the daemon"
+    // Not live: a try failed (note) is offline, else it is still connecting. What it shows meanwhile is the
+    // last sync, and when it was.
+    val (s, word) = when {
+        c == Conn.LIVE -> State.DONE to "Live"
+        c == Conn.REVOKED -> State.FAILED to "Unpaired by the daemon"
+        note.isNotBlank() && c == Conn.RETRYING -> State.STOPPED to "Offline"
+        else -> State.WORKING to "Connecting"
     }
+    val since = if (c != Conn.LIVE && c != Conn.REVOKED && level > 0) " · last synced ${dev.avifenesh.keel.syncedAt(level)}" else ""
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics { contentDescription = "conn-$word" }) {
         StateMark(s, 8.dp)
         Spacer(Modifier.width(6.dp))
-        Txt("$name · $word", T.meta, if (c == Conn.REVOKED) k.fail else k.muted, maxLines = 1)
-        if (c == Conn.RETRYING && note.isNotBlank()) Txt("  $note", T.meta, k.faint, maxLines = 1)
+        Txt("$name · $word$since", T.meta, if (c == Conn.REVOKED) k.fail else k.muted, maxLines = 1)
+        // Why, when it is more than being out of reach (which "Offline" says).
+        if (c == Conn.RETRYING && note.isNotBlank() && note != dev.avifenesh.keel.OUT_OF_REACH) Txt("  $note", T.meta, k.faint, maxLines = 1)
     }
 }
 
