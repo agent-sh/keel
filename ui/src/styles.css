@@ -81,7 +81,7 @@
   --st-wait-ink: oklch(0.45 0.11 240);
   --st-fail: oklch(0.55 0.2 27);
   --st-done: oklch(0.52 0.09 168);
-  --st-idle: oklch(0.6 0.015 255);
+  --st-idle: oklch(0.56 0.015 255); /* 3:1 on a hovered row of the rail */
   /* The ink band on pages, panels and dialogs. */
   --band: var(--fg);
 
@@ -329,12 +329,12 @@
    being listed here; no other rule and no component names the face
    (src/ui-conventions.test.ts). */
 /* 1. A state word: Working, Needs you, Failed, Done, Stopped, Offline. */
-.k-face-state, .k-station-word, .k-row-state, .k-row-class, .k-sum-word, .k-kids-word, .k-kids-new, .k-child-state, .k-stuck-head, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-act-mark, .k-pane-empty-word {
+.k-face-state, .k-station-word, .k-row-state, .k-row-class, .k-child-state, .k-stuck-head, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-act-mark, .k-pane-empty-word {
   /* Set in sentence case, a word of two parts ("Needs you") keeps them together: the face's own space is a whole letter wide. */
   font-family: var(--font-inst); font-stretch: 75%; word-spacing: -0.28em;
 }
 /* 2. A figure a glance reads: a clock, an age, a count. */
-.k-face-figure, .k-station-clock, .k-row-time, .k-row-queued, .k-sum-n, .k-kids-n, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
+.k-face-figure, .k-station-clock, .k-row-queued, .k-rail-card-time, .k-stuck-time, .k-stuck-chip, .k-tick-more, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
   font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
 }
 /* 3. A session's call sign on the folded rail. */

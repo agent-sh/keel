@@ -105,11 +105,13 @@ test("a session waiting on a timer says so, with what it waits for and since whe
     await expect(page.getByTestId("station-word")).toHaveText("Waiting");
     await expect(page.getByTestId("station-why")).toHaveText("Timer: check the deploy");
     await expect(page.getByTestId("station-clock")).toHaveText(/^due in 1[45]m$/);
-    // The command left running: named, with how long it has run.
+    // The command left running: named in words (it was given no description, and its shell text is
+    // not words), the command itself in the state and on the row's card.
     const j = row(page, job);
     await expect(j).toHaveAttribute("data-watch", "work");
     await expect(j.getByTestId("row-state")).toHaveText("Working");
-    await expect(j.getByTestId("row-why")).toHaveText("Command in background: sleep 300");
+    await expect(j.getByTestId("row-why")).toHaveText("Command in background");
+    expect(await stateOf(request, job)).toMatchObject({ text: "Command in background: sleep 300", brief: "Command in background" });
     await expect(j.getByTestId("row-time")).toHaveText("now");
     expect(await stateOf(request, timer)).toMatchObject({ watch: "wait", why: "timer", text: "Timer: check the deploy" });
     expect(await stateOf(request, job)).toMatchObject({ watch: "work", why: "command" });

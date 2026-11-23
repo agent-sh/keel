@@ -44,7 +44,7 @@ import { Grip } from "./Grip.tsx";
 import { PaneMap } from "./PaneMap.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
-import { elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
+import { briefText, elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { Kbd } from "./Kbd.tsx";
@@ -135,12 +135,13 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const now = useNow(timed(st) && !offline, tickOf(st));
   const focus = useStations((x) => x.focus);
   const panes = useStations((x) => x.count);
+  // The head says the reason short (a command's shell text is not words); its tooltip has it whole.
   const told = st.text ? whyText(st, now) : "";
   // An approval whose card this pane draws under its head (above the message box, the agents' too):
   // the head names the call and the card says it whole, so the command is not said twice. The
   // whole reason is the head's tip.
   const cardTool = useSafety((x) => (w === "need" && st.why === "approval" ? x.approvals[st.child ?? s.id]?.[0]?.tool ?? "" : ""));
-  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : cardTool ? askBrief(st, cardTool) : told;
+  const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : cardTool ? askBrief(st, cardTool) : st.text ? briefText(st, now) : "";
   // The tools the helm keeps in view take room beside the title (bridge.css counts them); every pane shows them when its head is pointed at or focused, another pane over the header's end.
   const tools = helm ? (!focus && panes > 1 ? 6 : 3) : 0;
   return (
@@ -149,6 +150,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
       {/* The title first, in the width it needs. The state and its reason beside it when they fit, else on the line under it. */}
       <div className="k-station-row k-station-identity">
         <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
+        {/* Pinned, said while the tools are quiet (the pin tool is one of them). */}
+        {pinned && <Pin className="k-station-pinned" data-testid="station-pinned" role="img" aria-label="Pinned" />}
         {/* Another machine's session names it beside the title, at any width of the pane (the folder and model give way first). */}
         {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">

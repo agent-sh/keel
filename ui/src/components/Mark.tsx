@@ -8,7 +8,7 @@ import { cn } from "../lib/utils.ts";
 import { beatOf, every } from "../lib/clock.ts";
 import { asOf, span } from "../../../src/core/watch.ts";
 
-export { failWord, span, whyText } from "../../../src/core/watch.ts";
+export { briefText, failWord, span, whyText } from "../../../src/core/watch.ts";
 
 // A state is a shape as well as a color, so it reads without color too.
 export function Mark({ w, className }: { w: Watch; className?: string }) {

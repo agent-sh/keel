@@ -310,10 +310,9 @@
 .k-index[data-lines="two"] .k-row-sub { grid-column: 2 / -1; grid-row: 2; flex: none; height: 1rem; line-height: 1rem; }
 /* Where a finger presses, a row of one line is high enough to hit. */
 @media (pointer: coarse) { .k-index[data-lines="one"] .k-row { height: 2.375rem; } }
-.k-row-state { margin-top: 1px; font-weight: 700; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--faint); }
+/* A row has one state signal, its mark. Its words are quiet; only what needs the owner keeps its ink. */
+.k-row-state { margin-top: 1px; font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-state { color: var(--st-need-ink); }
-.k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
-.k-row[data-watch="wait"] .k-row-state { color: var(--st-wait-ink); }
 /* A failure's class beside the word, in its colour: rate limit, billing, sign-in. */
 .k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1rem; letter-spacing: 0; color: var(--st-fail-ink); }
 /* The state line reads as one sentence on one line: the word, then why, cut at the row's edge.
@@ -321,31 +320,25 @@
 .k-row-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-micro); color: var(--muted); }
 /* A stream that went silent is said in the working ink: it may need a look. */
 :is(.k-row-why, .k-station-why)[data-why="stalled"] { color: var(--st-work-ink); font-weight: 500; }
-.k-row[data-watch="fail"] .k-row-state { color: var(--st-fail-ink); }
 .k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-row:hover { background: var(--hover); color: var(--fg); }
 /* The session open here: lifted onto the paper, no outline (a ringed white box read as a field). */
 .k-row[aria-current] { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-1); }
-.k-row[aria-current] .k-row-title { color: var(--fg); font-weight: 500; }
+.k-row[aria-current] .k-row-title { color: var(--fg); }
 .k-row[data-shown]::before { content: ""; position: absolute; left: -0.625rem; top: 0.3125rem; bottom: 0.3125rem; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--line-strong); }
 .k-row[aria-current]::before { background: var(--fg); }
 .k-row-title { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Finished and seen rows step back; what moved or needs them stays in ink. */
-.k-row:not([data-watch="done"], [data-watch="idle"]) .k-row-title { color: var(--fg); }
-/* Unread: the title in ink and a little heavier, and the dot the count above the list wears.
-   A row that needs them or failed says more already and has none. */
-/* (One step of weight: eighteen semibold titles in a list read as no title stood out.) */
-.k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 500; }
-/* Done and read: the mark steps back to a small steel dot. Green is news (done and not yet read), not every row's colour. */
-.k-row[data-watch="done"]:not([data-unread], [aria-current]) > .k-mark { background: var(--st-idle); transform: scale(0.7); }
+/* Every title has one weight. What is the owner's to look at is in ink: something new, what needs
+   them or failed, the open row. The rest steps back. (A heavier title for each of them read as a
+   list where every row was bold.) */
+.k-row:is([data-unread], [data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-row-title { color: var(--fg); }
+/* Done: the mark is a small steel dot. Whether it is new is the accent dot's to say, once. */
+.k-row[data-watch="done"]:not([aria-current]) > .k-mark { background: var(--st-idle); transform: scale(0.7); }
 .k-row .k-unread-dot { width: 0.375rem; height: 0.375rem; background: var(--accent-ink); }
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"], [data-gone]) .k-unread-dot { display: none; }
-.k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); line-height: 1.25rem; color: var(--faint); }
-/* The time column of a live row is the state's own clock, in its ink. */
-.k-row-time[data-live] { color: var(--muted); font-weight: 600; }
-.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); }
-.k-row[data-watch="work"] .k-row-time[data-live] { color: var(--st-work-ink); }
-.k-row[data-watch="wait"] .k-row-time[data-live] { color: var(--st-wait-ink); }
+/* The time, in the text face and quiet. A live clock is the same; only what needs the owner wears its ink. */
+.k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1.25rem; color: var(--faint); }
+.k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); font-weight: 500; }
 /* Where a session runs when that is not here (Where.tsx): a tag tinted with the
    machine's colour, its server glyph in that colour; one that does not answer
    loses the tint and says offline in the failure colour. A local session has none. */
@@ -423,7 +416,7 @@
 .k-late-line:hover { color: var(--fg); }
 .k-late-line svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
 /* The note under the counts that the default order changed: one line, read once. */
-.k-list-note { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); margin: 0 0.625rem 0.125rem; padding-left: 0.375rem; font-size: var(--text-caption); color: var(--muted); }
+.k-list-note { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); margin: 0 0.625rem 0.125rem; padding-left: 0.375rem; font-size: var(--text-caption); color: var(--faint); }
 /* A folded folder's head says that a session inside needs the owner or failed. */
 .k-head-calls { width: 0.5rem; height: 0.5rem; }
 /* The agents under a row. Their line of counts is one line that never wraps: how many, then each
@@ -450,14 +443,22 @@
 .k-kids-sum[data-many] .k-kids-label { display: none; }
 .k-kids-part .k-mark { width: 0.5rem; height: 0.5rem; animation: none; }
 .k-kids-part .k-mark[data-watch="work"] { border-width: 1.5px; }
-.k-kids-n { font-weight: 700; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-kids-n { font-weight: 500; font-size: var(--text-micro); font-variant-numeric: tabular-nums; line-height: 1; color: var(--muted); }
 /* Each count is its state's mark and a number, as a row is its mark and its title; what calls the owner is in that state's ink.
    Where the list is wide enough for the whole sentence the words stand too (they are always the line's name and tooltip). */
-.k-kids-word { display: none; font-weight: 700; font-size: var(--text-micro); line-height: 1; }
+.k-kids-word { display: none; font-size: var(--text-micro); line-height: 1; }
+/* A line of two states or fewer is a sentence in the text face: "4 agents · 3 working · 1 done".
+   A mark only before what calls the owner (its state, its ink); the others are words alone. */
+.k-kids-sum[data-words] .k-kids-word { display: inline; }
+.k-kids-sum[data-words] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) .k-mark { display: none; }
+.k-kids-sum[data-words] .k-kids-part { gap: 0.1875rem; }
+.k-kids-sum[data-words] .k-kids-part::before { content: "\00b7"; margin-right: 0.25rem; color: var(--faint); }
+.k-kids-sum[data-words] .k-kids-label { font-size: var(--text-micro); }
+.k-kids-sum[data-words] .k-kids-total .k-kids-n { color: var(--muted); }
 .k-kids-part[data-watch="need"] :is(.k-kids-n, .k-kids-word) { color: var(--st-need-ink); }
 .k-kids-part:is([data-watch="fail"], [data-watch="declined"]) :is(.k-kids-n, .k-kids-word) { color: var(--st-fail-ink); }
 @container rail (min-width: 30rem) { .k-kids-part .k-kids-word { display: inline; } .k-kids-sum[data-many] .k-kids-label { display: inline; } }
-.k-kids-new { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); color: var(--accent-ink); }
+.k-kids-new { flex-shrink: 0; font-weight: 500; font-size: var(--text-micro); color: var(--accent-ink); }
 .k-kids-viewing { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
 .k-child-row { position: relative; container: kid / inline-size; }
 /* Under an agent's row: what it is doing now, a step in from its mark. */
@@ -520,21 +521,21 @@
    there and always as high, so a count that comes or goes moves nothing under it. It fits its bar
    by measure (Sidebar.tsx): a word that does not fit goes (data-bare), then the room between the
    counts (data-tight), and a figure is never cut. */
-.k-sum { display: flex; align-items: center; gap: 0.0625rem; flex-shrink: 0; height: 1.75rem; margin: 0 0.625rem 0.125rem; overflow: hidden; border-bottom: 1px solid var(--line); }
-.k-sum-chip { display: inline-flex; align-items: center; gap: 0.3125rem; flex-shrink: 0; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); white-space: nowrap; font-size: var(--text-micro); line-height: 1; color: var(--muted); }
+.k-sum { display: flex; align-items: center; gap: 0; flex-shrink: 0; height: 1.75rem; margin: 0 0.625rem 0.125rem; overflow: hidden; border-bottom: 1px solid var(--line); }
+/* One quiet sentence in the text face, "3 need you, 3 failed, 18 new": each count a press, the
+   figure in ink, the words muted. Only what needs the owner wears its ink; a count's state is said
+   by the rows' marks under it. */
+.k-sum-chip { display: inline-flex; align-items: center; gap: 0.25rem; flex-shrink: 0; height: var(--spacing-ctl-sm); padding: 0 0.25rem; border-radius: var(--radius-sm); white-space: nowrap; font-size: var(--text-caption); line-height: 1; color: var(--muted); }
+.k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { content: ","; margin: 0 0.125rem 0 -0.4375rem; color: var(--faint); }
 .k-sum-chip[hidden], .k-sum-calm[hidden], .k-sum-chip[data-bare] .k-sum-word { display: none; }
-.k-sum[data-tight] { gap: 0; }
 .k-sum[data-tight] .k-sum-chip { gap: 0.1875rem; padding: 0 0.1875rem; }
+.k-sum[data-tight] .k-sum-chip:not([hidden]) ~ .k-sum-chip:not([hidden])::before { margin-left: -0.25rem; }
 .k-sum-chip:hover { background: var(--hover); color: var(--fg); }
 .k-sum-chip:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
-.k-sum-chip .k-mark { width: 0.5rem; height: 0.5rem; }
-.k-sum-chip svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--st-fail-ink); }
-.k-sum-dot { flex-shrink: 0; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--accent-ink); }
-.k-sum-n { font-weight: 700; color: var(--fg); }
-.k-sum-word { font-weight: 700; letter-spacing: 0; }
+.k-sum-chip svg { width: 0.75rem; height: 0.75rem; flex-shrink: 0; color: var(--faint); }
+.k-sum-n { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--fg); }
+.k-sum-word { font-weight: 400; letter-spacing: 0; }
 .k-sum-chip[data-kind="need"] :is(.k-sum-n, .k-sum-word) { color: var(--st-need-ink); }
-.k-sum-chip[data-kind="fail"] :is(.k-sum-n, .k-sum-word) { color: var(--st-fail-ink); }
-.k-sum-chip[data-kind="work"] :is(.k-sum-n, .k-sum-word) { color: var(--st-work-ink); }
 .k-sum-calm { flex: 0 1 auto; min-width: 0; padding: 0 0.375rem; overflow: hidden; white-space: nowrap; font-size: var(--text-caption); color: var(--faint); }
 /* Under the line a machine's separator needs no rule of its own. */
 .k-index > .k-machine-sep:first-child { padding-top: 0.125rem; border-top: 0; }
@@ -576,6 +577,7 @@
 .k-rail[data-narrow] .k-kids-counts { column-gap: 0.3125rem; }
 .k-rail[data-narrow] :is(.k-kids-label, .k-kids-viewing, .k-kids-fold) { display: none; }
 .k-rail[data-narrow] .k-kids-part .k-kids-word { display: none; }
+.k-rail[data-narrow] .k-kids-part::before { content: none; }
 /* The narrow list keeps the total and what calls the owner; the other counts are in the line's tooltip, as a row's state is on its card. */
 .k-rail[data-narrow] .k-kids-part:not([data-watch="need"], [data-watch="fail"], [data-watch="declined"]) { display: none; }
 
@@ -784,6 +786,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-tool { display: grid; place-items: center; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-sm); color: var(--faint); }
 .k-tool:hover { background: var(--hover); color: var(--fg); }
 .k-tool[aria-pressed="true"] { color: var(--fg); }
+/* A pinned pane says so while its tools are quiet: a small pin after the title. */
+.k-station-pinned { flex-shrink: 0; width: 0.75rem; height: 0.75rem; color: var(--faint); }
 .k-tool svg { width: 0.875rem; height: 0.875rem; }
 /* The title is read, not glanced at: the text face, two lines before it clips. */
 .k-station-title {
@@ -852,14 +856,20 @@ html[data-resizing] iframe { pointer-events: none; }
 @container k-top (min-width: 62rem) {
   .k-top-in { flex-direction: row; align-items: stretch; }
   .k-top-in > .k-station-head { flex: 1 1 0; min-width: 0; padding-right: 0.5rem; }
-  /* (A share of the bar that does not follow what is in it: the row folds its tools by its own width.) */
-  .k-station .k-top-in > .k-session-header { position: static; flex: 0 1 min(44rem, 50%); min-width: 0; height: auto; padding-left: 0; }
+  /* One line in the bar: the title gives way (its tip has it whole), so the bar keeps the brand row's height. */
+  .k-top-in > .k-station-head .k-station-identity { flex-wrap: nowrap; }
+  /* A long title leaves the reason room: it stops a little short of half the head. */
+  .k-top-in > .k-station-head .k-station-identity .k-station-title { flex-shrink: 0; max-width: 45%; }
+  /* The bar's controls that have an icon are the icon; the word is the tip (and the reader's). */
+  .k-station .k-top-in > .k-session-header .k-hand:not([data-words]) { gap: 0.125rem; padding: 0 0.4375rem; }
+  .k-station .k-top-in > .k-session-header .k-hand:not([data-words]) .k-hand-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* The bar is the brand row's height whatever the band is (a state that calls the owner wears a thicker one). */
+  .k-top-in > .k-station-head { height: calc(var(--spacing-bar) - var(--k-band-h)); padding-block: 0; }
+  /* The tools are as wide as what they show; they fold within half the bar, at most 44rem
+     (SessionHeader.tsx, TOOLS_SHARE), and the head takes the rest. */
+  .k-station .k-top-in > .k-session-header { position: static; flex: 0 1 auto; max-width: min(44rem, 50%); min-width: 0; height: auto; padding-left: 0; container-type: normal; }
+  /* (No container of its own here: one would size it by nothing. Its usage figure asks the bar, which is wide.) */
   .k-station[data-watch="need"] .k-top-in > .k-session-header { background: color-mix(in oklch, var(--st-need) 7%, transparent); }
-}
-/* With the bar this wide its tools have their whole share: the panels' chooser keeps its name. */
-@container k-top (min-width: 88rem) {
-  .k-station .k-top-in > .k-session-header .k-hand:not([data-words]) { gap: 0.375rem; padding: 0 0.5rem; }
-  .k-station .k-top-in > .k-session-header .k-hand:not([data-words]) .k-hand-word { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
 }
 
 /* The helm's full header: the tools row only (its title is in the head above). */
@@ -881,9 +891,9 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-head-tool { display: flex; align-items: center; gap: 0.375rem; }
 .k-head-tool:empty { display: none; }
 /* The panel shortcuts are a group of their own, set off from the session's tools. */
-/* More: how many tools are behind it, in the instrument face. */
-.k-head-more { display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-md); padding: 0 0.4375rem 0 0.5625rem; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--line); font-weight: 500; font-size: var(--text-caption); letter-spacing: 0.02em; white-space: nowrap; color: var(--muted); }
-.k-head-more:hover, .k-head-more[data-popup-open] { background: var(--hover); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* More: how many tools are behind it, in words and no box: the bar's boxes are the controls that say a state (the mode, the work in the background). */
+.k-head-more { display: inline-flex; align-items: center; gap: 0.25rem; height: var(--spacing-ctl-md); padding: 0 0.375rem 0 0.5rem; border-radius: var(--radius-md); font-size: var(--text-caption); white-space: nowrap; color: var(--faint); }
+.k-head-more:hover, .k-head-more[data-popup-open] { background: var(--hover); color: var(--fg); }
 .k-head-more svg { width: 0.75rem; height: 0.75rem; opacity: 0.7; transition: transform var(--dur-quick) var(--ease-out); }
 .k-head-more[data-popup-open] svg { transform: rotate(180deg); }
 /* Its list: a name on the left, the control itself on the right. */

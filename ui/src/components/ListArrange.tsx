@@ -23,10 +23,13 @@ const used = () => { for (let i = 0; i < localStorage.length; i++) if (localStor
 let kept = readArrange(localStorage.getItem(KEY), used());
 let arrange: Arrange = kept.arrange;
 const subs = new Set<() => void>();
+// The note is a hint for one load: once it was on screen it is kept as read, and this load still shows it
+// (it goes when dismissed, when the menu that says it too was opened, or with the next load).
+let seen = false;
 const write = (next: typeof kept) => {
   kept = next;
   arrange = next.arrange;
-  localStorage.setItem(KEY, keep(next));
+  localStorage.setItem(KEY, keep(seen ? { ...next, note: false } : next));
   subs.forEach((f) => f());
 };
 // A first visit is on this version from the start: nothing changed for it, so no later load says so.
@@ -37,6 +40,7 @@ export const useArrange = () => useSyncExternalStore(sub, () => arrange);
 // The note that the default order changed: shown under the counts line and in the menu until it was read.
 export const useNote = () => useSyncExternalStore(sub, () => kept.note);
 export const readNote = () => { if (kept.note) write({ ...kept, note: false }); };
+export const sawNote = () => { if (kept.note && !seen) { seen = true; localStorage.setItem(KEY, keep({ ...kept, note: false })); } };
 
 // Every word of the filter is in the title or the folder path.
 export const matches = (s: Session, q: string) => {

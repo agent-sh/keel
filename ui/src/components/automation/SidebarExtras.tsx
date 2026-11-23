@@ -85,6 +85,8 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         onClick={() => setOpen(!expanded)}
         className="k-kids-sum"
         data-many={sum.parts.length > 5 || undefined}
+        // Two states or fewer are said in words ("4 agents · 3 working · 1 done"); more are each a mark and a figure, the words in the tooltip.
+        data-words={sum.parts.length <= 2 || undefined}
       >
         {/* The counts, never cut: on a list too narrow for one line of them they take a second. */}
         <span className="k-kids-counts">

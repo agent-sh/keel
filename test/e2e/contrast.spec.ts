@@ -104,22 +104,23 @@ test("amber state words and brass text read on every surface in both themes", as
   console.log(got.map((g) => `${g.theme} ${g.surface} ${g.probe} ${g.ratio}`).join("\n"));
   expect(got).toHaveLength(24);
   expect(got.filter((g) => g.ratio < 4.5)).toEqual([]);
-  // The state words really wear that ink, and a brass icon keeps the brass fill.
+  // The state words really wear that ink, and a brass icon keeps the brass fill. (A list row's word is
+  // quiet: its mark is the row's one state signal, and only what needs the owner keeps its ink there.)
   for (const dark of [false, true]) {
     const c = await page.evaluate((dark) => {
       const root = document.documentElement;
       const was = root.classList.contains("dark");
       root.classList.toggle("dark", dark);
       const box = document.createElement("div");
-      box.innerHTML = `<div class="k-row" data-watch="work"><span class="k-row-state">w</span></div><div class="k-rail-card" data-watch="work"><span class="k-rail-card-word">w</span></div><div class="k-station" data-watch="work"><span class="k-station-word">w</span></div><i style="color: var(--st-work-ink)">ink</i><svg class="text-brass"></svg><b class="bg-brass">fill</b>`;
+      box.innerHTML = `<div class="k-rail-card" data-watch="work"><span class="k-rail-card-word">w</span></div><div class="k-station" data-watch="work"><span class="k-station-word">w</span></div><i style="color: var(--st-work-ink)">ink</i><svg class="text-brass"></svg><b class="bg-brass">fill</b>`;
       document.body.append(box);
       const color = (sel: string) => getComputedStyle(box.querySelector(sel)!).color;
-      const out = { words: [".k-row-state", ".k-rail-card-word", ".k-station-word"].map(color), ink: color("i"), icon: color("svg"), fill: getComputedStyle(box.querySelector("b")!).backgroundColor };
+      const out = { words: [".k-rail-card-word", ".k-station-word"].map(color), ink: color("i"), icon: color("svg"), fill: getComputedStyle(box.querySelector("b")!).backgroundColor };
       box.remove();
       root.classList.toggle("dark", was);
       return out;
     }, dark);
-    expect(c.words).toEqual([c.ink, c.ink, c.ink]);
+    expect(c.words).toEqual([c.ink, c.ink]);
     expect(c.icon).toBe(c.fill);
   }
 });

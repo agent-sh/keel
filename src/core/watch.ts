@@ -88,6 +88,9 @@ export type SessionState = {
   on?: string;      // wait: the kind of the thing waited for (file, log, http, process, session, ...), when `why` is wait
   parked?: number;  // how many of `agents` wait on something they set up: the rest work
   text?: string;    // the reason in words: "Approve Bash: rm -rf dist", "Plan to approve", "Timer: check the deploy"
+  // The reason short, where `text` carries what is not words (a command's own shell text): a head or a row
+  // shows this and keeps `text` for its tooltip. Absent when `text` is short already.
+  brief?: string;
   since?: number;   // when the reason began (ms)
   until?: number;   // when what it waits for is due: a timer's wake, a retry, a turn that continues by itself
   cls?: string;     // fail: the failure's class (rate_limit, quota, auth, ...: src/admin/classes.ts), when it has one
@@ -106,7 +109,8 @@ export type SessionState = {
 // wait's own kind (timer, file, log, http, process, pr_checks, session, ...),
 // `command` for one left running in the background. `agent`: the title of
 // the agent of the session that waits on it. `until`: a timer's wake time.
-export type Pending = { kind: string; text?: string; since?: number; until?: number; agent?: string };
+// `raw`: `text` is the command itself, not words about it (it was given no description).
+export type Pending = { kind: string; text?: string; since?: number; until?: number; agent?: string; raw?: boolean };
 
 // What the caller knows besides the session row: what waits on the owner
 // (its own or an agent's), the agents still at work, and what the session
@@ -201,9 +205,10 @@ const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
 // What a session waits for, in one form: the thing, then what the session
 // said of it. "Timer: check the deploy", "Command: make test", "Agent Scout: timer".
-export function pendingText(p: Pending): string {
-  const thing = p.kind === "command" ? "Command" : cap(waitWords(p.kind).replace(/^an? /, ""));
-  const t = oneLine(p.text, 120);
+// `short`: a command's own shell text is left out ("Agent Scout: command in background").
+export function pendingText(p: Pending, short = false): string {
+  const thing = p.kind === "command" ? (short && p.raw ? cap(COMMAND_IN_BACKGROUND) : "Command") : cap(waitWords(p.kind).replace(/^an? /, ""));
+  const t = short && p.raw ? "" : oneLine(p.text, 120);
   const said = t ? `${thing}: ${t}` : thing;
   return p.agent !== undefined ? `Agent ${oneLine(p.agent, 40) || "of this session"}: ${said.charAt(0).toLowerCase()}${said.slice(1)}` : said;
 }
@@ -269,6 +274,9 @@ export function whyText(st: SessionState, at = Date.now()): string {
   if (st.why === "unreachable" && st.watch === "wait" && st.since) return st.text === UNREACHABLE ? unreachableSince(hhmm(st.since)) : `${st.text} since ${hhmm(st.since)}`;
   return st.text ?? "";
 }
+
+// The reason as a head or a row shows it: short where the whole is not words (whyText is the whole, for a tooltip).
+export const briefText = (st: SessionState, at = Date.now()): string => st.brief ?? whyText(st, at);
 
 // A failure's class in a reader's words: the vocabulary's one fixed set.
 export { failWord };
@@ -357,8 +365,10 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   if (commands.length) {
     const t = oneLine(commands[0]!.text, 120);
     const lead = cap(COMMAND_IN_BACKGROUND);
+    const and = commands.length > 1 ? `, and ${commands.length - 1} more` : "";
     return {
-      watch: "work", agents, ...parked, why: "command", text: `${t ? `${lead}: ${t}` : lead}${commands.length > 1 ? `, and ${commands.length - 1} more` : ""}`,
+      watch: "work", agents, ...parked, why: "command", text: `${t ? `${lead}: ${t}` : lead}${and}`,
+      ...(t && commands[0]!.raw ? { brief: `${lead}${and}` } : {}),
       ...(commands[0]!.since ? { since: commands[0]!.since } : {}),
     };
   }
@@ -374,6 +384,7 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   const more = pending.length - 1;
   return {
     watch: "wait", agents, ...parked, why: whyOf(first), ...(whyOf(first) === "wait" && first.kind in WAITS_FOR ? { on: first.kind } : {}), text: `${pendingText(first)}${more ? `, and ${more} more` : ""}`,
+    ...(first.raw && first.text ? { brief: `${pendingText(first, true)}${more ? `, and ${more} more` : ""}` } : {}),
     ...(first.since ? { since: first.since } : {}), ...(first.until ? { until: first.until } : {}),
   };
 }

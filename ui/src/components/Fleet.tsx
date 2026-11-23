@@ -83,13 +83,17 @@ export function MachineChip({ session }: { session: Session }) {
       {h?.state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
     </>
   ) : (
+    // Here: its name says nothing the page does not, so the bar shows the machine's glyph and keeps the
+    // name for the tooltip and the reader. The move is still one press away.
     <>
-      {dot(undefined)}
-      <span className="font-medium text-fg">{name}</span>
+      <Server aria-hidden="true" className="size-3.5" />
+      <span className="sr-only">{name}</span>
       {h?.state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
     </>
   );
-  const cls = cn("inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border border-line bg-sunken px-2 text-caption text-muted", where && "k-where k-where-chip");
+  const cls = where
+    ? "k-where k-where-chip inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border border-line bg-sunken px-2 text-caption text-muted"
+    : "inline-flex h-ctl-md shrink-0 items-center gap-1 rounded-md px-1.5 text-faint hover:bg-hover";
   const tag = where ? { "data-machine": where.id, "data-reach": where.reach, style: whereStyle(where.colour) } : {};
   if (lives) return <span data-testid="machine-chip" title={`This session lives on ${name}'s daemon; you see and drive it through the link.${where?.reach === "offline" ? ` ${name} does not answer now.` : ""}`} className={cls} {...tag}>{chip}</span>;
   const move = async (to: string) => {

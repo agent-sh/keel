@@ -43,6 +43,9 @@ type Tool = { id: string; label: string; rank: number; node: ReactNode; item?: (
 const GIVE_WAY = ["usage"];
 const TITLE_ROOM = 11; // rem the title's field keeps while it is renamed
 const ROW_TOOLS = 3; // the tools the row shows at most; the rest are in More
+// In the pane's one top bar the row is as wide as what it shows, and folds within this share of the
+// bar, at most TOOLS_MAX rem (bridge.css gives the row the same max-width): the head takes the rest.
+const TOOLS_SHARE = 0.5, TOOLS_MAX = 44;
 
 function useFit(tools: Tool[], reserve: number) {
   const head = useRef<HTMLElement>(null);
@@ -60,7 +63,10 @@ function useFit(tools: Tool[], reserve: number) {
     const cs = getComputedStyle(el);
     const gap = parseFloat(cs.columnGap) || 0;
     const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    let room = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - reserve * root + gap;
+    const bar = el.parentElement;
+    const inBar = !!bar?.classList.contains("k-top-in") && getComputedStyle(bar).flexDirection === "row";
+    const width = inBar ? Math.min(TOOLS_MAX * root, bar!.clientWidth * TOOLS_SHARE) : el.clientWidth;
+    let room = width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - reserve * root + gap;
     // What stays whatever happens, and what each tool in the row measures now.
     const measure = (c: HTMLElement) => {
       const w = Math.ceil(c.getBoundingClientRect().width);
@@ -117,7 +123,8 @@ function useFit(tools: Tool[], reserve: number) {
   const frame = useRef(0);
   const later = useRef(() => { cancelAnimationFrame(frame.current); frame.current = requestAnimationFrame(() => fit.current()); }).current;
   const watch = () => {
-    if (head.current && ro.current) for (const c of [head.current, ...head.current.children, ...head.current.querySelectorAll("[data-tools] > *")]) ro.current.observe(c);
+    // (In the bar the row is as wide as its tools: the bar's own width is what gives them room.)
+    if (head.current && ro.current) for (const c of [head.current, ...(head.current.parentElement ? [head.current.parentElement] : []), ...head.current.children, ...head.current.querySelectorAll("[data-tools] > *")]) ro.current.observe(c);
   };
   // A render that changed what is in the row (a tool came or went, the title
   // is renamed, tools folded) measures before paint. One that left the row as

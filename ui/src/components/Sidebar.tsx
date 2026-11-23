@@ -34,11 +34,11 @@ import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState
 import { COUNTERS, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, countsNow, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
-import { finished, ListFind, matches, order, readNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
+import { finished, ListFind, matches, order, readNote, sawNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
 import { useLink } from "./Stale.tsx";
 import { useReach } from "../lib/reach.ts";
 import { useAuto } from "../lib/automation.ts";
-import { failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
+import { briefText, failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { DRAG, dragSession, PaneCount } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
@@ -304,7 +304,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
           {/* A state that is not current because the page does not hear the daemon says since when. (A machine out of reach: above.) */}
           {!left && !offline && !!st.as_of && <span className="shrink-0 whitespace-nowrap text-micro text-muted" data-testid="row-asof">{asOf(clock(st.as_of))}</span>}
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-          {!offline && SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{whyText(st, now)}</span>}
+          {!offline && SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why}>{briefText(st, now)}</span>}
           {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
           {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
         </span>
@@ -929,7 +929,8 @@ function Summary() {
         return (
           <button key={c.kind} type="button" className="k-sum-chip" data-kind={c.kind} data-testid={`sum-${c.kind}`} tabIndex={c.kind === at ? 0 : -1} onFocus={() => setStop(c.kind)} onClick={() => jumpNext(c.kind)}
             aria-label={`${n} ${c.kind === "offline" && since ? `on ${since}, ${word}` : word}. Go to the next`} title={`${c.says}${c.kind === "offline" && since ? ` (${since})` : ""}: ${names}${ids.length > 6 ? `, and ${ids.length - 6} more` : ""}. Press to go to the next one's row${c.kind === "need" ? " (Alt A opens it)" : ""}.`}>
-            {c.watch ? <Mark w={c.watch} /> : c.kind === "offline" ? <ServerOff aria-hidden="true" /> : <span className="k-sum-dot" aria-hidden="true" />}
+            {/* One sentence in the text face: the rows' marks say each state, the line says how many. */}
+            {c.kind === "offline" && <ServerOff aria-hidden="true" />}
             <b className="k-sum-n">{n}</b>
             <span className="k-sum-word">{c.kind === "offline" && down.length === 1 && <span className="inline-block max-w-[6.5rem] truncate align-bottom" data-testid="sum-offline-name">{down[0]!.name}</span>}{c.kind === "offline" && down.length === 1 ? " " : ""}{word}</span>
           </button>
@@ -972,6 +973,9 @@ function CountsKeeper() {
   useEffect(() => nameUnder(under.split(" ").filter(Boolean)), [under]);
   return null;
 }
+
+// The note above the list was on screen: it is read for the next load (ListArrange.tsx).
+const sawNoteRef = (el: HTMLElement | null) => { if (el) sawNote(); };
 
 function Index({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
@@ -1101,9 +1105,10 @@ function Index({ current }: { current: string | null }) {
       {/* The tabs' panel: it takes no box of its own, the list keeps its place in the rail. */}
       <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="contents">
       <Summary />
-      {/* Said once to whom the order changed under, where they will see it: gone when dismissed or when the Arrange menu was opened. */}
+      {/* Said once to whom the order changed under, where they will see it: a hint for the load it was
+          seen on, gone with the next one, or before when dismissed or when the Arrange menu was opened. */}
       {note && !narrow && (
-        <p className="k-list-note" data-testid="list-note">
+        <p ref={sawNoteRef} className="k-list-note" data-testid="list-note">
           <span className="min-w-0 flex-1 truncate">Sessions now keep their place.</span>
           <button type="button" className="k-link shrink-0 text-accent-ink underline-offset-2 hover:underline" data-testid="list-note-arrange" onClick={() => dispatchEvent(new Event("keel:arrange"))}>Arrange</button>
           <button type="button" className="k-find-btn" data-testid="list-note-dismiss" aria-label="Dismiss" title="Dismiss" onClick={readNote}><X /></button>

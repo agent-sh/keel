@@ -169,7 +169,7 @@ export function lens(d: From = from(), counts?: Map<string, number>): Lens {
       push(pending, w.session_id, { kind: w.kind, text: w.note, since: w.created, ...(until ? { until } : {}) });
     }
   }
-  for (const j of liveJobs()) if (j.background && running(j)) push(pending, j.sessionId, { kind: "command", text: j.description || j.command, since: j.started });
+  for (const j of liveJobs()) if (j.background && running(j)) push(pending, j.sessionId, { kind: "command", text: j.description || j.command, ...(j.description ? {} : { raw: true }), since: j.started });
   const kids = new Map<string, Kid[]>();
   if (hasTable(d.store, "agents")) {
     for (const a of d.store.db.query<Kid & { parent_id: string }, []>("SELECT parent_id, session_id, title, status, type FROM agents WHERE status IN ('running', 'waiting') ORDER BY created").all()) push(kids, a.parent_id, a);
