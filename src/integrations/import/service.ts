@@ -13,7 +13,7 @@ import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import { opencodeDb, opencodePending, opencodeSessions, readOpencode } from "./opencode.ts";
-import { geminiHome, geminiSessions, readGemini } from "./gemini.ts";
+import { geminiHome, geminiPending, geminiSessions, readGemini } from "./gemini.ts";
 import { inDatabase, type Found, type Harness, type Read } from "./types.ts";
 import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
@@ -169,6 +169,13 @@ export class Imports {
         await new Promise((r) => setTimeout(r, 0));
       }
       this.opencodeCache = null;
+      // Gemini CLI's files the same way: each read once, again only when it changed.
+      for (let i = 0; i < 10_000; i++) {
+        try { geminiSessions(undefined, 40); } catch { break; }
+        if (!geminiPending) break;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      this.geminiCache = null;
       const gone = [...known.keys()].filter((p) => !seen.has(p));
       const del = db.query("DELETE FROM import_index WHERE path = ?");
       for (const p of gone) del.run(p);
@@ -273,11 +280,12 @@ export class Imports {
     return rows;
   }
 
-  // Gemini CLI keeps a file a session: the newest are listed from their heads and tails, cached for a few seconds.
+  // Gemini CLI keeps a file a session: the newest are listed from their heads and tails, a file read again only
+  // when it changed, a slice of the reading at a time (the walk above reads the rest off the request).
   private gemini(): Found[] {
     if (this.geminiCache && Date.now() - this.geminiCache.at < 5000) return this.geminiCache.rows;
     let rows: Found[] = [];
-    try { rows = geminiSessions(); } catch {}
+    try { rows = geminiSessions(undefined, 50); } catch {}
     this.geminiCache = { at: Date.now(), rows };
     return rows;
   }

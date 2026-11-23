@@ -288,3 +288,32 @@ test("a Gemini CLI log is applied in time linear in what it touches, and one pas
   for (let i = 0; i < Math.ceil(WORK_MAX / 10_000) + 10; i++) many.push({ $patch: { orderIds: order } });
   expect(conversationOf(many).cut).toBe(true);
 });
+
+// Review of round 3, P2-e: a listing every few seconds read every file again on the loop.
+test("Gemini CLI files are read once until they change, and a listing reads no more than its time allows", async () => {
+  const { geminiSession } = await import("../../../test/e2e/fixtures/import-stores.ts");
+  const gemini = await import("./gemini.ts");
+  const files = await import("./files.ts");
+  const home = join(dir, "gemini-many");
+  const paths = Array.from({ length: 30 }, (_, i) => geminiSession(home, dir, `${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`, `Head ${i}`));
+  // A budget spent at once: nothing is read now, and every file is pending.
+  expect(gemini.geminiSessions(home, -1)).toEqual([]);
+  expect(gemini.geminiPending).toBe(30);
+  const first = gemini.geminiSessions(home);
+  expect([first.length, gemini.geminiPending]).toEqual([30, 0]);
+  // Read again: no file is opened. One that changed is.
+  const opened: string[] = [];
+  const { headTail } = files;
+  const spy = (await import("bun:test")).spyOn(files, "headTail").mockImplementation((p: string, n: number) => (opened.push(p), headTail(p, n)));
+  try {
+    expect(gemini.geminiSessions(home).length).toBe(30);
+    expect(opened).toEqual([]);
+    const { appendFileSync } = await import("node:fs");
+    appendFileSync(paths[3]!, JSON.stringify({ id: "late", type: "user", content: [{ text: "One more question." }] }) + "\n");
+    const again = gemini.geminiSessions(home);
+    expect(opened).toEqual([paths[3]!]);
+    expect(again.find((f) => f.path === paths[3])?.last_prompt).toBe("One more question.");
+  } finally {
+    spy.mockRestore();
+  }
+});

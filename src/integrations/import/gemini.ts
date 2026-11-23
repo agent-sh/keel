@@ -27,7 +27,8 @@ import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
 export const geminiHome = () => process.env.KEEL_IMPORT_GEMINI_DIR ?? join(homedir(), ".gemini");
 // The newest files a listing reads: older ones wait for a later version of the list.
 const LISTED_MAX = 400;
-// A legacy file is read whole to be listed: past this it is not listed.
+// A legacy file is read whole to be listed (once: see `known`), one between a
+// listing's yields at most: past this it is not listed.
 const LEGACY_MAX = 32 * 1024 * 1024;
 
 type Msg = { id: string; type: string; timestamp?: string; content?: unknown; toolCalls?: any[]; thoughts?: unknown[]; model?: string };
@@ -210,15 +211,36 @@ export function geminiFound(file: { path: string; project: string; parent?: stri
   };
 }
 
-export function geminiSessions(home = geminiHome()): Found[] {
+// What each file was read as, by its path, size and time: a listing reads
+// only a file that changed (a listing every few seconds reads none).
+const known = new Map<string, { size: number; mtime: number; found: Found | null }>();
+// Every session, newest first. `budgetMs`: how long this call may spend
+// reading files; those not reached are left for the next call
+// (`geminiPending` says how many), so a first listing of a large store never
+// holds the daemon.
+export let geminiPending = 0;
+export function geminiSessions(home = geminiHome(), budgetMs = Infinity): Found[] {
+  const until = performance.now() + budgetMs;
   const out: Found[] = [];
   const seen = new Set<string>();
-  for (const f of sessionFiles(home)) {
-    let found: Found | null = null;
-    try { found = geminiFound(f); } catch {}
+  const files = sessionFiles(home);
+  let pending = 0;
+  for (const f of files) {
+    const k = known.get(f.path);
+    let found: Found | null;
+    if (k && k.size === f.size && k.mtime === f.mtime) found = k.found;
+    else if (performance.now() > until) { pending++; continue; }
+    else {
+      found = null;
+      try { found = geminiFound(f); } catch {}
+      known.set(f.path, { size: f.size, mtime: f.mtime, found });
+    }
     // A session resumed from an older `.json` is written on as `.jsonl`: the newer file is the one listed.
     if (found && !seen.has(found.id)) { seen.add(found.id); out.push(found); }
   }
+  geminiPending = pending;
+  const listed = new Set(files.map((f) => f.path));
+  for (const p of known.keys()) if (p.startsWith(join(home, "tmp")) && !listed.has(p)) known.delete(p);
   return out;
 }
 
