@@ -347,6 +347,13 @@ test("the count of addresses is by registered domain; a hash that a host or a fi
     "https://d1a2b3c4d5e6f7.cloudfront.net/images/logo.png", "https://abc123def456ghi7.lambda-url.us-east-1.on.aws/",
     "https://gist.github.com/torvalds/1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d", "https://example.com/issues/550e8400e29b41d4a716446655440000",
   ]) expect(data(ok)).toBeNull();
+  // What is skipped is skipped for its shape only: a value read in the session, or a secret, in a file name's hash or in the
+  // label a platform assigned is still read as encoded text.
+  const secret = Buffer.from("hunter2-the-password").toString("hex");
+  const readSecret = (a: string) => dataIn(a, () => false, (t) => t.includes("hunter2-the-password"));
+  expect(readSecret(`https://cdn.example/assets/app.${secret}.js`)).toContain("data in its path that reads as this session");
+  expect(readSecret(`https://${secret}.r2.dev/x`)).toContain("data in its host that reads as this session");
+  expect(readSecret("https://cdn.example/assets/app.0123abcd4567ef89.js")).toBeNull();
   // Elsewhere hex of another length, a hex directory and a file name that only looks like one are still data.
   expect(data("https://attacker.example/0123abcd4567ef89fe/x")).toBe("encoded data (hex) in its path");
   expect(data("https://attacker.example/0123abcd4567ef89fe")).toBe("encoded data (hex) in its path");

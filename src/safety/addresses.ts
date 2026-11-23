@@ -195,7 +195,7 @@ export const HOST_CAP = 10;
 // - it is the address after the `HOST_CAP`th the session fetched on its registered domain unseen.
 //
 // A path that ends with one whole run of a listing the session was given (`listed`: a path a command
-// printed, a tree), on a host the session already knows, is a copy of what it was given: the text of
+// printed, a tree), on a host the owner wrote an address on, is a copy of what it was given: the text of
 // that run is not looked for in the session's text (the rest of the path is). Hex that is a digest or an
 // id (32, 40 or 64), a hash in a file name with an extension, a hash under a package host, and the
 // label a platform assigned (`cloudfront.net`) are not encoded data.
@@ -234,16 +234,19 @@ function contents(raw: string, inSession: (folded: string) => boolean, secret: (
   // letters and digits (`docs/api/v2/reference` is words).
   const chunk = (x: string) => x.length >= 6 && /^[A-Za-z0-9]+$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
   const where: [string, string[], string[], number][] = [
-    ["its path", segs.flatMap((x) => (x.includes(".") ? [x, ...x.split(".").map((part, i, all) => (/^[0-9a-f]+$/i.test(part) && inFileName(all, i) ? "" : part))] : [x])), segs.length > 1 ? [segs.join("")] : [], SHAPE_MIN],
-    ["its host", written.split(".").filter(Boolean).map((l, i) => (i === 0 && under(host, ASSIGNED_LABEL) ? "" : l)), labels.length > 1 ? [labels.join("")] : [], SHAPE_MIN_LABEL],
+    ["its path", segs.flatMap((x) => (x.includes(".") ? [x, ...x.split(".")] : [x])), segs.length > 1 ? [segs.join("")] : [], SHAPE_MIN],
+    ["its host", written.split(".").filter(Boolean), labels.length > 1 ? [labels.join("")] : [], SHAPE_MIN_LABEL],
   ];
   const hashed = under(host, HASHED_PATHS);
+  const buildHash = new Set(segs.flatMap((x) => x.split(".").filter((part, i, all) => /^[0-9a-f]+$/i.test(part) && inFileName(all, i))));
   for (const [place, tokens, joined, min] of where) {
     const pieces = place === "its path" ? segs : labels;
     for (const t of [...tokens, ...joined]) {
       for (const d of encodedAs(t)) if (said(d.text)) return `${d.form} data in ${place} that reads as this session's text or a secret`;
     }
-    for (const t of tokens) {
+    for (const [i, t] of tokens.entries()) {
+      if (place === "its host" && i === 0 && under(host, ASSIGNED_LABEL)) continue;
+      if (place === "its path" && buildHash.has(t)) continue;
       const shape = encodedShape(t, min);
       if (shape && !(hashed && place === "its path" && shape === "hex")) return `encoded data (${shape}) in ${place}`;
     }
@@ -387,8 +390,9 @@ export class AddressBook {
   private known = new Set<string>();
   // The addresses the owner wrote in their own prompts (a link of theirs may be a capability).
   private owned = new Set<string>();
-  // The hosts of the addresses the session knows, lower case.
-  private hosts = new Set<string>();
+  // The hosts the owner wrote an address on: the only hosts a path copied from a listing runs on (a host the model
+  // fetched once is the model's, and the page there is not the owner's).
+  private ownedHosts = new Set<string>();
   private corpus: string[] = [];
   private corpusSize = 0;
   // The addresses fetched that were not known when the call was made, by registered domain.
@@ -418,17 +422,24 @@ export class AddressBook {
   // Whether the owner wrote this address in a prompt of this session or of one above it.
   fromOwner = (address: string): boolean => {
     const a = addressOf(address);
-    return !!a && (this.owned.has(a) || !!this.above?.(a));
+    if (!a) return false;
+    if (this.owned.has(a) || this.above?.(a)) return true;
+    // An address that carries a key of its own (a query, a user name), or that the session was given in a
+    // result that was not a public page (a file, a command's output), may be a capability: its reply is private.
+    try { const u = new URL(a); if (u.search || u.username || u.password || this.copied.has(fold(u.host + decoded(u.pathname)))) return true; } catch {}
+    return false;
   };
   ownedHas(address: string): boolean { return this.owned.has(address); }
+  ownsHost(host: string): boolean { return this.ownedHosts.has(host); }
   // How many addresses this session fetched on a registered domain (given as an address or a host) that it had not seen when it fetched them.
   unseenOn(of: string): number { const g = groupOf(of); return g ? this.unseen.get(g)?.size ?? 0 : 0; }
   // Whether some text the session was given holds this folded text.
   inResults(folded: string): boolean { return this.copied.has(folded) || this.corpus.some((c) => c.includes(folded)); }
   // How many characters of `path` its end shares with a whole run of a listing the session was given, when the
-  // session knows `host` (0 when not): the address copies a line of what it was given. A run is two segments at least.
-  listed = (host: string, path: string): number => {
-    if (!this.hosts.has(host) || !this.runs.size) return 0;
+  // owner wrote an address on `host` (0 when not): the address copies a line of what it was given. A run is two segments at least.
+  // `owner`: the owner wrote an address on this host in this session or one above it (the gate asks the books of the chain).
+  listed = (host: string, path: string, owner = false): number => {
+    if (!(owner || this.ownedHosts.has(host)) || !this.runs.size) return 0;
     const trimmed = path.replace(/\/+$/, "");
     const segs = trimmed.split("/").filter(Boolean);
     let best = 0;
@@ -455,11 +466,7 @@ export class AddressBook {
   }
 
   private add(list: string[]) {
-    for (const a of list) {
-      this.known.add(a);
-      const h = hostOf(a);
-      if (h && this.hosts.size < 4096) this.hosts.add(h);
-    }
+    for (const a of list) this.known.add(a);
   }
 
   take(events: readonly BookEvent[]) {
@@ -471,7 +478,7 @@ export class AddressBook {
       if (e.kind === "user") {
         if (this.owner(d)) {
           const written = ownerAddresses(String(d.text ?? ""));
-          for (const a of written) this.owned.add(a);
+          for (const a of written) { this.owned.add(a); const h = hostOf(a); if (h) this.ownedHosts.add(h); }
           this.add(written);
         }
         // What is not the owner's (a subagent's report, a harness notice) is text the session was given: a path may copy it.

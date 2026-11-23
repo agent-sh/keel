@@ -302,7 +302,7 @@ export class Gate {
   judge: (a: ReviewAsk) => Promise<Verdict> = async () => ({ unavailable: "no reviewer is set up" });
   // What a tool of any family does on the web, by its name (set by the permission routes, which see the tools):
   // how a stored call is read for the addresses a session has seen (src/safety/addresses.ts).
-  webUse: (name: string) => WebUse | undefined = () => undefined;
+  webUse: (name: string, dispatched?: boolean) => WebUse | undefined = () => undefined;
   // The addresses each session has seen, read from its events as they come (one book a session, kept while the daemon runs).
   private books = new Map<string, AddressBook>();
 
@@ -333,7 +333,7 @@ export class Gate {
       has: (address) => books.some((b) => b.has(address)),
       // `earlier`: the unseen addresses on its registered domain that the call being judged fetches before it.
       carries: (address, earlier = 0) => timed(() => "reading an unseen address for the data it carries", () =>
-        dataIn(address, (f) => books.some((b) => b.inResults(f)), secret, earlier + books.reduce((n, b) => n + b.unseenOn(address), 0), (host, path) => books.reduce((n, b) => Math.max(n, b.listed(host, path)), 0))),
+        dataIn(address, (f) => books.some((b) => b.inResults(f)), secret, earlier + books.reduce((n, b) => n + b.unseenOn(address), 0), (host, path) => { const owner = books.some((b) => b.ownsHost(host)); return books.reduce((n, b) => Math.max(n, b.listed(host, path, owner)), 0); })),
     };
   }
   // Whether the owner wrote an address in a prompt of a session above this one.
@@ -347,7 +347,7 @@ export class Gate {
   // A stored call as the web tool it is: a dispatcher's call (mcp_call) is its tool's.
   private webCall(name: string, input: any): { use: WebUse; input: any } | undefined {
     if (name === "mcp_call") {
-      const use = this.webUse(String(input?.tool ?? ""));
+      const use = this.webUse(String(input?.tool ?? ""), true);
       return use ? { use, input: input?.arguments ?? {} } : undefined;
     }
     const use = this.webUse(name);

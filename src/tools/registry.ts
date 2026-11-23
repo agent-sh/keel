@@ -68,10 +68,12 @@ export function toolFacts(): MarkTool[] {
   return facts.list;
 }
 
-// What a tool of any family, or the web catalog's, does on the web, by the name a call gives it.
-export function webUse(name: string): WebUse | undefined {
-  for (const t of [...byFamily.values(), shared].flat()) if (t.name === name && t.web) return t.web;
-  for (const t of [webSearchTool, webFetchTool]) if (t.qualified === name) return t.web;
+// What a tool does on the web, by the name a call gives it. A call made by its own name is a tool of a family;
+// one that `mcp_call` makes (`dispatched`) is a tool of the web catalog, by its full name: `mcp_call` also takes a
+// server's tool by the name that tool has on its server, so `WebFetch` through it can be a server's tool and is not the built-in.
+export function webUse(name: string, dispatched = false): WebUse | undefined {
+  if (!dispatched) for (const t of [...byFamily.values(), shared].flat()) if (t.name === name && t.web) return t.web;
+  if (dispatched) for (const t of [webSearchTool, webFetchTool]) if (t.qualified === name) return t.web;
   return undefined;
 }
 
