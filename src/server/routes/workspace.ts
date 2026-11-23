@@ -8,6 +8,8 @@ import type { RouteModule } from "../app.ts";
 import { heldFile } from "../../core/store-files.ts";
 import { git } from "../../core/git.ts";
 import { contains } from "../../core/paths.ts";
+import { rankFolders } from "../../core/folder-match.ts";
+import { folderIndex, type Root } from "../folder-index.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -65,12 +67,19 @@ function score(q: string, path: string): number {
 
 export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
   // A folder the page may read: inside the home directory or the daemon's workspace.
+  const readable = (real: string) => contains(HOME, real) || contains(resolve(workspace), real);
   const allowed = (raw: string | null): string | null => {
     if (!raw) return null;
     const p = resolve(raw.replace(/^~(?=$|\/)/, HOME));
     let real: string;
     try { real = realpathSync(p); } catch { return null; }
-    return contains(HOME, real) || contains(resolve(workspace), real) ? real : null;
+    return readable(real) ? real : null;
+  };
+  // The folders sessions on this machine worked in, newest first.
+  const usedFolders = (): string[] => {
+    const seen = new Map<string, number>();
+    for (const s of [...store.sessions({ archived: true }), ...store.sessions()]) if (!s.machine && (seen.get(s.workspace) ?? -1) < s.updated) seen.set(s.workspace, s.updated);
+    return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
   };
 
   return {
@@ -89,13 +98,40 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
       },
     },
 
+    // Folders found by name for the picker (src/server/folder-index.ts), best first
+    // (src/core/folder-match.ts): the home three levels down, two levels under the
+    // parent of each folder a session used and under the repo roots, and those folders.
+    "/api/fs/find": {
+      GET: async (req: Request) => {
+        const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
+        const used = usedFolders().filter((p) => readable(p)).slice(0, 200);
+        const roots: Root[] = [{ path: HOME, depth: 3 }];
+        for (const p of used) if (dirname(p) !== p && contains(HOME, dirname(p)) && dirname(p) !== HOME) roots.push({ path: dirname(p), depth: 2 });
+        for (const r of (process.env.KEEL_REPO_ROOTS ?? dirname(resolve(workspace))).split(":").filter(Boolean)) {
+          const p = resolve(r.replace(/^~(?=$|\/)/, HOME));
+          if (contains(HOME, p) && p !== HOME) roots.push({ path: p, depth: 2 });
+        }
+        const { folders, partial } = await folderIndex(roots, used);
+        return json({ hits: q ? rankFolders(q, folders, 20) : [], partial, folders: folders.length });
+      },
+    },
+
+    // A folder's folders. A path that cannot open says why: 404 when nothing is there or it
+    // is a file, 403 when it is outside the folders the page may read or cannot be read.
+    // A path that does not start at the root or the home is taken from the home.
     "/api/fs/dirs": {
       GET: (req: Request) => {
         const raw = new URL(req.url).searchParams.get("path") || HOME;
-        const p = allowed(raw);
-        if (!p) return bad("outside the home directory", 403);
-        if (!statSync(p).isDirectory()) return bad("not a directory", 404);
-        const dirs = readdirSync(p, { withFileTypes: true })
+        const full = resolve(HOME, raw.replace(/^~(?=$|\/)/, HOME));
+        const shown = full.startsWith(HOME) ? "~" + full.slice(HOME.length) : full;
+        let real: string;
+        try { real = realpathSync(full); } catch { return bad(`No folder at ${shown}.`, 404); }
+        if (!readable(real)) return bad(`${shown} is outside your home folder. The picker opens folders inside ~ only.`, 403);
+        const p = real;
+        if (!statSync(p).isDirectory()) return bad(`${shown} is a file, not a folder.`, 404);
+        let entries;
+        try { entries = readdirSync(p, { withFileTypes: true }); } catch (e) { return bad(`Cannot read ${shown}: ${(e as NodeJS.ErrnoException).code === "EACCES" ? "permission denied" : (e as Error).message}.`, 403); }
+        const dirs = entries
           .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && !e.name.startsWith(".") && !SKIP.has(e.name))
           .map((e) => join(p, e.name))
           .filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } })

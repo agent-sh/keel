@@ -43,7 +43,7 @@ test("workbench", async ({ page, request }) => {
   // Folder picker: browse to this repository by typing its path.
   await page.getByTestId("workspace-picker").click();
   await expect(page.getByTestId("workspace-popup")).toBeVisible();
-  await page.getByPlaceholder("Type a path, Enter to open it").fill(folder);
+  await page.getByTestId("folder-find").fill(folder);
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("use-folder")).toBeVisible();
   await shoot(page, "wb-02-folder-browse");

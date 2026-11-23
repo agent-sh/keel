@@ -55,8 +55,8 @@ test("move to a folder, clone into a worktree, images, repositories, open", asyn
   // Move it, with its files, and make the new folder a repository.
   await openPanel(page, "session");
   await page.getByTestId("place").getByTestId("workspace-picker").click();
-  await page.getByPlaceholder(/Type a path/).fill(b);
-  await page.getByPlaceholder(/Type a path/).press("Enter");
+  await page.getByTestId("folder-find").fill(b);
+  await page.getByTestId("folder-find").press("Enter");
   await page.getByTestId("use-folder").click();
   await page.getByTestId("move-copy").check();
   await page.getByTestId("move-git").check();
@@ -81,8 +81,8 @@ test("move to a folder, clone into a worktree, images, repositories, open", asyn
   if (relative(home, defaultFolder).startsWith("..")) test.info().annotations.push({ type: "left out", description: "the folder picker's repository list: the daemon's default folder is outside its home" });
   else {
     await page.getByTestId("place").getByTestId("workspace-picker").click();
-    await page.getByPlaceholder(/Type a path/).fill(word);
-    await expect(page.getByTestId("repo-list")).toContainText(`${word}-repo`);
+    await page.getByTestId("folder-find").fill(word);
+    await expect(page.getByTestId("folder-matches")).toContainText(`${word}-repo`);
     await shoot(page, "places-02-repos");
     await page.keyboard.press("Escape");
   }

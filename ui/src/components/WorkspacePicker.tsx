@@ -1,6 +1,7 @@
 import { Popover } from "@base-ui/react/popover";
-import { ChevronDown, ChevronLeft, Folder, FolderGit2, History } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronLeft, CircleAlert, Folder, FolderGit2, History, Search } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { type FolderHit, rankFolders, typedPath } from "../../../src/core/folder-match.ts";
 import { api, reportError, failed, workspaces } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
@@ -16,22 +17,55 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
   const [info, setInfo] = useState<{ default: string; home: string; recent: Recent[] } | null>(null);
   const [browse, setBrowse] = useState<{ path: string; parent: string | null; dirs: Dir[]; is_git: boolean } | null>(null);
   const [typed, setTyped] = useState("");
+  // Why the last path or name did not open, shown above the field.
+  const [error, setError] = useState("");
 
   useEffect(() => { workspaces<NonNullable<typeof info>>().then(setInfo).catch(reportError); }, [open]);
   // The repositories under the repo roots and of past sessions (GET /api/fs/repos).
   const [repos, setRepos] = useState<{ name: string; path: string; linked_worktree: boolean }[]>([]);
   useEffect(() => { if (open) api<{ repos: typeof repos }>("/api/fs/repos").then((r) => setRepos(r.repos)).catch(reportError); }, [open]);
   const recentPaths = new Set(info?.recent.map((r) => r.path));
-  const q = typed.trim().toLowerCase();
-  const repoList = repos.filter((r) => !recentPaths.has(r.path) && (!q || r.path.toLowerCase().includes(q)));
+  const q = typed.trim();
+  // A name is found among the folders (GET /api/fs/find) as it is typed; a path is opened.
+  const naming = !!q && !typedPath(q);
+  const [found, setFound] = useState<{ q: string; hits: FolderHit[] } | null>(null);
+  const asked = useRef<{ q: string; job: Promise<FolderHit[]> } | null>(null);
+  const find = (name: string): Promise<FolderHit[]> => {
+    if (asked.current?.q === name) return asked.current.job;
+    const job = api<{ hits: FolderHit[] }>(`/api/fs/find?q=${encodeURIComponent(name)}`).then((r) => r.hits);
+    asked.current = { q: name, job };
+    job.then((hits) => setFound((f) => (asked.current?.q === name ? { q: name, hits } : f)), (e) => { if (asked.current?.q === name) asked.current = null; reportError(e); });
+    return job;
+  };
+  useEffect(() => {
+    if (!open || !naming) return;
+    const t = setTimeout(() => find(q), 120);
+    return () => clearTimeout(t);
+  }, [open, naming, q]);
+  const recentHits = (info?.recent ?? []).map((r): FolderHit => ({ name: r.name, path: r.path, is_git: r.is_git, used: true }));
+  const matchesOf = (name: string, hits: FolderHit[]) => rankFolders(name, [...recentHits, ...hits], 20);
+  const matches = naming ? matchesOf(q, found?.q === q ? found.hits : []) : [];
+  const [sel, setSel] = useState(0);
+  useEffect(() => setSel(0), [q]);
+  const repoList = repos.filter((r) => !recentPaths.has(r.path));
   const shown = value || info?.default || "";
   const home = info?.home ?? "";
 
-  const go = (path: string) => api(`/api/fs/dirs?path=${encodeURIComponent(path)}`).then(setBrowse).catch((e) => setTyped(`${path}: ${failed(e, { at: "WorkspacePicker" })}`));
-  const pick = (path: string) => { onChange(path); setOpen(false); setBrowse(null); };
+  const go = (path: string) => api(`/api/fs/dirs?path=${encodeURIComponent(path)}`).then((b) => { setError(""); setBrowse(b); }).catch((e) => setError(failed(e, { at: "WorkspacePicker" })));
+  const pick = (path: string) => { onChange(path); setOpen(false); setBrowse(null); setTyped(""); setError(""); };
+  // Enter: a path opens; a name takes the chosen match, the top one when the
+  // list is still on its way, or says that nothing has that name.
+  const submit = async () => {
+    if (!q) return;
+    if (!naming) return go(q);
+    const now = found?.q === q ? matches : matchesOf(q, await find(q).catch(() => []));
+    const top = now[Math.min(sel, now.length - 1)];
+    if (top) pick(top.path);
+    else setError(`No folder named \u201c${q}\u201d in your home folder or beside the folders you used. Type its path to open it.`);
+  };
 
   return (
-    <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) setBrowse(null); }}>
+    <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) { setBrowse(null); setError(""); } }}>
       <Popover.Trigger
         data-testid="workspace-picker"
         className="k-chip-pick"
@@ -45,7 +79,33 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="start" className="z-50">
           <Popover.Popup className={cn(popupClass, "w-[min(26rem,calc(100vw-1.5rem))] p-0")} data-testid="workspace-popup">
-            {!browse ? (
+            {!browse && naming ? (
+              <div className="p-1">
+                <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 k-label"><Search className="size-3" /> Matching folders</div>
+                <div className="max-h-[min(22rem,60vh)] overflow-y-auto" data-testid="folder-matches" role="listbox" aria-label="Matching folders">
+                  {matches.map((r, i) => (
+                    <button
+                      key={r.path}
+                      type="button"
+                      role="option"
+                      aria-selected={i === sel}
+                      data-testid="folder-match"
+                      onClick={() => pick(r.path)}
+                      onMouseMove={() => setSel(i)}
+                      className={cn("flex h-10 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover", i === sel && "bg-hover")}
+                    >
+                      {r.is_git ? <FolderGit2 className="size-4 shrink-0 text-accent" /> : <Folder className="size-4 shrink-0 text-faint" />}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-ui font-medium">{r.name}</span>
+                        <span className="block truncate text-micro text-faint">{tilde(r.path, home)}</span>
+                      </span>
+                      {r.used ? <span className="shrink-0 text-micro text-faint">used</span> : r.linked_worktree ? <span className="shrink-0 text-micro text-faint">worktree</span> : null}
+                    </button>
+                  ))}
+                  {matches.length === 0 && <p className="k-empty px-3 py-3" data-testid="folder-none">{found?.q === q ? "No folder has that name." : "Looking\u2026"}</p>}
+                </div>
+              </div>
+            ) : !browse ? (
               <div className="p-1">
                 <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 k-label"><History className="size-3" /> Recent folders</div>
                 {(info?.recent.length ? info.recent : info ? [{ name: info.default.split("/").pop()!, path: info.default, is_git: false, last: 0 }] : []).map((r) => (
@@ -99,14 +159,27 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
                 </div>
               </div>
             )}
+            {error && (
+              <p role="alert" data-testid="folder-error" className="flex items-start gap-1.5 border-t border-line bg-danger-soft px-2.5 py-1.5 text-caption text-danger">
+                <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+                <span className="min-w-0">{error}</span>
+              </p>
+            )}
             <form
               className="border-t border-line p-1.5"
-              onSubmit={(e) => { e.preventDefault(); if (typed.trim()) go(typed.trim()); }}
+              onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); void submit(); }}
             >
               <input
                 value={typed}
-                onChange={(e) => setTyped(e.target.value)}
-                placeholder={matchMedia("(pointer: coarse)").matches ? "Type a path to open it; filters the repositories" : "Type a path, Enter to open it; filters the repositories"}
+                data-testid="folder-find"
+                aria-label="Find a folder by name, or type a path"
+                onChange={(e) => { const v = e.target.value; setTyped(v); setError(""); if (v.trim() && !typedPath(v)) setBrowse(null); }}
+                onKeyDown={(e) => {
+                  if (!naming || !matches.length) return;
+                  if (e.key === "ArrowDown") { e.preventDefault(); setSel((i) => Math.min(i + 1, matches.length - 1)); }
+                  else if (e.key === "ArrowUp") { e.preventDefault(); setSel((i) => Math.max(i - 1, 0)); }
+                }}
+                placeholder={matchMedia("(pointer: coarse)").matches ? "Find a folder by name, or type a path" : "Find a folder by name, or type a path; Enter opens it"}
                 className="h-8 w-full rounded-sm bg-sunken px-2.5 font-mono text-caption outline-none placeholder:font-sans placeholder:text-faint"
               />
             </form>

@@ -131,8 +131,8 @@ test("loops: a panel loop names its folder and mode, and a run waiting on you sa
   // The owner's default mode is the one offered.
   await expect(page.getByTestId("new-loop-mode")).toHaveText("Plan");
   await page.getByTestId("new-loop-where").getByTestId("workspace-picker").click();
-  await page.getByPlaceholder(/Type a path/).fill(ws);
-  await page.getByPlaceholder(/Type a path/).press("Enter");
+  await page.getByTestId("folder-find").fill(ws);
+  await page.getByTestId("folder-find").press("Enter");
   await page.getByTestId("use-folder").click();
   await expect(page.getByTestId("new-loop")).toBeVisible();
   await page.getByTestId("new-loop-mode").click();
