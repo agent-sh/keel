@@ -7,7 +7,7 @@ import { errorText } from "../engine/retry.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { D, capture, clip, deliver, isPending, parkedOn, rider, stillRunning, type Pending, heldWhy } from "./core.ts";
 import { cutTurn } from "./waits.ts";
-import { acked, add, classOf, cleared, fingerprintOf, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
+import { acked, add, classOf, cleared, fingerprintOf, merged, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
 
 // A session's own account of what went wrong in its scope, kept so nobody has
 // to ask: every failure of its turns, of its agents and their tools, and of
@@ -112,6 +112,19 @@ export function record(sessionId: string, f: Failure, from = sessionId): boolean
     capture(e, { at: "failures", session: sessionId });
     return false;
   }
+}
+
+// What `from` keeps of its agents' failures goes to `to`, a cause both keep made one: the agents moved there (a
+// lost context's successor takes its working agents). In the caller's transaction, so nothing owed stays where
+// no one reads it, and a start does not wake the session that lost its context for it (recover).
+export function moveTo(from: string, to: string) {
+  const { db } = D().store;
+  for (const r of db.query<Row, [string]>("SELECT * FROM session_failures WHERE session_id = ?").all(from)) {
+    const g = toGroup(r);
+    const had = one(to, g.fp);
+    save(to, had ? merged(had, g) : g);
+  }
+  db.query("DELETE FROM session_failures WHERE session_id = ?").run(from);
 }
 
 function prune(sessionId: string) {

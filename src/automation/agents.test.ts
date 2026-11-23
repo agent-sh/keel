@@ -9,6 +9,7 @@ import { allHooks, registerHooks } from "../engine/hooks.ts";
 import { Engine, toMessages } from "../engine/turn.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
+import * as failures from "./failures.ts";
 import * as leftovers from "./leftovers.ts";
 import { deliver, dropPending, flush, isPending, setDeps } from "./core.ts";
 import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
@@ -76,6 +77,8 @@ const engine = {
   idle: async () => {},
   // Where a finished agent's follow-up starts: what the decision was given, and the plan a test sets.
   followUp: async (_id: string, o: any) => (followUps.push(o), nextPlan),
+  // A declined brief is not restated here: the successor gets it as it was.
+  reword: async () => undefined,
 };
 const followUps: any[] = [];
 let nextPlan: any;
@@ -87,6 +90,7 @@ store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds
 agents.migrate();
 waits.migrate();
 activity.migrate();
+failures.migrate();
 const parent = store.createSession({ model: "m:x", workspace: dir, title: "parent" });
 store.append(parent.id, "assistant", { blocks: [] }); // a warm cache: agents start without the stagger
 const spawn = (o: Partial<agents.SpawnInput> = {}) => agents.spawn(parent.id, { prompt: "do it", isolation: "none", background: true, ...o });
@@ -188,6 +192,61 @@ test("a turn that declined or ran out of steps is not a completed agent, and a d
   expect(declined).toContain("Looked at the parser.");
   expect(declined).not.toContain("I will not");
   expect(declined).toContain("Keel started no fresh context for it: 2 successors were started");
+});
+
+test("a context that declines while its own agent works hands the task and the agent to a successor", async () => {
+  const a = await spawn();
+  store.append(a.session_id, "assistant", { blocks: [] }); // a warm cache: its agent starts without the stagger
+  const done = await agents.spawn(a.session_id, { prompt: "look first", isolation: "none", background: true });
+  end(done, "end_turn", "the first look");
+  await settled();
+  flush(a.session_id); // its report is the context's next input, taken before the turn that declines
+  const kid = await agents.spawn(a.session_id, { prompt: "look it up", isolation: "none", background: true });
+  // A failure of one of its agents is owed to it, worth a turn of its own.
+  expect(failures.record(a.session_id, { kind: "agent", cls: "provider error", message: "the request failed", ref: { id: kid.id, label: "look it up" }, tell: "wake" })).toBe(true);
+  store.append(a.session_id, "assistant", { blocks: [{ type: "text", text: "I will not" }], stop: "refusal" });
+  store.append(a.session_id, "turn_end", { reason: "refusal" });
+  agents.onTurnEnd(a.session_id, "refusal");
+  await settled();
+  const now = agents.get(a.id)!;
+  // The loss is recorded and a successor started, though its agent still works.
+  expect([now.status, now.lost?.map((l) => l.kind), now.session_id === a.session_id]).toEqual(["running", ["refusal"], false]);
+  // What the lost context was owed of its agents' failures is the successor's: a start never wakes the lost one for it.
+  const owed = (sid: string) => store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM session_failures WHERE session_id = ? AND owed > 0 AND wake = 1").get(sid)!.n;
+  expect([owed(a.session_id), owed(now.session_id)]).toEqual([0, 1]);
+  // The agent that ended before the handover stays the lost context's, and shows under the successor.
+  expect([agents.get(done.id)!.parent_id, agents.shown(now.session_id).map((k) => k.id), agents.tree(now.session_id, true).map((r) => [r.agent.id, r.agent.parent_id])])
+    .toEqual([a.session_id, [done.id, kid.id], [[done.id, now.session_id], [kid.id, now.session_id]]]);
+  // The agent goes with the task: the successor's capsule names it, and it is the successor's to message or stop.
+  expect([agents.get(kid.id)!.parent_id, store.session(kid.session_id)!.parent_id]).toEqual([now.session_id, now.session_id]);
+  expect(sends.findLast((x) => x.id === now.session_id)!.text).toContain(`(${kid.id})`);
+  // Its report wakes the successor, never the context that declined.
+  const from = sends.length;
+  end(kid, "end_turn", "what it found");
+  await Bun.sleep(400);
+  expect(sends.slice(from).filter((x) => x.text.includes("what it found")).map((x) => x.id)).toEqual([now.session_id]);
+  agents.stop(a.id);
+  // No successor left for the task: it waits for its agent in the same context, as before.
+  const b = await spawn();
+  spendSuccessors(b);
+  store.append(b.session_id, "assistant", { blocks: [] });
+  const other = await agents.spawn(b.session_id, { prompt: "look it up", isolation: "none", background: true });
+  store.append(b.session_id, "assistant", { blocks: [{ type: "text", text: "I will not" }], stop: "refusal" });
+  store.append(b.session_id, "turn_end", { reason: "refusal" });
+  agents.onTurnEnd(b.session_id, "refusal");
+  await settled();
+  expect([agents.get(b.id)!.status, agents.get(b.id)!.session_id, agents.get(other.id)!.parent_id]).toEqual(["running", b.session_id, b.session_id]);
+  agents.stop(b.id);
+  // A stop while the task is being handed on ends it stopped, with its agent, and starts no successor.
+  const c = await spawn();
+  store.append(c.session_id, "assistant", { blocks: [] });
+  const third = await agents.spawn(c.session_id, { prompt: "look it up", isolation: "none", background: true });
+  store.append(c.session_id, "assistant", { blocks: [{ type: "text", text: "I will not" }], stop: "refusal" });
+  store.append(c.session_id, "turn_end", { reason: "refusal" });
+  agents.onTurnEnd(c.session_id, "refusal");
+  agents.stop(c.id, "owner");
+  await settled();
+  expect([agents.get(c.id)!.status, agents.get(c.id)!.stopped_by, agents.get(c.id)!.session_id, agents.get(c.id)!.lost, agents.get(third.id)!.status]).toEqual(["stopped", "owner", c.session_id, undefined, "stopped"]);
 });
 
 test("a lost context gets a successor, but not a step budget, an open outage or a wait the provider asked for", async () => {

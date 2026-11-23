@@ -481,3 +481,12 @@ test("control characters, escape sequences and line separators in a failure are 
   const g = add(undefined, { kind: "agent", cls: "other", message: "boom", ref: { id: "a1", label: "Lane\u001b[2J\u0007one" }, tell: "wake" }, 1000);
   expect(g.refs[0]!.label).toBe("Lane [2J one");
 });
+
+test("one cause kept by two sessions merges into one: counts and what is owed add up, each agent once", () => {
+  const f = (id: string, tell?: "wake" | "ride"): Failure => ({ kind: "agent", cls: "provider error", message: "the request failed", ref: { id, label: id }, tell });
+  const a = add(add(undefined, f("a1", "wake"), 10), f("a2"), 20);
+  const b = add(add(undefined, f("a1", "ride"), 5), f("a3", "wake"), 30);
+  const m = fg.merged(a, b);
+  expect([m.count, m.owed, m.wake, m.first_ts, m.last_ts]).toEqual([4, a.owed + b.owed, true, 5, 30]);
+  expect(m.refs.map((r) => [r.id, r.n, r.owed])).toEqual([["a1", 2, 2], ["a2", 1, 0], ["a3", 1, 1]]);
+});

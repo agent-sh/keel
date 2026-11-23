@@ -12,7 +12,7 @@ import * as beforeRun from "../checks/before-run.ts";
 import { awaited, beingStopped, listens, sampleServing, unfinished } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, whenPartsGo, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, movePending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, whenPartsGo, withdraw } from "./core.ts";
 import { Line, limitWords } from "./slots.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
@@ -275,6 +275,14 @@ export const byChild = (sessionId: string) => {
 };
 export const list = (parentId?: string) =>
   D().store.db.query<Row, any>(`SELECT * FROM agents ${parentId ? "WHERE parent_id = ?" : ""} ORDER BY created`).all(...(parentId ? [parentId] : [])).map(toRec);
+// The agents a session shows as its own: its own, and when it is an agent's successor, the agents its lost contexts
+// started that ended before the handover. Those stay the lost context's (their reports were its, and a message
+// to one would start a follow-up that reports there): a read for the owner's views, not for what acts on agents.
+const lostOf = (sessionId: string): string[] => byChild(sessionId)?.lost?.map((l) => l.session).filter((x) => x !== sessionId) ?? [];
+export const shown = (sessionId: string): AgentRecord[] => {
+  const before = lostOf(sessionId).flatMap((l) => list(l));
+  return before.length ? [...list(sessionId), ...before].sort((x, y) => x.created - y.created) : list(sessionId);
+};
 const defOf = (id: string): AgentDef | undefined => {
   const r = D().store.db.query<{ def: string | null }, [string]>("SELECT def FROM agents WHERE id = ?").get(id);
   return r?.def ? JSON.parse(r.def) : undefined;
@@ -311,8 +319,18 @@ export const depthIn = (sessionId: string) => depthOf(parentOf, sessionId);
 // Every agent session below one session, on the parent index.
 const BELOW = "WITH RECURSIVE t(s) AS (SELECT session_id FROM agents WHERE parent_id = ?1 UNION SELECT a.session_id FROM agents a JOIN t ON a.parent_id = t.s)";
 // The agents below a session, each followed by its own, with their depth under it.
-export const tree = (sessionId: string): TreeRow<AgentRecord>[] =>
-  treeRows(D().store.db.query<Row, [string]>(`${BELOW} SELECT * FROM agents WHERE session_id IN (SELECT s FROM t)`).all(sessionId).map(toRec), sessionId);
+// `lost`: for the owner's views, the agents of a lost context show under the session that took its task up (shown).
+export const tree = (sessionId: string, lost = false): TreeRow<AgentRecord>[] => {
+  const below = (sid: string) => D().store.db.query<Row, [string]>(`${BELOW} SELECT * FROM agents WHERE session_id IN (SELECT s FROM t)`).all(sid).map(toRec);
+  const rows = below(sessionId);
+  if (!lost) return treeRows(rows, sessionId);
+  const seen = new Set(rows.map((r) => r.id));
+  for (let i = -1; i < rows.length; i++) {
+    const at = i < 0 ? sessionId : rows[i]!.session_id;
+    for (const l of lostOf(at)) for (const k of below(l)) if (!seen.has(k.id)) { seen.add(k.id); rows.push(k.parent_id === l ? { ...k, parent_id: at } : k); }
+  }
+  return treeRows(rows, sessionId);
+};
 
 // A tree's slots count its agents that work. One that waits (its turn ended
 // on a wait it set) holds none: it takes one again when its wake comes, first
@@ -709,6 +727,7 @@ function reserve(sessionId: string) {
 // take no slot.
 const admitting = new Set<string>();
 export function admit(sessionId: string): boolean {
+  if (losing.has(sessionId)) return false;
   if (!kept.has(D().store)) return true;
   const a = byChild(sessionId);
   if (!a) return true;
@@ -1806,14 +1825,15 @@ async function checkUsd(budget: Budget | undefined, model: string, info?: { pric
 
 // Turn-end of any session: settle the agent whose session it is, unless more
 // work is already lined up for it (a queued message, a wait).
-export function onTurnEnd(sessionId: string, reason: string) {
+export function onTurnEnd(sessionId: string, reason: string, decided = false) {
   // This session's own turn ended: with no hold on it, what its agents owe it goes now.
   releaseOwed(sessionId);
   const a = byChild(sessionId);
   if (!a || (isEnded(a) && !stopping.has(a.id))) return;
   // Its report is being written (finish): that is its end. A second end now would write its record and hand
   // back its report again (a stop or its time limit while the report waits for its tests' run).
-  if (settling.has(a.id)) { stopping.delete(a.id); return; }
+  // (A refused context being handed on keeps its stop: the handover sees it and the agent ends stopped, below.)
+  if (settling.has(a.id)) { if (!losing.has(sessionId)) stopping.delete(a.id); return; }
   // Parked for a daemon stop: the agent has not ended. The next daemon
   // continues the turn or ends the agent (onCutTurn, onCutTurnHeld).
   if (reason === "restart" && !stopping.has(a.id)) return;
@@ -1826,6 +1846,21 @@ export function onTurnEnd(sessionId: string, reason: string) {
   // A message of its parent waits and no stop holds it: its turn starts by
   // itself (the next daemon starts it when this one is on its way down).
   if (!stopping.has(a.id) && !engine.isHeld(sessionId) && waitingFor(sessionId)) return;
+  // A context the model declined to go on in is lost whether or not its own agents still work or a wait holds
+  // it: a report or a wake would only start another turn in it. The lost-context decision runs now (heldLoss).
+  if (!decided && reason === "refusal" && !stopping.has(a.id) && !a.machine && !isSilent(a.id) && (ownAtWork(sessionId) || waitsOn(a, { own: true }))) {
+    const work = heldLoss(a);
+    settleEnd(a.id, work);
+    // Stopped meanwhile: it ends stopped. No successor: as before, it waits in this context for its agents or its wait.
+    void settling.get(a.id)!.then(async () => {
+      const stays = await work.catch(() => true);
+      if (stopping.has(a.id) && get(a.id)?.session_id === sessionId) return onTurnEnd(sessionId, "interrupted", true);
+      if (!stays) return;
+      onTurnEnd(sessionId, reason, true);
+      flush(sessionId);
+    });
+    return;
+  }
   // Its own agents still work: it has not finished, and their reports start
   // its next turn. (A blocking call on it goes on waiting; a stop ends it.)
   // (Out of its budget it has finished all the same: its own agents stop with it, below.)
@@ -1913,6 +1948,29 @@ function tellOwedBefore(parentId?: string) {
   }
 }
 
+// The waits a session's agent set are cancelled, with what they fired that was not given yet. A wait the owner set
+// by hand (POST /api/waits) is theirs: it stays, with its wake.
+function dropWaits(sessionId: string, why: string) {
+  const kept = waits.cancelForSession(sessionId, why, { keepOwner: true });
+  const spent = (m: any) => m?.kind === "wait" && !kept.has(String(m.wait_id));
+  withdraw(sessionId, (m) => spent(m) || (Array.isArray(m.parts) && m.parts.some(spent) && !m.parts.some((x: any) => x?.kind === "wait" && !spent(x))));
+}
+
+// A refused context whose own agents still work, or that a wait holds: a successor takes the task up, with the
+// agents (succeed moves them), and the waits the lost context set are cancelled, as at any end. Meanwhile nothing
+// starts in it (admit holds its inputs). true: no successor started, and the agent goes on as before.
+const losing = new Set<string>();
+async function heldLoss(a: AgentRecord): Promise<boolean> {
+  losing.add(a.session_id);
+  try {
+    const got = collect(a, "refusal");
+    const r = await succeed(a, "refusal", got, classOf(got.error));
+    return r !== "started" && r !== "gone";
+  } finally {
+    losing.delete(a.session_id);
+  }
+}
+
 // Agents whose ended turn is being settled (a work agent's worktree is read
 // first): a message meanwhile waits for it, then continues the agent.
 const settling = new Map<string, Promise<unknown>>();
@@ -1941,9 +1999,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // It ended: a wait it left set would wake it after its report (as a background command a subagent
   // started ends with its final response in Claude Code). What a wait fired and its session was not
   // given yet is not given either. A wait the owner set by hand (POST /api/waits) is theirs: it stays, with its wake.
-  const kept = waits.cancelForSession(a.session_id, `Cancelled at the end of its agent (${status}): a wait left set would wake it after its report.`, { keepOwner: true });
-  const spent = (m: any) => m?.kind === "wait" && !kept.has(String(m.wait_id));
-  withdraw(a.session_id, (m) => spent(m) || (Array.isArray(m.parts) && m.parts.some(spent) && !m.parts.some((x: any) => x?.kind === "wait" && !spent(x))));
+  dropWaits(a.session_id, `Cancelled at the end of its agent (${status}): a wait left set would wake it after its report.`);
   const got = collect(a, status === "incomplete" ? how.end_reason : undefined);
   let result = got.text;
   if (how.note) result += `${result ? "\n\n" : ""}${how.note}`;
@@ -2113,7 +2169,8 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   const [facts, checks] = await Promise.all([worktreeFacts(a), proofFor(a.session_id, folder, got.events).catch(() => "")]);
   // A failure is said as its class, and a provider's own error words up to a line; a refusal by its category only.
   const failure = loss === "refusal" ? `the model declined${category ? ` (${category})` : ""}` : `${cls}${got.error ? `: ${got.error.split("\n")[0]!.slice(0, 200)}` : ""}`;
-  const capsule = capsuleBrief({ title: attr(a.title), task: reworded?.text ?? task, reworded: !!reworded, loss, category, did: didLine(got.events), worktree: a.worktree ?? undefined, branch: a.branch ?? undefined, head: facts.head, files: facts.files, checks, failure, lost });
+  const working = list(a.session_id).filter((k) => !isEnded(k) && !isSilent(k.id)).map((k) => ({ id: k.id, title: attr(k.title) }));
+  const capsule = capsuleBrief({ title: attr(a.title), task: reworded?.text ?? task, reworded: !!reworded, loss, category, did: didLine(got.events), worktree: a.worktree ?? undefined, branch: a.branch ?? undefined, head: facts.head, files: facts.files, checks, failure, lost, agents: working });
   const text = [head, capsule].filter(Boolean).join("\n\n");
   // What its old session left running stops, and its repositories are read again for the new one.
   await leftovers.settle({ store, isRunning: (sid) => engine.isRunning(sid) }, { ...a, report: reportId(a) }).catch((e) => capture(e, { at: "agent successor leftovers", agent: a.id }));
@@ -2124,6 +2181,7 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   const entry: Lost & { task?: string } = { kind: loss, model: a.model, family: info.family, session: a.session_id, ...(category ? { category } : {}), at: Date.now(), ...(steers.length ? { steers } : {}), ...(lost.length ? {} : { task: base }) };
   // From the check to the task's start nothing waits: a stop lands before the check (and settles the
   // agent itself, "gone") or after the task is in the new session (and stops that).
+  const moved: string[] = [];
   const child = store.db.transaction(() => {
     const now = get(a.id);
     if (!now || stopping.has(a.id) || isEnded(now) || now.session_id !== a.session_id) return undefined;
@@ -2134,6 +2192,19 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
     // (task_at: the capsule is what the page shows as its task.)
     store.db.query("UPDATE agents SET task = ? WHERE id = ?").run(JSON.stringify(store.redact(c.id, "user", { text, task_at: text.length - capsule.length })), a.id);
     update(a.id, { session_id: c.id, model, first_seq: 0, tasks: a.tasks + 1, result: null, lost: [...lost, entry], start: null, end_reason: null, stopped_by: null }, true);
+    // The agents the lost context started that still work go with the task, as its worktree does: the successor
+    // holds the task, so their reports come to it and the agent's stop reaches them (stopBelow reads the agent's
+    // session). Left with the lost context, a report would wake a context that declined the work, or nobody.
+    // What the lost context is owed of its agents' reports, and the limit it set on them, go too.
+    for (const k of list(a.session_id)) if (!isEnded(k)) {
+      store.db.query("UPDATE agents SET parent_id = ? WHERE id = ?").run(c.id, k.id);
+      store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(c.id, k.session_id);
+      moved.push(k.id);
+    }
+    store.db.query("UPDATE agent_owed SET parent_id = ? WHERE parent_id = ?").run(c.id, a.session_id);
+    store.db.query("UPDATE agent_limits SET parent_id = ? WHERE parent_id = ?").run(c.id, a.session_id);
+    // So do the failures of its agents it was owed: told to the successor, never to the lost context at a start.
+    failures.moveTo(a.session_id, c.id);
     return c;
   })();
   if (!child) return "gone";
@@ -2149,6 +2220,14 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   // The parent hears one line, with its next input: nothing for it to act on.
   deliver(a.parent_id, line, { kind: "harness", agent_id: a.id, successor: plan.n }, { ride: true });
   sendTask(get(a.id)!);
+  for (const id of moved) { const k = get(id); if (k) { emit("agent", brief(k)); const ks = store.session(k.session_id); if (ks) bus.emit({ t: "session", session: ks }); } }
+  // What waited for the lost context goes to its successor after its task: its agents' reports are sent again
+  // from what is owed (now owed to the successor), the rest as it was. Its waits end with it, as at any end of an
+  // agent (a refused context that a wait held is handed on with the wait still set).
+  dropWaits(a.session_id, "Cancelled: the context that set it was lost, and a successor took its task up.");
+  withdraw(a.session_id, (m) => m.kind === "subagent");
+  movePending(a.session_id, child.id);
+  sendAllOwed(owedOf(child.id));
   return "started";
 }
 
@@ -2168,7 +2247,8 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   const { engine } = D();
   if (isEnded(a) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
   // Its turn ended and its report is being written: it has finished, and the stop goes to its own agents only.
-  if (settling.has(id) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
+  // (Not a refused context being handed on: it has not finished, and the stop is its own.)
+  if (settling.has(id) && !losing.has(a.session_id) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
   if (stopping.has(id)) return a;
   waits.cancelForSession(a.session_id);
   engine.cachePlans?.end(a.session_id, "stopped"); // nothing more is sent to keep its cache (also when it waited on no wait of its own)

@@ -418,7 +418,7 @@ function sweepArchived(deps: Deps) {
 
 function background(sessionId: string) {
   return {
-    agents: agents.list(sessionId),
+    agents: agents.shown(sessionId),
     waits: waits.list(sessionId, 20),
     loops: loops.list(sessionId),
   };
@@ -487,8 +487,8 @@ export const automationRoutes: RouteModule = (deps) => {
         // `agents`: its own; `tree`: every agent below it, each after the one that started it, with its
         // depth under this session; `limit`: the live agents its whole tree may have (its root's);
         // `slots`: how many of the tree's agents work (each holds a slot), wait on a wait of their own (none), and wait in line for one.
-        const rows = agents.tree(s.id);
-        return json({ agents: agents.list(s.id), tree: rows.map((r) => ({ ...r.agent, depth: r.depth, below: r.below })), now: now.linesOf(s.id), limit: agents.limitOf(s.id), root: agents.rootSession(s.id), depth: agents.depthIn(s.id), max_depth: maxDepth(),
+        const rows = agents.tree(s.id, true);
+        return json({ agents: agents.shown(s.id), tree: rows.map((r) => ({ ...r.agent, depth: r.depth, below: r.below })), now: now.linesOf(s.id), limit: agents.limitOf(s.id), root: agents.rootSession(s.id), depth: agents.depthIn(s.id), max_depth: maxDepth(),
           ...(s.parent_id ? {} : { default_limit: agents.DEFAULT_LIMIT, own_limit: agents.ownLimit(s.id), slots: agents.slotsOf(s.id) }) });
       },
       PATCH: async (req: any) => {

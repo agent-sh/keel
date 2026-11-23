@@ -188,6 +188,28 @@ export function add(g: FailureGroup | undefined, f: Failure, now: number): Failu
   return { ...base, count: base.count + 1, owed, wake: owed > 0 && (base.wake || (f.tell === "wake" && named)), last_ts: now, refs };
 }
 
+// One cause as two sessions kept it, as one: what each ref had and was owed, added up (the session a lost
+// context's agents moved to takes what was owed to the lost one).
+export function merged(a: FailureGroup, b: FailureGroup): FailureGroup {
+  const refs = a.refs.map((r) => ({ ...r }));
+  for (const r of b.refs) {
+    const at = refs.find((x) => x.id === r.id);
+    if (!at) { refs.push({ ...r }); continue; }
+    const newer = (r.ts ?? 0) > (at.ts ?? 0);
+    const late = [...(at.late ?? []), ...(r.late ?? [])].sort((x, y) => x - y).slice(-LATE);
+    const reports = [...(at.reports ?? []), ...(r.reports ?? [])];
+    const from = at.from === undefined ? r.from : r.from === undefined ? at.from : Math.min(at.from, r.from);
+    Object.assign(at, { n: at.n + r.n, owed: at.owed + r.owed, told: (at.told ?? 0) + (r.told ?? 0), ...(newer ? { eg: r.eg, ts: r.ts, label: r.label ?? at.label } : {}) });
+    if (reports.length) at.reports = reports;
+    if (late.length) at.late = late;
+    if (from !== undefined) at.from = from;
+    if (!(at.quiet && r.quiet)) delete at.quiet;
+  }
+  const owed = sum(refs);
+  const first = a.first_ts <= b.first_ts ? a : b;
+  return { ...a, sample: first.sample, count: a.count + b.count, owed, wake: owed > 0 && (a.wake || b.wake), told: a.told + b.told, first_ts: first.first_ts, last_ts: Math.max(a.last_ts, b.last_ts), refs };
+}
+
 // A ref with `took` of what it was owed told. What is left, if anything,
 // landed after the notice was made: with `newest` it is the ref's newest
 // failures, and its span starts at the first of them when that is still kept.

@@ -112,6 +112,7 @@ export type CapsuleFacts = {
   checks: string;           // what the check ledger saw (src/checks/proof.ts)
   failure?: string;         // the last failure, as its class
   lost: readonly Lost[];    // the losses before this one in the task
+  agents?: readonly { id: string; title: string }[]; // agents the lost context started that still work: the successor's now
 };
 
 const FILES_SHOWN = 40;
@@ -138,6 +139,7 @@ export function capsuleBrief(f: CapsuleFacts): string {
     `Files changed so far:\n${files}`,
     ...(f.checks ? [`Checks: ${f.checks}`] : []),
     ...(f.failure ? [`Last failure: ${f.failure}`] : []),
+    ...(f.agents?.length ? [`Agents the earlier context started still work, and are yours now: their reports come to you, and you can message or stop them by id. ${f.agents.map((x) => `${x.title ? `"${x.title}" ` : ""}(${x.id})`).join(", ")}`] : []),
     `Task${f.reworded ? " (its brief restated: what the work builds or checks)" : ""}:\n${f.task}`,
   ].filter(Boolean).join("\n\n");
 }

@@ -128,6 +128,19 @@ export function deliver(sessionId: string, text: string, meta: Record<string, un
   return true;
 }
 
+// What waits for one session goes to another (an agent's lost context to its successor), after what waits there.
+export function movePending(from: string, to: string) {
+  let any = false;
+  for (const lists of [pending, riding]) {
+    const list = lists.get(from);
+    lists.delete(from);
+    if (!list?.length) continue;
+    lists.set(to, [...(lists.get(to) ?? []), ...list]);
+    if (lists === pending) any = true;
+  }
+  if (any) flush(to);
+}
+
 export function dropPending(sessionId: string) {
   pending.delete(sessionId);
   riding.delete(sessionId);
