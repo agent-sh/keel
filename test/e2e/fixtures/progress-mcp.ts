@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // A stdio MCP server whose `work` tool takes longer than the client's timeout
 // and says so: given a progressToken, it reports progress every 150 ms, five
-// times, then answers. Without a token it reports nothing (as the spec says).
+// times, then answers (with `stuck`, the same progress each time). Without a
+// token it reports nothing (as the spec says).
 const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 async function handle(m: any) {
   if (m.id === undefined) return;
@@ -12,7 +13,8 @@ async function handle(m: any) {
     const token = m.params?._meta?.progressToken;
     for (let i = 1; i <= 5; i++) {
       await Bun.sleep(150);
-      if (token !== undefined) send({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: i, total: 5 } });
+      // `stuck`: the same progress each time, as a server that reports without moving on.
+      if (token !== undefined) send({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: m.params?.arguments?.stuck ? 1 : i, total: 5 } });
     }
     return reply({ content: [{ type: "text", text: "worked" }] });
   }

@@ -88,11 +88,15 @@ test("a server that keeps asking after its call ended loses its connection", asy
 }, 30_000);
 
 // A call that runs past its timeout while its server reports progress goes on (basic/utilities/progress).
-test("a tool call that reports progress is not ended by its timeout", async () => {
+test("a tool call that reports progress is not ended by its timeout, only progress that grew counts, and its ceiling holds", async () => {
   const c = await McpClient.connect({ kind: "stdio", command: "bun", args: [`${import.meta.dir}/../../test/e2e/fixtures/progress-mcp.ts`], env: process.env as Record<string, string> }, 10_000, "legacy");
   try {
     const r = await c.callTool("work", {}, undefined, 400);
     expect(r.content).toEqual([{ type: "text", text: "worked" }]);
+    // A report that does not move on is no progress: the call ends at its timeout.
+    await expect(c.callTool("work", { stuck: true }, undefined, 400)).rejects.toThrow("timed out after");
+    // However it reports, a call ends at its longest time.
+    await expect(c.callTool("work", {}, undefined, 400, undefined, undefined, undefined, 500)).rejects.toThrow("ran past its longest time");
   } finally {
     c.close();
   }

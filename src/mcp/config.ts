@@ -23,7 +23,8 @@ export type McpServerConfig = {
   bearer_env?: string;
   enabled?: boolean;
   timeout_secs?: number;               // connect
-  tool_timeout_secs?: number;          // one tools/call
+  tool_timeout_secs?: number;          // one tools/call without a word from its server (progress that grew starts it again)
+  tool_max_secs?: number;              // one tools/call at most, whatever it reports (client.ts TOOL_CEILING_MS by default)
   oauth?: OAuthConfig;
   // Tools of this server the owner marked as reads: they run without asking.
   // A server's own readOnlyHint does not count; it is the server's word.
@@ -133,6 +134,7 @@ function normalize(c: any): McpServerConfig {
   if (c.enabled === false || c.disabled === true) out.enabled = false;
   if (c.timeout_secs) out.timeout_secs = Number(c.timeout_secs);
   if (c.tool_timeout_secs) out.tool_timeout_secs = Number(c.tool_timeout_secs);
+  if (c.tool_max_secs) out.tool_max_secs = Number(c.tool_max_secs);
   if (c.oauth && typeof c.oauth === "object") out.oauth = c.oauth;
   if (Array.isArray(c.read_tools)) out.read_tools = c.read_tools.map(String);
   if (c.transport === "sse" || c.type === "sse") out.transport = "sse";

@@ -132,7 +132,16 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
 // `input`: the call takes the server's own requests. `hold` stops the request's timer while the owner is asked,
 // and gives back what starts it again.
 // `progressed`: the server reported progress on it (its progressToken is the request's id).
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; hold: () => () => void; progressed?: () => void };
+// The longest a tool call may run while its server keeps reporting progress,
+// when its server's config names none: Claude Code's documented default for
+// an MCP tool call's wall-clock limit (MCP_TOOL_TIMEOUT, 100000000 ms, about
+// 28 hours; code.claude.com/docs/en/env-vars). Claude Code is taken because it
+// documents the same two limits: an idle window that progress resets, and a
+// wall-clock limit that progress does not extend. Codex documents one 60 s
+// per-tool timeout and nothing about progress, so it gives no ceiling.
+export const TOOL_CEILING_MS = 100_000_000;
+
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; hold: () => () => void; progressed?: (progress: unknown) => void };
 
 export class McpClient {
   era: "modern" | "legacy" = "legacy";
@@ -308,7 +317,7 @@ export class McpClient {
     else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
     else if (msg.method === CHANNEL_METHOD && this.channel) this.onChannel?.(msg.params);
     // Progress on a request that asked for it (basic/utilities/progress): its timeout starts again.
-    else if (msg.method === "notifications/progress" && msg.params?.progressToken !== undefined) this.pending.get(msg.params.progressToken)?.progressed?.();
+    else if (msg.method === "notifications/progress" && msg.params?.progressToken !== undefined) this.pending.get(msg.params.progressToken)?.progressed?.(msg.params.progress);
   }
 
   // A legacy server's own request (2025-11-25: elicitation/create is sent
@@ -675,10 +684,12 @@ export class McpClient {
   }
 
   // `progress`: the request asks the server for progress (its id as the
-  // progressToken), and each report starts its timeout again: the timeout is
-  // the time the server goes without a word, and the owner's stop ends it
-  // at any time (lifecycle: Timeouts lets progress reset the clock).
-  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; timeoutText?: string; modern?: boolean; authorize?: () => string | undefined; input?: CallInput; progress?: () => void } = {}): Promise<any> {
+  // progressToken), and a report whose progress grew starts its timeout
+  // again: the timeout is the time a server goes without moving on.
+  // `ceilingMs` bounds the request whatever it reports (lifecycle: Timeouts
+  // lets progress reset the clock, and a client should always enforce a
+  // maximum); the owner's stop ends it at any time.
+  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; timeoutText?: string; modern?: boolean; authorize?: () => string | undefined; input?: CallInput; progress?: () => void; ceilingMs?: number; ceilingText?: string } = {}): Promise<any> {
     const deny = opt.authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
     if (this.closed) throw new Error("the connection is closed");
@@ -718,15 +729,27 @@ export class McpClient {
       // The owner's time is not the server's: the timer stops while the owner
       // is asked and goes on with what was left, so a server that keeps
       // asking still has one timeout for its call, not a new one a question.
-      let left = timeoutMs, since = 0;
-      const arm = () => { since = Date.now(); timer = setTimeout(() => giveUp(opt.timeoutText ?? `${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), left); };
+      // `spent`: the server's time so far (the owner's is not counted), against the ceiling.
+      let left = timeoutMs, since = 0, spent = 0;
+      const ceiling = opt.ceilingMs ?? Infinity;
+      const arm = () => {
+        since = Date.now();
+        const capped = ceiling - spent < left;
+        timer = setTimeout(() => giveUp(capped ? (opt.ceilingText ?? `${method} ran past its longest time, ${Math.round(ceiling / 1000)}s, while it reported progress`) : (opt.timeoutText ?? `${method} timed out after ${Math.round(timeoutMs / 1000)}s`), "timed out"), Math.max(0, Math.min(left, ceiling - spent)));
+      };
       let held = 0;
       const hold = () => {
-        if (held++ === 0) { clearTimeout(timer); left = Math.max(0, left - (Date.now() - since)); }
+        if (held++ === 0) { clearTimeout(timer); left = Math.max(0, left - (Date.now() - since)); spent += Date.now() - since; }
         return () => { if (--held === 0 && this.pending.has(id)) arm(); };
       };
       // (While the owner is asked the clock is held; a report then changes nothing.)
-      const progressed = opt.progress ? () => { if (held || !this.pending.has(id)) return; clearTimeout(timer); left = timeoutMs; arm(); opt.progress!(); } : undefined;
+      // Only progress that grew counts (the spec: progress increases with each notification); a repeat moves nothing.
+      let last = -Infinity;
+      const progressed = opt.progress ? (p: unknown) => {
+        if (held || !this.pending.has(id) || typeof p !== "number" || !(p > last)) return;
+        last = p;
+        clearTimeout(timer); spent += Date.now() - since; left = timeoutMs; arm(); opt.progress!();
+      } : undefined;
       this.pending.set(id, { resolve: done(resolve), reject: fail, input: opt.input, hold, progressed });
       arm();
       opt.signal?.addEventListener("abort", onAbort, { once: true });
@@ -784,8 +807,9 @@ export class McpClient {
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
   readResource(uri: string, signal?: AbortSignal) { return this.rounds("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rounds("prompts/get", { name, arguments: args }, { signal }); }
-  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, input?: CallInput): Promise<McpCallResult> {
-    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, input, progress: () => {} });
+  // `ceilingMs`: the call's longest time however it reports progress (TOOL_CEILING_MS by default).
+  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, input?: CallInput, ceilingMs = TOOL_CEILING_MS): Promise<McpCallResult> {
+    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, input, progress: () => {}, ceilingMs });
   }
 
   // A modern server asks for input by answering the request with
@@ -800,15 +824,18 @@ export class McpClient {
     // the server works counts, the time the owner takes to answer does not.
     const whole = opt.timeoutMs ?? this.timeoutMs;
     let left = whole;
+    let ceiling = opt.ceilingMs;
     for (let quiet = 0, round = 1; ; round++) {
       if (left <= 0) throw new Error(`${method} timed out after ${Math.round(whole / 1000)}s, before round ${round} of the call`);
       if (round > ROUNDS_MAX) throw new Error(`the server asked to be called again ${ROUNDS_MAX} times in one call`);
       let began = Date.now();
+      const start = began;
       // (A later round has only what is left of the call's time: its timeout is said as the call's.)
-      // A progress report gives the call its whole time again, from the report on.
+      // A progress report gives the call its whole time again, from the report on, up to its ceiling.
       const progress = opt.progress && (() => { began = Date.now(); left = whole; opt.progress!(); });
-      const r = await this.rpc(method, next, { ...opt, progress, timeoutMs: left, ...(round > 1 ? { timeoutText: `${method} timed out after ${Math.round(whole / 1000)}s, in round ${round} of the call` } : {}) });
+      const r = await this.rpc(method, next, { ...opt, progress, timeoutMs: left, ...(ceiling !== undefined ? { ceilingMs: ceiling, ceilingText: `${method} ran past its longest time, ${Math.round(opt.ceilingMs! / 1000)}s, while it reported progress` } : {}), ...(round > 1 ? { timeoutText: `${method} timed out after ${Math.round(whole / 1000)}s, in round ${round} of the call` } : {}) });
       left -= Date.now() - began;
+      if (ceiling !== undefined) ceiling -= Date.now() - start;
       if (r?.resultType !== "input_required") return r;
       const asked = Object.entries((r.inputRequests ?? {}) as Record<string, InputRequest>);
       if (!asked.length && ++quiet > QUIET_ROUNDS) throw new Error("the server kept asking to be called again without asking for anything");

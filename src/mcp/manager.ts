@@ -913,7 +913,7 @@ export class McpManager {
         // (By the name the session knows the server by: the card and the notes show it.)
         ask: (q) => this.input(shown, q, ctx, card, call),
         dropped: (method, why) => call.notes.add(`${shown} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other call is using ${shown}.`),
-      });
+      }, e?.config.tool_max_secs ? e.config.tool_max_secs * 1000 : undefined);
     } catch (err) {
       this.callEnded(ctx.sessionId, card);
       // Ended for a bound on its questions: the result says which, and that the call did not finish.
