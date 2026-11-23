@@ -541,8 +541,8 @@ export function mobileApi(ctx: MobileCtx) {
       // none), and the question's short header: sent where the model gave them.
       questions: qs.map((q) => ({
         id: q.id, question: q.question, options: q.options.map((o) => o.label), multi: q.multi,
-        ...(q.options.some((o) => o.description) ? { details: q.options.map((o) => o.description ?? "") } : {}),
-        ...(q.header ? { header: q.header } : {}),
+        ...(q.options.some((o) => o.description) ? { details: q.options.map((o) => clipped(o.description ?? "", DETAIL_CHARS)) } : {}),
+        ...(q.header ? { header: clipped(q.header, HEADER_CHARS) } : {}),
       })),
       // Just after its tool call's row in the chat (traceOf), not before the words of the reply that asks.
       actions: [[asked?.link ? (asked.link.waiting ? "I finished" : "I opened it") : "Answer", "once", "primary"], [asked?.link?.waiting ? "Cancel" : "Dismiss", "deny", "danger"]], state: "pending", choice: null, ts: e ? (e.ts + (e.seq % 1000) / 1000 + 0.0008) / 1000 : null,
@@ -1528,6 +1528,15 @@ function stepWhat(input: any): string | undefined {
   const v = Object.values(input).find((x) => typeof x === "string" && x.trim());
   return typeof v === "string" ? v.trim().slice(0, 200) : undefined;
 }
+
+// What a question card carries of a choice's meaning and of its header, at most. A meaning is drawn whole
+// under its label: 300 characters is about five lines at a phone's width at the default text size, and a
+// longer one makes a single choice taller than the screen at a large text size. A header is a chip: the
+// question tools ask for 12 or 16 characters, so twice the larger is room for any model that runs over.
+// The whole words stay in the tool call, which the session shows.
+const DETAIL_CHARS = 300;
+const HEADER_CHARS = 32;
+const clipped = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}\u2026` : text);
 
 // The question tools' inputs, in one shape.
 function normQuestions(input: any): { id: string; question: string; header?: string; options: { label: string; description?: string }[]; multi: boolean }[] {

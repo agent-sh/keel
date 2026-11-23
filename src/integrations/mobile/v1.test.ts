@@ -822,6 +822,22 @@ describe("questions", () => {
     expect(Object.keys(card.questions[1]).sort()).toEqual(["id", "multi", "options", "question"]);
   });
 
+  test("a choice's meaning and a header run long: the card carries them cut, with a mark", async () => {
+    const s = session();
+    const long = "Every caller of the retry helper gets the bound. ".repeat(40);
+    const input = { questions: [{ header: "A header far longer than any chip should be", question: "Which?", options: [{ label: "A", description: long }, { label: "B", description: "Short" }] }] };
+    store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-l", name: "AskUserQuestion", input }] });
+    ask({ callId: "call-l", sessionId: s.id, signal: new AbortController().signal } as any);
+    const q = (await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.find((a: any) => a.id === `q-${s.id}.call-l`).questions[0];
+    expect(q.details[0].length).toBeLessThanOrEqual(300);
+    expect(q.details[0].length).toBeGreaterThan(290);
+    expect(q.details[0].endsWith("\u2026")).toBe(true);
+    expect(long.startsWith(q.details[0].slice(0, -1))).toBe(true);
+    expect(q.details[1]).toBe("Short");
+    expect(q.header.length).toBeLessThanOrEqual(32);
+    expect(q.header.endsWith("\u2026")).toBe(true);
+  });
+
   // A server can ask one question after another on one call. A card of the
   // first, still on the phone after it was answered on the desktop, must not
   // answer or decline the second.
