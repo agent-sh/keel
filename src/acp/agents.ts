@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { basename, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { choicesOf, listedOf, type Learned } from "./choices.ts";
+import { listedOf, mergeChoices, type Learned } from "./choices.ts";
 import { readFolders } from "./confine.ts";
 import { AcpConnection } from "./rpc.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
@@ -120,14 +120,17 @@ export class AcpAgents {
   }
 
   // A session setup result of an agent (a session it opened, or a probe): its choices, kept.
+  // What the result does not state is kept as it was (mergeChoices).
   learn(a: AcpAgent, result: unknown) {
-    this.keep(a.id, { ...choicesOf(result), key: programKey(a.run!), at: Date.now() });
+    const prev = this.known[a.id];
+    this.keep(a.id, { ...mergeChoices(prev ?? {}, result), key: programKey(a.run!), at: Date.now() });
   }
 
   private keep(id: string, l: Learned) {
     const was = this.known[id];
     this.known[id] = l;
-    try { writeFileSync(this.choicesFile, JSON.stringify(this.known)); } catch (e) { this.error = `saving ${this.choicesFile}: ${(e as Error).message}`; }
+    // Whole or not at all: a write cut short never leaves half a file to read at the next start.
+    try { writeOwnFile(this.choicesFile, JSON.stringify(this.known), { prev: false }); } catch (e) { this.error = `saving ${this.choicesFile}: ${(e as Error).message}`; }
     const same = (x?: Learned) => JSON.stringify(x ? { ...x, at: 0 } : null);
     if (same(was) !== same(l)) this.onLearned?.();
   }
@@ -171,10 +174,12 @@ export class AcpAgents {
         return r;
       })();
       const r = await Promise.race([work, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(`no answer in ${PROBE_MS / 1000} s`)), PROBE_MS); })]);
-      this.keep(a.id, { ...choicesOf(r), key, at: Date.now() });
+      this.keep(a.id, { ...mergeChoices(this.known[a.id] ?? {}, r), key, at: Date.now() });
     } catch (e) {
+      // A probe that failed takes nothing away: what the agent offered before stays listed.
       const code = (e as any)?.code;
-      this.keep(a.id, { key, at: Date.now(), error: code === -32000 ? "it needs its own sign-in first" : (e as Error).message });
+      const { error: _, ...prev } = this.known[a.id] ?? ({} as Learned);
+      this.keep(a.id, { ...prev, key, at: Date.now(), error: code === -32000 ? "it needs its own sign-in first" : (e as Error).message });
     } finally {
       clearTimeout(timer);
       conn?.close();

@@ -402,7 +402,7 @@ test("acp agent models", async ({ page, request }) => {
   expect((await request.post("/api/acp/agents", { data: { id: "standin-m", command: "bun", args: [standin] } })).ok()).toBe(true);
   try {
     const models = async () => ((await (await request.get("/api/models")).json()).models as any[]).filter((m) => m.provider === "acp" && m.model.split("/")[0] === "standin-m");
-    await expect.poll(async () => (await models()).map((m) => m.id).sort(), { timeout: 60_000 }).toEqual(["acp:standin-m", "acp:standin-m/deep", "acp:standin-m/fast"]);
+    await expect.poll(async () => (await models()).map((m) => m.id).sort(), { timeout: 60_000 }).toEqual(["acp:standin-m", "acp:standin-m/busy", "acp:standin-m/deep", "acp:standin-m/fast"]);
     const deep = (await models()).find((m) => m.id === "acp:standin-m/deep");
     expect(deep).toMatchObject({ name: "standin-m: Deep", efforts: ["low", "high"] });
 
@@ -428,6 +428,11 @@ test("acp agent models", async ({ page, request }) => {
     await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.model).toBe("acp:standin-m/fast");
     await which(2);
     await expect(page.getByTestId("assistant-text").last()).toContainText("model fast, effort high");
+    // A switch the agent refuses: the turn goes on with what it had, and the session is told.
+    expect((await request.patch(`/api/sessions/${session.id}`, { data: { model: "acp:standin-m/busy" } })).ok()).toBe(true);
+    await which(3);
+    await expect(page.getByTestId("assistant-text").last()).toContainText("model fast, effort high");
+    await expect(page.getByTestId("note").filter({ hasText: "refused to switch to model busy" })).toHaveCount(1);
     // To another agent's model it does not move: that agent would not know what was said.
     expect((await request.patch(`/api/sessions/${session.id}`, { data: { model: HAIKU } })).status()).toBe(409);
   } finally {

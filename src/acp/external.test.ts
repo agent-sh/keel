@@ -35,3 +35,27 @@ test("registry agents count when their program is installed; one program is one 
   expect(a.filter((x) => x.run).map((x) => x.id)).toEqual(["oc", "mine"]);
   expect(a.find((x) => x.id === "np")!.add).toEqual({ command: "npx", args: ["-y", "np@1", "--acp"] });
 });
+
+test("what an agent offered stays listed through a resume that states nothing and a probe that fails", async () => {
+  const { AcpAgents } = await import("./agents.ts");
+  const { listedOf } = await import("./choices.ts");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const st = mkdtempSync(join(tmpdir(), "keel-acp-choices-"));
+  const a = new AcpAgents(st);
+  // A program that ends at once: a probe of it fails.
+  const agent = { id: "ag", name: "Ag", source: "custom", run: { command: "/bin/false", args: [] } } as any;
+  a.learn(agent, { sessionId: "s", configOptions: [{ id: "model", name: "Model", category: "model", type: "select", currentValue: "fast", options: [{ value: "fast", name: "Fast" }, { value: "deep", name: "Deep" }] }] });
+  const ids = () => listedOf(agent, a.learned("ag")).map((m) => m.model);
+  expect(ids()).toEqual(["ag", "ag/fast", "ag/deep"]);
+  a.learn(agent, {});
+  expect(ids()).toEqual(["ag", "ag/fast", "ag/deep"]);
+  // The program changed under it (another key): it is probed again, and the probe fails.
+  agent.run = { command: "/bin/false", args: ["again"] };
+  a.ask([agent]);
+  for (let i = 0; i < 100 && !a.learned("ag")?.error; i++) await Bun.sleep(20);
+  expect(a.learned("ag")?.error).toBeTruthy();
+  expect(ids()).toEqual(["ag", "ag/fast", "ag/deep"]);
+  expect(JSON.parse(readFileSync(join(st, "acp-choices.json"), "utf8")).ag.models.options).toHaveLength(2);
+});

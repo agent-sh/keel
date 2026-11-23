@@ -17,7 +17,7 @@ let cost = 0;
 // Its models and reasoning levels, as session config options; "which model" is answered with the current ones.
 const config = { model: "fast", effort: "low" };
 const configOptions = () => [
-  { id: "model", name: "Model", category: "model", type: "select", currentValue: config.model, options: [{ group: "main", name: "Main", options: [{ value: "fast", name: "Fast" }, { value: "deep", name: "Deep", description: "Slower, thinks longer" }] }] },
+  { id: "model", name: "Model", category: "model", type: "select", currentValue: config.model, options: [{ group: "main", name: "Main", options: [{ value: "fast", name: "Fast" }, { value: "deep", name: "Deep", description: "Slower, thinks longer" }, { value: "busy", name: "Busy", description: "Listed, and refused when asked for" }] }] },
   { id: "effort", name: "Reasoning", category: "thought_level", type: "select", currentValue: config.effort, options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
 ];
 
@@ -82,6 +82,7 @@ process.stdin.on("data", (d) => {
     else if (m.method === "session/set_config_option") {
       const key = m.params.configId === "model" ? "model" : m.params.configId === "effort" ? "effort" : null;
       if (!key) out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: `no option ${m.params.configId}` } });
+      else if (m.params.value === "busy") out({ jsonrpc: "2.0", id: m.id, error: { code: -32603, message: "that model is busy" } });
       else { config[key] = String(m.params.value); out({ jsonrpc: "2.0", id: m.id, result: { configOptions: configOptions() } }); }
     }
     else if (m.method === "session/prompt") void prompt(m.id, m.params);

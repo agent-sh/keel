@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { choicesOf, listedOf, settle, splitModel, withOptions } from "./choices.ts";
+import { choicesOf, listedOf, mergeChoices, settle, splitModel, unknownCurrent, withOptions } from "./choices.ts";
 
 const model = { id: "model", name: "Model", category: "model", type: "select", currentValue: "a", options: [{ group: "g", name: "G", options: [{ value: "a", name: "A" }, { value: "x/b", name: "B" }] }] };
 const level = { id: "think", name: "Thinking", category: "thought_level", type: "select", currentValue: "low", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] };
@@ -35,4 +35,23 @@ test("a session is brought to its model and effort, and nothing is sent for what
   ]);
   expect(settle(c, { choice: "gone", effort: "max" })).toEqual([]);
   expect(listedOf({ id: "ag", name: "Ag" }, undefined).map((m) => m.model)).toEqual(["ag"]);
+});
+
+test("a result that states no options keeps what was known; one that states them is the agent's whole state", () => {
+  const known = choicesOf({ configOptions: [model, level] });
+  expect(mergeChoices(known, {})).toEqual(known); // a resume or load with no options
+  expect(mergeChoices(known, { modes: { currentModeId: "ask", availableModes: [{ id: "ask", name: "Ask" }] } }).models).toEqual(known.models);
+  const now = mergeChoices(known, { configOptions: [{ ...model, currentValue: "x/b" }] });
+  expect(now.models?.current).toBe("x/b");
+  expect(now.efforts).toBeUndefined(); // the list no longer has a reasoning level
+  // A fresh connection to a resumed session knows the sets, not what is current: the session's choice is sent.
+  expect(settle(unknownCurrent(known), { choice: "a", effort: "low" })).toEqual([
+    { method: "session/set_config_option", params: { configId: "model", value: "a" } },
+    { method: "session/set_config_option", params: { configId: "think", value: "low" } },
+  ]);
+});
+
+test("modes that skip the agent's permission checks are not offered as models", () => {
+  const c = choicesOf({ modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "plan", name: "Plan" }, { id: "bypassPermissions", name: "Bypass Permissions" }, { id: "yolo", name: "Auto", description: "Run everything without asking" }] } });
+  expect(listedOf({ id: "ag", name: "Ag" }, c).map((m) => m.model)).toEqual(["ag", "ag/default", "ag/plan"]);
 });

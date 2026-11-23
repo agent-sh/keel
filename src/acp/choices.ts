@@ -56,6 +56,41 @@ export function choicesOf(result: Json): AgentChoices {
   return out;
 }
 
+// What a setup result says on top of what was known. Config options and
+// modes are optional in session/load and session/resume results: a result
+// that states neither changes nothing, and one that states only one kind
+// keeps the other as it was. A config option list is the agent's whole
+// state (session-config-options: "the complete configuration state"), so
+// the sets it is the source of are taken from it as they are.
+export function mergeChoices(prev: AgentChoices, result: Json): AgentChoices {
+  const next = choicesOf(result);
+  const config = Array.isArray(result?.configOptions), legacy = result?.modes && Array.isArray(result.modes.availableModes);
+  const out: AgentChoices = {};
+  const models = config ? next.models : prev.models;
+  const efforts = config ? next.efforts : prev.efforts;
+  // Modes: a config mode option when the list has one, else the older modes the result states, else what was known.
+  const modes = next.modes?.via === "config" ? next.modes : legacy ? next.modes : config && prev.modes?.via === "config" ? undefined : prev.modes;
+  if (models) out.models = models;
+  if (modes) out.modes = modes;
+  if (efforts) out.efforts = efforts;
+  return out;
+}
+
+// The same sets with nothing known to be current: what a fresh connection to
+// a session the agent resumed without saying its options holds, so the
+// session's own choice is sent to it rather than taken for granted.
+export function unknownCurrent(c: AgentChoices): AgentChoices {
+  const out: AgentChoices = {};
+  for (const k of ["models", "modes", "efforts"] as const) if (c[k]) out[k] = { ...c[k]!, current: "" };
+  return out;
+}
+
+// Modes that loosen what the agent may do without asking (a bypass of its
+// own permission checks): Keel's gate decides that, so none is offered as a
+// model of the agent. Read from the agent's own words for the mode.
+const LOOSENS = /bypass|yolo|dangerous|skip[\s_-]?permission|no[\s_-]?approval|full[\s_-]?access|dont[\s_-]?ask|don't ask/i;
+export const offeredModes = (set: ChoiceSet): Choice[] => set.options.filter((o) => !LOOSENS.test(`${o.value} ${o.name} ${o.description ?? ""}`));
+
 // The choices after the agent sent its whole config option list again (a
 // set_config_option result, a config_option_update): the older session modes
 // stay as they were when no option is a mode.
@@ -65,7 +100,8 @@ export function withOptions(prev: AgentChoices, configOptions: Json[]): AgentCho
 }
 
 // The choices a session picks from the picker: models when the agent offers them, else its modes.
-export const pickable = (c: AgentChoices | undefined): ChoiceSet | undefined => c?.models ?? c?.modes;
+// Modes stand in only with what they offer (offeredModes).
+export const pickable = (c: AgentChoices | undefined): ChoiceSet | undefined => c?.models ?? (c?.modes ? { ...c.modes, options: offeredModes(c.modes) } : undefined);
 
 // `acp:<agent>/<value>` as its agent and its choice. An agent id holds no slash
 // (registry ids are slugs, the owner's entries are checked on add); a value may.

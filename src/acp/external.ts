@@ -22,7 +22,7 @@ import type { ExternalIO } from "../engine/hooks.ts";
 import { shellText, type CallClass } from "../safety/policy.ts";
 import type { AcpAgent, AcpAgents } from "./agents.ts";
 import { AcpConnection } from "./rpc.ts";
-import { choicesOf, pickable, settle, splitModel, withOptions, type AgentChoices } from "./choices.ts";
+import { mergeChoices, pickable, settle, splitModel, unknownCurrent, withOptions, type AgentChoices } from "./choices.ts";
 
 type Json = any;
 export const ACP_PREFIX = "acp:";
@@ -219,8 +219,11 @@ export class AcpRunner {
   }
 
   // A setup result: what the agent offers in this session, and in its listing.
+  // A resume or load that states no options keeps what was known of the agent,
+  // with nothing taken as current: the session's own choice is sent to it.
   private setup(live: Live, r: Json) {
-    live.choices = choicesOf(r);
+    const stated = Array.isArray(r?.configOptions) || Array.isArray(r?.modes?.availableModes);
+    live.choices = stated ? mergeChoices(live.choices, r) : unknownCurrent(mergeChoices(this.agents.learned(live.agent.id) ?? {}, {}));
     this.agents.learn(live.agent, r);
   }
 
@@ -235,9 +238,17 @@ export class AcpRunner {
       return;
     }
     for (const step of settle(live.choices, { choice, effort: s.settings?.effort })) {
-      const r = await live.conn.request(step.method, { sessionId: live.acpSession, ...step.params });
+      let r: Json;
+      // A switch the agent refuses does not cost the turn: the agent goes on with what it has, and the session is told.
+      try { r = await live.conn.request(step.method, { sessionId: live.acpSession, ...step.params }); } catch (e) {
+        const what = step.method === "session/set_mode" ? `the mode ${step.params.modeId}` : `${step.params.configId} ${step.params.value}`;
+        io.append("note", { kind: "acp", text: `${live.agent.name} refused to switch to ${what} (${(e as Error).message}): this turn runs with what it had.` });
+        if (!live.conn.alive) throw e;
+        continue;
+      }
       if (Array.isArray(r?.configOptions)) live.choices = withOptions(live.choices, r.configOptions);
       else if (step.method === "session/set_mode" && live.choices.modes) live.choices.modes = { ...live.choices.modes, current: step.params.modeId };
+      else if (step.method === "session/set_config_option") for (const k of ["models", "modes", "efforts"] as const) { const c = live.choices[k]; if (c?.via === "config" && c.configId === step.params.configId) live.choices[k] = { ...c, current: step.params.value }; }
     }
   }
 
