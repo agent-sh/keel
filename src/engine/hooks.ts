@@ -84,6 +84,10 @@ export type TurnHooks = {
   // the messages from the branch does so for `purpose: "turn"` only (a summary
   // or side request carries its own ask, which the branch does not hold).
   beforeRequest?: (s: Session, req: ProviderRequest) => ProviderRequest | Promise<ProviderRequest>;
+  // Whether a request may be sent at all (a spend limit): it throws to refuse
+  // it. Runs for every request, a reader's and a title's too, which skip
+  // beforeRequest (they carry no conversation to add to), and before it.
+  mayRequest?: (s: Session, req: ProviderRequest) => void;
   // Every provider call, turn steps, summaries and side answers alike, for
   // measuring only: the request exactly as sent (after every beforeRequest and
   // the attachment projection), then its answer or its failure (`aborted`: the

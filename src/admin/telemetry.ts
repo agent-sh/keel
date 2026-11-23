@@ -169,10 +169,9 @@ export class Telemetry {
     this.backfill();
     void bus;
     registerHooks({
-      beforeRequest: (_s, req) => {
+      mayRequest: () => {
         const over = this.overBudget();
         if (over) throw Object.assign(new Error(over), { kind: "budget" });
-        return req;
       },
       requestSent: (s, req) => {
         const purpose = req.purpose ?? "turn";

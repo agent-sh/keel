@@ -8,6 +8,9 @@ import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { TurnStatus } from "../core/types.ts";
 import { ProviderError } from "../providers/http.ts";
+import { Telemetry } from "../admin/telemetry.ts";
+import { allHooks } from "./hooks.ts";
+import { PromptStore } from "./prompt-store.ts";
 import { Engine } from "./turn.ts";
 
 const dirs: string[] = [];
@@ -62,6 +65,39 @@ test("with no model cheaper than the session's own, no title is asked for", asyn
   await Bun.sleep(50);
   expect(asked.filter((r) => r.purpose === "title")).toEqual([]);
   expect(store.session(s.id)!.title).toBe("Fix the cart discount rounding");
+});
+
+test("a session with no title choice is not looked at again at the next turn's end", async () => {
+  const { engine, s, asked } = rig([BIG], async () => said("Should not be asked"));
+  engine.send(s.id, "Fix the cart discount rounding");
+  await engine.idle(s.id);
+  await waitFor(() => !(engine as any).titling.has(s.id));
+  expect((engine as any).untitled.has(s.id)).toBe(true);
+  expect(asked.filter((r) => r.purpose === "title")).toEqual([]);
+});
+
+// The spend limit holds for every request: a title's skips the hooks that add to a conversation, not the limit.
+test("over the spend limit no title is asked for", async () => {
+  const { loadSettings, patchSettings } = await import("../admin/settings.ts");
+  const costly = { ...said("Done."), usage: { input: 1, output: 1, cache_read: 0, cache_write: 0, cost: 1 } };
+  const { engine, s, asked, store } = rig([BIG, SMALL], async () => said("Should not be asked"), async () => costly);
+  loadSettings(store.stateDir, () => {});
+  new PromptStore(store);
+  const before = allHooks().length;
+  new Telemetry(store, new Bus());
+  const mine = allHooks().slice(before);
+  try {
+    expect(patchSettings({ budget: { daily_usd: 0.5, monthly_usd: null } }).ok).toBe(true);
+    // The turn's one request is under the limit when it is sent; its cost takes the day over it.
+    engine.send(s.id, "Fix the cart discount rounding");
+    await engine.idle(s.id);
+    await waitFor(() => (engine as any).untitled.has(s.id));
+    expect(asked.map((r) => r.purpose ?? "turn")).toEqual(["turn"]);
+    expect(store.session(s.id)!.title).toBe("Fix the cart discount rounding");
+  } finally {
+    for (const h of mine) allHooks().splice(allHooks().indexOf(h), 1);
+    patchSettings({ budget: { daily_usd: null, monthly_usd: null } });
+  }
 });
 
 test("a first prompt edited while its title is out is titled from the new prompt", async () => {

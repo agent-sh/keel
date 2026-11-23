@@ -816,6 +816,8 @@ export class Engine {
     const named = [...smallModels(), process.env.KEEL_READER_MODEL];
     const choices = readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels())
       .filter((m) => m.id !== cur.id || named.includes(m.id));
+    // No choice now is no choice at the next turn's end either: not looked for again until a start.
+    if (!choices.length) { this.untitled.add(id); return; }
     let last: unknown;
     for (const m of choices) {
       try {
@@ -1523,6 +1525,8 @@ export class Engine {
     // A reader's request and a title's carry no conversation for the hooks to add to. A
     // sampling request goes through them (secrets, budget, telemetry); the
     // ones that add to a conversation add only to a turn's.
+    // Whether it may be sent at all (the spend limit) is asked of every request, a bare one too.
+    for (const h of allHooks()) h.mayRequest?.(session, req);
     if (!bare) for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };
     if (session.parent_id && !bare && purpose !== "sampling") req.cacheLife = this.cacheLife(id, st, purpose);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
