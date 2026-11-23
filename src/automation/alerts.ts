@@ -430,14 +430,24 @@ const routine = (kind: AlertKind, data: unknown, st: AlertSettings) =>
 
 // `silent`: kept in the inbox and told on no channel (an update of a row the owner was told of already).
 // An open incident a session's failure is part of (src/automation/incidents.ts): its one alert
-// stands for the failure alerts of every session it touched, so these are filed silently.
-export const absorbHook: { of?: (sessionId: string) => string | undefined } = {};
-const ABSORBED = new Set<AlertKind>(["failed", "limit", "loop_failed"]);
+// stands for the failure alerts of every session it touched, so these are filed silently. Only a
+// failure that names its class (`data.cls`, src/admin/classes.ts) and the session it is about
+// (`data.agent_session` for an agent's alert on its parent) can be part of one: the incident
+// takes it only when the class is of its cause. A reply cut at its limit and a loop's failure
+// name none and are always told.
+export const absorbHook: { of?: (sessionId: string, cls: string | undefined) => string | undefined } = {};
+const ABSORBED = new Set<AlertKind>(["failed", "limit"]);
+const absorbedBy = (kind: AlertKind, sessionId: string, data: unknown) => {
+  if (!ABSORBED.has(kind)) return undefined;
+  const d = data as { cls?: unknown; agent_session?: unknown } | undefined;
+  if (typeof d?.cls !== "string") return undefined;
+  return absorbHook.of?.(typeof d.agent_session === "string" ? d.agent_session : sessionId, d.cls);
+};
 
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown, silent = false): Alert | undefined {
   try {
     const { store } = D();
-    const incident = !silent && sessionId && ABSORBED.has(kind) ? absorbHook.of?.(sessionId) : undefined;
+    const incident = !silent && sessionId ? absorbedBy(kind, sessionId, data) : undefined;
     if (incident) { silent = true; data = { ...(data as object), in_incident: incident }; }
     const s = sessionId ? store.session(sessionId) : undefined;
     if (sessionId && !s) return undefined;
@@ -1116,7 +1126,7 @@ registerChannel({
 // is not an alert: its report goes to its parent, and the parent's own Done
 // says when the work is over (its alert waits while agents are out).
 const failureFp = (data: unknown) => { const fp = (data as { failure_fp?: unknown } | null | undefined)?.failure_fp; return typeof fp === "string" ? fp : undefined; };
-export function agentsFailed(a: { id: string; parent_id: string }) {
+export function agentsFailed(a: { id: string; parent_id: string; session_id?: string }) {
   try {
     const { store } = D();
     const parent = store.session(a.parent_id);
@@ -1128,7 +1138,7 @@ export function agentsFailed(a: { id: string; parent_id: string }) {
     const mine = named.find((r) => r.id === a.id);
     const why = failWord(g.cls) || exampleOf(g.sample);
     const told = store.db.query<{ n: number }, [string, string]>("SELECT COUNT(*) AS n FROM alerts WHERE read = 0 AND kind = 'failed' AND session_id = ? AND json_extract(data, '$.failure_fp') = ?").get(parent.parent_id ?? parent.id, g.fp)!.n > 0;
-    raise("failed", parent.id, `${parent.title || "Session"}: ${n} ${n === 1 ? "agent" : "agents"} failed: ${why}`, `${mine?.label ? `Agent "${mine.label}": ` : ""}${exampleOf(mine?.eg ?? g.sample)}`, { failure_fp: g.fp, agents_failed: n, agent_id: a.id }, told);
+    raise("failed", parent.id, `${parent.title || "Session"}: ${n} ${n === 1 ? "agent" : "agents"} failed: ${why}`, `${mine?.label ? `Agent "${mine.label}": ` : ""}${exampleOf(mine?.eg ?? g.sample)}`, { failure_fp: g.fp, agents_failed: n, agent_id: a.id, cls: g.cls, ...(a.session_id ? { agent_session: a.session_id } : {}) }, told);
     // The session the owner sees counts as failed until they look at it (ui/src/lib/home.ts).
     let root = parent;
     for (let i = 0; root.parent_id && i < 32; i++) root = store.session(root.parent_id) ?? root;
@@ -1168,9 +1178,9 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
     const failed = [...evs].reverse().find((e) => e.kind === "error")?.data;
     const err = String(failed?.message ?? "The turn failed.");
     if (opts.loopRun) return; // the loop reports its own failure
-    if (!LIMIT.test(err)) { raise("failed", sessionId, `Failed: ${title}`, err.split("\n")[0]!); return; }
-    // A limit says which (a rate limit, an overloaded provider, a spent quota) and, when the provider named one, until when.
     const cls = classOfText(err);
+    if (!LIMIT.test(err)) { raise("failed", sessionId, `Failed: ${title}`, err.split("\n")[0]!, { cls }); return; }
+    // A limit says which (a rate limit, an overloaded provider, a spent quota) and, when the provider named one, until when.
     const until = typeof failed?.retry_at === "number" ? failed.retry_at : undefined;
     raise("limit", sessionId, `${limitWord(cls)}: ${title}`, err.split("\n")[0]!, { cls, ...(until ? { until } : {}) });
     return;

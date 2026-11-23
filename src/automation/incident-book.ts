@@ -59,15 +59,23 @@ export type Hit = {
   now?: boolean;
 };
 
-// Repeats this close together are one cause, not chance: an outage's failures
-// came within 40 s of each other, and a retry's backoff (up to a minute) fits.
+// The numbers, from the failed turns of the daemon's history (20 to 23 Nov: 110 failed turns, 46
+// of a provider's or account's class): every storm began with failures 0 to 12 s apart (once 62 s,
+// a rate limit), and a session that repeats its own failure does so 160 to 370 s apart. A window of
+// two minutes takes every storm from its second session and leaves one session's repeats its own;
+// two sessions that failed of one class three or four minutes apart (twice in the history) stay
+// two failures, each told on its own.
 export const WINDOW_MS = 2 * 60_000;
-// Three of a cause, or two sessions, make an incident.
+// Three of a cause, or two sessions, make an incident. Every incident in the history opened on its
+// second session; three of one session is for a cause with no session (stalls, the judge).
 export const REPEATS = 3;
 export const SESSIONS = 2;
 // A cause with no sign of its end (no answer, no verdict) is over when nothing of it came for this
-// long: five windows, so a provider that fails every few minutes stays one incident.
+// long. Inside an incident of the history failures came at most 365 s apart; two incidents of one
+// cause were three hours apart or more. Ten minutes keeps one outage one incident and two apart.
 export const QUIET_MS = 5 * WINDOW_MS;
+// How often a held wait's time moves on while nothing else of it does.
+const HELD_BEAT_MS = 60_000;
 // Sessions named on a row; the rest are counted.
 export const NAMED = 60;
 
@@ -75,6 +83,11 @@ export const NAMED = 60;
 const PROVIDER_CLS = new Set(["unreachable", "server", "overloaded", "stream_drop", "rate_limit"]);
 const ACCOUNT_CLS = new Set(["auth", "quota"]);
 export const causeOfClass = (cls: string): IncidentCause | undefined => (PROVIDER_CLS.has(cls) ? "provider" : ACCOUNT_CLS.has(cls) ? "account" : undefined);
+
+// How the daemon before this start went down (its start record, src/admin/life.ts), and whether
+// that is an incident: killed (no stop at all) and a crash are; a signal (systemd's stop or restart
+// sends SIGTERM), a stop and a restart are planned and are not.
+export const wentDownByItself = (how: string | undefined): how is "killed" | "crash" => how === "killed" || how === "crash";
 
 const pl = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -97,7 +110,7 @@ export function titleOf(i: Pick<Incident, "cause" | "label" | "cls" | "count" | 
 }
 
 // What Keel does about it, said plainly.
-export function doingOf(i: Pick<Incident, "cause" | "cls" | "held" | "failed">): string {
+export function doingOf(i: Pick<Incident, "cause" | "cls" | "held" | "failed"> & { touched?: Touched[] }): string {
   switch (i.cause) {
     case "provider":
       if (i.held && !i.failed) return "Keel holds the work and tries the provider again every few seconds: it goes on by itself when it answers. Nothing failed.";
@@ -106,7 +119,7 @@ export function doingOf(i: Pick<Incident, "cause" | "cls" | "held" | "failed">):
     case "account": return "Turns on this provider fail at once: a refused credential or quota is not tried again.";
     case "judge": return "Calls that need the judge's review are refused (it fails closed); the rest run.";
     case "stall": return "Work goes on between stalls. Each stall is in Errors with what took the time.";
-    case "restarts": return "Cut turns are resumed, or held for you when they cannot be.";
+    case "restarts": return i.touched && !i.touched.length ? "No turn was running, so none was cut." : "Cut turns are resumed, or held for you when they cannot be.";
     case "disk": return "Nothing new is saved. What you send waits and goes out by itself.";
   }
 }
@@ -123,20 +136,29 @@ export function youOf(i: Pick<Incident, "cause" | "cls" | "held" | "failed">): s
   }
 }
 
-// What it touched, in one line: "9 agents and 1 session: 13 turns failed; 4 wait".
+// What it touched, in one line: "9 agents and 1 session: 13 turns failed, 4 waiting", "3 sessions waiting".
 export function radiusOf(i: Pick<Incident, "touched" | "more" | "failed" | "cause" | "count">): string {
   const agents = i.touched.filter((t) => t.parent).length;
   const own = i.touched.length - agents + i.more;
   const who = [agents ? pl(agents, "agent") : "", own ? pl(own, "session") : ""].filter(Boolean).join(" and ");
   const waiting = i.touched.filter((t) => t.state === "waiting").length;
   const wentOn = i.touched.filter((t) => t.state === "went_on").length;
-  const bits = [i.failed ? `${pl(i.failed, "turn")} failed` : "", waiting ? `${waiting} ${waiting === 1 ? "waits" : "wait"}` : "", wentOn ? `${wentOn} went on` : ""].filter(Boolean).join("; ");
+  const cut = i.touched.filter((t) => t.state === "cut").length;
   if (i.cause === "stall" || (i.cause === "judge" && !who)) return `${pl(i.count, i.cause === "stall" ? "stall" : "refused review")}${who ? ` in ${who}` : ""}`;
+  // All of them in one state: said once ("3 sessions waiting", "3 agents went on").
+  const all = i.touched.length && !i.more && !i.failed;
+  if (all && waiting === i.touched.length) return `${who} waiting`;
+  if (all && wentOn === i.touched.length) return `${who}: all went on`;
+  const bits = [i.failed ? `${pl(i.failed, "turn")} failed` : "", waiting ? `${waiting} waiting` : "", wentOn ? `${wentOn} went on` : "", cut ? `${cut} cut by the stop` : ""].filter(Boolean).join(", ");
   return who ? `${who}${bits ? `: ${bits}` : ""}` : bits;
 }
 
 // The row as one line: the activity list's, the alert's body, a terminal's.
-export const lineOf = (i: Incident) => (i.cleared ? `${titleOf(i)} (cleared: ${i.cleared_how ?? "over"}). ${radiusOf(i)}.` : `${titleOf(i)}. ${radiusOf(i)}. ${doingOf(i)}`);
+// A radius with nothing in it (a stop of the daemon that cut no turn) is left out.
+const sentences = (...xs: string[]) => xs.filter(Boolean).map((x) => (/[.!?]$/.test(x) ? x : `${x}.`)).join(" ");
+export const lineOf = (i: Incident) => (i.cleared ? sentences(`${titleOf(i)} (cleared: ${i.cleared_how ?? "over"})`, radiusOf(i)) : sentences(titleOf(i), radiusOf(i), doingOf(i)));
+// The alert's body: what it touched and what Keel does.
+export const bodyOf = (i: Incident) => sentences(radiusOf(i), doingOf(i));
 
 // Whether the owner is told now: once, when work failed or stopped because of it, at once; a
 // held wait only when it lasts (outage.ts, alertMs): a short one needs nothing of the owner.
@@ -216,15 +238,23 @@ export class IncidentBook {
       for (const x of p?.hits ?? []) this.fold(i, x);
       this.open.set(o.key, i);
     }
+    const was = JSON.stringify([i.held, i.since, i.sample, i.long, i.touched.map((t) => [t.id, t.state])]);
     i.held = true;
     i.cls = "unreachable";
     i.since = Math.min(i.since, o.since);
-    i.last = Math.max(i.last, at);
     if (o.message) i.sample = o.message.slice(0, 400);
     if (o.long) i.long = true;
     const now = new Set(o.sessions.map((s) => s.id));
     for (const t of i.touched) if (t.state === "waiting" && !now.has(t.id)) t.state = "went_on";
-    for (const s of o.sessions) this.touch(i, s, "waiting", at, 0);
+    for (const s of o.sessions) {
+      const t = i.touched.find((x) => x.id === s.id);
+      if (t?.state === "waiting") continue;
+      this.touch(i, s, "waiting", at, 0);
+    }
+    // The wait is synced at each of its tries: what it holds is written when it moved, and its time
+    // at most once a minute (a held wait is never quiet; a start that finds it no longer held is).
+    const moved = was !== JSON.stringify([i.held, i.since, i.sample, i.long, i.touched.map((t) => [t.id, t.state])]);
+    if (moved || at - i.last >= HELD_BEAT_MS) i.last = Math.max(i.last, at);
     return i;
   }
 
@@ -264,12 +294,16 @@ export class IncidentBook {
     return out;
   }
 
-  // Whether a session's alert of a failure is this incident's to tell: the session (or an agent of
-  // it) was touched by an open incident within the window. One alert an incident, never one a session.
-  absorbs(sessionId: string, at: number): Incident | undefined {
+  // Whether a failure alert is this incident's to tell: the session it is about (an agent's own,
+  // for an alert of its parent's) failed of the incident's cause and of a class the incident holds,
+  // within the window. A failure of another class (a reply cut at its limit, a request too large, a
+  // tool) is the session's own, told as it was. One alert an incident, never one a session.
+  absorbs(sessionId: string, cls: string | undefined, at: number): Incident | undefined {
+    const cause = cls ? causeOfClass(cls) : undefined;
+    if (!cause) return undefined;
     for (const i of this.open.values()) {
-      if (i.cause !== "provider" && i.cause !== "account") continue;
-      if (i.touched.some((t) => (t.id === sessionId || t.parent === sessionId) && at - t.last <= WINDOW_MS)) return i;
+      if (i.cause !== cause || !i.classes?.[cls!]) continue;
+      if (i.touched.some((t) => t.id === sessionId && at - t.last <= WINDOW_MS)) return i;
     }
     return undefined;
   }

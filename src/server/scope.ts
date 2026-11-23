@@ -67,6 +67,9 @@ export function route(f: Frame): Route {
       if (f.name === "landing" && f.session_id) return one(f.session_id);
       if (f.name === "artifacts") return { topics: [feedTopic("artifacts"), EVERY, ...(f.session_id ? [sessionTopic(f.session_id)] : [])] };
       if (f.name === "awake") return { topics: [feedTopic("awake"), EVERY] };
+      // The daemon's incidents (src/automation/incidents.ts): the band at the top of every page reads
+      // them, so every socket. A frame only when one changed, with the open ones and what cleared since.
+      if (f.name === "incidents") return { topics: [ALL] };
       // What the agents of one tree are doing now: to the views of the sessions that started them
       // (their agent lines) and to a view of the tree's rows, never to every socket.
       if (f.name === "agents_now" && f.session_id) {

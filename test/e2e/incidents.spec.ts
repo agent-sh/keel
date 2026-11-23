@@ -1,4 +1,7 @@
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { daemon, exited, ROOT } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: what just broke, told before the owner asks. A cause that touches
@@ -21,15 +24,26 @@ async function open(request: APIRequestContext, title: string) {
 const say = (request: APIRequestContext, id: string, text: string) => request.post(`/api/sessions/${id}/messages`, { data: { text } });
 const incidents = async (request: APIRequestContext) => (await (await request.get("/api/incidents")).json()) as { open: any[]; cleared: any[] };
 const outageAlerts = async (request: APIRequestContext, id: string) => ((await (await request.get("/api/alerts")).json()).alerts as any[]).filter((a) => a.kind === "outage" && a.data?.incident === id);
+// Text the owner reads is not cut at either width: each of these shows whole.
+const whole = async (page: Page, ids: string[]) => {
+  for (const id of ids) for (const el of await page.getByTestId(id).all()) {
+    if (!(await el.isVisible())) continue;
+    expect(await el.evaluate((e) => e.scrollWidth <= e.clientWidth + 1), `${id}: "${await el.textContent()}" is cut`).toBe(true);
+  }
+};
+const WHOLE = ["incident-title", "incident-head", "incident-row-title"];
 const both = async (page: Page, name: string) => {
+  await whole(page, WHOLE);
   await shoot(page, `${name}-wide`);
   await page.setViewportSize(NARROW);
+  await whole(page, WHOLE);
   await shoot(page, `${name}-narrow`);
   await page.setViewportSize(WIDE);
 };
 
 // Ends an outage a test may have left: the next one starts with a provider that answers.
-test.afterEach(async ({ request }) => {
+test.afterEach(async ({ request }, info) => {
+  if (info.title.startsWith("a stop")) return;
   const id = await open(request, "Incidents: provider back");
   await say(request, id, "script:outage-end");
   await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 60_000 }).toBe(true);
@@ -49,7 +63,7 @@ test("a provider that cannot be reached is one row for every session it holds, a
   await expect(band).toHaveAttribute("data-key", "provider:scripted", { timeout: 30_000 });
   await expect(band).toHaveAttribute("data-count", "1");
   await expect(page.getByTestId("incident-title")).toContainText(/^Scripted \(test\) cannot be reached since \d\d:\d\d/);
-  await expect(page.getByTestId("incident-line")).toContainText("3 sessions: 3 wait", { timeout: 20_000 });
+  await expect(page.getByTestId("incident-line")).toContainText("3 sessions waiting", { timeout: 20_000 });
   await expect(page.getByTestId("incident-line")).toContainText("Keel holds the work");
   const [held] = (await incidents(request)).open.filter((i) => i.key === "provider:scripted");
   expect(held.held).toBe(true);
@@ -118,4 +132,49 @@ test("a credential refused in two sessions is one incident and one alert, and a 
   await expect(band).toHaveAttribute("data-cleared", "", { timeout: 30_000 });
   expect((await incidents(request)).cleared.find((i) => i.id === inc.id)?.cleared_how).toBe("a turn on it went through");
   await expect.poll(async () => (await outageAlerts(request, inc.id)).map((x) => x.read)).toEqual([true]);
+});
+
+test("a stop systemd asks for is no incident; a daemon that went down without stopping is one, told once", async ({ page }) => {
+  test.setTimeout(180_000);
+  const state = join(ROOT, `incidents-restart-${Date.now()}`);
+  let d = await daemon(state);
+  const get = async (path: string) => (await fetch(d.url + path)).json() as Promise<any>;
+  const told = async () => ((await get("/api/alerts")).alerts as any[]).filter((a) => a.kind === "outage");
+  try {
+    // SIGTERM, as `systemctl --user stop` and `restart` send it: planned, so nothing broke.
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    d = await daemon(state);
+    await expect.poll(async () => (await get("/api/daemon")).last_start?.before?.how).toBe("signal");
+    expect((await get("/api/incidents")).open).toEqual([]);
+    expect(await told()).toEqual([]);
+
+    // Killed: it did not stop. One incident at once, one alert, and it says no turn was cut.
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state);
+    await expect.poll(async () => (await get("/api/daemon")).last_start?.before?.how).toBe("killed");
+    await expect.poll(async () => (await get("/api/incidents")).open.map((i: any) => i.key)).toEqual(["restarts"]);
+    const [inc] = (await get("/api/incidents")).open;
+    expect(inc.cls).toBe("killed");
+    expect((await told()).map((a) => [a.title, a.body])).toEqual([["Keel went down by itself", "No turn was running, so none was cut."]]);
+    await page.setViewportSize(WIDE);
+    await page.goto(d.url);
+    await expect(page.getByTestId("incident-band")).toHaveAttribute("data-key", "restarts");
+    await expect(page.getByTestId("incident-line")).toContainText(/(^|· )No turn was running, so none was cut\.$/);
+    await page.getByTestId("incident-open").click();
+    await expect(page.getByTestId("incident-popup").getByTestId("incident-you")).toContainText("Settings, Daemon");
+    await both(page, "incidents-05-killed");
+
+    // The next planned stop keeps the incident and does not tell it again.
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    d = await daemon(state);
+    expect((await get("/api/incidents")).open.map((i: any) => i.id)).toEqual([inc.id]);
+    expect((await told()).length).toBe(1);
+  } finally {
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
+  }
 });

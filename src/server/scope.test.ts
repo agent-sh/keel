@@ -20,6 +20,8 @@ test("a session's stream goes to the sockets that named it; what a list needs go
   expect(topics({ t: "feature", name: "automation", data: { kind: "alert", data: { session_id: "s1" } } })).toEqual([ALL]);
   expect(topics({ t: "questions", pending: [] })).toEqual([ALL]);
   expect(topics({ t: "error", error: {} as any })).toEqual([ALL]);
+  // The incidents: the band on every page reads them.
+  expect(topics({ t: "feature", name: "incidents", data: { open: [], cleared: [] } })).toEqual([ALL]);
   // Read by one view across sessions: a feed, and the session's own stream.
   expect(topics({ t: "feature", name: "automation", data: { kind: "activity", data: { session_id: "s1" } } })).toEqual(["f:activity", EVERY, "s:s1"]);
   expect(topics({ t: "feature", name: "artifacts", session_id: "s1", data: {} })).toEqual(["f:artifacts", EVERY, "s:s1"]);

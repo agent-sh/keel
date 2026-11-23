@@ -16,7 +16,7 @@ import { restarts } from "../admin/life.ts";
 import { classOfText } from "../admin/classes.ts";
 import { span } from "../core/watch.ts";
 import type { Outage } from "../providers/outage.ts";
-import { causeOfClass, IncidentBook, lineOf, owesAlert, radiusOf, titleOf, doingOf, type Hit, type Incident } from "./incident-book.ts";
+import { bodyOf, causeOfClass, IncidentBook, lineOf, owesAlert, titleOf, wentDownByItself, type Hit, type Incident } from "./incident-book.ts";
 import { absorbHook, raise, readWhere } from "./alerts.ts";
 import { D, capture, emit } from "./core.ts";
 
@@ -27,10 +27,14 @@ const RESTORE_MS = 24 * 3600_000;
 // Cleared ones the list gives with the open ones.
 const LISTED_MS = 24 * 3600_000;
 
-type State = { book: IncidentBook; dirty: Set<string>; frame?: ReturnType<typeof setTimeout>; tick?: ReturnType<typeof setInterval>; off?: () => void };
+// `told`: each incident's row as last written (unchanged: no write and no frame). `stored`: the
+// cleared ones of the rows of the last day, read once at the start (listed() reads no table).
+// `sent`: the cleared ones a frame carried already (a frame carries what cleared since the last).
+// `news`: a row changed since the last frame (the alert's call writes its row before the frame).
+type State = { book: IncidentBook; told: Map<string, string>; stored: Incident[]; sent: Set<string>; news?: boolean; frame?: ReturnType<typeof setTimeout>; tick?: ReturnType<typeof setInterval>; off?: () => void };
 const G = globalThis as { __keelIncidents?: State };
 
-const st = (): State => (G.__keelIncidents ??= { book: new IncidentBook(() => Bun.randomUUIDv7()), dirty: new Set() });
+const st = (): State => (G.__keelIncidents ??= { book: new IncidentBook(() => Bun.randomUUIDv7()), told: new Map(), stored: [], sent: new Set() });
 export const book = () => st().book;
 
 const who = (id: string) => {
@@ -40,45 +44,61 @@ const who = (id: string) => {
 const providerOf = (model: string) => (model.includes(":") ? model.slice(0, model.indexOf(":")) : model);
 const labelOf = (id: string) => D().providers.get(id)?.label ?? id;
 
-// The row's data: the incident whole, so the list and a restart read it back as it was.
-function persist(i: Incident) {
+const UPSERT = `INSERT INTO activity (id, ts, kind, sub, session_id, text, data) VALUES (?, ?, 'daemon', 'incident', NULL, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET text = excluded.text, data = excluded.data`;
+// The row's data: the incident whole, so the list and a restart read it back as it was. Written
+// only when it changed. `now`: in this call, not with the side writes (the row that says its alert
+// went: a kill right after the alert must not let the next start tell it again).
+function persist(i: Incident, now = false): boolean {
   try {
+    const s = st();
+    const data = JSON.stringify(i);
+    if (s.told.get(i.id) === data) return false;
+    s.told.set(i.id, data);
     const { store } = D();
     const text = lineOf(i).slice(0, 500);
-    const data = JSON.stringify(i);
-    store.side.later("an incident row", () => void store.db.query(`INSERT INTO activity (id, ts, kind, sub, session_id, text, data) VALUES (?, ?, 'daemon', 'incident', NULL, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET text = excluded.text, data = excluded.data`).run(i.id, i.since, text, data));
+    const write = () => void store.db.query(UPSERT).run(i.id, i.since, text, data);
+    if (now) write();
+    else store.side.later("an incident row", write);
+    s.news = true;
     emit("activity", { id: i.id, ts: i.since, kind: "daemon", sub: "incident", session_id: null, text, data: i });
-  } catch (e) { capture(e, { at: "incident row" }); }
+    return true;
+  } catch (e) { capture(e, { at: "incident row" }); return false; }
 }
 
-// The one alert, when it is owed; read when the incident clears.
+// The one alert, when it is owed, and the row that says so in the same call; read when the incident clears.
 function tell(i: Incident) {
   if (!owesAlert(i)) return;
   i.notified = Date.now();
-  raise("outage", null, titleOf(i), `${radiusOf(i)}. ${doingOf(i)}`, { incident: i.id, key: i.key });
+  raise("outage", null, titleOf(i), bodyOf(i), { incident: i.id, key: i.key });
+  persist(i, true);
 }
 
+// Its row is written at once when it changed (a side write: a stop makes it before it ends), the
+// alert's row in the same call as the alert; the pages hear it in the next frame.
 function changed(i: Incident | undefined) {
   if (!i) return;
   const s = st();
-  s.dirty.add(i.id);
-  tell(i);
+  if (owesAlert(i)) tell(i);
+  else persist(i);
   if (i.cleared) try { readWhere("incident", i.id); } catch (e) { capture(e, { at: "incident alert read" }); }
-  s.frame ??= setTimeout(flush, FRAME_MS);
+  if (!s.news) return;
+  s.frame ??= setTimeout(frame, FRAME_MS);
   (s.frame as any)?.unref?.();
 }
 
-function flush() {
+// One frame for what changed since the last: every open incident, and those that cleared since
+// (the page keeps the cleared ones it has). Nothing changed: no frame.
+export function frame() {
   const s = st();
+  clearTimeout(s.frame);
   s.frame = undefined;
-  const all = [...s.book.list(), ...s.book.cleared()];
-  for (const id of s.dirty) {
-    const i = all.find((x) => x.id === id);
-    if (i) persist(i);
-  }
-  s.dirty.clear();
-  try { D().bus.emit({ t: "feature", name: "incidents", data: listed(Date.now(), false) }); } catch (e) { capture(e, { at: "incidents frame" }); }
+  if (!s.news) return;
+  s.news = false;
+  const recent = s.book.cleared();
+  const cleared = recent.filter((i) => !s.sent.has(i.id));
+  s.sent = new Set(recent.map((i) => i.id));
+  try { D().bus.emit({ t: "feature", name: "incidents", data: { open: s.book.list().sort((a, b) => b.last - a.last), cleared } satisfies Listed }); } catch (e) { capture(e, { at: "incidents frame" }); }
 }
 
 const hit = (h: Hit) => changed(book().hit(h));
@@ -141,14 +161,15 @@ function onDisk(d: { full?: { since_ms: number; free_mb?: number }; silent_since
   else changed(book().clear("disk", "the store saves again", at));
 }
 
-// This start's record: the daemon before it went down by itself (killed, a crash, a signal nobody in Keel sent).
+// This start's record: the daemon before it went down by itself (killed, or a crash). A signal is
+// a planned stop (systemd stops and restarts with SIGTERM), as a stop and a restart are.
 function onStart() {
   const r = restarts()?.last();
   const how = r?.before?.how;
-  if (!r || (how !== "killed" && how !== "crash" && how !== "signal")) return;
+  if (!r || !wentDownByItself(how)) return;
   // Counted already (the same process built its routes again: a hot reload).
   if ((book().get("restarts")?.last ?? 0) >= r.up_ms) return;
-  hit({ key: "restarts", cause: "restarts", cls: how, at: r.up_ms, message: `The daemon ${how === "killed" ? "went down without stopping" : how === "crash" ? "ended on a failure" : "was stopped by a signal"}`, now: true });
+  hit({ key: "restarts", cause: "restarts", cls: how, at: r.up_ms, message: `The daemon ${how === "killed" ? "went down without stopping" : "ended on a failure"}`, now: true });
 }
 
 // The cut turns of this start, as they are decided: the sessions a stop of the daemon touched.
@@ -175,19 +196,14 @@ function tick() {
 // --- what reads it ---------------------------------------------------------
 
 export type Listed = { open: Incident[]; cleared: Incident[] };
-// The open ones and those that cleared in the last day, the newest first.
-// `stored`: with those of the rows (a start's own memory holds only what cleared since it began).
-export function listed(now = Date.now(), stored = true): Listed {
-  const open = book().list().sort((a, b) => b.last - a.last);
+// The open ones and those that cleared in the last day, the newest first: from memory (what this
+// start saw clear, and what the rows held when it began), no read of a table.
+export function listed(now = Date.now()): Listed {
+  const s = st();
+  const open = s.book.list().sort((a, b) => b.last - a.last);
   const seen = new Set(open.map((i) => i.id));
   const cleared: Incident[] = [];
-  for (const i of book().cleared()) if (!seen.has(i.id) && i.cleared! >= now - LISTED_MS) { cleared.push(i); seen.add(i.id); }
-  if (stored) try {
-    for (const r of D().store.db.query<{ data: string }, [number]>("SELECT data FROM activity WHERE kind = 'daemon' AND sub = 'incident' AND ts >= ? ORDER BY ts DESC LIMIT 50").all(now - LISTED_MS)) {
-      const i = JSON.parse(r.data) as Incident;
-      if (i.cleared && !seen.has(i.id)) { cleared.push(i); seen.add(i.id); }
-    }
-  } catch (e) { capture(e, { at: "incident list" }); }
+  for (const i of [...s.book.cleared(), ...s.stored]) if (!seen.has(i.id) && i.cleared! >= now - LISTED_MS) { cleared.push(i); seen.add(i.id); }
   return { open, cleared: cleared.sort((a, b) => b.cleared! - a.cleared!).slice(0, 20) };
 }
 
@@ -200,18 +216,25 @@ export function bind() {
   clearTimeout(s.frame);
   s.frame = undefined;
   s.book = new IncidentBook(() => Bun.randomUUIDv7());
-  s.dirty.clear();
+  s.told.clear();
+  s.stored = [];
+  s.sent = new Set();
+  s.news = false;
   const { store, bus, errors } = D();
+  // The incident rows, by their own index: a start reads them once.
+  store.migrate("CREATE INDEX IF NOT EXISTS activity_incident ON activity(ts) WHERE kind = 'daemon' AND sub = 'incident'");
   // What was open when the last daemon stopped: open again, its alert already told. A held wait
   // holds again only when the provider's wait takes it up; else it goes quiet like the rest.
   try {
-    for (const r of store.db.query<{ data: string }, [number]>("SELECT data FROM activity WHERE kind = 'daemon' AND sub = 'incident' AND ts >= ? ORDER BY ts").all(Date.now() - RESTORE_MS)) {
+    for (const r of store.db.query<{ data: string }, [number]>("SELECT data FROM activity INDEXED BY activity_incident WHERE kind = 'daemon' AND sub = 'incident' AND ts >= ? ORDER BY ts DESC LIMIT 200").all(Date.now() - RESTORE_MS)) {
       const i = JSON.parse(r.data) as Incident;
-      if (!i.cleared) s.book.restore({ ...i, held: false, touched: i.touched.map((t) => (t.state === "waiting" ? { ...t, state: "went_on" as const } : t)) });
+      s.told.set(i.id, r.data);
+      if (i.cleared) s.stored.push(i);
+      else s.book.restore({ ...i, held: false, touched: i.touched.map((t) => (t.state === "waiting" ? { ...t, state: "went_on" as const } : t)) });
     }
   } catch (e) { capture(e, { at: "incident restore" }); }
   // A session's failure alert while an incident it is part of is open: kept in the inbox, told on no channel.
-  absorbHook.of = (sessionId) => book().absorbs(sessionId, Date.now())?.id;
+  absorbHook.of = (sessionId, cls) => book().absorbs(sessionId, cls, Date.now())?.id;
   const offErrors = errors.onCapture((c) => {
     if ((c.context as { kind?: unknown } | undefined)?.kind !== "stall") return;
     const e = store.error(c.id);
@@ -225,4 +248,15 @@ export function bind() {
   onStart();
   s.tick = setInterval(tick, TICK_MS);
   (s.tick as any).unref?.();
+}
+
+// Leaves nothing running or hooked (a test's end; the next bind starts again).
+export function unbind() {
+  const s = G.__keelIncidents;
+  if (!s) return;
+  s.off?.();
+  clearInterval(s.tick);
+  clearTimeout(s.frame);
+  absorbHook.of = undefined;
+  delete G.__keelIncidents;
 }

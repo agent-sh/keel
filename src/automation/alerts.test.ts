@@ -9,6 +9,7 @@ import { ask, answer } from "../tools/interact.ts";
 import * as activity from "./activity.ts";
 import * as alerts from "./alerts.ts";
 import { clip, setDeps } from "./core.ts";
+import { IncidentBook } from "./incident-book.ts";
 import * as snooze from "./snooze.ts";
 
 // The alert service over a scratch store: what the inbox keeps, reads and
@@ -441,4 +442,30 @@ test("a question's outcome is stored with its alert as it closes", async () => {
   const kept = (id: string) => alerts.list().find((x) => x.data?.call_id === id);
   expect([kept("qo-a")?.data.outcome, kept("qo-b")?.data.outcome]).toEqual(["answered", "not answered"]);
   expect([kept("qo-a")?.outcome, kept("qo-b")?.outcome]).toEqual(["answered", "not answered"]);
+});
+
+test("an open incident takes a touched session's failure alert only when the failure is of its cause and class", () => {
+  const { session } = scratch();
+  const p = session("Coordinator"), a = session("Lane", p), b = session("Other lane", p);
+  const book = new IncidentBook(() => "inc");
+  const at = Date.now();
+  for (const id of [a, b]) book.hit({ key: "account:p", cause: "account", label: "P", cls: "auth", at, message: "HTTP 401: bad key", session: { id, title: id, parent: p }, failed: true });
+  alerts.absorbHook.of = (sid, cls) => book.absorbs(sid, cls, Date.now())?.id;
+  try {
+    const of = (x: ReturnType<typeof alerts.raise>) => (x?.data as { in_incident?: string } | undefined)?.in_incident;
+    // The incident's own failure: filed silently, the incident's alert stands for it.
+    expect(of(alerts.raise("failed", a, "Failed: Lane", "HTTP 401: bad key", { cls: "auth" }))).toBe("inc");
+    // The same session failing of another class, a reply cut at its limit, a loop: told on their own.
+    expect(of(alerts.raise("failed", a, "Failed: Lane", "prompt is too long", { cls: "context_overflow" }))).toBeUndefined();
+    expect(of(alerts.raise("failed", a, "Cut off: Lane", "The reply reached the model's output limit."))).toBeUndefined();
+    expect(of(alerts.raise("loop_failed", a, "Loop failed: x", "HTTP 401", { cls: "auth" }))).toBeUndefined();
+    // A provider's class in a session the account incident touched is another cause.
+    expect(of(alerts.raise("limit", a, "Rate limited: Lane", "HTTP 429", { cls: "rate_limit" }))).toBeUndefined();
+    // An agent's failure on its parent: the agent's own session decides, never "any agent of the parent".
+    expect(of(alerts.raise("failed", p, "Coordinator: 1 agent failed: auth", "401", { cls: "auth", agent_session: b }))).toBe("inc");
+    const c = session("Untouched", p);
+    expect(of(alerts.raise("failed", p, "Coordinator: 1 agent failed: auth", "401", { cls: "auth", agent_session: c }))).toBeUndefined();
+  } finally {
+    alerts.absorbHook.of = undefined;
+  }
 });

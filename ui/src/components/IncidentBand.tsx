@@ -39,11 +39,11 @@ function Details({ i, head = true }: { i: Incident; head?: boolean }) {
     <section className="flex flex-col gap-2 px-3 py-2.5" data-testid="incident-details" data-key={i.key}>
       {head && <div className="flex items-baseline gap-2">
         <Icon i={i} className="self-center" />
-        <h3 className="min-w-0 flex-1 truncate text-ui font-medium text-fg">{titleOf(i)}</h3>
+        <h3 className="min-w-0 flex-1 break-words text-ui font-medium text-fg" data-testid="incident-head">{titleOf(i)}</h3>
         <span className="shrink-0 tabular-nums text-caption text-faint">{i.cleared ? `${clock(i.since)} to ${clock(i.cleared)}` : `since ${clock(i.since)}`}</span>
       </div>}
       <dl className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-2 gap-y-1 text-caption">
-        <dt className="text-faint">Touched</dt><dd className="text-fg" data-testid="incident-radius">{radiusOf(i)}</dd>
+        {radiusOf(i) && <><dt className="text-faint">Touched</dt><dd className="text-fg" data-testid="incident-radius">{radiusOf(i)}</dd></>}
         <dt className="text-faint">{i.cleared ? "Cleared" : "Keel"}</dt><dd className="text-muted" data-testid="incident-doing">{i.cleared ? i.cleared_how : doingOf(i)}</dd>
         {!i.cleared && <><dt className="text-faint">You</dt><dd className="text-muted" data-testid="incident-you">{youOf(i)}</dd></>}
       </dl>
@@ -89,11 +89,12 @@ export function IncidentBand() {
       className={cn("flex min-h-9 shrink-0 items-center gap-3 border-b px-4 py-1 text-ui animate-in max-md:gap-2 max-md:px-3", TONE[tone].row)}>
       <Icon i={first} />
       <span className="flex min-w-0 flex-1 items-baseline gap-3 max-md:flex-col max-md:gap-0">
-        <span className="shrink-0 truncate font-medium text-fg max-md:max-w-full" data-testid="incident-title">
-          {titleOf(first)}{first.cleared ? `: cleared at ${clock(first.cleared)}` : <span className="font-normal text-muted"> since {clock(first.since)}</span>}
+        <span className="shrink-0 truncate font-medium text-fg max-md:max-w-full max-md:whitespace-normal max-md:break-words" data-testid="incident-title">
+          {titleOf(first)}{first.cleared ? `: cleared at ${clock(first.cleared)}` : <span className="font-normal text-muted max-md:hidden"> since {clock(first.since)}</span>}
         </span>
         <span className="min-w-0 truncate text-caption text-muted max-md:max-w-full" data-testid="incident-line">
-          {first.cleared ? radiusOf(first) : <>{radiusOf(first)}<span className="max-md:hidden">. {doingOf(first)}</span></>}
+          {!first.cleared && <span className="tabular-nums md:hidden">Since {clock(first.since)} · </span>}
+          {first.cleared || !radiusOf(first) ? radiusOf(first) || doingOf(first) : <>{radiusOf(first)}<span className="max-md:hidden">. {doingOf(first)}</span></>}
         </span>
       </span>
       {rest > 0 && <span className="shrink-0 text-caption text-muted" data-testid="incident-more">+{rest} more</span>}
@@ -134,9 +135,12 @@ export function IncidentList() {
         {all.map((i) => (
           <li key={i.id} data-testid="errors-incident" data-key={i.key} data-cleared={i.cleared ? "" : undefined}>
             <button type="button" aria-expanded={shown === i.id} onClick={() => setShown(shown === i.id ? null : i.id)}
-              className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-caption outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
-              <Icon i={i} />
-              <span className="min-w-0 flex-1 truncate text-fg">{titleOf(i)}<span className="text-muted"> · {radiusOf(i)}</span></span>
+              className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-caption outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring max-md:items-start">
+              <Icon i={i} className="max-md:mt-0.5" />
+              <span className="flex min-w-0 flex-1 items-baseline gap-1 max-md:flex-col max-md:gap-0">
+                <span className="min-w-0 truncate text-fg max-md:max-w-full max-md:whitespace-normal max-md:break-words" data-testid="incident-row-title">{titleOf(i)}</span>
+                <span className="min-w-0 truncate text-muted max-md:max-w-full"><span className="max-md:hidden">· </span>{radiusOf(i)}</span>
+              </span>
               <span className="shrink-0 tabular-nums text-faint">{i.cleared ? `${clock(i.since)} to ${clock(i.cleared)}` : `since ${clock(i.since)}`}</span>
             </button>
             {shown === i.id && <div className="-mx-3"><Details i={i} head={false} /></div>}

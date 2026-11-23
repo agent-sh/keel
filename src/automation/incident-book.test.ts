@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { IncidentBook, lineOf, owesAlert, QUIET_MS, radiusOf, titleOf, type Hit } from "./incident-book.ts";
+import { bodyOf, IncidentBook, lineOf, owesAlert, QUIET_MS, radiusOf, titleOf, wentDownByItself, type Hit } from "./incident-book.ts";
 
 const T0 = 1_800_000_000_000;
 let n = 0;
@@ -26,9 +26,12 @@ test("nine agents and their parent failing on one provider within a minute are o
   expect(owesAlert(i)).toBe(true);
   i.notified = T0;
   expect(owesAlert(i)).toBe(false);
-  // The parent's failure alert is the incident's to tell; another session's is not.
-  expect(b.absorbs("coord", T0 + 4 * 60_000)?.id).toBe(i.id);
-  expect(b.absorbs("elsewhere", T0 + 60_000)).toBeUndefined();
+  // The parent's failure alert of the incident's class is the incident's to tell; another session's,
+  // or one of another class, is not.
+  expect(b.absorbs("coord", "unreachable", T0 + 4 * 60_000)?.id).toBe(i.id);
+  expect(b.absorbs("coord", "context_overflow", T0 + 4 * 60_000)).toBeUndefined();
+  expect(b.absorbs("coord", undefined, T0 + 4 * 60_000)).toBeUndefined();
+  expect(b.absorbs("elsewhere", "unreachable", T0 + 60_000)).toBeUndefined();
   // A turn on it that went through ends it.
   const c = b.clear("provider:p", "it answers again", T0 + 5 * 60_000)!;
   expect(c.cleared).toBe(T0 + 5 * 60_000);
@@ -51,7 +54,7 @@ test("a held wait is an incident at once, is told only when it lasts, and clears
   const wait = (sessions: string[], at: number, long = false) => b.held({ key: "provider:p", label: "Provider", since: T0, message: "ConnectionRefused", sessions: sessions.map((id) => ({ id, title: id, parent: "coord" })), long }, at);
   const i = wait(["a", "b", "c"], T0 + 3_000);
   expect(titleOf(i)).toBe("Provider cannot be reached");
-  expect(radiusOf(i)).toBe("3 agents: 3 wait");
+  expect(radiusOf(i)).toBe("3 agents waiting");
   expect(owesAlert(i)).toBe(false);
   // A session that left the wait went on.
   wait(["a", "b"], T0 + 20_000);
@@ -63,7 +66,7 @@ test("a held wait is an incident at once, is told only when it lasts, and clears
   expect(owesAlert(i)).toBe(true);
   const c = b.unheld("provider:p", "it answers again, after 8 min", T0 + 8 * 60_000)!;
   expect(c.touched.every((t) => t.state === "went_on")).toBe(true);
-  expect(radiusOf(c)).toBe("3 agents: 3 went on");
+  expect(radiusOf(c)).toBe("3 agents: all went on");
   expect(owesAlert(c)).toBe(false);
 });
 
@@ -94,4 +97,13 @@ test("a stop of the daemon it did not choose is an incident by itself", () => {
   expect(titleOf(i)).toBe("Keel went down by itself");
   b.hit({ key: "restarts", cause: "restarts", cls: "crash", at: T0 + 60_000, message: "ended on a failure", now: true });
   expect(titleOf(i)).toBe("Keel went down by itself 2 times");
+  // No turn was running: the row says so, with no empty sentence.
+  expect(lineOf(i)).toBe("Keel went down by itself 2 times. No turn was running, so none was cut.");
+  expect(bodyOf(i)).toBe("No turn was running, so none was cut.");
+});
+
+test("only a stop nobody chose is an incident: a signal (systemd's stop or restart), a stop and a restart are planned", () => {
+  expect(wentDownByItself("killed")).toBe(true);
+  expect(wentDownByItself("crash")).toBe(true);
+  for (const how of ["signal", "stop", "restart", undefined]) expect(wentDownByItself(how)).toBe(false);
 });

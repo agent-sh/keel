@@ -1,7 +1,7 @@
 // The daemon's incidents as the page last heard them (src/automation/incidents.ts):
 // read when the socket opens, then from its `incidents` frames. A frame carries
-// the open ones whole and what cleared since the daemon started; the read at
-// open also has what cleared in the last day before it.
+// the open ones whole and what cleared since the last frame; the read at open
+// has what cleared in the last day.
 import { useSyncExternalStore } from "react";
 import type { Incident } from "../../../src/automation/incident-book.ts";
 import { api, onFeature, readAtOpen } from "./store.ts";
