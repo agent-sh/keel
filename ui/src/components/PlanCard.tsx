@@ -165,7 +165,10 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
     const el = text.current, tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
     if (!el || !reader.current) return;
     if (reading.current) { queued.current = end ? Infinity : queued.current + 1; return; }
-    const go = () => {
+    const go = (): boolean | "wait" => {
+      // (Lines in view not counted yet: not carried out of view unread. Read again first.)
+      const u = lines.current && unseenLines(lines.current);
+      if (u && u.n > u.out) return "wait";
       const f = foot.current?.hasAttribute("data-stuck") ? foot.current.offsetHeight : 0;
       const frame = Math.min(el.clientHeight, tray ? tray.clientHeight - f : el.clientHeight);
       const step = Math.max(16, Math.round(frame * 0.6));

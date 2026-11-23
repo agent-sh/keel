@@ -531,14 +531,17 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     const left = (p: ReturnType<typeof parts>) => !!p && (latest().unseen.get(id)?.n ?? 0) > 0 && p.tray.scrollTop + p.tray.clientHeight < p.tray.scrollHeight - 1 && rest(p) > -1.25 * rem();
     if (!left(parts())) return false;
     run.on = true; run.more = end ? 0 : 1; run.end = end; run.at = performance.now();
-    const go = () => {
+    const go = (): boolean | "wait" => {
       // (Each step is the run's: an End, or a press of Space not yet made.)
       if (!run.end && run.more <= 0) return false;
       const p = parts();
       if (!p || !left(p)) return false;
-      if (!run.end) run.more--;
       run.at = performance.now();
       own();
+      // (Lines in view not counted yet: not carried out of view unread. Read again first.)
+      const u = latest().unseen.get(id);
+      if (u && u.n > u.out) return "wait";
+      if (!run.end) run.more--;
       p.tray.scrollTop += Math.min(stepBy(p), Math.max(1, Math.ceil(rest(p)) + 1));
       return true;
     };

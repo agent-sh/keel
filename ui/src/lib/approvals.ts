@@ -264,8 +264,26 @@ export function paintedReader(watched: () => Element[], read: () => void): Paint
 // and its own view is read after it was painted. `step` moves the view and
 // says whether it did; `end`: on to the end, else one step. `done` runs when
 // the steps are over (the last one read, or no step left to make).
-export function readOnSteps(step: () => boolean, reader: PaintedReader, end: boolean, done?: () => void): void {
+// `step` says "wait" while lines in view now were not counted as seen yet: the
+// view the key found was not read after a paint (the key came in the frames
+// after the text grew), or a reading found the list changed under it. A step
+// then would carry those lines out of view unread, and End would stop short of
+// the end with them still to read. The view is read again after the next paint
+// and the step asked again. A view that stands counts within a settle time
+// (sawLines); one that still does not after twice that is kept from counting
+// by something else (a layer over it), and the steps end there.
+export function readOnSteps(step: () => boolean | "wait", reader: PaintedReader, end: boolean, done?: () => void): void {
   const later = (f: () => void) => requestAnimationFrame(() => requestAnimationFrame(f));
-  const next = () => { if (step()) reader.ask(() => (end ? later(next) : done?.())); else done?.(); };
+  let waiting = 0;
+  const next = () => {
+    const did = step();
+    if (did === "wait") {
+      waiting ||= performance.now();
+      if (performance.now() - waiting > 2 * SETTLE_MS) return done?.();
+      return reader.ask(next);
+    }
+    waiting = 0;
+    if (did) reader.ask(() => (end ? later(next) : done?.())); else done?.();
+  };
   later(next);
 }
