@@ -37,10 +37,34 @@ const keys = new WeakMap<object, string>();
 export function keyBlocks(body: unknown, text: string): void {
   if (!body || typeof body !== "object") return;
   const h = `${Bun.hash(text).toString(36)}.${text.length.toString(36)}`;
-  for (const list of [(body as { blocks?: unknown }).blocks, (body as { results?: unknown }).results]) {
+  keys.set(body, h);
+  const b = body as { blocks?: unknown; results?: unknown; images?: unknown };
+  for (const [name, list] of [["", b.blocks], ["", b.results], ["i", b.images]] as const) {
     if (!Array.isArray(list)) continue;
-    list.forEach((b, i) => { if (b && typeof b === "object") keys.set(b, `${h}.${i}`); });
+    list.forEach((x, i) => { if (x && typeof x === "object") keys.set(x, `${h}.${name}${i}`); });
   }
+}
+
+// What a projection makes of a stored body (a prompt's text block, a note's, a checkpoint's summary
+// message), made once per body and frozen, its blocks keyed by the body's key and `tag`: the same
+// request after request, so a message of them is known like one of stored blocks.
+const made = new WeakMap<object, Map<string, object>>();
+export function derived<T extends object>(body: object, tag: string, make: () => T): T {
+  let m = made.get(body);
+  if (!m) made.set(body, (m = new Map()));
+  const had = m.get(tag) as T | undefined;
+  if (had) return had;
+  const v = make();
+  const key = keys.get(body);
+  const blocks = (v as { content?: unknown }).content;
+  const each = Array.isArray(blocks) ? blocks : [v];
+  each.forEach((b, i) => {
+    if (!b || typeof b !== "object") return;
+    if (key !== undefined && !keys.has(b)) keys.set(b, `${key}:${tag}.${i}`);
+    Object.freeze(b);
+  });
+  m.set(tag, v);
+  return v;
 }
 
 // Facts of messages whose blocks all have keys, by the role and the keys; bounded, the oldest read go first.

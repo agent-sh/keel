@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { requestShape } from "../admin/trace.ts";
 import { zoneBytes } from "../admin/zones.ts";
 import type { Message } from "./types.ts";
-import { blobSize, keyBlocks, markOf, messageFacts } from "./message-facts.ts";
+import { blobSize, derived, keyBlocks, markOf, messageFacts } from "./message-facts.ts";
 
 // As the store hands bodies out: frozen all the way down.
 const frozen = <T>(v: T): T => {
@@ -75,4 +75,20 @@ test("a message read again from the table, as new objects of the same text, is s
   const other = JSON.stringify({ results: [{ type: "tool_result", tool_use_id: "t1", content: "s ".repeat(20_000) }] });
   const body = frozen(JSON.parse(other)); keyBlocks(body, other);
   expect(messageFacts({ role: "user", content: [body.results[0]] } as Message).mark).not.toBe(facts.mark);
+});
+
+test("a prompt's text and a checkpoint's summary, made of a stored body, are the same blocks each request", () => {
+  const text = JSON.stringify({ text: "p ".repeat(20_000) });
+  const body = frozen(JSON.parse(text)); keyBlocks(body, text);
+  const make = () => ({ type: "text", text: body.text });
+  const a = derived(body, "text", make), b = derived(body, "text", make);
+  expect(b).toBe(a);
+  expect(Object.isFrozen(a)).toBe(true);
+  const facts = messageFacts({ role: "user", content: [a] } as Message);
+  expect(longTexts(() => { expect(messageFacts({ role: "user", content: [derived(body, "text", make)] } as Message)).toBe(facts); })).toBe(0);
+  // Read again from the table: a new body of the same text, a new block, the same facts.
+  const again = frozen(JSON.parse(text)); keyBlocks(again, text);
+  const c = derived(again, "text", () => ({ type: "text", text: again.text }));
+  expect(c).not.toBe(a);
+  expect(longTexts(() => { expect(messageFacts({ role: "user", content: [c] } as Message)).toBe(facts); })).toBe(0);
 });

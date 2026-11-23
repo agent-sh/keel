@@ -36,6 +36,7 @@ import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, typ
 import { REWORD_SYSTEM, rewordHolds, rewordPrompt } from "../automation/successor.ts";
 import { cleanTitle, firstReply, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
+import { derived } from "../core/message-facts.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
@@ -159,14 +160,15 @@ export const MAX_CONTINUATIONS = 3;
 export function toMessages(events: readonly StoredEvent[]): Message[] {
   const cp = checkpointAt(events);
   const out: Message[] = [];
-  if (cp.at >= 0 && events[cp.at]!.data.mode === "summary") out.push(summaryMessage(events[cp.at]!.data));
+  // (The blocks made here of a stored body are made once per body: the same objects each request, src/core/message-facts.ts.)
+  if (cp.at >= 0 && events[cp.at]!.data.mode === "summary") { const d = events[cp.at]!.data; out.push(derived(d, "summary", () => summaryMessage(d))); }
   for (let i = cp.keepFrom; i < events.length; i++) {
     const e = events[i]!;
     if (e.kind === "compaction") {
       continue; // the checkpoint's summary leads (an older one in the tail is covered)
     } else if (e.kind === "user") {
       // An image sent without a caption has no text block (providers refuse an empty one).
-      const content: any[] = [...(e.data.images ?? []), ...(e.data.text ? [{ type: "text", text: e.data.text }] : [])];
+      const content: any[] = [...(e.data.images ?? []), ...(e.data.text ? [derived(e.data, "text", () => ({ type: "text", text: e.data.text }))] : [])];
       out.push({ role: "user", content });
     } else if (e.kind === "assistant") {
       // A declined reply is discarded: its partial output is not the model's answer.
@@ -182,7 +184,7 @@ export function toMessages(events: readonly StoredEvent[]): Message[] {
     } else if (e.kind === "note" && e.data.model) {
       // A note meant for the model (a background job ended): stored, so the
       // same bytes come back on every later request.
-      out.push({ role: "user", content: [{ type: "text", text: e.data.text }] });
+      out.push({ role: "user", content: [derived(e.data, "note", () => ({ type: "text", text: e.data.text }))] });
     }
   }
   // Consecutive same-role messages merge (an interrupted turn can leave two users).
