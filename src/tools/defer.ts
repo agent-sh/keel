@@ -58,6 +58,20 @@ export function nativeName(t: Pick<CatalogTool, "qualified" | "mcp">): string {
   return `${raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 55)}_${h}`;
 }
 
+// What a call to a tool the request does not declare is told besides its name:
+// a catalog tool called by its own name where catalog tools run through the
+// search pair is named with the call that runs it, and one where they load
+// on demand with the search that loads it.
+export async function unknownToolHint(name: string, tools: Tool[], session?: string): Promise<string> {
+  const t = (await catalogTools(session)).find((c) => !c.hidden && (nativeName(c) === name || c.qualified === name));
+  const call = tools.some((x) => x.name === "mcp_call");
+  const search = tools.find((x) => x.search || x.name === TOOL_SEARCH)?.name;
+  if (t && call) return ` It is ${t.mcp ? `the tool ${t.name} of the MCP server ${t.server}` : `the tool ${t.qualified}`}, which is not loaded as a tool of its own here: run it with mcp_call {"tool": "${t.qualified}", "arguments": {...}}.`;
+  if (t && search) return ` Load it first with ${search} "select:${nativeName(t)}", then call it by that name.`;
+  if (name.startsWith("mcp__")) return call ? " No connected MCP server offers it: find MCP tools with search_tools and run them with mcp_call." : search ? ` No connected MCP server offers it: find MCP tools with ${search}.` : "";
+  return "";
+}
+
 // `left`: a stand-in for a tool the catalog no longer has.
 type Deferred = Tool & { catalog?: string; left?: true };
 

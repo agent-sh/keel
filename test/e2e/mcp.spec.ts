@@ -141,6 +141,17 @@ test("mcp servers", async ({ page, request }) => {
   await expect(calls.filter({ hasText: search }).first()).toContainText(ask("Loaded mcp__echo__echo", "echo__echo"));
   await calls.filter({ hasText: ran }).last().click();
   await shoot(page, "mcp-04-chat");
+  // A tool called by the name it has where tools load natively, in a session that runs them
+  // through mcp_call: the model is told how to run it. (The stand-in makes that call on purpose.)
+  if (SCRIPTED) {
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "mcp__echo__echo", input: { text: "heron" } }])}`);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
+    const way = 'It is the tool echo of the MCP server echo, which is not loaded as a tool of its own here: run it with mcp_call {"tool": "echo__echo", "arguments": {...}}.';
+    await expect(page.getByTestId("assistant-text").last()).toContainText(`No tool named mcp__echo__echo. ${way}`);
+    await expect(calls.last().getByTestId("tool-why")).toContainText("run it with mcp_call");
+    await shoot(page, "mcp-04b-qualified-name");
+  }
 
   // The server's prompts are slash commands, as Claude Code lists them
   // (/server:prompt); the words after it fill the prompt's arguments, and what

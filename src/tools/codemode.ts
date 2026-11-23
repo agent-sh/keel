@@ -143,10 +143,10 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
           r = await run(c.tool, c.input);
           // A catalog tool's own name (server__tool, as search_tools lists it) runs as the
           // session declares it: mcp__server__tool where tools load natively, else through mcp_call.
-          if (r.is_error && r.content === `No tool named ${c.tool}.` && c.tool.includes("__")) {
+          if (r.is_error && typeof r.content === "string" && r.content.startsWith(`No tool named ${c.tool}.`) && c.tool.includes("__")) {
             const native = c.tool.startsWith("mcp__") ? null : `mcp__${c.tool}`;
             const viaNative = native ? await run(native, c.input) : r;
-            if (native && viaNative.content !== `No tool named ${native}.`) { c.tool = native; r = viaNative; }
+            if (native && !(typeof viaNative.content === "string" && viaNative.content.startsWith(`No tool named ${native}.`))) { c.tool = native; r = viaNative; }
             else {
               c.input = { tool: c.tool.replace(/^mcp__/, ""), arguments: c.input };
               c.tool = "mcp_call";
