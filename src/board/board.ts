@@ -173,6 +173,8 @@ export class WorkBoard {
     for (const r of rows.values()) {
       if (!r.branch) continue;
       r.review = pickReview(facts.reviews, r, lineage) ?? null;
+      const who = r.review && r.review.how === "task" ? rows.get(r.review.by) : undefined;
+      if (who && !who.reviews.includes(r.branch)) who.reviews.push(r.branch);
       const q = facts.queue.filter((x) => x.branch === r.branch && (!r.repo || x.repo === r.repo)).sort((a, b) => b.updated - a.updated)[0];
       if (q) r.queue = { id: q.id, state: q.state, why: q.why, landed: q.landed, tip: q.tip, current: !!r.head && q.tip === r.head, updated: q.updated };
       if (r.landed) r.landed = queueLanded(r.landed, r.queue);
@@ -200,7 +202,9 @@ export class WorkBoard {
 
 function rowOf(a: AgentFact): BoardRow {
   let reviews: string[] = [];
-  try { reviews = a.reviews ? (JSON.parse(a.reviews) as { branch: string }[]).map((x) => x.branch) : []; } catch {}
+  // (An agent with a branch of its own whose task named another branch is that branch's reviewer only
+  // when its review counted: added where it is picked.)
+  try { reviews = a.reviews ? (JSON.parse(a.reviews) as { branch: string; how?: string }[]).filter((x) => x.how !== "task" || !a.branch).map((x) => x.branch) : []; } catch {}
   const branch = a.branch ?? null;
   const remote = !!a.machine && !!branch;
   return {

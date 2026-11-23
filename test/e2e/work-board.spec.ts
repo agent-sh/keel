@@ -100,6 +100,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(be.review).toMatchObject({ by: refuser.id, how: "named", verdict: "refused", line: refusal, tip: betaTip, current: true });
   expect(g).toMatchObject({ state: "running", landed: { state: "no", missing: 1 }, review: null, worktree: "here" });
   expect(rv).toMatchObject({ branch: null, reviews: [beta.branch], landed: null });
+  expect(rowOf(b, approver.id).reviews).toEqual([alpha.branch]);
 
   // The coordinator reads the same rows in a few hundred tokens, with no model request behind them.
   await send(coord, calls([{ name: "keel__work_board", input: {} }]));
