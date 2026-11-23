@@ -132,7 +132,7 @@ export type Session = {
 // the owner; nothing here has a built-in model name.
 export type SessionSettings = {
   effort?: string;     // one of the model's listed efforts; absent = the model's default
-  fallback?: string;   // model id to continue on when the session's model declines
+  fallback?: string;   // model id to continue on when the session's model declines (for good) or stays overloaded (that turn)
   compact_at?: number; // owner ceiling in tokens; absent = a share of the model's window
   idle_compact?: false; // false: no summary is prepared while the session is idle (src/engine/compact.ts)
   speed?: string;      // a speed offer id of the model's listing; absent = standard

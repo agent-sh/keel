@@ -1,5 +1,7 @@
 // The session's fallback model: when the model declines a request, the turn
-// goes on once on this one, which then stays the session's model. Shown in
+// goes on once on this one, which then stays the session's model; when the
+// model stays overloaded, that turn goes on on this one and the next turn
+// tries the session's model first (src/engine/retry.ts movesToFallback). Shown in
 // the message box's bar while it is set (or being chosen); set from a refusal
 // card, /fallback or the palette.
 import { CornerDownRight, X } from "lucide-react";
@@ -25,9 +27,9 @@ export const FallbackChip = memo(function FallbackChip({ sessionId }: { sessionI
   const open = ch?.sid === sessionId;
   if (!fb && !open) return null;
   return (
-    <span className="inline-flex h-8 items-center rounded-md text-caption text-faint" data-testid="fallback-chip" title="If the model declines a request, the turn goes on once on this model, which then stays">
+    <span className="inline-flex h-8 items-center rounded-md text-caption text-faint" data-testid="fallback-chip" title="If the model declines a request, the turn goes on on this model, which then stays. If the model stays overloaded, that turn goes on on this model and the next one tries the session's model first.">
       <CornerDownRight className="ml-1 size-3.5" />
-      <span className="pl-1 max-md:hidden">If declined</span>
+      <span className="pl-1 max-md:hidden">Fallback</span>
       <ModelPicker compact value={fb ?? ""} openSignal={open ? ch!.n : undefined} onChange={(m) => setFallback(sessionId, m).catch(reportError)} />
       {(fb || open) && (
         <button type="button" aria-label="No fallback model" title="No fallback model" onClick={() => (fb ? setFallback(sessionId, null).catch(reportError) : done())} className="grid size-6 place-items-center rounded-sm hover:bg-hover hover:text-fg">

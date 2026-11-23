@@ -44,7 +44,7 @@ slash.add(
   { id: "continue", label: "Resume the stopped turn (the same as /resume)", when: ({ session }) => !!session && session.phase !== "working", run: (_a, { session }) => actions.resume(session!.id).then(() => {}) },
   {
     id: "fallback",
-    label: "The model a declined request goes on with",
+    label: "The model a declined or overloaded request goes on with",
     hint: "[model | off]",
     when: ({ session }) => !!session,
     run: async (arg, { session }) => {
@@ -62,7 +62,7 @@ registerCommand(
   { id: "compact", label: "Compact the context", group: "Session", words: "summarize summary free tokens", when: () => !!current(), run: () => actions.compact(current()!.id).catch(reportError) },
   { id: "clear-context", label: "Clear the context, keep the session", group: "Session", words: "fresh reset", when: () => !!current(), run: () => actions.clear(current()!.id).catch(reportError) },
   { id: "fork", label: "Fork this session", group: "Session", words: "branch copy", when: () => !!current()?.head, run: () => fork(current()!.id, current()!.head!).catch(reportError) },
-  { id: "fallback", label: "Set a fallback model for declined requests", group: "Session", words: "refusal declined backup model", when: () => !!current(), run: () => chooseFallback(current()!.id) },
+  { id: "fallback", label: "Set a fallback model for declined or overloaded requests", group: "Session", words: "refusal declined overloaded capacity backup model", when: () => !!current(), run: () => chooseFallback(current()!.id) },
   { id: "continue", label: "Resume the stopped turn", group: "Session", words: "continue go on", when: () => !!current() && current()!.phase !== "working", run: () => actions.resume(current()!.id).catch(reportError) },
 );
 

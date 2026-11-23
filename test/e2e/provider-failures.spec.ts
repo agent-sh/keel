@@ -13,6 +13,8 @@ import { shoot } from "./shots.ts";
 // in the same turn), a refusal (the card, then a retry on another model), a
 // request too long for the window and a context that fills up (compaction).
 const STAND_IN = "scripted:stand-in";
+// The counted retries (src/engine/retry.ts RETRY.max): the answers a request takes before its turn moves.
+const RETRY_MAX = 10;
 
 // An overloaded model (a 529, a 503, a stream's serviceUnavailable) is at capacity, not down and not
 // broken: the turn keeps trying past the counted retries until it has room, and the burst is one
@@ -76,6 +78,50 @@ test("an overloaded model past the counted retries: the turn goes on, an agent's
     await api(`/api/sessions/${two.id}/messages`, { text: "script:overloaded-asks" });
     await expect.poll(() => ended(two.id), { timeout: 30_000 }).toBe(true);
     expect((await events(two.id)).filter((e) => e.kind === "error").map((e) => e.data.message).join("")).toMatch(/the provider asked to wait until \d\d:\d\d/);
+  } finally {
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
+  }
+});
+
+// A session with a fallback model whose own model stays overloaded past the counted retries (the
+// stand-in keeps no cache Keel can count on, so waiting keeps nothing): the turn goes on on the
+// fallback with one note, the session's model stays its own, and the next turn tries it first.
+// Without a fallback the same overload is waited out (the test above).
+test("an overloaded model moves the turn to the session's fallback, and the next turn tries the model first", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state", `overloaded-fallback-${Date.now()}`);
+  mkdirSync(state, { recursive: true });
+  const d = await ownDaemon(state, 0, { KEEL_RETRY_WAIT_MAX_MS: "1000" });
+  const api = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    fetch(d.url + path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then((r) => r.json() as any);
+  try {
+    const { session } = await api("/api/sessions", { model: STAND_IN, title: "Overloaded with a fallback" });
+    await api(`/api/sessions/${session.id}`, { settings: { fallback: "scripted:stand-in-backup" } }, "PATCH");
+    await page.goto(`${d.url}/s/${session.id}`);
+    await expect(page.getByTestId("fallback-chip")).toContainText("Scripted backup");
+    const composer = page.getByTestId("composer");
+    await composer.fill("script:overloaded-long");
+    await composer.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+    await expect(page.getByTestId("note").filter({ hasText: "overloaded" })).toContainText(/Scripted stand-in has answered that it is overloaded for \d+ s\. This turn continues on Scripted backup; the next turn tries Scripted stand-in first\./);
+    await expect(page.getByTestId("assistant-text").last()).toHaveText("The backup model took the request.");
+    await shoot(page, "failures-overloaded-fallback");
+    const first = (await api(`/api/sessions/${session.id}`)).events as any[];
+    expect(first.filter((e) => e.kind === "error").map((e) => e.data.message)).toEqual([]);
+    expect(first.filter((e) => e.kind === "assistant").map((e) => e.data.model)).toEqual(["scripted:stand-in-backup"]);
+    // Moved at the counted retries, not after the twelve answers the overload lasts.
+    const rows = ((await api(`/api/errors?session=${session.id}`)).errors as any[]).filter((r) => /529 overloaded/.test(r.message));
+    expect(rows.map((r) => r.count)).toEqual([RETRY_MAX]);
+    expect(((await api(`/api/sessions/${session.id}`)).session as any).model).toBe(STAND_IN);
+
+    await composer.fill("And now?");
+    await composer.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
+    const both = (await api(`/api/sessions/${session.id}`)).events as any[];
+    expect(both.filter((e) => e.kind === "turn_start").map((e) => e.data.model)).toEqual([STAND_IN, STAND_IN]);
+    expect(both.filter((e) => e.kind === "assistant").map((e) => e.data.model)).toEqual(["scripted:stand-in-backup", STAND_IN]);
   } finally {
     d.proc.kill("SIGKILL");
     await exited(d.proc);

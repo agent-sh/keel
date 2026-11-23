@@ -94,6 +94,38 @@ export function retriesLeft(e: unknown, attempt: number, since?: number, now = D
   return attempt + 1 < RETRY.max;
 }
 
+// What decides whether a turn whose model answers that it is overloaded goes on on the session's
+// fallback model, for the rest of that turn (the next turn tries its own model first).
+// `tries`: the overloaded answers this request already waited after. `overloadedMs`: how long the
+// model has answered overloaded, as the daemon saw it across its sessions (the first such answer
+// of the overload still going on). `nextWaitMs`: the wait before the next try. `cacheMs`: how long
+// the provider keeps the session's cache on this model (none: the wire keeps none Keel can count
+// on). `cachedAt`: when a request last read or wrote that cache (0: never).
+export type MoveFacts = { tries: number; overloadedMs: number; nextWaitMs: number; asked?: boolean; cacheMs?: number; cachedAt: number; now: number };
+// Why it moves: the provider asked for a wait longer than a turn waits (the turn would end), the
+// overload is an outage by the daemon's measure, or the counted retries are spent and the model's
+// cache would be cold by the next try anyway.
+export type MoveWhy = "asked" | "outage" | "cold";
+
+// Moving costs one cold cache: the fallback reads none of the session's context, so the whole
+// of it is written there once, and once more on the session's model at the next turn when its
+// own cache expired meanwhile. Waiting costs only time. So:
+// - a burst within the counted retries is waited out on the warm cache, as before: the bursts the
+//   providers send heal within seconds (a burst of twelve answers, test/e2e/provider-failures);
+// - past the counted retries (where Claude Code moves to its fallback, after its ten retries), it
+//   moves when the cache it would keep is cold by the next try: nothing is lost by moving then;
+// - an overload that has lasted OUTAGE.alertMs moves whatever the cache: five minutes is where
+//   the daemon calls a provider's interruption an outage and tells the owner (src/providers/outage.ts),
+//   and the backoff past it is minutes a try, so a warm cache is not worth holding the work for;
+// - a wait the provider asked for, longer than a turn waits, would end the turn: it moves.
+export function movesToFallback(f: MoveFacts): MoveWhy | undefined {
+  if (f.asked && f.nextWaitMs > RETRY_WAIT_MAX_MS) return "asked";
+  if (f.overloadedMs >= OUTAGE.alertMs) return "outage";
+  if (f.tries < RETRY.max - 1) return undefined;
+  if (!f.cacheMs || !f.cachedAt || f.now + f.nextWaitMs - f.cachedAt >= f.cacheMs) return "cold";
+  return undefined;
+}
+
 // The wait before try `attempt + 1`: what the provider asked for, else 0.5 s doubling with a
 // quarter's jitter either way, to 32 s; an overloaded model's grows on, and never past
 // RETRY_WAIT_MAX_MS with its jitter (a wait over that is only ever one the provider asked for).

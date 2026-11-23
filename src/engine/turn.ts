@@ -47,7 +47,7 @@ import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
-import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep } from "./retry.ts";
+import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, movesToFallback, overloaded, overloadedGroup, retriesLeft, retryAfterMs, retryable, sleep, type MoveWhy } from "./retry.ts";
 import { OUTAGE } from "../providers/outage.ts";
 import { unreachable } from "../providers/unreachable.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
@@ -404,8 +404,21 @@ const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortE
 // owner stopped the session): nothing starts until the owner resumes it.
 export type Sent = { event?: StoredEvent; queued?: QueueItem; steer?: boolean; duplicate?: boolean; held?: boolean };
 
+// A turn's request that leaves an overloaded model for the session's fallback (retry.ts
+// movesToFallback): the turn goes on on `step` for the rest of that turn.
+class MovedToFallback extends Error {
+  constructor(readonly step: Step, readonly why: MoveWhy, readonly overloadedMs: number, cause: unknown) {
+    super(`moved to ${step.info.id}`, { cause });
+    this.name = "MovedToFallback";
+  }
+}
+
 export class Engine {
   private running = new Map<string, Running>();
+  // Each model that answers overloaded, across the daemon's sessions: the first such answer of
+  // the overload going on, and the last. An answer of the model ends it, and so does a quiet of
+  // OUTAGE.flapMs (an overload after that is another one, as an outage's is).
+  private busyModels = new Map<string, { since: number; last: number }>();
   // The unspent retry budget of a request parked in an outage, for its first
   // call on the same route and purpose in the continued turn.
   private resumedProviderRetry = new Map<string, { model: string; purpose: "turn" | "summary"; spent: number }>();
@@ -1756,6 +1769,39 @@ export class Engine {
     for (const h of allHooks()) try { f(h); } catch (e) { this.errors.capture("server", e, { hook: "measure", session: id }); }
   }
 
+  // An overloaded answer of `model`: how long the model has answered so across the daemon, from
+  // the first answer of the overload going on (or this request's own first, when that is earlier).
+  private overloadSeen(model: string, own = Date.now()): number {
+    const now = Date.now();
+    const was = this.busyModels.get(model);
+    const since = Math.min(own, was && now - was.last < OUTAGE.flapMs ? was.since : now);
+    this.busyModels.set(model, { since, last: now });
+    if (this.busyModels.size > 64) this.busyModels.delete(this.busyModels.keys().next().value!);
+    return now - since;
+  }
+
+  // Whether this turn's request leaves its overloaded model for the session's fallback now: only
+  // on the session's own model (the fallback, once moved to, is waited out like any model), to a
+  // fallback that lists and holds the context without compacting (a summary written there would
+  // replace the session's history for a model it leaves at the next turn).
+  private async overloadMove(id: string, session: Session, st: Step, req: ProviderRequest, fit: Fit | undefined, f: Omit<Parameters<typeof movesToFallback>[0], "cacheMs" | "cachedAt" | "now">, cause: unknown): Promise<MovedToFallback | undefined> {
+    const fb = this.store.session(id)?.settings.fallback;
+    if (!fb || fb === st.info.id || st.info.id !== session.model) return undefined;
+    const now = Date.now();
+    const cachedAt = Math.max(lastWarm(this.lineage(id), st.info.id), this.cachePlans.warmedAt(id, st.info.id));
+    const why = movesToFallback({ ...f, cacheMs: req.cacheMs, cachedAt, now });
+    if (!why) return undefined;
+    let to: Step;
+    try {
+      to = await this.step(session, fb);
+    } catch (e) {
+      this.errors.capture("provider", e, { session: id, at: "the fallback model for an overloaded one", fallback: fb });
+      return undefined;
+    }
+    if ((fit?.tokens ?? 0) >= Math.floor(to.info.context * COMPACT_SHARE)) return undefined;
+    return new MovedToFallback(to, why, f.overloadedMs, cause);
+  }
+
   // One provider call with retries for passing failures. The UI is told about
   // each wait and the half-streamed reply of a failed attempt is dropped.
   // `fit`: what the caller counted for this request. The request as it is
@@ -1876,6 +1922,7 @@ export class Engine {
         // The failures this request was sent again for are healed: recorded, not open.
         if (retried.length) this.errors.recovered(retried, id);
         answeredAt.set(res, since);
+        if (this.busyModels.size) this.busyModels.delete(st.info.id);
         return res;
       } catch (e) {
         clearInterval(hush);
@@ -1994,9 +2041,16 @@ export class Engine {
         if (full) (e as { group?: string }).group ??= overloadedGroup(st.info.id);
         const waitsOut = full && !!outages;
         if (waitsOut) busySince ??= Date.now();
+        const busyFor = full ? this.overloadSeen(st.info.id, busySince) : 0;
         const counted = attempt - busyTries;
-        if (!retriesLeft(e, counted, waitsOut ? busySince : undefined)) throw e;
         const wait = backoffMs(waitsOut ? busyTries : counted, e);
+        // A turn's request on the session's own model may go on on its fallback (retry.ts movesToFallback).
+        const moved = waitsOut && purpose === "turn" ? await this.overloadMove(id, session, st, req, fit, { tries: busyTries, overloadedMs: busyFor, nextWaitMs: wait, asked: retryAfterMs(e) !== undefined }, e) : undefined;
+        if (moved) {
+          this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: 0, then: `this turn went on on ${moved.step.info.id}` });
+          throw moved;
+        }
+        if (!retriesLeft(e, counted, waitsOut ? busySince : undefined)) throw e;
         // Only a wait the provider asked for is longer than a turn waits (backoffMs keeps its own under it).
         if (wait > RETRY_WAIT_MAX_MS && retryAfterMs(e) !== undefined) throw new RetryTooLong(e, Date.now() + wait);
         retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait }));
@@ -2207,6 +2261,10 @@ export class Engine {
     let reason = "end_turn";
     let cuts = 0;
     let fellBack = false;
+    // The turn left its overloaded model for the session's fallback (once a turn), and the model
+    // the session had when the turn began or the owner last chose one.
+    let movedOn = false;
+    let ownModel = session.model;
     let compactedForFit = false;
     let summaryFailed = false;
     // The code of the error that ended the turn (context_over_window, summary_truncated), kept on its turn_end.
@@ -2310,8 +2368,11 @@ export class Engine {
         // or a loop started in a session the owner had stopped.
         for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: !q.meta })) this.emitQueue(id);
         session = this.store.session(id)!;
-        // A model or effort chosen while the turn runs takes effect at its next request.
-        if (session.model !== st.info.id || effectiveEffort(st.info, session.settings.effort) !== st.effort) st = await this.step(session, session.model);
+        // A model or effort chosen while the turn runs takes effect at its next request. (A turn
+        // that went on on the fallback stays there unless the owner chose another model meanwhile.)
+        const chosen = session.model !== ownModel && session.model !== st.info.id;
+        if (chosen) { ownModel = session.model; movedOn = false; }
+        if ((session.model !== st.info.id && (chosen || !movedOn)) || effectiveEffort(st.info, session.settings.effort) !== st.effort) st = await this.step(session, movedOn ? st.info.id : session.model);
         // The owner's step budget for one turn (none by default).
         const budget = session.settings.max_steps ?? 0;
         if (budget > 0 && steps >= budget) {
@@ -2400,6 +2461,18 @@ export class Engine {
           res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.whole(events, st), ...(final ? { least: this.least(events, st) } : {}) });
           sentAt = answeredAt.get(res) ?? sentAt;
         } catch (e) {
+          // The session's model stayed overloaded: this turn goes on on its fallback, once, and the
+          // next turn tries its own model first (its turn_start names it; tellSwitch tells each model).
+          if (e instanceof MovedToFallback && (signal.aborted || movedOn)) throw e.cause;
+          if (e instanceof MovedToFallback) {
+            movedOn = true;
+            const from = st.info.name;
+            st = e.step;
+            const span = e.overloadedMs < 60_000 ? `${Math.max(1, Math.round(e.overloadedMs / 1000))} s` : `${Math.round(e.overloadedMs / 60_000)} min`;
+            const said = e.why === "asked" ? `${from} is overloaded and asked for a wait longer than a turn waits` : `${from} has answered that it is overloaded for ${span}`;
+            this.append(id, "note", { kind: "fallback", overloaded: true, why: e.why, from: session.model, to: st.info.id, waited_ms: e.overloadedMs, text: `${said}. This turn continues on ${st.info.name}; the next turn tries ${from} first.` });
+            continue;
+          }
           // Counted over the window before it was sent: the provider said nothing about its own count.
           const unsent = !!(e as any)?.unsent;
           // Refused by the provider as over its window: its count of this context is higher than Keel's.
