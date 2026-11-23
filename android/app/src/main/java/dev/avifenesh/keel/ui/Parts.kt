@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -172,7 +173,8 @@ fun Pill(text: String, fg: Color, bg: Color, modifier: Modifier = Modifier) =
 /** The page head: a back or brand slot, the title in the instrument face, actions. */
 @Composable
 fun Head(title: String, sub: (@Composable () -> Unit)? = null, lead: (@Composable () -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
-    Row(Modifier.fillMaxWidth().padding(start = if (lead != null) 4.dp else S.lg, end = 6.dp, top = 6.dp, bottom = 6.dp).height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+    // At least a finger's row, and taller when the text size asks for it: a fixed height cut the second line at 200%.
+    Row(Modifier.fillMaxWidth().padding(start = if (lead != null) 4.dp else S.lg, end = 6.dp, top = 6.dp, bottom = 6.dp).heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
         if (lead != null) { lead(); Spacer(Modifier.width(4.dp)) }
         Column(Modifier.weight(1f)) {
             Txt(title, if (lead != null) T.title else T.display, maxLines = 1)
