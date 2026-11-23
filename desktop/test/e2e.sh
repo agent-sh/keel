@@ -401,10 +401,20 @@ if [ "$BACKEND" = kwin ]; then
     $A focus-window --id "$WS" "$oid" > /dev/null 2>&1
     wait_for 5 "active | grep -q 'Another app'" || true
   fi
-  $A key --id "$WS" t > /dev/null 2>&1
-  wait_for 5 "[ -s '$D/token' ]"
-  XDG_ACTIVATION_TOKEN=$(cat "$D/token") "$SHELL_BIN"
-  check "a launch with the desktop's token brings Keel's window to the front" "wait_for 5 \"active | grep -q 'Keel'\" && last present | grep -q '\"token\":true'"
+  # The other app asks the desktop for a token at a key of the owner's in it. (It must have the
+  # keyboard for that key: asked for again when the key did not reach it.)
+  for _ in 1 2 3; do
+    $A focus-window --id "$WS" "$oid" > /dev/null 2>&1
+    wait_for 5 "active | grep -q 'Another app'" || true
+    $A key --id "$WS" t > /dev/null 2>&1
+    wait_for 5 "[ -s '$D/token' ]" && break
+  done
+  if [ -s "$D/token" ]; then
+    XDG_ACTIVATION_TOKEN=$(cat "$D/token") "$SHELL_BIN"
+    check "a launch with the desktop's token brings Keel's window to the front" "wait_for 5 \"active | grep -q 'Keel'\" && last present | grep -q '\"token\":true'"
+  else
+    fail "the other app was given no token by this desktop, so a launch with one was not tried"
+  fi
   sig -TERM "$(cat "$D/host-other.pid")"
 else
   echo "# note: focus on a launch with the desktop's activation token is checked under the native Wayland backend"
