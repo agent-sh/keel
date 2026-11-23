@@ -92,6 +92,36 @@ describe("a photo leaves without where it was taken", () => {
     expect(withoutLocation(plain)).toBe(plain);
   });
 
+  test("the caller's bytes are not written to, and every PNG chunk keeps a right checksum", async () => {
+    for (const make of [() => jpegWithGps(), pngWithGps, webpWithGps]) {
+      // A Buffer (what readFileSync and Buffer.from give): its slices share its memory.
+      const was = await make();
+      const copy = Buffer.from(was);
+      withoutLocation(was);
+      expect(was.equals(copy)).toBe(true);
+    }
+    const now = Buffer.from(withoutLocation(await pngWithGps()));
+    for (let at = 8; at + 12 <= now.length;) {
+      const len = now.readUInt32BE(at);
+      expect([now.toString("latin1", at + 4, at + 8), now.readUInt32BE(at + 8 + len)]).toEqual([now.toString("latin1", at + 4, at + 8), crc32(now.subarray(at + 4, at + 8 + len)) >>> 0]);
+      at += 12 + len;
+    }
+  });
+
+  test("a JPEG keeps one picture: the appended ones and the IPTC block go", async () => {
+    const first = await jpegWithGps(), second = await jpegWithGps();
+    const iptc = segment(0xed, Buffer.from("Photoshop 3.0\x008BIM\x04\x04\x00\x00\x00\x00\x00\x0e\x1c\x02\x5a\x00\x05Paris", "latin1"));
+    const mpf = segment(0xe2, Buffer.from("MPF\0II*\0", "latin1"));
+    // A camera's multi-picture file: the first picture with its index, a second one after its end.
+    const multi = Buffer.concat([first.subarray(0, 2), iptc, mpf, first.subarray(2), second]);
+    const now = Buffer.from(withoutLocation(multi));
+    expect([now.includes("Paris"), now.includes("MPF\0"), has(now, LAT()), now.includes("GPSLatitude")]).toEqual([false, false, false, false]);
+    // One picture: one start and one end of image.
+    expect([now.indexOf(Buffer.from([0xff, 0xd8]), 2), now.subarray(-2).equals(Buffer.from([0xff, 0xd9]))]).toEqual([-1, true]);
+    const m = await new Bun.Image(now).metadata();
+    expect([m.width, m.height]).toEqual([8, 8]);
+  });
+
   test("every way an image is stored drops it: a prompt's image, an upload, a streamed upload", async () => {
     setAttachmentsRoot(mkdtempSync(join(tmpdir(), "keel-exif-")));
     const photo = await jpegWithGps();

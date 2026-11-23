@@ -6,6 +6,10 @@
 // orientation among them, so the picture keeps its way up), and XMP, which can
 // carry the place again, is dropped. No decode, no re-encode: the pixels are
 // the same bytes. JPEG, PNG and WebP; anything else is returned as it is.
+// A JPEG also loses its IPTC block (APP13, which names places too) and the
+// pictures a camera appends after the first (MPF: a depth map, a gain map,
+// each with EXIF and XMP of its own): what is kept is the one picture.
+// The input is never written to: every changed part is a copy of its own.
 import { crc32 } from "node:zlib";
 
 // The bytes each TIFF type takes per value.
@@ -47,21 +51,36 @@ export function clearGps(t: Uint8Array): boolean {
   return true;
 }
 
+// Where the first picture's data ends: just past its end-of-image marker, found
+// from its first scan (inside scan data a 0xFF byte is followed by 0x00 or a
+// restart marker; any other marker there is a later scan's header).
+function endOfImage(b: Uint8Array, from: number): number {
+  for (let i = from; i + 1 < b.length; i++) if (b[i] === 0xff && b[i + 1] === 0xd9) return i + 2;
+  return b.length;
+}
+
 function jpeg(b: Uint8Array): Uint8Array | null {
   const keep: Uint8Array[] = [b.subarray(0, 2)];
   let at = 2, changed = false;
   while (at + 4 <= b.length && b[at] === 0xff) {
     const marker = b[at + 1]!;
-    // Start of scan: the rest is the picture.
-    if (marker === 0xda) break;
+    // Start of scan: the rest of the first picture is its data. What follows its end goes.
+    if (marker === 0xda) {
+      const end = endOfImage(b, at);
+      if (end < b.length) changed = true;
+      keep.push(b.subarray(at, end));
+      return changed ? Buffer.concat(keep) : null;
+    }
     // Markers with no length of their own.
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { keep.push(b.subarray(at, at + 2)); at += 2; continue; }
     const len = (b[at + 2]! << 8) | b[at + 3]!;
     const seg = b.subarray(at, at + 2 + len);
-    if (marker === 0xe1) {
+    if (marker === 0xed) changed = true; // IPTC: dropped
+    else if (marker === 0xe2 && ascii(seg, 4, 4) === "MPF\0") changed = true; // the index of the dropped pictures
+    else if (marker === 0xe1) {
       const body = seg.subarray(4);
       if (ascii(body, 0, 6) === "Exif\0\0") {
-        const copy = seg.slice();
+        const copy = new Uint8Array(seg);
         if (clearGps(copy.subarray(10))) { changed = true; keep.push(copy); } else keep.push(seg);
       } else if (ascii(body, 0, XMP_ID.length) === XMP_ID || ascii(body, 0, XMP_EXT_ID.length) === XMP_EXT_ID) changed = true;
       else keep.push(seg);
@@ -81,9 +100,9 @@ function png(b: Uint8Array): Uint8Array | null {
     const len = v.getUint32(at), type = ascii(b, at + 4, 4);
     const chunk = b.subarray(at, at + 12 + len);
     if (type === "eXIf") {
-      const copy = chunk.slice();
+      const copy = new Uint8Array(chunk);
       if (clearGps(copy.subarray(8, 8 + len))) {
-        new DataView(copy.buffer).setUint32(8 + len, crc32(copy.subarray(4, 8 + len)) >>> 0);
+        new DataView(copy.buffer, copy.byteOffset, copy.byteLength).setUint32(8 + len, crc32(copy.subarray(4, 8 + len)) >>> 0);
         changed = true; keep.push(copy);
       } else keep.push(chunk);
     } else if (type === "iTXt" && ascii(b, at + 8, 18) === "XML:com.adobe.xmp\0") changed = true;
@@ -104,7 +123,7 @@ function webp(b: Uint8Array): Uint8Array | null {
     const type = ascii(b, at, 4), len = v.getUint32(at + 4, true);
     const chunk = b.subarray(at, at + 8 + len + (len & 1));
     if (type === "EXIF") {
-      const copy = chunk.slice();
+      const copy = new Uint8Array(chunk);
       // Some writers put EXIF's JPEG prefix in front of the TIFF block.
       const off = ascii(copy, 8, 6) === "Exif\0\0" ? 14 : 8;
       if (clearGps(copy.subarray(off, 8 + len))) { changed = true; keep.push(copy); } else keep.push(chunk);
@@ -114,7 +133,7 @@ function webp(b: Uint8Array): Uint8Array | null {
   }
   if (!changed) return null;
   // The extended header says whether XMP follows: it does not any more.
-  if (vp8x >= 0) { const c = keep[vp8x]!.slice(); c[8] = c[8]! & ~0x04; keep[vp8x] = c; }
+  if (vp8x >= 0) { const c = new Uint8Array(keep[vp8x]!); c[8] = c[8]! & ~0x04; keep[vp8x] = c; }
   const body = Buffer.concat(keep);
   const head = Buffer.from(b.subarray(0, 12));
   head.writeUInt32LE(body.length + 4, 4);
