@@ -15,6 +15,8 @@ test("the inbox says how each answered approval and question was answered", asyn
   const denied = await asksToRun(request, "Outcome denied", ws, "denied");
   const asked = await create(request, "Outcome asked", ws);
   await ask(request, asked, "question");
+  const stopped = await create(request, "Outcome stopped", ws);
+  await ask(request, stopped, "question");
   // Answered the way the page answers (allowed once), from the command line's API (denied), and a question.
   await request.post(`/api/sessions/${allowed}/approvals/${await approvalId(request, allowed)}`, { data: { choice: "once", seen: "whole", via: "page" } });
   await request.post(`/api/sessions/${denied}/approvals/${await approvalId(request, denied)}`, { data: { choice: "deny", via: "cli" } });
@@ -24,6 +26,10 @@ test("the inbox says how each answered approval and question was answered", asyn
   // The question's outcome is kept with its alert (the Inbox says it after a restart too).
   await expect.poll(async () => ((await (await request.get("/api/alerts?limit=200")).json()).alerts as { kind: string; session_id: string; data?: { outcome?: string } }[])
     .find((x) => x.kind === "question" && x.session_id === asked)?.data?.outcome, { timeout: 15_000 }).toBe("answered");
+  // A question whose turn the owner stopped was not answered, and that is kept with its alert too.
+  await request.post(`/api/sessions/${stopped}/interrupt`, { data: { by: "owner" } });
+  await expect.poll(async () => ((await (await request.get("/api/alerts?limit=200")).json()).alerts as { kind: string; session_id: string; data?: { outcome?: string } }[])
+    .find((x) => x.kind === "question" && x.session_id === stopped)?.data?.outcome, { timeout: 15_000 }).toBe("not answered");
 
   await page.goto("/");
   await page.getByTestId("inbox-button").click();
@@ -32,8 +38,9 @@ test("the inbox says how each answered approval and question was answered", asyn
   await expect(row("Outcome allowed", "Approval").getByTestId("inbox-outcome")).toHaveText("Allowed once from the page");
   await expect(row("Outcome denied", "Approval").getByTestId("inbox-outcome")).toHaveText("Denied from the command line");
   await expect(row("Outcome asked", "Question").getByTestId("inbox-outcome")).toHaveText("Answered");
+  await expect(row("Outcome stopped", "Question").getByTestId("inbox-outcome")).toHaveText("Not answered");
   await shoot(page, "inbox-outcome-01-earlier");
   await page.setViewportSize({ width: 390, height: 844 });
   await shoot(page, "inbox-outcome-02-phone");
-  await drop(request, allowed, denied, asked);
+  await drop(request, allowed, denied, asked, stopped);
 });

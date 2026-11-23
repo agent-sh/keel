@@ -10,6 +10,7 @@ import { readsOf } from "../server/reads.ts";
 import { awakeHolds, awakeReasons, recheckAwake } from "../admin/awake.ts";
 import type { Judged } from "../safety/gate.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { stopKind } from "../core/stops.ts";
 import { toMessages } from "../engine/turn.ts";
 import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
@@ -136,6 +137,13 @@ function init(deps: Deps) {
         // The answer to a question is the owner's word: it ends a snooze.
         snooze.end(deps.store.session(s.id)?.parent_id ?? s.id, "the owner answered");
       }
+    },
+    // A question whose turn was stopped while it waited was not answered: said so with its alert, as an
+    // answer is (afterTool does not run for a stopped call). Only a call whose question the stop closed
+    // (the model's own, or a server's on any tool) is looked up. A call a restart cut is asked again on
+    // its card, and one that could not be is an expiry with an alert of its own.
+    toolRan: (s, call, result, ran) => {
+      if (ran.outcome === "interrupted" && stopKind(result.content) === "stopped" && closedHow(s.id, call.id) === "not answered") alerts.keepOutcome("call_id", call.id, s.id, "not answered", true);
     },
     // A question a server asked on a call's card is an alert like the model's own.
     // (One alert per question: a call's server can ask more than one.)

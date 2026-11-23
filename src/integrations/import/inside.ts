@@ -49,9 +49,18 @@ async function holding(t: Tool, word: string, files: string[], signal?: AbortSig
     while (next < batches.length) {
       if (signal?.aborted) throw signal.reason ?? new Error("aborted");
       const b = batches[next++]!;
-      const r = await run([...argsOf(t, word), ...b], signal);
-      // 0: some matched; 1: none did; anything else is a failure of the read (a file gone meanwhile is not one: -s, --no-messages).
-      if (r.code > 1 && !r.out) throw new Error(`${t} exited ${r.code}`);
+      let r = await run([...argsOf(t, word), ...b], signal);
+      // 0: some matched; 1: none did; anything else is a failure of the read. A file removed since the listing
+      // (a transcript a harness deleted or rotated) also exits 2, with nothing printed when no other file matched:
+      // it holds no match, and the files left are read again without it. Only a read that failed on files that
+      // are there is a failure.
+      if (r.code > 1 && !r.out) {
+        const there = await Promise.all(b.map((f) => Bun.file(f).exists().catch(() => true)));
+        const left = b.filter((_, k) => there[k]);
+        if (left.length === b.length) throw new Error(`${t} exited ${r.code}`);
+        r = left.length ? await run([...argsOf(t, word), ...left], signal) : { out: "", code: 1 };
+        if (r.code > 1 && !r.out) throw new Error(`${t} exited ${r.code}`);
+      }
       for (const l of r.out.split("\n")) if (l) out.push(l);
     }
   };

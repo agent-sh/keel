@@ -925,8 +925,10 @@ export const raisedOffline = (machine: string, since: number) =>
 
 // What became of a question, kept with its alert when it closes, so the Inbox says it after a
 // restart too: answered, declined, or not answered. Its notice of expiry is an alert of its own.
-export function keepOutcome(key: "call_id" | "ask_id", value: string, askedIn: string, outcome: string) {
-  D().store.db.query(`UPDATE alerts SET data = json_set(COALESCE(data, '{}'), '$.outcome', ?) WHERE far_id IS NULL AND kind = 'question' AND json_extract(data, ?) = ? AND ${ASKED_IN} = ? AND json_extract(data, '$.expired') IS NULL`)
+// `unsaid`: only the questions with no outcome yet (a call's turn stopped after a server's first
+// question on it was answered leaves that one answered).
+export function keepOutcome(key: "call_id" | "ask_id", value: string, askedIn: string, outcome: string, unsaid = false) {
+  D().store.db.query(`UPDATE alerts SET data = json_set(COALESCE(data, '{}'), '$.outcome', ?) WHERE far_id IS NULL AND kind = 'question' AND json_extract(data, ?) = ? AND ${ASKED_IN} = ? AND json_extract(data, '$.expired') IS NULL${unsaid ? " AND json_extract(data, '$.outcome') IS NULL" : ""}`)
     .run(outcome, `$.${key}`, value, askedIn);
 }
 
