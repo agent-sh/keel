@@ -61,7 +61,9 @@ test("loading a skill does not change the listing block a kept prompt is compare
     const loaded = await render();
     expect(loaded.text).not.toBe(first.text);
     expect(loaded.text).toContain("does thing 17");
-    expect(loaded.block).toEqual(first.block);
+    // A kept prompt is compared by the block's hash and data (prompt-store.ts changedBlocks, ownChanges); its size is the sent text's own.
+    const kept = (b: typeof first.block) => ({ name: b.name, hash: b.hash, data: b.data });
+    expect(kept(loaded.block)).toEqual(kept(first.block));
     // A skill added is a change, of the block and of the owner's side of it.
     skill(30);
     const added = (await render()).block;
