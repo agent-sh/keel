@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BROUGHT_MS, broughtHere, hexOf, pastedFiles, pathParts, wasBrought } from "./shell.ts";
+import { BROUGHT_MS, broughtHere, hexOf, mayCollect, pastedFiles, pathParts, wasBrought } from "./shell.ts";
 
 // The review's case: a link raised the window and a card took the keyboard on its answer.
 test("an arrival from outside the page holds the keyboard off the answers for a while, then no longer", () => {
@@ -31,4 +31,12 @@ test("the pictures the app hands a paste are files", () => {
   const files = pastedFiles([{ type: "text/plain", data: btoa("words") }, { type: "image/png", data: png }]);
   expect(files.map((f) => [f.name, f.type, f.size])).toEqual([["pasted.png", "image/png", 4]]);
   expect(pastedFiles([])).toEqual([]);
+});
+
+test("a collection is asked for only when the window is not the owner's, and not twice in a minute", () => {
+  expect(mayCollect(false, 0, 60_000)).toBe(true);
+  // The keyboard went into a frame of the page: the document still has the focus.
+  expect(mayCollect(true, 0, 600_000)).toBe(false);
+  expect(mayCollect(false, 100_000, 159_999)).toBe(false);
+  expect(mayCollect(false, 100_000, 160_000)).toBe(true);
 });

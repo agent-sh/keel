@@ -124,3 +124,8 @@ export function pathParts(path: string): { pathname: string; event: string | nul
   const u = new URL(path, "http://keel.invalid");
   return { pathname: u.pathname, event: u.searchParams.get("e"), approval: u.searchParams.get("approval"), inbox: u.searchParams.has("inbox") };
 }
+
+// Whether the page asks the app's engine for a collection now (features/shell.ts): the owner
+// has turned to another window (a blur alone also comes when the keyboard goes into a frame of
+// the page), and the last one was a minute ago or more.
+export const mayCollect = (focused: boolean, last: number, now: number) => !focused && now - last >= 60_000;

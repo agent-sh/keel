@@ -9,7 +9,7 @@ import { createElement } from "react";
 import { focusApproval } from "../lib/automation.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { pasteKey } from "../lib/paste-key.ts";
-import { broughtHere, hexOf, pathParts, shell, shellSaving, soloWindow, type ShellTold } from "../lib/shell.ts";
+import { broughtHere, hexOf, mayCollect, pathParts, shell, shellSaving, soloWindow, type ShellTold } from "../lib/shell.ts";
 import { reconnectNow } from "../lib/store.ts";
 import { getUI, setScale, setUI, stepScale } from "../lib/ui.ts";
 
@@ -103,7 +103,8 @@ if (host) {
     let last = 0;
     addEventListener("blur", () => {
       clearTimeout(wait);
-      wait = setTimeout(() => { if (Date.now() - last >= 60_000) { last = Date.now(); collect(); } }, 5_000);
+      // (A blur also comes when the keyboard goes into a frame of the page: the window is then still the owner's.)
+      wait = setTimeout(() => { if (mayCollect(document.hasFocus(), last, Date.now())) { last = Date.now(); collect(); } }, 5_000);
     });
     addEventListener("focus", () => clearTimeout(wait));
   }
