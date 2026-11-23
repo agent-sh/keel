@@ -341,8 +341,8 @@ body {
 }
 ::selection { background: var(--accent-soft); }
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-/* A popup on its way out (a dialog, a sheet, its backdrop) takes no press and covers nothing: what it
-   leaves in view is in view at once (an approval's Allow counts its stillness from then). */
+/* A popup on its way out (a dialog, a sheet, its backdrop) takes no press. (What it still lies over is
+   not in view until it is gone: an approval card asks for that itself, ApprovalCard.tsx.) */
 [data-ending-style] { pointer-events: none; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 input:focus-visible, textarea:focus-visible { outline: none; }

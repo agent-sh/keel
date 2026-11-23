@@ -101,6 +101,16 @@ function frameOf(list: HTMLElement) {
     inList: (at: DOMRect) => ({ x: at.left - r.left, y: at.top - r.top + top }),
   };
 }
+// A layer on its way out (a closing sheet, its backdrop) takes no press, so no point hits it (styles.css),
+// but it still lies over what is under it until it is gone: nothing under it is in view yet.
+function underLeaving(el: Element, x: number, y: number): boolean {
+  for (const g of document.querySelectorAll<HTMLElement>("[data-ending-style]")) {
+    if (g.contains(el)) continue;
+    const q = g.getBoundingClientRect();
+    if (x >= q.left && x <= q.right && y >= q.top && y <= q.bottom) return true;
+  }
+  return false;
+}
 // Where an element is, and whether all of it shows: inside the clip and, for text that is
 // to be read or pressed (`open`), with nothing lying over its middle. (A pointer cannot
 // press a control something lies over, but a key can: such a control does not act.)
@@ -108,8 +118,10 @@ function seenAt(el: HTMLElement, c: Clip, open = false) {
   const r = el.getBoundingClientRect();
   let whole = r.width > 0 && r.height > 0 && r.top >= c.top - 0.5 && r.bottom <= c.bottom + 0.5 && r.left >= c.left - 0.5 && r.right <= c.right + 0.5;
   if (whole && open) {
-    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const top = document.elementFromPoint(x, y);
     whole = !!top && el.contains(top);
+    if (whole && underLeaving(el, x, y)) whole = false;
   }
   return { r, at: { x: r.left, y: r.top, whole } };
 }
@@ -135,7 +147,7 @@ function rowsInView(pre: HTMLElement, c: Clip): { total: number; line: number; v
   const top = Math.max(c.top, r.top), bottom = Math.min(c.bottom, r.bottom);
   if (!(r.width > 0) || r.left < c.left - 0.5 || r.right > c.right + 0.5 || bottom <= top) return { total, line, view: null };
   const over = document.elementFromPoint(r.left + r.width / 2, (top + bottom) / 2);
-  if (!over || !pre.contains(over)) return { total, line, view: null };
+  if (!over || !pre.contains(over) || underLeaving(pre, r.left + r.width / 2, (top + bottom) / 2)) return { total, line, view: null };
   const y = (v: number) => v - r.top - pre.clientTop + pre.scrollTop - padTop;
   return { total, line, view: [y(top), y(bottom)] };
 }
@@ -440,9 +452,12 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   };
   // Moves the region above the message box on through the text of the card the keyboard is on
   // (on the list itself: the first card with lines not seen), a step at a time, each step read as
-  // the owner's own scroll: what it passes is in view. A step is under the region's height, so
-  // the views overlap and no line is jumped over. `end`: on to the card's end, else one step.
-  // Not for a card whose text must be opened first (Enter opens it): its lines are in its box.
+  // the owner's own scroll. A step is the height the text can be read in, less a line (with the
+  // fades at both edges and the card's foot counted out), so two views always share a line and
+  // none is jumped over. Each view stands for a painted frame before it is read and before the
+  // next step: a step is made two frames after the one before it, never in the frame of it, and
+  // the reading that counts it is made after it was painted. `end`: on to the card's end, else
+  // one step. Not for a card whose text must be opened first (Enter opens it).
   const readOn = (from: HTMLElement, end: boolean): boolean => {
     const el = list.current, tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
     if (!el || !tray) return false;
@@ -451,21 +466,28 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     const card = own_ ? (unread(own_) ? own_ : null) : [...el.querySelectorAll<HTMLElement>(':scope > [data-testid="approval"]')].find(unread);
     const text = card?.querySelector<HTMLElement>('[data-testid="approval-summary"]');
     if (!card || !text) return false;
-    const left = () => {
-      const foot = card.hasAttribute("data-foot") ? card.querySelector<HTMLElement>(":scope > .k-ask-foot")?.offsetHeight ?? 0 : 0;
-      return text.getBoundingClientRect().bottom - (tray.getBoundingClientRect().bottom - foot);
+    const foot = () => (card.hasAttribute("data-foot") ? card.querySelector<HTMLElement>(":scope > .k-ask-foot")?.offsetHeight ?? 0 : 0);
+    const left = () => text.getBoundingClientRect().bottom - (tray.getBoundingClientRect().bottom - foot());
+    const stepBy = () => {
+      const r = tray.getBoundingClientRect(), rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const bar = el.hasAttribute("data-bar-stays") ? el.querySelector<HTMLElement>(":scope > .k-ask-bar")?.getBoundingClientRect().bottom ?? 0 : 0;
+      const fade = 1.25 * rem; // the region's fades (styles.css), counted whether they show or not
+      const top = Math.max(r.top + fade, bar), bottom = r.bottom - foot() - fade;
+      const line = parseFloat(getComputedStyle(text).lineHeight) || 1.5 * rem;
+      return Math.max(line, Math.floor(bottom - top - line));
     };
-    const stepBy = () => Math.max(16, Math.round(tray.clientHeight * 0.6));
     const go = () => {
       const rest = left();
       if (rest <= 1 || tray.scrollTop + tray.clientHeight >= tray.scrollHeight - 1) return false;
       own();
       tray.scrollTop += Math.min(stepBy(), Math.ceil(rest) + 1);
-      tick();
       return true;
     };
+    // Two frames on: the view the step made has been painted. It is read then, and the next step made.
+    const later = (f: () => void) => requestAnimationFrame(() => requestAnimationFrame(f));
+    const after = () => later(() => { own(); tick(); if (end && go()) after(); });
     if (!go()) return false;
-    if (end) { const next = () => { if (go()) requestAnimationFrame(next); }; requestAnimationFrame(next); }
+    after();
     return true;
   };
   const onFocus = (e: ReactFocusEvent<HTMLDivElement>) => {

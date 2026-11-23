@@ -363,6 +363,56 @@ test("a long command is read by keys: Enter opens it, End reads it to its end, E
   }
 });
 
+// End steps through a long command one painted view at a time. The page keeps, after each frame was
+// painted, which lines of the text stood whole in the region (less the card's foot where it stays): when
+// the card says every line was seen and takes an answer, each of the 201 lines was on screen in a frame.
+test("End reads a long command on only through views that were painted, each line on screen", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const MANY = `${Array.from({ length: 200 }, (_, i) => `echo step ${i + 1}`).join("\n")}\necho done > last.txt`;
+  const s = await asking(request, "Read: two hundred and one lines by End", [bash(MANY)]);
+  try {
+    await waits(request, s.id);
+    await page.goto(`/s/${s.id}`);
+    const list = page.getByTestId("approvals"), card = list.getByTestId("approval").first();
+    await expect(list).toBeFocused();
+    await expect(list).toHaveAttribute("data-keys", "ready");
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("approval-read-key")).toBeVisible();
+    await page.evaluate(() => {
+      const w = window as unknown as { __painted: { tops: number[]; lines: Set<number>; total: number } };
+      w.__painted = { tops: [], lines: new Set(), total: 0 };
+      const ch = new MessageChannel();
+      // After a frame's paint: what it showed.
+      ch.port1.onmessage = () => {
+        const tray = document.querySelector<HTMLElement>('[data-testid="composer-tray"]'), pre = document.querySelector<HTMLElement>('[data-testid="approval-summary"]');
+        const cardEl = pre?.closest<HTMLElement>('[data-testid="approval"]');
+        if (tray && pre && cardEl) {
+          const t = tray.getBoundingClientRect(), r = pre.getBoundingClientRect(), cs = getComputedStyle(pre);
+          const foot = cardEl.hasAttribute("data-foot") ? cardEl.querySelector<HTMLElement>(":scope > .k-ask-foot")!.getBoundingClientRect().height : 0;
+          const line = parseFloat(cs.lineHeight), pad = parseFloat(cs.paddingTop);
+          const total = Math.round((pre.scrollHeight - pad - parseFloat(cs.paddingBottom)) / line);
+          w.__painted.total = total;
+          if (w.__painted.tops.at(-1) !== tray.scrollTop) w.__painted.tops.push(tray.scrollTop);
+          for (let i = 0; i < total; i++) { const y0 = r.top + pad + i * line, y1 = y0 + line; if (y0 >= t.top - 0.5 && y1 <= t.bottom - foot + 0.5) w.__painted.lines.add(i); }
+        }
+        requestAnimationFrame(() => ch.port2.postMessage(0));
+      };
+      requestAnimationFrame(() => ch.port2.postMessage(0));
+    });
+    await page.keyboard.press("End");
+    await expect.poll(async () => Number(await card.getAttribute("data-unseen")), { timeout: 10_000 }).toBe(0);
+    const seen = await page.evaluate(() => { const p = (window as unknown as { __painted: { tops: number[]; lines: Set<number>; total: number } }).__painted; const missing: number[] = []; for (let i = 0; i < p.total; i++) if (!p.lines.has(i)) missing.push(i); return { tops: p.tops, total: p.total, missing }; });
+    expect(seen.total).toBeGreaterThan(150);
+    // (The lines in view before End were painted before the sampling began.)
+    const before = seen.missing.filter((i) => i > 25);
+    expect(before, `lines never painted on screen, scroll positions painted ${seen.tops.join(",")}`).toEqual([]);
+    expect(seen.tops.length).toBeGreaterThan(3);
+  } finally {
+    await drop(request, [s.id]);
+  }
+});
+
 // The step a card asks for first is the one it leads with. A card that must be
 // opened shows that as its first button, says why its Allow once waits before
 // anything was pressed, and Enter on the list of requests opens it: two keys,
@@ -886,7 +936,12 @@ test("a card reached by the Inbox's Review stands still from its first frame, an
         const look = () => {
           const b = [...document.querySelectorAll<HTMLElement>('[data-testid="allow-once"]')].find((el) => !el.closest("[inert]"));
           // Where it stands, and whether a press at its middle would reach it (nothing on its way out lies over it).
-          if (b) { const r = b.getBoundingClientRect(); w.__at.push({ t: performance.now(), x: r.x, y: r.y, hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }); }
+          // (A layer on its way out takes no press, so a point does not hit it: it is looked for by its place.)
+          if (b) {
+            const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+            const leaving = [...document.querySelectorAll<HTMLElement>("[data-ending-style]")].some((g) => { const q = g.getBoundingClientRect(); return !g.contains(b) && x >= q.left && x <= q.right && y >= q.top && y <= q.bottom; });
+            w.__at.push({ t: performance.now(), x: r.x, y: r.y, hit: !leaving && b.contains(document.elementFromPoint(x, y)) });
+          }
           if (w.__at.length < 120) requestAnimationFrame(look);
         };
         requestAnimationFrame(look);
@@ -897,8 +952,9 @@ test("a card reached by the Inbox's Review stands still from its first frame, an
       await page.waitForTimeout(1100);
       const moves = await page.evaluate(() => { const a = (window as unknown as { __at: { x: number; y: number }[] }).__at; return a.filter((p, i) => i > 0 && (Math.abs(p.x - a[i - 1]!.x) >= 0.5 || Math.abs(p.y - a[i - 1]!.y) >= 0.5)).length; });
       expect(moves, `rep ${rep}: frames where Allow once moved after it was drawn`).toBe(0);
-      const covered = await page.evaluate(() => (window as unknown as { __at: { hit: boolean }[] }).__at.filter((p) => !p.hit).length);
-      expect(covered, `rep ${rep}: frames where something lay over Allow once after it was drawn`).toBe(0);
+      // Once nothing lies over it any more (the Inbox on its way out may for a frame or two), nothing does again.
+      const covered = await page.evaluate(() => { const a = (window as unknown as { __at: { hit: boolean }[] }).__at; const from = a.findIndex((p) => p.hit); return from < 0 ? -1 : a.slice(from).filter((p) => !p.hit).length; });
+      expect(covered, `rep ${rep}: frames where something lay over Allow once after it was first clear`).toBe(0);
       await card.getByTestId("allow-once").click();
       await expect.poll(() => states(request, s.id), { message: `rep ${rep}: the press 1.1 s after the card showed`, timeout: 5000 }).toBe("allowed/once");
       takes.push("taken");

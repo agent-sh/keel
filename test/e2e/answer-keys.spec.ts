@@ -1002,4 +1002,48 @@ test("the hint says Enter allows once exactly when it would, and says so quietly
   await page.keyboard.press("Enter");
   await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
   await drop(request, id);
+  // A high-risk request is the owner's to go to (Down, then Enter): its Allow never shows the arming line.
+  const risky = await create(request, "The hint is true, high risk", folder("hint"));
+  await request.put(`/api/sessions/${risky}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${risky}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "rm -rf ./release && git push --force origin main" } }]) } });
+  await expect.poll(async () => (await approvals(request, risky)).length, { timeout: 30_000 }).toBe(1);
+  await page.goto(`/s/${risky}`);
+  const rc = page.getByTestId("approval");
+  await expect(rc).toHaveAttribute("data-risk", "high");
+  await page.evaluate(() => { const w = window as unknown as { __armed: number }; w.__armed = 0; const t0 = performance.now(); const look = () => { if (document.querySelector('[data-testid="allow-once"][data-arming]')) w.__armed++; if (performance.now() - t0 < 2500) requestAnimationFrame(look); }; requestAnimationFrame(look); });
+  await page.waitForTimeout(2700);
+  expect(await page.evaluate(() => (window as unknown as { __armed: number }).__armed)).toBe(0);
+  await expect(rc.getByTestId("approval-arming")).toHaveText("High risk: Down, then Enter allows once");
+  await drop(request, risky);
+});
+
+// Enter held down through an answer in the sequence answers once: its repeats allow nothing of the
+// next card, which arrives while the key is still down.
+test("Enter held through an answer in the sequence allows one card, never the next", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("held-enter");
+  const quiet = await create(request, "Nothing waits here", ws);
+  const a = await asksToRun(request, "Held: first", ws, "first");
+  const b = await asksToRun(request, "Held: second", ws, "second");
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${a}$`));
+  await expect(cardIn(page, a, "approval").getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+  await expect(cardIn(page, a, "approval").getByTestId("approval")).toHaveAttribute("data-live", "true");
+  // Down, and held for three seconds (the browser repeats it): past the next card's arrival and its settle time.
+  await page.keyboard.down("Enter");
+  const t0 = Date.now();
+  while (Date.now() - t0 < 3000) { await page.keyboard.down("Enter"); await page.waitForTimeout(30); }
+  await page.keyboard.up("Enter");
+  await expect.poll(async () => (await approvals(request, a))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  await expect(page).toHaveURL(new RegExp(`/s/${b}$`));
+  await page.waitForTimeout(800);
+  expect((await approvals(request, b))[0]).toMatchObject({ state: "pending" });
+  // A fresh press answers it.
+  await expect(cardIn(page, b, "approval").getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await approvals(request, b))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  await drop(request, quiet, a, b);
 });
