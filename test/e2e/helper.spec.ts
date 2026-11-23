@@ -124,3 +124,23 @@ test("helper: remembered list, send-mail card, digest of sessions and mail", asy
   await expect(page.getByTestId("helper-on")).toHaveAttribute("aria-checked", "true");
   await shoot(page, "helper-04-settings");
 });
+
+// A helper with nothing in its conversation says what it does and offers things to ask it;
+// one click asks it.
+test("helper: an empty helper says what it does and what to ask", async ({ page, request }) => {
+  const { default: model } = await (await request.get("/api/models")).json();
+  test.skip(!String(model).startsWith("scripted:"), "needs a scripted default model: the helper's first turn goes to the default model");
+  const was = await (await request.get("/api/helper")).json();
+  if (was.session_id) await request.patch(`/api/sessions/${was.session_id}`, { data: { archived: true } });
+  await page.goto("/");
+  await page.getByTestId("open-helper").click();
+  const intro = page.getByTestId("helper-intro");
+  await expect(intro).toBeVisible();
+  await expect(intro).toContainText("follows your other sessions");
+  await expect(page.getByTestId("helper-ask")).toHaveCount(3);
+  await shoot(page, "helper-00-empty");
+  // (The helper is on the daemon's default model: a scripted one on a scratch daemon.)
+  await page.getByTestId("helper-ask").first().click();
+  await expect(page.getByTestId("user-message").first()).toContainText("What needs me right now?");
+  await expect(intro).toHaveCount(0);
+});

@@ -7,6 +7,7 @@ import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session,
 import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { rowActions } from "../lib/extend.ts";
 import { blockKey, buildRows, nextLineage, nextSiblings, PROBE, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
+import { EmptyTranscript } from "./EmptyTranscript.tsx";
 import { actions, api, dropSession, failed, forgetEvents, getState, keepEvents, liveNow, onFeature, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
@@ -1640,7 +1641,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               <button type="button" data-testid="preview-back" onClick={() => setUI({ preview: null })} className="h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">Back to the current one</button>
             </div>
           )}
-          {events.length === 0 && session.phase !== "working" && <p className="k-empty py-4">No messages yet.</p>}
+          {events.length === 0 && session.phase !== "working" && <EmptyTranscript sessionId={sessionId} />}
           {more && (
             <div className="flex flex-wrap items-center justify-center gap-x-2" data-testid="earlier-messages" data-pinned="1">
               {unread.older && !loading && <span role="status" data-testid="earlier-failed" className="text-caption text-warn">Earlier messages did not load: {unread.older}</span>}
