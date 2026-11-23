@@ -23,7 +23,9 @@ const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
 
 const btn = "k-btn k-btn-lg shrink-0";
-const dur = (ms: number) => (ms < 3600_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : ms < 86_400_000 ? `${(ms / 3600_000).toFixed(1)} h` : `${(ms / 86_400_000).toFixed(1)} days`);
+// How long the daemon has been up, never more than it was: the panel is read again every ten seconds,
+// so under a minute is said as such (a daemon a second old is not "up 1 min").
+const dur = (ms: number) => (ms < 60_000 ? "under a minute" : ms < 3600_000 ? `${Math.floor(ms / 60_000)} min` : ms < 86_400_000 ? `${(ms / 3600_000).toFixed(1)} h` : `${(ms / 86_400_000).toFixed(1)} days`);
 
 // A number of hours, or no limit when empty or 0.
 function HoursField({ value, onSave }: { value: number; onSave: (v: number) => Promise<unknown> }) {

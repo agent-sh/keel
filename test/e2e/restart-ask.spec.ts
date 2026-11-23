@@ -77,6 +77,10 @@ test("Restart Keel is a command, and Enter restarts when no turn works", async (
   await page.keyboard.press("Enter");
   await expect.poll(async () => { try { return (await (await request.get("/api/daemon", { timeout: 2000 })).json()).pid; } catch { return before; } }, { timeout: 300_000, intervals: [1000] }).not.toBe(before);
   await reloaded();
+  // The daemon that came back says how long it has been up: under a minute, not "1 min".
   await page.goto("/settings/daemon");
-  await expect(page.getByTestId("daemon-status")).toContainText("pid");
+  const up = (await (await request.get("/api/daemon")).json()).uptime_ms as number;
+  if (up < 50_000) await expect(page.getByTestId("daemon-status")).toContainText("up under a minute");
+  else await expect(page.getByTestId("daemon-status")).toContainText(`up ${Math.floor(up / 60_000)} min`);
+  await shoot(page, "restart-ask-03-up");
 });
