@@ -903,7 +903,7 @@ export class Gate {
   }
   // The changed `fields` of a parent's settings, carried to the sessions below it, each level from the one above.
   private reachBelow(parent: SessionPerm, fields: (typeof PERM_FIELDS)[number][], changed: Set<string>, depth = 0) {
-    if (depth > 64 || !this.store.columnExists("sessions", "parent_id")) return;
+    if (depth > 64 || !this.hasParents()) return;
     for (const { id } of this.store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE parent_id = ?").all(parent.session_id)) {
       const cur = this.perm(id);
       const next = { ...cur, ...reached(parent, cur, this.tieOf(id), fields) };
@@ -930,7 +930,38 @@ export class Gate {
     const all = this.store.db.query<Rule, []>("SELECT * FROM perm_rules ORDER BY created").all();
     if (!session) return all;
     const turn = this.turnGrants.get(session.id);
-    return [...all.filter((r) => (r.lifetime === "session" ? r.session_id === session.id : contains(r.scope, session.workspace) || contains(r.scope, this.scopeOf(session.workspace)))), ...(turn && !turn.next ? turn.rules : [])];
+    const tree = this.inTree(session);
+    return [...all.filter((r) => (r.lifetime === "session" ? tree(r) : contains(r.scope, session.workspace) || contains(r.scope, this.scopeOf(session.workspace)))), ...(turn && !turn.next ? turn.rules : [])];
+  }
+  // Whether a grant "for this session" covers the session: one made in its own agent tree (Claude Code's
+  // sub-agents doc: such a choice on a subagent's prompt applies to the whole session, the main conversation
+  // included), for the repository the session works in (the answer was given to a call there). A grant never
+  // widens an agent's write scope: that is refused before any rule is read (`scopeRefusal`).
+  private inTree(session: Session): (r: Rule) => boolean {
+    let mine: string | undefined, scope: string | undefined;
+    const roots = new Map<string, string>();
+    return (r) => {
+      if (!r.session_id) return false;
+      if (r.session_id === session.id) return true;
+      if (r.scope !== (scope ??= this.scopeOf(session.workspace))) return false;
+      if (!roots.has(r.session_id)) roots.set(r.session_id, this.treeRoot(r.session_id));
+      return roots.get(r.session_id) === (mine ??= this.treeRoot(session.id));
+    };
+  }
+  // Whether sessions name their parent yet (agents.ts adds the column; a store with no agents has none).
+  private parents = false;
+  private hasParents() { return this.parents ||= this.store.columnExists("sessions", "parent_id"); }
+  // The session at the top of a session's agent tree (itself when it is nobody's agent).
+  private treeRoot(sessionId: string): string {
+    if (!this.hasParents()) return sessionId;
+    const up = this.store.db.query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM sessions WHERE id = ?");
+    let at = sessionId;
+    for (let n = 0; n < 64; n++) {
+      const p = up.get(at)?.parent_id;
+      if (!p) break;
+      at = p;
+    }
+    return at;
   }
 
   // A skill's allowed-tools (Claude Code's skills frontmatter): rules that

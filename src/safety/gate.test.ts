@@ -13,6 +13,7 @@ import { gptTools } from "../tools/gpt.ts";
 import { makeJudge } from "./judge.ts";
 import { classify, decide, type Mode } from "./policy.ts";
 import { vault } from "./secrets.ts";
+import { scopes } from "./write-scope.ts";
 
 const kind = (d: ReturnType<typeof decide>) => ("allow" in d ? "allow" : "deny" in d ? "deny" : `ask-${d.ask.risk}`);
 
@@ -598,4 +599,44 @@ test("a parent's tighter change caps its whole agent tree, and a looser one reac
   expect([mode(child), mode(grand)]).toEqual(["ask", "ask"]);
   // Its tie is carried as written (a successor takes its predecessor's).
   expect([g.tieOf(planner.id), g.tieOf(child.id), g.tieOf(grand.id)]).toEqual([{ follows: true, want: "plan" }, { follows: false }, { follows: true }]);
+});
+
+// RSH-S48: a grant "for this session" covers the session's whole agent tree (Claude Code's sub-agents doc: such a
+// choice on a subagent's prompt applies to the whole session). A grant on the root covers its agents and theirs,
+// one answered on an agent covers the root and its siblings, a session of another tree still asks, and a grant
+// never widens an agent's write scope.
+test("a grant for this session covers the session's whole agent tree, and no other", async () => {
+  const { g, make, call, opened } = treeGate();
+  const root = make("root"), child = make("child", root), sibling = make("sibling", root), grand = make("grand", child), other = make("other");
+  for (const s of [root, child, sibling, grand, other]) g.setPerm(s.id, { mode: "ask", sandbox: "off", network: true });
+  const grantOn = async (s: Session, command: string, pattern: string) => {
+    const asking = g.check(s, call(s, command));
+    const card = await opened(s);
+    expect(g.resolve(card.id, s.id, { choice: "session", rules: [{ kind: "shell", pattern }] })).toEqual({ ok: true });
+    expect(await asking).not.toHaveProperty("deny");
+  };
+  // Runs without a card: the check settles at once.
+  const unasked = async (s: Session, command: string) => {
+    const r = await Promise.race([g.check(s, call(s, command)), Bun.sleep(300).then(() => "asked" as const)]);
+    return r !== "asked" && !("deny" in r);
+  };
+  await grantOn(root, "touch a.txt", "touch *");
+  expect([await unasked(child, "touch b.txt"), await unasked(grand, "touch c.txt"), await unasked(sibling, "touch d.txt")]).toEqual([true, true, true]);
+  await grantOn(child, "mkdir one", "mkdir *");
+  expect([await unasked(root, "mkdir two"), await unasked(sibling, "mkdir three"), await unasked(grand, "mkdir four")]).toEqual([true, true, true]);
+  // Another tree asks for both.
+  for (const command of ["touch e.txt", "mkdir five"]) {
+    const asking = g.check(other, call(other, command));
+    const card = await opened(other);
+    expect(g.resolve(card.id, other.id, { choice: "deny", reason: "not here" })).toEqual({ ok: true });
+    expect(await asking).toHaveProperty("deny");
+  }
+  // An agent given a write scope is refused a write outside it, whatever the root granted.
+  const before = { of: scopes.of, ask: scopes.ask };
+  try {
+    scopes.of = (id) => (id === grand.id ? { places: [{ path: join(mkdtempSync(join(tmpdir(), "keel-scope-")), "mine") }] } : undefined);
+    scopes.ask = (_id, paths) => `Refused: ${paths.join(", ")} is outside the paths this agent may write.`;
+    const r = await g.check(grand, call(grand, "touch /var/lib/keel-scope-probe/x.txt"));
+    expect("deny" in r ? r.deny : "").toContain("outside the paths this agent may write");
+  } finally { Object.assign(scopes, before); }
 });

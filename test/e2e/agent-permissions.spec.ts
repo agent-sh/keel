@@ -47,3 +47,36 @@ test("a parent's permission change reaches its agents and their open cards", asy
     await request.delete(`/api/sessions/${id}`);
   }
 });
+
+// Feature: a grant "for this session" made on an agent's card covers its whole tree. The owner answers the agent's
+// card on the root's page with a grant for the session; the root's own command of that form then runs unasked.
+test("a grant for this session on an agent's card covers the root", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "needs the scripted provider: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `tree-grant-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, workspace: ws, title: "Tree grant" } })).json();
+  const id = session.id as string;
+  try {
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    const agent = `Toucher\n${calls([bash("touch alpha.txt")])}`;
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { message: agent, isolation: "none" } }]) } });
+    await page.goto(`/s/${id}`);
+    const theirs = page.locator(`[data-station="${id}"]`).getByTestId("child-approvals").getByTestId("approval");
+    await expect(theirs).toHaveCount(1, { timeout: 30_000 });
+    await theirs.getByTestId("allow-always").click();
+    await expect(page.getByTestId("grant-pattern")).toHaveValue("touch *");
+    await shoot(page, "agent-permissions-03-grant");
+    await page.getByTestId("grant-session").click();
+    await expect(theirs).toHaveCount(0);
+    await expect.poll(() => existsSync(join(ws, "alpha.txt")), { timeout: 30_000 }).toBe(true);
+    // The root's own touch runs without a card: a card would hold it, and the file would never be made.
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([bash("touch beta.txt")]) } });
+    await expect.poll(() => existsSync(join(ws, "beta.txt")), { timeout: 30_000 }).toBe(true);
+    const cards = (await (await request.get(`/api/sessions/${id}/approvals?all`)).json()).approvals as { session_id: string }[];
+    expect(cards.filter((a) => a.session_id === id)).toEqual([]);
+  } finally {
+    await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
+    await request.delete(`/api/sessions/${id}`);
+  }
+});
