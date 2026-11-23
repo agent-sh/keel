@@ -29,6 +29,7 @@ import {
   answersText, approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage, sha256Hex,
 } from "./sig.ts";
 import type { Device, MobileStore, SendRecord } from "./store.ts";
+import { typedCodeOf } from "./typed-code.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { STORE } from "../../providers/image-limits.ts";
 import { Bad, type Checkpoints } from "../../safety/checkpoints.ts";
@@ -630,14 +631,18 @@ export function mobileApi(ctx: MobileCtx) {
     // A retry of a redeemed code (the phone lost the answer) must prove the
     // request key with the canonical request signature, claimed once in its own
     // scope, over a body that names this server: a server the phone was lured to
-    // cannot relay its retry here. A first claim needs none.
+    // cannot relay its retry here. A first claim of a link code needs none; a
+    // code typed by hand (typed-code.ts) needs it the first time too.
     const ts = req.headers.get("x-hm-ts") ?? "", sig = req.headers.get("x-hm-sig") ?? "";
     const here = urlOrigin(mobile.setting("public_url") ?? new URL(req.url).origin);
     const proven = !!sig && !!here && urlOrigin(String(b.server ?? "")) === here
       && (await checkAndClaim(sig, String(b.pub), canonicalMessage(req.method, new URL(req.url).pathname, ts, raw), ts, "pair", now, mobile)) === "valid";
-    const got = mobile.claimPairCode(String(b.code ?? ""), String(b.device_name ?? "phone"), b.pub, b.apub, b.lock === false, proven);
+    const code = String(b.code ?? "");
+    const got = mobile.claimPairCode(code, String(b.device_name ?? "phone"), b.pub, b.apub, b.lock === false, proven);
     if (!got) {
       limiter.fail(source, now);
+      // A code typed by hand pairs only a request signed with the request key over a body naming this server.
+      if (!proven && typedCodeOf(code)) return err("a typed code pairs only a signed request (x-hm-ts, x-hm-sig) whose body names this server", 403);
       return err("invalid or expired code", 403);
     }
     if (!got.reissued) ctx.changed();

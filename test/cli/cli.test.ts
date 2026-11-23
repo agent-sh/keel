@@ -1314,6 +1314,67 @@ describe("client commands against a running daemon", () => {
     }
   }, 90_000);
 
+  // Pairing a phone from keel attach: /pair draws a QR in the terminal and prints the link and a
+  // code a person types. The code alone, in a request the phone signed, pairs a device keel devices
+  // lists; unsigned it pairs nothing, and once used neither it nor the link's code pairs again.
+  test("attach: /pair prints a QR, the link and a typed code that pairs a phone", async () => {
+    const { createHash, generateKeyPairSync, sign } = await import("node:crypto");
+    const ran = await k(["run", "--json", "hi"]);
+    const sid = json(ran.out).session_id;
+    const p = Bun.spawn([BIN, "attach", sid], { cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state }, stdin: "pipe", stdout: "ignore", stderr: "pipe" });
+    let said = "";
+    void (async () => { const dec = new TextDecoder(); for await (const c of p.stderr) said += dec.decode(c, { stream: true }); })();
+    const until = async (what: RegExp, ms = 20_000) => {
+      for (const t0 = Date.now(); !what.test(said); await Bun.sleep(50)) if (Date.now() - t0 > ms) throw new Error(`${what} was not printed:\n${said}`);
+      return said.match(what)!;
+    };
+    const type = (l: string) => { p.stdin.write(l + "\n"); p.stdin.flush(); };
+    const key = () => {
+      const k = generateKeyPairSync("ec", { namedCurve: "P-256" });
+      return { k, pub: k.publicKey.export({ type: "spki", format: "der" }).toString("base64") };
+    };
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const SERVER = "https://keel.example.test";
+    const pairBy = async (body: Record<string, unknown>, signer?: ReturnType<typeof key>) => {
+      const raw = JSON.stringify(body);
+      const ts = String(Math.floor(Date.now() / 1000));
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (signer) Object.assign(headers, { "x-hm-ts": ts, "x-hm-sig": sign("sha256", Buffer.from(`POST\n/v1/pair\n${ts}\n${createHash("sha256").update(raw).digest("hex")}`), { key: signer.k.privateKey, dsaEncoding: "der" }).toString("base64") });
+      const r = await fetch(`${url}/v1/pair`, { method: "POST", headers, body: raw });
+      return { status: r.status, body: await r.json() as any };
+    };
+    try {
+      await until(/-- attached to /);
+      type(`/pair ${SERVER}`);
+      const [, typed] = await until(/type the address https:\/\/keel\.example\.test and the code ([0-9A-Z]{4}-[0-9A-Z]{4})\n/);
+      const link = (await until(/Pair link \(Keel app\): (keel:\/\/pair\?\S+)/))[1]!;
+      expect(new URL(link).searchParams.get("u")).toBe(SERVER);
+      // The QR, drawn in the terminal with half blocks.
+      expect(said.split("\n").filter((l) => /^[ █▀▄]{20,}$/.test(l)).length).toBeGreaterThan(10);
+      await until(/The code is good once, for 600 s\./);
+
+      const req = key(), apr = key();
+      const body = { code: typed!.toLowerCase().replace("-", " "), pub: req.pub, apub: apr.pub, device_name: "Typed phone", lock: true, server: SERVER };
+      // Unsigned, the typed code pairs nothing.
+      const unsigned = await pairBy(body);
+      expect([unsigned.status, unsigned.body.error]).toEqual([403, expect.stringContaining("signed request")]);
+      // Signed with the request key over a body naming this server, the code alone pairs.
+      const paired = await pairBy(body, req);
+      expect(paired.status).toBe(200);
+      expect(paired.body.device_id).toMatch(/^dev_/);
+      const listed = await k(["devices"]);
+      expect(listed.out).toContain(`${paired.body.device_id}  "Typed phone"`);
+      // Used once: another phone pairs with neither the typed code nor the link's code.
+      const other = key(), other2 = key();
+      expect((await pairBy({ ...body, pub: other.pub, apub: other2.pub }, other)).status).toBe(403);
+      expect((await pairBy({ ...body, code: new URL(link).searchParams.get("c"), pub: other.pub, apub: other2.pub })).status).toBe(403);
+      type("/detach");
+      expect(await p.exited).toBe(0);
+    } finally {
+      p.kill();
+    }
+  }, 60_000);
+
   // The read-first rule on the command line: the request is shown before anything asks or
   // answers, --yes alone covers only what one line shows whole, and several are never answered by guess.
   test("approve: shows before it asks, --yes for one line only, --yes --seen for a request that was read", async () => {

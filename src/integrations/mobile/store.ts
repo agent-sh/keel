@@ -3,6 +3,7 @@
 import type { Store } from "../../core/store.ts";
 import type { StoredEvent } from "../../core/types.ts";
 import { sha256Hex, type ReplayStore } from "./sig.ts";
+import { newTypedCode, typedCodeOf } from "./typed-code.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS mobile_devices (
@@ -66,6 +67,11 @@ export class MobileStore implements ReplayStore {
     // A redeemed code names its device until it expires (a pairing retry); a
     // device's token is marked once it authenticated a request.
     if (!store.db.query("SELECT 1 FROM pragma_table_info('mobile_pair_codes') WHERE name = 'device_id'").get()) store.migrate("ALTER TABLE mobile_pair_codes ADD COLUMN device_id TEXT");
+    // A pairing's link code and its typed code are two rows of one pairing: claiming either uses both.
+    if (!store.db.query("SELECT 1 FROM pragma_table_info('mobile_pair_codes') WHERE name = 'pair_id'").get()) {
+      store.migrate("ALTER TABLE mobile_pair_codes ADD COLUMN pair_id TEXT");
+      store.migrate("ALTER TABLE mobile_pair_codes ADD COLUMN typed INTEGER NOT NULL DEFAULT 0");
+    }
     if (!store.db.query("SELECT 1 FROM pragma_table_info('mobile_devices') WHERE name = 'token_used'").get()) store.migrate("ALTER TABLE mobile_devices ADD COLUMN token_used INTEGER NOT NULL DEFAULT 0");
     // Events stored before this table existed get their places in order, once:
     // the fill reads the whole events table (gigabytes in a large store), and
@@ -109,8 +115,22 @@ export class MobileStore implements ReplayStore {
     return code;
   }
 
+  // A pairing with both codes: the link's, and one a person types (typed-code.ts).
+  createPair(ttlSecs: number): { code: string; typed: string } {
+    const code = rand(18), typed = newTypedCode(), id = rand(8);
+    const now = nowSecs(), exp = now + Math.max(60, ttlSecs);
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM mobile_pair_codes WHERE expires_secs < ?").run(now);
+      const add = this.db.query("INSERT INTO mobile_pair_codes (code_hash, expires_secs, pair_id, typed) VALUES (?, ?, ?, ?)");
+      add.run(sha256Hex(code), exp, id, 0);
+      add.run(sha256Hex(typed), exp, id, 1);
+    })();
+    return { code, typed };
+  }
+
+  // The pairings not claimed yet.
   pairCodes(): number {
-    return this.db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM mobile_pair_codes WHERE expires_secs >= ? AND device_id IS NULL").get(nowSecs())!.n;
+    return this.db.query<{ n: number }, [number]>("SELECT COUNT(DISTINCT COALESCE(pair_id, code_hash)) AS n FROM mobile_pair_codes WHERE expires_secs >= ? AND device_id IS NULL").get(nowSecs())!.n;
   }
 
   // A code is good once: claiming it makes the device. A phone that lost the
@@ -118,14 +138,18 @@ export class MobileStore implements ReplayStore {
   // `proven` (it signed this request with the device's own key over a body
   // naming this server): the same keys get the same device and a new token,
   // as long as the first token never authenticated a request. Anything else
-  // with a used code fails.
+  // with a used code fails. A typed code is short: it pairs only a `proven`
+  // request, the first time too, and claiming it uses its pairing's link code
+  // (and the other way round).
   claimPairCode(code: string, name: string, pub: string, apub: string, nolock: boolean, proven = false): { device_id: string; token: string; reissued?: boolean } | null {
     const now = nowSecs();
+    const typed = typedCodeOf(code);
+    if (typed && !proven) return null;
     return this.db.transaction(() => {
-      const hash = sha256Hex(code);
+      const hash = sha256Hex(typed ?? code);
       this.db.query("DELETE FROM mobile_pair_codes WHERE expires_secs < ?").run(now);
-      const row = this.db.query<{ expires_secs: number; device_id: string | null }, [string]>("SELECT expires_secs, device_id FROM mobile_pair_codes WHERE code_hash = ?").get(hash);
-      if (!row || row.expires_secs < now) return null;
+      const row = this.db.query<{ expires_secs: number; device_id: string | null; pair_id: string | null; typed: number }, [string]>("SELECT expires_secs, device_id, pair_id, typed FROM mobile_pair_codes WHERE code_hash = ?").get(hash);
+      if (!row || row.expires_secs < now || (row.typed && !proven)) return null;
       const token = rand(32);
       if (row.device_id) {
         if (!proven) return null;
@@ -134,7 +158,7 @@ export class MobileStore implements ReplayStore {
         return n === 1 ? { device_id: row.device_id, token, reissued: true } : null;
       }
       const id = `dev_${rand(8)}`;
-      this.db.query("UPDATE mobile_pair_codes SET device_id = ? WHERE code_hash = ?").run(id, hash);
+      this.db.query("UPDATE mobile_pair_codes SET device_id = ?1 WHERE code_hash = ?2 OR (?3 IS NOT NULL AND pair_id = ?3)").run(id, hash, row.pair_id);
       this.db.query("INSERT INTO mobile_devices (id, name, token_hash, pub, apub, nolock, revoked, created_secs, last_seen_secs) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
         .run(id, name.slice(0, 120), sha256Hex(token), pub, apub, nolock ? 1 : 0, now, now);
       return { device_id: id, token };

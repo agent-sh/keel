@@ -7,6 +7,7 @@ import * as push from "../../integrations/mobile/push.ts";
 import { PhoneShown } from "../../integrations/mobile/shown.ts";
 import { hostOf, MobileStore } from "../../integrations/mobile/store.ts";
 import { mobileApi, pairLink } from "../../integrations/mobile/v1.ts";
+import { typedShown } from "../../integrations/mobile/typed-code.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { addAllowedHosts } from "../admission.ts";
 import { allPendingQuestions, pendingQuestions } from "../../tools/interact.ts";
@@ -171,8 +172,9 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     "/api/mobile/settings": {
       GET: () => json({ public_url: mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL ?? "", push: { configured: push.configured(), path: push.accountPath() } }),
     },
-    // A one-time code, the link the app opens and its QR. The address is the
-    // one the phone reaches this machine at (a tunnel); it is remembered.
+    // A one-time code, the link the app opens and its QR, and a code to type on
+    // a phone that cannot scan. The address is the one the phone reaches this
+    // machine at (a tunnel); it is remembered.
     "/api/mobile/pair": {
       POST: async (req: Request) => {
         const b = await body(req);
@@ -180,9 +182,9 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         if (!/^https?:\/\/[^\s/]+/.test(url)) return bad("give the address the phone reaches this machine at (http or https)");
         mobile.setPublicUrl(url);
         const ttl = Math.min(86_400, Math.max(60, Number(b.ttl_seconds) || 600));
-        const code = mobile.createPairCode(ttl);
+        const { code, typed } = mobile.createPair(ttl);
         const pair_link = pairLink(url, code);
-        return json({ code, public_url: url, pair_link, hermes_link: pairLink(url, code, "hermes"), qr_svg: renderSVG(pair_link, { border: 2 }), ttl_seconds: ttl, expires_ms: Date.now() + ttl * 1000 });
+        return json({ code, typed_code: typedShown(typed), public_url: url, pair_link, hermes_link: pairLink(url, code, "hermes"), qr_svg: renderSVG(pair_link, { border: 2 }), ttl_seconds: ttl, expires_ms: Date.now() + ttl * 1000 });
       },
     },
     // What a phone would be sent for an alert: its words, and what its notification may answer.

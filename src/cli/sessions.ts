@@ -15,6 +15,7 @@ import { assistantText, Follower, streamLine, textLines } from "./events.ts";
 import { ask, cardRow, cardShown, formOf, interactive, shortId, showCard, whyHeld } from "./cards.ts";
 import { holdSaid, type CardForm } from "../safety/card.ts";
 import { spelled } from "../safety/chars.ts";
+import { pairText } from "./pair-text.ts";
 import { exitOf, heldNote, resultObject, RUN_OPTIONS, RUN_USAGE, runPrompt, watch, worktreeArg } from "./run.ts";
 
 const home = homedir();
@@ -493,6 +494,8 @@ const ATTACH_USAGE = `keel attach ID [--thoughts]
   Follows a session in this terminal. A typed line is a prompt; commands:
   /steer TEXT, /queue TEXT, /approve [ID] [once|session|always], /deny [ID] [REASON],
   /answer N|TEXT (a question's choice by its number, several as 1,3, or an answer of your own),
+  /pair [URL] (pair a phone: a QR, the link, and a code to type on a phone that cannot scan;
+  URL is the address the phone reaches this daemon at, remembered from the last pairing),
   /stop, /detach.
   An approval card is printed whole when it opens. /approve answers the one open card this
   terminal has printed; a request that is read first (long, cut, marked, high risk, or one
@@ -605,6 +608,18 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
       const arg = rest.join(" ");
       if (cmd === "/detach") break;
       else if (cmd === "/stop") await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" });
+      else if (cmd === "/pair") {
+        const url = arg.trim().replace(/\/+$/, "");
+        if (url && !/^https?:\/\/[^\s/]+/.test(url)) console.error("-- /pair URL: the address the phone reaches this daemon at (http or https)");
+        else {
+          const made = await c.post<any>("/api/mobile/pair", url ? { public_url: url } : {}).catch((e) => {
+            if (e instanceof ApiError && e.status === 400 && !url) return null;
+            throw e;
+          });
+          if (!made) console.error("-- no address is remembered for the phone: /pair URL, with the address it reaches this daemon at");
+          else console.error(pairText({ url: made.public_url, link: made.pair_link, hermes: made.hermes_link, typed: made.typed_code }, made.ttl_seconds));
+        }
+      }
       else if (cmd === "/steer" || cmd === "/queue") await c.post(`/api/sessions/${sessionId}/messages`, { text: arg, mode: cmd.slice(1) });
       else if (cmd === "/approve" || cmd === "/deny") {
         // The cards this terminal had printed before the line was typed, then what is open now
@@ -657,7 +672,7 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
             await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, { answers, ...(q.question ? { question: q.question } : {}) });
           }
         } else console.error("this question has nothing to choose: answer it in the workbench");
-      } else if (cmd!.startsWith("/") && !cmd!.startsWith("//")) console.error(`unknown command ${cmd}; /steer, /queue, /approve, /deny, /answer, /stop, /detach`);
+      } else if (cmd!.startsWith("/") && !cmd!.startsWith("//")) console.error(`unknown command ${cmd}; /steer, /queue, /approve, /deny, /answer, /pair, /stop, /detach`);
       else await c.post(`/api/sessions/${sessionId}/messages`, { text: text.replace(/^\/\//, "/") });
     } catch (e) {
       console.error(`keel attach: ${(e as Error).message}`);

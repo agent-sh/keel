@@ -11,20 +11,22 @@ import { Database } from "bun:sqlite";
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { renderSVG, renderUnicodeCompact } from "uqr";
+import { renderSVG } from "uqr";
+import { pairText } from "./pair-text.ts";
 import { claimState, lockedDaemon } from "../core/daemon-lock.ts";
 import { undoCutRestore } from "../admin/storage.ts";
 import { Store } from "../core/store.ts";
 import { storePath } from "../core/store-files.ts";
 import { MobileStore } from "../integrations/mobile/store.ts";
 import { pairLink } from "../integrations/mobile/v1.ts";
+import { typedShown } from "../integrations/mobile/typed-code.ts";
 import { defaultStateDir } from "../core/paths.ts";
 import { authHeaders } from "./client.ts";
 
 const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
 
 type Device = { id: string; name: string; nolock: unknown; revoked: unknown; push: { registered: boolean; warning?: unknown; unacknowledged?: number } };
-type Paired = { code: string; link: string; hermes: string; svg: string };
+type Paired = { code: string; typed: string; url: string; link: string; hermes: string; svg: string };
 // What the three commands need, from the daemon or from the store.
 type Phone = {
   remembers: boolean; // the address the phone reaches this machine at is kept on the other side (the daemon's)
@@ -56,7 +58,7 @@ function viaDaemon(base: string): Phone {
       const r = await call("POST", "/api/mobile/pair", { ...(url ? { public_url: url } : {}), ttl_seconds: ttl });
       if (r.status === 400 && !url) throw new NoAddress();
       if (!r.ok) throw new Error(String(r.body.error ?? `HTTP ${r.status}`));
-      return { code: r.body.code, link: r.body.pair_link, hermes: r.body.hermes_link, svg: r.body.qr_svg };
+      return { code: r.body.code, typed: r.body.typed_code ?? "", url: r.body.public_url ?? url, link: r.body.pair_link, hermes: r.body.hermes_link, svg: r.body.qr_svg };
     },
     devices: async () => {
       const r = await call("GET", "/api/mobile/devices");
@@ -107,9 +109,9 @@ function viaStore(state: string, claim: { release: () => void }): Phone {
     publicUrl: () => m.setting("public_url") ?? undefined,
     pair: (url, ttl) => {
       m.setPublicUrl(url);
-      const code = m.createPairCode(ttl);
+      const { code, typed } = m.createPair(ttl);
       const link = pairLink(url, code);
-      return { code, link, hermes: pairLink(url, code, "hermes"), svg: renderSVG(link, { border: 2 }) };
+      return { code, typed: typedShown(typed), url, link, hermes: pairLink(url, code, "hermes"), svg: renderSVG(link, { border: 2 }) };
     },
     devices: () => m.devices().map((d) => ({ id: d.id, name: d.name, nolock: d.nolock, revoked: d.revoked, push: m.pushStatus(d.id) })),
     revoke: (id) => !!m.revoke(id),
@@ -152,8 +154,7 @@ async function pair(argv: string[]): Promise<number> {
     }
     const svg = join(stateDirOf(values["state-dir"]), "pair-qr.svg");
     writeFileSync(svg, made.svg);
-    console.log(renderUnicodeCompact(made.link, { border: 2 }));
-    console.log(`Pair link (Keel app): ${made.link}\nFor the Hermes app: ${made.hermes}\nSaved QR SVG: ${svg}\nThe code is good once, for ${ttl} s.`);
+    console.log(pairText(made, ttl, svg));
     return 0;
   } finally {
     m.close();
