@@ -221,6 +221,16 @@ const quoted = (s: string) => {
   const a = s.search(/["\u201c]/), b = Math.max(s.lastIndexOf('"'), s.lastIndexOf("\u201d"));
   return a >= 0 && b > a ? s.slice(a + 1, b) : null;
 };
+// A quote as the model may have written it inside its own quotes: inner
+// quotes escaped as \" (and a backslash as \\), the way JSON writes them. Its
+// words are the conversation's once the escapes are read; a conversation that
+// itself holds a backslash before a quote (a shell line) is matched as written.
+const unescaped = (q: string) => q.replace(/\\(["\\])/g, "$1");
+const forms = (q: string) => (/\\["\\]/.test(q) ? [unescaped(q), q] : [q]);
+function sourceOfQuote(q: string, texts: string[]): string | null {
+  for (const f of forms(q)) { const src = sourceOf(f, texts); if (src !== null) return src; }
+  return null;
+}
 
 // The summary as it is stored: the statements the model quoted, each checked
 // against the conversation (the owner's words for an owner statement, any
@@ -260,9 +270,9 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
       const q = m ? quoted(m[2]!) : null;
       // The harness's own request (its text, the owner's focus line) is not the conversation.
       if (!m || q === null || /^\s*(\[harness\]|Keep above all:)/.test(q)) continue;
-      const mine = m[1]!.toLowerCase() === "owner" ? sourceOf(q, said_().owner) : null;
-      const src = mine ?? sourceOf(q, said_().all);
-      if (src === null) { dropped.push(q); continue; }
+      const mine = m[1]!.toLowerCase() === "owner" ? sourceOfQuote(q, said_().owner) : null;
+      const src = mine ?? sourceOfQuote(q, said_().all);
+      if (src === null) { dropped.push(forms(q)[0]!); continue; }
       said.push({ by: mine !== null ? "owner" : "work", text: src, kind });
     }
   }
@@ -272,10 +282,10 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
     const [what, why] = l.split(/lifted by\s*:/i);
     const q = what ? quoted(what) : null, w = why ? quoted(why) : null;
     if (q === null || w === null) continue;
-    const exact = prior.find((p) => p.text === q);
-    const old = exact ? null : sourceOf(q, prior.map((p) => p.text));
+    const exact = prior.find((p) => forms(q).includes(p.text));
+    const old = exact ? null : sourceOfQuote(q, prior.map((p) => p.text));
     const target = exact ?? (old === null ? undefined : prior.find((p) => norm(p.text).includes(norm(old))));
-    const by = target ? sourceOf(w, target.by === "owner" ? said_().owner : said_().all) : null;
+    const by = target ? sourceOfQuote(w, target.by === "owner" ? said_().owner : said_().all) : null;
     if (target && by !== null) lifted.push({ text: target.text, by });
   }
   const gone = new Set(lifted.map((l) => l.text));
@@ -295,7 +305,7 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
   // Done can retire only an exact quote already recorded as a scoped request.
   // Check after merging so an exact quote also kept as standing cannot be retired.
   const eligible = new Set(prior.filter((p) => p.kind === "request" && !gone.has(p.text)).map((p) => p.text));
-  const markedDone = new Set((section(text, "Done") ?? []).filter((l) => /^\s*[-*]/.test(l)).map(quoted));
+  const markedDone = new Set((section(text, "Done") ?? []).filter((l) => /^\s*[-*]/.test(l)).flatMap((l) => { const q = quoted(l); return q === null ? [] : forms(q); }));
   const done = out.filter((s) => s.kind === "request" && eligible.has(s.text) && markedDone.has(s.text)).map((s) => s.text);
   const active = out.filter((s) => s.kind !== "request" || !done.includes(s.text));
   if (!active.length && !dropped.length && !lifted.length && !done.length) return { summary: structured ? story : text.trim() };

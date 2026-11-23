@@ -521,3 +521,36 @@ test("a tool output is measured in the transcript as it is written there", () =>
     expect(transcriptParts(out(content), utf8Bytes(whole) - 1).parts.length).toBeGreaterThan(1);
   }
 });
+
+// The model often writes a quote's inner quotes as \" inside its own quotes,
+// as JSON does: read so, the words are the conversation's and stay.
+test("a quote whose inner quotes the model escaped is the conversation's own words", () => {
+  const said = [
+    ev("user", { text: 'Run "bun test" before you push.' }),
+    ev("user", { kind: "task", origin: "agent", text: 'Never rebase, amend or force-push it. (1) An agent reported "failed: the daemon restarted twice" may still be running; check its child session first.' }),
+    ev("assistant", { blocks: [{ type: "text", text: 'We keep the "prepare again" list as the only place of that act.' }], stop: "end_turn" }),
+  ];
+  const s = settle(said, [
+    "## Statements",
+    '- owner: "Run \\"bun test\\" before you push."',
+    '- work: "(1) An agent reported \\"failed: the daemon restarted twice\\" may still be running; check its child session first."',
+    '- work: "We keep the \\"prepare again\\" list as the only place of that act."',
+    '- work: "Never write \\"done\\" before the tests pass."', // nothing said it: left out, as read
+    "## Requests",
+    "## Done",
+    "## Story",
+    "x",
+  ].join("\n"));
+  expect(s.statements).toEqual([
+    { by: "owner", text: 'Run "bun test" before you push.', kind: "standing" },
+    { by: "work", text: '(1) An agent reported "failed: the daemon restarted twice" may still be running; check its child session first.', kind: "standing" },
+    { by: "work", text: 'We keep the "prepare again" list as the only place of that act.', kind: "standing" },
+  ]);
+  expect(s.statements_dropped).toEqual(['Never write "done" before the tests pass.']);
+  // Lifted and Done read the same escapes.
+  const later = settle([...said, ev("user", { text: "Pushing without the tests is fine today." })], [
+    "## Statements", "## Lifted", '- "Run \\"bun test\\" before you push." lifted by: "Pushing without the tests is fine today."', "## Story", "x",
+  ].join("\n"), s.statements);
+  expect(later.statements!.map((x) => x.text)).not.toContain('Run "bun test" before you push.');
+  expect(later.statements_lifted).toEqual([{ text: 'Run "bun test" before you push.', by: "Pushing without the tests is fine today." }]);
+});
