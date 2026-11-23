@@ -191,12 +191,9 @@ export function WorktreeToggle({ workspace }: { workspace: string }) {
       data-testid="start-in-worktree"
       onClick={() => setStartInWorktree(!on)}
       title="Work on a new branch in its own folder, so this checkout stays as it is"
-      className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-ui transition-colors",
-        on ? "border-accent/50 bg-accent-soft text-accent-ink" : "border-line text-muted hover:bg-hover hover:text-fg",
-      )}
+      className="k-chip-pick"
     >
-      <GitBranch className="size-3.5" /> {on ? "In a new worktree" : "New worktree"}
+      <GitBranch /> {on ? "In a new worktree" : "New worktree"}
     </button>
   );
 }

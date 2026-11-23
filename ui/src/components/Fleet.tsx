@@ -232,12 +232,12 @@ export function MachinePicker() {
         data-testid="machine-picker"
         data-blocked={pick.blocked ? "true" : undefined}
         title={pick.blocked ? `${pick.blocked.name} ${pick.blocked.why}` : undefined}
-        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 text-ui text-muted shadow-1 hover:text-fg data-popup-open:text-fg"
+        className="k-chip-pick"
       >
-        {pick.blocked ? <CloudOff className="size-3.5 text-brass" /> : cur ? <Server className="size-3.5 text-accent" /> : <Cpu className="size-3.5 text-accent" />}
-        <span className="font-medium text-fg">{cur?.name ?? local?.name ?? "This machine"}</span>
-        {cur?.workspace_root && <span className="hidden truncate font-mono text-micro text-faint sm:inline">{cur.workspace_root}</span>}
-        <ChevronDown className="size-3.5 opacity-60" />
+        {pick.blocked ? <CloudOff className="text-brass" /> : cur ? <Server /> : <Cpu />}
+        <span className="k-chip-pick-name">{cur?.name ?? local?.name ?? "This machine"}</span>
+        {cur?.workspace_root && <span className="k-chip-pick-sub max-sm:hidden">{cur.workspace_root}</span>}
+        <ChevronDown className="k-chip-pick-more" />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="start" className="z-50">

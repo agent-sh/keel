@@ -34,13 +34,13 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
     <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) setBrowse(null); }}>
       <Popover.Trigger
         data-testid="workspace-picker"
-        className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 text-ui text-muted shadow-1 hover:text-fg data-popup-open:text-fg"
+        className="k-chip-pick"
         title={shown}
       >
-        <Folder className="size-3.5 shrink-0 text-accent" />
-        <span className="truncate font-medium text-fg">{shown.split("/").pop() || "Folder"}</span>
-        <span className="hidden truncate text-faint sm:inline">{tilde(shown.slice(0, shown.lastIndexOf("/")), home)}</span>
-        <ChevronDown className="size-3.5 shrink-0 opacity-60" />
+        <Folder />
+        <span className="k-chip-pick-name">{shown.split("/").pop() || "Folder"}</span>
+        <span className="k-chip-pick-sub max-sm:hidden">{tilde(shown.slice(0, shown.lastIndexOf("/")), home)}</span>
+        <ChevronDown className="k-chip-pick-more" />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="start" className="z-50">

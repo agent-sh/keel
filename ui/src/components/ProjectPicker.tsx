@@ -17,8 +17,8 @@ export function ProjectPicker({ workspace }: { workspace: string }) {
   if (!list.length) return null;
   const value = startProject(workspace, picked) ?? "none";
   return (
-    <span className="inline-flex items-center gap-1 text-ui text-muted" data-testid="new-project">
-      <Boxes className="size-3.5 text-faint" aria-hidden="true" />
+    <span className="k-chip-pick" data-testid="new-project">
+      <Boxes aria-hidden="true" />
       <Select
         value={value}
         aria-label="Project of the new session"
