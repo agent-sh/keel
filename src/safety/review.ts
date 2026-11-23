@@ -78,9 +78,10 @@ const RUBRIC: Record<ReviewKind, string> = {
   ].join("\n"),
 };
 
-export function reviewTask(o: { kind: ReviewKind; scope: Scope; target: string; focus?: string; diff: string; cut: boolean; files: { path: string; status: string }[] }): string {
-  const what = o.scope === "uncommitted" ? "the uncommitted work (tracked and untracked files) over HEAD"
-    : o.scope === "branch" ? `the branch over its merge base with ${o.target}` : `commit ${o.target}`;
+// `what`: the change in words when it is not one of the scopes (a pull request).
+export function reviewTask(o: { kind: ReviewKind; scope: Scope; target: string; focus?: string; diff: string; cut: boolean; files: { path: string; status: string }[]; what?: string }): string {
+  const what = o.what ?? (o.scope === "uncommitted" ? "the uncommitted work (tracked and untracked files) over HEAD"
+    : o.scope === "branch" ? `the branch over its merge base with ${o.target}` : `commit ${o.target}`);
   return [
     `You are an independent reviewer. Review ${what} in this repository. You have read-only tools: read files, search, and run commands that change nothing, to check the code around the diff. Do not change anything.`,
     RUBRIC[o.kind],

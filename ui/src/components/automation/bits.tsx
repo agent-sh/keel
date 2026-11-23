@@ -1,4 +1,4 @@
-import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, Gauge, Hand, MessageCircleQuestion, Repeat, ServerOff, ShieldX, Square, TrendingDown, Ban } from "lucide-react";
+import { AlarmClock, Bell, Bot, CircleAlert, CircleCheck, Gauge, GitPullRequest, Hand, MessageCircleQuestion, Repeat, ServerOff, ShieldX, Square, TrendingDown, Ban } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo } from "react";
 import { auto, type AgentRecord, type Alert } from "../../lib/automation.ts";
@@ -56,7 +56,7 @@ export function StopAgent({ a, title, testid }: { a: AgentRecord; title: string;
 }
 
 const ALERT_ICON: Record<Alert["kind"], typeof Bell> = {
-  approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock, regression: TrendingDown, refused: ShieldX, declined: Ban, machine: ServerOff, outage: ServerOff,
+  approval: Hand, question: MessageCircleQuestion, finished: CircleCheck, failed: CircleAlert, limit: Gauge, loop_failed: Repeat, agent: Bot, snooze_over: AlarmClock, regression: TrendingDown, refused: ShieldX, declined: Ban, machine: ServerOff, outage: ServerOff, review: GitPullRequest,
 };
 export const ALERT_LABEL = ALERT_WORD as Record<Alert["kind"], string>;
 
@@ -65,7 +65,7 @@ export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", comman
 // What each alert kind means in the Bridge's state colors: violet needs you,
 // amber is work (an agent speaking, a limit closing in), red failed, sea green done.
 export const ALERT_STATE: Record<Alert["kind"], Watch> = {
-  approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail", refused: "work", declined: "fail", machine: "idle", outage: "wait",
+  approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail", refused: "work", declined: "fail", machine: "idle", outage: "wait", review: "done",
 };
 
 export function AlertIcon({ kind, read, declined }: { kind: Alert["kind"]; read?: boolean; declined?: boolean }) {

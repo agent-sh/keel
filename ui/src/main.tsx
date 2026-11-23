@@ -22,6 +22,7 @@ import "./features/projects.tsx";
 import "./features/artifacts.tsx";
 import "./features/helper.tsx";
 import "./features/experiments.tsx";
+import "./features/pr-reviews.tsx";
 import "./features/shell.ts";
 
 // Install metadata. Added here, not in index.html, because the bundler tries

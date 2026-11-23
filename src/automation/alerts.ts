@@ -23,7 +23,8 @@ import { handShell, shellShows, tellShells } from "../server/shell.ts";
 // kind. A channel is anything with deliver(); phone push registers one later.
 
 // `machine`: about a machine of the fleet, not a session (it went out of reach; more of its alerts came than are listed).
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine", "outage"] as const;
+// `review`: a pull request review from GitHub is ready, was posted, or failed (src/prreview/watch.ts).
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine", "outage", "review"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
 // Sent means the channel took it, not that the owner saw it.
@@ -1105,8 +1106,14 @@ const LIMIT = /rate.?limit|usage limit|quota|too many requests|\b429\b|overloade
 // only when it fails). Only this turn's events speak for it: a turn with no
 // reply of its own never quotes an earlier one. The alert names the reply it
 // quotes, so opening it shows that reply.
+// Sessions whose module tells their turn's end with an alert of its own (a
+// pull request review: ready, posted, failed): not filed as finished or failed too.
+// Keyed by the module, so a hot reload replaces its entry.
+export const ownSessionEnd = new Map<string, (sessionId: string) => boolean>();
+
 export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: boolean; loopRun: boolean; more: boolean }) {
   if (opts.subagent || opts.more) return;
+  for (const own of ownSessionEnd.values()) if (own(sessionId)) return;
   // Parked for a daemon stop: the turn has not finished, the next daemon goes on with it.
   if (reason === "restart") return;
   const { store } = D();

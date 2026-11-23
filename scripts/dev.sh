@@ -22,6 +22,8 @@ export KEEL_DESKTOP_NOTIFY="${KEEL_DESKTOP_NOTIFY:-off}"
 # on the machine: gh, and the other harnesses' session stores for import.
 # Each is kept when already set.
 export KEEL_GH_BIN="${KEEL_GH_BIN:-$(cd "$(dirname "$0")/.." && pwd)/test/e2e/fixtures/gh-standin.sh}"
+# The GitHub API of the pull request watcher: nothing answers there unless a spec names its stand-in.
+export KEEL_GITHUB_API="${KEEL_GITHUB_API:-http://127.0.0.1:9}"
 export KEEL_IMPORT_CLAUDE_DIR="${KEEL_IMPORT_CLAUDE_DIR:-$DEV/import/claude}"
 export KEEL_IMPORT_CODEX_DIR="${KEEL_IMPORT_CODEX_DIR:-$DEV/import/codex}"
 export KEEL_IMPORT_AGY_DIR="${KEEL_IMPORT_AGY_DIR:-$DEV/import/agy}"

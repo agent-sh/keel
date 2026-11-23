@@ -1603,6 +1603,40 @@ newest 200 causes), with the Errors rows that last happened in that session or
 its agents. For an agent's session it returns the rows of its parent that name
 it.
 
+## Pull request reviews from GitHub
+
+Keel reviews the pull requests of the repositories you name, with no public
+URL and no GitHub App. Watch one in Settings > Pull requests or with
+`keel review watch OWNER/REPO`.
+
+Keel polls two lists per repository: the open pull requests and the newest
+comments. Each request carries the ETag of the last answer, so an unchanged
+list is a 304, which GitHub does not count against the hourly limit. The pace
+is the `X-Poll-Interval` GitHub sends, else 60 seconds, never faster:
+`retry-after`, `x-ratelimit-remaining: 0` and secondary limits are obeyed.
+That is two conditional requests a minute per repository; only a change
+costs one. The Events API is not used: it has no event for a push to a pull
+request and its latency can reach hours. `gh webhook forward` is for testing
+only by GitHub's own words, and needs admin rights.
+
+A review starts for a new head of a ready pull request (Every push, the
+default), for a new pull request only, or only when asked. A comment whose
+first line starts with `@keel review` (any case; the words are a setting)
+asks for a review of the head, from an owner, a member or a collaborator.
+What was open when the watch began is not reviewed unless asked.
+
+Each head is reviewed once, ever, across restarts. The review is Keel's own
+reviewer in a session of its own, read-only and sandboxed, in a checkout of
+that head. Its findings are a draft you read in the session's Pull request
+panel and post with one button. Turn on Post by itself for a repository and
+each review is posted as a comment review: findings on changed lines inline,
+the rest in its body. It never approves or requests changes. The Inbox
+tells you each draft, post and failure.
+
+Credentials: a token saved in Settings > Pull requests (kept in the system
+keyring), else `GH_TOKEN` or `GITHUB_TOKEN`, else your gh login. The token
+is never printed and never on a command line.
+
 ## Backups
 
 `keel backup` writes a checked copy under `<state>/backups`: the database, the

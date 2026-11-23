@@ -14,6 +14,7 @@
 // `script:color` (the newest picture), `script:count` (a long reply that
 // streams for a while), `script:say` (the reply is the words given) and
 // `script:obey` (it makes the call a page it fetched asks for).
+// `script:review` (a reviewer's findings for the BUG: lines of a diff).
 //
 // An outage of the whole provider (src/providers/outage.ts), for every session
 // and for the listing a probe asks for:
@@ -523,6 +524,26 @@ export class ScriptedProvider implements Provider {
         // The numbers from one to four hundred as words: a reply that streams
         // for about ten seconds, for a spec that cuts the page's socket meanwhile.
         return paced(Array.from({ length: 400 }, (_, i) => numberWords(i + 1)).join(", "), 32, 30);
+      case "review": {
+        // `script:review` in a review task's diff: a reviewer that answers with
+        // one finding (P1) for each added line that says BUG: <title>, at its
+        // file and line on the new side, as a real reviewer's JSON answer.
+        const findings: { file: string; line: number; priority: number; title: string; body: string }[] = [];
+        let file = "", line = 0;
+        for (const l of owner.split("\n")) {
+          if (l.startsWith("+++ ")) { file = l.slice(4).replace(/^b\//, ""); continue; }
+          const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(l);
+          if (h) { line = Number(h[1]); continue; }
+          if (!line || l.startsWith("-")) continue;
+          if (l.startsWith("+") || l.startsWith(" ")) {
+            const bug = l.startsWith("+") ? /BUG: ([^\n]+)/.exec(l) : null;
+            if (bug) findings.push({ file, line, priority: 1, title: bug[1]!.trim(), body: `Line ${line} of ${file} says so.` });
+            line++;
+          }
+        }
+        const answer = { findings, verdict: findings.length ? "incorrect" : "correct", summary: `The scripted reviewer read ${new Set(findings.map((f) => f.file)).size || "the"} changed file${findings.length === 1 ? "" : "s"}.`, reading_order: [] };
+        return reply("```json\n" + JSON.stringify(answer) + "\n```");
+      }
       case "say":
         // `script:say <words>`: the reply is those words, a written \n a line break.
         return reply((owner.match(/script:say[ \t]+([^\n]+)/)?.[1]?.trim() ?? "").replaceAll("\\n", "\n"));

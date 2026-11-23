@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Stands in for gh in `gh pr view N --repo OWNER/NAME --json state,statusCheckRollup`:
 # prints $KEEL_GH_STANDIN_DIR/OWNER_NAME_N.json (the e2e writes it), else fails as gh does.
+# `gh auth token` prints the stand-in GitHub's token (test/e2e/fixtures/github-standin.ts): a word, not a credential.
+if [ "$1 $2" = "auth token" ]; then echo "standin-token"; exit 0; fi
 dir=${KEEL_GH_STANDIN_DIR:-$HOME/.cache/keel-work/bun/e2e-state/gh}
 n=$3 repo=$5
 f="$dir/${repo/\//_}_$n.json"

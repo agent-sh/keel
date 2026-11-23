@@ -7,6 +7,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["attach", "follow a session in this terminal and type into it"],
     ["approve", "answer an open approval card or question"],
     ["rules", "the standing permission rules: list, revoke, check a sample"],
+    ["review", "pull request reviews from GitHub: watch a repository, list, post a draft"],
     ["stop", "interrupt a session's running turn"],
   ]],
   ["Sessions", [
@@ -104,6 +105,7 @@ const FIRST: [commands: string[], what: Words][] = [
   [["login", "logout"], "xai"],
   [["plugin"], "install list enable disable update remove check"],
   [["mcp"], "list channel"],
+  [["review"], "watch unwatch list post"],
   [["service"], "install"],
   [["completion"], SHELLS.join(" ")],
   [["help"], "commands"],

@@ -38,6 +38,7 @@ import { pluginUnitRoutes } from "./plugin-units.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { reviewRoutes } from "./reviews.ts";
+import { prReviewRoutes } from "./pr-reviews.ts";
 import { turnRoutes } from "./turns.ts";
 import { switchRoutes } from "./switch.ts";
 import { buildPinRoutes } from "./build-pin.ts";
@@ -85,6 +86,7 @@ const modules: Record<string, RouteModule> = {
   profileRoutes,
   worktreeRoutes,
   reviewRoutes,
+  prReviewRoutes, // after reviews: it reads the reviewer model they keep; after permissions: its sessions are read-only
   turnRoutes,
   switchRoutes,
   buildPinRoutes,

@@ -90,6 +90,11 @@ export type GitOpts = {
   // git are spoken, and a folder on this machine the repository names
   // itself: no other transport program is started.
   fetch?: GitFetch;
+  // Keys of this call's own, after the ones every call gets (git reads them in
+  // order and a later key wins): what a fetch of Keel's own needs (the
+  // transports it may speak, a header with a token). Through the environment,
+  // never the command line, so a token is not in the process list.
+  config?: [string, string][];
 };
 export type GitFetch = "any" | "public";
 // How far the daemon's git may fetch for a session: as far as that
@@ -428,7 +433,7 @@ const DROPPED = /^GIT_(DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTE
 // For a call that may fetch: only these transports are spoken, so no other
 // transport program (a `git-remote-<name>` found on PATH) is ever started
 // (git-config(1), protocol.allow and protocol.<name>.allow).
-const FETCH_KEYS: [string, string][] = [
+export const FETCH_KEYS: [string, string][] = [
   ["protocol.allow", "never"],
   ["protocol.https.allow", "always"],
   ["protocol.http.allow", "always"],
@@ -595,6 +600,11 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
   let p: Plan;
   try { p = plan(dir, args, o); } catch (e) { return { code: 128, out: "", err: `git: ${(e as Error).message}` }; }
   if ("fail" in p) return { code: 128, out: "", err: p.fail };
+  if (o.config?.length) {
+    const n = Number(p.env.GIT_CONFIG_COUNT ?? 0);
+    o.config.forEach(([k, v], i) => { p.env[`GIT_CONFIG_KEY_${n + i}`] = k; p.env[`GIT_CONFIG_VALUE_${n + i}`] = v; });
+    p.env.GIT_CONFIG_COUNT = String(n + o.config.length);
+  }
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn(p.argv, { cwd: p.cwd, env: p.env, stdin: bytes(o.input), stdout: "pipe", stderr: "pipe", timeout: o.timeout ?? 120_000, killSignal: "SIGKILL", signal: o.signal });
