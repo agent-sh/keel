@@ -312,7 +312,8 @@ const schema = {
 };
 
 // Its pages are fetched; what comes back is the readers' answer, not a page.
-const web = { fetches: (input: any) => list(input?.urls), links: false };
+// Public only when it read no file: its pages are, and an answer that quotes a local file is the session's text.
+const web = { fetches: (input: any) => list(input?.urls), links: false, public: (input: any, own: (a: string) => boolean) => list(input?.paths).length === 0 && !list(input?.urls).some(own) };
 export const AskReaders: Tool = { name: "AskReaders", families: ["claude"], readOnly: true, web, description: DESCRIPTION, input_schema: schema, run };
 export const ask_readers: Tool = { name: "ask_readers", families: ["gpt", "gemini", "other"], readOnly: true, web, description: DESCRIPTION, input_schema: schema, run };
 export const READER_TOOLS = new Set([AskReaders.name, ask_readers.name]);

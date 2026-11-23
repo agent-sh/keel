@@ -251,18 +251,25 @@ export const webSearchTool: CatalogTool = {
   input_schema: { type: "object", properties: { query: { type: "string" }, count: { type: "integer" }, time_range: { type: "string", enum: ["all", "day", "week", "month", "year"] } }, required: ["query"] },
   run: async (i, ctx) => { const r = await webSearch(String(i.query ?? ""), { count: i.count, time_range: i.time_range }, ctx.signal); return { content: r.text, is_error: r.error }; },
 };
+// What a web__webfetch request sends besides its address.
+function requestOf(i: any) {
+  const method = typeof i?.method === "string" && i.method.trim() ? i.method.trim() : "GET";
+  const headers = i?.headers && typeof i.headers === "object" && Object.keys(i.headers).length ? i.headers : undefined;
+  const body = typeof i?.body === "string" && i.body ? i.body : undefined;
+  return { method, headers, body };
+}
+// A plain GET or HEAD with no header and no body: it reads a page anyone can read.
+const plainGet = (i: any) => { const r = requestOf(i); return /^(GET|HEAD)$/i.test(r.method) && !r.headers && !r.body; };
 export const webFetchTool: CatalogTool = {
-  server: "web", name: "webfetch", qualified: "web__webfetch", readOnly: true, web: { fetches: (i) => [String(i?.url ?? "")], links: true },
+  server: "web", name: "webfetch", qualified: "web__webfetch", readOnly: true, web: { fetches: (i) => [String(i?.url ?? "")], links: true, public: (i, own) => plainGet(i) && !own(String(i?.url ?? "")) },
   description: "Fetch an http(s) URL and return it as markdown (PDFs as text); long pages are saved to a file.",
   input_schema: { type: "object", properties: { url: { type: "string" }, method: { type: "string" }, body: { type: "string" }, headers: { type: "object" }, extract: { type: "string", enum: ["markdown", "raw", "both"] } }, required: ["url"] },
   // A request with a body, headers of its own or a method other than GET or HEAD sends what it carries to any
   // address, one the session has seen too; a plain one is a read of its page (src/safety/addresses.ts).
   judge: async (i) => {
     const url = String(i?.url ?? "");
-    const method = typeof i?.method === "string" && i.method.trim() ? i.method.trim() : "GET";
-    const headers = i?.headers && typeof i.headers === "object" && Object.keys(i.headers).length ? i.headers : undefined;
-    const body = typeof i?.body === "string" && i.body ? i.body : undefined;
-    if (!/^(GET|HEAD)$/i.test(method) || headers || body) return { kind: "send", to: [url], shown: sendShown([url], { method, headers, body }), carries: true };
+    const { method, headers, body } = requestOf(i);
+    if (!plainGet(i)) return { kind: "send", to: [url], shown: sendShown([url], { method, headers, body }), carries: true };
     return { kind: "read", fetches: [url] };
   },
   run: async (i, ctx) => { const r = await webFetch(String(i.url ?? ""), { method: i.method, body: i.body, headers: i.headers, extract: i.extract, spillDir: ctx.spillDir }, ctx.signal); return { content: r.text, is_error: r.error }; },

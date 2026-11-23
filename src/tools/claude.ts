@@ -272,7 +272,7 @@ const Grep: Tool = {
 const WebFetch: Tool = {
   name: "WebFetch",
   readOnly: true,
-  web: { fetches: (input) => [String(input?.url ?? "")], links: true },
+  web: { fetches: (input) => [String(input?.url ?? "")], links: true, public: (input, own) => !own(String(input?.url ?? "")) },
   description:
     "Fetch a URL (http is upgraded to https) and answer prompt from the page: a long page is read by a smaller, faster " +
     "model that returns what the prompt asks for, and the whole page is saved to a file you can Read; a short page " +

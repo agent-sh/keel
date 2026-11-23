@@ -263,7 +263,7 @@ const promptUrls = (prompt: unknown) => [...new Set(String(prompt ?? "").match(/
 const web_fetch: Tool = {
   name: "web_fetch",
   readOnly: true,
-  web: { fetches: (input) => promptUrls(input?.prompt), links: true },
+  web: { fetches: (input) => promptUrls(input?.prompt), links: true, public: (input, own) => !promptUrls(input?.prompt).some(own) },
   description: "Fetches up to 20 URLs named in the prompt (http/https) and answers the prompt from their content.",
   input_schema: obj({
     prompt: { type: "string", description: "A prompt that includes the URL(s) (up to 20) to fetch and what to look for." },

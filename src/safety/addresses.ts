@@ -32,8 +32,12 @@ import { domainToUnicode } from "node:url";
 
 // What a tool does on the web, declared by the tool. `fetches`: the addresses
 // one call fetches, from its input. `links`: its result is the page's text
-// (so the page's same-origin links count), not a reader's answer.
-export type WebUse = { search: true } | { fetches(input: any): string[]; links: boolean };
+// (so the page's same-origin links count), not a reader's answer. `public`: the call read public pages
+// and nothing else, so its result is the web's text and not the session's (a path that copies it leaks
+// nothing the site did not have). Not public when it read a local file, sent a header or a body (the
+// reply may be private), or fetched an address the owner wrote (a link that is a capability: an
+// unlisted page, a gist, a presigned address). `fromOwner`: whether an address is one the owner wrote.
+export type WebUse = { search: true } | { fetches(input: any): string[]; links: boolean; public?(input: any, fromOwner: (address: string) => boolean): boolean };
 
 // An address as the fetch tools read it, or null when no fetch tool would send anything for it.
 export function addressOf(raw: string): string | null {
@@ -139,11 +143,24 @@ const entropy = (t: string): number => {
   for (const v of n.values()) h -= (v / t.length) * Math.log2(v / t.length);
   return h;
 };
+// The lengths of a digest or an id that is written in hex everywhere: 32 (an md5, a gist id, a UUID without
+// dashes), 40 (a git object), 64 (a sha256). A value that long is one of these far more often than a chunk of data.
+const DIGESTS = new Set([32, 40, 64]);
 export function encodedShape(token: string, min = SHAPE_MIN): string | null {
   if (token.length < min || !/^[A-Za-z0-9]+$/.test(token) || !/\d/.test(token) || !/[A-Za-z]/.test(token)) return null;
-  if (/^[0-9a-f]+$/i.test(token)) return token.length === 40 || token.length === 64 ? null : "hex";
+  if (/^[0-9a-f]+$/i.test(token)) return DIGESTS.has(token.length) ? null : "hex";
   return entropy(token) >= 3.5 ? "random letters and digits" : null;
 }
+
+// Hosts where a hex value in a path is a content hash the host made (a package's file, its place in a
+// store), not a chunk anyone chose: the package and file hosts that put a hash in a directory name.
+const HASHED_PATHS = ["files.pythonhosted.org", "pypi.org", "registry.npmjs.org", "static.crates.io", "rubygems.org", "repo1.maven.org", "cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com", "proxy.golang.org"];
+// Hosts whose first label the platform picked at random (a distribution, a function url, a public bucket):
+// nobody chose it, so it carries nothing.
+const ASSIGNED_LABEL = ["cloudfront.net", "on.aws", "r2.dev"];
+const under = (host: string, list: string[]) => list.some((h) => host === h || host.endsWith(`.${h}`));
+// A hex part of a file name with an extension (`main.8f3a2b1c9d4e5f60.js`, `app.0123abcd4567.css`): a build's name for the file.
+const inFileName = (parts: string[], i: number) => parts.length >= 3 && i > 0 && i < parts.length - 1 && /^[a-z][a-z0-9]{0,7}$/i.test(parts.at(-1)!);
 
 // The most addresses a session fetches on one host that it had not seen before the fetch: the next asks.
 // Data in pieces too short to be held one by one (a value cut into chunks, a chunk a request) takes this many
@@ -175,12 +192,18 @@ export const HOST_CAP = 10;
 //   secret or as 12 or more folded characters of the session's text, or it has the shape of
 //   random letters and digits; or
 // - its path is longer than `PATH_READ` folded characters; or
-// - it is the address after the `HOST_CAP`th the session fetched on its host unseen.
-export function dataIn(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean, unseenOnHost = 0): string | null {
-  return contents(raw, inSession, secret) ?? (unseenOnHost >= HOST_CAP ? `address number ${unseenOnHost + 1} on one host this session had not seen` : null);
+// - it is the address after the `HOST_CAP`th the session fetched on its registered domain unseen.
+//
+// A path that ends with one whole run of a listing the session was given (`listed`: a path a command
+// printed, a tree), on a host the session already knows, is a copy of what it was given: the text of
+// that run is not looked for in the session's text (the rest of the path is). Hex that is a digest or an
+// id (32, 40 or 64), a hash in a file name with an extension, a hash under a package host, and the
+// label a platform assigned (`cloudfront.net`) are not encoded data.
+export function dataIn(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean, unseenOnHost = 0, listed?: (host: string, path: string) => number): string | null {
+  return contents(raw, inSession, secret, listed) ?? (unseenOnHost >= HOST_CAP ? `address number ${unseenOnHost + 1} on one registered domain this session had not seen` : null);
 }
 
-function contents(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean): string | null {
+function contents(raw: string, inSession: (folded: string) => boolean, secret: (decoded: string) => boolean, listed?: (host: string, path: string) => number): string | null {
   let u: URL;
   try { u = new URL(String(raw).trim()); } catch { return null; }
   // The port is read as the fetch reads the address: http is fetched as https.
@@ -195,11 +218,12 @@ function contents(raw: string, inSession: (folded: string) => boolean, secret: (
   if (secret(written) || secret(host)) return "a secret in its host";
   const path = decoded(u.pathname);
   if (secret(path)) return "a secret in its path";
-  const f = fold(path);
   const whole = fold(host + path);
+  // The path as it is searched for the session's text: what is left of it when a whole listed run ends it.
+  const f = fold(path.slice(0, path.length - (listed?.(u.hostname.toLowerCase(), path) ?? 0)));
   if (whole.length >= WINDOW && inSession(whole)) return null;
   for (const label of host.split(".")) if (fold(label).length >= WINDOW && windowIn(fold(label), inSession)) return "text from this session in its host";
-  if (f.length > PATH_READ) return "a very long path";
+  if (fold(path).length > PATH_READ) return "a very long path";
   // What a segment says read as encoded text: a secret, or text the session was given.
   const said = (text: string) => secret(text) || (fold(text).length >= ENCODED_MIN && (fold(text).length < WINDOW ? inSession(fold(text)) : windowIn(fold(text), inSession)));
   // The tokens of a path: its segments and the parts of a segment between dots, and the segments joined (a value cut
@@ -210,9 +234,10 @@ function contents(raw: string, inSession: (folded: string) => boolean, secret: (
   // letters and digits (`docs/api/v2/reference` is words).
   const chunk = (x: string) => x.length >= 6 && /^[A-Za-z0-9]+$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
   const where: [string, string[], string[], number][] = [
-    ["its path", segs.flatMap((x) => (x.includes(".") ? [x, ...x.split(".")] : [x])), segs.length > 1 ? [segs.join("")] : [], SHAPE_MIN],
-    ["its host", written.split(".").filter(Boolean), labels.length > 1 ? [labels.join("")] : [], SHAPE_MIN_LABEL],
+    ["its path", segs.flatMap((x) => (x.includes(".") ? [x, ...x.split(".").map((part, i, all) => (/^[0-9a-f]+$/i.test(part) && inFileName(all, i) ? "" : part))] : [x])), segs.length > 1 ? [segs.join("")] : [], SHAPE_MIN],
+    ["its host", written.split(".").filter(Boolean).map((l, i) => (i === 0 && under(host, ASSIGNED_LABEL) ? "" : l)), labels.length > 1 ? [labels.join("")] : [], SHAPE_MIN_LABEL],
   ];
+  const hashed = under(host, HASHED_PATHS);
   for (const [place, tokens, joined, min] of where) {
     const pieces = place === "its path" ? segs : labels;
     for (const t of [...tokens, ...joined]) {
@@ -220,7 +245,7 @@ function contents(raw: string, inSession: (folded: string) => boolean, secret: (
     }
     for (const t of tokens) {
       const shape = encodedShape(t, min);
-      if (shape) return `encoded data (${shape}) in ${place}`;
+      if (shape && !(hashed && place === "its path" && shape === "hex")) return `encoded data (${shape}) in ${place}`;
     }
     if (joined.length && pieces.every(chunk)) {
       const shape = encodedShape(joined[0]!, min);
@@ -234,6 +259,19 @@ function contents(raw: string, inSession: (folded: string) => boolean, secret: (
 
 // The host of an address (with its port), in lower case.
 export const hostOf = (address: string): string | null => { try { return new URL(address).host.toLowerCase(); } catch { return null; } };
+
+// The registered domain of an address's host: the two last labels, three under a country's second level
+// (`co.uk`); an IP address as it is. The addresses a session fetches are counted by it, so a value cut into
+// pieces and sent to `s0.attacker.example` ... `s6.attacker.example` is one count.
+const SECOND_LEVEL = new Set(["co", "com", "org", "net", "gov", "edu", "ac", "or", "ne", "go"]);
+export function groupOf(address: string): string | null {
+  let h: string;
+  try { h = new URL(/^[a-z][a-z0-9+.-]*:/i.test(address) ? address : `https://${address}`).hostname.toLowerCase(); } catch { return null; }
+  if (/^[\d.]+$/.test(h) || h.startsWith("[")) return h;
+  const l = h.split(".");
+  if (l.length <= 2) return h;
+  return l.slice(-(l.at(-1)!.length === 2 && SECOND_LEVEL.has(l.at(-2)!) ? 3 : 2)).join(".");
+}
 
 // The origin a link must share with the page it is on.
 const originOf = (address: string): string | null => { try { return new URL(address).origin; } catch { return null; } };
@@ -311,24 +349,56 @@ const textOf = (content: unknown): string =>
 // A stored event as this reads it.
 export type BookEvent = { seq: number; kind: string; data: any };
 
+// The runs of words joined by slashes in a text (a path a command printed, a tree's line, a URL's path), the
+// parts of a run that are a segment each: `src/a/b.ts`, `home/u/clients/x.md`. One pass over the text, a run
+// no longer than `RUN_MAX` characters and at least two segments; a leading `.`, `..` and `~` segment is not a part of the run.
+const RUN_MAX = 400;
+const segChar = (c: number) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 46 || c === 126 || c === 37 || c === 43 || c === 64 || c === 45 || c === 95;
+export function runsIn(text: string, into: Set<string>, room: { left: number }) {
+  let start = -1, slash = false;
+  const n = text.length;
+  for (let i = 0; i <= n; i++) {
+    const c = i < n ? text.charCodeAt(i) : 0;
+    if (i < n && (c === 47 || segChar(c))) {
+      if (start < 0) { start = i; slash = false; }
+      if (c === 47 && i > start) slash = true;
+      continue;
+    }
+    if (start >= 0 && slash && i - start <= RUN_MAX && room.left > 0) {
+      const parts = text.slice(start, i).split("/").filter(Boolean);
+      while (parts.length && (parts[0] === "." || parts[0] === ".." || parts[0] === "~")) parts.shift();
+      if (parts.length >= 2) { const run = parts.join("/").toLowerCase(); if (!into.has(run)) { into.add(run); room.left -= run.length; } }
+    }
+    start = -1;
+  }
+}
+
+// What a session's book keeps of the text it was given. The folded text of what one session was given (the
+// results of tools that did not read public pages only, and messages that are not the owner's: a subagent's
+// report), the newest kept when it holds more than this many characters (one result is cut to its start).
+const CORPUS_MAX = 1 << 20;
+// The room for the runs of slash-joined words.
+const RUNS_MAX = 1 << 20;
+
 // One session's addresses, read from its events in order, a part at a time:
 // `take` reads the events after the last it read. A call is matched to its
 // result by id; the calls whose result has not come yet are kept for it.
-// The folded text of what one session was given (the results of tools that are not web tools, and messages that are not the owner's: a subagent's report), the newest kept
-// when it holds more than this many characters (one result is cut to its start).
-const CORPUS_MAX = 1 << 20;
-// (Each part is bounded so a long word with no slash costs a few hundred steps a character, not a pass over the rest.)
-const PATH_RUN = /[\w.~%+@-]{1,200}(?:\/[\w.~%+@-]{1,200})+/g;
-
 export class AddressBook {
   private known = new Set<string>();
+  // The addresses the owner wrote in their own prompts (a link of theirs may be a capability).
+  private owned = new Set<string>();
+  // The hosts of the addresses the session knows, lower case.
+  private hosts = new Set<string>();
   private corpus: string[] = [];
   private corpusSize = 0;
-  // The addresses fetched that were not known when the call was made, by host.
+  // The addresses fetched that were not known when the call was made, by registered domain.
   private unseen = new Map<string, Set<string>>();
   // The addresses written out in what the session was given, as `fold(host + path)`: an address copied from there is the
-  // text's own, whole, even when its path is no longer a part of the corpus.
+  // text's own, whole.
   private copied = new Set<string>();
+  // The runs of slash-joined words in what the session was given, lower case.
+  private runs = new Set<string>();
+  private runsRoom = { left: RUNS_MAX };
   private calls = new Map<string, { name: string; input: unknown }>();
   seq = 0;
   constructor(
@@ -336,6 +406,8 @@ export class AddressBook {
     private use: (name: string, input: unknown) => { use: WebUse; input: any } | undefined,
     // Whether a stored prompt is the owner's own words (src/core/owner.ts).
     private owner: (data: any) => boolean,
+    // Whether an address was written by the owner in a session above this one (the gate gives the parent chain).
+    private above?: (address: string) => boolean,
   ) {}
 
   has(address: string): boolean {
@@ -343,28 +415,52 @@ export class AddressBook {
     return a === null || this.known.has(a);
   }
   get size() { return this.known.size; }
-  // How many addresses this session fetched on a host that it had not seen when it fetched them.
-  unseenOn(host: string): number { return this.unseen.get(host.toLowerCase())?.size ?? 0; }
+  // Whether the owner wrote this address in a prompt of this session or of one above it.
+  fromOwner = (address: string): boolean => {
+    const a = addressOf(address);
+    return !!a && (this.owned.has(a) || !!this.above?.(a));
+  };
+  ownedHas(address: string): boolean { return this.owned.has(address); }
+  // How many addresses this session fetched on a registered domain (given as an address or a host) that it had not seen when it fetched them.
+  unseenOn(of: string): number { const g = groupOf(of); return g ? this.unseen.get(g)?.size ?? 0 : 0; }
   // Whether some text the session was given holds this folded text.
   inResults(folded: string): boolean { return this.copied.has(folded) || this.corpus.some((c) => c.includes(folded)); }
+  // How many characters of `path` its end shares with a whole run of a listing the session was given, when the
+  // session knows `host` (0 when not): the address copies a line of what it was given. A run is two segments at least.
+  listed = (host: string, path: string): number => {
+    if (!this.hosts.has(host) || !this.runs.size) return 0;
+    const trimmed = path.replace(/\/+$/, "");
+    const segs = trimmed.split("/").filter(Boolean);
+    let best = 0;
+    for (let k = 2, tail = ""; k <= Math.min(segs.length, 64); k++) {
+      tail = segs.slice(-k).join("/");
+      if (tail.length > RUN_MAX) break;
+      if (this.runs.has(tail.toLowerCase())) best = tail.length + (path.length - trimmed.length);
+    }
+    return best;
+  }
 
-  // A run of words joined by slashes (a file's path, a URL's path, a listing's line) is not kept: a model that
-  // reads a listing and then fetches a path from it is the ordinary use, and a path names where a file is, not
-  // what it holds. What is kept is the words and values around it.
   private keep(text: string) {
-    const cut = text.slice(0, CORPUS_MAX * 2);
+    const cut = text.slice(0, CORPUS_MAX + (CORPUS_MAX >> 1));
     for (const a of urlsIn(cut)) {
       if (this.copied.size >= 4096) break;
       try { const u = new URL(a); this.copied.add(fold(u.host + decoded(u.pathname))); } catch {}
     }
-    const f = fold(cut.replace(PATH_RUN, " ")).slice(0, CORPUS_MAX);
+    runsIn(cut, this.runs, this.runsRoom);
+    const f = fold(cut).slice(0, CORPUS_MAX);
     if (!f) return;
     this.corpus.push(f);
     this.corpusSize += f.length;
     while (this.corpusSize > CORPUS_MAX && this.corpus.length > 1) this.corpusSize -= this.corpus.shift()!.length;
   }
 
-  private add(list: string[]) { for (const a of list) this.known.add(a); }
+  private add(list: string[]) {
+    for (const a of list) {
+      this.known.add(a);
+      const h = hostOf(a);
+      if (h && this.hosts.size < 4096) this.hosts.add(h);
+    }
+  }
 
   take(events: readonly BookEvent[]) {
     for (const e of events) {
@@ -373,7 +469,11 @@ export class AddressBook {
       const d = e.data;
       if (!d) continue;
       if (e.kind === "user") {
-        if (this.owner(d)) this.add(ownerAddresses(String(d.text ?? "")));
+        if (this.owner(d)) {
+          const written = ownerAddresses(String(d.text ?? ""));
+          for (const a of written) this.owned.add(a);
+          this.add(written);
+        }
         // What is not the owner's (a subagent's report, a harness notice) is text the session was given: a path may copy it.
         else if (typeof d.text === "string") this.keep(d.text);
       } else if (e.kind === "assistant") {
@@ -388,12 +488,13 @@ export class AddressBook {
         for (const r of d.results ?? []) {
           const call = this.calls.get(r?.tool_use_id);
           const how = call && ran ? this.use(call.name, call.input) : undefined;
-          // What a web tool returned is the public web's text: a path that copies it leaks nothing the
-          // site did not have, and a model that reads a listing then fetches a path from it is the
-          // ordinary use (the paths of a repository's tree). The session's own text is what files,
-          // commands, other tools and messages gave it.
           const text = ran ? textOf(r?.content) : "";
-          if (text && !how) this.keep(text);
+          // What a call returned is the session's text, except what it read of public pages and nothing else (a search,
+          // a page fetched by an address the model made or a search gave): that is the web's text, and a path that copies
+          // it leaks nothing the site did not have. A file a reader read, a reply to a request with a header or a body, a
+          // page at an address the owner wrote (it may be a link that is a key) and every other tool's result are the session's.
+          const publicOnly = !!how && ("search" in how.use || how.use.public?.(how.input, this.fromOwner) === true);
+          if (text && !publicOnly) this.keep(text);
           if (!call) continue;
           this.calls.delete(r.tool_use_id);
           if (!how) continue;
@@ -403,10 +504,10 @@ export class AddressBook {
             for (const raw of asked) {
               const a = addressOf(raw);
               if (!a || this.known.has(a)) continue;
-              const host = hostOf(a);
-              if (!host) continue;
-              let set = this.unseen.get(host);
-              if (!set) this.unseen.set(host, (set = new Set()));
+              const group = groupOf(a);
+              if (!group) continue;
+              let set = this.unseen.get(group);
+              if (!set) this.unseen.set(group, (set = new Set()));
               if (set.size < 4 * HOST_CAP) set.add(a);
             }
             this.add(fetchedAddresses(asked, text, how.use.links));

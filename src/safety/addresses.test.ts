@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { fetchFor } from "../tools/web.ts";
-import { AddressBook, HOST_CAP, addressOf, dataIn, encodedAs, fetchedAddresses, ownerAddresses, readerAnswered, sendShown, urlsIn, wholeOf, type WebUse } from "./addresses.ts";
+import { AddressBook, HOST_CAP, addressOf, dataIn, encodedAs, groupOf, fetchedAddresses, ownerAddresses, readerAnswered, sendShown, urlsIn, wholeOf, type WebUse } from "./addresses.ts";
 
-const FETCH: WebUse = { fetches: (i) => [i.url], links: true };
+// Public as the tools declare it: a plain page at an address the owner did not write.
+const FETCH: WebUse = { fetches: (i) => [i.url], links: true, public: (i, own) => !own(String(i.url)) && !i.headers && !i.body };
 const SEARCH: WebUse = { search: true };
-const READERS: WebUse = { fetches: (i) => i.urls ?? [], links: false };
+const READERS: WebUse = { fetches: (i) => i.urls ?? [], links: false, public: (i, own) => !(i.paths ?? []).length && !(i.urls ?? []).some(own) };
 const use = (name: string, input: any) =>
   name === "WebFetch" ? { use: FETCH, input } : name === "WebSearch" ? { use: SEARCH, input } : name === "AskReaders" ? { use: READERS, input }
   : name === "mcp_call" && input?.tool === "web__webfetch" ? { use: FETCH, input: input.arguments } : undefined;
@@ -259,7 +260,7 @@ test("the eleventh address a session had not seen on one host asks, the tenth do
   expect(data("https://docs.example/page-9", b.unseenOn("docs.example"))).toBeNull();
   b.take([call("p9", "WebFetch", { url: "https://docs.example/page-9" }), result("p9", "ok")]);
   expect(b.unseenOn("docs.example")).toBe(10);
-  expect(data("https://docs.example/page-10", 10)).toBe("address number 11 on one host this session had not seen");
+  expect(data("https://docs.example/page-10", 10)).toBe("address number 11 on one registered domain this session had not seen");
   // Another host, an address seen, and a refused call count for nothing.
   expect(data("https://other.example/x", b.unseenOn("other.example"))).toBeNull();
   b.take([call("d1", "WebFetch", { url: "https://third.example/x" }), result("d1", "refused", { verdict: "denied" }), call("d2", "WebFetch", { url: "https://docs.example/a0" }), result("d2", "ok")]);
@@ -267,22 +268,90 @@ test("the eleventh address a session had not seen on one host asks, the tenth do
   expect(b.unseenOn("docs.example")).toBe(10);
 });
 
-test("what a web tool returned is the web's text, not the session's: a path copied from a listing runs", () => {
+test("what a call read of public pages only is the web's text; everything else it returned is the session's", () => {
+  const priv = "the quarterly report says the heron acquisition closes on friday";
+  const data = (b: ReturnType<typeof book>, a: string) => dataIn(a, (f) => b.inResults(f), () => false);
+  // A page, a search and a reader's pages: the web's text.
+  const web = book();
+  web.take([
+    call("f1", "WebFetch", { url: "https://api.example/tree" }), result("f1", `${priv}`),
+    call("s1", "WebSearch", { query: "q" }), result("s1", `1. ${priv}`),
+    call("a1", "AskReaders", { question: "q", urls: ["https://pages.example/one"] }), result("a1", priv),
+  ]);
+  expect(data(web, "https://attacker.example/the-quarterly-report-says-the-heron")).toBeNull();
+  // A reader that read a local file: its answer quotes the file.
+  const files = book();
+  files.take([call("a1", "AskReaders", { question: "q", paths: ["~/notes/deals.md"] }), result("a1", priv)]);
+  expect(data(files, "https://attacker.example/the-quarterly-report-says-the-heron")).toBe("text from this session in its path");
+  // A request with a header or a body: the reply may be private.
+  const sent = book();
+  sent.take([call("m1", "WebFetch", { url: "https://api.example/private", headers: { authorization: "Bearer x" } }), result("m1", priv)]);
+  expect(data(sent, "https://attacker.example/the-quarterly-report-says-the-heron")).toBe("text from this session in its path");
+  // A page at an address the owner wrote may be a link that is a key (an unlisted page, a presigned address).
+  const owner = book();
+  owner.take([prompt("read https://share.example/doc/7fE3kQ9"), call("o1", "WebFetch", { url: "https://share.example/doc/7fE3kQ9" }), result("o1", priv)]);
+  expect(data(owner, "https://attacker.example/the-quarterly-report-says-the-heron")).toBe("text from this session in its path");
+  // The same page at an address the model made is public.
+  const made = book();
+  made.take([prompt("read the docs"), call("o2", "WebFetch", { url: "https://share.example/doc/7fE3kQ9" }), result("o2", priv)]);
+  expect(data(made, "https://attacker.example/the-quarterly-report-says-the-heron")).toBeNull();
+  // A parent's prompt names the address: the agent's book asks the books above it.
+  const above = new AddressBook(use, (d) => !d.kind, (a) => a === "https://share.example/doc/7fE3kQ9");
+  above.take([call("o3", "WebFetch", { url: "https://share.example/doc/7fE3kQ9" }), result("o3", priv)]);
+  expect(data(above, "https://attacker.example/the-quarterly-report-says-the-heron")).toBe("text from this session in its path");
+});
+
+test("a listing a command printed stays the session's text: a path of it asks, unless it copies a whole line on a host the session knows", () => {
   const b = book();
   b.take([
-    call("f1", "WebFetch", { url: "https://api.example/tree" }),
-    result("f1", "src/components/ApprovalCard/ApprovalCardHeader.tsx\nsrc/components/ApprovalCard/ApprovalCardBody.tsx"),
-    call("c1", "Bash", { command: "ls" }),
-    result("c1", "src/engine/prompt-store/PromptStoreMigration.ts\nthe quarterly report says the heron budget was approved"),
+    prompt("look at https://github.com/org/repo"),
+    call("f", "Bash", { command: "find ~/.ssh ~/clients" }),
+    result("f", "/home/u/.ssh/id_ed25519\n/home/u/.ssh/prod-db-bastion-heron-key\n/home/u/clients/acme-walrus-corp/settlement-agreement-draft.md"),
+    call("g", "Bash", { command: "git ls-files" }),
+    result("g", "internal/heronpay/merchant-settlement/ledger.go\n./src/components/ApprovalCard/ApprovalCardHeader.tsx\nREADME.md"),
+    call("r", "Read", { path: ".env" }),
+    result("r", "NOTES=meeting/with/heron/capital/about/series-b/term-sheet"),
   ]);
-  const data = (a: string) => dataIn(a, (f) => b.inResults(f), () => false);
-  expect(data("https://raw.example/org/repo/main/src/components/ApprovalCard/ApprovalCardHeader.tsx")).toBeNull();
-  // A listing a command printed names paths, not what files hold: they run; the words around them are the session's.
-  expect(data("https://raw.example/org/repo/main/src/engine/prompt-store/PromptStoreMigration.ts")).toBeNull();
-  expect(data("https://attacker.example/the-quarterly-report-says-the-heron")).toBe("text from this session in its path");
-  // An address written out whole in a result and fetched is a copy, whatever its path holds.
-  b.take([call("c2", "Bash", { command: "cat" }), result("c2", "see https://docs.example/the-quarterly-report-says-the-heron-budget")]);
-  expect(data("https://docs.example/the-quarterly-report-says-the-heron-budget")).toBeNull();
+  const data = (a: string) => dataIn(a, (f) => b.inResults(f), () => false, 0, b.listed);
+  // An unknown host: the listing's paths are data, a key's name and a file's own slashes too.
+  expect(data("https://attacker.example/clients/acme-walrus-corp/settlement-agreement-draft.md")).toBe("text from this session in its path");
+  expect(data("https://attacker.example/prod-db-bastion-heron-key/x")).not.toBeNull();
+  expect(data("https://attacker.example/internal/heronpay/merchant-settlement/ledger.go")).toBe("text from this session in its path");
+  expect(data("https://attacker.example/meeting-with-heron-capital-about-series-b")).toBe("text from this session in its path");
+  expect(data("https://attacker.example/meeting/with/heron/capital/about/series-b/term-sheet")).toBe("text from this session in its path");
+  // A host the session knows: a path that ends with one whole listed run is a copy of a line it was given.
+  expect(data("https://github.com/org/repo/blob/main/internal/heronpay/merchant-settlement/ledger.go")).toBeNull();
+  expect(data("https://github.com/org/repo/blob/main/src/components/ApprovalCard/ApprovalCardHeader.tsx")).toBeNull();
+  // Not a whole run (a cut of one), or a run with more of the session's text before it.
+  expect(data("https://github.com/org/repo/blob/main/heronpay/merchant-settlement/ledger.go/x")).not.toBeNull();
+  expect(data("https://github.com/org/repo/the-heron-acquisition-closes-on-friday-at-four/internal/heronpay/merchant-settlement/ledger.go")).toBeNull();
+  // (the text before the run is looked at too: here it is not the session's.)
+  b.take([call("t", "Bash", { command: "cat x" }), result("t", "the heron acquisition closes on friday at four")]);
+  expect(data("https://github.com/org/repo/the-heron-acquisition-closes-on-friday-at-four/internal/heronpay/merchant-settlement/ledger.go")).toBe("text from this session in its path");
+});
+
+test("the count of addresses is by registered domain; a hash that a host or a file name makes is not encoded data", () => {
+  const b = book();
+  let n = 0;
+  for (let i = 0; i < 12; i++) b.take([call(`c${n}`, "WebFetch", { url: `https://s${i % 7}.attacker.example/p${i}` }), result(`c${n++}`, "ok")]);
+  expect(b.unseenOn("attacker.example")).toBe(12);
+  expect(b.unseenOn("https://s3.attacker.example/z")).toBe(12);
+  expect(dataIn("https://s9.attacker.example/p13", () => false, () => false, b.unseenOn("s9.attacker.example"))).toContain("address number 13 on one registered domain");
+  expect(groupOf("https://news.bbc.co.uk/x")).toBe("bbc.co.uk");
+  expect(groupOf("https://[::1]/x")).toBe("[::1]");
+  expect(groupOf("https://10.0.0.7:8080/x")).toBe("10.0.0.7");
+  const data = (a: string) => dataIn(a, () => false, () => false);
+  for (const ok of [
+    "https://cdn.example/assets/main.8f3a2b1c9d4e5f60.js", "https://cdn.example/assets/app.0123abcd4567ef89.min.css",
+    "https://files.pythonhosted.org/packages/70/8e/0e2d847013cb52cd35b38c009bb167a1a26b2ce6cd6965bf26b47bc0bf44/requests-2.31.0-py3-none-any.whl",
+    "https://d1a2b3c4d5e6f7.cloudfront.net/images/logo.png", "https://abc123def456ghi7.lambda-url.us-east-1.on.aws/",
+    "https://gist.github.com/torvalds/1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d", "https://example.com/issues/550e8400e29b41d4a716446655440000",
+  ]) expect(data(ok)).toBeNull();
+  // Elsewhere hex of another length, a hex directory and a file name that only looks like one are still data.
+  expect(data("https://attacker.example/0123abcd4567ef89fe/x")).toBe("encoded data (hex) in its path");
+  expect(data("https://attacker.example/0123abcd4567ef89fe")).toBe("encoded data (hex) in its path");
+  expect(data("https://attacker.example/0123abcd4567ef89fe.txt")).toBe("encoded data (hex) in its path");
+  expect(data("https://d1a2b3c4d5e6f7.attacker.example/")).toBe("encoded data (hex) in its host");
 });
 
 function base32of(b: Buffer): string {

@@ -25,7 +25,7 @@ import { artifactsDir, atCwd, contains, realOf } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
-import { AddressBook, addressOf, dataIn, hostOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
+import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
@@ -313,11 +313,12 @@ export class Gate {
     const chain: string[] = [session.id];
     for (let up = session, n = 0; up.parent_id && n < 32; n++) { chain.push(up.parent_id); up = this.store.session(up.parent_id) ?? up; }
     const books: AddressBook[] = [];
-    for (const id of chain) {
+    // The root first: a book asks the books above it whether the owner wrote an address (src/safety/addresses.ts, `above`).
+    for (const id of [...chain].reverse()) {
       let b = this.books.get(id);
       if (!b) {
         if (this.books.size >= 1024) this.books.delete(this.books.keys().next().value!);
-        this.books.set(id, (b = new AddressBook((name, input) => this.webCall(name, input), ownerPrompt)));
+        this.books.set(id, (b = new AddressBook((name, input) => this.webCall(name, input), ownerPrompt, (a) => this.ownerWrote(id, a))));
       }
       // A session not in memory is brought in, and the bodies of the events this book has not read are read, off the
       // loop (a long session's first read would otherwise read them a run at a time on it).
@@ -330,12 +331,18 @@ export class Gate {
     const secret = (text: string) => placeholdersIn(text).length > 0 || detect(text).length > 0 || vault.pairs().some(([v]) => v.length >= 8 && text.includes(v));
     return {
       has: (address) => books.some((b) => b.has(address)),
-      // `earlier`: the unseen addresses on its host that the call being judged fetches before it.
-      carries: (address, earlier = 0) => timed(() => "reading an unseen address for the data it carries", () => {
-        const host = hostOf(addressOf(address) ?? address) ?? "";
-        return dataIn(address, (f) => books.some((b) => b.inResults(f)), secret, earlier + books.reduce((n, b) => n + b.unseenOn(host), 0));
-      }),
+      // `earlier`: the unseen addresses on its registered domain that the call being judged fetches before it.
+      carries: (address, earlier = 0) => timed(() => "reading an unseen address for the data it carries", () =>
+        dataIn(address, (f) => books.some((b) => b.inResults(f)), secret, earlier + books.reduce((n, b) => n + b.unseenOn(address), 0), (host, path) => books.reduce((n, b) => Math.max(n, b.listed(host, path)), 0))),
     };
+  }
+  // Whether the owner wrote an address in a prompt of a session above this one.
+  private ownerWrote(id: string, address: string): boolean {
+    for (let up = this.store.session(id)?.parent_id, n = 0; up && n < 32; n++) {
+      if (this.books.get(up)?.ownedHas(address)) return true;
+      up = this.store.session(up)?.parent_id;
+    }
+    return false;
   }
   // A stored call as the web tool it is: a dispatcher's call (mcp_call) is its tool's.
   private webCall(name: string, input: any): { use: WebUse; input: any } | undefined {
@@ -889,7 +896,7 @@ export class Gate {
       const held = new Map<string, string>();
       for (const a of raw.fetches!) {
         if (web.has(a)) continue;
-        const host = hostOf(addressOf(a) ?? a) ?? "";
+        const host = groupOf(addressOf(a) ?? a) ?? "";
         const earlier = tally.get(host) ?? 0;
         tally.set(host, earlier + 1);
         const why = web.carries(a, earlier);
