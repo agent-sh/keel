@@ -4,6 +4,7 @@ import { settingsSections } from "../lib/extend.ts";
 import { actions, reportError, useStore, useModels } from "../lib/store.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
+import { settingsFind } from "../lib/settings-find.macro.ts" with { type: "macro" };
 import { ShortcutList } from "./ShortcutSheet.tsx";
 import { SmallModels } from "./SmallModels.tsx";
 import { Seg } from "./Seg.tsx";
@@ -153,19 +154,41 @@ settingsSections.add(
   { id: "about", label: "About", words: "version daemon", icon: <Info className="size-4" />, order: 100, component: About },
 );
 
-// Sections grouped by what they are about; a section another lane adds falls in by id, else under More.
-const GROUP: Record<string, string> = {
-  general: "Working", models: "Working", providers: "Working", keyboard: "Working", voice: "Working",
-  mcp: "Toolkit", lsp: "Toolkit", skills: "Toolkit", commands: "Toolkit", agents: "Toolkit", plugins: "Toolkit", hooks: "Toolkit", instructions: "Toolkit",
-  safety: "Safety", alerts: "Safety",
-  machines: "Machine", resources: "Machine", storage: "Machine", daemon: "Machine", phone: "Machine", usage: "Machine", logs: "Machine",
-  integrations: "Reach", "acp-agents": "Reach", elsewhere: "Reach", export: "Reach", port: "Reach",
-  about: "Keel",
-};
-const ORDER = ["Working", "Toolkit", "Safety", "Machine", "Reach", "More", "Keel"];
-const groupOf = (id?: string) => (id ? GROUP[id] ?? "More" : "");
+// Sections grouped by what the owner comes for, the most used first: the everyday
+// settings, then what customizes the agent, what it reaches, this computer, and the
+// rest. A section another lane adds falls in by id, else under Advanced.
+const GROUPS: [string, string[]][] = [
+  ["Basics", ["general", "models", "providers", "safety", "alerts", "usage", "keyboard", "voice"]],
+  ["Customize", ["instructions", "skills", "commands", "agents", "plugins", "hooks", "mcp", "lsp", "port"]],
+  ["Connections", ["machines", "phone", "integrations", "pull-requests", "elsewhere", "acp-agents", "helper", "export"]],
+  ["This computer", ["resources", "storage", "logs", "daemon"]],
+  ["Advanced", ["observability", "experiments", "about"]],
+];
+const GROUP: Record<string, string> = Object.fromEntries(GROUPS.flatMap(([g, ids]) => ids.map((id) => [id, g])));
+const RANK: Record<string, number> = Object.fromEntries(GROUPS.flatMap(([, ids]) => ids).map((id, i) => [id, i]));
+const ORDER = GROUPS.map(([g]) => g);
+// The rows and headings of each section, read from the source when the page is bundled.
+const FIND: Record<string, string[]> = settingsFind();
+const groupOf = (id?: string) => (id ? GROUP[id] ?? "Advanced" : "");
 // Sections of figures and lists use the width; forms keep a reading measure.
 const WIDE = new Set(["usage", "observability", "experiments", "resources", "storage", "machines", "models", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
+
+// A row found by its name is brought into view and marked a moment, once its
+// section has drawn it (a section loads on its own: it is watched for, not waited).
+function reveal(name: string) {
+  const find = () => [...document.querySelectorAll<HTMLElement>('.k-settings-scroll :is(.k-setting > div > div:first-child, h2, h3, h4, .k-label)')].find((el) => el.textContent?.replace(/\s+/g, " ").trim() === name);
+  const mark = (el: HTMLElement) => {
+    const row = el.closest<HTMLElement>(".k-setting") ?? el;
+    row.scrollIntoView({ block: "center" });
+    row.dataset.found = "";
+    row.addEventListener("animationend", () => delete row.dataset.found, { once: true });
+  };
+  const now = find();
+  if (now) return mark(now);
+  const watch = new MutationObserver(() => { const el = find(); if (el) { watch.disconnect(); mark(el); } });
+  watch.observe(document.body, { childList: true, subtree: true });
+  setTimeout(() => watch.disconnect(), 10_000);
+}
 
 // A wide page keeps the grouped rail beside the section. A narrow one (by the
 // page's own width, so the session list and the text size count) names the
@@ -178,8 +201,11 @@ export function Settings({ section }: { section: string }) {
   const jump = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const sidebar = useUI((s) => s.sidebar);
-  const all = settingsSections.all().sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (a.order ?? 50) - (b.order ?? 50));
-  const shown = q ? all.filter((s) => `${s.label} ${s.words ?? ""}`.toLowerCase().includes(q.toLowerCase())) : all;
+  const all = settingsSections.all().sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (RANK[a.id] ?? 999) - (RANK[b.id] ?? 999) || (a.order ?? 50) - (b.order ?? 50));
+  // A word finds a section by its name and words, and by the rows it holds: those rows are named under it.
+  const needle = q.trim().toLowerCase();
+  const hits = (id: string, label: string) => (needle ? (FIND[id] ?? []).filter((n) => n.toLowerCase().includes(needle) && n.toLowerCase() !== label.toLowerCase()).slice(0, 3) : []);
+  const shown = needle ? all.filter((s) => `${s.label} ${s.words ?? ""}`.toLowerCase().includes(needle) || hits(s.id, s.label).length > 0) : all;
   const cur = all.find((s) => s.id === section) ?? all[0]!;
   const Body = cur.component;
   // The section shown has its row in view: on a direct link to a late one, and when the list opens.
@@ -187,8 +213,9 @@ export function Settings({ section }: { section: string }) {
   const close = () => { setOpen(false); setQ(""); jump.current?.focus(); };
   // A section reached from elsewhere (the palette, a link, Back) while the list is open: the list gives way to it.
   useEffect(() => setOpen(false), [section]);
-  const go = (id: string) => {
+  const go = (id: string, row?: string) => {
     navigate({ name: "settings", section: id }, true);
+    if (row) reveal(row);
     // Only where the bar is on screen (a narrow page): a rail click on a wide page keeps the search as typed.
     if (open && jump.current?.offsetParent) close();
   };
@@ -239,6 +266,9 @@ export function Settings({ section }: { section: string }) {
                     <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>
                     {s.label}
                   </button>
+                  {hits(s.id, s.label).map((n) => (
+                    <button key={n} type="button" className="k-settings-hit" data-testid="settings-hit" onClick={() => go(s.id, n)}>{n}</button>
+                  ))}
                 </Fragment>
               ))}
               {shown.length === 0 && <p className="k-empty px-2.5 py-3" data-testid="settings-none">No section matches. Try another word.</p>}

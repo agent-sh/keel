@@ -1122,6 +1122,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 .k-settings-group { padding: 0.875rem 0.625rem 0.25rem; }
 .k-settings-nav > button { height: 2.5rem; border-radius: var(--radius-md); scroll-margin-block: 1rem; }
 .k-settings-nav > button[aria-current] > span { color: var(--fg); }
+/* A row a search found inside a section: named under it, a step in, in the quiet ink. */
+.k-settings-nav > button.k-settings-hit { height: var(--spacing-ctl-md); padding: 0 0.625rem 0 2.25rem; text-align: left; font-size: var(--text-caption); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-settings-nav > button.k-settings-hit:hover { background: var(--hover); color: var(--fg); }
+/* The row it opens on is marked a moment, then lets go. */
+.k-settings-scroll [data-found] { animation: k-found 1.6s var(--ease-out); border-radius: var(--radius-md); }
+@keyframes k-found { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
 .k-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .k-settings-rail[data-open] + .k-settings-scroll { display: none; }
 .k-settings-body { max-width: 52rem; padding: 1rem 1rem 1.5rem; }

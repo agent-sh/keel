@@ -390,7 +390,8 @@ test("settings search shows keyboard focus", async ({ page }) => {
   await field.fill("usage");
   await expect(page.getByRole("textbox", { name: "Find a setting" })).toHaveValue("usage");
   // (Storage answers to the word too: it keeps the usage records and says for how long.)
-  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage", "Storage"]);
+  // The row inside Storage that matched is named under it.
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage", "Storage", "Keep usage records"]);
   // Away from the field the mark goes.
   await page.keyboard.press("Tab");
   expect((await mark()).shown).not.toContain((await mark()).ring);
@@ -416,7 +417,7 @@ test("settings sections on a narrow page", async ({ page }) => {
   // A direct link to a late section: the bar says which one, whole, inside the page.
   await expect(title).toHaveText("Storage");
   await expect(jump).toBeVisible();
-  await expect(jump).toContainText("Machine");
+  await expect(jump).toContainText("This computer");
   await expect(jump).toContainText("Storage");
   await expect(jump).toHaveAttribute("aria-expanded", "false");
   expect(await inView(jump)).toBe(true);
@@ -429,7 +430,7 @@ test("settings sections on a narrow page", async ({ page }) => {
   await expect(jump).toHaveAttribute("aria-expanded", "true");
   await expect(row("storage")).toHaveAttribute("aria-current", "page");
   await expect.poll(() => inView(row("storage"))).toBe(true);
-  await expect(nav.getByRole("heading", { name: "Machine" })).toBeVisible();
+  await expect(nav.getByRole("heading", { name: "This computer" })).toBeVisible();
   await expect(settings.getByTestId("storage-panel")).toBeHidden();
   expect(await fits()).toBe(true);
   await shoot(page, "layout-14-settings-narrow-sections");
@@ -467,6 +468,15 @@ test("settings sections on a narrow page", async ({ page }) => {
   await expect(jump).toHaveAttribute("aria-expanded", "false");
   await expect(jump).toContainText("About");
   await expect(row("about")).toBeHidden();
+  // A word inside a section finds the row that holds it: named under its section, and opened on it.
+  await jump.click();
+  await page.getByTestId("settings-find").fill("judge model");
+  const hit = nav.getByTestId("settings-hit").filter({ hasText: "Judge model" });
+  await expect(hit).toHaveCount(1);
+  await expect(row("safety")).toBeVisible();
+  await hit.click();
+  await expect(title).toHaveText("Permissions");
+  await expect(settings.locator(".k-setting", { hasText: "Judge model" }).first()).toBeInViewport();
   // Opened narrow, then the window is widened: a rail click keeps the search as typed.
   await jump.click();
   await page.setViewportSize({ width: 1920, height: 1040 });
@@ -493,7 +503,7 @@ test("settings sections on a narrow page", async ({ page }) => {
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto("/settings/about");
   await expect(jump).toBeHidden();
-  await expect(nav.getByRole("heading", { name: "Working" })).toBeVisible();
+  await expect(nav.getByRole("heading", { name: "Basics" })).toBeVisible();
   await expect(row("about")).toHaveAttribute("aria-current", "page");
   await expect(title).toBeVisible();
   await shoot(page, "layout-17-settings-wide");
