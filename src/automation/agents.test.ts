@@ -13,6 +13,9 @@ import * as leftovers from "./leftovers.ts";
 import { deliver, dropPending, flush, isPending, setDeps } from "./core.ts";
 import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
+import { bindBefore, latest } from "../checks/before-run.ts";
+import { bindLedger } from "../checks/ledger.ts";
+import { Worktrees } from "../worktree/manager.ts";
 
 // Agents get git worktrees here, several git commands each, and on a busy disk one git
 // command takes half a second: the 5 s default was passed in whole-suite runs.
@@ -1408,4 +1411,58 @@ test("a peer's message sent while an agent's report settles says who sent it", a
   expect(got.from_agent).toBe(b.id);
   for (const x of [a, b]) agents.stop(x.id);
   await settled();
+});
+
+// Its new and changed tests run on the base without its change when it reports (src/checks/before-run.ts).
+// The report waits for that run a bounded time: what is still running then is said, and follows when it ends.
+const beforeRepo = (files: Record<string, string>) => {
+  const repo = mkdtempSync(join(tmpdir(), "keel-agents-before-"));
+  const g = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: repo });
+  g("init", "-q", "-b", "main");
+  mkdirSync(join(repo, ".keel"));
+  writeFileSync(join(repo, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "sh t.sh", args: true, tests: ["*.test.sh"] } } }));
+  writeFileSync(join(repo, "t.sh"), 'sh "$1"\n');
+  g("add", "-A");
+  g("commit", "-qm", "checks");
+  for (const [f, text] of Object.entries(files)) writeFileSync(join(repo, f), text);
+  new Worktrees(store, join(dir, "before-worktrees")); // its table: the base is read from it
+  bindLedger(store);
+  bindBefore({ store, bus, perm: () => ({ mode: "full-auto", sandbox: "off" }), confine: () => undefined, capture: (e) => { throw e; } });
+  const p = store.createSession({ model: "m:x", workspace: repo, title: "before parent" });
+  store.append(p.id, "assistant", { blocks: [] });
+  return p;
+};
+const until = async (what: () => boolean, ms: number) => { const end = Date.now() + ms; while (!what() && Date.now() < end) await Bun.sleep(20); return what(); };
+
+test("an agent's report waits for its tests on the base a bounded time, and their answers follow it", async () => {
+  const p = beforeRepo({ "slow.test.sh": "sleep 2; exit 1\n", "weak.test.sh": "sleep 2; exit 0\n" });
+  const was = agents.BEFORE_WAIT.ms;
+  agents.BEFORE_WAIT.ms = 300;
+  try {
+    const a = await agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true });
+    sends.length = 0;
+    end(a, "end_turn", "report R");
+    // The report goes before the run has ended, and says what is still running.
+    expect(await until(() => agents.get(a.id)!.status === "completed", 1_500)).toBe(true);
+    expect(agents.get(a.id)!.result).toContain("2 still running (their answers follow when done");
+    // A file passes without the change: the parent is told when the run ends, and the report says it in its place.
+    expect(await until(() => sends.some((x) => x.id === p.id && x.text.includes("weak.test.sh passes without the change")), 15_000)).toBe(true);
+    expect(sends.find((x) => x.text.includes("weak.test.sh passes"))!.text).toContain("slow.test.sh fails before: yes (exit 1)");
+    expect(agents.get(a.id)!.result).toContain("slow.test.sh fails before: yes (exit 1)");
+    expect(agents.get(a.id)!.result).not.toContain("still running");
+  } finally {
+    agents.BEFORE_WAIT.ms = was;
+  }
+});
+
+test("a stop while an agent's report is being written leaves its end as it was and hands back one report", async () => {
+  const p = beforeRepo({ "slow.test.sh": "sleep 1; exit 1\n" });
+  const a = await agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true });
+  sends.length = 0;
+  end(a, "end_turn", "report Q");
+  agents.stop(a.id, "parent");
+  expect(await until(() => latest(a.session_id)?.state === "done" && agents.get(a.id)!.status === "completed", 15_000)).toBe(true);
+  flush(p.id);
+  expect(agents.get(a.id)).toMatchObject({ status: "completed", stopped_by: null });
+  expect(sends.filter((x) => x.id === p.id && x.text.includes("report Q"))).toHaveLength(1);
 });

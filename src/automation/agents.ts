@@ -1596,6 +1596,9 @@ export function onTurnEnd(sessionId: string, reason: string) {
   releaseOwed(sessionId);
   const a = byChild(sessionId);
   if (!a || (isEnded(a) && !stopping.has(a.id))) return;
+  // Its report is being written (finish): that is its end. A second end now would write its record and hand
+  // back its report again (a stop or its time limit while the report waits for its tests' run).
+  if (settling.has(a.id)) { stopping.delete(a.id); return; }
   // Parked for a daemon stop: the agent has not ended. The next daemon
   // continues the turn or ends the agent (onCutTurn, onCutTurnHeld).
   if (reason === "restart" && !stopping.has(a.id)) return;
@@ -1639,15 +1642,41 @@ export function onTurnEnd(sessionId: string, reason: string) {
   settling.set(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
 }
 
-// The longest one shell call may run (the Bash tool's own maximum): a report waits no longer for its tests' run on the base.
-const REPORT_WAIT = 600_000;
-async function failsBefore(sessionId: string, folder: string): Promise<string> {
-  try {
-    const run = await beforeRun.startFor(sessionId, folder);
-    if (!run) return "";
-    const r = await beforeRun.settled(run, REPORT_WAIT);
-    return beforeLine({ mergeBase: r.merge_base, base: r.base, why: r.why, results: r.results });
-  } catch (e) { capture(e, { at: "agent fails before", session: sessionId }); return ""; }
+// Its new and changed tests, run on the base without its change (src/checks/before-run.ts). The run starts when
+// the agent's report is first written and goes beside the rest of it (the check ledger's line, what it left
+// running); the report waits for it BEFORE_WAIT at most from its start. Runs measured 0.2 to 1.3 s for a whole
+// run and about 2 s a file at most, so this is about five slow files: a longer run, or one queued behind other
+// agents' runs in the same repository (one at a time there), does not hold the report, its parent's slot or its
+// wake. The report then says how many are still running, and their answers follow (followBefore).
+export const BEFORE_WAIT = { ms: 10_000 };
+type Before = { run?: beforeRun.BeforeRun; deadline: number };
+const beforeOf = (r: beforeRun.BeforeRun) => beforeLine({ mergeBase: r.merge_base, base: r.base, why: r.why, unconfined: r.unconfined, results: r.results });
+async function startBefore(sessionId: string, folder: string): Promise<Before> {
+  const deadline = Date.now() + BEFORE_WAIT.ms;
+  try { return { run: await beforeRun.startFor(sessionId, folder), deadline }; }
+  catch (e) { capture(e, { at: "agent fails before", session: sessionId }); return { deadline }; }
+}
+async function settleBefore(b: Before): Promise<beforeRun.BeforeRun | undefined> {
+  return b.run && beforeRun.settled(b.run, Math.max(0, b.deadline - Date.now()));
+}
+// A run that was still going when the report went: when it ends, the agent's report says what it found in the
+// place of the line that said it ran (while the report has that line), and its parent is told. A file that
+// passes without the change is one to act on: the parent's next turn starts with it (unless the owner's Stop
+// holds the parent). Otherwise the answer rides with whatever the parent is sent next.
+function followBefore(a: AgentRecord, said: string, run: beforeRun.BeforeRun) {
+  const done = beforeRun.whenDone(run);
+  if (!done) return;
+  void done.then((r) => {
+    const line = beforeOf(r);
+    if (!line) return;
+    const now = get(a.id);
+    if (now?.result?.includes(said)) emit("agent", brief(update(a.id, { result: now.result.replace(said, line) }, true)!));
+    const parent = D().store.session(a.parent_id);
+    if (!parent || parent.archived) return;
+    const act = r.results.some((f) => f.state === "passes") && !D().engine.isHeld(a.parent_id);
+    deliver(a.parent_id, `[harness] Agent "${a.title}" (${a.id}): its tests that were still running on the base when it reported have ended. ${line}`,
+      { kind: "harness", agent_id: a.id, fails_before: r.id }, act ? { coalesceMs: 300 } : { ride: true });
+  }).catch((e) => capture(e, { at: "agent fails before follow-up", agent: a.id }));
 }
 
 // Agents whose ended turn is being settled (a work agent's worktree is read
@@ -1714,14 +1743,15 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   const did = row.output_schema && status === "completed" ? "" : didLine(got.events);
   // What the check ledger saw of its checks (src/checks/proof.ts), read before an empty worktree goes.
   const folder = a.worktree ?? D().store.session(a.session_id)?.workspace;
+  // (Its tests' run on the base starts first, and goes beside the rest: BEFORE_WAIT.)
+  const starting = status !== "completed" || row.output_schema || a.machine || !folder ? undefined : startBefore(a.session_id, folder);
   const proof = row.output_schema && status === "completed" || a.machine || !folder ? "" : await proofFor(a.session_id, folder, got.events).catch(() => "");
-  // Its new and changed tests, run on the base without its change (src/checks/before-run.ts): the report waits
-  // for them as long as one shell call of its own may run (REPORT_WAIT), and says what is still running then.
-  const before = status !== "completed" || row.output_schema || a.machine || !folder ? "" : await failsBefore(a.session_id, folder);
   // What it left running is stopped, and what is new in its repositories is named (leftovers.ts), before its
   // worktree is looked at: a process of it could still write there.
   const left = a.machine ? "" : await leftovers.settle({ store: D().store, isRunning: (sid) => D().engine.isRunning(sid) }, { ...a, report: reportId(a) })
     .catch((e) => { capture(e, { at: "agent leftovers", agent: a.id }); return ""; });
+  const ran = starting ? await settleBefore(await starting) : undefined;
+  const before = ran ? beforeOf(ran) : "";
   const lines = [did, proof, before, row.output_schema && status === "completed" ? "" : left].filter(Boolean).join("\n");
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
@@ -1751,6 +1781,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);
   if (!blocked) handback(rec, grouped);
+  if (ran && before && ran.state === "running") followBefore(a, before, ran);
 }
 
 // --- a successor for a lost context ------------------------------------------
@@ -1888,6 +1919,8 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   if (!a) return undefined;
   const { engine } = D();
   if (isEnded(a) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
+  // Its turn ended and its report is being written: it has finished, and the stop goes to its own agents only.
+  if (settling.has(id) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
   if (stopping.has(id)) return a;
   waits.cancelForSession(a.session_id);
   engine.cachePlans?.end(a.session_id, "stopped"); // nothing more is sent to keep its cache (also when it waited on no wait of its own)

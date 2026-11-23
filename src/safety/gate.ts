@@ -517,6 +517,19 @@ export class Gate {
     const more = [...this.readMore.values()].flatMap((f) => f(session));
     return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts), ...more], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}) };
   }
+  // How a command Keel runs as the session's own is confined (its tests on the base without its change,
+  // src/checks/before-run.ts): the profile its own commands get, with `workspace` in the place of its folder
+  // and `tool` as its tool folder (writable in every profile, as a call's spill folder is). Undefined when the
+  // session's commands run unconfined. (No pin of the session's folder: `workspace` is not that folder.)
+  confineFor(sessionId: string, workspace: string, tool: string): { wrap: (argv: string[]) => string[]; sandbox: SessionPerm["sandbox"]; network: boolean } | undefined {
+    const session = this.store.session(sessionId);
+    if (!session || session.machine) return undefined;
+    const p = this.perm(session.id);
+    if (p.sandbox === "off" || !this.sandboxed(session, p)) return undefined;
+    const { root: _pin, ...read } = this.readOpts(session, p.sandbox);
+    const writable = this.writable(session, tool, p.sandbox);
+    return { wrap: (argv) => confine(argv, p, workspace, writable, read), sandbox: p.sandbox, network: p.network };
+  }
   // (Read from the store at most every two seconds per session: a turn asks for it at every call.)
   private trees = new Map<string, { at: number; list: string[] }>();
   private agentTrees(sessionId: string): string[] {

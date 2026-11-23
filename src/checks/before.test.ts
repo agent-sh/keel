@@ -65,7 +65,7 @@ test("the report line says each file, and what is still running", () => {
     "(Its new and changed tests on the base (origin/main at 012345678), without the change: a.test.ts fails before: yes (2 of 3 failed); b.test.ts passes without the change; c.test.ts could not run (the command could not start on the base: x).)",
   );
   expect(beforeLine({ ...base, results: [r("a.test.ts", "fails"), r("b.test.ts", "running"), r("c.test.ts", "waiting")] })).toBe(
-    "(Its new and changed tests on the base (origin/main at 012345678), without the change: a.test.ts fails before: yes; 2 still running (the Review view shows them when done).)",
+    "(Its new and changed tests on the base (origin/main at 012345678), without the change: a.test.ts fails before: yes; 2 still running (their answers follow when done, and the Review view shows them).)",
   );
   expect(beforeLine({ ...base, why: "no base to compare with", results: [r("a.test.ts", "waiting")] })).toContain("a.test.ts could not run (no base to compare with)");
   const many = Array.from({ length: 30 }, (_, i) => r(`src/some/rather/long/folder/name/file-${i}.test.ts`, i % 2 ? "passes" : "fails", "1 of 1 failed"));
@@ -74,12 +74,17 @@ test("the report line says each file, and what is still running", () => {
   expect(line).toContain("more");
 });
 
-test("the run is confined as the agent's own commands are, or not made", () => {
-  expect(howToRun({ mode: "ask", sandbox: "workspace-write", network: false }, true)).toEqual({ confined: true, network: false });
-  expect(howToRun({ mode: "full-auto", sandbox: "off", network: true }, true)).toEqual({ confined: false });
-  expect(howToRun({ mode: "full-auto", sandbox: "workspace-write", network: true }, false)).toEqual({ confined: false });
-  expect(howToRun({ mode: "auto", sandbox: "off", network: true }, true)).toEqual({ refused: "the session's commands run outside the sandbox and its mode asks before a command runs" });
-  expect(howToRun({ mode: "auto", sandbox: "workspace-write", network: true }, false)).toMatchObject({ refused: expect.stringContaining("not available") });
+test("the run is confined as the agent's own commands are, or not made, and an unconfined one says why", () => {
+  expect(howToRun({ mode: "ask", sandbox: "read-only" }, { sandbox: "read-only" })).toEqual({ confined: true, sandbox: "read-only" });
+  expect(howToRun({ mode: "full-auto", sandbox: "off" }, undefined)).toEqual({ confined: false, why: "the session runs in full auto with its sandbox off" });
+  expect(howToRun({ mode: "full-auto", sandbox: "workspace-write" }, undefined)).toEqual({ confined: false, why: "the session runs in full auto and the sandbox is not available on this machine" });
+  expect(howToRun({ mode: "auto", sandbox: "off" }, undefined)).toEqual({ refused: "the session's commands run outside the sandbox and its mode asks before a command runs" });
+  expect(howToRun({ mode: "auto", sandbox: "workspace-write" }, undefined)).toMatchObject({ refused: expect.stringContaining("not available") });
+  expect(howToRun(undefined, { sandbox: "workspace-write" })).toMatchObject({ refused: expect.stringContaining("could not be read") });
+  const r: FileResult = { path: "a.test.ts", check: "unit", command: "bun test ./a.test.ts", state: "fails", why: "", exit: 1, ms: 1, cpu_ms: 1 };
+  expect(beforeLine({ mergeBase: "0123456789", base: "main", unconfined: "the session runs in full auto with its sandbox off", results: [r] })).toBe(
+    "(Its new and changed tests on the base (main at 012345678), without the change, run outside the sandbox (the session runs in full auto with its sandbox off): a.test.ts fails before: yes.)",
+  );
 });
 
 test("a command whose own program or script is not on the base could not run", () => {
@@ -97,5 +102,5 @@ test("the processor time of a run, from bash's times", () => {
   expect(timesCpu("0m0.002s 0m0.001s\n0m0.398s 0m0.020s\n")).toBe(421);
   expect(timesCpu("1m2.500s 0m0.000s\n0m0.000s 0m0.000s\n")).toBe(62_500);
   expect(timesCpu("")).toBeNull();
-  expect(withTimes("bun test ./a.test.ts")).toBe("bun test ./a.test.ts\ns=$?; times > .keel-cpu-times 2>/dev/null; exit $s");
+  expect(withTimes("bun test ./a.test.ts", "/s/7.tool/cpu-times")).toBe("bun test ./a.test.ts\ns=$?; times > /s/7.tool/cpu-times 2>/dev/null; exit $s");
 });

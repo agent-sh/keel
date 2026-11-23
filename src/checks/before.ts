@@ -103,7 +103,8 @@ export function limitFor(ownRunsMs: readonly number[]): number {
 // --- the line on the agent's report
 
 export type FileResult = { path: string; check: string; command: string; state: State | "running" | "waiting"; why: string; exit: number | null; ms: number | null; cpu_ms: number | null };
-export type BeforeIn = { mergeBase: string | null; base: string | null; why?: string | null; results: readonly FileResult[] };
+// `unconfined`: why the run went outside the sandbox (the session runs in full auto with its sandbox off).
+export type BeforeIn = { mergeBase: string | null; base: string | null; why?: string | null; unconfined?: string | null; results: readonly FileResult[] };
 export const LINE_MAX = 700;
 const SHOWN = 6;
 const short = (sha: string | null) => (sha ? sha.slice(0, 9) : "?");
@@ -112,14 +113,14 @@ const short = (sha: string | null) => (sha ? sha.slice(0, 9) : "?");
 // time the report goes says which files are still running.
 export function beforeLine(b: BeforeIn): string {
   if (!b.results.length) return "";
-  const head = `Its new and changed tests on the base${b.base ? ` (${b.base} at ${short(b.mergeBase)})` : ""}, without the change`;
+  const head = `Its new and changed tests on the base${b.base ? ` (${b.base} at ${short(b.mergeBase)})` : ""}, without the change${b.unconfined ? `, run outside the sandbox (${b.unconfined})` : ""}`;
   if (b.why) return `(${head}: ${b.results.length === 1 ? b.results[0]!.path : `${b.results.length} test files`} could not run (${b.why}).)`.slice(0, LINE_MAX);
   const open = b.results.filter((r) => r.state === "running" || r.state === "waiting");
   const done = b.results.filter((r) => r.state !== "running" && r.state !== "waiting");
   const said = (n: number) => {
     const shown = done.slice(0, n).map((r) => `${r.path} ${stateWords(r.state, r.why)}`);
     const rest = done.length - shown.length;
-    const running = open.length ? `${open.length} still running (the Review view shows ${open.length === 1 ? "it" : "them"} when done)` : "";
+    const running = open.length ? `${open.length} still running (${open.length === 1 ? "its answer follows" : "their answers follow"} when done, and the Review view shows ${open.length === 1 ? "it" : "them"})` : "";
     return [...shown, rest ? `${rest} more` : "", running].filter(Boolean).join("; ");
   };
   for (const n of [SHOWN, 3, 1]) {
@@ -130,17 +131,19 @@ export function beforeLine(b: BeforeIn): string {
   return `(${head}: ${counts.join(", ")}${open.length ? `, ${open.length} still running` : ""}.)`.slice(0, LINE_MAX);
 }
 
-// How the run on the base is started for a session: in a sandbox whose only
-// writable folder is the scratch checkout when the session's sandbox is on;
-// without one only where the session's own commands run without asking
-// (full auto). The test files are the agent's code: Keel never runs them with
-// more reach than the agent's own commands had.
-export type How = { confined: true; network: boolean } | { confined: false } | { refused: string };
-export function howToRun(p: { mode: string; sandbox: string; network: boolean } | undefined, sandboxAvailable: boolean): How {
+// How the run on the base is started for a session: in the sandbox its own
+// commands get (its profile, with the scratch checkout in the place of its
+// folder: `confined`, from the gate) when its sandbox is on; without one only
+// where the session's own commands run unconfined without asking (full auto),
+// and the run then says so. The test files are the agent's code: Keel never
+// runs them with more reach than the agent's own commands had.
+export type How = { confined: true; sandbox: string } | { confined: false; why: string } | { refused: string };
+export function howToRun(p: { mode: string; sandbox: string } | undefined, confined: { sandbox: string } | undefined): How {
   if (!p) return { refused: "the session's permissions could not be read" };
-  if (p.sandbox !== "off" && sandboxAvailable) return { confined: true, network: p.network };
-  if (p.mode === "full-auto") return { confined: false };
-  return { refused: p.sandbox === "off" ? "the session's commands run outside the sandbox and its mode asks before a command runs" : "the sandbox is not available on this machine and the session's mode asks before a command runs" };
+  if (confined) return { confined: true, sandbox: confined.sandbox };
+  const off = p.sandbox === "off";
+  if (p.mode === "full-auto") return { confined: false, why: off ? "the session runs in full auto with its sandbox off" : "the session runs in full auto and the sandbox is not available on this machine" };
+  return { refused: off ? "the session's commands run outside the sandbox and its mode asks before a command runs" : "the sandbox is not available on this machine and the session's mode asks before a command runs" };
 }
 
 // What must be on the base for a check's command to start: its program (a
@@ -163,9 +166,10 @@ export function missingOnBase(run: string, has: { file: (path: string) => boolea
 
 // The processor time of a run, from what bash's `times` printed at its end: the shell's own user and system
 // time, then its children's. (Read inside the run: a sandbox's first process does not pass its children's
-// time up to the daemon.) Milliseconds, or null when it printed nothing this reads.
-export const TIMES_FILE = ".keel-cpu-times";
-export const withTimes = (command: string) => `${command}\ns=$?; times > ${TIMES_FILE} 2>/dev/null; exit $s`;
+// time up to the daemon.) `file` is in the run's tool folder, which every sandbox profile can write.
+// Milliseconds, or null when it printed nothing this reads.
+export const TIMES_FILE = "cpu-times";
+export const withTimes = (command: string, file: string) => `${command}\ns=$?; times > ${quote(file)} 2>/dev/null; exit $s`;
 export function timesCpu(text: string): number | null {
   const all = [...text.matchAll(/(\d+)m(\d+(?:\.\d+)?)s/g)].map((m) => Number(m[1]) * 60_000 + Number(m[2]) * 1000);
   return all.length === 4 ? Math.round(all.reduce((a, b) => a + b, 0)) : null;

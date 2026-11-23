@@ -36,7 +36,7 @@ registerSettings("checks", { repos: {}, keep_runs: KEEP }, (v) => {
 
 export const checkRoutes: RouteModule = ({ store, errors, bus }) => {
   bindLedger(store);
-  bindBefore({ store, bus, perm: (id) => gate?.perm(id), capture: (e, ctx) => errors.capture("server", e, ctx) });
+  void bindBefore({ store, bus, perm: (id) => gate?.perm(id), confine: (id, workspace, tool) => gate?.confineFor(id, workspace, tool), capture: (e, ctx) => errors.capture("server", e, ctx) });
   setKeep(settings().checks?.keep_runs ?? KEEP);
   onSettings((s) => setKeep(s.checks?.keep_runs ?? KEEP));
   const quiet = (at: string, f: () => void) => { try { f(); } catch (e) { errors.capture("server", e, { at }); } };

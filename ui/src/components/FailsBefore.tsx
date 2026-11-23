@@ -64,6 +64,7 @@ export function FailsBefore({ session }: { session: Session }) {
         </button>
       </div>
       {note && <p className="mt-2 px-0.5 text-caption text-muted" data-testid="fails-before-note">{note}</p>}
+      {run?.unconfined && <p className="mt-1 px-0.5 text-caption text-warn" data-testid="fails-before-unconfined">Ran outside the sandbox: {run.unconfined}.</p>}
       {run && (
         <>
           {counts.length > 0 && (
