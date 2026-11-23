@@ -306,14 +306,22 @@ const PATH_OF: Record<OwedHook, MemoryPath> = { "session-start": "store_start", 
 // The session id the probes call the store with: no session of Keel's.
 const PROBE_SESSION = "keel-probe";
 
-// Whether a session reads the memory store: on unless the owner turned it off
-// (memory_flags, made by the Tacit below; none yet is on).
+// Whether a session reads the memory store: off when the owner turned it off
+// there or in any session above it (an agent of a memory-off session stays
+// off), and off when that cannot be read: the store is not reached on a guess.
 export function memoryOn(store: Store, id: string): boolean {
   try {
-    const r = store.db.query<{ use_memory: number }, [string]>("SELECT use_memory FROM memory_flags WHERE session_id = ?").get(id);
-    return r ? !!r.use_memory : true;
-  } catch {
+    // No switch was ever stored (the table is made with the first Tacit): every session is on.
+    if (!store.db.query("SELECT 1 FROM sqlite_master WHERE name = 'memory_flags'").get()) return true;
+    const q = store.db.query<{ use_memory: number }, [string]>("SELECT use_memory FROM memory_flags WHERE session_id = ?");
+    for (let at: string | null | undefined = id, n = 0; at && n < 64; n++) {
+      const r = q.get(at);
+      if (r && !r.use_memory) return false;
+      at = store.session(at)?.parent_id;
+    }
     return true;
+  } catch {
+    return false;
   }
 }
 
@@ -413,9 +421,12 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     return { ...this.metrics, out: { ...this.out }, degraded: { ask: this.degraded("ask"), tool: this.degraded("tool") } };
   }
 
-  flags(id: string): Flags {
+  // A session's own switches; an agent with none of its own has its parent's.
+  flags(id: string, depth = 0): Flags {
     const r = this.store.db.query<{ use_memory: number; feed_memory: number }, [string]>("SELECT use_memory, feed_memory FROM memory_flags WHERE session_id = ?").get(id);
-    return { use_memory: r ? !!r.use_memory : true, feed_memory: r ? !!r.feed_memory : true };
+    if (r) return { use_memory: !!r.use_memory, feed_memory: !!r.feed_memory };
+    const parent = depth < 64 ? this.store.session(id)?.parent_id : undefined;
+    return parent ? this.flags(parent, depth + 1) : { use_memory: true, feed_memory: true };
   }
 
   setFlags(id: string, patch: Partial<Flags>): Flags | { error: string } {
