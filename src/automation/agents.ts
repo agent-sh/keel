@@ -170,7 +170,9 @@ CREATE TABLE IF NOT EXISTS agents (
   def TEXT
 );
 CREATE INDEX IF NOT EXISTS agents_parent ON agents(parent_id);
-CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
+CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);
+-- The live agents only (a few of every agent ever stored): the counts walk up from them (src/core/agent-count.ts).
+CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('running', 'waiting');`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
   for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"]] as const) {

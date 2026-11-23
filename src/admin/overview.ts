@@ -18,7 +18,7 @@ import { stopSays } from "../core/stoppers.ts";
 import { NEEDS } from "../core/state-words.ts";
 import { CLASS, dur, type Refs, type TimelineNow, type TimelineRow } from "./timeline-rows.ts";
 import { waitingOf } from "./waiting-line.ts";
-import { AGENTS_RECENT_MS, countedSql } from "../core/agent-count.ts";
+import { AGENTS_RECENT_MS, countedTree } from "../core/agent-count.ts";
 
 // What a row did since the asked time. `turns`: its own turns that ended.
 // `cut`: those a daemon restart cut, which did not end: they are continued
@@ -239,7 +239,7 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   if (opts.of && tables.agents) {
     mine = [];
     const all = db.query<{ id: string; session_id: string; status: string; ended: number | null; stopped_by: string | null; end_reason: string | null }, [string, number]>(
-      `SELECT id, session_id, status, ended, ${from.store.columnExists("agents", "stopped_by") ? "stopped_by, end_reason" : "NULL AS stopped_by, NULL AS end_reason"} FROM agents WHERE parent_id = ?1 AND ${countedSql("agents", "?2")} ORDER BY (status = 'failed') DESC, (status IN ('running', 'waiting')) DESC, COALESCE(ended, created) DESC`).all(opts.of, since - 1);
+      `${countedTree("?1", "?2")} SELECT a.id, a.session_id, a.status, a.ended, ${from.store.columnExists("agents", "stopped_by") ? "a.stopped_by, a.end_reason" : "NULL AS stopped_by, NULL AS end_reason"} FROM counted c CROSS JOIN agents a ON a.id = c.id ORDER BY (a.status = 'failed') DESC, (a.status IN ('running', 'waiting')) DESC, COALESCE(a.ended, a.created) DESC`).all(opts.of, since - 1);
     agentsTotal = all.length;
     const shown = Math.min(Math.max(opts.agentsMax ?? AGENTS_MAX, 1), 40);
     for (const a of all.slice(0, shown)) {

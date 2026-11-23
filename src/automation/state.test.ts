@@ -38,7 +38,7 @@ test("a session's state counts its own agents by a seek on the parent, never by 
   // (It grouped the whole table for every state: 41 ms at a hundred thousand agents.)
   const plan = store.db.query<{ detail: string }, [string, number, number]>(`EXPLAIN QUERY PLAN ${TALLY}`).all(lead.id, 0, 0).map((r) => r.detail).join("; ");
   expect(plan).toContain("SEARCH agents USING INDEX agents_parent (parent_id=?)");
-  expect(plan).not.toContain("SCAN agents");
+  expect(plan).not.toMatch(/SCAN (agents|a)\b/);
   const t0 = performance.now();
   for (let i = 0; i < 200; i++) store.db.query(TALLY).get(lead.id, now - 86_400_000, 0);
   expect((performance.now() - t0) / 200).toBeLessThan(1);
@@ -70,6 +70,12 @@ test("a session's agent counts are its tree's of the last day, and its failures 
   store.mergeSettings(lead.id, { agents_failed_ms: now - 4 * 3_600_000 + 5, agents_fail_seen_ms: now - 4 * 3_600_000 + 5 });
   // The tree's four of the day (the live one, its own agent, the two failures), one failed since the look.
   expect(sessionState(store.session(lead.id)!)).toMatchObject({ agents_total: 4, agents_failed: 1 });
+  // A live agent under one that ended days ago is reached all the same.
+  const old = store.createSession({ model: "m:x", workspace: dir, title: "Old", parent_id: lead.id } as any);
+  add.run("old", lead.id, old.id, "completed", now - 3 * day, now - 2 * day);
+  add.run("under-old", old.id, "s-under-old", "running", now - 2 * day, null);
+  expect(sessionState(store.session(lead.id)!)).toMatchObject({ agents_total: 5, agents_failed: 1 });
+  store.db.query("DELETE FROM agents WHERE id IN ('old', 'under-old')").run();
   // Never looked at: both of the day's failures are news.
   store.mergeSettings(lead.id, { agents_fail_seen_ms: null });
   expect(sessionState(store.session(lead.id)!)).toMatchObject({ agents_total: 4, agents_failed: 2 });

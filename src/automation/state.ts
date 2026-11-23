@@ -26,7 +26,7 @@ import { jobsOf, liveJobs, running } from "../tools/jobs.ts";
 import { errorClass } from "../admin/classes.ts";
 import { toolLine } from "../../ui/src/lib/tools.ts";
 import { D, slotGate } from "./core.ts";
-import { countedSince, countedSql } from "../core/agent-count.ts";
+import { countedSince, countedTree } from "../core/agent-count.ts";
 
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
 export type SessionState = State & { label: string; word: string };
@@ -125,11 +125,8 @@ export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, numb
 // day, and of them the failed ones that ended after the owner last looked (?3). Seeks on the
 // parent's index, one a counted agent: never a pass over every agent ever stored (a state is
 // read at each flush and for each timeline's "now"), and an agent past the day is not followed.
-export const TALLY = `WITH RECURSIVE t(sid, status, ended, depth) AS (
-  SELECT session_id, status, ended, 1 FROM agents WHERE parent_id = ?1 AND ${countedSql("agents", "?2")}
-  UNION ALL
-  SELECT a.session_id, a.status, a.ended, t.depth + 1 FROM agents a JOIN t ON a.parent_id = t.sid WHERE t.depth < 32 AND ${countedSql("a", "?2")}
-) SELECT COUNT(*) AS n, SUM(status = 'failed' AND ended > ?3) AS failed FROM t`;
+export const TALLY = `${countedTree("?1", "?2")}
+SELECT COUNT(*) AS n, SUM(status = 'failed' AND ended > ?3) AS failed FROM counted`;
 function tallyOf(l: Lens, s: Session): { n: number; failed: number } | undefined {
   const seen = (l.tally ??= new Map());
   if (!seen.has(s.id)) {

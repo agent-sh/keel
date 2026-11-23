@@ -381,8 +381,12 @@ export const automationRoutes: RouteModule = (deps) => {
     "/api/automation": {
       GET: () => {
         const db = store.db;
-        // The agents every count names (src/core/agent-count.ts): live, or of the last day.
-        const agentRows = db.query<{ id: string }, [number]>(`SELECT id FROM agents WHERE ${countedSql("agents", "?1")} ORDER BY created`).all(countedSince());
+        // The agents every count names (src/core/agent-count.ts): live, or of the last day; and
+        // the agents above a live one, so the page's tree reaches it (it counts only the counted).
+        const agentRows = db.query<{ id: string }, [number]>(`WITH RECURSIVE up(sid, n) AS (
+          SELECT parent_id, 0 FROM agents WHERE status IN ('running', 'waiting')
+          UNION SELECT a.parent_id, up.n + 1 FROM agents a JOIN up ON a.session_id = up.sid WHERE up.n < 32
+        ) SELECT id FROM agents WHERE ${countedSql("agents", "?1")} OR session_id IN (SELECT sid FROM up) ORDER BY created`).all(countedSince());
         return json({
           // Without their reports: a card that opens reads its agent's (/api/sessions/:id/agents/:agent_id/report).
           agents: agentRows.map((r) => agents.get(r.id)).filter((a) => !!a).map(agents.brief),

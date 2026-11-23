@@ -38,7 +38,8 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
   // The agents every count of the row names (src/core/agent-count.ts): a page open for days does not keep counting old ones.
-  const rows = useMemo(() => treeRows(Object.values(all).filter((a) => isCounted(a)), parentId), [all, parentId]);
+  // (The tree is made of every agent the page holds, so a live one under an old one is reached; the old one is not shown.)
+  const rows = useMemo(() => treeRows(Object.values(all), parentId).filter((r) => isCounted(r.agent)), [all, parentId]);
   const liveKids = useMemo(() => rows.map((r) => r.agent), [rows]);
   const place = useMemo(() => new Map(rows.map((r) => [r.agent.id, { depth: r.depth, below: r.below }])), [rows]);
   const told = useToldStates();
