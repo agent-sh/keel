@@ -35,21 +35,25 @@ export function settleIn(changed: number, behind: number, now: number, ms = SETT
 }
 
 // What the lists show, by what each value stands for (`st:<session>`, `kids:<parent>`): one store for
-// the page, so what changed together moves together. A change waits until it has held SETTLE_MS; one
-// that only says more of the same state (a new step, another count) is shown at the latest
-// MAX_BEHIND_MS after it began to wait, also while it keeps changing. When one is due, every one that
+// the page, so what changed together moves together. A change waits until it has held SETTLE_MS, and
+// is shown at the latest MAX_BEHIND_MS after the row fell behind, also while it keeps changing (from
+// state to state or within one). When one is due, every one that
 // is due within a moment of it is shown in the same frame, and a change that is shown at once takes
 // every one that waits with it. A coordinator's row, its agents' line and the count above the list
 // then change once for twelve agents started in a breath, and a turn of a second is never shown.
 type Held = { key: string; value: unknown };
-type Waits = Held & { at: number; behind: number; minor: boolean };
+type Waits = Held & { at: number; behind: number };
 const shown = new Map<string, Held>();
 const waiting = new Map<string, Waits>();
 let timer: ReturnType<typeof setTimeout> | undefined, rev = 0;
 const subs = new Set<() => void>();
 // What is shown together with what is due: what falls due within this much after it.
 const TOGETHER_MS = 400;
-const due = (w: Waits) => settleIn(w.at, w.minor ? w.behind : Infinity, 0) ;
+// When a change that waits is shown: once it has held, and at the latest MAX_BEHIND_MS after the row fell
+// behind, whatever it changed to meanwhile (a session that goes from state to state every second is shown
+// as it is then, not as it was before).
+export const dueAt = (w: { at: number; behind: number }) => settleIn(w.at, w.behind, 0);
+const due = dueAt;
 function flush(all = false) {
   clearTimeout(timer);
   timer = undefined;
@@ -74,8 +78,7 @@ function wait() {
   timer = setTimeout(() => flush(), Math.max(0, next - Date.now()));
 }
 // (Read while a component renders: what it shows is decided there, and the store is told after.)
-// `minor`: the change says more of the same (it may be shown while it keeps changing).
-function settled<T>(id: string, key: string, value: T, atOnce: (was: T) => boolean, minor: (was: T) => boolean = () => false): T {
+function settled<T>(id: string, key: string, value: T, atOnce: (was: T) => boolean): T {
   const was = shown.get(id);
   if (!was || was.key === key || atOnce(was.value as T)) {
     shown.set(id, { key, value });
@@ -88,7 +91,7 @@ function settled<T>(id: string, key: string, value: T, atOnce: (was: T) => boole
   const had = waiting.get(id);
   const now = Date.now();
   if (!had || had.key !== key) {
-    waiting.set(id, { key, value, at: now, behind: had?.behind ?? now, minor: minor(was.value as T) });
+    waiting.set(id, { key, value, at: now, behind: had?.behind ?? now });
     wait();
   } else had.value = value;
   return was.value as T;
@@ -98,19 +101,19 @@ const version = () => rev;
 const useSettledRev = () => useSyncExternalStore(subscribe, version);
 
 // The value a list shows for `id`: `value` once it has held (by its `key`), or at once when `atOnce` says so of what is shown.
-export function useSettled<T>(id: string, value: T, key: string, atOnce: (shown: T) => boolean, minor?: (shown: T) => boolean): T {
+export function useSettled<T>(id: string, value: T, key: string, atOnce: (shown: T) => boolean): T {
   useSettledRev();
-  return settled(id, key, value, atOnce, minor);
+  return settled(id, key, value, atOnce);
 }
 
 // A session's state as a list shows it (see above).
-export const useSettledState = (id: string, st: SessionState): SessionState => useSettled(`st:${id}`, st, stateKey(st), (was) => urgent(was, st), (was) => was.watch === st.watch);
+export const useSettledState = (id: string, st: SessionState): SessionState => useSettled(`st:${id}`, st, stateKey(st), (was) => urgent(was, st));
 
 // The states of many sessions as a list orders and counts them: each as its row shows it.
 export function useSettledStates(states: Record<string, SessionState>): Record<string, SessionState> {
   const r = useSettledRev();
   const out: Record<string, SessionState> = {};
-  for (const [id, st] of Object.entries(states)) out[id] = settled(`st:${id}`, stateKey(st), st, (was) => urgent(was, st), (was) => was.watch === st.watch);
+  for (const [id, st] of Object.entries(states)) out[id] = settled(`st:${id}`, stateKey(st), st, (was) => urgent(was, st));
   // The same object while nothing it holds changed, for what is memoized on it.
   const last = useRef<{ r: number; keys: string; out: Record<string, SessionState> } | null>(null);
   const keys = Object.entries(out).map(([id, st]) => `${id}:${stateKey(st)}`).join(" ");

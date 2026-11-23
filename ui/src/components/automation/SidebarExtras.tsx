@@ -9,7 +9,8 @@ import { AgentMark, agentSaid, ALERT_STATE, StopAgent } from "./bits.tsx";
 import { Mark } from "../Mark.tsx";
 import { useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
-import { useSettled } from "../../lib/settle.ts";
+import { calls, useSettled } from "../../lib/settle.ts";
+import type { Watch } from "../../../../src/core/watch.ts";
 
 // The panels load the first time they open.
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
@@ -37,10 +38,11 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const seen = useAgentsSeen();
   const liveSaid = useMemo(() => liveKids.map((k) => agentSaid(k, told[k.session_id])), [liveKids, told]);
   // As the list shows them (lib/settle.ts): twelve agents started in a breath are one change of the
-  // line, made with the parent's row; an agent that comes to need the owner is shown at once.
-  const asking = (v: { said: { watch: string }[] }) => v.said.filter((x) => x.watch === "need").length;
+  // line, made with the parent's row; an agent that comes to need the owner, fails or is declined, or
+  // leaves one of those, is shown at once.
+  const calling = (v: { kids: { id: string }[]; said: { watch: Watch }[] }) => v.said.map((x, i) => (calls(x.watch) ? `${v.kids[i]!.id}:${x.watch}` : "")).filter(Boolean).join(" ");
   const live = useMemo(() => ({ kids: liveKids, said: liveSaid }), [liveKids, liveSaid]);
-  const { kids, said } = useSettled(`kids:${parentId}`, live, liveKids.map((k, i) => `${k.id}:${liveSaid[i]!.watch}:${liveSaid[i]!.title}`).join(" "), (was) => asking(live) !== asking(was), (was) => was.kids.length === live.kids.length);
+  const { kids, said } = useSettled(`kids:${parentId}`, live, liveKids.map((k, i) => `${k.id}:${liveSaid[i]!.watch}:${liveSaid[i]!.title}`).join(" "), (was) => calling(live) !== calling(was));
   const sum = useMemo(() => agentTally(said.map((x) => x.watch)), [said]);
   const viewing = kids.find((k) => k.session_id === current);
   const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
@@ -189,7 +191,7 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
   });
   // Counted as the list counts (lib/settle.ts): finishes coming one after another move the bell once
   // they have settled; what needs the owner or failed, and what they read, move it at once.
-  const { unread, top } = useSettled("bell", { unread: liveUnread, top: liveTop }, `${liveUnread}|${liveTop}`, (was) => liveTop === "need" || liveTop === "fail" || was.top !== liveTop || liveUnread < was.unread, () => true);
+  const { unread, top } = useSettled("bell", { unread: liveUnread, top: liveTop }, `${liveUnread}|${liveTop}`, (was) => liveTop === "need" || liveTop === "fail" || was.top !== liveTop || liveUnread < was.unread);
   return (
     <>
       <button
