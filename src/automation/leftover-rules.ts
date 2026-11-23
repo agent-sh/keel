@@ -43,12 +43,16 @@ export type GitSnap = { worktrees: string[]; branches: Record<string, string> };
 
 // What is new in a repository since the agent started: worktrees and branches that were not there. Who made
 // them is not known (the agent, its commands' children, the owner, another session), so they are only listed.
-// `skip`: Keel's own worktree and branch for the agent, told on their own. `same`: the key a path is compared by.
-export function newSince(before: GitSnap, trees: GitTree[], heads: Record<string, string>, skip: { trees: Set<string>; branches: Set<string> }, same: (p: string) => string = (p) => p): { trees: GitTree[]; branches: string[] } {
+// `skip`: Keel's own worktree and branch for the agent, told on their own, and the folders where Keel makes
+// scratch worktrees of its own (`under`: a fails-before run, the landing queue), which come and go with Keel's
+// own work and are never an agent's. `same`: the key a path is compared by.
+export function newSince(before: GitSnap, trees: GitTree[], heads: Record<string, string>, skip: { trees: Set<string>; branches: Set<string>; under?: readonly string[] }, same: (p: string) => string = (p) => p): { trees: GitTree[]; branches: string[] } {
   const had = new Set(before.worktrees.map(same));
   const skipped = new Set([...skip.trees].map(same));
+  const under = (skip.under ?? []).map((u) => same(u).replace(/\/+$/, ""));
+  const keels = (p: string) => { const k = same(p); return under.some((u) => k === u || k.startsWith(`${u}/`)); };
   return {
-    trees: trees.filter((t) => !t.main && !had.has(same(t.path)) && !skipped.has(same(t.path))),
+    trees: trees.filter((t) => !t.main && !had.has(same(t.path)) && !skipped.has(same(t.path)) && !keels(t.path)),
     branches: Object.keys(heads).filter((b) => !(b in before.branches) && !skip.branches.has(b)),
   };
 }

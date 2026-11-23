@@ -1,12 +1,13 @@
 // The fails-before run (the decisions are in src/checks/before.ts): the test
 // files a session added or changed over its base, each run on a scratch
-// worktree at the merge base with only the test files applied, through the
-// repository's own command for one test file. Off the loop (git and the runs
+// worktree at the merge base with only the test files applied and the base's
+// own packages (packagesFor), through the repository's own command for one
+// test file. Off the loop (git and the runs
 // are child processes), at a low priority, one run at a time per repository,
 // each file within its time limit. Never in the session's own folder or the
 // owner's checkout: the scratch worktree is Keel's own, under its state
 // folder, and goes when the run ends.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { git } from "../core/git.ts";
 import { chunksUntil, readText } from "../core/proc.ts";
@@ -15,7 +16,7 @@ import type { Store } from "../core/store.ts";
 import { sandboxStatus, scopeHead } from "../safety/sandbox.ts";
 import { toolEnv } from "../tools/jobs.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
-import { commandFor, howToRun, keyOf, limitFor, missingOnBase, testsOf, timesCpu, TIMES_FILE, verdictOf, withTimes, type FileResult } from "./before.ts";
+import { BEFORE_DIR, commandFor, declaredOf, howToRun, keyOf, limitFor, lockDirOf, missingOnBase, needsOf, testsOf, timesCpu, TIMES_FILE, verdictOf, withTimes, type BasePackages, type FileResult } from "./before.ts";
 import { baseOf, namedFor, ofSession, repoOf, type Repo } from "./ledger.ts";
 
 const SCHEMA = `
@@ -55,7 +56,7 @@ type Deps = {
   confine: (sessionId: string, workspace: string, tool: string) => { wrap: (argv: string[]) => string[]; sandbox: string } | undefined;
 };
 let d: Deps | undefined;
-const dir = () => join(d!.store.stateDir, "checks", "before");
+const dir = () => join(d!.store.stateDir, ...BEFORE_DIR);
 // Bytes of output read from one file's run: enough for the summary and the first error.
 const OUT_MAX = 256 * 1024;
 
@@ -222,26 +223,35 @@ async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof tes
     catch (e) { run.results = run.results.map((r) => ({ ...r, state: "unrun", why: `the base could not be checked out: ${(e as Error).message.slice(0, 120)}` })); return run; }
     // Only the test files are applied.
     for (const t of tests) { mkdirSync(dirname(join(scratch, t.path)), { recursive: true }); writeFileSync(join(scratch, t.path), t.bytes ?? new Uint8Array()); }
-    // What a check reads that is not in the tree (an install named in its inputs) is the folder's own, linked.
+    const own = ofSession(run.session_id, 0);
+    const wrap = confined?.wrap;
+    // (CI: a runner that would watch for changes runs once.)
+    const env: Record<string, string> = { ...toolEnv(run.session_id), CI: "1" };
+    // The base's packages, once per check folder, before any of its files runs.
+    const pkgs = new Map<string, Packages>();
+    const dirs = [...new Set(tests.map((t) => t.check.dir))];
+    for (let k = 0; k < dirs.length; k++) {
+      pkgs.set(dirs[k]!, await packagesFor(scratch, dirs[k]!, [repo.top, top], env.PATH ?? "", (cwd, command) =>
+        runOne({ cwd, tool, env, command, limitMs: INSTALL_MS, wrap, unit: `keel-before-${process.pid}-${run.id}-${tests.length + k}` })));
+    }
+    const handled = new Set([...pkgs.values()].flatMap((p) => (p.modules ? [p.modules] : [])));
+    // What a check reads that is not in the tree (an install named in its inputs) is the folder's own, linked,
+    // unless it is the packages of a lockfile the base has: those are the base's own (above).
     for (const c of new Set(tests.map((t) => t.check))) for (const input of c.inputs) {
       const first = input.split("/").find((p) => p && p !== ".");
-      if (!first || first === "..") continue;
+      if (!first || first === ".." || handled.has(first)) continue;
       const from = join(repo.top, first), to = join(scratch, first);
       if (existsSync(from) && !existsSync(to)) try { symlinkSync(from, to); } catch {} // one at a time: it is there
     }
-    const own = ofSession(run.session_id, 0);
-    const wrap = confined?.wrap;
     for (let i = 0; i < tests.length; i++) {
       const t = tests[i]!;
       run.results[i] = { ...run.results[i]!, state: "running" };
       save(run);
       const mine = own.filter((r) => r.command.includes(t.path.split("/").pop()!)).map((r) => r.ended - r.started);
       const cwd = t.check.dir === "." ? scratch : join(scratch, t.check.dir);
-      // (CI: a runner that would watch for changes runs once.)
-      const env: Record<string, string> = { ...toolEnv(run.session_id), CI: "1" };
       const missing = !existsSync(cwd) ? `the check's folder ${t.check.dir} is not on the base`
         : missingOnBase(t.check.run, { file: (f) => existsSync(join(cwd, f)), onPath: (n) => !!Bun.which(n, { PATH: env.PATH ?? "", cwd }) });
-      run.results[i] = { ...run.results[i]!, ...(missing ? { state: "unrun" as const, why: missing } : await runOne({ cwd, tool, env, command: run.results[i]!.command, limitMs: limitFor(mine), wrap, unit: `keel-before-${process.pid}-${run.id}-${i}` })) };
+      run.results[i] = { ...run.results[i]!, ...(missing ? { state: "unrun" as const, why: missing } : await runOne({ cwd, tool, env, command: run.results[i]!.command, limitMs: limitFor(mine), wrap, unit: `keel-before-${process.pid}-${run.id}-${i}` }, pkgs.get(t.check.dir))) };
       save(run);
     }
     return run;
@@ -255,6 +265,48 @@ async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof tes
 // The main checkout of a repository (its worktree commands go one after another there).
 const mainTop = (repo: Repo) => (repo.common.endsWith("/.git") ? dirname(repo.common) : repo.top);
 
+// How long the base's own install may take: a cold `npm ci` of a large project takes minutes, one from a warm
+// cache seconds. Its scope ends it in any case.
+export const INSTALL_MS = 600_000;
+
+// The base's packages for a check's folder in the scratch checkout. `modules`: the packages folder this decided
+// (relative to the checkout), linked or installed or neither; `declared`: what the base's package.json files
+// from the check's folder up to the top name; `why`: why the packages are not there, when they are not.
+type Packages = BasePackages & { modules?: string };
+const bytesOf = async (p: string): Promise<Uint8Array | null> => { try { return await Bun.file(p).bytes(); } catch { return null; } };
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && Buffer.from(a).equals(Buffer.from(b));
+
+// Packages installed in a source folder (the session's own, the repository's main checkout) from the same
+// lockfile as the base's are linked: the lockfile compared is the one next to the folder the packages really are
+// (a source's own packages may be a link to another checkout's). Else the base's own install runs in the scratch
+// checkout, in the run's sandbox and at its priority, within INSTALL_MS. Never an install through a link: it
+// would rewrite the source's packages under whoever uses them.
+async function packagesFor(scratch: string, checkDir: string, sources: string[], path: string, install: (cwd: string, command: string) => Promise<Partial<FileResult>>): Promise<Packages> {
+  const texts: string[] = [];
+  const parts = checkDir === "." ? [] : checkDir.split("/").filter(Boolean);
+  for (let n = parts.length; n >= 0; n--) { const t = await bytesOf(join(scratch, ...parts.slice(0, n), "package.json")); if (t) texts.push(new TextDecoder().decode(t)); }
+  const declared = declaredOf(texts);
+  if (!declared.size) return { declared };
+  const at = lockDirOf(checkDir, (p) => existsSync(join(scratch, p)));
+  if (!at) return { declared, why: "the base has no lockfile to install them from" };
+  const modules = at.dir === "." ? "node_modules" : `${at.dir}/node_modules`;
+  const to = join(scratch, modules);
+  if (existsSync(to)) return { declared, modules }; // committed on the base
+  const want = await bytesOf(join(scratch, at.dir, at.lock.file));
+  for (const src of [...new Set(sources)]) {
+    let real: string;
+    try { real = realpathSync(join(src, modules)); } catch { continue; } // none there
+    const have = await bytesOf(join(dirname(real), at.lock.file));
+    if (!want || !have || !sameBytes(want, have)) continue;
+    try { symlinkSync(real, to); return { declared, modules }; } catch (e) { return { declared, modules, why: `they could not be linked: ${(e as Error).message}` }; }
+  }
+  const program = needsOf(at.lock.install).program;
+  if (!Bun.which(program, { PATH: path })) return { declared, modules, why: `no installed packages match its ${at.lock.file}, and ${program} is not here to install them` };
+  const r = await install(join(scratch, at.dir), at.lock.install);
+  if (r.exit === 0) return { declared, modules };
+  return { declared, modules, why: `its install (${at.lock.install}) did not finish: ${r.why || `exit ${r.exit}`}` };
+}
+
 // How long the output of a run is still read after its end: what a process it started outside its group still
 // holds open (a `setsid` child) is not waited for after that.
 export const DRAIN_MS = 2_000;
@@ -265,7 +317,7 @@ const SCOPE_SLACK_S = 10;
 // in a systemd scope of its own when the machine has them, so what it started goes with it, also a process that
 // left its group. Its process group goes at its end in any case, also after a normal exit.
 type One = { cwd: string; tool: string; env: Record<string, string>; command: string; limitMs: number; wrap?: (argv: string[]) => string[]; unit: string };
-export async function runOne(o: One): Promise<Partial<FileResult>> {
+export async function runOne(o: One, base?: BasePackages): Promise<Partial<FileResult>> {
   const times = join(o.tool, TIMES_FILE);
   rmSync(times, { force: true });
   const argv = [...LOW(), "bash", "-c", withTimes(o.command, times)];
@@ -299,6 +351,6 @@ export async function runOne(o: One): Promise<Partial<FileResult>> {
   let cpu_ms: number | null = null;
   try { cpu_ms = timesCpu(readFileSync(times, "utf8")); } catch {} // stopped before its end: not known
   rmSync(times, { force: true });
-  const v = verdictOf({ code: timedOut ? null : code, signal: timedOut || p.signalCode == null ? null : String(p.signalCode), timedOut, limitMs: o.limitMs, out: out.slice(-OUT_MAX) });
+  const v = verdictOf({ code: timedOut ? null : code, signal: timedOut || p.signalCode == null ? null : String(p.signalCode), timedOut, limitMs: o.limitMs, out: out.slice(-OUT_MAX) }, base);
   return { ...v, exit: timedOut ? null : code, ms, cpu_ms };
 }

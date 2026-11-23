@@ -14,6 +14,8 @@ import { countsOf } from "./counts.ts";
 import type { Check } from "./named.ts";
 
 export type State = "fails" | "passes" | "unrun";
+// Where under the state folder the scratch worktrees of the runs are (Keel's own: never an agent's leftover).
+export const BEFORE_DIR = ["checks", "before"] as const;
 export type TestFile = { path: string; check: Check };
 
 // Which changed files are tests, and the check that runs each: the first
@@ -52,7 +54,11 @@ const clipWhy = (s: string) => (s.length > WHY_MAX ? `${s.slice(0, WHY_MAX - 1)}
 const LOAD = /^.*(?:Cannot find module|Cannot find package|does not provide an export|ModuleNotFoundError|ImportError|SyntaxError).*$/m;
 const lastLine = (out: string) => out.replace(ANSI, "").trim().split("\n").map((l) => l.trim()).filter(Boolean).at(-1) ?? "";
 
-export function verdictOf(r: Ran): Verdict {
+// `base`: what the base declares of packages (`declared`: the names in its package.json files) and, when its
+// packages could not be put in the scratch checkout, why. A package the base declares that does not load is the
+// checkout's lack, not the change's: the file could not run. A module only the change adds is a real failure.
+export type BasePackages = { declared: ReadonlySet<string>; why?: string };
+export function verdictOf(r: Ran, base?: BasePackages): Verdict {
   const out = r.out.replace(ANSI, "").replace(/\r/g, "");
   if (r.timedOut) return { state: "unrun", why: `it ran past its ${Math.round(r.limitMs / 1000)} s limit and was stopped` };
   if (r.signal) return { state: "unrun", why: `it was ended by ${r.signal}` };
@@ -64,10 +70,61 @@ export function verdictOf(r: Ran): Verdict {
     if (counts && pass + fail === 0) return { state: "unrun", why: "no test in it ran on the base" };
     return { state: "passes", why: counts ? `${pass} passed` : "" };
   }
-  const load = pass === 0 ? LOAD.exec(out)?.[0].trim() : undefined;
-  if (load) return { state: "fails", why: clipWhy(`it does not load without the change: ${load.trim().replace(/^error:\s*/, "")}`) };
+  const load = pass === 0 ? LOAD.exec(out)?.[0].trim().replace(/^error:\s*/, "") : undefined;
+  if (load) {
+    const pkg = missingPackage(out);
+    if (pkg && base?.declared.has(pkg)) return { state: "unrun", why: clipWhy(`the base's packages are not there: ${base.why ?? load}`) };
+    return { state: "fails", why: clipWhy(`it does not load without the change: ${load}`) };
+  }
   if (fail) return { state: "fails", why: `${fail} of ${pass + fail} failed` };
   return { state: "fails", why: clipWhy(`exit ${r.code}${lastLine(out) ? `: ${lastLine(out)}` : ""}`) };
+}
+
+// The package a load error names as missing ("Cannot find module 'x' from ...", "Cannot find package 'x'
+// imported from ..."): the root of a bare specifier (`@scope/name`, `name` of `name/sub`), never a path or a
+// builtin. Undefined when the error names none.
+export function missingPackage(out: string): string | undefined {
+  const spec = /Cannot find (?:module|package) ['"]([^'"]+)['"]/.exec(out.replace(ANSI, ""))?.[1];
+  if (!spec || /^(?:\.|\/|[a-z]+:)/i.test(spec)) return undefined;
+  const parts = spec.split("/");
+  return spec.startsWith("@") ? (parts.length > 1 ? `${parts[0]}/${parts[1]}` : undefined) : parts[0];
+}
+
+// The packages a set of package.json texts declares (every dependency field); a text that does not parse
+// declares none.
+const DEP_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
+export function declaredOf(texts: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of texts) {
+    let j: Record<string, unknown>;
+    try { j = JSON.parse(t); } catch { continue; }
+    if (!j || typeof j !== "object") continue;
+    for (const f of DEP_FIELDS) { const deps = j[f]; if (deps && typeof deps === "object") for (const n of Object.keys(deps)) out.add(n); }
+  }
+  return out;
+}
+
+// The lockfiles of the JavaScript package managers, each with the install that reproduces it exactly.
+export const LOCKS = [
+  { file: "bun.lock", install: "bun install --frozen-lockfile" },
+  { file: "bun.lockb", install: "bun install --frozen-lockfile" },
+  { file: "pnpm-lock.yaml", install: "pnpm install --frozen-lockfile" },
+  { file: "yarn.lock", install: "yarn install --frozen-lockfile" },
+  { file: "package-lock.json", install: "npm ci" },
+  { file: "npm-shrinkwrap.json", install: "npm ci" },
+] as const;
+export type Lock = (typeof LOCKS)[number];
+
+// The folder whose packages a check's folder uses: the nearest one from it up to the top ("."), that holds a
+// lockfile, with that lockfile. Undefined when none does.
+export function lockDirOf(dir: string, has: (path: string) => boolean): { dir: string; lock: Lock } | undefined {
+  const parts = dir === "." ? [] : dir.split("/").filter(Boolean);
+  for (let n = parts.length; n >= 0; n--) {
+    const at = n ? parts.slice(0, n).join("/") : ".";
+    const lock = LOCKS.find((l) => has(at === "." ? l.file : `${at}/${l.file}`));
+    if (lock) return { dir: at, lock };
+  }
+  return undefined;
 }
 
 // The words for one file, as the report and the Review view say them.

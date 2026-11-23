@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { beforeLine, commandFor, howToRun, keyOf, limitFor, LINE_MAX, missingOnBase, needsOf, testsOf, timesCpu, verdictOf, withTimes, type FileResult } from "./before.ts";
+import { beforeLine, commandFor, declaredOf, howToRun, keyOf, limitFor, LINE_MAX, lockDirOf, missingOnBase, missingPackage, needsOf, testsOf, timesCpu, verdictOf, withTimes, type FileResult } from "./before.ts";
 import { parseChecks } from "./named.ts";
 
 const named = parseChecks(JSON.stringify({
@@ -43,6 +43,26 @@ test("what a run on the base says", () => {
   expect(v(null, "", { signal: "SIGKILL" })).toEqual({ state: "unrun", why: "it was ended by SIGKILL" });
   expect(v(0, " 0 pass\n 0 fail\n")).toEqual({ state: "unrun", why: "no test in it ran on the base" });
   expect(v(2, "boom\n")).toEqual({ state: "fails", why: "exit 2: boom" });
+});
+
+test("a package the base declares that does not load is the checkout's lack, not a failure before", () => {
+  const out = "# Unhandled error between tests\nerror: Cannot find module '@simplewebauthn/server' from '/s/src/admin/x.ts'\n 0 pass\n 1 fail\n 1 error\n";
+  const declared = declaredOf(['{"dependencies":{"@simplewebauthn/server":"^13"},"devDependencies":{"typescript":"^5"}}', "not json"]);
+  expect([...declared].sort()).toEqual(["@simplewebauthn/server", "typescript"]);
+  const v = (base?: Parameters<typeof verdictOf>[1]) => verdictOf({ code: 1, out, limitMs: 120_000 }, base);
+  expect(v({ declared })).toEqual({ state: "unrun", why: "the base's packages are not there: Cannot find module '@simplewebauthn/server' from '/s/src/admin/x.ts'" });
+  expect(v({ declared, why: "its install (bun install --frozen-lockfile) did not finish: exit 1" })).toEqual({ state: "unrun", why: "the base's packages are not there: its install (bun install --frozen-lockfile) did not finish: exit 1" });
+  // A package only the change adds, or a module of the repository's own, is a real failure before.
+  expect(v({ declared: new Set(["typescript"]) }).state).toBe("fails");
+  expect(verdictOf({ code: 1, out: "error: Cannot find module './gone.ts' from 'a.test.ts'\n 0 pass\n 1 fail\n", limitMs: 1 }, { declared: new Set(["gone.ts"]) }).state).toBe("fails");
+  expect([missingPackage("Cannot find package 'lodash/fp' imported from /x.js"), missingPackage("Cannot find module '@a/b/c'"), missingPackage("Cannot find module 'node:fs'"), missingPackage("Cannot find module '/abs/x'")]).toEqual(["lodash", "@a/b", undefined, undefined]);
+});
+
+test("the packages of a check's folder are the nearest lockfile's, up to the top", () => {
+  const has = (files: string[]) => (p: string) => files.includes(p);
+  expect(lockDirOf("web/app", has(["bun.lock", "web/package-lock.json"]))).toMatchObject({ dir: "web", lock: { install: "npm ci" } });
+  expect(lockDirOf("web/app", has(["bun.lock"]))).toMatchObject({ dir: ".", lock: { install: "bun install --frozen-lockfile" } });
+  expect(lockDirOf(".", has([]))).toBeUndefined();
 });
 
 test("a run is known by its base, its files' content and commands", () => {

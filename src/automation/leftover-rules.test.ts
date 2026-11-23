@@ -55,3 +55,10 @@ test("the report's one line names what was stopped and what is left, and nothing
   const kept = leftLine({ stopped: [], kept: [{ job: "b3", command: "serve", pids: [3], ports: [80], clients: 1, why: "a connection of another process to port 80" }], found: [], units: ["web.service", ""] });
   expect(kept).toBe("Left behind: left running `serve` on port 80 (a connection of another process to port 80), which runs until stopped from Settings, Leftovers; its commands name systemd unit web.service (systemd-run), which Keel neither tracks nor stops (systemctl --user stop web.service); its commands start a systemd unit with no name (systemd-run), which Keel neither tracks nor stops.");
 });
+
+test("Keel's own scratch worktrees (a fails-before run's, the landing queue's) are never an agent's leftovers", () => {
+  const trees = parseWorktrees("worktree /r\nHEAD a\nbranch refs/heads/main\n\nworktree /state/checks/before/12\nHEAD b\ndetached\n\nworktree /state/landing/ab12/batch-3\nHEAD c\ndetached\n\nworktree /state/checks/before-other\nHEAD d\ndetached\n");
+  const fresh = newSince({ worktrees: ["/r"], branches: {} }, trees, {}, { trees: new Set(), branches: new Set(), under: ["/state/checks/before", "/state/landing/"] });
+  // (A folder whose name only starts the same is not under one.)
+  expect(fresh.trees.map((t) => t.path)).toEqual(["/state/checks/before-other"]);
+});

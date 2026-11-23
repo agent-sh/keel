@@ -1,7 +1,7 @@
 // The fails-before run on a real repository: what a test leaves running does not hold the run, and the run is
 // confined by the session's own sandbox profile.
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -103,6 +103,61 @@ test.skipIf(!scoped)("a scope a killed daemon left is stopped at the next start,
   await bindBefore({ store, bus: new Bus(), perm: (id) => gate.perm(id), confine: (id, ws, tool) => gate.confineFor(id, ws, tool), capture: (e) => { throw e; } });
   expect(await Promise.race([left.exited.then(() => true), Bun.sleep(5_000).then(() => false)])).toBe(true);
   expect(active()).toBe(false);
+});
+
+// A package project whose base declares a dependency (installed from its lockfile in the main checkout), and an
+// agent's worktree without the packages that adds a test of a fix: the test imports the dependency and fails on
+// the base by its assertion. `extra`: more files of the agent's.
+function pkgRepo(extra: Record<string, string> = {}) {
+  const top = mkdtempSync(join(dir, "pkg-"));
+  const g = (cwd: string, ...args: string[]) => Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });
+  g(top, "init", "-q", "-b", "main");
+  mkdirSync(join(top, ".keel"));
+  writeFileSync(join(top, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "bun test", args: true, inputs: ["node_modules"], tests: ["*.test.ts"] } } }));
+  mkdirSync(join(top, "vendor", "dep"), { recursive: true });
+  writeFileSync(join(top, "vendor", "dep", "package.json"), JSON.stringify({ name: "dep", version: "1.0.0", main: "index.js" }));
+  writeFileSync(join(top, "vendor", "dep", "index.js"), "module.exports = { twice: (n) => n * 2 };\n");
+  writeFileSync(join(top, "package.json"), JSON.stringify({ name: "p", dependencies: { dep: "file:./vendor/dep" } }));
+  writeFileSync(join(top, ".gitignore"), "node_modules\n");
+  writeFileSync(join(top, "lib.ts"), "export const add = (a: number, b: number) => a - b;\n");
+  expect(Bun.spawnSync(["bun", "install"], { cwd: top, stdout: "ignore", stderr: "ignore" }).exitCode).toBe(0);
+  g(top, "add", "-A");
+  g(top, "commit", "-qm", "base");
+  const wt = `${top}-agent`;
+  g(top, "worktree", "add", "-q", "-b", "fix", wt);
+  writeFileSync(join(wt, "lib.ts"), "export const add = (a: number, b: number) => a + b;\n");
+  writeFileSync(join(wt, "add.test.ts"), 'import { expect, test } from "bun:test";\nimport { twice } from "dep";\nimport { add } from "./lib.ts";\ntest("add", () => expect(twice(add(1, 2))).toBe(6));\n');
+  for (const [f, text] of Object.entries(extra)) writeFileSync(join(wt, f), text);
+  const session = store.createSession({ model: "m:x", workspace: wt, title: "before" });
+  gate.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
+  return { top, wt, session };
+}
+
+test("a test of a package the base declares runs on the base with its packages, linked from a checkout of the same lockfile", async () => {
+  const { top, wt, session } = pkgRepo();
+  expect(existsSync(join(wt, "node_modules"))).toBe(false); // the agent's worktree has none of its own
+  const r = await settled((await startFor(session.id, wt))!, 60_000);
+  expect(r.results.map((f) => [f.path, f.state, f.why])).toEqual([["add.test.ts", "fails", "1 of 1 failed"]]);
+  // The link is the run's: the main checkout's packages are still there, and the scratch checkout is gone.
+  expect(existsSync(join(top, "node_modules", "dep", "index.js"))).toBe(true);
+  expect(readdirSync(join(store.stateDir, "checks", "before")).filter((n) => !n.endsWith(".tool"))).toEqual([]);
+});
+
+test("with no installed packages of the base's lockfile, the base's own install runs in the scratch checkout", async () => {
+  const { top, wt, session } = pkgRepo();
+  renameSync(join(top, "node_modules"), join(top, "node_modules.away"));
+  const r = await settled((await startFor(session.id, wt))!, 120_000);
+  expect(r.results.map((f) => [f.path, f.state, f.why])).toEqual([["add.test.ts", "fails", "1 of 1 failed"]]);
+  expect(existsSync(join(top, "node_modules"))).toBe(false);
+});
+
+test("a package only the change adds does not load on the base: that is a failure before", async () => {
+  const { session, wt } = pkgRepo({ "new.test.ts": 'import { test } from "bun:test";\nimport x from "brand-new-dep";\ntest("x", () => x());\n' });
+  const r = await settled((await startFor(session.id, wt))!, 60_000);
+  const n = r.results.find((f) => f.path === "new.test.ts")!;
+  expect(n.state).toBe("fails");
+  expect(n.why).toContain("it does not load without the change: Cannot find");
+  expect(n.why).toContain("brand-new-dep");
 });
 
 test("the scopes a start stops are those of daemons that are gone", () => {
