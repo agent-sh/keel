@@ -497,23 +497,25 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   const titles = useStore((x) => ids.map((id) => x.sessions[id]?.title || "New session").join("\u0000"));
   const title = (id: string) => titles.split("\u0000")[ids.indexOf(id)] ?? "New session";
   const key = ids.join(" ");
-  const [out, setOut] = useState<string[]>([]);
+  const [found, setOut] = useState<string[]>([]);
   useEffect(() => {
     const root = nav.current;
     if (!root || !ids.length) return setOut([]);
-    const seen = new Map<string, boolean>();
-    const say = () => { const next = ids.filter((id) => !seen.get(id)); setOut((was) => (was.join(" ") === next.join(" ") ? was : next)); };
-    const io = new IntersectionObserver((es) => { for (const e of es) seen.set((e.target as HTMLElement).dataset.session!, e.intersectionRatio > 0.99); say(); }, { root, threshold: [0, 1] });
+    // What the observer said of each row it watches. A row it has not spoken of yet is left out: named
+    // before the first word, every row was named for a frame each time the set of sessions changed.
+    // A session the list does not draw (another tab, filtered out) is out of view and named.
+    const seen = new Map<Element, boolean>();
+    let at: (Element | null)[] = [], frame = 0;
+    const say = () => { const next = ids.filter((_, i) => (at[i] ? seen.get(at[i]!) === false : true)); setOut((was) => (was.join(" ") === next.join(" ") ? was : next)); };
+    const io = new IntersectionObserver((es) => { for (const e of es) seen.set(e.target, e.intersectionRatio > 0.99); say(); }, { root, threshold: [0, 1] });
     // The rows are looked for again when the list draws others (a fold, a group, a row that came).
-    let at: Element[] = [], frame = 0;
     const watch = () => {
       frame = 0;
       const rows = ids.map((id) => root.querySelector(`[data-testid="session-row"][data-session="${CSS.escape(id)}"]`));
       if (rows.length === at.length && rows.every((r, i) => r === at[i])) return;
-      io.disconnect();
-      seen.clear();
-      at = rows.filter((r): r is Element => !!r);
-      for (const r of at) io.observe(r);
+      for (const r of at) if (r && !rows.includes(r)) { io.unobserve(r); seen.delete(r); }
+      for (const r of rows) if (r && !at.includes(r)) io.observe(r);
+      at = rows;
       say();
     };
     watch();
@@ -521,6 +523,11 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     mo.observe(root, { childList: true, subtree: true });
     return () => { io.disconnect(); mo.disconnect(); cancelAnimationFrame(frame); };
   }, [key, nav]);
+  // While the hand is on the list the strip stands as it was: it never grows over the row under the pointer.
+  const held = useContext(HandCtx).held;
+  const kept = useRef(found);
+  if (!held) kept.current = found;
+  const out = kept.current.filter((id) => ids.includes(id));
   if (!out.length) return null;
   const need = new Set(counts.need);
   return (
@@ -893,7 +900,7 @@ function CountsKeeper() {
   // What is new, as the rows show it: a finish comes to the count once it has settled, a read leaves it at once.
   const liveUnread = useAuto((x) => x.unread.sessions);
   const unreadKey = Object.entries(liveUnread).filter(([, n]) => (n ?? 0) > 0).map(([id]) => id).sort().join(" ");
-  const unread = useSettled("unread", liveUnread, unreadKey, (was) => Object.keys(was).some((id) => (was[id] ?? 0) > 0 && !((liveUnread[id] ?? 0) > 0)), () => true);
+  const unread = useSettled("unread", liveUnread, unreadKey, (was) => Object.keys(was).some((id) => (was[id] ?? 0) > 0 && !((liveUnread[id] ?? 0) > 0)));
   // The machines that do not answer, as one word: it changes when one of them does. A machine is
   // among them until it has stayed heard a while (lib/reach.ts), so the count does not come and go with a link that does.
   const down = useReach((x) => Object.keys(x.unheard).sort().join(" "));
