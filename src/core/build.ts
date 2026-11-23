@@ -39,20 +39,31 @@ export function buildId(): string {
 // tool or a changed input needs none. The build that makes such a change
 // gives the tool (by its name) or the prompt block (by its name in the kept
 // prompt: "core", "instruction files", a feature block's first words) a mark
-// here, any new text. A session whose pinned copy carries another mark, or
-// none, takes this build's tools and prompt at its next request, at the price
-// of one cache write of its context. Everything not marked waits.
+// a mark, any new text: a tool on its own definition (`urgent` in
+// src/tools/types.ts), a prompt block here, one entry a line. A session whose
+// pinned copy carries another mark, or none, takes this build's tools and
+// prompt at its next request, at the price of one cache write of its context.
+// Everything not marked waits. The marks live where the change is, so two
+// branches that each mark a tool merge clean (one record here, edited by both
+// at the same line, conflicted every time).
 // A mark can be removed once the builds before it are no longer pinned anywhere.
 export const URGENT: { tools: Record<string, string>; blocks: Record<string, string> } = {
-  // An agent may start agents of its own, and message the other agents of its tree.
-  tools: { Agent: "nested-agents", spawn_agent: "nested-agents", SendMessage: "agent-tree-messages", send_input: "agent-tree-messages",
-    // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts).
-    Bash: "wait-poll", run_shell_command: "wait-poll", exec_command: "wait-poll", write_stdin: "wait-poll",
-    // A file or log wait's wake carries the file, and its job's end or stall wakes early.
-    WaitFor: "wait-carries-file", wait_for: "wait-carries-file",
-    ...testBuild?.urgent?.tools },
-  blocks: { ...testBuild?.urgent?.blocks },
+  // (A tool's own mark is read from its definition: toolMarks.)
+  tools: {
+    ...testBuild?.urgent?.tools,
+  },
+  blocks: {
+    ...testBuild?.urgent?.blocks,
+  },
 };
+
+// The urgent marks of a build's tools by name: each tool's own, then this
+// file's (a test build's stand-in marks).
+export function toolMarks(tools: readonly { name: string; urgent?: string }[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const t of tools) if (t.urgent) out[t.name] = t.urgent;
+  return { ...out, ...URGENT.tools };
+}
 
 // What this process was built from. scripts/build.ts stamps a binary with its
 // git revision (with `-dirty` when the tree had changes), its target and the

@@ -82,6 +82,10 @@ export type ToolKind = "shell" | "edit" | "control" | "remote";
 
 export type Tool = ToolSpec & {
   readOnly: boolean;
+  // A mark of a change a live session must not wait for (src/core/build.ts
+  // URGENT): any new text, written on the tool itself so two branches that
+  // each mark a tool change two places and merge clean.
+  urgent?: string;
   kind?: ToolKind;
   // A shell tool whose shell reports each command it runs to the check ledger
   // when asked (ctx.checkRun, src/tools/shell.ts): a check behind a wait, or

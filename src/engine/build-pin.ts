@@ -42,7 +42,7 @@
 // small; the tool list it points at (24 to 36 kB as measured, 62 tools on the
 // Anthropic wire) is shared by the sessions of one build, family and wire.
 import { registerSettings, settings } from "../admin/settings.ts";
-import { buildId, URGENT } from "../core/build.ts";
+import { buildId, toolMarks } from "../core/build.ts";
 import { SessionMap } from "../core/session-map.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
@@ -202,7 +202,7 @@ export class BuildPins {
     if (row.asked) return "the owner asked";
     const other = otherList(row, to);
     if (other) return other;
-    const m = mergeTools(this.list(row.list)!, current, URGENT.tools);
+    const m = mergeTools(this.list(row.list)!, current, toolMarks(current));
     if (m.urgent) return m.urgent;
     if (this.aged(row)) return agedWhy();
     const blocks = this.blocks.get(session.id);
@@ -271,7 +271,7 @@ export class BuildPins {
     const from = base ? this.list(base.list) : undefined;
     if (row) reason ??= otherList(row, to) ?? (this.aged(row) ? agedWhy() : undefined);
     if (from && !reason) {
-      const m = mergeTools(from, current, URGENT.tools);
+      const m = mergeTools(from, current, toolMarks(current));
       if (!m.urgent) {
         const waiting = { blocks, tools: m.waiting };
         const behind = m.waiting.length + blocks.length > 0;
@@ -285,7 +285,8 @@ export class BuildPins {
       }
       reason = m.urgent;
     }
-    const pin = current.map((t) => pinOf(t, URGENT.tools[t.name]));
+    const marks = toolMarks(current);
+    const pin = current.map((t) => pinOf(t, marks[t.name]));
     const tools = from ? changedTools(from, pin) : [];
     if (row && (took?.blocks.length || tools.length)) {
       this.store.db

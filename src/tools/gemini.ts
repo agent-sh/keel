@@ -18,6 +18,7 @@ const obj = (properties: Record<string, unknown>, required: string[]) => ({ type
 
 const run_shell_command: Tool = {
   name: "run_shell_command",
+  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
   readOnly: false,
   kind: "shell",
   cwdOf: (ctx, input) => input?.dir_path ? abs(input.dir_path, ctx) : shellCwd(ctx),

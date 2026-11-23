@@ -69,6 +69,7 @@ const execShell = (input: any): string => (typeof input?.shell === "string" && i
 
 const exec_command: Tool = {
   name: "exec_command",
+  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
   resultCap: EXEC_CAP,
   readOnly: false,
   kind: "shell",
@@ -114,6 +115,7 @@ const exec_command: Tool = {
 
 const write_stdin: Tool = {
   name: "write_stdin",
+  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
   resultCap: EXEC_CAP,
   readOnly: false,
   kind: "control",

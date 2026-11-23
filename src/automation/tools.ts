@@ -81,6 +81,7 @@ async function onMachine(input: any, prompt: unknown) {
 
 const Agent: Tool = {
   name: "Agent",
+  urgent: "nested-agents", // an agent may start agents of its own
   resultCap: agents.RESULT_CAP, // a report is cut to this by the agents' own code, never in its middle by the engine's smaller cap
   families: CLAUDE,
   readOnly: true,
@@ -170,6 +171,7 @@ function whenRead(r: agents.MessageSent): string {
 
 const SendMessage: Tool = {
   name: "SendMessage",
+  urgent: "agent-tree-messages", // it messages the other agents of its tree
   families: CLAUDE,
   readOnly: true,
   description: "Send a message to one of your subagents, or to another agent of this session's tree, by agent id or description: it steers a running agent (after its current step) or continues a finished one with its context. Its next report goes to the agent that started it.",
@@ -212,6 +214,7 @@ export function extendTaskStop() {
 
 const spawn_agent: Tool = {
   name: "spawn_agent",
+  urgent: "nested-agents", // an agent may start agents of its own
   families: OTHERS,
   readOnly: true,
   description:
@@ -242,6 +245,7 @@ const spawn_agent: Tool = {
 
 const send_input: Tool = {
   name: "send_input",
+  urgent: "agent-tree-messages", // it messages the other agents of its tree
   families: OTHERS,
   readOnly: true,
   description: "Send a message to an existing agent: one you spawned, or another agent of this session's tree. Use interrupt=true to redirect the work of one you spawned immediately; otherwise it is handled after its current step. A finished agent continues with its context, and its next result goes to the agent that spawned it.",
@@ -384,8 +388,8 @@ const waitDesc =
 // where other actions ask and the owner can allow it by that name.
 const waitTarget = async (input: any) =>
   input?.kind === "pr_checks" || input?.spec?.kind === "pr_checks" ? { name: "wait_pr_checks", readOnly: false, input, cls: { kind: "other" as const } } : null;
-const WaitFor: Tool = { name: "WaitFor", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
-const wait_for: Tool = { name: "wait_for", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
+const WaitFor: Tool = { name: "WaitFor", urgent: "wait-carries-file", families: CLAUDE, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
+const wait_for: Tool = { name: "wait_for", urgent: "wait-carries-file", families: OTHERS, readOnly: true, description: waitDesc, input_schema: waitSchema, run: waitRun, target: waitTarget };
 
 const cancel_wait: Tool = {
   name: "cancel_wait",

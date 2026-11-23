@@ -21,6 +21,7 @@ const obj = (properties: Record<string, unknown>, required: string[]) =>
 
 const Bash: Tool = {
   name: "Bash",
+  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
   readOnly: false,
   kind: "shell",
   cwdOf: shellCwd,

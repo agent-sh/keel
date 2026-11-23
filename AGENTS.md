@@ -37,9 +37,9 @@ under `~/.cache/keel-work/bun/research/`.
   (`cache_warm`), and a warm read is tried once and moves no session in the list.
 - A change to a tool or a prompt block reaches a live session late by design
   (its tools and prompt are pinned, see above): when its cache is cold, or
-  after `build_pin.max_age_hours` (24 by default). Mark it urgent in `URGENT`
-  (`src/core/build.ts`), by the tool's or the block's name, when waiting that
-  long would be wrong. Exactly two kinds of change need the mark: a safety
+  after `build_pin.max_age_hours` (24 by default). Mark it urgent when waiting
+  that long would be wrong: a tool with `urgent` on its own definition, a
+  prompt block by its name in `URGENT` (`src/core/build.ts`), one entry a line. Exactly two kinds of change need the mark: a safety
   instruction (what the model must or must not do with the owner's machine,
   data or accounts), and any change of what a tool does under an unchanged
   input schema (the model would keep the old description of the new
