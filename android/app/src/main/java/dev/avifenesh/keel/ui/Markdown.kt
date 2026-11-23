@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.AnnotatedString
@@ -51,20 +52,28 @@ sealed class Block {
 
 // Display math that starts a line: $$...$$ or \[...\], on one line or over several. The lines it
 // covers and its TeX, or null when it is not closed (a reply still streaming shows it as written).
+// It ends at a blank line, and within DISPLAY_LINES lines and DISPLAY_CHARS characters (ten inline
+// formulas): each opener reads that far at most, so a reply of openers is read in bounded time.
+private const val DISPLAY_LINES = 200
+private const val DISPLAY_CHARS = 10 * INLINE_MATH_CHARS
+
 private fun displayMath(lines: List<String>, from: Int): Pair<Int, String>? {
     val t = lines[from].trimStart()
     val (open, close) = when { t.startsWith("$$") -> "$$" to "$$"; t.startsWith("\\[") -> "\\[" to "\\]"; else -> return null }
+    if (t.length > DISPLAY_CHARS) return null
     val first = t.removePrefix(open)
     first.indexOf(close).takeIf { it >= 0 }?.let { e -> return if (first.substring(e + close.length).isBlank() && first.substring(0, e).isNotBlank()) 1 to first.substring(0, e).trim() else null }
     val body = StringBuilder(first)
-    for (j in from + 1 until lines.size) {
-        val e = lines[j].indexOf(close)
+    for (j in from + 1 until minOf(lines.size, from + DISPLAY_LINES)) {
+        val line = lines[j]
+        if (line.isBlank() || body.length + line.length > DISPLAY_CHARS) return null
+        val e = line.indexOf(close)
         if (e >= 0) {
-            if (lines[j].substring(e + close.length).isNotBlank()) return null
-            body.append('\n').append(lines[j].substring(0, e))
+            if (line.substring(e + close.length).isNotBlank()) return null
+            body.append('\n').append(line.substring(0, e))
             return (j - from + 1) to body.toString().trim()
         }
-        body.append('\n').append(lines[j])
+        body.append('\n').append(line)
     }
     return null
 }
@@ -93,7 +102,7 @@ fun blocks(md: String): List<Block> {
                 }
                 out += Block.Code(lang, body.toString().trimEnd('\n'))
             }
-            displayMath(lines, i) != null -> {
+            (t.startsWith("$$") || t.startsWith("\\[")) && displayMath(lines, i) != null -> {
                 flush()
                 val (n, tex) = displayMath(lines, i)!!
                 out += Block.Math(tex); i += n; continue
@@ -128,9 +137,10 @@ fun blocks(md: String): List<Block> {
 /** Inline marks: **bold**, *italic* or _italic_, `code`, [text](url), math ($...$, \\(...\\)), and \\ before a mark to write it as is. */
 fun inline(s: String, code: SpanStyle, link: SpanStyle): AnnotatedString = buildAnnotatedString {
     var i = 0
+    val scan = MathScan(s)
     while (i < s.length) {
         val c = s[i]
-        val math = if (c == '$' || s.startsWith("\\(", i)) inlineMath(s, i) else null
+        val math = if (c == '$' || s.startsWith("\\(", i)) scan.at(i) else null
         when {
             math != null -> { math(mathRuns(math.second)); i += math.first }
             c == '\\' && i + 1 < s.length && s[i + 1] in ESCAPABLE -> { append(s[i + 1]); i += 2 }
@@ -140,9 +150,12 @@ fun inline(s: String, code: SpanStyle, link: SpanStyle): AnnotatedString = build
                 val e = s.indexOf(c, i + 1)
                 if (e > i + 1 && (e + 1 >= s.length || !s[e + 1].isLetterOrDigit())) { withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(s.substring(i + 1, e)) }; i = e + 1 } else { append(c); i++ }
             }
+            // [text](url): the text up to the first ], the url up to a ) with no space in it.
             c == '[' -> {
-                val m = Regex("^\\[([^\\]]+)]\\(([^)\\s]+)\\)").find(s.substring(i))
-                if (m != null) { withStyle(link) { append(m.groupValues[1]) }; i += m.value.length } else { append(c); i++ }
+                val e = scan.bracket.from(i + 1)
+                val end = if (e > i + 1 && e + 2 < s.length && s[e + 1] == '(') scan.close.from(e + 2) else -1
+                val sp = if (end > e + 2) scan.space.from(e + 2) else -1
+                if (end > e + 2 && (sp < 0 || sp > end)) { withStyle(link) { append(s.substring(i + 1, e)) }; i = end + 1 } else { append(c); i++ }
             }
             else -> { append(c); i++ }
         }
@@ -170,24 +183,38 @@ private fun AnnotatedString.Builder.math(runs: List<MathRun>) {
 /** Math as an AnnotatedString of its own: a display block, or a test. */
 fun mathString(tex: String): AnnotatedString = buildAnnotatedString { math(mathRuns(tex)) }
 
+// A block's text as it is drawn: one string, or a table's cells row by row.
+private fun setBlock(b: Block, code: SpanStyle, link: SpanStyle): List<AnnotatedString> = when (b) {
+    is Block.Para -> listOf(inline(b.text, code, link))
+    is Block.Heading -> listOf(inline(b.text, code, link))
+    is Block.Item -> listOf(inline(b.text, code, link))
+    is Block.Quote -> listOf(inline(b.text, code, link))
+    is Block.Math -> listOf(mathString(b.tex))
+    is Block.Table -> b.rows.flatMap { row -> row.map { inline(it, code, link) } }
+    is Block.Code -> emptyList()
+}
+
 @Composable
 fun Markdown(md: String, style: TextStyle = T.body, modifier: Modifier = Modifier) {
     val k = k()
     val code = SpanStyle(fontFamily = Mono, fontSize = 0.86.em, background = k.sunken)
     val link = SpanStyle(color = k.ownerInk, textDecoration = TextDecoration.Underline)
     val base = style.copy(color = k.fg)
+    // Set once for each text and theme, not on every recomposition: a list scrolled or a tick of the
+    // clock draws the reply again but does not read it again.
+    val set = remember(md, code, link) { blocks(md).map { it to setBlock(it, code, link) } }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        for (b in blocks(md)) when (b) {
-            is Block.Para -> BasicText(inline(b.text, code, link), style = base)
-            is Block.Heading -> BasicText(inline(b.text, code, link), style = (if (b.level <= 2) T.title else T.bodyStrong).copy(color = k.fg), modifier = Modifier.padding(top = 4.dp))
+        for ((b, text) in set) when (b) {
+            is Block.Para -> BasicText(text[0], style = base)
+            is Block.Heading -> BasicText(text[0], style = (if (b.level <= 2) T.title else T.bodyStrong).copy(color = k.fg), modifier = Modifier.padding(top = 4.dp))
             is Block.Item -> Row(Modifier.padding(start = (b.depth * 16).dp)) {
                 BasicText(b.marker, style = base.copy(color = k.muted), modifier = Modifier.width(if (b.marker == "•") 16.dp else 24.dp))
-                BasicText(inline(b.text, code, link), style = base, modifier = Modifier.weight(1f))
+                BasicText(text[0], style = base, modifier = Modifier.weight(1f))
             }
             is Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
                 Box(Modifier.width(2.dp).fillMaxHeight().background(k.lineStrong))
                 Spacer(Modifier.width(12.dp))
-                BasicText(inline(b.text, code, link), style = base.copy(color = k.muted))
+                BasicText(text[0], style = base.copy(color = k.muted))
             }
             is Block.Code -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))) {
                 // The language and Copy over the code: a command to run elsewhere is taken whole, not by a selection.
@@ -200,15 +227,16 @@ fun Markdown(md: String, style: TextStyle = T.body, modifier: Modifier = Modifie
             }
             // Display math: centered on its own lines, scrolled sideways when it is wider than the screen.
             is Block.Math -> Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = Alignment.Center) {
-                BasicText(mathString(b.tex), style = base.copy(fontSize = base.fontSize * 1.1f, lineHeight = base.lineHeight * 1.15f), softWrap = false,
+                BasicText(text[0], style = base.copy(fontSize = base.fontSize * 1.1f, lineHeight = base.lineHeight * 1.15f), softWrap = false,
                     modifier = Modifier.horizontalScroll(rememberScrollState()).testTag("math"))
             }
             is Block.Table -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).border(1.dp, k.line, RoundedCornerShape(S.r)).horizontalScroll(rememberScrollState())) {
                 val widths = (0 until (b.rows.maxOfOrNull { it.size } ?: 0)).map { c -> (b.rows.maxOfOrNull { it.getOrNull(c)?.length ?: 0 } ?: 0).coerceIn(4, 28) }
+                var at = 0
                 b.rows.forEachIndexed { r, row ->
                     Row(Modifier.background(if (r == 0) k.sunken else k.raised).padding(horizontal = 4.dp)) {
-                        row.forEachIndexed { c, cell ->
-                            BasicText(inline(cell, code, link), style = T.small.copy(color = k.fg, fontWeight = if (r == 0) FontWeight(600) else FontWeight(400)),
+                        row.forEachIndexed { c, _ ->
+                            BasicText(text[at++], style = T.small.copy(color = k.fg, fontWeight = if (r == 0) FontWeight(600) else FontWeight(400)),
                                 modifier = Modifier.width((widths.getOrElse(c) { 8 } * 8 + 16).dp).padding(horizontal = 8.dp, vertical = 6.dp))
                         }
                     }

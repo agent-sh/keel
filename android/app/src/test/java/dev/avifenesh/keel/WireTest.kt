@@ -3,9 +3,11 @@ package dev.avifenesh.keel
 import dev.avifenesh.keel.ui.Block
 import dev.avifenesh.keel.ui.blocks
 import dev.avifenesh.keel.ui.MathRun
+import dev.avifenesh.keel.ui.inline
 import dev.avifenesh.keel.ui.inlineMath
 import dev.avifenesh.keel.ui.mathRuns
 import dev.avifenesh.keel.ui.mathText
+import androidx.compose.ui.text.SpanStyle
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -300,6 +302,40 @@ class WireTest {
         assertEquals("{1\u2003n = 0\n\u2007n!\u2003otherwise", mathText("\\begin{cases} 1 & n = 0 \\\\ n! & \\text{otherwise} \\end{cases}"))
         // What it does not know is shown as written.
         assertEquals("\\foo\u2009x", mathText("\\foo x"))
+    }
+
+    // A reply is set on the UI thread, again on every streamed token: no reply, however it is made,
+    // overflows the stack or takes long. Each case runs on a thread with a small stack and a deadline.
+    @Test fun mathIsSetInBoundedTimeAndStack() {
+        val bad = mutableListOf<String>()
+        fun bounded(name: String, body: () -> Unit) {
+            var err: Throwable? = null
+            val t = Thread(null, { try { body() } catch (e: Throwable) { err = e } }, name, 512L shl 10)
+            t.start(); t.join(5000)
+            if (t.isAlive) bad += "$name took over 5 s" else if (err != null) bad += "$name threw ${err!!.javaClass.simpleName}"
+        }
+        val sp = SpanStyle()
+        val deep = "{".repeat(20_000) + "x" + "}".repeat(20_000)
+        bounded("20,000 nested braces") { assertTrue(mathText(deep).isNotEmpty()) }
+        bounded("20,000 nested scripts") { mathText("x^".repeat(20_000) + "2") }
+        bounded("a 30 KB line of prices") { inline("costs \$5 " + "word ".repeat(6000) + "\$6 x", sp, sp) }
+        bounded("a megabyte of lone \$") { inline("\$ ".repeat(500_000), sp, sp) }
+        bounded("a megabyte of \$x\$") { inline("\$x\$ ".repeat(250_000), sp, sp) }
+        bounded("a megabyte of \\(") { inline("\\(".repeat(500_000), sp, sp) }
+        bounded("a megabyte of [") { inline("[".repeat(1_000_000), sp, sp) }
+        bounded("100,000 unclosed display openers") { blocks("\\[ a\n".repeat(50_000) + "\$\$ b\n".repeat(50_000)) }
+        assertEquals(emptyList<String>(), bad)
+        // Links and math are still found as they were, now without a regular expression per opener.
+        assertEquals("see docs, [a](b c) and x", inline("see [docs](https://x.y), [a](b c) and \$x\$", sp, sp).text)
+        assertEquals(1, inline("see [docs](https://x.y)", sp, sp).spanStyles.size)
+        assertEquals(Triple(7, "a+b", true), inlineMath("\$\$a+b\$\$", 0))
+        assertEquals(Triple(8, "a \\$ b", false), inlineMath("\$a \\$ b\$", 0))
+        assertNull(inlineMath("\\(x\ny\\)", 0))
+        // Math longer than a formula is text, and display math ends at a blank line.
+        assertNull(inlineMath("\$" + "x".repeat(2_100) + "\$", 0))
+        assertEquals(Block.Para("\$\$ a"), blocks("\$\$ a\n\nb \$\$")[0])
+        // Deeper than math is written is shown as written.
+        assertEquals("{".repeat(100) + "x" + "}".repeat(100), mathText("{".repeat(100) + "x" + "}".repeat(100)))
     }
 
     @Test fun times() {

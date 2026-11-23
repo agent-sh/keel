@@ -8,14 +8,77 @@ package dev.avifenesh.keel.ui
 /** One run of math text: its letters, whether they are italic or bold, and how many script levels up (or down) it sits. */
 data class MathRun(val text: String, val italic: Boolean = false, val bold: Boolean = false, val level: Int = 0)
 
+// What is set as math is bounded, since a reply is set on the UI thread, again with every streamed
+// token: an inline formula of over 2,000 characters of TeX is text (a formula is a line or two; a
+// run that long between two dollars is prose), and so is TeX nested deeper than MAX_DEPTH groups.
+const val INLINE_MATH_CHARS = 2_000
+private const val MAX_DEPTH = 64
+
 /** The math at the start of `s`, as the page finds it: the raw text it covers, its TeX, and whether it is display math. */
-fun inlineMath(s: String, at: Int): Triple<Int, String, Boolean>? {
-    val src = s.substring(at)
-    Regex("^\\$\\$(?!\\$)([^\\n]+?)\\$\\$").find(src)?.let { return Triple(it.value.length, it.groupValues[1].trim(), true) }
-    Regex("^\\\\\\(([^\\n]+?)\\\\\\)").find(src)?.let { return Triple(it.value.length, it.groupValues[1].trim(), false) }
-    Regex("^\\$(?![\\s$])((?:\\\\.|[^\\\\\\n$])*?[^\\s\\\\])\\$(?!\\d)").find(src)?.let { return Triple(it.value.length, it.groupValues[1], false) }
-    Regex("^\\$([^\\s$\\\\])\\$(?!\\d)").find(src)?.let { return Triple(it.value.length, it.groupValues[1], false) }
-    return null
+fun inlineMath(s: String, at: Int): Triple<Int, String, Boolean>? = MathScan(s).at(at)
+
+// TeX's spaces as a regular expression's \s reads them, and its \d.
+internal fun ws(c: Char) = c == ' ' || c in '\t'..'\r'
+private fun digit(c: Char) = c in '0'..'9'
+
+/** The first place at or after a point where `pat` starts. Points only grow, so the text is read once. */
+internal class Next(val s: String, val pat: String) {
+    private var pos = -2
+    fun from(i: Int): Int { if (pos == -2 || (pos in 0 until i)) pos = s.indexOf(pat, i); return pos }
+}
+
+/** The first place at or after a point where a character is a line's end or a space. Read once, as Next. */
+internal class NextChar(val s: String, val pred: (Char) -> Boolean) {
+    private var pos = -2
+    fun from(i: Int): Int {
+        if (pos == -2 || (pos in 0 until i)) { var k = i; while (k < s.length && !pred(s[k])) k++; pos = if (k < s.length) k else -1 }
+        return pos
+    }
+}
+
+/** Finds math in one line of prose, each opener in time bounded by the formula's length, the line read once whatever it holds. */
+class MathScan(private val s: String) {
+    private val dollars = Next(s, "$$")
+    private val paren = Next(s, "\\)")
+    private val newline = Next(s, "\n")
+
+    // Display math inline ($$...$$) and \(...\): the first closer after one character of TeX, on the same line, within the bound.
+    private fun closed(at: Int, open: Int, closer: Next, len: Int, display: Boolean): Triple<Int, String, Boolean>? {
+        val body = at + open
+        val e = closer.from(body + 1)
+        if (e < 0 || e - body > INLINE_MATH_CHARS) return null
+        val nl = newline.from(body)
+        if (nl in 0 until e) return null
+        return Triple(e + len - at, s.substring(body, e).trim(), display)
+    }
+
+    fun at(at: Int): Triple<Int, String, Boolean>? {
+        val n = s.length
+        if (s.startsWith("$$", at)) return if (at + 2 < n && s[at + 2] != '$') closed(at, 2, dollars, 2, true) else null
+        if (s.startsWith("\\(", at)) return closed(at, 2, paren, 2, false)
+        if (at >= n || s[at] != '$') return null
+        // An inline $ by Pandoc's rule: no space after the opening $, none before the closing one, and
+        // no digit after it. A backslash takes the next character with it (\$ is not a closer).
+        val j0 = at + 1
+        if (j0 >= n || ws(s[j0]) || s[j0] == '$') return null
+        var k = j0
+        var plain = false // the last thing read was one character, not a space
+        while (k < n && k - j0 <= INLINE_MATH_CHARS) {
+            val c = s[k]
+            when {
+                c == '\n' -> return null
+                c == '\\' -> { if (k + 1 >= n || s[k + 1] == '\n') return null; k += 2; plain = false }
+                c == '$' -> return if (plain && !(k + 1 < n && digit(s[k + 1])) && k - j0 <= INLINE_MATH_CHARS) Triple(k + 1 - at, s.substring(j0, k), false) else null
+                else -> { plain = !ws(c); k++ }
+            }
+        }
+        return null
+    }
+
+    // For the links of the same line.
+    internal val bracket = Next(s, "]")
+    internal val close = Next(s, ")")
+    internal val space = NextChar(s, ::ws)
 }
 
 private sealed class Node {
@@ -82,8 +145,16 @@ private val BB: (Char) -> String = { alpha(it, 0x1D538, 0x1D552, 0x1D7D8, mapOf(
 private val CAL: (Char) -> String = { alpha(it, 0x1D49C, 0, holes = mapOf('B' to "ℬ", 'E' to "ℰ", 'F' to "ℱ", 'H' to "ℋ", 'I' to "ℐ", 'L' to "ℒ", 'M' to "ℳ", 'R' to "ℛ")) }
 private val FRAK: (Char) -> String = { alpha(it, 0x1D504, 0x1D51E, holes = mapOf('C' to "ℭ", 'H' to "ℌ", 'I' to "ℑ", 'R' to "ℜ", 'Z' to "ℨ")) }
 
-private class Parser(val s: String) {
+// TeX nested deeper than math is written: the formula is shown as written.
+private class TooDeep : RuntimeException()
+
+private class Parser(val s: String, private var depth: Int = 0) {
     var i = 0
+
+    private inline fun <T> deeper(f: () -> T): T {
+        if (++depth > MAX_DEPTH) throw TooDeep()
+        try { return f() } finally { depth-- }
+    }
 
     fun all(): Node = one(seq(stop = null))
 
@@ -103,15 +174,23 @@ private class Parser(val s: String) {
         return out
     }
 
-    private fun scripts(base: Node): Node {
+    private fun scripts(first: Node): Node {
+        var base = first
         var sup: Node? = null; var sub: Node? = null
+        var primes = 0
         while (i < s.length) {
             skipSpace()
             if (i >= s.length) break
             when (s[i]) {
                 '^' -> { i++; sup = arg() }
                 '_' -> { i++; sub = arg() }
-                '\'' -> { var p = ""; while (i < s.length && s[i] == '\'') { p += "′"; i++ }; return scripts(Node.Seq(listOf(base, Node.Atom(p, Kind.ORD)))) }
+                '\'' -> {
+                    // Primes join the base; scripts before them stay on it. Each run is a level of the tree.
+                    if (++primes + depth > MAX_DEPTH) throw TooDeep()
+                    val st = i; while (i < s.length && s[i] == '\'') i++
+                    if (sup != null || sub != null) { base = Node.Script(base, sup, sub); sup = null; sub = null }
+                    base = Node.Seq(listOf(base, Node.Atom("′".repeat(i - st), Kind.ORD)))
+                }
                 else -> break
             }
         }
@@ -121,7 +200,9 @@ private class Parser(val s: String) {
     private fun skipSpace() { while (i < s.length && s[i].isWhitespace()) i++ }
 
     // One argument: a group in braces, a command, or one character.
-    fun arg(): Node {
+    fun arg(): Node = deeper { arg0() }
+
+    private fun arg0(): Node {
         skipSpace()
         if (i >= s.length) return Node.Seq(emptyList())
         if (s[i] == '{') { i++; return one(seq('}')) }
@@ -143,10 +224,12 @@ private class Parser(val s: String) {
         val end = s.indexOf(']', i)
         if (end < 0) return null
         val inner = s.substring(i + 1, end); i = end + 1
-        return Parser(inner).all()
+        return Parser(inner, depth + 1).all()
     }
 
-    fun atom(): Node? {
+    fun atom(): Node? = deeper { atom0() }
+
+    private fun atom0(): Node? {
         val c = s[i]
         when {
             c.isWhitespace() -> { i++; return null }
@@ -249,7 +332,8 @@ private class Parser(val s: String) {
 /** TeX set as runs of text. Rows of an environment are separate lines ("\n"). */
 fun mathRuns(tex: String): List<MathRun> {
     val out = mutableListOf<MathRun>()
-    Writer(out).node(Parser(tex).all(), Ctx())
+    val tree = try { Parser(tex).all() } catch (_: TooDeep) { return listOf(MathRun(tex)) }
+    Writer(out).node(tree, Ctx())
     return merge(out)
 }
 
@@ -337,16 +421,17 @@ private class Writer(val out: MutableList<MathRun>) {
 
 // Runs that look the same are one run, and doubled spaces are one.
 private fun merge(list: List<MathRun>): List<MathRun> {
-    val out = mutableListOf<MathRun>()
+    val runs = mutableListOf<MathRun>()
+    val texts = mutableListOf<StringBuilder>()
     for (r in list) {
-        val prev = out.lastOrNull()
-        if (prev != null && prev.italic == r.italic && prev.bold == r.bold && prev.level == r.level) out[out.size - 1] = prev.copy(text = prev.text + r.text)
-        else out += r
+        val prev = runs.lastOrNull()
+        if (prev != null && prev.italic == r.italic && prev.bold == r.bold && prev.level == r.level) texts.last().append(r.text)
+        else { runs += r; texts += StringBuilder(r.text) }
     }
-    return out.map { it.copy(text = it.text.replace(Regex("  +"), " ")) }.let { l ->
-        // No space at the start or the end of a line.
-        val joined = l.toMutableList()
-        if (joined.isNotEmpty()) { joined[0] = joined[0].copy(text = joined[0].text.trimStart(' ')); joined[joined.size - 1] = joined.last().copy(text = joined.last().text.trimEnd(' ')) }
-        joined.map { it.copy(text = it.text.replace(" \n", "\n").replace("\n ", "\n")) }.filter { it.text.isNotEmpty() }
-    }
+    val joined = runs.mapIndexed { k, r -> r.copy(text = texts[k].toString().replace(SPACES, " ")) }.toMutableList()
+    // No space at the start or the end of a line.
+    if (joined.isNotEmpty()) { joined[0] = joined[0].copy(text = joined[0].text.trimStart(' ')); joined[joined.size - 1] = joined.last().copy(text = joined.last().text.trimEnd(' ')) }
+    return joined.map { it.copy(text = it.text.replace(" \n", "\n").replace("\n ", "\n")) }.filter { it.text.isNotEmpty() }
 }
+
+private val SPACES = Regex("  +")
