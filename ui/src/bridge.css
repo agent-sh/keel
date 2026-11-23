@@ -757,7 +757,10 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-meta { margin-left: auto; min-width: 0; font-size: var(--text-micro); color: var(--faint); white-space: pre; }
 .k-gone { color: var(--st-fail-ink); }
 .k-station-tools { display: flex; gap: 1px; opacity: 0; transition: opacity var(--dur-quick); }
-.k-station:hover .k-station-tools, .k-station:focus-within .k-station-tools, .k-station[data-helm] .k-station-tools { opacity: 1; }
+/* Quiet until the head is pointed at or the keyboard is in it, the pane worked in too: they are
+   there every second the pane is, and needed now and then. Without a pointer that hovers they stay. */
+.k-station-head:hover .k-station-tools, .k-station-head:focus-within .k-station-tools { opacity: 1; }
+@media (hover: none) { .k-station-tools { opacity: 1; } }
 .k-tool { display: grid; place-items: center; width: var(--spacing-ctl-md); height: var(--spacing-ctl-md); border-radius: var(--radius-sm); color: var(--faint); }
 .k-tool:hover { background: var(--hover); color: var(--fg); }
 .k-tool[aria-pressed="true"] { color: var(--fg); }

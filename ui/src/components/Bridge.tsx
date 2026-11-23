@@ -109,8 +109,9 @@ const StationTools = memo(function StationTools({ id, helm, pinned, focus, panes
   return (
     <span className="k-station-tools">
       {!focus && panes > 1 && <PaneMenu id={id} label="Move to a pane" testid="station-place" className="k-tool k-tool-move"><PanelsTopLeft /></PaneMenu>}
-      {!focus && <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(id, -1)}><ChevronLeft /></Tool>}
-      {!focus && <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(id, 1)}><ChevronRight /></Tool>}
+      {/* With one pane there is nowhere to move it. */}
+      {!focus && panes > 1 && <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(id, -1)}><ChevronLeft /></Tool>}
+      {!focus && panes > 1 && <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(id, 1)}><ChevronRight /></Tool>}
       <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(id, !pinned).catch(reportError)}>{pinned ? <PinOff /> : <Pin />}</Tool>
       <Tool label={focus ? "Show all panes (Alt Enter)" : "Focus this pane (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
       <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(id)}><X /></Tool>
@@ -134,8 +135,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const panes = useStations((x) => x.count);
   const told = st.text ? whyText(st, now) : "";
   const why = offline ? asOf(clock((st as { as_of?: number }).as_of ?? s.updated)) : told;
-  // The tools the helm keeps in view take room beside the title (bridge.css counts them); another pane shows its tools over the header's end when it is pointed at.
-  const tools = helm ? (!focus && panes > 1 ? 6 : !focus ? 5 : 3) : 0;
+  // The tools the helm keeps in view take room beside the title (bridge.css counts them); every pane shows them when its head is pointed at or focused, another pane over the header's end.
+  const tools = helm ? (!focus && panes > 1 ? 6 : 3) : 0;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}
       style={{ "--k-tools": tools } as CSSProperties} data-whole={why ? `${s.title || "New session"}\n${why}` : s.title || "New session"}>
