@@ -15,6 +15,18 @@
 // session that queued entries is told what landed and left as one harness
 // input, owed here until the prompt that carries it is stored.
 //
+// A conflict with the base goes to the agent whose branch it is, not out of
+// the queue (src/landing/resolve.ts): the queue rebases the branch in a
+// worktree of its own to read where it stops (the commit, the files, the
+// base's lines), gives that rebase up, and continues the agent with a task
+// that names them. When the agent's turn ends, a branch that moved and merges
+// with the base is queued again and checked like any entry; a conflict the
+// agent calls substantive, or two failed tries, leaves and is told to the
+// session that started it. An agent that is gone is replaced by a fresh one
+// of the session that queued the branch, on the branch. The forecast's word
+// at queue time sends the task at once. Keel never ends a rebase in the
+// agent's worktree; one in progress there is named and left as it is.
+//
 // Who queues what: a session queues its own branches and its agents' (an
 // agent's agents' too); a branch another session holds, or one nobody holds,
 // is the owner's to queue (the Branches panel).
@@ -34,9 +46,9 @@
 // never ends; a repository with such checks raises land.timeout_minutes and
 // restarts less often.
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { countsOf } from "../checks/counts.ts";
 import { inputsOf, keyOf, onTree, record, repoOf, settingFor, treeOf } from "../checks/ledger.ts";
 import { parseChecks, readChecks, overlay } from "../checks/named.ts";
@@ -46,6 +58,7 @@ import { git, locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import type { Overlaps } from "../worktree/overlap-scan.ts";
+import { afterTask, baseLines, rebaseTask, TRIES, type ConflictAt, type Stop } from "./resolve.ts";
 import { buildOrder, checksToRun, failureText, leftWhy, outcomeText, queueWarning, readLand, tailOf, type LandRules, type Left, type Outcome, type Push, type ToRun } from "./rules.ts";
 
 const SCHEMA = `
@@ -64,13 +77,22 @@ CREATE TABLE IF NOT EXISTS landing_batches (
 );
 `;
 
+// The columns of a branch's own agent settling its conflict with the base (src/landing/resolve.ts):
+// `tries` the rebase tasks it was sent, `agent` the agent that has the newest, `agent_task` the task
+// number that ends it, `sent_tip` the branch's tip when it was sent.
+const RESOLVE_COLUMNS: [string, string][] = [["tries", "INTEGER NOT NULL DEFAULT 0"], ["agent", "TEXT"], ["agent_task", "INTEGER"], ["sent_tip", "TEXT"]];
+
 // queued: waits for a pass; building / checking: in the pass that runs (step says what);
+// resolving: it conflicts with the base and its agent was sent a rebase task;
 // landed: on the base; left: out of the queue, `why` says why; removed: taken out by whoever queued it.
-export type EntryState = "queued" | "building" | "checking" | "landed" | "left" | "removed";
+export type EntryState = "queued" | "building" | "checking" | "resolving" | "landed" | "left" | "removed";
+export const LIVE_STATES: readonly EntryState[] = ["queued", "building", "checking", "resolving"];
+const LIVE_SQL = `(${LIVE_STATES.map((s) => `'${s}'`).join(", ")})`;
 export type Entry = {
   id: string; repo: string; branch: string; pos: number; queued_by: string | null; holder: string | null;
   tip: string; state: EntryState; step: string | null; built: string | null; landed: string | null;
   why: string | null; log: string | null; batch: string | null; owed: number; created: number; updated: number;
+  tries: number; agent: string | null; agent_task: number | null; sent_tip: string | null;
 };
 export type QueueView = { repo: string | null; base: string | null; entries: Entry[]; running: boolean; rules?: { checks: string[]; push?: string; after?: string; method: string; problems: string[] } };
 
@@ -79,6 +101,7 @@ export type QueueView = { repo: string | null; base: string | null; entries: Ent
 // (its ref: the agent whose branch it is). `owed`: an outcome waits for `session`.
 // `confine`: the argv a check runs with, inside the session's sandbox when it has one.
 // `mayPush`: why the queue may not push for this session (it has no network), or nothing.
+// `agents`: the agents a conflict with the base goes to (none: the branch leaves, told).
 export type QueueDeps = {
   changed: (sessionIds: string[]) => void;
   error: (e: unknown, at: string) => void;
@@ -87,6 +110,19 @@ export type QueueDeps = {
   confine: (argv: string[], sessionId: string | null, folder: string) => string[];
   env: (sessionId: string | null) => Record<string, string>;
   mayPush: (sessionId: string | null) => string | undefined;
+  agents?: AgentDeps;
+};
+
+// Who settles a branch's conflict: the agent that holds it, or a fresh agent
+// of `fresh` (a session) on the branch when that agent is gone.
+export type Taker = { agent: string } | { fresh: string };
+export type AgentDeps = {
+  // Who takes a rebase task for the entry; none: a top-level session holds it, or nobody can.
+  who: (e: Pick<Entry, "holder" | "queued_by">) => Taker | undefined;
+  // Sends the task: the agent that has it, its session and the task number its end closes; or why not.
+  send: (e: Entry, to: Taker, text: string) => Promise<{ agent: string; session: string; task: number } | { why: string }>;
+  // The agent as it is now; undefined when it is gone.
+  state: (agentId: string) => { ended: boolean; status: string; tasks: number; report: string } | undefined;
 };
 
 // Queue calls of one step (a coordinator queueing several branches) make one pass.
@@ -102,6 +138,9 @@ const TAIL_BYTES = 64 * 1024;
 // The identity of a commit the queue makes (a rebased entry) on a machine with none of its own.
 const KEEL_IDENT = { GIT_AUTHOR_NAME: "Keel", GIT_AUTHOR_EMAIL: "keel@localhost", GIT_COMMITTER_NAME: "Keel", GIT_COMMITTER_EMAIL: "keel@localhost" };
 const NO_EDIT = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" };
+// A conflicted file larger than this is named without its lines (a generated file, a lockfile).
+const MAX_MARKED = 2 * 1024 * 1024;
+type Sg = (args: string[], env?: Record<string, string>) => Promise<{ code: number; out: string; err: string }>;
 
 const newId = () => `lq-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const short = (b: string) => b.replace(/^refs\/(heads|remotes\/[^/]+)\//, "");
@@ -122,9 +161,17 @@ export class LandingQueue {
   private viewers = new Map<string, Set<string>>();
   // How often each entry was built again because the base moved under it.
   private moves = new Map<string, number>();
+  // Entries that conflicted with an entry ahead of them only, and wait for it to land (once each).
+  private deferred = new Set<string>();
+  // Entries whose agent's end is being read.
+  private deciding = new Set<string>();
+  // Rebase tasks being made and sent, outside a pass (idle waits for them too).
+  private sending = new Set<Promise<unknown>>();
+  private track(p: Promise<unknown>) { const t = p.catch((x) => this.d.error(x, "landing rebase task")).finally(() => this.sending.delete(t)); this.sending.add(t); }
 
   constructor(private store: Store, private ov: Overlaps, private d: QueueDeps) {
     store.migrate(SCHEMA);
+    for (const [c, t] of RESOLVE_COLUMNS) if (!store.columnExists("landing_queue", c)) store.migrate(`ALTER TABLE landing_queue ADD COLUMN ${c} ${t}`);
   }
 
   private get dir() { return join(this.store.stateDir, "landing"); }
@@ -147,6 +194,11 @@ export class LandingQueue {
     for (const batch of landedIn.keys()) this.store.db.query("UPDATE landing_batches SET after_exit = -2 WHERE id = ? AND after IS NOT NULL AND after_exit IS NULL").run(batch);
     for (const r of this.store.db.query<{ repo: string }, []>("SELECT DISTINCT repo FROM landing_queue").all()) await this.dropScratch(r.repo).catch((e) => this.d.error(e, "landing recover"));
     this.prune();
+    // An agent's task the stop cut before it was sent is built again; one that was sent is read when the agent ends (or now, if it has).
+    for (const e of this.store.db.query<Entry, []>("SELECT * FROM landing_queue WHERE state = 'resolving'").all()) {
+      if (!e.agent) this.set(e.id, { state: "queued", step: null, tries: Math.max(0, e.tries - 1) });
+      else await this.agentEnded(e.agent).catch((x) => this.d.error(x, "landing recover"));
+    }
     for (const r of this.store.db.query<{ repo: string }, []>("SELECT DISTINCT repo FROM landing_queue WHERE state = 'queued'").all()) this.schedule(r.repo, 0);
     for (const r of this.store.db.query<{ queued_by: string }, []>("SELECT DISTINCT queued_by FROM landing_queue WHERE owed = 1 AND queued_by IS NOT NULL").all()) this.d.owed(r.queued_by);
   }
@@ -188,7 +240,8 @@ export class LandingQueue {
     const queued: Entry[] = [], refused: { branch: string; why: string }[] = [], warnings: string[] = [];
     if (!base) return { queued, refused: branches.map((b) => ({ branch: b, why: "the repository has no base branch to land on (main or master, or the branch origin/HEAD names)" })), warnings };
     const owners = this.ov.owners(repo);
-    const live = () => this.store.db.query<Entry, [string]>("SELECT * FROM landing_queue WHERE repo = ? AND state IN ('queued', 'building', 'checking') ORDER BY pos").all(repo);
+    const live = () => this.store.db.query<Entry, [string]>(`SELECT * FROM landing_queue WHERE repo = ? AND state IN ${LIVE_SQL} ORDER BY pos`).all(repo);
+    const early: string[] = [];
     for (const raw of branches) {
       const branch = raw.trim().replace(/^refs\/heads\//, "");
       if (!/^[\w./@-]+$/.test(branch) || branch.includes("..")) { refused.push({ branch: raw, why: "not a branch name" }); continue; }
@@ -200,16 +253,23 @@ export class LandingQueue {
       if (by && holder && !this.within(holder, by)) { refused.push({ branch, why: `another session holds it (${holder}): that session queues it, or the one that started it, or the owner from the Branches panel` }); continue; }
       const had = live().find((e) => e.branch === branch);
       if (had) { queued.push(had); continue; }
+      // The forecast already finds it conflicting with the base, at these tips: its agent is told now,
+      // not after the entries ahead of it were built and checked.
+      const fc = this.d.agents?.who({ holder, queued_by: by }) ? await this.ov.againstBase(repo, branch).catch(() => undefined) : undefined;
+      const toAgent = fc?.state === "conflict" && fc.tip === tip;
+      if (live().some((e) => e.branch === branch)) { queued.push(live().find((e) => e.branch === branch)!); continue; } // queued meanwhile
       const now = Date.now();
       const pos = (this.store.db.query<{ p: number | null }, [string]>("SELECT MAX(pos) AS p FROM landing_queue WHERE repo = ?").get(repo)?.p ?? 0) + 1;
       const id = newId();
-      this.store.db.query("INSERT INTO landing_queue (id, repo, branch, pos, queued_by, holder, tip, state, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)")
-        .run(id, repo, branch, pos, by, holder, tip, now, now);
+      this.store.db.query("INSERT INTO landing_queue (id, repo, branch, pos, queued_by, holder, tip, state, step, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, repo, branch, pos, by, holder, tip, toAgent ? "resolving" : "queued", toAgent ? `the forecast finds it conflicting with ${short(base)}: its agent is being sent a rebase task` : null, now, now);
+      if (toAgent) early.push(id);
       queued.push(this.entry(id)!);
       const w = this.warning(repo, branch, base, live().filter((e) => e.branch !== branch).map((e) => e.branch));
       if (w) warnings.push(w);
     }
     if (queued.length) { this.changedFor(repo); this.schedule(repo); }
+    for (const id of early) this.track(this.early(id));
     return { queued, refused, warnings };
   }
 
@@ -218,7 +278,7 @@ export class LandingQueue {
     const e = this.entry(id);
     if (!e) return { error: "no such entry" };
     if (by && e.queued_by !== by && !(e.holder && this.within(e.holder, by))) return { error: "this entry was queued by another session" };
-    if (e.state !== "queued") return { error: e.state === "building" || e.state === "checking" ? "it is being built now: it lands or leaves with this pass" : `it already ${e.state === "landed" ? "landed" : "left the queue"}` };
+    if (e.state !== "queued" && e.state !== "resolving") return { error: e.state === "building" || e.state === "checking" ? "it is being built now: it lands or leaves with this pass" : `it already ${e.state === "landed" ? "landed" : "left the queue"}` };
     this.set(id, { state: "removed", why: by ? "taken out by the session that queued it" : "taken out by the owner" });
     this.changedFor(e.repo);
     return this.entry(id)!;
@@ -255,7 +315,7 @@ export class LandingQueue {
     if (seen.size > 64) seen.delete(seen.values().next().value!);
     this.viewers.set(repo, seen);
     const base = await this.baseOf(repo);
-    const entries = this.store.db.query<Entry, [string, number]>("SELECT * FROM landing_queue WHERE repo = ? AND (state IN ('queued', 'building', 'checking') OR updated > ?) ORDER BY pos DESC LIMIT 60").all(repo, Date.now() - KEEP_MS);
+    const entries = this.store.db.query<Entry, [string, number]>(`SELECT * FROM landing_queue WHERE repo = ? AND (state IN ${LIVE_SQL} OR updated > ?) ORDER BY pos DESC LIMIT 60`).all(repo, Date.now() - KEEP_MS);
     let rules: QueueView["rules"];
     if (base) {
       const r = await this.rulesOf(repo, base);
@@ -315,15 +375,16 @@ export class LandingQueue {
       const t = this.timers.get(repo);
       if (t) { clearTimeout(t); this.timers.delete(repo); void this.run(repo); }
       const r = this.running.get(repo);
-      if (!r) return;
-      await r;
+      if (r) { await r; continue; }
+      if (!this.sending.size) return;
+      await Promise.all([...this.sending]);
     }
   }
 
   private changedFor(repo: string) {
     const ids = new Set<string>();
     for (const id of this.ov.owners(repo).values()) ids.add(id);
-    for (const r of this.store.db.query<{ a: string | null; b: string | null }, [string, number]>("SELECT queued_by AS a, holder AS b FROM landing_queue WHERE repo = ?1 AND (state IN ('queued', 'building', 'checking') OR owed = 1 OR updated > ?2)").all(repo, Date.now() - 3_600_000)) {
+    for (const r of this.store.db.query<{ a: string | null; b: string | null }, [string, number]>(`SELECT queued_by AS a, holder AS b FROM landing_queue WHERE repo = ?1 AND (state IN ${LIVE_SQL} OR owed = 1 OR updated > ?2)`).all(repo, Date.now() - 3_600_000)) {
       if (r.a) ids.add(r.a);
       if (r.b) ids.add(r.b);
     }
@@ -331,7 +392,7 @@ export class LandingQueue {
     this.d.changed([...ids]);
   }
 
-  private set(id: string, f: Partial<Pick<Entry, "state" | "step" | "built" | "landed" | "why" | "log" | "batch" | "owed" | "tip">>) {
+  private set(id: string, f: Partial<Pick<Entry, "state" | "step" | "built" | "landed" | "why" | "log" | "batch" | "owed" | "tip" | "holder" | "tries" | "agent" | "agent_task" | "sent_tip">>) {
     const keys = Object.keys(f);
     if (!keys.length) return;
     this.store.db.query(`UPDATE landing_queue SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated = ? WHERE id = ?`).run(...(Object.values(f) as any[]), Date.now(), id);
@@ -345,6 +406,7 @@ export class LandingQueue {
     const queuerTold = !!root && root.session === e.queued_by;
     this.set(e.id, { state: "left", step: null, why, log: log ?? null, batch, owed: e.queued_by && !queuerTold && this.store.session(e.queued_by) ? 1 : 0 });
     this.moves.delete(e.id);
+    this.deferred.delete(e.id);
     const l: Left = { branch: e.branch, why, ...(log ? { log } : {}) };
     if (root) this.d.failed(root.session, { cls: clsOf(why), message: failureText(l, base), ...(root.ref ? { ref: root.ref } : {}) });
   }
@@ -411,7 +473,9 @@ export class LandingQueue {
         await sg(["clean", "-q", "-fd"]);
         const built = await this.apply(sg, rules.method, tip, bt, ident, e.branch);
         if ("conflict" in built) {
-          leave(e, leftWhy({ kind: "conflict", base: baseName, at: from, files: built.conflict, ahead }));
+          const to = await this.conflicted(e, { sg, scratch, ident, base, baseName, from, bt, ahead, method: rules.method, checks: checks.map((c) => c.check.name), batch });
+          if (to !== "leave") continue;
+          leave(e, leftWhy({ kind: "conflict", base: baseName, at: from, files: built.conflict, ahead, ...(e.tries ? { tries: e.tries } : {}) }));
           continue;
         }
         if (built.at === tip) { leave(e, `it has nothing to land: ${baseName}${ahead.length ? " with the entries ahead of it" : ""} already holds its change`); continue; }
@@ -468,6 +532,183 @@ export class LandingQueue {
       this.set(e.id, { state: "queued", step: null, built: null, why: `${base} moved during the check; built again` });
     }
     this.again.add(repo);
+  }
+
+  // ---- a conflict with the base, settled by the branch's own agent (src/landing/resolve.ts)
+
+  // An entry the pass could not build: "agent" when its agent was sent a rebase task, "later" when it
+  // waits for the entries ahead of it to land (it conflicts with them, not with the base), else "leave".
+  private async conflicted(e: Entry, p: { sg: Sg; scratch: string; ident: Record<string, string>; base: string; baseName: string; from: string; bt: string; ahead: string[]; method: "rebase" | "merge"; checks: string[]; batch: string }): Promise<"agent" | "later" | "leave"> {
+    if (!this.d.agents) return "leave";
+    const to = this.d.agents.who(e);
+    if (!to || e.tries >= TRIES) return "leave";
+    if (p.ahead.length) {
+      // With the base alone it merges: what it meets is an entry ahead. Once that lands it is the base's, and a rebase settles it.
+      const alone = await p.sg(["merge-tree", "--write-tree", "--name-only", "--no-messages", p.from, p.bt]);
+      if (alone.code === 0) {
+        if (this.deferred.has(e.id)) return "leave";
+        this.deferred.add(e.id);
+        this.set(e.id, { state: "queued", step: null, built: null, why: `it conflicts with ${p.ahead.join(", ")}, ahead of it: built again once ${p.ahead.length === 1 ? "that lands" : "they land"}` });
+        this.again.add(e.repo);
+        return "later";
+      }
+    }
+    const stop = await this.stopOf(p.sg, p.scratch, p.from, p.bt, p.ident);
+    if (!stop) return "leave"; // (it rebases clean onto the base alone, and conflicts with what is ahead: it was deferred once already)
+    this.track(this.task(e, to, stop, { base: p.base, baseName: p.baseName, from: p.from, tip: p.bt, method: p.method, checks: p.checks }));
+    return "agent";
+  }
+
+  // An entry the forecast found conflicting when it was queued: its rebase is tried in a worktree of the
+  // queue's own, and its agent gets the task; when it rebases clean after all, it waits for a pass.
+  private async early(id: string) {
+    const e = this.entry(id);
+    if (!e || e.state !== "resolving" || e.agent) return;
+    try {
+      const to = this.d.agents?.who(e);
+      const base = await this.baseOf(e.repo);
+      const from = base ? (await git(e.repo, ["rev-parse", "-q", "--verify", base], { read: true })).out.trim() : "";
+      const stop = to && base && from ? await this.probe(e.repo, from, e.tip) : undefined;
+      if (!to || !base || !stop) { this.set(id, { state: "queued", step: null }); this.changedFor(e.repo); this.schedule(e.repo, 0); return; }
+      const method = (await this.rulesOf(e.repo, base, from))?.rules.method ?? "rebase";
+      await this.task(e, to, stop, { base, baseName: short(base), from, tip: e.tip, method, checks: await this.checkNames(e.repo, base, from) });
+    } catch (x) {
+      this.d.error(x, "landing rebase task");
+      if (this.entry(id)?.state === "resolving" && !this.entry(id)?.agent) { this.set(id, { state: "queued", step: null }); this.schedule(e.repo, 0); }
+    }
+  }
+
+  // Where a rebase of `bt` onto `onto` stops, tried in a worktree of the queue's own (removed after).
+  private async probe(repo: string, onto: string, bt: string): Promise<Stop | undefined> {
+    const dir = join(this.dir, createHash("sha256").update(repo).digest("hex").slice(0, 16), newId().replace(/^lq-/, "probe-"));
+    mkdirSync(join(dir, ".."), { recursive: true });
+    await worktreeGit(repo, ["worktree", "add", "-q", "--detach", dir, onto]);
+    try {
+      const sg: Sg = (args, env) => git(dir, args, { env: { ...NO_EDIT, ...env }, timeout: 300_000 });
+      const ident = (await sg(["var", "GIT_COMMITTER_IDENT"])).code === 0 ? {} : KEEL_IDENT;
+      return await this.stopOf(sg, dir, onto, bt, ident);
+    } finally {
+      await worktreeGit(repo, ["worktree", "remove", "--force", dir], { ok: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // The commit a rebase of `bt` onto `onto` stops at, and each conflicted file with the base's lines
+  // the conflict covers there. Undefined: it rebases clean. The rebase is the queue's own, in its own
+  // worktree, and is given up after it is read.
+  private async stopOf(sg: Sg, dir: string, onto: string, bt: string, ident: Record<string, string>): Promise<Stop | undefined> {
+    await sg(["checkout", "-q", "--detach", "--force", onto]);
+    await sg(["clean", "-q", "-fd"]);
+    if ((await sg(["merge-base", "--is-ancestor", onto, bt])).code === 0) return undefined;
+    const r = await sg(["-c", "merge.conflictStyle=diff3", "rebase", "-q", "--no-autostash", onto, bt], ident);
+    if (r.code === 0) return undefined;
+    try {
+      const paths = (await sg(["diff", "--name-only", "--diff-filter=U"])).out.split("\n").filter(Boolean);
+      const at = (await sg(["rev-parse", "-q", "--verify", "REBASE_HEAD"])).out.trim();
+      const commit = at ? { sha: at, subject: (await sg(["log", "-1", "--format=%s", at])).out.trim() } : undefined;
+      const files: ConflictAt[] = paths.map((path) => {
+        let text = "";
+        try { if (statSync(join(dir, path)).size <= MAX_MARKED) text = readFileSync(join(dir, path), "utf8"); } catch {} // a removed file: no lines
+        return { path, lines: baseLines(text) };
+      });
+      if (!paths.length && !/conflict/i.test(r.out + r.err)) throw new Error(`git rebase: ${tailOf(r.err || r.out, 3, 300)}`);
+      return { ...(commit ? { commit } : {}), files };
+    } finally {
+      await sg(["rebase", "--abort"]);
+    }
+  }
+
+  // Sends the entry's agent its rebase task (try `tries + 1`). The entry waits as resolving until the agent ends.
+  private async task(e: Entry, to: Taker, stop: Stop, at: { base: string; baseName: string; from: string; tip: string; method: "rebase" | "merge"; checks: string[] }) {
+    const tries = e.tries + 1;
+    this.set(e.id, { state: "resolving", step: `its agent is being sent a rebase task onto ${at.baseName} (try ${tries} of ${TRIES})`, built: null, why: null, tries, agent: null, agent_task: null, sent_tip: at.tip, tip: at.tip });
+    this.changedFor(e.repo);
+    const baseSubject = (await git(e.repo, ["log", "-1", "--format=%s", at.from], { read: true })).out.trim();
+    const inProgress = "agent" in to && !!e.holder && (await this.rebasingIn(e.holder));
+    const text = rebaseTask({ branch: e.branch, tip: at.tip, base: at.baseName, baseTip: at.from, baseSubject, stop, try: tries, method: at.method, checks: at.checks, inProgress, fresh: "fresh" in to });
+    let r: Awaited<ReturnType<AgentDeps["send"]>>;
+    try { r = await this.d.agents!.send(this.entry(e.id) ?? e, to, text); } catch (x) { r = { why: (x as Error).message.slice(0, 300) }; }
+    const now = this.entry(e.id);
+    if (!now || now.state !== "resolving") return; // taken out meanwhile
+    if ("why" in r) {
+      this.leaveAlone(now, leftWhy({ kind: "conflict", base: at.baseName, at: at.from, files: stop.files.map((f) => f.path), ahead: [], agent: `its agent could not be given the rebase: ${r.why}` }), at.baseName);
+      return;
+    }
+    this.set(e.id, { agent: r.agent, agent_task: r.task, holder: r.session, step: `its agent rebases it onto ${at.baseName} (try ${tries} of ${TRIES})` });
+    this.changedFor(e.repo);
+    // It ended before the record said who it was (a short turn): read it now.
+    const st = this.d.agents!.state(r.agent);
+    if (st?.ended && st.tasks >= r.task) this.track(this.agentEnded(r.agent));
+  }
+
+  // Whether a rebase or a merge is in progress in the worktree of a session's branch.
+  private async rebasingIn(sessionId: string): Promise<boolean> {
+    let path: string | undefined;
+    try { path = this.store.db.query<{ path: string }, [string]>("SELECT path FROM worktrees WHERE session_id = ? ORDER BY updated DESC LIMIT 1").get(sessionId)?.path; } catch {} // no worktree was ever made
+    if (!path || !existsSync(path)) return false;
+    for (const name of ["rebase-merge", "rebase-apply", "MERGE_HEAD"]) {
+      const p = (await git(path, ["rev-parse", "--git-path", name], { read: true })).out.trim();
+      if (p && existsSync(isAbsolute(p) ? p : join(path, p))) return true;
+    }
+    return false;
+  }
+
+  // An agent's turn ended: an entry whose rebase task it had goes back in the queue, gets another
+  // task, or goes to the session that started the agent (src/landing/resolve.ts afterTask).
+  async agentEnded(agentId: string) {
+    const rows = this.store.db.query<Entry, [string]>("SELECT * FROM landing_queue WHERE state = 'resolving' AND agent = ?").all(agentId);
+    for (const e of rows) {
+      if (this.deciding.has(e.id)) continue;
+      const st = this.d.agents?.state(agentId);
+      if (st && (!st.ended || st.tasks < (e.agent_task ?? 0))) continue;
+      this.deciding.add(e.id);
+      try { await this.decide(e, st); } finally { this.deciding.delete(e.id); }
+    }
+  }
+
+  private async decide(e: Entry, st: ReturnType<AgentDeps["state"]>) {
+    const base = await this.baseOf(e.repo);
+    const baseName = base ? short(base) : "the base";
+    const from = base ? (await git(e.repo, ["rev-parse", "-q", "--verify", base], { read: true })).out.trim() : "";
+    const now = (await git(e.repo, ["rev-parse", "-q", "--verify", `refs/heads/${e.branch}^{commit}`], { read: true })).out.trim() || null;
+    const merged = now && from ? await git(e.repo, ["merge-tree", "--write-tree", "--name-only", "--no-messages", from, now], { read: true }) : undefined;
+    const merges = !merged ? null : merged.code === 0 ? true : merged.code === 1 ? false : null;
+    const rebasing = e.holder ? await this.rebasingIn(e.holder) : false;
+    const files = merged?.code === 1 ? merged.out.split("\n").slice(1).filter(Boolean) : [];
+    const next = st
+      ? afterTask({ status: st.status, report: st.report, before: e.sent_tip ?? e.tip, now, merges, rebasing, tries: e.tries })
+      : { kind: "parent" as const, why: "its agent is gone" };
+    if (this.entry(e.id)?.state !== "resolving") return; // taken out meanwhile
+    if (next.kind === "queue") {
+      this.set(e.id, { state: "queued", step: null, tip: now!, built: null, why: `its agent settled the conflict with ${baseName} (try ${e.tries} of ${TRIES}): built and checked again` });
+      this.changedFor(e.repo);
+      this.schedule(e.repo, 0);
+      return;
+    }
+    if (next.kind === "again" && now && from && base) {
+      const to = this.d.agents?.who(e);
+      const stop = to ? await this.probe(e.repo, from, now) : undefined;
+      if (to && stop) {
+        await this.task({ ...e, tip: now }, to, stop, { base, baseName, from, tip: now, method: (await this.rulesOf(e.repo, base, from))?.rules.method ?? "rebase", checks: await this.checkNames(e.repo, base, from) });
+        return;
+      }
+      if (!stop && to) { this.set(e.id, { state: "queued", step: null, tip: now, why: null }); this.changedFor(e.repo); this.schedule(e.repo, 0); return; }
+    }
+    this.leaveAlone(e, leftWhy({ kind: "conflict", base: baseName, at: from, files, ahead: [], agent: next.why }), baseName);
+  }
+
+  // An entry leaves outside a pass: in a batch of its own, whose outcome is owed as a pass's is.
+  private leaveAlone(e: Entry, why: string, baseName: string) {
+    const batch = newId().replace(/^lq-/, "lb-");
+    this.leave(e, why, baseName, batch);
+    this.finish(e.repo, baseName, batch, undefined, []);
+    this.changedFor(e.repo);
+  }
+
+  private async checkNames(repo: string, base: string, from: string): Promise<string[]> {
+    const r = await this.rulesOf(repo, base, from);
+    const plan = r ? checksToRun(r.rules, r.named, homedir()) : undefined;
+    return plan && "run" in plan ? plan.run.map((c) => c.check.name) : [];
   }
 
   // Every check of an entry on its built tree, or why it leaves. The tree is

@@ -387,6 +387,22 @@ export class ScriptedProvider implements Provider {
           return reply(`Went on in a fresh context. ${head.split("\n\n[")[0]!.trim().split("\n").at(-1)}`);
         }
         const done = msgs.slice(at + 1).filter((m) => m.role === "assistant").length;
+        // `script:then-calls [...]` on a later line: each input that comes after the calls and is not a
+        // tool result (a harness note, a parent's message) is answered with these calls, in order, and a
+        // reply naming the last result, as a model that follows what it was sent does.
+        if (/\nscript:then-calls[ \t]/.test(owner)) {
+          const h = msgs.findLastIndex((m) => m.role === "user" && !(m.content as any[]).some((b) => b.type === "tool_result"));
+          if (h > at) {
+            const then = callsAfter(owner, "script:then-calls");
+            const k = msgs.slice(h + 1).filter((m) => m.role === "assistant").length;
+            const c = then[k];
+            if (c && typeof c.after_ms === "number") await Bun.sleep(Math.max(0, Math.min(c.after_ms, 10_000)));
+            if (c) return reply(typeof c.say === "string" ? c.say : `Then step ${k + 1} of ${then.length}.`, "tool_use", [{ type: "tool_use", id: `then-${msgs.length}-${k}`, name: String(c.name), input: c.input ?? {} }]);
+            const got = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
+            const said = typeof got?.content === "string" ? got.content : (got?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
+            return reply(`Done with the ${then.length} call${then.length === 1 ? "" : "s"} it asked for.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
+          }
+        }
         // An agent's budget is spent: it writes its report in words, as a model told so does.
         if (lastText.includes("[harness] Your budget for this task is spent")) return reply(`Report at the budget: ${done} of ${calls.length} steps taken.`);
         const next = calls[done];

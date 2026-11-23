@@ -3,9 +3,10 @@
 // with keel__landing_queue, a branch that leaves is told to the session that
 // holds it as a failure in its scope (src/automation/failures.ts), and the
 // session that queued entries gets their outcome as one harness input.
+import * as agents from "../../automation/agents.ts";
 import { deliver, isPending } from "../../automation/core.ts";
 import * as failures from "../../automation/failures.ts";
-import { LandingQueue, type Entry } from "../../landing/queue.ts";
+import { LandingQueue, LIVE_STATES, type Entry } from "../../landing/queue.ts";
 import { readOptsFor } from "../../safety/sandbox-config.ts";
 import { sandboxScope } from "../../safety/sandbox-scope.ts";
 import { confine } from "../../safety/sandbox.ts";
@@ -20,6 +21,7 @@ import { gate, presence } from "./permissions.ts";
 export let landing: LandingQueue | undefined;
 // The daemon's parts the tool reads when it runs (a tool is registered once a process; the routes may be built again).
 let current: { store: Deps["store"]; q: LandingQueue } | undefined;
+let offAgents: (() => void) | undefined;
 
 export const landingRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, errors } = deps;
@@ -53,6 +55,40 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
       const p = sessionId ? gate?.perm(sessionId) : undefined;
       return p && p.sandbox !== "off" && !p.network ? "the session that queued it has no network in its sandbox" : undefined;
     },
+    // A branch that conflicts with the base goes to its own agent with a rebase task (src/landing/resolve.ts).
+    agents: {
+      who: (e) => {
+        const s = e.holder ? store.session(e.holder) : undefined;
+        const a = s ? agents.byChild(s.id) : undefined;
+        // A top-level session's branch is its own to rebase: it is told, as before.
+        if (s && !a) return undefined;
+        if (s && a && !s.archived) return agents.isHeld(s.id) ? undefined : { agent: a.id };
+        // Its agent is gone (its session deleted or archived): a fresh agent of the session that queued it takes the branch.
+        const parent = e.queued_by ? store.session(e.queued_by) : undefined;
+        return parent && !parent.archived && !agents.isHeld(parent.id) ? { fresh: parent.id } : undefined;
+      },
+      send: async (e, to, text) => {
+        if ("agent" in to) {
+          const r = await agents.send(to.agent, text, false, `landing:${e.id}:${e.tries}`, undefined, undefined, "landing");
+          if (r.held) return { why: "a stop holds it" };
+          return { agent: r.agent.id, session: r.agent.session_id, task: r.agent.tasks };
+        }
+        const a = await agents.spawn(to.fresh, { title: `Rebase ${e.branch}`, prompt: text, background: true, branch: e.branch });
+        return { agent: a.id, session: a.session_id, task: a.tasks };
+      },
+      state: (id) => {
+        const a = agents.get(id);
+        return a ? { ended: agents.isEnded(a), status: a.status, tasks: a.tasks, report: agents.report(id) ?? "" } : undefined;
+      },
+    },
+  });
+  // An agent that ended may have settled a branch's conflict: the queue reads it.
+  offAgents?.();
+  offAgents = bus.on((f) => {
+    if (f.t !== "feature" || f.name !== "automation") return;
+    const d = f.data as { kind?: string; data?: { id?: string; status?: string } } | undefined;
+    if (d?.kind !== "agent" || !d.data?.id || d.data.status === "running" || d.data.status === "waiting") return;
+    void q.agentEnded(d.data.id).catch((e) => errors.capture("server", e, { at: "landing agent end" }));
   });
   landing = q;
   current = { store, q };
@@ -63,9 +99,11 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
   const LandingTool: Tool = {
     name: "keel__landing_queue",
     readOnly: false,
+    urgent: "landing-rebase-task", // a conflict with the base now goes to the branch's agent, not out of the queue
     description:
       "The landing queue of this session's repository. queue puts branches in it, yours or your agents' (another session's branch is its own to queue, or the owner's): Keel builds each on the base plus the entries ahead of it in a worktree of its own, runs the repository's named checks on that exact tree, and fast-forwards the base only to a commit they passed on. " +
-      "A branch that conflicts or fails a check leaves the queue and is told; the rest are built without it, and those that pass land together. The outcome (what landed, what left and why) arrives later as a message: end your turn or do other work, do not poll. " +
+      "An agent's branch that conflicts with the base goes back to that agent with a rebase task (a fresh agent takes the branch when it is gone), then is checked again; a conflict it calls substantive, or two failed tries, leaves the queue and is told to you. " +
+      "A branch that fails a check, or conflicts with no agent to rebase it, leaves the queue and is told; the rest are built without it, and those that pass land together. The outcome (what landed, what left and why) arrives later as a message: end your turn or do other work, do not poll. " +
       "show lists the queue; remove takes a queued entry out by its id.",
     input_schema: {
       type: "object",
@@ -87,8 +125,8 @@ export const landingRoutes: RouteModule = (deps: Deps) => {
       if (!repo) return fail("This session's folder is not in a git repository on this machine.");
       if (input?.action === "show") {
         const v = await q.view(ctx.sessionId);
-        const live = v.entries.filter((e) => ["queued", "building", "checking"].includes(e.state)).reverse();
-        const done = v.entries.filter((e) => !["queued", "building", "checking"].includes(e.state)).slice(0, 8);
+        const live = v.entries.filter((e) => LIVE_STATES.includes(e.state)).reverse();
+        const done = v.entries.filter((e) => !LIVE_STATES.includes(e.state)).slice(0, 8);
         return ok([`Landing on ${v.base ?? "no base"}${v.rules ? `; checks: ${v.rules.checks.join(", ") || "none"}${v.rules.push ? `; pushed to ${v.rules.push}` : ""}${v.rules.problems.length ? `; problems: ${v.rules.problems.join("; ")}` : ""}` : "; the repository names no checks"}.`, live.length ? "In the queue:" : "Nothing is queued.", ...live.map(line), ...(done.length ? ["Lately:", ...done.map(line)] : [])].join("\n"));
       }
       if (input?.action === "remove") {

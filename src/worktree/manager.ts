@@ -209,6 +209,37 @@ export class Worktrees {
     };
   }
 
+  // A worktree of its own for an existing branch, which no checkout has out (an agent that takes over
+  // the branch of one that is gone). Its base is what the workspace has out, as for a new branch.
+  async attach(sessionKey: string, workspace: string, branch: string, madeFor: string = sessionKey): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string }> {
+    const repo = await this.repoOf(workspace);
+    if (!repo) throw new GitError(`not a git repository: ${workspace}`, 400);
+    if (!/^[\w./@-]+$/.test(branch) || branch.includes("..")) throw new GitError(`not a branch name: ${branch}`, 400);
+    const ref = (await git(repo.top, ["symbolic-ref", "--quiet", "--short", "HEAD"], { ok: true })).trim() || "HEAD";
+    const tip = (await git(repo.top, ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`])).trim();
+    const baseCommit = (await git(repo.top, ["merge-base", ref, tip], { ok: true })).trim() || tip;
+    // A worktree of Keel's that has it out for a session that is gone (deleted, archived) is taken over as
+    // it is, with what is uncommitted there; one that another live session or the owner has out is not.
+    const list = (await git(repo.root, ["worktree", "list", "--porcelain"], { ok: true })).split("\n\n");
+    const out = list.map((b) => ({ path: /^worktree (.+)$/m.exec(b)?.[1], branch: /^branch (.+)$/m.exec(b)?.[1] })).find((x) => x.branch === `refs/heads/${branch}`)?.path;
+    let path = join(this.root, `${basename(repo.root)}-${sessionKey.replace(/-/g, "").slice(-6)}`);
+    if (out) {
+      const row = this.store.db.query<Worktree, [string]>("SELECT * FROM worktrees WHERE path = ?").all(out);
+      const live = row.some((r) => { const s = this.store.session(r.session_id); return !!s && !s.archived; });
+      if (!row.length || live) throw new GitError(`${branch} is checked out at ${out}${live ? " for a session that is still there" : ""}`, 409);
+      this.store.db.query("DELETE FROM worktrees WHERE path = ?").run(out);
+      path = out;
+    } else {
+      mkdirSync(this.root, { recursive: true });
+      await git(repo.root, ["worktree", "add", "-q", path, branch], { fetch: gitReach(madeFor) });
+    }
+    const now = Date.now();
+    return {
+      wt: { repo_root: repo.root, path, branch, base: ref === "HEAD" ? baseCommit : ref, base_commit: baseCommit, state: "active", snapshot_ref: null, created: now, updated: now },
+      cwd: join(path, relative(repo.top, workspace)),
+    };
+  }
+
   adopt(sessionId: string, wt: Omit<Worktree, "session_id">) {
     this.put({ ...wt, session_id: sessionId });
   }

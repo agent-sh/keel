@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { bareBy } from "../core/bare-index.ts";
+import { git as gitRun } from "../core/git.ts";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { localTime } from "../core/clock.ts";
@@ -690,6 +691,7 @@ export type SpawnInput = {
   machine?: string; cwd?: string; // another machine of the fleet, and a directory there
   call_id?: string; // the tool_use id of the spawning call
   budget?: unknown; // steps, minutes or dollars for its task (parseBudget); over its definition's
+  branch?: string; // Keel's own: an existing branch its worktree has out (it takes over a gone agent's work); never from a tool's input
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -757,6 +759,7 @@ async function isolate(parent: Session, def: AgentDef, input: SpawnInput, title:
   if (!wantsWorktree(def, input, mode)) return null;
   if (!(await wts().repoOf(parent.workspace))) return null;
   // (What its fill may fetch is bounded by the parent's reach: the agent works under the parent's permissions.)
+  if (input.branch) return wts().attach(key, parent.workspace, input.branch, parent.id);
   return wts().create(key, parent.workspace, title, undefined, parent.id);
 }
 
@@ -1997,6 +2000,8 @@ function stopBelow(a: AgentRecord, by: StopBy) {
 // (the agent's Stop, a stop nobody named) stays until the owner resumes it.
 const OWN_HOLDS: readonly string[] = ["parent", "ancestor", "parent_turn", "time_limit", "parent_archived"] satisfies StopBy[];
 // Whether a hold by this stopper word is one its parent cannot release.
+// Whether a stop holds the session's queue (anyone's: a message would wait behind it).
+export const isHeld = (sessionId: string) => D().engine.isHeld(sessionId);
 export const isOwnerHold = (by: string | null | undefined) => !OWN_HOLDS.includes(by ?? "");
 // Whether the agent's queue is held by a stop its parent cannot release.
 export const ownerHolds = (sessionId: string) => D().engine.isHeld(sessionId) && isOwnerHold(D().engine.heldBy(sessionId));
@@ -2017,7 +2022,9 @@ export type MessageSent = { agent: AgentRecord; waits: boolean; held?: boolean; 
 // hold: only the sender whose own stop made a hold releases it.
 // `budget`: a new budget for the agent's task (a finished agent's next task counts again from the
 // message either way). Refused before anything is sent when it cannot be one.
-export async function send(id: string, message: string, interrupt = false, key?: string, from?: string, budgetIn?: unknown): Promise<MessageSent> {
+// `harness`: the message is Keel's own (a rebase task of the landing queue), sent as it is: it says
+// who it is from, and it releases no hold.
+export async function send(id: string, message: string, interrupt = false, key?: string, from?: string, budgetIn?: unknown, harness?: string): Promise<MessageSent> {
   const budget = parseBudget(budgetIn);
   // Another message is making this finished agent ready (its slot held, its
   // worktree made again): this one waits for that, then steers the agent it
@@ -2025,7 +2032,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
   const ahead = restarting.get(id);
   if (ahead) {
     await ahead;
-    return send(id, message, interrupt, key, from, budget);
+    return send(id, message, interrupt, key, from, budget, harness);
   }
   let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
@@ -2038,16 +2045,16 @@ export async function send(id: string, message: string, interrupt = false, key?:
   const peer = from && from !== a.parent_id ? byChild(from) : undefined;
   if (from && from !== a.parent_id && (!peer || rootSession(from) !== rootSession(a.parent_id))) throw new Error(`agent ${id} is not in this session's tree`);
   if (peer?.id === id) throw new Error("an agent cannot message itself");
-  const text = peer
-    ? `Message from agent "${attr(peer.title)}" (${peer.id}), another agent of your session's tree:\n${message}`
+  const text = harness ? message
+    : peer ? `Message from agent "${attr(peer.title)}" (${peer.id}), another agent of your session's tree:\n${message}`
     : `Message from the session that started you:\n${message}`;
-  const meta = { kind: "steer", agent_id: id, ...(peer ? { from_agent: peer.id } : {}) };
-  const opts = { key, fp: key ? Bun.hash(message).toString(36) : undefined, releases: peer ? [] : OWN_HOLDS };
+  const meta = harness ? { kind: harness, agent_id: id } : { kind: "steer", agent_id: id, ...(peer ? { from_agent: peer.id } : {}) };
+  const opts = { key, fp: key ? Bun.hash(message).toString(36) : undefined, releases: peer || harness ? [] : OWN_HOLDS };
   const sent = (r: Sent): MessageSent => ({ agent: get(id)!, waits: !!r.queued, ...(r.held ? { held: true, held_by: engine.heldBy(a!.session_id) ?? null } : {}), ...(r.duplicate ? { duplicate: true } : {}) });
   // The owner stopped it: nothing is made ready and nothing starts. A turn
   // that runs there all the same (the owner's own prompt) takes the message
   // at its next step. A peer's message waits behind any hold.
-  if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
+  if (ownerHolds(a.session_id) || ((peer || harness) && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
   // A finished agent that goes on takes a slot again. It is reserved before
   // anything yields (its place on another machine, its worktree made again),
   // with no await between the check and the reservation: a spawn in that time
@@ -2072,19 +2079,23 @@ export async function send(id: string, message: string, interrupt = false, key?:
     if (a.machine && remote) await remote.revive(a);
     const w = a.worktree && !a.machine ? wts().get(a.session_id) : undefined;
     const parent = store.session(a.parent_id);
-    if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title, undefined, parent.id)).wt);
+    // (Its branch still there, with work on it: the new worktree has that branch out.)
+    if (w && w.state === "removed" && parent) {
+      const kept = (await gitRun(w.repo_root, ["rev-parse", "-q", "--verify", `refs/heads/${w.branch}^{commit}`], { read: true })).code === 0;
+      wts().adopt(a.session_id, (await (kept ? wts().attach(a.id, parent.workspace, w.branch, parent.id) : wts().create(a.id, parent.workspace, a.title, undefined, parent.id))).wt);
+    }
     // Its turn ended and its report is being settled: it is finished, not
     // running. Steering it now would start a turn its record says is done.
     const ending = settling.get(id);
     if (ending) {
       free();
       await ending;
-      return send(id, message, interrupt, key, from, budget);
+      return send(id, message, interrupt, key, from, budget, harness);
     }
     a = get(id); // placement may have yielded while this agent finished
     if (!a) throw new Error(`no agent ${id}`);
     // The owner stopped it while its place was made ready.
-    if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
+    if (ownerHolds(a.session_id) || ((peer || harness) && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
     if (!isEnded(a)) {
       // (Only its parent redirects it: a peer's message waits for its next step.)
       if (interrupt && !peer && engine.isRunning(a.session_id)) {
@@ -2121,7 +2132,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
     // The owner stopped it while that was weighed: the message waits for the
     // owner, with no start of its own (the turn that takes it up later starts
     // as any turn does). A capsule already in place stays: the record says so.
-    if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) {
+    if (ownerHolds(a.session_id) || ((peer || harness) && engine.isHeld(a.session_id))) {
       if (start?.way === "capsule") update(id, { start: { ...without(start), task: a.tasks + 1 } });
       return sent(engine.message(a.session_id, text, meta, opts));
     }
@@ -2137,7 +2148,7 @@ export async function send(id: string, message: string, interrupt = false, key?:
       if (start) activity.record("agent", "follow_up", a!.parent_id, `Agent "${a!.title}" ${WAY_WORDS[start.way]}`, { agent_id: id, child_session: a!.session_id, way: start.way, why: start.why, ...(start.forced ? { forced: true } : {}) });
       release?.(); // the running row now occupies the slot
       // The stop that ended it was the sending side's: its hold goes before anything starts.
-      if (!peer) engine.releaseHold(a!.session_id, OWN_HOLDS);
+      if (!peer && !harness) engine.releaseHold(a!.session_id, OWN_HOLDS);
       sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
       // (Where it starts goes with the message: the turn it opens reads it, on this daemon or the next.)
       return { ...sent(engine.message(a!.session_id, text, start?.mark ? { ...meta, follow_up: start.mark } : meta, opts)), ...(start ? { start: { way: start.way, why: start.why } } : {}) };

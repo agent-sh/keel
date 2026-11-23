@@ -139,10 +139,15 @@ export type Push = { remote: string; ok: true } | { remote: string; ok: false; e
 export type Outcome = { repo: string; base: string; from: string; to: string; landed: Landed[]; left: Left[]; checks: string[]; push?: Push; after?: { exit: number | null; log: string }; afterCut?: true };
 
 // Why an entry left, in one line: what failed, on what, and what to do.
-export function leftWhy(k: { kind: "conflict"; base: string; at: string; files: string[]; ahead: string[] } | { kind: "check"; name: string; base: string; at: string; ahead: string[]; note: string; tail: string } | { kind: "gone" } | { kind: "setup"; err: string } | { kind: "wrote"; name: string; files: string[] } | { kind: "unmoved"; base: string; why: string } | { kind: "moving"; base: string; times: number }): string {
+// A conflict's `agent`: what came of the rebase task its agent was sent (src/landing/resolve.ts); `tries`: how many it had.
+export function leftWhy(k: { kind: "conflict"; base: string; at: string; files: string[]; ahead: string[]; agent?: string; tries?: number } | { kind: "check"; name: string; base: string; at: string; ahead: string[]; note: string; tail: string } | { kind: "gone" } | { kind: "setup"; err: string } | { kind: "wrote"; name: string; files: string[] } | { kind: "unmoved"; base: string; why: string } | { kind: "moving"; base: string; times: number }): string {
   const on = (base: string, at: string, ahead: string[]) => `${base} at ${short(at)}${ahead.length ? ` with ${ahead.join(", ")} ahead of it` : ""}`;
   switch (k.kind) {
-    case "conflict": return `it conflicts with ${on(k.base, k.at, k.ahead)} in ${k.files.length ? k.files.slice(0, 6).join(", ") : "a change git names no file for"}: rebase it onto ${k.base} and queue it again`;
+    case "conflict": {
+      const where = `it conflicts with ${on(k.base, k.at, k.ahead)} in ${k.files.length ? k.files.slice(0, 6).join(", ") : "a change git names no file for"}`;
+      if (k.agent) return `${where}, and ${k.agent}: settle it on the branch, or decide what it keeps, and queue it again`;
+      return `${where}${k.tries ? `, again after its agent's ${k.tries === 1 ? "rebase" : `${k.tries} rebases`}` : ""}: rebase it onto ${k.base} and queue it again`;
+    }
     case "check": return `${k.name} failed on it built on ${on(k.base, k.at, k.ahead)}${k.note ? ` (${k.note})` : ""}${k.tail ? `; its last lines: ${k.tail}` : ""}: fix it on the branch and queue it again`;
     case "gone": return "the branch is gone";
     case "wrote": return `${k.name} changed the files it checked (${k.files.length ? k.files.slice(0, 6).join(", ") : "files git does not list"}): what it passed on is not what would land; make it check without writing, or do the writing in land.setup`;

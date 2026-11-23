@@ -129,3 +129,96 @@ test("a queue lands what passed on the exact tree, and a branch that fails or co
   expect(readFileSync(join(top, "after.log"), "utf8")).toBe(`${main}\n`);
   expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
 });
+
+// Feature: a queued branch that conflicts with the base goes to its own agent. The coordinator's
+// agent delta changed the line main changed since; queued, it conflicts, and Keel continues delta
+// with a rebase task naming the branch, main's tip, the commit the rebase stops at, the file and
+// main's lines there. Delta rebases, keeps both sides and runs the check; the entry is checked again
+// on the exact tree and lands. Epsilon's agent was archived before its branch was queued: a fresh
+// agent of the coordinator takes the branch over in a worktree of its own and does not settle it;
+// after two tries it goes to the coordinator, told under that agent.
+test("a conflict with the base goes to the branch's own agent, which rebases it; two failed tries go to the coordinator", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const top = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `landing-rebase-${Date.now()}`);
+  const repo = join(top, "repo");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "notes.md"), Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  writeFileSync(join(repo, "check.sh"), "! grep -q '^<<<<<<<' notes.md\n");
+  mkdirSync(join(repo, ".keel"));
+  writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { notes: "sh check.sh" }, land: { checks: ["notes"] } }));
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "init");
+
+  const commit = (sed: string, msg: string) => `sed -i '${sed}' notes.md && git -c user.name=k -c user.email=k@k commit -qam '${msg}'`;
+  const idle = (id: string) => expect.poll(async () => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 90_000 }).toBe(true);
+  const send = async (id: string, text: string) => { await request.post(`/api/sessions/${id}/messages`, { data: { text } }); await idle(id); };
+  // Delta, sent a rebase task, rebases onto main keeping both sides of line 5, and runs the check.
+  const settle = "git rebase main || { sed -i -e '/^<<<<<<< /,/^>>>>>>> /c\\\\line 5 MAIN DELTA' notes.md && git add notes.md && GIT_EDITOR=true git -c user.name=k -c user.email=k@k rebase --continue; }; sh check.sh && echo settled";
+  const delta = { name: "spawn_agent", input: { message: `Lane delta\n${scriptBash(commit("s/^line 5$/line 5 DELTA/", "Lane delta"))}\nscript:then-calls ${JSON.stringify([{ name: "Bash", input: { command: settle }, after_ms: 10_000 }])}` } };
+  const eps = { name: "spawn_agent", input: { message: `Lane epsilon\n${scriptBash(commit("s/^line 9$/line 9 EPS/", "Lane epsilon"))}` } };
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start two agents.", `script:batch ${JSON.stringify([delta, eps])}`) } });
+  const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
+  await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(2);
+  await idle(coord);
+  const of = async (title: string) => (await agentsOf()).find((a) => a.title === title)!;
+  const d = await of("Lane delta"), e = await of("Lane epsilon");
+  // main changes lines 5 and 9 since: both branches conflict with it. Epsilon's agent is archived.
+  writeFileSync(join(repo, "notes.md"), readFileSync(join(repo, "notes.md"), "utf8").replace("line 5\n", "line 5 MAIN\n").replace("line 9\n", "line 9 MAIN\n"));
+  git(repo, "commit", "-qam", "main changes lines 5 and 9");
+  const main0 = git(repo, "rev-parse", "main").trim();
+  expect((await request.patch(`/api/sessions/${e.session_id}`, { data: { archived: true } })).ok()).toBe(true);
+
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "branches");
+  const panel = page.getByTestId("branches-panel");
+  await send(coord, ask(`Queue ${d.branch} and ${e.branch} with keel__landing_queue, then end your turn.`, `script:calls ${JSON.stringify([{ name: "keel__landing_queue", input: { action: "queue", branches: [d.branch, e.branch] } }])}`));
+  const view = async () => (await request.get(`/api/sessions/${coord}/landing`)).json();
+  const entryOf = async (branch: string) => (await view()).entries.find((x: any) => x.branch === branch);
+
+  // Delta's entry waits on its agent (it takes a while to rebase); the panel says so.
+  const deltaRow = panel.locator(`[data-testid="landing-entry"][data-branch="${d.branch}"]`);
+  await expect(deltaRow).toHaveAttribute("data-state", "resolving", { timeout: 60_000 });
+  await expect(deltaRow.getByTestId("landing-why")).toContainText("its agent rebases it onto main (try 1 of 2)");
+  await page.mouse.move(0, 0);
+  await shoot(page, "landing-03-agent-rebases");
+
+  // The task delta was sent names the branch, main's tip, the commit the rebase stops at, the file and main's lines.
+  const userTexts = async (sid: string) => ((await (await request.get(`/api/sessions/${sid}`)).json()).events as any[]).filter((x) => x.kind === "user").map((x) => String(x.data.text ?? ""));
+  const task = (await userTexts(d.session_id)).find((t) => t.startsWith("[harness] Landing queue:"))!;
+  expect(task).toContain(`your branch ${d.branch} conflicts with main`);
+  expect(task).toContain(`main is now at ${main0.slice(0, 9)} (main changes lines 5 and 9)`);
+  expect(task).toMatch(/stops at [0-9a-f]{9} \(Lane delta\)/);
+  expect(task).toContain("notes.md: main's lines 5");
+
+  // Delta settled it: checked again on the tree that lands, and landed.
+  await expect.poll(async () => (await entryOf(d.branch))?.state, { timeout: 90_000 }).toBe("landed");
+  const main1 = git(repo, "rev-parse", "main").trim();
+  expect(git(repo, "log", "--format=%s", "-3", "main").trim().split("\n")).toEqual(["Lane delta", "main changes lines 5 and 9", "init"]);
+  expect(readFileSync(join(repo, "notes.md"), "utf8")).toContain("line 5 MAIN DELTA\n");
+  expect((await entryOf(d.branch)).landed).toBe(main1);
+
+  // Epsilon: a fresh agent took it over, did not settle it, and after two tries it left, told to the coordinator.
+  await expect.poll(async () => (await entryOf(e.branch))?.state, { timeout: 120_000 }).toBe("left");
+  const left = await entryOf(e.branch);
+  expect(left.why).toContain("it conflicts with main");
+  expect(left.why).toContain("its agent did not move the branch, after 2 tries");
+  const fresh = (await agentsOf()).find((a) => a.title === `Rebase ${e.branch}`);
+  expect(fresh).toBeTruthy();
+  expect((await userTexts(fresh.session_id)).join("\n")).toContain(`The agent that made ${e.branch} is gone: you take over its branch`);
+  const told = async (words: string) => (await userTexts(coord)).filter((t) => t.includes(words)).length;
+  await expect.poll(() => told(`${e.branch} left the landing queue of main: it conflicts with main`), { timeout: 60_000 }).toBeGreaterThan(0);
+  await expect.poll(() => told(`Landed on main: ${d.branch}`), { timeout: 60_000 }).toBeGreaterThan(0);
+  await idle(coord);
+
+  await expect(panel.locator(`[data-testid="landing-entry"][data-branch="${e.branch}"]`)).toHaveAttribute("data-state", "left", { timeout: 30_000 });
+  await expect(deltaRow).toHaveAttribute("data-state", "landed");
+  await page.mouse.move(0, 0);
+  await shoot(page, "landing-04-rebased-and-handed-up");
+  expect(git(repo, "status", "--porcelain")).toBe("");
+  expect(git(repo, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ") && l.includes("/landing/"))).toEqual([]);
+  expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
+});

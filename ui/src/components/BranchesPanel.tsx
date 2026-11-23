@@ -75,6 +75,7 @@ const STATE: Record<LandingEntry["state"], { word: string; tone: string }> = {
   queued: { word: "queued", tone: "text-muted" },
   building: { word: "building", tone: "text-accent" },
   checking: { word: "checking", tone: "text-accent" },
+  resolving: { word: "rebasing", tone: "text-warn" },
   landed: { word: "landed", tone: "text-ok" },
   left: { word: "left the queue", tone: "text-danger" },
   removed: { word: "taken out", tone: "text-faint" },
@@ -82,6 +83,7 @@ const STATE: Record<LandingEntry["state"], { word: string; tone: string }> = {
 function StateIcon({ e }: { e: LandingEntry }) {
   const cls = cn("size-3.5 shrink-0", STATE[e.state].tone);
   if (e.state === "building" || e.state === "checking") return <Loader2 className={cn(cls, "animate-spin")} />;
+  if (e.state === "resolving") return <GitMerge className={cls} />;
   if (e.state === "landed") return <Check className={cls} />;
   if (e.state === "left") return <X className={cls} />;
   if (e.state === "removed") return <Undo2 className={cls} />;
@@ -104,7 +106,7 @@ function LandingQueue({ session, q }: { session: Session; q: LandingView }) {
         {e.landed && <span className="shrink-0 font-mono text-micro text-faint">as {e.landed.slice(0, 9)}</span>}
         <span className="flex-1" />
         <span className="shrink-0 text-micro text-faint">{ago(e.updated)}</span>
-        {e.state === "queued" && (
+        {(e.state === "queued" || e.state === "resolving") && (
           <button type="button" onClick={() => remove(e.id)} data-testid="landing-remove" title="Take it out of the queue"
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-3.5" /></button>
         )}

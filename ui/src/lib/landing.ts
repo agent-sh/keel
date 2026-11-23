@@ -42,7 +42,7 @@ export async function removeEntry(sessionId: string, entry: string) {
   await loadLanding(sessionId);
 }
 
-export const isLive = (e: Entry) => e.state === "queued" || e.state === "building" || e.state === "checking";
+export const isLive = (e: Entry) => e.state === "queued" || e.state === "building" || e.state === "checking" || e.state === "resolving";
 
 onFeature({
   frame(f) {

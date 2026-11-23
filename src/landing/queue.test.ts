@@ -223,3 +223,110 @@ test("a session whose commands have no network: the base moves here and is not p
   expect(g(join(t.dir, "origin.git"), "rev-parse", "main")).toBe(base);
   expect(t.q.outcomeFor(t.coord)?.text).toContain("It was not pushed to origin: the session that queued it has no network in its sandbox.");
 });
+
+// A branch that conflicts with the base goes to its own agent (src/landing/resolve.ts): a stand-in
+// agent here, which rebases in its worktree or does not, and reports.
+function withAgents(t: ReturnType<typeof setup>) {
+  const sent: { to: string; text: string }[] = [];
+  const agents = new Map<string, { ended: boolean; status: string; tasks: number; report: string }>();
+  t.deps.agents = {
+    who: (e) => (e.holder && t.store.session(e.holder)?.parent_id ? { agent: `ag-${e.holder}` } : undefined),
+    send: async (e, to, text) => {
+      const id = "agent" in to ? to.agent : "fresh";
+      sent.push({ to: id, text });
+      const a = agents.get(id) ?? { ended: true, status: "completed", tasks: 0, report: "" };
+      agents.set(id, { ...a, ended: false, status: "running", tasks: a.tasks + 1 });
+      return { agent: id, session: e.holder!, task: a.tasks + 1 };
+    },
+    state: (id) => agents.get(id),
+  };
+  const wts = new Worktrees(t.store, join(t.dir, "wt"));
+  // The agent's worktree, with its branch out.
+  const worktree = async (session: string, branch: string) => { const w = await wts.attach(session, t.repo, branch); wts.adopt(session, w.wt); return w.wt.path; };
+  // Its turn ends with this report.
+  const end = async (session: string, report = "Done.") => {
+    const id = `ag-${session}`;
+    agents.set(id, { ...agents.get(id)!, ended: true, status: "completed", report });
+    await t.q.agentEnded(id);
+    await t.q.idle(t.repo);
+  };
+  return { sent, worktree, end };
+}
+
+test("a conflict with the base: its agent gets a rebase task naming files and lines, and the rebased branch lands", async () => {
+  const t = setup();
+  const a = withAgents(t);
+  const agent = t.session("delta", t.coord);
+  t.branch("keel/d", 5, "line 5 DELTA", agent);
+  const wt = await a.worktree(agent, "keel/d");
+  writeFileSync(join(t.repo, "notes.md"), readFileSync(join(t.repo, "notes.md"), "utf8").replace("line 5\n", "line 5 MAIN\n"));
+  g(t.repo, "commit", "-qam", "main changes line 5");
+  const base = t.main();
+  await t.land(["keel/d"]);
+  // It did not leave: its agent has the task, and nobody was told of a failure.
+  expect(t.rows()[0]).toMatchObject({ state: "resolving" });
+  expect(t.told).toEqual([]);
+  expect(a.sent).toHaveLength(1);
+  const task = a.sent[0]!.text;
+  expect(task).toContain(`your branch keel/d conflicts with main`);
+  expect(task).toContain(`main is now at ${base.slice(0, 9)} (main changes line 5)`);
+  expect(task).toContain(`stops at ${g(t.repo, "rev-parse", "keel/d").slice(0, 9)} (keel/d)`);
+  expect(task).toContain("notes.md: main's lines 5");
+  expect(task).toContain("1. git rebase main");
+  // The queue's own rebase was given up in its own worktree: nothing of the agent's changed.
+  expect(existsSync(join(wt, ".git"))).toBe(true);
+  expect(g(wt, "status", "--porcelain")).toBe("");
+  // The agent rebases, keeping both sides, and reports.
+  expect(tryG(wt, "rebase", "main")).toBeNull();
+  writeFileSync(join(wt, "notes.md"), readFileSync(join(wt, "notes.md"), "utf8").replace(/<<<<<<< [^\n]*\n[\s\S]*?>>>>>>> [^\n]*\n/, "line 5 MAIN DELTA\n"));
+  g(wt, "add", "notes.md");
+  execFileSync("git", ["rebase", "--continue"], { cwd: wt, env: { ...process.env, GIT_EDITOR: "true" } });
+  await a.end(agent, "Rebased onto main, kept both.");
+  expect(t.rows()[0]).toMatchObject({ state: "landed" });
+  expect(g(t.repo, "log", "--format=%s", "main").split("\n")).toEqual(["keel/d", "main changes line 5", "init"]);
+  expect(readFileSync(join(t.repo, "notes.md"), "utf8")).toContain("line 5 MAIN DELTA\n");
+  expect(t.told).toEqual([]);
+});
+
+test("two failed tries go to the session that started the agent; a rebase in progress in its worktree is left as it is", async () => {
+  const t = setup();
+  const a = withAgents(t);
+  const agent = t.session("delta", t.coord);
+  t.branch("keel/d", 5, "line 5 DELTA", agent);
+  const wt = await a.worktree(agent, "keel/d");
+  writeFileSync(join(t.repo, "notes.md"), readFileSync(join(t.repo, "notes.md"), "utf8").replace("line 5\n", "line 5 MAIN\n"));
+  g(t.repo, "commit", "-qam", "main changes line 5");
+  await t.land(["keel/d"]);
+  expect(a.sent).toHaveLength(1);
+  // The agent starts the rebase and ends its turn in the middle of it.
+  expect(tryG(wt, "rebase", "main")).toBeNull();
+  const rebasing = join(t.repo, ".git/worktrees", g(wt, "rev-parse", "--git-dir").split("/").at(-1)!, "rebase-merge");
+  expect(existsSync(rebasing)).toBe(true);
+  await a.end(agent);
+  // Another try: the task says the rebase in progress is left as it is, and the queue did not end it.
+  expect(a.sent).toHaveLength(2);
+  expect(a.sent[1]!.text).toContain("try 2 of 2");
+  expect(a.sent[1]!.text).toContain("already in progress in your worktree, and Keel did not start it: it is left as it is");
+  expect(existsSync(rebasing)).toBe(true);
+  expect(t.rows()[0]).toMatchObject({ state: "resolving" });
+  await a.end(agent);
+  expect(existsSync(rebasing)).toBe(true);
+  expect(t.rows()[0]).toMatchObject({ state: "left" });
+  expect(t.rows()[0]!.why).toContain("its agent left a rebase or merge in progress, after 2 tries");
+  expect(t.told.map((x) => x.root)).toEqual([t.coord]);
+  expect(t.told[0]!.message).toContain("keel/d left the landing queue of main: it conflicts with main");
+});
+
+test("a conflict its agent calls substantive goes to the session that started it at once", async () => {
+  const t = setup();
+  const a = withAgents(t);
+  const agent = t.session("delta", t.coord);
+  t.branch("keel/d", 5, "line 5 DELTA", agent);
+  writeFileSync(join(t.repo, "notes.md"), readFileSync(join(t.repo, "notes.md"), "utf8").replace("line 5\n", "line 5 MAIN\n"));
+  g(t.repo, "commit", "-qam", "main changes line 5");
+  await t.land(["keel/d"]);
+  await a.end(agent, "Both sides set line 5.\nConflict: substantive: keep MAIN or DELTA on line 5?");
+  expect(a.sent).toHaveLength(1);
+  expect(t.rows()[0]).toMatchObject({ state: "left" });
+  expect(t.told[0]!.message).toContain("its agent found the conflict substantive: keep MAIN or DELTA on line 5?");
+});
