@@ -168,19 +168,24 @@ export class BuildPins {
       l = JSON.parse(r.tools) as PinnedTool[];
       if (this.lists.size >= 32) this.lists.delete(this.lists.keys().next().value!);
       this.lists.set(hash, l);
+      this.hashes.set(l, hash);
     }
     return l;
   }
 
+  // The hash of a list already stored, by the list: a step that keeps its pin does not write the
+  // list's text again to learn it (tens of KB a step, the step of every working session).
+  private hashes = new WeakMap<PinnedTool[], string>();
   // Written only when something changed: a step that finds its pin as it was writes nothing.
   private save(id: string, was: Row | undefined, now: Omit<Row, "list"> & { tools: PinnedTool[] }) {
-    const text = JSON.stringify(now.tools);
+    const known = this.hashes.get(now.tools);
+    const text = known === undefined ? JSON.stringify(now.tools) : undefined;
     const { tools: _, ...rest } = now;
-    const next: Row = { ...rest, list: Bun.hash(text).toString(36) };
+    const next: Row = { ...rest, list: known ?? Bun.hash(text!).toString(36) };
     const flat = (r: Row) => JSON.stringify([r.build, r.ts, r.model, r.native, r.own, r.list, r.waiting, r.checked, r.asked, r.stale, r.took, r.gone]);
     if (was && flat(was) === flat(next)) return;
     this.store.db.transaction(() => {
-      this.store.db.query("INSERT OR IGNORE INTO pinned_tools (hash, tools) VALUES (?, ?)").run(next.list, text);
+      if (text !== undefined) this.store.db.query("INSERT OR IGNORE INTO pinned_tools (hash, tools) VALUES (?, ?)").run(next.list, text);
       this.store.db
         .query(`INSERT INTO session_pins (session_id, build, ts, model, native, own, list, waiting, checked, asked, stale, took, gone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET build = excluded.build, ts = excluded.ts, model = excluded.model, native = excluded.native,
@@ -190,6 +195,7 @@ export class BuildPins {
           next.stale, next.took ? JSON.stringify(next.took) : null, JSON.stringify(next.gone));
     })();
     this.lists.set(next.list, now.tools);
+    this.hashes.set(now.tools, next.list);
   }
 
   // The session has been behind the running build for longer than the owner allows.
