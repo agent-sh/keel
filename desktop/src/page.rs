@@ -4,7 +4,7 @@
 //! page to post a message to the app: `post`, a JavaScript expression over
 //! the string `s`.
 use crate::daemon::Link;
-use crate::view::Away;
+use crate::view::{Away, Can};
 use crate::prefs::Look;
 
 /// Injected before the page's own scripts, in the top frame of the daemon's
@@ -21,7 +21,7 @@ use crate::prefs::Look;
 /// The origin tested is the document's own (`self.origin`), not its
 /// address's: a document the daemon serves sandboxed (an artifact's raw
 /// address) keeps the address and has an opaque origin, and gets nothing.
-pub fn bridge(engine: &str, window: &str, tray: bool, post: &str, key: &str, origin: &str) -> String {
+pub fn bridge(engine: &str, window: &str, can: Can, post: &str, key: &str, origin: &str) -> String {
     format!(
         r#"(() => {{
   if (window.top !== window || window.keelShell || self.origin !== {origin}) return;
@@ -29,12 +29,14 @@ pub fn bridge(engine: &str, window: &str, tray: bool, post: &str, key: &str, ori
   const post = (m) => {{ try {{ const s = JSON.stringify({{ ...m, key }}); {post}; }} catch (e) {{}} }};
   Object.defineProperty(window, "keelShell", {{ value: Object.freeze({{
     name: "keel-desktop", version: "{version}", engine: "{engine}", platform: "{platform}", window: "{window}",
-    can: Object.freeze({{ titlebar: true, windows: true, links: true, notifications: true, tray: {tray}, saving: true }}), post,
+    can: Object.freeze({{ titlebar: true, windows: true, links: true, notifications: true, tray: {tray}, saving: true, shortcuts: {shortcuts} }}), post,
   }}) }});
   // A new document is in the window: what the one before said it does with the app is gone
   // with it, until this one's page says so itself.
   post({{ t: "can" }});
 }})();"#,
+        tray = can.tray,
+        shortcuts = can.shortcuts,
         version = env!("CARGO_PKG_VERSION"),
         platform = std::env::consts::OS,
         key = serde_json::Value::String(key.to_string()),
@@ -166,7 +168,7 @@ mod tests {
 
     #[test]
     fn the_bridge_names_the_shell() {
-        let b = bridge("webkit", "main", true, "send(s)", "k1", "http://127.0.0.1:47960");
+        let b = bridge("webkit", "main", Can { tray: true, shortcuts: false }, "send(s)", "k1", "http://127.0.0.1:47960");
         assert!(b.contains(r#"window: "main""#) && b.contains("tray: true") && b.contains("keelShell") && b.contains(r#"engine: "webkit""#) && b.contains("send(s)"));
     }
 
@@ -174,7 +176,7 @@ mod tests {
     // in the main frame) keeps the address's origin in `location` and got the object.
     #[test]
     fn the_bridge_is_for_documents_of_the_daemons_origin_and_keys_every_message() {
-        let b = bridge("webkit", "main", true, "send(s)", "secret\"-key", "http://127.0.0.1:47960");
+        let b = bridge("webkit", "main", Can { tray: true, shortcuts: false }, "send(s)", "secret\"-key", "http://127.0.0.1:47960");
         assert!(b.contains(r#"self.origin !== "http://127.0.0.1:47960""#));
         assert!(!b.contains("location.origin"));
         // The key is a string of the script, whatever it holds, and goes into every message.

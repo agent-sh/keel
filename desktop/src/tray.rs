@@ -5,6 +5,7 @@
 //! the shell then quits with its last window instead of hiding where no one
 //! can find it.
 use crate::daemon::Link;
+use crate::shortcut::Keys;
 use gtk::prelude::*;
 use gtk::{cairo, gio, glib};
 use std::cell::{Cell, RefCell};
@@ -57,6 +58,7 @@ pub enum Pick {
     Pause,
     Resume,
     Start,
+    Shortcuts,
     Quit,
     QuitAll,
 }
@@ -71,6 +73,8 @@ pub struct Shown {
     pub refused: bool,
     /// Another program attached to the daemon as its app before this one: the alerts go there.
     pub elsewhere: bool,
+    /// What the owner can do about the app's global shortcuts on this desktop.
+    pub keys: Keys,
 }
 
 /// The first line of the menu and the mark's tooltip.
@@ -108,6 +112,12 @@ pub fn menu(s: &Shown) -> Vec<(i32, String, bool, Option<Pick>)> {
         Link::Down if !s.refused => m.push((8, "Start Keel".into(), true, Some(Pick::Start))),
         Link::Down => {}
         Link::Restarting => {}
+    }
+    // The desktop's dialog for the app's global shortcuts: asked for, or shown to be changed.
+    match s.keys {
+        Keys::Offer => m.push((13, "Set Global Shortcuts…".into(), true, Some(Pick::Shortcuts))),
+        Keys::Change => m.push((14, "Change Global Shortcuts…".into(), true, Some(Pick::Shortcuts))),
+        Keys::None | Keys::Held => {}
     }
     m.push((9, String::new(), true, None));
     m.push((10, "Quit".into(), true, Some(Pick::Quit)));
@@ -208,7 +218,7 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(conn: &gio::DBusConnection, symbolic: bool, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
-        let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down, refused: false, elsewhere: false }));
+        let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down, refused: false, elsewhere: false, keys: Keys::None }));
         let revision = Rc::new(Cell::new(1u32));
         let available = Rc::new(Cell::new(false));
         let on_pick = Rc::new(on_pick);
@@ -217,8 +227,11 @@ impl Tray {
         let (s, pick) = (shown.clone(), on_pick.clone());
         conn.register_object(ITEM_PATH, &item)
             .method_call(move |_, _, _, _, method, _, inv| {
-                if method == "Activate" || method == "SecondaryActivate" {
-                    pick(Pick::Open);
+                // A press on the mark shows the window; the middle button starts a session.
+                match method {
+                    "Activate" => pick(Pick::Open),
+                    "SecondaryActivate" => pick(Pick::New),
+                    _ => {}
                 }
                 inv.return_value(None);
             })
@@ -379,7 +392,7 @@ mod tests {
     use super::*;
 
     fn s(needs: u32, paused: bool, link: Link) -> Shown {
-        Shown { needs, paused, link, refused: false, elsewhere: false }
+        Shown { needs, paused, link, refused: false, elsewhere: false, keys: Keys::None }
     }
 
     #[test]
@@ -410,6 +423,13 @@ mod tests {
         let told = menu(&Shown { elsewhere: true, ..s(0, false, Link::Up) });
         assert!(told.iter().any(|(_, label, enabled, pick)| label == "Another Keel app shows the notifications" && !enabled && pick.is_none()));
         assert!(!menu(&s(0, false, Link::Up)).iter().any(|(_, label, _, _)| label.starts_with("Another")));
+        // The desktop's global shortcuts: offered where it has them, shown to be changed once held, with the daemon up or not.
+        assert_eq!(picks(&Shown { keys: Keys::Offer, ..s(0, false, Link::Up) }), [Pick::Open, Pick::New, Pick::Pause, Pick::Shortcuts, Pick::Quit, Pick::QuitAll]);
+        assert_eq!(picks(&Shown { keys: Keys::Change, ..s(0, false, Link::Down) }), [Pick::Open, Pick::Start, Pick::Shortcuts, Pick::Quit]);
+        assert_eq!(picks(&Shown { keys: Keys::Held, ..s(0, false, Link::Restarting) }), [Pick::Open, Pick::Quit]);
+        let label = |k: Keys| menu(&Shown { keys: k, ..s(0, false, Link::Up) }).into_iter().find(|i| i.3 == Some(Pick::Shortcuts)).map(|i| i.1);
+        assert_eq!(label(Keys::Offer).as_deref(), Some("Set Global Shortcuts…"));
+        assert_eq!(label(Keys::Change).as_deref(), Some("Change Global Shortcuts…"));
         // An address the app does not speak to: nothing to start there.
         assert_eq!(picks(&Shown { refused: true, ..s(0, false, Link::Down) }), [Pick::Open, Pick::Quit]);
         // Ids are one per item, so a click on an old menu never picks another item.

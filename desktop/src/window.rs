@@ -16,7 +16,7 @@ use crate::links::{self, origin};
 use crate::page;
 use crate::prefs::Look;
 use crate::said::{asked, Asked1};
-use crate::view::{Ask, Asked, Away, Engine, Opening, Showing, View};
+use crate::view::{Ask, Asked, Away, Can, Engine, Opening, Showing, View};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use serde_json::Value;
@@ -195,7 +195,7 @@ struct Win {
     view: webkit::WebView,
     ucm: webkit::UserContentManager,
     main: bool,
-    tray: bool,
+    can: Can,
     showing: Cell<Showing>,
     /// The path to open once the daemon answers.
     wanted: RefCell<String>,
@@ -225,7 +225,7 @@ fn rgba(hex: &str) -> gdk::RGBA {
 
 impl Win {
     fn new(app: &gtk::Application, session: &webkit::NetworkSession, id: u32, opening: Opening, ask: Asked, wins: &Rc<RefCell<Vec<Weak<Win>>>>) -> Rc<dyn View> {
-        let Opening { main, size, maximized, look, tray, devtools } = opening;
+        let Opening { main, size, maximized, look, can, devtools } = opening;
         // What a closure of the window asks goes out as the view it is.
         let ask: Rc<dyn Fn(&Rc<Win>, Ask)> = Rc::new(move |win, what| {
             let view: Rc<dyn View> = win.clone();
@@ -288,7 +288,7 @@ impl Win {
             view,
             ucm: ucm.clone(),
             main,
-            tray,
+            can,
             showing: Cell::new(Showing::Nothing),
             wanted: RefCell::new("/".into()),
             key: glib::uuid_string_random().to_string(),
@@ -628,7 +628,7 @@ impl View for Win {
         // The capability object goes to the top frame of this daemon's origin, and nowhere else.
         let at = origin(base);
         self.ucm.remove_all_scripts();
-        let bridge = page::bridge("webkit", if self.main { "main" } else { "session" }, self.tray, POST, &self.key, &at);
+        let bridge = page::bridge("webkit", if self.main { "main" } else { "session" }, self.can, POST, &self.key, &at);
         let only = pattern(&at);
         self.ucm.add_script(&webkit::UserScript::new(&bridge, webkit::UserContentInjectedFrames::TopFrame, webkit::UserScriptInjectionTime::Start, &[only.as_str()], &[]));
         if let Some(src) = std::env::var_os("KEEL_DESKTOP_PROBE").and_then(|p| std::fs::read_to_string(p).ok()) {

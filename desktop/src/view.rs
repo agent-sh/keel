@@ -24,6 +24,8 @@ pub enum Ask {
     Window(String),
     /// The page's colors and text size, for the title bar and the first frame.
     Look(Look),
+    /// The owner asked for the app's global shortcuts (the desktop shows its dialog).
+    Shortcuts,
     /// The owner closed the window.
     Close,
     /// A load of the page failed: the daemon went away under it.
@@ -52,14 +54,22 @@ pub struct Away {
 }
 
 /// How a window is opened.
+/// What depends on the desktop the app runs on: whether a tray shows its mark, and whether
+/// the desktop has global shortcuts for apps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Can {
+    pub tray: bool,
+    pub shortcuts: bool,
+}
+
 pub struct Opening {
     /// The app's window, or a session's own.
     pub main: bool,
     pub size: (i32, i32),
     pub maximized: bool,
     pub look: Look,
-    /// Whether a tray shows the app's mark (the page is told).
-    pub tray: bool,
+    /// What the page is told this app can do here.
+    pub can: Can,
     pub devtools: bool,
 }
 

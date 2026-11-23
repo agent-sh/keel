@@ -69,7 +69,8 @@ address that is not this machine's there is no button and nothing is
 started: the first page says so.
 
 - **Tray.** The mark shows how many things wait on you, and its menu opens the
-  window, starts a session, pauses notifications for an hour, and quits. On a
+  window, starts a session, pauses notifications for an hour, and quits. A
+  press on the mark shows the window; the middle button starts a session. On a
   desktop with no tray host (GNOME without the AppIndicator extension) there
   is no mark, and closing the window quits the app instead of hiding it.
 - **Notifications.** While the app runs, the daemon hands its desktop
@@ -82,9 +83,20 @@ started: the first page says so.
   opens the inbox.
 - **Quit.** Quit leaves the daemon and its turns running. "Quit and Stop the
   Daemon" asks first, and names the sessions at work.
-- **Summon.** Bind a key of your desktop to `keel-desktop`: a second launch
-  raises the running app. `--shortcut` asks the desktop portal for a global
-  shortcut instead (GlobalShortcuts; the desktop asks you once).
+- **Keys from anywhere.** Where the desktop has global shortcuts for apps
+  (the portal's GlobalShortcuts: GNOME, KDE and others under Wayland), the
+  app asks for two: one shows Keel, one starts a session. Ask from the tray
+  ("Set Global Shortcuts…") or the command list ("Global shortcuts"): the
+  desktop shows a dialog of its own, where the keys are yours to choose
+  (the app proposes Ctrl+Alt+K and Ctrl+Alt+N). After your yes the app holds
+  them at every start with no dialog, the same item shows them to be
+  changed, and a no there is the end of it until you ask again.
+  `--shortcut` asks at that start. On a desktop without them, bind a key of
+  the desktop's own to `keel-desktop` (a second launch raises the running
+  app) and to `keel-desktop --new`.
+- **Keys in the window.** Ctrl+N starts a session, as in every desktop app
+  (a browser tab cannot take that key; Ctrl+Shift+O works in both). The
+  launcher's own menu (a right click on the app's icon) has New Session too.
 - **Text size.** Ctrl with plus, minus and zero change the text size
   setting of the page itself: one scale, the same one Settings shows. The
   window's size and the page's colors are remembered. The title bar follows
@@ -295,7 +307,13 @@ times a second launch against one timed before the flips, ends a page's own proc
 the engine's processes hold of the pipe to the app, asks the environment for
 the debugging port and no sandbox, and starts a Qt that cannot start, one
 that stops before it drew and one that stops soon after each start
-(`test/e2e-more.sh`). With another
+(`test/e2e-more.sh`). The desktop's own keys are played
+against a stand-in for the portal (`test/portal-host.js`, `test/e2e-keys.sh`):
+the app asks for nothing unasked, names itself first, holds its two
+shortcuts after a yes from the tray, shows the window and starts a session
+at their press, has the desktop show them to be changed, holds them again
+at the next start with no dialog, and stops asking after a no; the tray's
+middle button and Ctrl+N start a session. With another
 app in front it checks focus under Wayland: a launch that carries the
 desktop's activation token brings Keel's window to the front; one without
 it, or with a made-up one, does not where the desktop refuses it (some let an
@@ -349,6 +367,12 @@ names the Qt engine's program when it is not beside the app.
   yourself). Where Vulkan cannot start, or the card has no memory left, the
   program stops before it drew and the app draws its windows itself. The
   app's log says what draws (`"what":"qt"`: `draws`, `gl`).
+- Where the desktop's OpenGL is the processor's own work (a virtual machine,
+  a remote desktop: llvmpipe and the like), the Qt program draws its windows
+  without OpenGL: the same picture for about a quarter of the processor's
+  time while a session streams, with less memory and a faster first
+  picture. `QT_QUICK_BACKEND` or `QSG_RHI_BACKEND` set by hand is left as it
+  is.
 - A window of the Qt engine draws its own bar and has no frame of the
   desktop's: floating, it has a line around it and no shadow; it is resized
   from its edges.
@@ -372,6 +396,9 @@ names the Qt engine's program when it is not beside the app.
   stand-ins that speak the desktop's protocols on the hidden desktop's bus
   (what a panel asks of the mark, what a notification service is sent and
   what its click sends back), and the file dialog is the toolkit's real one.
+  The global shortcuts are checked against a stand-in that speaks the
+  portal's interface as its specification has it: no desktop's own portal
+  and no dialog of a real desktop has been part of a check.
   A real desktop session is still what proves the mark as a shell's own tray
   host draws it, a notification as the desktop's own service shows it, the
   file dialog a desktop's portal puts in the toolkit's place, and a second

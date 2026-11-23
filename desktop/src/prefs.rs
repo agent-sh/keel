@@ -40,11 +40,14 @@ pub struct Prefs {
     pub height: i32,
     pub maximized: bool,
     pub look: Look,
+    /// The owner agreed to the app's global shortcuts: they are asked for again at each start
+    /// (the desktop answers without a dialog), until the owner says no there.
+    pub shortcuts: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { width: 1320, height: 860, maximized: false, look: Look::of(false) }
+        Self { width: 1320, height: 860, maximized: false, look: Look::of(false), shortcuts: false }
     }
 }
 
@@ -65,6 +68,7 @@ impl Prefs {
             width: int("width", 480, d.width),
             height: int("height", 320, d.height),
             maximized: v.get("maximized").and_then(Value::as_bool).unwrap_or(false),
+            shortcuts: v.get("shortcuts").and_then(Value::as_bool).unwrap_or(false),
             look: Look {
                 dark: base.dark,
                 bg: color("bg", &base.bg),
@@ -84,7 +88,7 @@ impl Prefs {
 
     pub fn text(&self) -> String {
         let l = &self.look;
-        json!({ "width": self.width, "height": self.height, "maximized": self.maximized,
+        json!({ "width": self.width, "height": self.height, "maximized": self.maximized, "shortcuts": self.shortcuts,
             "look": { "dark": l.dark, "bg": l.bg, "panel": l.panel, "fg": l.fg, "muted": l.muted, "line": l.line, "need": l.need, "scale": l.scale } })
         .to_string()
     }

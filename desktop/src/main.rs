@@ -29,7 +29,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tray::{Pick, Shown, Tray};
-use view::{Ask, Away, Engine, Opening, Showing, View};
+use shortcut::{Keys, Shortcuts};
+use view::{Ask, Away, Can, Engine, Opening, Showing, View};
 
 /// The application's id: its name on the session bus, its window's app id and the name of its desktop file.
 pub const APP_ID: &str = "io.github.agent_sh.Keel";
@@ -47,7 +48,7 @@ usage: keel-desktop [options] [keel://LINK]
   --state-dir DIR       the daemon's state folder (else KEEL_STATE_DIR)
   --keel PATH           the keel program that starts the daemon (else KEEL_BIN, the one beside this, the PATH)
   --engine NAME         what draws the page: qt (Qt WebEngine, where it is installed) or webkit (else KEEL_DESKTOP_ENGINE)
-  --shortcut            ask the desktop for a global shortcut that raises the window
+  --shortcut            ask the desktop for the app's global shortcuts (show Keel, new session) at this start
   --devtools            the web inspector in the context menu
   --version, --help
 
@@ -100,6 +101,8 @@ struct Shell {
     elsewhere: Cell<bool>,
     /// The desktop's activation token of the request being served: it lets the window take the focus.
     token: RefCell<Option<String>>,
+    /// The desktop's global shortcuts for the app (shortcut.rs); none before the session bus is known.
+    keys: RefCell<Option<Rc<Shortcuts>>>,
     devtools: bool,
     /// A line per thing done, for the end-to-end check (KEEL_DESKTOP_LOG).
     log: Option<PathBuf>,
@@ -126,9 +129,45 @@ impl Shell {
         self.paused_until.get().is_some_and(|t| t > now_ms())
     }
 
+    fn keys(&self) -> Keys {
+        self.keys.borrow().as_ref().map_or(Keys::None, |k| k.keys())
+    }
+
+    /// The app's global shortcuts. Not held: the desktop is asked for them (it answers at once
+    /// when the owner agreed before, and with its own dialog when not). Held, and the owner
+    /// asked: the desktop shows them to be changed.
+    fn shortcuts(self: &Rc<Self>, asked: bool) {
+        let Some(keys) = self.keys.borrow().clone() else { return };
+        match keys.keys() {
+            Keys::Offer => keys.bind(|held, bound| with_shell(|s| s.bound(held, &bound))),
+            Keys::Change if asked => keys.change(),
+            _ => {}
+        }
+    }
+
+    /// The desktop's answer: remembered either way, so a start asks again only after a yes.
+    fn bound(&self, held: bool, bound: &[(String, String)]) {
+        self.note_done("shortcuts", serde_json::json!({ "held": held, "keys": bound.iter().map(|(id, keys)| format!("{id}={keys}")).collect::<Vec<_>>() }));
+        if self.prefs.borrow().shortcuts != held {
+            let mut p = self.prefs.borrow_mut();
+            p.shortcuts = held;
+            p.save();
+        }
+        self.show_tray();
+    }
+
+    /// A global shortcut was pressed, somewhere else on the desktop.
+    fn pressed(self: &Rc<Self>, id: &str, token: Option<String>) {
+        self.note_done("shortcut", serde_json::json!({ "id": id, "token": token.is_some() }));
+        if token.is_some() {
+            self.token.replace(token);
+        }
+        self.open(if id == "new-session" { Some("/") } else { None }, false);
+    }
+
     fn show_tray(&self) {
         if let Some(t) = self.tray.borrow().as_ref() {
-            t.show(Shown { needs: self.needs.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get() });
+            t.show(Shown { needs: self.needs.get(), paused: self.paused(), link: self.link.borrow().clone(), refused: self.refused.get(), elsewhere: self.elsewhere.get(), keys: self.keys() });
             self.note_done("tray", serde_json::json!({ "needs": self.needs.get(), "paused": self.paused(), "headline": tray::headline(&t.shown()) }));
         }
     }
@@ -144,7 +183,7 @@ impl Shell {
     fn new_window(self: &Rc<Self>, main: bool) -> Rc<dyn View> {
         let p = self.prefs.borrow().clone();
         let size = if main { (p.width, p.height) } else { ((p.width * 2 / 3).max(720), (p.height * 9 / 10).max(560)) };
-        let opening = Opening { main, size, maximized: main && p.maximized, look: p.look, tray: self.tray_available(), devtools: self.devtools };
+        let opening = Opening { main, size, maximized: main && p.maximized, look: p.look, can: Can { tray: self.tray_available(), shortcuts: self.keys() != Keys::None }, devtools: self.devtools };
         self.engine.borrow().open(opening, Rc::new(|win, ask| with_shell(|s| s.asked(win, ask))))
     }
 
@@ -325,6 +364,7 @@ impl Shell {
             Ask::Start => self.start_daemon(),
             Ask::External(url) => self.external(&url),
             Ask::Window(path) => self.open_window(&path),
+            Ask::Shortcuts => self.shortcuts(true),
             Ask::Look(look) => {
                 if self.prefs.borrow().look != look {
                     let mut p = self.prefs.borrow_mut();
@@ -432,6 +472,7 @@ impl Shell {
             }
             Pick::Pause => daemon::call(&self.place, "PUT", "/api/snooze".into(), Some(serde_json::json!({ "until_ms": now_ms() + 3_600_000 }).to_string()), |_| {}),
             Pick::Resume => daemon::call(&self.place, "DELETE", "/api/snooze".into(), None, |_| {}),
+            Pick::Shortcuts => self.shortcuts(true),
             Pick::Quit => self.quit(),
             Pick::QuitAll => self.quit_all(),
         }
@@ -597,6 +638,7 @@ fn main() -> glib::ExitCode {
             refused: Cell::new(daemon::refusal(&daemon::find(&place).url).is_some()),
             elsewhere: Cell::new(false),
             token: RefCell::new(None),
+            keys: RefCell::new(None),
             devtools,
             log: std::env::var_os("KEEL_DESKTOP_LOG").map(PathBuf::from),
         });
@@ -617,9 +659,12 @@ fn main() -> glib::ExitCode {
                 // The notification is on screen: the daemon is told, and does not show it itself.
                 |(ack, stream)| with_shell(|s| daemon::call(&s.place, "POST", "/api/shell/ack".into(), Some(serde_json::json!({ "ack": ack, "stream": stream }).to_string()), |_| {})),
             ));
-            // Asked for only: the desktop shows its own dialog for it.
-            if shortcut {
-                shortcut::bind(&conn, || with_shell(|s| s.open(None, false)));
+            // The desktop's global shortcuts, where it has them: asked for at the start when the
+            // owner agreed to them before (or passed --shortcut), else from the tray or the page.
+            *shell.keys.borrow_mut() = Some(Shortcuts::new(&conn, &instance::bus_name(), |id, token| with_shell(|s| s.pressed(id, token))));
+            shell.note_done("shortcuts-known", serde_json::json!({ "keys": format!("{:?}", shell.keys()) }));
+            if shortcut || shell.prefs.borrow().shortcuts {
+                shell.shortcuts(false);
             }
             // A later launch hands its words to this one and ends.
             if let Err(e) = instance::serve(&conn, |args, token| {

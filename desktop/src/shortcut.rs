@@ -1,49 +1,197 @@
-//! A global shortcut that brings the window up, through the desktop portal
-//! (org.freedesktop.portal.GlobalShortcuts): the only way an app gets one on
-//! Wayland. The desktop asks the owner once and they pick the keys there. A
-//! desktop without the portal has no global shortcut; there the owner binds
-//! a key of the desktop's own to `keel-desktop`, which raises the running app.
+//! Global shortcuts: keys that reach the app while another window has the
+//! keyboard, through the desktop portal (org.freedesktop.portal.GlobalShortcuts),
+//! the only way an app gets one under Wayland. The app names what it wants (show
+//! the window, start a session); the desktop asks the owner once, in a dialog
+//! of its own, and the keys are the owner's to choose there. A desktop without
+//! the portal has none: there the owner binds a key of the desktop's own to
+//! `keel-desktop` (and to `keel-desktop --new`), which reach the running app.
 use gtk::prelude::*;
 use gtk::{gio, glib};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 const IFACE: &str = "org.freedesktop.portal.GlobalShortcuts";
+
+/// What the app asks for: the id the desktop says back, what the desktop's
+/// dialog calls it, and the keys it proposes (the owner's choice there wins).
+pub const WANTED: [(&str, &str, &str); 2] = [("summon", "Show Keel", "CTRL+ALT+K"), ("new-session", "New Session", "CTRL+ALT+N")];
+
+/// What the owner can do about the shortcuts now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Keys {
+    /// The desktop has no global shortcuts for apps.
+    None,
+    /// It has, and the app holds none: they can be asked for.
+    Offer,
+    /// The app holds its shortcuts, and the desktop can show them to be changed.
+    Change,
+    /// The app holds its shortcuts; this desktop changes them in its own settings only.
+    Held,
+}
+
+/// What follows from the portal's version and whether the shortcuts are held.
+pub fn keys(version: u32, held: bool) -> Keys {
+    match (version, held) {
+        (0, _) => Keys::None,
+        (_, false) => Keys::Offer,
+        // (The desktop's own dialog for an app's shortcuts came with the interface's second version.)
+        (v, true) if v >= 2 => Keys::Change,
+        _ => Keys::Held,
+    }
+}
 
 fn options(pairs: &[(&str, glib::Variant)]) -> HashMap<String, glib::Variant> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
 }
 
 /// The path of the request a call answers on: the portal derives it from the caller's name and the token.
-fn request_path(conn: &gio::DBusConnection, token: &str) -> String {
-    let me = conn.unique_name().map(|n| n.trim_start_matches(':').replace('.', "_")).unwrap_or_default();
-    format!("/org/freedesktop/portal/desktop/request/{me}/{token}")
+fn request_path(unique: &str, token: &str) -> String {
+    format!("/org/freedesktop/portal/desktop/request/{}/{token}", unique.trim_start_matches(':').replace('.', "_"))
 }
 
-/// Asks the portal for one shortcut, "summon". Quiet when there is no portal.
-#[allow(deprecated)]
-pub fn bind(conn: &gio::DBusConnection, on_summon: impl Fn() + 'static) {
-    let c = conn.clone();
-    conn.call(Some(PORTAL), PATH, "org.freedesktop.DBus.Properties", "Get", Some(&(IFACE, "version").to_variant()), None, gio::DBusCallFlags::NONE, 2000, gio::Cancellable::NONE, move |r| {
-        if r.is_err() {
+/// A shortcut the desktop says was pressed: its id, and the token that lets a window take the focus when the desktop gave one.
+pub fn pressed(params: &glib::Variant) -> Option<(String, Option<String>)> {
+    if params.n_children() < 4 {
+        return None;
+    }
+    let id = params.child_value(1).get::<String>()?;
+    let token = glib::VariantDict::new(Some(&params.child_value(3))).lookup_value("activation_token", None).and_then(|v| v.get::<String>()).filter(|t| !t.is_empty());
+    WANTED.iter().any(|(w, _, _)| *w == id).then_some((id, token))
+}
+
+/// The keys the desktop bound, as it words them ("Ctrl+Alt+K"), from the answer to a bind.
+pub fn bound(results: &glib::Variant) -> Vec<(String, String)> {
+    let Some(list) = glib::VariantDict::new(Some(results)).lookup_value("shortcuts", None) else { return Vec::new() };
+    (0..list.n_children())
+        .filter_map(|i| {
+            let one = list.child_value(i);
+            let id = one.child_value(0).get::<String>()?;
+            let keys = glib::VariantDict::new(Some(&one.child_value(1))).lookup_value("trigger_description", None).and_then(|v| v.get::<String>()).unwrap_or_default();
+            Some((id, keys))
+        })
+        .collect()
+}
+
+pub struct Shortcuts {
+    conn: gio::DBusConnection,
+    version: u32,
+    /// The portal's session that holds the app's shortcuts, once they are bound.
+    session: RefCell<Option<String>>,
+    /// A bind is on its way: the desktop may be showing its dialog.
+    asking: Cell<bool>,
+    /// Each request and session of a connection needs a token of its own.
+    count: Cell<u32>,
+}
+
+impl Shortcuts {
+    /// Reads whether the desktop has global shortcuts, and listens for a press. It starts no
+    /// portal that is not running, and waits a fifth of a second at most: the first window
+    /// tells its page what this app can do.
+    pub fn new(conn: &gio::DBusConnection, app_id: &str, on_press: impl Fn(&str, Option<String>) + 'static) -> Rc<Self> {
+        // The app says who it is before it asks for anything: the desktop keeps shortcuts per
+        // app, and knows a program started outside its launcher (a terminal, a script) by no
+        // name. Where the toolkit said so already the portal refuses the second word, which
+        // changes nothing.
+        conn.call(Some(PORTAL), PATH, "org.freedesktop.host.portal.Registry", "Register", Some(&(app_id, options(&[])).to_variant()), None, gio::DBusCallFlags::NO_AUTO_START, 2000, gio::Cancellable::NONE, |_| {});
+        let version = conn
+            .call_sync(Some(PORTAL), PATH, "org.freedesktop.DBus.Properties", "Get", Some(&(IFACE, "version").to_variant()), None, gio::DBusCallFlags::NO_AUTO_START, 200, gio::Cancellable::NONE)
+            .ok()
+            .and_then(|r| r.child_value(0).as_variant())
+            .and_then(|v| v.get::<u32>())
+            .unwrap_or(0);
+        if version > 0 {
+            #[allow(deprecated)]
+            conn.signal_subscribe(Some(PORTAL), Some(IFACE), Some("Activated"), Some(PATH), None, gio::DBusSignalFlags::NONE, move |_, _, _, _, _, params| {
+                if let Some((id, token)) = pressed(params) {
+                    on_press(&id, token);
+                }
+            });
+        }
+        Rc::new(Self { conn: conn.clone(), version, session: RefCell::new(None), asking: Cell::new(false), count: Cell::new(0) })
+    }
+
+    pub fn keys(&self) -> Keys {
+        keys(self.version, self.session.borrow().is_some())
+    }
+
+    fn token(&self, what: &str) -> String {
+        self.count.set(self.count.get() + 1);
+        format!("keel_{what}{}", self.count.get())
+    }
+
+    /// One call of the portal that answers on a request: `done` gets the answer's code (0: done,
+    /// 1: the owner said no, 2: it could not be done) and its results.
+    #[allow(deprecated)]
+    fn request(self: &Rc<Self>, method: &'static str, token: &str, args: glib::Variant, done: impl Fn(u32, glib::Variant) + 'static) {
+        let unique = self.conn.unique_name().map(|n| n.to_string()).unwrap_or_default();
+        let sub = Rc::new(Cell::new(None));
+        let (s2, c2) = (sub.clone(), self.conn.clone());
+        let id = self.conn.signal_subscribe(Some(PORTAL), Some("org.freedesktop.portal.Request"), Some("Response"), Some(&request_path(&unique, token)), None, gio::DBusSignalFlags::NONE, move |_, _, _, _, _, params| {
+            if let Some(id) = s2.take() {
+                c2.signal_unsubscribe(id);
+            }
+            done(params.child_value(0).get::<u32>().unwrap_or(2), params.child_value(1));
+        });
+        sub.set(Some(id));
+        let (s3, c3, me) = (sub, self.conn.clone(), self.clone());
+        self.conn.call(Some(PORTAL), PATH, IFACE, method, Some(&args), None, gio::DBusCallFlags::NONE, -1, gio::Cancellable::NONE, move |r| {
+            // A call the portal refused answers on no request.
+            if let Err(e) = r {
+                if let Some(id) = s3.take() {
+                    c3.signal_unsubscribe(id);
+                }
+                me.asking.set(false);
+                eprintln!("keel-desktop: the desktop refused {method}: {e}");
+            }
+        });
+    }
+
+    /// Asks the desktop for the app's shortcuts: a session, then the bind, which the desktop
+    /// answers at once when the owner agreed to them before and with a dialog of its own when
+    /// not. `done` hears whether they are held now, and the keys.
+    pub fn bind(self: &Rc<Self>, done: impl Fn(bool, Vec<(String, String)>) + 'static) {
+        if self.version == 0 || self.session.borrow().is_some() || self.asking.replace(true) {
             return;
         }
-        // The session is made, then the shortcut is bound to it; each answer comes as a Response signal on the request's path.
-        let (c2, token) = (c.clone(), "keel_session");
-        c.signal_subscribe(Some(PORTAL), Some("org.freedesktop.portal.Request"), Some("Response"), Some(&request_path(&c, token)), None, gio::DBusSignalFlags::NONE, move |_, _, _, _, _, params| {
-            let Some(session) = glib::VariantDict::new(Some(&params.child_value(1))).lookup_value("session_handle", None).and_then(|v| v.get::<String>()) else { return };
-            let Ok(handle) = glib::variant::ObjectPath::try_from(session) else { return };
-            let shortcut = ("summon", options(&[("description", "Show Keel".to_variant()), ("preferred_trigger", "CTRL+ALT+K".to_variant())]));
-            c2.call(Some(PORTAL), PATH, IFACE, "BindShortcuts", Some(&(handle, vec![shortcut], "", options(&[("handle_token", "keel_bind".to_variant())])).to_variant()), None, gio::DBusCallFlags::NONE, -1, gio::Cancellable::NONE, |_| {});
+        let (me, done) = (self.clone(), Rc::new(done));
+        let (request, session) = (self.token("session"), self.token("keys"));
+        let create = (options(&[("handle_token", request.to_variant()), ("session_handle_token", session.to_variant())]),).to_variant();
+        self.request("CreateSession", &request, create, move |code, results| {
+            let handle = glib::VariantDict::new(Some(&results)).lookup_value("session_handle", None).and_then(|v| v.get::<String>());
+            let Some(path) = handle.as_deref().filter(|_| code == 0).and_then(|h| glib::variant::ObjectPath::try_from(h.to_string()).ok()) else {
+                me.asking.set(false);
+                return done(false, Vec::new());
+            };
+            let wanted: Vec<(&str, HashMap<String, glib::Variant>)> = WANTED.iter().map(|(id, says, keys)| (*id, options(&[("description", says.to_variant()), ("preferred_trigger", keys.to_variant())]))).collect();
+            let token = me.token("bind");
+            let args = (path, wanted, "", options(&[("handle_token", token.to_variant())])).to_variant();
+            let (me2, done2, handle) = (me.clone(), done.clone(), handle.unwrap_or_default());
+            me.request("BindShortcuts", &token, args, move |code, results| {
+                me2.asking.set(false);
+                if code == 0 {
+                    me2.session.replace(Some(handle.clone()));
+                }
+                done2(code == 0, bound(&results));
+            });
         });
-        c.call(Some(PORTAL), PATH, IFACE, "CreateSession", Some(&(options(&[("handle_token", token.to_variant()), ("session_handle_token", "keel".to_variant())]),).to_variant()), None, gio::DBusCallFlags::NONE, -1, gio::Cancellable::NONE, |_| {});
-    });
-    conn.signal_subscribe(Some(PORTAL), Some(IFACE), Some("Activated"), Some(PATH), None, gio::DBusSignalFlags::NONE, move |_, _, _, _, _, params| {
-        if params.child_value(1).get::<String>().as_deref() == Some("summon") {
-            on_summon();
+    }
+
+    /// Has the desktop show the app's shortcuts, to be changed there.
+    pub fn change(&self) {
+        let Some(path) = self.session.borrow().as_deref().and_then(|h| glib::variant::ObjectPath::try_from(h.to_string()).ok()) else { return };
+        if self.keys() != Keys::Change {
+            return;
         }
-    });
+        let args = (path, "", options(&[])).to_variant();
+        self.conn.call(Some(PORTAL), PATH, IFACE, "ConfigureShortcuts", Some(&args), None, gio::DBusCallFlags::NONE, -1, gio::Cancellable::NONE, |r| {
+            if let Err(e) = r {
+                eprintln!("keel-desktop: the desktop did not show the shortcuts: {e}");
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -55,8 +203,41 @@ mod tests {
         let create = (options(&[("handle_token", "t".to_variant())]),).to_variant();
         assert_eq!(create.type_().as_str(), "(a{sv})");
         let handle = glib::variant::ObjectPath::try_from("/a/b").unwrap();
-        let shortcut = ("summon", options(&[("description", "Show Keel".to_variant())]));
-        let bind = (handle, vec![shortcut], "", options(&[])).to_variant();
+        let wanted: Vec<(&str, HashMap<String, glib::Variant>)> = WANTED.iter().map(|(id, says, _)| (*id, options(&[("description", says.to_variant())]))).collect();
+        let bind = (handle.clone(), wanted, "", options(&[])).to_variant();
         assert_eq!(bind.type_().as_str(), "(oa(sa{sv})sa{sv})");
+        assert_eq!((handle, "", options(&[])).to_variant().type_().as_str(), "(osa{sv})");
+        assert_eq!(request_path(":1.42", "keel_bind3"), "/org/freedesktop/portal/desktop/request/1_42/keel_bind3");
+        assert_eq!(("io.github.agent_sh.Keel", options(&[])).to_variant().type_().as_str(), "(sa{sv})");
+    }
+
+    #[test]
+    fn what_the_owner_can_do_follows_the_desktop() {
+        assert_eq!(keys(0, false), Keys::None);
+        assert_eq!(keys(0, true), Keys::None);
+        assert_eq!(keys(1, false), Keys::Offer);
+        assert_eq!(keys(2, false), Keys::Offer);
+        assert_eq!(keys(1, true), Keys::Held);
+        assert_eq!(keys(2, true), Keys::Change);
+    }
+
+    #[test]
+    fn a_press_is_one_of_the_apps_own_shortcuts() {
+        let session = glib::variant::ObjectPath::try_from("/s/1").unwrap();
+        let press = |id: &str, opts: &[(&str, glib::Variant)]| (session.clone(), id, 7u64, options(opts)).to_variant();
+        assert_eq!(pressed(&press("summon", &[])), Some(("summon".into(), None)));
+        assert_eq!(pressed(&press("new-session", &[("activation_token", "tok".to_variant())])), Some(("new-session".into(), Some("tok".into()))));
+        assert_eq!(pressed(&press("summon", &[("activation_token", "".to_variant())])), Some(("summon".into(), None)));
+        // One the app never asked for, and a signal of another shape, do nothing.
+        assert_eq!(pressed(&press("quit", &[])), None);
+        assert_eq!(pressed(&("summon",).to_variant()), None);
+    }
+
+    #[test]
+    fn the_bound_keys_are_read_from_the_answer() {
+        let one = |id: &str, keys: &str| (id.to_string(), options(&[("trigger_description", keys.to_variant())]));
+        let results = options(&[("shortcuts", vec![one("summon", "Ctrl+Alt+K"), one("new-session", "")].to_variant())]).to_variant();
+        assert_eq!(bound(&results), [("summon".to_string(), "Ctrl+Alt+K".to_string()), ("new-session".to_string(), String::new())]);
+        assert!(bound(&options(&[]).to_variant()).is_empty());
     }
 }

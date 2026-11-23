@@ -49,7 +49,7 @@ use crate::links::{self, origin};
 use crate::page;
 use crate::prefs::Look;
 use crate::said::{asked, Asked1};
-use crate::view::{Ask, Asked, Away, Engine, Opening, Showing, View};
+use crate::view::{Ask, Asked, Away, Can, Engine, Opening, Showing, View};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use serde_json::{json, Value};
@@ -560,7 +560,7 @@ impl Engine for Qt {
     }
 
     fn open(&self, opening: Opening, ask: Asked) -> Rc<dyn View> {
-        let Opening { main, size, maximized, look: _, tray, devtools: _ } = opening;
+        let Opening { main, size, maximized, look: _, can, devtools: _ } = opening;
         let id = self.inner.next.replace(self.inner.next.get() + 1);
         // What the window asks goes out as the view it is.
         let ask: Rc<dyn Fn(&Rc<Win>, Ask)> = Rc::new(move |win, what| {
@@ -571,7 +571,7 @@ impl Engine for Qt {
             id,
             inner: self.inner.clone(),
             main,
-            tray,
+            can,
             ask,
             showing: Cell::new(Showing::Nothing),
             wanted: RefCell::new("/".into()),
@@ -614,7 +614,7 @@ struct Win {
     id: u32,
     inner: Rc<Inner>,
     main: bool,
-    tray: bool,
+    can: Can,
     ask: Rc<dyn Fn(&Rc<Win>, Ask)>,
     showing: Cell<Showing>,
     /// The path to open once the daemon answers.
@@ -793,7 +793,7 @@ impl View for Win {
     fn load(&self, base: &str, path: &str) {
         // The capability object goes to the top frame of this daemon's origin, and nowhere else.
         let at = origin(base);
-        let mut script = page::bridge("qt", if self.main { "main" } else { "session" }, self.tray, POST, &self.key, &at);
+        let mut script = page::bridge("qt", if self.main { "main" } else { "session" }, self.can, POST, &self.key, &at);
         if let Some(src) = std::env::var_os("KEEL_DESKTOP_PROBE").and_then(|p| std::fs::read_to_string(p).ok()) {
             // The measurer's script, for this daemon's origin alone as well.
             script.push_str(&format!("\nif (self.origin === {}) {{ {src} }}", Value::String(at.clone())));

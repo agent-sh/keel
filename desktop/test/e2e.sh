@@ -609,6 +609,9 @@ fi
 # --- 10c. what the review of the Qt engine asked for (a frame that asks for the keyboard in a loop, on both engines; the rest for Qt)
 . "$HERE/e2e-more.sh"
 
+# --- 10d. the desktop's own keys: global shortcuts through the portal, the tray's middle button, Ctrl+N
+. "$HERE/e2e-keys.sh"
+
 # --- 11. a stranger on the daemon's port while the daemon is down is never sent the token
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
 daemon_down

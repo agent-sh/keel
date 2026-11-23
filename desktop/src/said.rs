@@ -16,6 +16,7 @@ pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
     let id = || m.get("id").and_then(Value::as_u64).unwrap_or(0);
     match m.get("t").and_then(Value::as_str)? {
         "start" => Some(Asked1::Ask(Ask::Start)),
+        "shortcuts" => Some(Asked1::Ask(Ask::Shortcuts)),
         "window" => Some(Asked1::Ask(Ask::Window(s("path")))),
         // (`edge`: the longer side the page keeps a picture at.)
         "paste" => Some(Asked1::Paste(id(), m.get("edge").and_then(Value::as_i64).filter(|e| (64..=16384).contains(e)).map(|e| e as i32))),
@@ -95,6 +96,7 @@ mod tests {
         let m = |raw: &str| asked(&serde_json::from_str(raw).unwrap(), "k-123");
         assert!(matches!(m(r#"{"t":"window","path":"/s/abc","key":"k-123"}"#), Some(Asked1::Ask(Ask::Window(p))) if p == "/s/abc"));
         assert!(matches!(m(r#"{"t":"start","key":"k-123"}"#), Some(Asked1::Ask(Ask::Start))));
+        assert!(matches!(m(r#"{"t":"shortcuts","key":"k-123"}"#), Some(Asked1::Ask(Ask::Shortcuts))));
         assert!(matches!(m(r#"{"t":"paste","id":7,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
         assert!(matches!(m(r#"{"t":"can","paste":true,"key":"k-123"}"#), Some(Asked1::Can { paste: true, saving: false })));
         assert!(matches!(m(r#"{"t":"paste-through","key":"k-123"}"#), Some(Asked1::PasteThrough)));
