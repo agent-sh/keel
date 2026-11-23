@@ -232,7 +232,9 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
 // A retry of the model request in words, with the class of the failure it follows when it has one.
 export function retryText(st: { attempt: number; max: number; message?: string }): string {
   const why = st.message ? failWord(classOfText(st.message)) : "";
-  return why ? `Retry ${st.attempt} of ${st.max}: ${why}` : `Retry ${st.attempt} of ${st.max} of the model request`;
+  // (An overloaded model is tried with no count, max 0, until it has room.)
+  const n = st.max > 0 ? `Retry ${st.attempt} of ${st.max}` : `Retry ${st.attempt}`;
+  return why ? `${n}: ${why}` : `${n} of the model request`;
 }
 
 // The time of day on the reader's 24-hour clock: 09:51.

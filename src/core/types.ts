@@ -277,7 +277,7 @@ export type TurnStatus =
   | { kind: "idle" }
   // `unreachable`: the provider cannot be reached since then; the request waits for it
   // and is not counted (no attempt, no time of the next try: src/providers/outage.ts).
-  | { kind: "retry"; attempt: number; max: number; at: number; message: string; unreachable?: number }
+  | { kind: "retry"; attempt: number; max: number; at: number; message: string; unreachable?: number } // max 0: no count (an overloaded model is tried until it has room)
   // `plan`: the history is too long for one request and is read as a
   // transcript in that many requests, with what they are estimated to send
   // (`cost` in dollars when the model has a price) and how many are done.

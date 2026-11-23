@@ -1,5 +1,6 @@
 import { zonedClock } from "../core/clock.ts";
 import { unreachable } from "../providers/unreachable.ts";
+import { OUTAGE } from "../providers/outage.ts";
 
 // Provider calls that fail for a passing reason (rate limit, overload, a 5xx,
 // a dropped stream) are tried again with exponential backoff. Anything else
@@ -62,10 +63,40 @@ export function retryAfterMs(e: unknown): number | undefined {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
+// An answer that the model is at capacity: Anthropic's 529 overloaded_error, an HTTP 503,
+// Bedrock's serviceUnavailableException (its documentation: "a transient capacity error",
+// to be retried with exponential backoff and jitter). It is neither an outage (the provider
+// answered, and its other models may have room) nor a broken reply: the turn waits it out,
+// past the counted retries, the backoff growing to RETRY_WAIT_MAX_MS. That is Claude Code's
+// way for unattended sessions (CLAUDE_CODE_RETRY_WATCHDOG retries 529 without a count, backing
+// off up to five minutes); most of Keel's turns are agents' and run with nobody watching.
+export function overloaded(e: unknown): boolean {
+  const err = e as any;
+  if (!err || unreachable(e)) return false;
+  if (typeof err.kind === "string") return err.kind === "overloaded";
+  const type = err.error?.error?.type ?? err.error?.type ?? err.type;
+  return type === "overloaded_error" || Number(err.status ?? 0) === 529;
+}
+// What an overloaded model's answers share as one Errors row (ErrorPlace.group, carried on the
+// error as `group`): the model, not the words, which differ by the path each answer came by
+// (a stream's exception, an HTTP status) though they are one cause.
+export const overloadedGroup = (model: string) => `overloaded: ${model}`;
+// How long a turn waits out an overloaded model: as long as a provider that cannot be reached
+// is waited for (a week, src/providers/outage.ts), after which it will not have room either.
+export const capacityMaxMs = () => OUTAGE.maxMs;
+// Whether a failed request is sent again: a passing failure within the counted retries, or, for
+// a request that waits out an overloaded model (`since`: its first overloaded answer), an
+// overloaded answer within capacityMaxMs of that.
+export function retriesLeft(e: unknown, attempt: number, since?: number, now = Date.now()): boolean {
+  if (!retryable(e)) return false;
+  if (since !== undefined && overloaded(e)) return now - since < capacityMaxMs();
+  return attempt + 1 < RETRY.max;
+}
+
 export function backoffMs(attempt: number, e?: unknown): number {
   const asked = retryAfterMs(e);
   if (asked !== undefined) return asked;
-  const exp = Math.min(RETRY.capMs, RETRY.baseMs * 2 ** attempt);
+  const exp = Math.min(overloaded(e) ? RETRY_WAIT_MAX_MS : RETRY.capMs, RETRY.baseMs * 2 ** attempt);
   return Math.round(exp * (0.75 + Math.random() * 0.5));
 }
 

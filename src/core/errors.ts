@@ -150,6 +150,9 @@ export class ErrorTracker {
     const e = err instanceof Error ? err : new Error(String(err));
     // A failed model request or tool call names its trace span on the error it threw (src/admin/trace.ts).
     const span_id = at.span_id ?? (typeof (err as any)?.span_id === "string" ? (err as any).span_id : undefined);
+    // And the cause it is one of, when the code that saw it knew (src/engine/retry.ts overloadedGroup); a RetryTooLong's is its cause's.
+    const own = (x: any) => (typeof x?.group === "string" ? x.group as string : undefined);
+    at = at.group ? at : { ...at, group: own(err) ?? own((err as any)?.cause) };
     const span = span_id ? this.spanOf?.(span_id) : undefined;
     const scope = errorScope.getStore();
     const session_id = at.session_id ?? sessionOf(context) ?? span?.session_id;

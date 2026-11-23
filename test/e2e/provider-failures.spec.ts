@@ -11,6 +11,27 @@ import { shoot } from "./shots.ts";
 // request too long for the window and a context that fills up (compaction).
 const STAND_IN = "scripted:stand-in";
 
+// An overloaded model (a 529, a 503, a stream's serviceUnavailable) is at capacity, not down and not
+// broken: the turn keeps trying past the counted retries until it has room, and the burst is one
+// Errors row for its cause, whichever form each answer took.
+test("a burst of overloaded answers longer than the retries is waited out and is one row", async ({ request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Overloaded burst" } })).json();
+  try {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:overloaded-burst" } });
+    const ended = async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[]).find((e) => e.kind === "turn_end");
+    await expect.poll(ended, { timeout: 30_000 }).toBeTruthy();
+    const events = (await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[];
+    expect(events.filter((e) => e.kind === "error").map((e) => e.data.message)).toEqual([]);
+    expect(events.filter((e) => e.kind === "assistant").at(-1)?.data.blocks.find((b: any) => b.type === "text")?.text).toBe("Answered after the burst passed.");
+    const rows = ((await (await request.get(`/api/errors?session=${session.id}`)).json()).errors as any[]).filter((r) => /unable to process/.test(r.message));
+    expect(rows.map((r) => r.count)).toEqual([12]);
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
 async function send(page: Page, text: string, ends: number) {
   const composer = page.getByTestId("composer");
   await composer.fill(text);
@@ -42,7 +63,7 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   // 529 twice: backoff without retry-after, attempt 2 shown.
   await composer.fill("script:overloaded");
   await composer.press("Enter");
-  await expect(retrying).toContainText(/attempt 2 of 9/, { timeout: 5_000 });
+  await expect(retrying).toContainText(/attempt 2, until the model has room/, { timeout: 5_000 });
   await expect(texts.last()).toHaveText("Answered after the overload passed.", { timeout: 15_000 });
 
   // A model slow to start: the working line says what the turn waits on.

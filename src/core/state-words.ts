@@ -80,6 +80,9 @@ export const limitWord = (cls: unknown) => LIMIT_WORD[String(cls ?? "")] ?? "Usa
 
 const plural = (n: number) => `${n} agent${n === 1 ? "" : "s"}`;
 // A session counted as Failed for agents of it that failed, until the owner looks at it.
+// A retry's count: "attempt 3 of 9", or "attempt 3" for a model at capacity, which is tried
+// until it has room (max 0: src/engine/retry.ts overloaded).
+export const attemptWords = (attempt: number, max: number, word = "attempt") => max > 0 ? `${word} ${attempt} of ${max}` : `${word} ${attempt}, until the model has room`;
 export const agentsFailedText = (n: number) => `${n} of its agents failed`;
 
 // ---- A provider that cannot be reached. The turn waits and tries again by

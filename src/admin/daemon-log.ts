@@ -12,6 +12,7 @@ import { runMode } from "../core/runmode.ts";
 import { logAt, logOwn } from "./logs.ts";
 import { dur } from "./timeline-rows.ts";
 import { stopSays } from "../core/stoppers.ts";
+import { attemptWords } from "../core/state-words.ts";
 
 // Where the lines go: the daemon's log (logs.ts logOwn). A daemon a command runs inside its own
 // process (keel run with no daemon answering) says none of them: they are a serving daemon's story,
@@ -151,7 +152,7 @@ export const loopLine = (o: { name: string; said: string; title?: string }) => c
 
 // A model request that is being tried again, and the provider answering again after it.
 export const retryLine = (o: { attempt: number; max: number; inMs: number; message: string; title?: string }) =>
-  clip(`[provider] retrying the model request${inTitle(o.title)}: try ${o.attempt + 1} of ${o.max + 1} in ${dur(Math.max(0, o.inMs))} after ${reason(o.message, 160)}`);
+  clip(`[provider] retrying the model request${inTitle(o.title)}: ${attemptWords(o.attempt + 1, o.max && o.max + 1, "try")} in ${dur(Math.max(0, o.inMs))} after ${reason(o.message, 160)}`);
 export const answeredLine = (o: { tries: number; ms: number; title?: string }) =>
   clip(`[provider] answered again${inTitle(o.title)} after ${o.tries} tr${o.tries === 1 ? "y" : "ies"} over ${dur(Math.max(0, o.ms))}`);
 

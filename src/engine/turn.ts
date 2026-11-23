@@ -42,7 +42,7 @@ import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
-import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
+import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, overloaded, overloadedGroup, retriesLeft, retryable, sleep } from "./retry.ts";
 import { OUTAGE } from "../providers/outage.ts";
 import { unreachable } from "../providers/unreachable.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
@@ -1538,6 +1538,8 @@ export class Engine {
     const retried: ErrorRecord[] = [];
     // The provider could not be reached and this request waits for it: captured once, however long it takes.
     let down = false;
+    // When the model first answered that it is overloaded, for a request that waits it out.
+    let busySince: number | undefined;
     // A request the turn cannot go on without waits for a provider that cannot be reached; a call its
     // caller can go on without (a reader, a side answer, a summary made ahead) fails at once.
     const running = this.running.get(id);
@@ -1713,11 +1715,17 @@ export class Engine {
           }
           continue;
         }
-        if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
+        // An overloaded model is waited out past the count by a request the turn cannot go on
+        // without (retry.ts overloaded; a reader or a side answer keeps the count), and its
+        // answers are one Errors row for the model, whatever words each came in.
+        const full = overloaded(e);
+        if (full) (e as { group?: string }).group ??= overloadedGroup(st.info.id);
+        if (full && outages) busySince ??= Date.now();
+        if (!retriesLeft(e, attempt, busySince)) throw e;
         const wait = backoffMs(attempt, e);
         if (wait > RETRY_WAIT_MAX_MS) throw new RetryTooLong(e, Date.now() + wait);
         retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait }));
-        if (shown) this.status(id, { kind: "retry", attempt: attempt + 1, max: RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
+        if (shown) this.status(id, { kind: "retry", attempt: attempt + 1, max: busySince !== undefined && full ? 0 : RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
         await sleep(wait, signal);
         attempt++;
       }

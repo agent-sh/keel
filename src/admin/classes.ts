@@ -19,7 +19,7 @@ const KIND: Record<string, ErrorClass> = {
 };
 
 const WORDS: [RegExp, ErrorClass][] = [
-  [/overloaded/i, "overloaded"],
+  [/overloaded|serviceunavailable|unable to process your request/i, "overloaded"],
   [/rate.?limit|too many requests|throttl/i, "rate_limit"],
   [/prompt is too long|context.?(window|length)|maximum context|too many tokens|input is too long|input token count|exceeds? the maximum number of tokens|exceed.{0,30}context/i, "context_overflow"],
   [/unauthori[sz]ed|forbidden|invalid.{0,12}(api.?key|token|credential)|expired.{0,12}token|no credentials/i, "auth"],
@@ -60,7 +60,8 @@ export function errorClass(e: unknown): ErrorClass | null {
   const status = Number(err.status ?? err.statusCode ?? 0);
   const msg = String(err.message ?? err ?? "");
   if (status === 429) return "rate_limit";
-  if (status === 529) return "overloaded";
+  // (A 503 is the provider at capacity, as its drivers read it: src/providers/http.ts classify.)
+  if (status === 529 || status === 503) return "overloaded";
   if (status === 401 || status === 403) return "auth";
   if (status === 402) return "quota";
   if (status === 413) return "context_overflow";

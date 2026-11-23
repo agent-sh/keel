@@ -12,7 +12,7 @@ import { PEER_PREFIX } from "../core/owner.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { classOfText, errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
-import { FAIL_WORD, NEEDS, STATE_WORD, failWord, limitWord, unreachableSince } from "../core/state-words.ts";
+import { FAIL_WORD, NEEDS, STATE_WORD, attemptWords, failWord, limitWord, unreachableSince } from "../core/state-words.ts";
 import { ownerStop, stopSays, stopper } from "../core/stoppers.ts";
 import { probeWords } from "../engine/trail.ts";
 
@@ -445,7 +445,7 @@ const DOING = (s: TurnStatus, now: number, output?: number): string => {
     case "model": return s.quiet ? `the model is answering, no output for ${dur(now - s.quiet)}` : s.connected ? "the model is answering" : "waiting for the model";
     case "tool": return `running ${s.names.slice(0, 3).join(", ")}${s.names.length > 3 ? ` and ${s.names.length - 3} more` : ""}`;
     // A provider that cannot be reached is waited for, not retried by count; a counted retry names its cause.
-    case "retry": { if (s.unreachable) return `${STATE_WORD.wait.toLowerCase()}: ${lower(unreachableSince(localTime(s.unreachable).slice(0, 5)))}`; const why = failWord(classOfText(s.message)); return `retrying the model request (attempt ${s.attempt} of ${s.max}${why ? `: ${why}` : ""})`; }
+    case "retry": { if (s.unreachable) return `${STATE_WORD.wait.toLowerCase()}: ${lower(unreachableSince(localTime(s.unreachable).slice(0, 5)))}`; const why = failWord(classOfText(s.message)); return `retrying the model request (${attemptWords(s.attempt, s.max)}${why ? `: ${why}` : ""})`; }
     case "compacting": return "compacting the context";
     default: return output ? "the model is answering" : "between steps";
   }

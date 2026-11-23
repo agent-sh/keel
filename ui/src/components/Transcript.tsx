@@ -32,7 +32,7 @@ import { LiveWork, Thinking, Work } from "./Work.tsx";
 import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
-import { CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
+import { attemptWords, CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
 import { agentLive, hhmm } from "../../../src/core/watch.ts";
 import { probeWords } from "../../../src/engine/trail.ts";
 
@@ -446,7 +446,7 @@ function Status({ sessionId }: { sessionId: string }) {
     <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-raised px-3 py-2 text-ui" data-testid="retrying">
       <span className="size-1.5 rounded-full bg-warn animate-pulse-dot" />
       <span className="min-w-0 flex-1 truncate text-muted" title={st.message}>{st.message}</span>
-      <span className="shrink-0 tabular-nums text-faint">retrying in {fmtWait(st.at - liveNow())}, attempt {st.attempt} of {st.max}</span>
+      <span className="shrink-0 tabular-nums text-faint">retrying in {fmtWait(st.at - liveNow())}, {attemptWords(st.attempt, st.max)}</span>
     </div>
   );
 }
@@ -616,7 +616,7 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
   // A question card takes the place of the working line: the region says what the turn waits on.
   else if (asking) text = `${STATE_WORD.need}: ${NEEDS.owner}.`;
   else if (st?.kind === "retry" && st.unreachable) text = `${unreachableSince(hhmm(st.unreachable))}.`;
-  else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, attempt ${st.attempt} of ${st.max}.`;
+  else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, ${attemptWords(st.attempt, st.max)}.`;
   else if (st?.kind === "compacting") text = `Compacting the context${compactPlan(st.plan)}.`;
   else if (working) text = `${STATE_WORD.work}.`;
   else if (said.current) text = "The turn ended.";

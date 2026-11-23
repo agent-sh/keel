@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { zoned, zoneNote } from "../core/clock.ts";
 import type { Store } from "../core/store.ts";
 import { leafOf, lineage } from "../core/tree.ts";
+import { attemptWords } from "../core/state-words.ts";
 import type { ErrorRecord, StoredEvent, TurnStatus } from "../core/types.ts";
 import { redact } from "../server/routes/admin.ts";
 import { logDir, type LogLine, logLines } from "./logs.ts";
@@ -122,7 +123,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     if (now?.running) {
       const st = now.status;
       const since = (t: number) => `for ${dur(Date.now() - t)}`;
-      out.push(`- Now: a turn is running; ${st.kind === "tool" ? `waiting on the tool${st.names.length > 1 ? "s" : ""} ${st.names.join(", ")} ${since(st.since)}` : st.kind === "model" && st.quiet ? `${st.model} is answering, no output ${since(st.quiet)}` : st.kind === "model" ? `waiting on ${st.model} ${since(st.since)}${st.connected ? `, connected ${since(st.connected)} with no output yet` : ", not connected yet"}` : st.kind === "retry" && st.unreachable ? `waiting for a provider that cannot be reached since ${iso(st.unreachable)} (${st.message})` : st.kind === "retry" ? `retry ${st.attempt} of ${st.max} at ${iso(st.at)} after: ${clip(st.message, 300)}` : st.kind === "compacting" ? "compacting the context" : "between steps"}`);
+      out.push(`- Now: a turn is running; ${st.kind === "tool" ? `waiting on the tool${st.names.length > 1 ? "s" : ""} ${st.names.join(", ")} ${since(st.since)}` : st.kind === "model" && st.quiet ? `${st.model} is answering, no output ${since(st.quiet)}` : st.kind === "model" ? `waiting on ${st.model} ${since(st.since)}${st.connected ? `, connected ${since(st.connected)} with no output yet` : ", not connected yet"}` : st.kind === "retry" && st.unreachable ? `waiting for a provider that cannot be reached since ${iso(st.unreachable)} (${st.message})` : st.kind === "retry" ? `${attemptWords(st.attempt, st.max, "retry")} at ${iso(st.at)} after: ${clip(st.message, 300)}` : st.kind === "compacting" ? "compacting the context" : "between steps"}`);
     }
     if (turnEvent) {
       out.push(`- Turn \`${turnEvent}\` started ${turnAt ? iso(turnAt.ts) : "(event gone)"}; trace id \`${traceId}\``);
