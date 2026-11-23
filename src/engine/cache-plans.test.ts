@@ -98,3 +98,16 @@ test("the warm reads of one wait stay under one rewrite across restarts", async 
   expect(park(plans, id, w.shape, Date.now())?.choice).toBe("warm");
   plans.stopAll();
 });
+
+// A tool step whose last request read the cache longer ago than its lifetime: the cache was gone
+// before the step began, and the note says so, not that the wait lost it.
+test("a cache gone before its wait began is told as gone before it", () => {
+  const id = store.createSession({ model: MODEL, workspace: dir, title: "gone before" }).id;
+  const plans = daemon({ held: false, calls: [] });
+  const usage = { input: 0, cache_read: TOKENS, cache_write: 0, output: 1 };
+  const done = plans.tool(id, st, replied(Date.now() - 3_000), [], { kind: "tool:Bash" }, Date.now() - 3_000, usage);
+  done();
+  expect(notes(id).at(-1)).toMatchObject({ outcome: "lapsed", before_wait: true, text: expect.stringMatching(/^The prompt cache had lapsed before this wait began, 3 s after the request that last read it: nothing could keep it/) });
+  expect(notes(id).at(-1)!.idle_ms).toBeGreaterThanOrEqual(3_000);
+  plans.stopAll();
+});

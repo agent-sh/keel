@@ -1013,3 +1013,40 @@ test("a follow-up decision whose message never came leaves the next turn alone",
   expect(asked.filter((r) => r.purpose === "summary")).toHaveLength(0);
   expect(asked.filter((r) => r.purpose === "turn")).toHaveLength(1);
 });
+
+// A request that retried (or waited out an outage) was answered by its last attempt: that attempt
+// read or wrote the cache, so a tool step's cache plan counts the cache's life from it, not from
+// the first attempt (after an eight-minute outage every plan began as "lapsed" and said so).
+test("a tool step's cache plan starts from the attempt that answered", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "answered-"));
+  const store = new Store(dir);
+  const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+  const tried: number[] = [];
+  const provider = {
+    id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async (req: any) => {
+      if (req.purpose !== "turn") return { blocks: [{ type: "text", text: "t" }], usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: "m" };
+      tried.push(Date.now());
+      if (tried.length === 1) throw Object.assign(new Error("HTTP 500: try again"), { status: 500, headers: new Headers({ "retry-after-ms": "300" }) });
+      if (tried.length === 2) return { blocks: [{ type: "tool_use", id: "c1", name: "no_such_tool", input: {} }], usage: { input: 1, output: 1, cache_read: 0, cache_write: 5_000 }, stop: "tool_use", model: "m" };
+      return { blocks: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cache_read: 5_000, cache_write: 0 }, stop: "end_turn", model: "m" };
+    },
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+  const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }), recovered: () => {} } as any, join(dir, "spill"));
+  const sent: number[] = [];
+  (engine as any).cachePlans.tool = (...a: any[]) => { sent.push(a[5]); return () => {}; };
+  engine.send(s.id, "go");
+  await engine.idle(s.id);
+  expect(tried.length).toBe(3);
+  expect(sent).toHaveLength(1);
+  // Sent after the first attempt failed, at most when the second one reached the provider.
+  expect(sent[0]!).toBeGreaterThan(tried[0]!);
+  expect(sent[0]!).toBeLessThanOrEqual(tried[1]!);
+});

@@ -127,6 +127,11 @@ export function restartText(cut: number, owed: number, unstarted = false): strin
 }
 
 // What a call that names a tool the session does not have is answered with.
+// When the attempt that answered a request was sent: a request that waited out
+// an outage or retried was answered by its last attempt, which read or wrote the
+// cache then, not when the first attempt went.
+const answeredAt = new WeakMap<ProviderResult, number>();
+
 export const noSuchTool = (name: string) => `No tool named ${name}.`;
 export const isNoSuchTool = (content: unknown) => typeof content === "string" && /^No tool named .+\.$/.test(content);
 
@@ -1870,6 +1875,7 @@ export class Engine {
         if (fixed) this.imagesFixed(id, fixed, purpose);
         // The failures this request was sent again for are healed: recorded, not open.
         if (retried.length) this.errors.recovered(retried, id);
+        answeredAt.set(res, since);
         return res;
       } catch (e) {
         clearInterval(hush);
@@ -2392,6 +2398,7 @@ export class Engine {
           const final = !worthSummarizing(summarizable(events));
           sentAt = Date.now();
           res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.whole(events, st), ...(final ? { least: this.least(events, st) } : {}) });
+          sentAt = answeredAt.get(res) ?? sentAt;
         } catch (e) {
           // Counted over the window before it was sent: the provider said nothing about its own count.
           const unsent = !!(e as any)?.unsent;

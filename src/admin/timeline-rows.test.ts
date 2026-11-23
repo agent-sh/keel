@@ -319,4 +319,6 @@ test("a cache plan's row says what the wait did with the cache and what it cost,
   const plan = (d: Record<string, unknown>) => markRow({ id: "m", ts: 5, kind: "note", data: { kind: "cache_plan", ...d } });
   expect(plan({ outcome: "warm", pings: 3, spent_usd: 0.22, lapse_usd: 5.712, waited_ms: 30 * 60_000 })).toMatchObject({ kind: "cache", sub: "warm", tone: "plain", text: "Kept the prompt cache warm through a wait of 30 min: 3 requests for $0.220, where writing the context again would cost $5.71" });
   expect(plan({ outcome: "lapsed", pings: 0, lapse_usd: 5.712, waited_ms: 13 * 3_600_000 })).toMatchObject({ tone: "failed", text: expect.stringMatching(/^The prompt cache lapsed during a wait of .+: writing the context again costs about \$5\.71$/) });
+  // Gone before the wait began (the request before it had waited out an outage): the wait lost nothing.
+  expect(plan({ outcome: "lapsed", before_wait: true, idle_ms: 8 * 60_000, pings: 0, lapse_usd: 1.713, waited_ms: 300 })).toMatchObject({ text: "The prompt cache had lapsed before this wait began, 8 min after the request that last read it: nothing could keep it, and the next request writes the context again for about $1.71" });
 });

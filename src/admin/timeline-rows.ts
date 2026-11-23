@@ -232,6 +232,7 @@ function cacheLine(d: Record<string, any>): string {
   const reqs = `${n} ${n === 1 ? "request" : "requests"}`;
   if (d.outcome === "warm") return `Kept the prompt cache warm through a wait of ${long}: ${reqs} for ${usd(d.spent_usd)}, where writing the context again would cost ${usd(d.lapse_usd)}`;
   if (d.outcome === "summary") return `Prepared the summary while the cache was warm, for a wait of ${long}; writing the whole context again would cost ${usd(d.lapse_usd)}`;
+  if (d.outcome === "lapsed" && d.before_wait) return `The prompt cache had lapsed before this wait began, ${dur(Number(d.idle_ms) || 0)} after the request that last read it: nothing could keep it, and the next request writes the context again for about ${usd(d.lapse_usd)}`;
   if (d.outcome === "lapsed") return `The prompt cache lapsed during a wait of ${long}${n ? ` after ${reqs} for ${usd(d.spent_usd)}` : ""}: writing the context again costs about ${usd(d.lapse_usd)}`;
   return `The wait of ${long} ended before the cache lapsed`;
 }

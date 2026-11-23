@@ -252,13 +252,17 @@ export class CachePlans {
     if (!r.done.length && !lapsed) return;
     const lapse = this.lapse(r);
     const outcome = lapsed ? (r.done.includes("summary") ? "summary" : "lapsed") : r.done.includes("warm") ? "warm" : "held";
-    const text = outcome === "warm" ? `Kept the prompt cache warm through a wait of ${mins(now - r.started)}: ${r.pings} ${r.pings === 1 ? "request" : "requests"} for ${usd(r.spent)}, where writing the context again would cost ${usd(lapse)}`
+    // Gone before the wait began (a daemon that was down, the last request long before it): the wait lost nothing.
+    const before = outcome === "lapsed" && r.started >= r.touched + r.life - marginOf(r.life);
+    const text = before ? beforeText(r.started - r.touched, lapse)
+      : outcome === "warm" ? `Kept the prompt cache warm through a wait of ${mins(now - r.started)}: ${r.pings} ${r.pings === 1 ? "request" : "requests"} for ${usd(r.spent)}, where writing the context again would cost ${usd(lapse)}`
       : outcome === "summary" ? `Prepared the summary while the cache was warm, for a wait of ${mins(now - r.started)}; writing the whole context again would cost ${usd(lapse)}`
       : outcome === "lapsed" ? `The prompt cache lapsed during a wait of ${mins(now - r.started)}${r.pings ? ` after ${r.pings} warm ${r.pings === 1 ? "request" : "requests"} for ${usd(r.spent)}` : ""}: writing the context again costs about ${usd(lapse)} (${r.first.why})`
       : `The wait ended before the cache lapsed`;
     try {
       this.d.append(id, "note", {
         kind: "cache_plan", text, plan: r.kind, wait_kind: r.shape.kind, choice: r.first.choice, outcome, why: r.first.why,
+        ...(before ? { before_wait: true, idle_ms: r.started - r.touched } : {}),
         ...(r.first.expect ? { expect_ms: r.first.expect.ms, expect_from: r.first.expect.from } : {}),
         waited_ms: now - r.started, life_ms: r.life, tokens: r.tokens, route: r.model,
         pings: r.pings, missed: r.missed, read_tokens: r.read, written_tokens: r.written,
@@ -293,6 +297,11 @@ export function withWarm(messages: Message[], kind: "park" | "tool"): Message[] 
   if (kind === "tool" && last?.role === "user") return [...messages.slice(0, -1), { ...last, content: [...(last.content as any[]), block] } as Message];
   return [...messages, { role: "user", content: [block] } as Message];
 }
+
+// The note of a cache that had lapsed before its wait began: `idle` is the time from the request that
+// last read it to the wait's start. (src/admin/timeline-rows.ts says the same from the note's data.)
+export const beforeText = (idle: number, lapse: number) =>
+  `The prompt cache had lapsed before this wait began, ${mins(idle)} after the request that last read it: nothing could keep it, and the next request writes the context again for about ${usd(lapse)}`;
 
 const round = (x: number) => Math.round(x * 1e6) / 1e6;
 const usd = (x: number) => (x >= 1 ? `$${x.toFixed(2)}` : x >= 0.01 ? `$${x.toFixed(3)}` : `$${x.toFixed(4)}`);
