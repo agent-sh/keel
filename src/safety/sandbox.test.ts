@@ -117,11 +117,14 @@ test("a linked worktree's git directories are writable only when the layout conf
 // The profile also opens the temporary folder, and these scratch repositories
 // live under it: for the run it is a folder of its own, so only what the
 // profile opens for the workspace is writable.
+// The test's environment without git settings the shell that runs it may pass (GIT_CONFIG_COUNT and its
+// pairs): a test counts the ones the sandbox adds.
+const ownEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k)));
 const run = (ws: string, script: string) => {
   const tmp = process.env.TMPDIR;
   process.env.TMPDIR = mkdtempSync(join(tmpdir(), "keel-sandbox-tmp-"));
   try {
-    const r = Bun.spawnSync(confine(["bash", "-c", script], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+    const r = Bun.spawnSync(confine(["bash", "-c", script], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "pipe", stderr: "pipe", env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
     return { code: r.exitCode, out: r.stdout.toString() + r.stderr.toString() };
   } finally {
     rmSync(process.env.TMPDIR!, { recursive: true, force: true });
@@ -222,7 +225,7 @@ test.skipIf(!sandboxStatus().available)("the config and the hooks stay read-only
     const during = async (ws: string, inside: string) => {
       rmSync(join(ws, "go"), { force: true });
       rmSync(join(ws, "ready"), { force: true });
-      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${inside}`], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${inside}`], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "pipe", stderr: "pipe", env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
       for (let i = 0; i < 200 && !existsSync(join(ws, "ready")); i++) await Bun.sleep(25);
       const was = [inode(join(common, "config")), inode(join(subDir, "config"))];
       git(main, "config", "keel.test", "outside");
@@ -316,7 +319,7 @@ test.skipIf(!sandboxStatus().available)("a linked worktree cannot plant an opera
     const tmp = process.env.TMPDIR;
     process.env.TMPDIR = mkdtempSync(join(tmpdir(), "keel-sandbox-tmp-"));
     try {
-      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${commit}; git rev-list --count HEAD`], { sandbox: "workspace-write", network: false }, wt), { cwd: wt, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${commit}; git rev-list --count HEAD`], { sandbox: "workspace-write", network: false }, wt), { cwd: wt, stdout: "pipe", stderr: "pipe", env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
       for (let i = 0; i < 200 && !existsSync(join(wt, "ready")); i++) await Bun.sleep(25);
       git(main, "pack-refs", "--all");
       expect(existsSync(join(common, "refs/heads/a"))).toBe(false); // packed, and the loose file pruned
@@ -346,7 +349,7 @@ test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main 
     const during = async (inside: string, outside: () => void) => {
       rmSync(join(wt, "ready"), { force: true });
       rmSync(join(wt, "go"), { force: true });
-      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${inside}`], { sandbox: "workspace-write", network: false }, wt), { cwd: wt, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${inside}`], { sandbox: "workspace-write", network: false }, wt), { cwd: wt, stdout: "pipe", stderr: "pipe", env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
       for (let i = 0; i < 200 && !existsSync(join(wt, "ready")); i++) await Bun.sleep(25);
       outside();
       writeFileSync(join(wt, "go"), "");
@@ -370,7 +373,7 @@ test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main 
     git(nc, "worktree", "add", "-q", "-b", "w", ncw, "HEAD");
     expect(existsSync(join(nc, ".git/index"))).toBe(false);
     const late = async () => {
-      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; git prune; echo pruned-$?; (echo x > ${nc}/.git/index) 2>/dev/null || echo index-closed`], { sandbox: "workspace-write", network: false }, ncw), { cwd: ncw, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; git prune; echo pruned-$?; (echo x > ${nc}/.git/index) 2>/dev/null || echo index-closed`], { sandbox: "workspace-write", network: false }, ncw), { cwd: ncw, stdout: "pipe", stderr: "pipe", env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
       for (let i = 0; i < 200 && !existsSync(join(ncw, "ready")); i++) await Bun.sleep(25);
       git(nc, "checkout", "-q", "main");
       writeFileSync(join(nc, "late"), "only in the new index\n");
@@ -393,7 +396,7 @@ test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main 
     // The settings come after the ones the command's own environment carries, which still hold.
     const own = Bun.spawnSync(confine(["bash", "-c", "git config user.name; git config alias.hi; git config gc.auto; git config branch.autoSetupMerge; echo $GIT_CONFIG_COUNT"], { sandbox: "workspace-write", network: false }, wt), {
       cwd: wt, stdout: "pipe", stderr: "pipe",
-      env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "From The Command", GIT_CONFIG_KEY_1: "alias.hi", GIT_CONFIG_VALUE_1: "status" },
+      env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "From The Command", GIT_CONFIG_KEY_1: "alias.hi", GIT_CONFIG_VALUE_1: "status" },
     });
     expect(own.stdout.toString()).toBe("From The Command\nstatus\n0\nfalse\n7\n");
     // A session in the main checkout can gc, and is not told otherwise; a new branch still records no upstream.
@@ -417,7 +420,7 @@ test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main 
 // when they run unconfined is kept when they run confined.
 test.skipIf(!sandboxStatus().available)("a prune or a repack in a worktree keeps what every other checkout holds", () => {
   const sh = (cwd: string, script: string) => {
-    const r = Bun.spawnSync(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+    const r = Bun.spawnSync(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
     if (r.exitCode !== 0) throw new Error(`${script}: ${r.stderr.toString()}`);
     return r.stdout.toString().trim();
   };
@@ -521,7 +524,7 @@ test.skipIf(!sandboxStatus().available)("a submodule's hooks and config are read
     const tmp = process.env.TMPDIR;
     process.env.TMPDIR = mkdtempSync(join(tmpdir(), "keel-sandbox-tmp-"));
     try {
-      const kept = (script: string) => Bun.spawnSync(confine(["bash", "-c", script], { sandbox: "workspace-write", network: false }, fresh), { cwd: fresh, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_ALLOW_PROTOCOL: "file" } }).stdout.toString();
+      const kept = (script: string) => Bun.spawnSync(confine(["bash", "-c", script], { sandbox: "workspace-write", network: false }, fresh), { cwd: fresh, stdout: "pipe", stderr: "pipe", env: { ...ownEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_ALLOW_PROTOCOL: "file" } }).stdout.toString();
       expect(kept("git -c protocol.file.allow=always submodule update -q --init >/dev/null 2>&1 && echo inited")).toBe("inited\n");
       expect(existsSync(join(made, "HEAD"))).toBe(true);
       expect(kept(`(echo '[core]' >> ${made}/config) 2>/dev/null || echo refused-config; (cd libs/sub && ${commit}) >/dev/null 2>&1 || echo refused-commit; (${commit}) 2>/dev/null`)).toBe("refused-config\nrefused-commit\ncommitted\n");
