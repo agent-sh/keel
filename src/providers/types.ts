@@ -210,6 +210,9 @@ export interface Provider {
   // request's prefix is kept for sure, and whether a read refreshes that.
   readonly caching?: { life: number; refresh?: "read" };
   readonly family: Family; // the default for models whose id says nothing
+  // The wire one of its models stands for, when it is not the provider's own
+  // (the scripted stand-in of each family): what decides how its tools load.
+  wireOf?(model: string): Wire | undefined;
   available(): boolean;
   // Looks again for a credential last found missing (at least `olderThanMs`
   // ago), so available() can change without a restart.

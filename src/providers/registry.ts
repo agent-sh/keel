@@ -520,7 +520,7 @@ export class Providers {
     return {
       id: p.id,
       family: info.family,
-      wire: p.wire,
+      wire: p.wireOf?.(info.model) ?? p.wire,
       caching: p.caching,
       label: p.label,
       available: () => p.available(),

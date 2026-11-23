@@ -36,7 +36,7 @@ import { inflateSync } from "node:zlib";
 import type { Message } from "../core/types.ts";
 import { imageSize } from "../engine/images.ts";
 import { classify, fetchFailure, ProviderError } from "./http.ts";
-import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
+import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult, Wire } from "./types.ts";
 
 export const SCRIPTED_ENV = "KEEL_SCRIPTED_PROVIDER";
 export const scriptedEnabled = () => process.env[SCRIPTED_ENV] === "1";
@@ -57,6 +57,14 @@ const OUTPUT = 2_000;
 const STRICT = "stand-in-strict";
 const STRICT_WINDOW = 80_000;
 const STRICT_BYTES = 2.5;
+// A stand-in of each model family, for the e2e of the tools that family is
+// offered (src/tools/<family>.ts), driven by `script:calls`: each answers as
+// `stand-in` does and loads its tools as the family's own wire does.
+const FAMILY_STAND_INS = [
+  { model: "claude-stand-in", name: "Scripted Claude stand-in", family: "claude", wire: "anthropic_messages" },
+  { model: "gpt-stand-in", name: "Scripted GPT stand-in", family: "gpt", wire: "openai_responses" },
+  { model: "gemini-stand-in", name: "Scripted Gemini stand-in", family: "gemini", wire: "gemini_generate_content" },
+] as const;
 
 const textOf = (m: Message | undefined) =>
   (m?.content as any[] | undefined)?.filter((b) => b.type === "text").map((b) => b.text).join("\n") ?? "";
@@ -114,6 +122,10 @@ export class ScriptedProvider implements Provider {
     return scriptedEnabled();
   }
 
+  wireOf(model: string): Wire | undefined {
+    return FAMILY_STAND_INS.find((m) => m.model === model)?.wire;
+  }
+
   private outage: OutageState = { kind: "dns", until: 0, started: [], requests: 0, listings: 0 };
   private saveOutage() {
     try { if (this.stateDir) writeFileSync(join(this.stateDir, "scripted-outage.json"), JSON.stringify(this.outage)); } catch {}
@@ -144,6 +156,7 @@ export class ScriptedProvider implements Provider {
       // Says it reads no images: the composer holds a new screenshot for it.
       { model: STRICT, name: "Scripted strict window", context: STRICT_WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
       { model: "stand-in-text", name: "Scripted text only", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, images: false },
+      ...FAMILY_STAND_INS.map(({ model, name, family }) => ({ model, name, family, context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" as const } })),
     ];
   }
 
@@ -357,7 +370,8 @@ export class ScriptedProvider implements Provider {
           return reply(typeof next.say === "string" ? next.say : `Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
         }
         const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
-        const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
+        // An image in the result is named by its color, as a model that looked at it would.
+        const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.type === "image" ? `an image, ${colorOf(b.data)}` : b.text ?? "").join("\n") ?? "";
         return reply(`Done with ${calls.length} call${calls.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
       }
       case "obey": {

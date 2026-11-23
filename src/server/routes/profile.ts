@@ -55,7 +55,7 @@ export const profileRoutes: RouteModule = ({ store, bus, providers, engine }) =>
       model: info ? { id: info.id, name: info.name, provider: info.provider, family: info.family, context: info.context, output: info.output, billing: info.billing, price: info.price } : null,
       reasoning: { choice: s.settings.effort && info?.efforts.includes(s.settings.effort) ? s.settings.effort : undefined, options: info?.efforts.length ? { kind: "levels", levels: info.efforts } : { kind: info ? "none" : "unknown" } },
       speed: { choice: offer?.id ?? "standard", options: [{ speed: "standard", label: "Standard", available: true }, ...(info?.speeds ?? []).map((o) => ({ speed: o.id, label: o.label, available: true, note: o.note, price: o.price }))] },
-      ...(info ? toolProfile(info, providers.get(info.provider)?.wire) : { tool_profile: null, eager_tools: [] }),
+      ...(info ? toolProfile(info, ((p) => p?.wireOf?.(info.model) ?? p?.wire)(providers.get(info.provider))) : { tool_profile: null, eager_tools: [] }),
       instructions: instructions(s.workspace, s.machine ? [] : loadedPaths(store, s.id)),
     };
   };
