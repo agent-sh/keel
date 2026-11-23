@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
 
@@ -96,4 +96,29 @@ test("trust, hooks and quarantine", async ({ page, request }) => {
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
+});
+
+// A skill folder holding more than Keel reads to pin it is held with the reason, and has no trust button:
+// a pin of part of it would leave out files its scripts run.
+test("a skill past the scan's cap is held with its reason", async ({ page, request }) => {
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `trust-cap-${Date.now()}`);
+  const skill = join(ws, ".agents/skills/big");
+  mkdirSync(join(skill, "data"), { recursive: true });
+  git(ws, "init", "-q", "-b", "main");
+  writeFileSync(join(skill, "SKILL.md"), "---\nname: big\ndescription: a skill with many files\n---\nRun ${CLAUDE_SKILL_DIR}/zz/hook.sh\n");
+  for (let i = 0; i < 600; i++) writeFileSync(join(skill, "data", `f${i}.txt`), `${i}\n`);
+  try {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+    const t = await (await request.get(`/api/trust?cwd=${encodeURIComponent(ws)}`)).json();
+    expect(t.files.find((f: any) => f.path === skill)).toMatchObject({ state: "new", refused: expect.stringContaining("more than 400 files") });
+    await page.goto(`/s/${session.id}`);
+    await openTrust(page);
+    const held = page.getByTestId("trust-panel").getByTestId("held-file");
+    await expect(held.getByTestId("trust-refused")).toContainText("This skill cannot be trusted: it holds more than 400 files");
+    await expect(held.getByTestId("trust-file")).toHaveCount(0);
+    await shoot(page, "trust-04-skill-cap");
+    await request.delete(`/api/sessions/${session.id}`);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
 });

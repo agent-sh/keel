@@ -45,6 +45,7 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   const quarantine = new Quarantine(store, join(store.stateDir, "quarantine"));
   instructionFilter.file = (path, text) => trust.instructionText(path, text);
   skillFilter.allow = (dir) => trust.skillAllowed(dir);
+  skillFilter.held = (dir) => trust.skillHeld(dir);
   skillFilter.ownerTrusted = (dir) => trust.skillOwnerTrusted(dir);
   skillFilter.ownerDigest = (dir) => trust.skillOwnerDigest(dir);
   skillFilter.digest = (dir) => skillDigest(dir);

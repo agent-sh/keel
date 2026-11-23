@@ -142,12 +142,15 @@ function HeldFile({ f, cwd, onDone }: { f: File; cwd: string; onDone: () => void
         <Icon className="size-4 shrink-0 text-warn" />
         <span className="min-w-0 flex-1 truncate font-mono text-caption">{f.rel}</span>
         <span className="text-micro text-faint">{KIND[f.kind]} · {f.state === "changed" ? "changed" : f.state === "new" ? "new" : "gone"}</span>
-        <button data-testid="trust-file" onClick={trust} className="h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90">
-          {f.state === "gone" ? "Forget it" : "Trust this version"}
-        </button>
+        {!f.refused && (
+          <button data-testid="trust-file" onClick={trust} className="h-7 rounded-lg bg-accent px-2.5 text-caption font-medium text-accent-fg hover:opacity-90">
+            {f.state === "gone" ? "Forget it" : "Trust this version"}
+          </button>
+        )}
       </div>
       {diff && f.kind !== "skill" && <div className="border-t border-line p-2"><DiffView files={[{ path: diff.rel, status: f.state === "new" ? "A" : "M", added: diff.patch.added, removed: diff.patch.removed }]} patch={diff.patch.text} /></div>}
-      {diff && f.kind === "skill" && <p className="border-t border-line px-3 py-2 text-caption text-muted">The skill's files changed. Read its folder before trusting it.</p>}
+      {f.refused && <p className="border-t border-line px-3 py-2 text-caption text-warn" data-testid="trust-refused">{f.refused}</p>}
+      {diff && f.kind === "skill" && !f.refused && <p className="border-t border-line px-3 py-2 text-caption text-muted">The skill's files changed. Read its folder before trusting it.</p>}
       {err && <p className="px-3 pb-2 text-caption text-danger">{err}</p>}
     </div>
   );

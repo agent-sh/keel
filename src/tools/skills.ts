@@ -163,7 +163,8 @@ offerToSandbox(() => [
 // A feature may hold back a repository's skill (one changed since it was trusted).
 // `ownerTrusted`: the owner pinned that repository skill himself (not on first sight).
 // `ownerDigest`: the digest he pinned it at, while it is still that; `digest`: its digest now (src/safety/trust.ts).
-export const skillFilter: { allow?: (dir: string) => boolean; ownerTrusted?: (dir: string) => boolean; ownerDigest?: (dir: string) => string | null; digest?: (dir: string) => string | null } = {};
+// `held`: why a repository's skill the filter holds back does not load, said to the model that asks for it.
+export const skillFilter: { allow?: (dir: string) => boolean; held?: (dir: string) => string | null; ownerTrusted?: (dir: string) => boolean; ownerDigest?: (dir: string) => string | null; digest?: (dir: string) => string | null } = {};
 
 // Whether a skill's allowed-tools may run without asking: the owner's own
 // skills and his plugins' do; a repository's only once the owner trusted that
@@ -201,7 +202,8 @@ export function commandRoots(cwd: string): { dir: string; scope: Skill["scope"] 
   return roots;
 }
 
-export function discoverSkills(cwd: string): Skill[] {
+// `heldBack`: the repository skills the filter holds back are added to it, by the name they would have.
+export function discoverSkills(cwd: string, heldBack?: { name: string; dir: string }[]): Skill[] {
   const out = new Map<string, Skill>();
   const off = skillsOff();
   const seenReal = new Set<string>();
@@ -210,7 +212,10 @@ export function discoverSkills(cwd: string): Skill[] {
     let real: string;
     try { if (!statSync(file).isFile()) return; real = realpathSync(file); } catch { return; }
     if (seenReal.has(real)) return;
-    if (scope === "project" && skillFilter.allow && !skillFilter.allow(held)) return;
+    if (scope === "project" && skillFilter.allow && !skillFilter.allow(held)) {
+      if (heldBack) { try { heldBack.push({ name: prefix + String((kind === "skill" && frontmatter(readFileSync(file, "utf8")).data.name) || fallback), dir: held }); } catch {} }
+      return;
+    }
     seenReal.add(real);
     let text = "";
     try { text = readFileSync(file, "utf8"); } catch { return; }
@@ -430,7 +435,11 @@ function grantOf(skill: Skill, vars: Record<string, string>): { rules: { kind: R
 export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
   const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => s.name === name || s.name === name.replace(/^\//, ""));
   if (!skill) {
-    const names = discoverSkills(ctx.cwd).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
+    const heldBack: { name: string; dir: string }[] = [];
+    const names = discoverSkills(ctx.cwd, heldBack).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
+    // A repository's skill held back by its trust: the model is told why, not that it does not exist.
+    const held = heldBack.find((h) => h.name === name || h.name === name.replace(/^\//, ""));
+    if (held) return fail(`The skill "${held.name}" is this repository's and does not load: ${skillFilter.held?.(held.dir) ?? "the owner has not trusted it"}.`);
     return fail(`No skill named "${name}". Available: ${names.join(", ") || "none"}.`);
   }
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);

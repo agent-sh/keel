@@ -24,6 +24,7 @@ export type ProjectFile = {
   trusted_ms?: number;
   auto?: boolean;         // pinned on first sight, not by the owner
   outside?: string[];     // a skill's links that land outside it: it does not load
+  refused?: string;       // why a skill cannot be pinned (more than the scan reads): it does not load, and is not trusted
 };
 
 const SCHEMA = `
@@ -73,42 +74,55 @@ function fileSha(p: string): string {
 // skill does not load (what it runs is not the skill's to pin). Hook events
 // ask for it (a repository skill's hooks run only while it is trusted as it is
 // now), so a file's content is hashed again only when it changed (fileSha).
-function skillScan(dir: string): { digest: string; outside: string[] } | null {
+// The scan reads SKILL_SCAN.files files and links, SKILL_SCAN.depth folders down and files of SKILL_SCAN.bytes at
+// most. A folder with more is `refused`: a digest of part of it would leave out files its hooks and scripts can run
+// (${CLAUDE_SKILL_DIR}/...), and a change there would load as trusted.
+export const SKILL_SCAN = { files: 400, depth: 4, bytes: 2_000_000 };
+type Scan = { digest: string; outside: string[]; refused?: string };
+function skillScan(dir: string): Scan | null {
   return timed(() => `trust: scan skill ${relative(homedir(), dir)}`, () => scanSkill(dir));
 }
-function scanSkill(dir: string): { digest: string; outside: string[] } | null {
+function scanSkill(dir: string): Scan | null {
   if (!existsSync(join(dir, "SKILL.md"))) return null;
   const parts: string[] = [];
   const outside: string[] = [];
+  let refused: string | undefined;
   const top = realOf(dir);
   const walk = (d: string, depth: number) => {
-    if (depth > 4 || parts.length > 400) return;
     let names: string[] = [];
     try { names = readdirSync(d).sort(); } catch { return; }
+    if (depth > SKILL_SCAN.depth) { if (names.length) refused = `it nests folders more than ${SKILL_SCAN.depth} deep (${relative(dir, d)}), deeper than Keel reads to pin a skill`; return; }
     for (const n of names) {
+      if (refused) return;
       const p = join(d, n);
       let st;
       try { st = lstatSync(p); } catch { continue; }
-      if (st.isDirectory()) walk(p, depth + 1);
-      else if (st.isFile() && st.size <= 2_000_000) parts.push(`${relative(dir, p)}\0${fileSha(p)}`);
-      else if (st.isSymbolicLink()) {
+      if (st.isDirectory()) { walk(p, depth + 1); continue; }
+      if (!st.isFile() && !st.isSymbolicLink()) continue;
+      if (parts.length >= SKILL_SCAN.files) { refused = `it holds more than ${SKILL_SCAN.files} files, more than Keel reads to pin a skill`; return; }
+      if (st.isFile() && st.size > SKILL_SCAN.bytes) { refused = `it holds ${relative(dir, p)}, a file over ${SKILL_SCAN.bytes / 1_000_000} MB, larger than Keel reads to pin a skill`; return; }
+      if (st.isFile()) parts.push(`${relative(dir, p)}\0${fileSha(p)}`);
+      else {
         let target = "";
         try { target = readlinkSync(p); } catch {}
         const lands = realOf(p);
         if (!contains(top, lands)) { outside.push(relative(dir, p)); parts.push(`${relative(dir, p)}\0link\0${target}\0outside`); continue; }
         let body = "missing";
-        try { const t = statSync(lands); body = t.isFile() && t.size <= 2_000_000 ? fileSha(lands) : t.isDirectory() ? "dir" : "large"; } catch {}
+        try { const t = statSync(lands); body = t.isFile() && t.size <= SKILL_SCAN.bytes ? fileSha(lands) : t.isDirectory() ? "dir" : "large"; } catch {}
         parts.push(`${relative(dir, p)}\0link\0${target}\0${body}`);
       }
     }
   };
   walk(dir, 0);
-  return { digest: sha(parts.join("\n")), outside };
+  return { digest: sha(parts.join("\n")), outside, ...(refused ? { refused: `This skill cannot be trusted: ${refused}. Move what it does not need out of its folder.` } : {}) };
 }
 
 // A skill's digest as it is on disk now: a command file's content, a folder's scan.
+// (null for a folder past what the scan reads: such a skill is never trusted, SKILL_SCAN.)
 export function skillDigest(dir: string): string | null {
-  return dir.endsWith(".md") ? commandDigest(dir) : skillScan(dir)?.digest ?? null;
+  if (dir.endsWith(".md")) return commandDigest(dir);
+  const scan = skillScan(dir);
+  return scan && !scan.refused ? scan.digest : null;
 }
 
 // A command file (<repo>/.claude/commands/<name>.md): its content.
@@ -142,7 +156,7 @@ export class Trust {
   files(cwd: string): ProjectFile[] {
     const root = rootOf(cwd);
     if (!root) return [];
-    const found: { path: string; kind: TrustKind; digest: string | null; content?: string; outside?: string[] }[] = [];
+    const found: { path: string; kind: TrustKind; digest: string | null; content?: string; outside?: string[]; refused?: string }[] = [];
     const dirs: string[] = [];
     for (let d = cwd; ; d = dirname(d)) {
       dirs.unshift(d);
@@ -172,7 +186,7 @@ export class Trust {
         for (const n of names.sort()) {
           const dir = join(d, sub, n);
           const scan = skillScan(dir);
-          if (scan) found.push({ path: dir, kind: "skill", digest: scan.digest, ...(scan.outside.length ? { outside: scan.outside } : {}) });
+          if (scan) found.push({ path: dir, kind: "skill", digest: scan.digest, ...(scan.outside.length ? { outside: scan.outside } : {}), ...(scan.refused ? { refused: scan.refused } : {}) });
         }
       }
     }
@@ -180,6 +194,8 @@ export class Trust {
     const auto = this.newFiles() === "auto";
     for (const f of found) {
       const p = this.pin(f.path);
+      // (A skill past what the scan reads is never trusted: not on first sight, not by its old pin.)
+      if (f.refused) { out.push({ path: f.path, kind: f.kind, root, sha256: f.digest, state: p ? "changed" : "new", pinned_sha256: p?.sha, trusted_ms: p?.trusted, auto: p ? !!p.auto : undefined, refused: f.refused }); continue; }
       if (!p && auto) {
         this.setPin({ path: f.path, kind: f.kind, root }, f.digest!, f.kind === "instructions" ? f.content! : null, true);
         out.push({ path: f.path, kind: f.kind, root, sha256: f.digest, state: "trusted", pinned_sha256: f.digest!, trusted_ms: Date.now(), auto: true, ...(f.outside ? { outside: f.outside } : {}) });
@@ -223,12 +239,21 @@ export class Trust {
   }
 
   skillAllowed(dir: string): boolean {
-    if (!rootOf(dir)) return true;
-    if (dir.endsWith(".md")) { const d = commandDigest(dir); return !d || this.check(dir, "skill", d, null) === "trusted"; }
+    return this.skillHeld(dir) === null;
+  }
+  // Why a repository's skill does not load, in words for the model and the owner; null when it loads.
+  skillHeld(dir: string): string | null {
+    if (!rootOf(dir)) return null;
+    const state = (digest: string) => {
+      const st = this.check(dir, "skill", digest, null);
+      return st === "trusted" ? null : st === "changed" ? "it changed since the owner trusted it, and waits for him to trust it again (the session's Trust panel)" : "it is new in this repository, and waits for the owner to trust it (the session's Trust panel)";
+    };
+    if (dir.endsWith(".md")) { const d = commandDigest(dir); return d ? state(d) : null; }
     const scan = skillScan(dir);
-    if (!scan) return true;
-    if (scan.outside.length) return false;
-    return this.check(dir, "skill", scan.digest, null) === "trusted";
+    if (!scan) return null;
+    if (scan.refused) return scan.refused;
+    if (scan.outside.length) return `it links to files outside its folder (${scan.outside.slice(0, 3).join(", ")}), which Keel does not load`;
+    return state(scan.digest);
   }
 
   // Whether the owner pinned a project skill himself, as it is now: what a
@@ -254,6 +279,7 @@ export class Trust {
       this.store.db.query("DELETE FROM trust_pins WHERE path = ?").run(path);
       return f;
     }
+    if (f.refused) throw Object.assign(new Error(f.refused), { status: 422 });
     if (f.sha256 !== digest) throw Object.assign(new Error("the file changed since it was shown: look at it again"), { status: 409 });
     this.setPin(f, digest, f.kind === "instructions" ? readFileSync(path, "utf8") : null, false);
     return { ...f, state: "trusted", pinned_sha256: digest, trusted_ms: Date.now(), auto: false };
