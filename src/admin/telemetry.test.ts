@@ -128,6 +128,30 @@ test("a call that runs before its turn's first request is booked to that turn", 
   expect(store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM telemetry_tools WHERE turn_event = ? AND is_error = 1").get(second.id)!.n).toBe(2);
 }));
 
+// A turn request that wrote its context again after warm requests read it within its lifetime: the warm
+// requests missed (a failed warm), not an expiry or the provider's own miss.
+test("a miss after warm requests is told as theirs", () => withStore(async (store) => {
+  const s = store.createSession({ model: "p:m", workspace: "/" });
+  store.append(s.id, "user", { text: "Start" });
+  new PromptStore(store);
+  const t = new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  const send = async (purpose: "turn" | "warm", read: number, write: number) => {
+    await Bun.sleep(2); // (each request in a millisecond of its own: the ledger orders them by their start)
+    const req = { model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal, purpose, route: "p:m", cacheMs: 300_000 } as any;
+    const sess = store.session(s.id)!;
+    hooks.requestSent!(sess, req);
+    hooks.requestDone!(sess, req, { blocks: [], stop: "end_turn", usage: { input: 0, output: 1, cache_read: read, cache_write: write } } as any);
+  };
+  const causes = async () => (await t.report({})).breaks.map((b) => [b.cause, b.count]);
+  await send("turn", 0, 10_000);
+  await send("turn", 1_000, 9_000);
+  expect(await causes()).toEqual([["provider_miss", 1]]);
+  await send("warm", 10_000, 0);
+  await send("turn", 1_000, 9_100);
+  expect(await causes()).toEqual([["warm_missed", 1], ["provider_miss", 1]]);
+}));
+
 test("a cache break is a changed prefix only where a stored fingerprint differs", () => {
   const tool = (name: string, defer = false) => ({ name, description: "d", input_schema: {}, defer }) as any;
   const was = prefixOf({ tools: [tool("Bash")], system: "one" }, ["a", "b"]);
@@ -147,6 +171,9 @@ test("a cache break is a changed prefix only where a stored fingerprint differs"
   // The build's tools and prompt taken because the cache had expired: an expiry, though the prefix differs.
   expect(breakCause({ ...gap, gapMs: 3_600_000, diff: ["tools", "system (core)"], tookExpired: true })).toBe("expired");
   expect(breakCause({ ...gap, gapMs: 1_000, diff: null })).toBe("prefix_changed");
+  // Warm requests read it within its lifetime: their miss, past the lifetime or not; a changed prefix is still that.
+  expect(breakCause({ ...gap, gapMs: 3_600_000, lifeMs: 300_000, diff: [], warmed: true })).toBe("warm_missed");
+  expect(breakCause({ ...gap, gapMs: 1_000, diff: ["tools"], warmed: true })).toBe("prefix_changed");
   // Another branch is its own cause: before a changed prefix, after a compaction or a model switch.
   expect(breakCause({ ...gap, gapMs: 1_000, switched: true, diff: ["history"] })).toBe("branch_switch");
   expect(breakCause({ ...gap, compacted: true, gapMs: 1_000, switched: true, diff: ["history"] })).toBe("compaction");

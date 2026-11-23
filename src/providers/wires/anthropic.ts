@@ -79,7 +79,17 @@ const image = (b: ImageBlock) => ({ type: "image", source: { type: "base64", med
 // breakpoint on the system), and a rolling breakpoint on the last user message
 // so each request reads the whole previous prefix from cache.
 // `part`: one reply's block, not a request (its calls are not paired with results).
-export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine" | "rules"> & { sessionKey?: string }, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false, part = false): any[] {
+// `own`: the request's last blocks that are its own words and no later
+// request repeats (a warm request's, src/engine/cache-plans.ts withWarm). The
+// rolling breakpoint goes on the last user block before them, where the last
+// turn request put it: "Place the cache_control breakpoint on the last block
+// that is shared with the follow-up request [...], not on the placeholder user
+// message. Otherwise the cache entry is keyed to the placeholder and the
+// follow-up request won't hit it." (build-with-claude/prompt-caching,
+// "Pre-warming the cache"). A write happens only at a breakpoint, and the
+// entry a read there finds is the one it keeps: a breakpoint on the warm words
+// keeps an entry no later request looks up.
+export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine" | "rules"> & { sessionKey?: string }, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false, part = false, own = 0): any[] {
   const out: any[] = project(messages, { origin: ctx.origin, legacyIsMine: ctx.legacyIsMine, sessionKey: ctx.sessionKey, rules: ctx.rules ?? ANTHROPIC_RULES, toolRefs, part }).map((m) => ({
     role: m.role,
     content: m.content.map((b): any => {
@@ -103,10 +113,13 @@ export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legac
       }
     }).filter(Boolean),
   })).filter((m) => m.content.length);
+  let skip = own;
   for (let i = out.length - 1; mark && i >= 0; i--) {
     const m = out[i]!;
-    if (m.role !== "user" || m.content.length === 0) continue;
-    m.content[m.content.length - 1].cache_control = mark;
+    let at = m.content.length - 1;
+    for (; skip > 0 && at >= 0; skip--) at--;
+    if (m.role !== "user" || at < 0) continue;
+    m.content[at].cache_control = mark;
     break;
   }
   return out;
@@ -145,7 +158,8 @@ export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?:
   if (systemPrefix) system.unshift({ type: "text", text: systemPrefix });
   // Thinking whose prefix changed since it was written is left out (binding.ts).
   // null, not undefined: a request without a cache marks no message either (undefined takes the default mark).
-  const bound = unbind(toWire(req.messages, ctx, cache ?? null, deferred.length > 0), system, tools);
+  // A warm request's last block is its own words (ProviderRequest.purpose): no breakpoint on it.
+  const bound = unbind(toWire(req.messages, ctx, cache ?? null, deferred.length > 0, false, req.purpose === "warm" ? 1 : 0), system, tools);
   binders.set(req, bound.binder);
   const body: Record<string, any> = {
     model: req.model,

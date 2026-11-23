@@ -149,6 +149,8 @@ export class Telemetry {
   // compared with (cacheBreak), kept so that comparison reads no row (a read of the ledger has the
   // side rows that wait written first: src/core/side.ts). A session not here is read from the ledger.
   private lastTurnCall = new SessionMap<PrevCall>(512);
+  // Each session's last warm request that answered (src/engine/cache-plans.ts): its start, route and the lifetime it asked.
+  private lastWarmCall = new SessionMap<{ ts: number; model: string; cache_ms: number | null }>(512);
 
   constructor(private store: Store, bus: Bus) {
     store.migrate(SCHEMA);
@@ -319,7 +321,20 @@ export class Telemetry {
     if (r.outcome === "ok" && p.purpose === "turn" && !((this.lastTurnCall.get(p.session)?.ts ?? -1) > p.t0)) {
       this.lastTurnCall.set(p.session, { ts: p.t0, model: p.model, prompt, h_tools: x?.tools ?? null, h_system: x?.system ?? null, n_msgs: x?.n ?? null, h_msgs: x?.msgs ?? null, h_kept: x?.kept ?? null, cache_ms: p.cacheMs ?? null, compaction_event: p.compaction ?? null, turn_event: p.turn ?? null });
     }
+    if (r.outcome === "ok" && p.purpose === "warm" && !((this.lastWarmCall.get(p.session)?.ts ?? -1) > p.t0)) this.lastWarmCall.set(p.session, { ts: p.t0, model: p.model, cache_ms: p.cacheMs ?? null });
     this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0);
+  }
+
+  // The last warm request of the session on `model` between two turn requests, when it read the
+  // cache within the lifetime the cache was asked to live before `ts`: the cache was kept warm up to it.
+  private warmedBefore(sessionId: string, model: string, since: number, ts: number, life: number | null): boolean {
+    const kept = this.lastWarmCall.get(sessionId);
+    const w = kept && kept.ts > since ? kept : this.store.db
+      .query<{ ts: number; model: string; cache_ms: number | null }, [string, number, number]>("SELECT ts, model, cache_ms FROM telemetry_calls WHERE session_id = ? AND ts > ? AND ts < ? AND purpose = 'warm' AND outcome = 'ok' ORDER BY ts DESC LIMIT 1")
+      .get(sessionId, since, ts) ?? undefined;
+    if (!w || w.ts <= since || w.ts >= ts || w.model !== model) return false;
+    const lived = w.cache_ms ?? life;
+    return !lived || ts - w.ts <= lived;
   }
 
   // A turn request that read less than half of what it and the last one of the
@@ -355,7 +370,9 @@ export class Telemetry {
     const took = adoptionBetween(this.store, sessionId, prev.ts, ts);
     const parts = (diff ?? []).map((d) => (d === "tools" && took?.tools.length ? `tools (${took.tools.slice(0, 8).join(", ")}${took.tools.length > 8 ? `, ${took.tools.length - 8} more` : ""})` : d));
     if (took) parts.push(`build ${took.to_build} taken: ${took.reason}`);
-    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, switched, diff, tookExpired: took?.reason === EXPIRED }), detail: parts.length ? parts.join("; ") : null };
+    // Warm requests read the cache in between, the last one within its lifetime: the miss is theirs.
+    const warmed = prev.model === model && this.warmedBefore(sessionId, model, prev.ts, ts, prev.cache_ms);
+    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, switched, diff, tookExpired: took?.reason === EXPIRED, warmed }), detail: parts.length ? parts.join("; ") : null };
   }
 
   private compactedBetween(sessionId: string, a: number, b: number) {
@@ -688,12 +705,16 @@ const ratio = (list: { prompt_tokens: number; cache_read: number }[]) => {
 // differs only because nothing was left to keep, so the break is an expiry.
 // `switched`: the request was sent on another branch than the last one (the
 // history before it is another), with no compaction since.
-export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChanged: boolean; compacted: boolean; switched?: boolean; diff?: string[] | null; tookExpired?: boolean }): (typeof BREAK_CAUSES)[number] {
+// `warmed`: warm requests read the cache after the last request, the last one
+// within the lifetime: they were sent to keep it and did not, a failed warm,
+// not an expiry (src/engine/cache-plans.ts).
+export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChanged: boolean; compacted: boolean; switched?: boolean; diff?: string[] | null; tookExpired?: boolean; warmed?: boolean }): (typeof BREAK_CAUSES)[number] {
   if (b.modelChanged) return "model_switch";
   if (b.compacted) return "compaction";
   if (b.switched) return "branch_switch";
   if (b.tookExpired) return "expired";
   if (b.diff?.length) return "prefix_changed";
+  if (b.warmed) return "warm_missed";
   if (b.lifeMs && b.gapMs > b.lifeMs) return "expired";
   return b.diff ? "provider_miss" : "prefix_changed";
 }

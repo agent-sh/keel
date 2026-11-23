@@ -105,9 +105,42 @@ test("a cache gone before its wait began is told as gone before it", () => {
   const id = store.createSession({ model: MODEL, workspace: dir, title: "gone before" }).id;
   const plans = daemon({ held: false, calls: [] });
   const usage = { input: 0, cache_read: TOKENS, cache_write: 0, output: 1 };
-  const done = plans.tool(id, st, replied(Date.now() - 3_000), [], { kind: "tool:Bash" }, Date.now() - 3_000, usage);
+  const done = plans.tool(id, st, replied(Date.now() - 3_000), () => [], { kind: "tool:Bash" }, Date.now() - 3_000, usage);
   done();
   expect(notes(id).at(-1)).toMatchObject({ outcome: "lapsed", before_wait: true, text: expect.stringMatching(/^The prompt cache had lapsed before this wait began, 3 s after the request that last read it: nothing could keep it/) });
   expect(notes(id).at(-1)!.idle_ms).toBeGreaterThanOrEqual(3_000);
   plans.stopAll();
+});
+
+// A tool step kept warm is told once the next request says whether it read the cache: read, a failed warm
+// named so when it wrote the context again, or not known when no request came while the cache lived.
+test("a wait kept warm is told by what the next request read", async () => {
+  const usage = { input: 0, cache_read: TOKENS, cache_write: 0, output: 1 };
+  const kept = async (title: string) => {
+    const id = store.createSession({ model: MODEL, workspace: dir, title }).id;
+    const w: World = { held: false, calls: [] };
+    const plans = daemon(w);
+    const done = plans.tool(id, st, replied(Date.now()), () => [], { kind: "tool:Bash" }, Date.now(), usage);
+    await Bun.sleep(1_400);
+    expect(w.calls).toHaveLength(1);
+    done();
+    // Nothing is told before the next request answers.
+    expect(notes(id)).toHaveLength(0);
+    expect(plans.owes(id)).toBe(true);
+    return { id, plans };
+  };
+  const a = await kept("read");
+  a.plans.answered(a.id, { route: MODEL, usage: { input: 10, cache_read: TOKENS, cache_write: 200, output: 5 }, sentAt: Date.now() });
+  expect(notes(a.id)).toEqual([expect.objectContaining({ outcome: "warm", pings: 1, next_read_tokens: TOKENS, text: expect.stringMatching(/^Kept the prompt cache warm through a wait of 1 s: 1 warm request for \$0\.050, and the next request read it/) })]);
+  const b = await kept("missed");
+  b.plans.answered(b.id, { route: MODEL, usage: { input: 10, cache_read: 3_000, cache_write: 97_000, output: 5 }, sentAt: Date.now() });
+  expect(notes(b.id)).toEqual([expect.objectContaining({ outcome: "warm_missed", next_read_tokens: 3_000, next_written_tokens: 97_010, text: expect.stringMatching(/^The warm requests did not keep the prompt cache through a wait of 1 s: 1 warm request for \$0\.050, and the next request read 3,000 of 100,000 tokens and wrote the rest again/) })]);
+  // Another route's request says nothing of this cache; nor does none at all, once the cache's lifetime passed.
+  const c = await kept("other route");
+  c.plans.answered(c.id, { route: "standin:other", usage: { input: 10, cache_read: 0, cache_write: 97_000, output: 5 }, sentAt: Date.now() });
+  expect(notes(c.id)).toEqual([expect.objectContaining({ outcome: "warm_unchecked" })]);
+  const d = await kept("none");
+  await Bun.sleep(LIFE); // (the last read was 1.25 s into the step: its cache lived 2 s from there)
+  expect(notes(d.id)).toEqual([expect.objectContaining({ outcome: "warm_unchecked", text: expect.stringMatching(/so whether they kept it is not known$/) })]);
+  for (const p of [a, b, c, d]) p.plans.stopAll();
 });

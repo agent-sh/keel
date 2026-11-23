@@ -43,6 +43,7 @@ type Example = { session_id: string; ts: number; tool: string; ms: number | null
 
 export const CAUSE: Record<string, string> = {
   expired: "the cache lifetime passed",
+  warm_missed: "the warm requests sent during a wait did not keep the cache",
   model_switch: "the model changed",
   compaction: "a compaction rewrote the history",
   branch_switch: "the session showed another branch",

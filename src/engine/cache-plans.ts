@@ -5,8 +5,11 @@
 // When the wait ends the session's timeline gets one note of what was chosen,
 // what it cost and what a rewrite of the context would have cost
 // (`cache_plan`); each warm request is a call of its own in telemetry
-// (purpose "warm"). Nothing here enters the history the model reads: a warm
-// request is sent beside it, and the note is not sent.
+// (purpose "warm"). A wait kept warm is told once the session's next request
+// says whether it read the cache (`answered`): a warm request whose next
+// request wrote the context again failed, and the note says so ("warm_missed").
+// Nothing here enters the history the model reads: a warm request is sent
+// beside it, and the note is not sent.
 import type { Store } from "../core/store.ts";
 import type { Message, Session, StoredEvent, Usage } from "../core/types.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -88,8 +91,13 @@ type Run = {
   model: string;
 };
 
+type Note = Record<string, any> & { text: string; outcome: string; route: string; tokens: number; waited_ms: number; pings: number; spent_usd: number; lapse_usd: number };
+type Owed = { data: Note; touched: number; life: number; timer?: ReturnType<typeof setTimeout> };
+
 export class CachePlans {
   private runs = new Map<string, Run>();
+  // Waits kept warm, until the session's next request says whether they kept the cache.
+  private owed = new Map<string, Owed>();
   // Routes that refused a warm request: they get none again in this process.
   private refused = new Set<string>();
 
@@ -127,11 +135,13 @@ export class CachePlans {
   }
 
   // A tool step: the plan holds while it runs; the returned function ends it.
-  tool(id: string, st: PlanStep, events: readonly StoredEvent[], messages: Message[], shape: WaitShape, sentAt: number, u: Usage): () => void {
+  // `messages`: the history the step's request was sent with, as the session's
+  // next request projects it (the notes the request's hooks stored included).
+  tool(id: string, st: PlanStep, events: readonly StoredEvent[], messages: () => Message[], shape: WaitShape, sentAt: number, u: Usage): () => void {
     if (u.cache_read + u.cache_write <= 0) return () => {};
     const tokens = u.input + u.cache_read + u.cache_write;
     const extra = Math.ceil(utf8Bytes(WARM_TEXT) / bytesPerToken(st.info.id));
-    this.start({ id, kind: "tool", shape, touched: sentAt, tokens, extra, st, events, step: async () => st, messages: () => messages });
+    this.start({ id, kind: "tool", shape, touched: sentAt, tokens, extra, st, events, step: async () => st, messages });
     return () => this.end(id, "tool");
   }
 
@@ -160,10 +170,11 @@ export class CachePlans {
   }
 
   // What the plan's choices cost, by the model's price: a warm request reads
-  // the context and writes what follows its last breakpoint; a lapse writes
+  // the context up to the breakpoint the next request shares with it, and what
+  // follows (the reply of a park, its own words) is plain input; a lapse writes
   // the whole context again at the lifetime the wake asks for; a summary reads
   // it, writes the summary and the wake writes what follows the summary.
-  private ping = (r: Run) => priceOf({ input: 0, cache_read: r.tokens, cache_write: r.extra, output: 1 }, r.price) ?? 0;
+  private ping = (r: Run) => priceOf({ input: r.extra, cache_read: r.tokens, cache_write: 0, output: 1 }, r.price) ?? 0;
   private lapse = (r: Run) => this.write(r, r.tokens);
   private write = (r: Run, tokens: number) => priceOf({ input: 0, cache_read: 0, cache_write: tokens, ...(r.long ? { cache_write_1h: tokens } : {}), output: 0 }, r.price) ?? 0;
   private summaryCost = (r: Run, t: { out: number; after: number }) => (priceOf({ input: 0, cache_read: r.tokens, cache_write: 0, output: t.out }, r.price) ?? 0) + this.write(r, t.after);
@@ -255,20 +266,65 @@ export class CachePlans {
     // Gone before the wait began (a daemon that was down, the last request long before it): the wait lost nothing.
     const before = outcome === "lapsed" && r.started >= r.touched + r.life - marginOf(r.life);
     const text = before ? beforeText(r.started - r.touched, lapse)
-      : outcome === "warm" ? `Kept the prompt cache warm through a wait of ${mins(now - r.started)}: ${r.pings} ${r.pings === 1 ? "request" : "requests"} for ${usd(r.spent)}, where writing the context again would cost ${usd(lapse)}`
+      : outcome === "warm" ? ""
       : outcome === "summary" ? `Prepared the summary while the cache was warm, for a wait of ${mins(now - r.started)}; writing the whole context again would cost ${usd(lapse)}`
       : outcome === "lapsed" ? `The prompt cache lapsed during a wait of ${mins(now - r.started)}${r.pings ? ` after ${r.pings} warm ${r.pings === 1 ? "request" : "requests"} for ${usd(r.spent)}` : ""}: writing the context again costs about ${usd(lapse)} (${r.first.why})`
       : `The wait ended before the cache lapsed`;
-    try {
-      this.d.append(id, "note", {
-        kind: "cache_plan", text, plan: r.kind, wait_kind: r.shape.kind, choice: r.first.choice, outcome, why: r.first.why,
-        ...(before ? { before_wait: true, idle_ms: r.started - r.touched } : {}),
-        ...(r.first.expect ? { expect_ms: r.first.expect.ms, expect_from: r.first.expect.from } : {}),
-        waited_ms: now - r.started, life_ms: r.life, tokens: r.tokens, route: r.model,
-        pings: r.pings, missed: r.missed, read_tokens: r.read, written_tokens: r.written,
-        spent_usd: round(r.spent), lapse_usd: round(lapse), ...(r.summary !== undefined ? { summary_usd: round(r.summary) } : {}),
-      });
-    } catch (e) { this.d.errors.capture("server", e, { session: id, at: "cache plan note" }); }
+    const data: Note = {
+      kind: "cache_plan", text, plan: r.kind, wait_kind: r.shape.kind, choice: r.first.choice, outcome, why: r.first.why,
+      ...(before ? { before_wait: true, idle_ms: r.started - r.touched } : {}),
+      ...(r.first.expect ? { expect_ms: r.first.expect.ms, expect_from: r.first.expect.from } : {}),
+      waited_ms: now - r.started, life_ms: r.life, tokens: r.tokens, route: r.model,
+      pings: r.pings, missed: r.missed, read_tokens: r.read, written_tokens: r.written,
+      spent_usd: round(r.spent), lapse_usd: round(lapse), ...(r.summary !== undefined ? { summary_usd: round(r.summary) } : {}),
+    };
+    if (outcome !== "warm") return this.note(id, data);
+    // Kept warm: told when the next request says whether it read the cache, or
+    // once the cache's lifetime from the last read passed with no request.
+    this.settle(id, "unchecked");
+    const owed: Owed = { data, touched: r.touched, life: r.life };
+    // (A session at work may have its next request in flight: it is waited for.)
+    const arm = (ms: number) => {
+      owed.timer = setTimeout(() => (this.d.isRunning(id) && this.owed.get(id) === owed ? arm(r.life) : this.settle(id, "unchecked")), Math.max(0, ms));
+      (owed.timer as any).unref?.();
+    };
+    arm(r.touched + r.life - Date.now());
+    this.owed.set(id, owed);
+  }
+
+  // Whether a wait kept warm waits for the session's next request to be told.
+  owes(id: string) { return this.owed.has(id); }
+
+  // The session's next turn request answered (`sentAt` its start, `usage` what
+  // it read and wrote, `compactedAt` the time of its history's last
+  // compaction): the wait kept warm is told by what it read. A request that
+  // read less than half of what the warm requests kept (the rule a cache break
+  // is counted by, src/admin/telemetry.ts) wrote the context again: the warm
+  // requests failed. One on another route, or after a compaction, says nothing
+  // of them.
+  answered(id: string, o: { route: string; usage: Usage; sentAt: number; compactedAt?: number }) {
+    const w = this.owed.get(id);
+    if (!w) return;
+    const prompt = o.usage.input + o.usage.cache_read + o.usage.cache_write;
+    if (o.route !== w.data.route || (o.compactedAt ?? 0) > w.touched || o.sentAt > w.touched + w.life) return this.settle(id, "unchecked");
+    this.settle(id, o.usage.cache_read >= 0.5 * Math.min(w.data.tokens, prompt) ? "read" : "missed", o.usage);
+  }
+
+  private settle(id: string, how: "read" | "missed" | "unchecked", u?: Usage) {
+    const w = this.owed.get(id);
+    if (!w) return;
+    this.owed.delete(id);
+    clearTimeout(w.timer);
+    const d = w.data;
+    const long = mins(d.waited_ms), reqs = `${d.pings} warm ${d.pings === 1 ? "request" : "requests"}`;
+    const next = u ? { next_read_tokens: u.cache_read, next_written_tokens: u.cache_write + u.input } : {};
+    if (how === "read") return this.note(id, { ...d, ...next, text: warmText(long, reqs, d.spent_usd, d.lapse_usd) });
+    if (how === "missed") return this.note(id, { ...d, ...next, outcome: "warm_missed", text: missedText(long, reqs, d.spent_usd, u!.cache_read, d.tokens, d.lapse_usd) });
+    this.note(id, { ...d, outcome: "warm_unchecked", text: uncheckedText(long, reqs, d.spent_usd) });
+  }
+
+  private note(id: string, data: Note) {
+    try { this.d.append(id, "note", data); } catch (e) { this.d.errors.capture("server", e, { session: id, at: "cache plan note" }); }
   }
 
   // The plan a session has now, for the page and telemetry.
@@ -278,6 +334,8 @@ export class CachePlans {
   }
 
   stopAll() {
+    // A wait kept warm that no request read after is told so now: this daemon will not see the next one.
+    for (const id of [...this.owed.keys()]) this.settle(id, "unchecked");
     for (const id of [...this.runs.keys()]) {
       const r = this.runs.get(id)!;
       clearTimeout(r.timer);
@@ -290,13 +348,26 @@ export class CachePlans {
 // The history with the warm request's words after it: a message of its own
 // after a reply, or a block at the end of the last message when that is the
 // owner's side (a tool step waits for its results). Everything before them is
-// the prefix the cache holds, byte for byte.
+// the prefix the cache holds, byte for byte. The words are the request's last
+// block, and the wire puts the cache breakpoint before them, on the last user
+// block: where the session's last request put its own, so the warm request
+// reads that entry at its breakpoint and keeps it, and the next request finds
+// it (src/providers/wires/anthropic.ts toWire).
 export function withWarm(messages: Message[], kind: "park" | "tool"): Message[] {
   const last = messages.at(-1);
   const block = { type: "text" as const, text: WARM_TEXT };
   if (kind === "tool" && last?.role === "user") return [...messages.slice(0, -1), { ...last, content: [...(last.content as any[]), block] } as Message];
   return [...messages, { role: "user", content: [block] } as Message];
 }
+
+// The notes of a wait kept warm (src/admin/timeline-rows.ts says the same from the note's data): the
+// next request read the cache, wrote it again (the warm requests failed), or none came while it lived.
+export const warmText = (long: string, reqs: string, spent: number, lapse: number) =>
+  `Kept the prompt cache warm through a wait of ${long}: ${reqs} for ${usd(spent)}, and the next request read it, where writing the context again would cost ${usd(lapse)}`;
+export const missedText = (long: string, reqs: string, spent: number, read: number, tokens: number, lapse: number) =>
+  `The warm requests did not keep the prompt cache through a wait of ${long}: ${reqs} for ${usd(spent)}, and the next request read ${read.toLocaleString("en-US")} of ${tokens.toLocaleString("en-US")} tokens and wrote the rest again for about ${usd(lapse)}`;
+export const uncheckedText = (long: string, reqs: string, spent: number) =>
+  `Sent ${reqs} for ${usd(spent)} through a wait of ${long}; no request read the cache while it lived after them, so whether they kept it is not known`;
 
 // The note of a cache that had lapsed before its wait began: `idle` is the time from the request that
 // last read it to the wait's start. (src/admin/timeline-rows.ts says the same from the note's data.)

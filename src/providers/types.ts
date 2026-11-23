@@ -48,7 +48,9 @@ export type ProviderRequest = {
   // tool, or an MCP server's sampling request the owner allowed (no history,
   // the server's own messages). Read by telemetry, and by a driver that keeps
   // a connection per session to keep the turn's apart from the others'.
-  // A "warm" request reads the cache beside the history while the session waits (src/engine/cache-plans.ts).
+  // A "warm" request reads the cache beside the history while the session waits (src/engine/cache-plans.ts):
+  // its last block is its own words, and a wire puts its cache breakpoint before them, on the block the
+  // session's next request shares with it.
   purpose?: "turn" | "summary" | "side" | "reader" | "warm" | "sampling" | "title";
   // false: a one-off request nothing will repeat; no cache breakpoints (a
   // write costs more than plain input when no later request reads it).

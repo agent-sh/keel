@@ -17,6 +17,7 @@ type Drivers = Omit<DriversRead, "breaks"> & { breaks: (DriversRead["breaks"][nu
 // What lowers each cause, in Keel's own terms.
 const REWRITE_LEVER: Record<string, string> = {
   expired: "A session idle past the cache lifetime pays for its prompt again. Keel warms the cache while a session waits on a wait it set; long pauses mid-task with nothing set still lose it.",
+  warm_missed: "Keel sent warm requests during a wait, and the request after it still wrote the prompt again: the warm requests missed. Their notes in the session's timeline say so.",
   model_switch: "A model switch writes the whole prompt again for the new model. Switch in a new session, or right after a compaction.",
   compaction: "Each compaction writes its new, shorter context once; expected, and paid back by the steps after it.",
   branch_switch: "Showing another branch sends that branch's prompt, written again.",

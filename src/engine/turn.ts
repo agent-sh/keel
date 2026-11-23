@@ -2610,6 +2610,8 @@ export class Engine {
           }
           throw e;
         }
+        // A wait kept warm before this request is told by what it read (src/engine/cache-plans.ts).
+        if (this.cachePlans.owes(id)) this.cachePlans.answered(id, { route: st.info.id, usage: res.usage, sentAt, compactedAt: events.findLast((e) => e.kind === "compaction")?.ts });
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
         // (Right before the step's own writes: the hold's notice comes a moment before the lock is taken.)
         if (this.store.pacing?.()) await this.store.clear(signal);
@@ -2660,7 +2662,9 @@ export class Engine {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = closing || (budget > 0 && steps >= budget);
           // A step that runs past the cache's lifetime keeps it by its plan.
-          const planned = uses.length && !spent ? this.cachePlans.tool(id, st, events, messages, this.toolShape(id, uses), sentAt, u) : undefined;
+          // (Its history as the next request projects it: the notes this request's hooks stored are in it.)
+          const sentWith = () => toMessages(this.lineage(id).filter((e) => e.seq < stored.seq));
+          const planned = uses.length && !spent ? this.cachePlans.tool(id, st, events, sentWith, this.toolShape(id, uses), sentAt, u) : undefined;
           try {
           await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: closing ? AGENT_BUDGET_SPENT : BUDGET_SPENT }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
           } finally { planned?.(); }

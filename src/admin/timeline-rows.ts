@@ -230,7 +230,12 @@ const usd = (x: unknown) => { const n = Number(x) || 0; return n >= 1 ? `$${n.to
 function cacheLine(d: Record<string, any>): string {
   const n = Number(d.pings) || 0, long = dur(Number(d.waited_ms) || 0);
   const reqs = `${n} ${n === 1 ? "request" : "requests"}`;
+  // (A note from before the next request was checked has no next_read_tokens: it says what it said then.)
+  const warm = `${n} warm ${n === 1 ? "request" : "requests"}`, tok = (x: unknown) => (Number(x) || 0).toLocaleString("en-US");
+  if (d.outcome === "warm" && d.next_read_tokens !== undefined) return `Kept the prompt cache warm through a wait of ${long}: ${warm} for ${usd(d.spent_usd)}, and the next request read it, where writing the context again would cost ${usd(d.lapse_usd)}`;
   if (d.outcome === "warm") return `Kept the prompt cache warm through a wait of ${long}: ${reqs} for ${usd(d.spent_usd)}, where writing the context again would cost ${usd(d.lapse_usd)}`;
+  if (d.outcome === "warm_missed") return `The warm requests did not keep the prompt cache through a wait of ${long}: ${warm} for ${usd(d.spent_usd)}, and the next request read ${tok(d.next_read_tokens)} of ${tok(d.tokens)} tokens and wrote the rest again for about ${usd(d.lapse_usd)}`;
+  if (d.outcome === "warm_unchecked") return `Sent ${warm} for ${usd(d.spent_usd)} through a wait of ${long}; no request read the cache while it lived after them, so whether they kept it is not known`;
   if (d.outcome === "summary") return `Prepared the summary while the cache was warm, for a wait of ${long}; writing the whole context again would cost ${usd(d.lapse_usd)}`;
   if (d.outcome === "lapsed" && d.before_wait) return `The prompt cache had lapsed before this wait began, ${dur(Number(d.idle_ms) || 0)} after the request that last read it: nothing could keep it, and the next request writes the context again for about ${usd(d.lapse_usd)}`;
   if (d.outcome === "lapsed") return `The prompt cache lapsed during a wait of ${long}${n ? ` after ${reqs} for ${usd(d.spent_usd)}` : ""}: writing the context again costs about ${usd(d.lapse_usd)}`;
@@ -254,7 +259,7 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
     case "rewind": return row("files", "restored", "Files were restored to an earlier state");
     case "fork": return row("model", "fork", "Forked from another session");
     // What a wait did with the prompt cache, and its cost (src/engine/cache-plans.ts).
-    case "cache_plan": return row("cache", String(d.outcome ?? "plan"), cacheLine(d), d.outcome === "lapsed" ? "failed" : "plain");
+    case "cache_plan": return row("cache", String(d.outcome ?? "plan"), cacheLine(d), d.outcome === "lapsed" || d.outcome === "warm_missed" ? "failed" : "plain");
     default: return null;
   }
 }
