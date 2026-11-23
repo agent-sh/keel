@@ -1312,6 +1312,30 @@ test("an agent file's memory folder starts its task with MEMORY.md, within its b
   await settled();
 });
 
+// RSH-S42: an entry with a specifier is one entry for its tool. Claude Code's sub-agents doc: `Bash(git push *)` in
+// disallowedTools takes the whole of Bash away, and `Agent(worker, researcher)` in a subagent's tools lets it spawn.
+test("an agent file's tool entries with a specifier work as Claude Code reads them", async () => {
+  const folder = join(dir, ".claude", "agents");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "nopush.md"), ["---", "name: nopush", "description: Never pushes", "disallowedTools: Bash(git push *)", "---", "Work."].join("\n"));
+  writeFileSync(join(folder, "coordinator.md"), ["---", "name: coordinator", "description: Leads", "tools: Agent(worker, researcher), Read, Bash", "---", "Lead."].join("\n"));
+  writeFileSync(join(folder, "flow.md"), ["---", "name: flow", "description: x", "tools: [Agent(worker, researcher), Read]", "---", "x"].join("\n"));
+  const defs = agents.definitions(dir);
+  expect(defs.find((d) => d.name === "coordinator")!.tools).toEqual(["Agent(worker, researcher)", "Read", "Bash"]);
+  expect(defs.find((d) => d.name === "flow")!.tools).toEqual(["Agent(worker, researcher)", "Read"]);
+  for (const type of ["nopush", "coordinator"])
+    await tool("Agent").run({ description: type, prompt: "go", subagent_type: type, run_in_background: true, isolation: "none" }, ctx as any);
+  const nopush = agents.list(parent.id).find((x) => x.type === "nopush")!;
+  const lead = agents.list(parent.id).find((x) => x.type === "coordinator")!;
+  expect(agents.gate(nopush.session_id, "Bash", { command: "git push origin x" })).toContain("takes the whole tool away");
+  expect(agents.gate(nopush.session_id, "Bash", { command: "ls" })).toBeDefined();
+  expect(agents.gate(nopush.session_id, "Read", { file_path: join(dir, "a") })).toBeUndefined();
+  for (const t of ["Agent", "Read", "Bash"]) expect(agents.gate(lead.session_id, t, {})).toBeUndefined();
+  expect(agents.gate(lead.session_id, "Write", { file_path: join(dir, "a") })).toContain("not in this agent's tools");
+  for (const a of [nopush, lead]) end(a, "end_turn");
+  await settled();
+});
+
 // An agent that ends without its end being settled (its parent archived while a daemon was down, its session
 // deleted) keeps no reading of its repositories from its start.
 test("an agent closed by a restart or a deleted session leaves no reading of its repositories", async () => {

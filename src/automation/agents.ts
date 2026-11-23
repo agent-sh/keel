@@ -360,8 +360,31 @@ export const agentServers: {
 // The definition an agent's session was started from.
 export const defOfSession = (sessionId: string): AgentDef | undefined => { const a = byChild(sessionId); return a ? defOf(a.id) : undefined; };
 
-const listOf = (v: unknown) =>
-  v === undefined || v === null ? undefined : (Array.isArray(v) ? v.map(String) : String(v).replace(/^\[|\]$/g, "").split(",")).map((x) => x.trim()).filter(Boolean);
+// A frontmatter list: a YAML list or one comma-separated line. A comma inside
+// an entry's parentheses is part of the entry (`Agent(worker, researcher)` is
+// one), so a YAML flow list that split one is joined again first.
+export const listOf = (v: unknown): string[] | undefined => {
+  if (v === undefined || v === null) return undefined;
+  const text = Array.isArray(v) ? v.map(String).join(", ") : String(v).replace(/^\[|\]$/g, "");
+  const out: string[] = [];
+  let depth = 0, cur = "";
+  for (const ch of text) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) { out.push(cur); cur = ""; } else cur += ch;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+};
+// The tool an entry of `tools` or `disallowedTools` names: what comes before its
+// specifier. Claude Code's sub-agents doc: an entry with a specifier in
+// `disallowedTools` (`Bash(git push *)`) still removes the whole tool, and in a
+// subagent's `tools` an `Agent(type, ...)` lets it spawn with the type list
+// ignored. Both are read that way here.
+export const toolOfEntry = (entry: string) => {
+  const cut = entry.indexOf("(");
+  return (cut > 0 ? entry.slice(0, cut) : entry).trim();
+};
 
 // What a Claude Code agent file asks for beyond its prompt and tools. A
 // plugin's agent has no hooks, mcpServers or permissionMode, as there
@@ -2304,12 +2327,16 @@ export function gate(sessionId: string, toolName: string, input?: any, names: st
   }
   const def = defOf(a.id);
   if (!def) return undefined;
-  const is = (list: string[], n: string) => list.some((t) => t.toLowerCase() === n.toLowerCase());
+  const entry = (list: string[], n: string) => list.find((t) => toolOfEntry(t).toLowerCase() === n.toLowerCase());
   // A dispatched tool (mcp_call) is in the list when the dispatcher, or the tool it runs by either of its names, is.
   const own = [toolName, names[0]!, ...names.filter((n) => n.startsWith("mcp__"))];
-  if (def.tools && !own.some((n) => is(def.tools!, n))) return `${toolName} is not in this agent's tools (${def.tools.join(", ")}).`;
-  const hit = names.find((n) => def.disallowed && is(def.disallowed, n));
-  if (hit) return `${names[0]} is not allowed for this agent${hit !== names[0] ? ` (${hit} is not)` : ""}.`;
+  if (def.tools && !own.some((n) => entry(def.tools!, n))) return `${toolName} is not in this agent's tools (${def.tools.join(", ")}).`;
+  for (const n of names) {
+    const e = def.disallowed && entry(def.disallowed, n);
+    if (!e) continue;
+    const whole = e !== toolOfEntry(e) ? `; its definition's disallowedTools entry ${e} takes the whole tool away, as in Claude Code` : "";
+    return `${names[0]} is not allowed for this agent${n !== names[0] ? ` (${n} is not)` : ""}${whole}.`;
+  }
   return undefined;
 }
 
