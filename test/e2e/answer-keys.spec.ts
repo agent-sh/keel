@@ -1422,6 +1422,36 @@ test("a request that comes under the pointer takes no click within its second, t
   await drop(request, id);
 });
 
+// End pressed at once after Enter opened a long command reads it to its end. The opened view may not have
+// been read after a paint yet when End comes: a step then would carry its lines out of view unread, and
+// End would stop short ("7 lines not seen yet"). The step waits for that view to count. Six times each
+// with End in the frame of the Enter and a frame after it (the race showed about once in five).
+test("End at once after Enter opened a long command reads it to its end, every time", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  test.setTimeout(120_000);
+  const ws = folder("end-at-once");
+  const left: string[] = [];
+  for (const gap of [0, 16]) for (let i = 0; i < 6; i++) {
+    const id = await create(request, `End ${gap} ms after Enter, ${i + 1}`, ws);
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: LONG } }]) } });
+    await expect.poll(async () => (await approvals(request, id)).length, { timeout: 30_000 }).toBe(1);
+    await page.goto(`/s/${id}`);
+    const list = cardIn(page, id, "approval"), card = list.getByTestId("approval");
+    await expect(list).toBeFocused();
+    await expect(list).toHaveAttribute("data-keys", "ready");
+    await page.keyboard.press("Enter");
+    if (gap) await page.waitForTimeout(gap);
+    await page.keyboard.press("End");
+    let n = -1;
+    await expect.poll(async () => (n = Number(await card.getAttribute("data-unseen"))), { timeout: 5000 }).toBe(0).catch(() => {});
+    if (n !== 0) left.push(`${gap} ms, run ${i + 1}: ${n} lines not seen`);
+    await drop(request, id);
+  }
+  expect(left, "End stopped short of the end").toEqual([]);
+});
+
 // A key is judged by when it went down, not by when the page handled it. A key that went down while the
 // keyboard was arriving, and that a busy page handles only once the card says it is ready, was pressed
 // before the card stood there: it answers nothing. (The key is sent stamped with the time it went down,
