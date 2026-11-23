@@ -58,7 +58,12 @@ export type ProjectState = { root: string; file: string | null; error?: string; 
 
 // An agent file's key: the folder it is in, as a project's key, and its name.
 export const agentKey = (file: string) => join(projectKey(dirname(file)), basename(file));
-export const isAgentKey = (root: string) => root.endsWith(".md");
+// A key ending in .md that names a folder is a project's (a folder may be called notes.md); one that
+// names a file, or nothing any longer, is an agent file's.
+export const isAgentKey = (root: string) => {
+  if (!root.endsWith(".md")) return false;
+  try { return !statSync(root).isDirectory(); } catch { return true; }
+};
 
 // The servers an agent file defines itself: its frontmatter's `mcpServers`
 // entries that are objects, each keyed by the server's name (a plain string

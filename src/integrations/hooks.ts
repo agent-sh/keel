@@ -263,7 +263,7 @@ export function pinKey(root: string): string {
 
 // What the file's list says of a hook that runs in the background.
 const BACKGROUND = "runs in the background: the event does not wait for it and nothing it decides has effect; its additionalContext and systemMessage (or plain stdout, where the event reads it) reach the model with the session's next turn";
-const ASYNC_NOTE = `${BACKGROUND}, with no time limit`;
+const ASYNC_NOTE = `${BACKGROUND}, past its timeout up to the event's longest time limit (an hour on most events), and it is stopped when its session is archived or deleted`;
 const REWAKE_NOTE = `${BACKGROUND}, within its time limit, and exit code 2 wakes the session with its stderr (or stdout)`;
 
 // The fields of a command hook Keel reads, for a hook brought from another
@@ -644,7 +644,9 @@ export class Hooks {
     const limit = (h: Handler) => Math.min(h.timeout ?? normal, most);
     // A background hook is started and not waited for (onFailure has no effect on it, as documented).
     const bg = (h: Handler) => h.type === "command" && !!(h.async || h.asyncRewake);
-    for (const { h } of kept) if (h.type === "command" && bg(h)) void this.background(h, event, s, input, h.asyncRewake ? limit(h) : Infinity);
+    // `async` does not hold to its `timeout` (as in Claude Code), but to the event's longest limit, so one that never
+    // ends is stopped; `asyncRewake` holds to its own.
+    for (const { h } of kept) if (h.type === "command" && bg(h)) void this.background(h, event, s, input, h.asyncRewake ? limit(h) : most);
     const fg = kept.filter(({ h }) => !bg(h));
     const handlers = fg.map((x) => x.h);
     const outs = await Promise.all(handlers.map((h) => {
@@ -746,12 +748,16 @@ export class Hooks {
   }
 
   // A hook that runs in the background (code.claude.com/docs/en/hooks, "Run hooks in the background"): nothing
-  // waits for it, `async` runs with no time limit (`limit_s` Infinity), and what it decides has no effect: the
-  // action it would have controlled has gone on. What it says the event reads as context is owed to the session's
+  // waits for it, `async` runs to the event's longest limit, and what it decides has no effect: the
+  // action it would have controlled has gone on. It is stopped when its session is archived or deleted, and
+  // when the daemon exits (stopBackground). What it says the event reads as context is owed to the session's
   // next turn, which an idle session waits for. An `asyncRewake` hook that exits with code 2 wakes the session.
   private async background(h: Extract<Handler, { type: "command" }>, event: HookEvent, s: Session, input: string, limit_s: number) {
+    let pid = 0;
     try {
-      const o = await runHook(h, input, s.workspace, limit_s * 1000);
+      const o = await runHook(h, input, s.workspace, limit_s * 1000, (p) => { pid = p; trackBackground(p, s.id); });
+      // Stopped with its session or the daemon: nothing it said is owed, and that is no failure.
+      if (pid && STOPPED.delete(pid)) return;
       if (o.code === null) return void this.failure(h, event, s, o, "it did not finish in time", limit_s);
       if (o.code === 2) {
         if (h.asyncRewake) this.rewake?.(s, hookSaid(o.stderr.trim() || o.stdout.trim() || "a background hook exited with code 2"), event);
@@ -762,9 +768,39 @@ export class Hooks {
       if (lines.length) this.owe(s.id, event, hookName(h), lines.join("\n\n"));
     } catch (e) {
       this.failed?.({ hook: hookName(h).slice(0, 500), event, session: s.id, why: (e as Error).message });
+    } finally {
+      if (pid) RUNNING.delete(pid);
     }
   }
 }
+
+// The background hooks running now: each one's process group (its leader's
+// pid: a hook is started in a group of its own), by the session it runs for.
+const RUNNING = new Map<number, string>();
+// The groups stopBackground ended, until their hook's run returns.
+const STOPPED = new Set<number>();
+let reaper = false;
+function trackBackground(pid: number, session: string) {
+  RUNNING.set(pid, session);
+  // The daemon exits: what it started in the background ends with it (its service stops the main process only).
+  if (!reaper) { reaper = true; process.on("exit", () => void stopBackground()); }
+}
+
+// Ends the background hooks of a session (archived or deleted), or every one
+// (the daemon exits): each process group is killed whole. The count ended.
+export function stopBackground(session?: string): number {
+  let n = 0;
+  for (const [pid, s] of RUNNING) {
+    if (session !== undefined && s !== session) continue;
+    RUNNING.delete(pid);
+    STOPPED.add(pid);
+    try { process.kill(-pid, "SIGKILL"); n++; } catch { STOPPED.delete(pid); } // (already gone)
+  }
+  return n;
+}
+
+// How many background hooks run now, of a session or in all.
+export const backgroundCount = (session?: string) => [...RUNNING.values()].filter((s) => session === undefined || s === session).length;
 
 // What a hook runs, in one line: its command, URL or tool.
 const hookName = (h: Handler) => (h.type === "http" ? h.url : h.type === "mcp_tool" ? `${h.server}__${h.tool}` : [h.command, ...(h.args ?? [])].join(" "));
@@ -799,7 +835,7 @@ type Out = { code: number | null; stdout: string; stderr: string };
 // in its environment, and ${user_config.KEY} in its args (src/plugins/settings.ts).
 const PLUGIN_ENV = new WeakMap<object, { env: Record<string, string>; plugin: string }>();
 
-async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number): Promise<Out> {
+async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number, started?: (pid: number) => void): Promise<Out> {
   const root = projectRoot(folder);
   // A session whose folder is gone, or is on another machine, still runs its hooks (one that denies must still deny): in the home folder.
   const cwd = existsSync(folder) ? folder : homedir();
@@ -814,8 +850,8 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   } catch (e) {
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }
+  started?.(p.pid);
   let timedOut = false;
-  // (No limit for a hook with none: a background `async` one.)
   const t = Number.isFinite(ms) ? setTimeout(() => { timedOut = true; try { process.kill(-p.pid, "SIGKILL"); } catch {} }, ms) : undefined;
   // Read to the end, kept to a bound: a hook that prints without end fills no memory.
   const read = async (s: ReadableStream<Uint8Array> | number | undefined) => {

@@ -29,7 +29,7 @@ import { parseConfig, validate, type McpServerConfig } from "../mcp/config.ts";
 import { carriedPlugins, discoverSkills } from "../tools/skills.ts";
 import { cloneInto, copyFolder, folderDigest, folderSize, parseSource, type Source } from "./fetch.ts";
 import { changes, chooseId, consentKey, entrySource, fill, fillLine, versionProblem, readMarketplace, readPlugin, resolveNames, runLine, runsOf, type HookGroups, type MarketEntry, type NotTaken, type Plugin, type Run, type Summary } from "./manifest.ts";
-import { checkValue, hookRefusal, serverRefusal, substitute, type OptionSpec, type OptionValue } from "./options.ts";
+import { checkValue, hookRefusal, serverRefusal, shownValues, substitute, type OptionSpec, type OptionValue } from "./options.ts";
 import { installedUnits, pluginsHome, readRegistry, unitOf, writeRegistry, type Unit, type UnitSource } from "./registry.ts";
 import { dropSecret, forgetPlugin, loadSecrets, putSecret, valuesOf } from "./settings.ts";
 
@@ -37,7 +37,8 @@ import { dropSecret, forgetPlugin, loadSecrets, putSecret, valuesOf } from "./se
 export type Host = {
   // Every MCP server name taken now (the owner's, the built-in ones, every plugin's), but this plugin's own.
   mcpTaken(except?: string): Set<string>;
-  setServers(id: string, servers: Unit["mcp"]): void;
+  // `shown` on each: its config as the owner may see it, a sensitive setting not filled in.
+  setServers(id: string, servers: (Unit["mcp"][number] & { shown?: Record<string, unknown> })[]): void;
   mcpState?(label: string): { state: string; tools: string[]; error?: string } | undefined;
 };
 
@@ -119,7 +120,7 @@ export class Installer {
     if (!now || !now.enabled) return this.host.setServers(u.id, []);
     const v = valuesOf(now);
     if (v.missing.length) return this.host.setServers(u.id, []);
-    this.host.setServers(u.id, now.options ? now.mcp.map((m) => ({ ...m, config: substitute(m.config, v.text) })) : now.mcp);
+    this.host.setServers(u.id, now.options ? now.mcp.map((m) => ({ ...m, config: substitute(m.config, v.text), shown: substitute(m.config, shownValues(v.specs, v.text)) })) : now.mcp);
   }
 
   // The owner's values for a plugin's settings. `values`: key to value; an

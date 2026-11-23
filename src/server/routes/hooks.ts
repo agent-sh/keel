@@ -9,7 +9,7 @@ import type { Session, ToolResultBlock } from "../../core/types.ts";
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { contains } from "../../core/paths.ts";
-import { Hooks, hookContext, hookFailureText, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
+import { Hooks, hookContext, hookFailureText, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, stopBackground, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 import { ownerStop, replaced } from "../../core/stoppers.ts";
@@ -309,7 +309,9 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     if (f.t === "session") {
       const s = f.session;
       if (!f.deleted && !s.archived) return void live.add(s.id);
-      // Archived or deleted: the session ended, once. A subagent's end is its SubagentStop.
+      // Archived or deleted: its background hooks end (a subagent's too), and nothing they would say is owed.
+      stopBackground(s.id);
+      // The session ended, once. A subagent's end is its SubagentStop.
       if (live.delete(s.id) && !s.parent_id) tell("SessionEnd", s, () => ({ reason: "other", keel_reason: f.deleted ? "deleted" : "archived" }), ["other"]);
       return;
     }

@@ -160,6 +160,8 @@ export type McpReloadedServer = { name: string; change: "added" | "removed" | "c
 type Entry = {
   name: string;
   config: McpServerConfig;
+  // A plugin's server: its config with only what may be shown filled in.
+  shown?: McpServerConfig;
   state: McpState;
   error?: string;
   client?: McpClient;
@@ -221,6 +223,8 @@ export const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|SESSI
 
 // A server as it is shown: its command and arguments, or its address without
 // a user, a password or what follows a `?` (a key is often passed there).
+const digest = (s: string) => createHash("sha256").update(s).digest("hex");
+
 export function shownTarget(c: McpServerConfig): string {
   if (c.command) return [c.command, ...(c.args ?? [])].join(" ");
   try {
@@ -340,6 +344,14 @@ export class McpManager {
     // (Entries of sessions that are gone are never asked about: only the newest are kept.)
     try { this.asked = new Set((JSON.parse(readFileSync(this.askedPath, "utf8")) as string[]).slice(-200)); } catch {} // none kept
     try { this.published = JSON.parse(readFileSync(this.publishedPath, "utf8")); } catch {} // none kept yet
+    // A file kept by an older build holds each config whole as its key (a
+    // plugin's setting filled in among it): the key becomes its digest, the
+    // same one configKey makes now, and the file is written again without it.
+    const old = Object.values(this.published).filter((p) => p && typeof p.key === "string" && !/^[0-9a-f]{64}$/.test(p.key));
+    if (old.length) {
+      for (const p of old) p.key = digest(p.key);
+      this.writePublished();
+    }
     const keyPath = join(stateDir, "mcp-bind.key");
     if (!existsSync(keyPath)) {
       mkdirSync(stateDir, { recursive: true });
@@ -465,12 +477,14 @@ export class McpManager {
   // under the name the installer gave each, and are kept in memory only: the
   // owner's file is never written for them. One named again unchanged keeps
   // its connection.
-  setPluginServers(plugin: string, servers: { name: string; label: string; config: Record<string, unknown> }[]) {
+  // `shown`: the config as the owner may see it (a sensitive setting not
+  // filled in); `config` is what runs.
+  setPluginServers(plugin: string, servers: { name: string; label: string; config: Record<string, unknown>; shown?: Record<string, unknown> }[]) {
     const keep = new Set<string>();
     for (const s of servers) {
       const config = s.config as McpServerConfig;
       const had = [...this.entries.values()].find((e) => e.plugin === plugin && e.given === s.name);
-      if (had && same(had.config, config) && (had.name === s.label || this.entries.get(s.label)?.plugin !== plugin)) { keep.add(had.name); continue; }
+      if (had && same(had.config, config) && (had.name === s.label || this.entries.get(s.label)?.plugin !== plugin)) { had.shown = s.shown as McpServerConfig | undefined; keep.add(had.name); continue; }
       if (had) this.drop(had.name);
       // A name taken since the install (the owner added a server by it): the plugin's id goes before it.
       const taken = (n: string) => RESERVED.has(n.toLowerCase()) || n in this.cfg.servers || (this.entries.has(n) && !keep.has(n) && this.entries.get(n)!.plugin !== plugin) || keep.has(n);
@@ -480,6 +494,7 @@ export class McpManager {
       const e = this.addEntry(label, config);
       e.plugin = plugin;
       e.given = s.name;
+      if (s.shown) e.shown = s.shown as McpServerConfig;
       keep.add(label);
       if (!runMode.client && config.enabled !== false) this.ensure(label).catch(() => {});
     }
@@ -1200,11 +1215,13 @@ export class McpManager {
   list(session?: string): McpServerState[] {
     return [...this.entries.values()].filter((e) => !e.session || e.session === session).sort((a, b) => (a.label ?? a.name).localeCompare(b.label ?? b.name)).map((e) => {
       const live = e.bundled?.live && e.state !== "disabled" ? e.bundled.live.state() : null;
+      // A plugin's server is shown as its plugin wrote it, a sensitive setting not filled in.
+      const shown = e.shown ?? e.config;
       return {
       name: e.label ?? e.name,
       ...(e.session ? { session: e.session } : {}),
       transport: e.bundled?.live ? "socket" : e.config.url ? "http" : "stdio",
-      target: e.bundled?.live?.target ?? (e.session ? shownTarget(e.config) : e.config.url ?? [e.config.command, ...(e.config.args ?? [])].join(" ")),
+      target: e.bundled?.live?.target ?? (e.session ? shownTarget(e.config) : shown.url ?? [shown.command, ...(shown.args ?? [])].join(" ")),
       enabled: e.state !== "disabled",
       state: live?.state ?? e.state,
       // (Of a session's own server, the reason in one line: what its command printed is not shown.)
@@ -1219,7 +1236,7 @@ export class McpManager {
       ...(e.config.transport === "sse" || e.sse ? { sse: true as const } : {}),
       // Name, title and version; icons (data URIs of kilobytes) stay out of a list polled every second or two.
       server_info: e.client?.serverInfo ? { name: e.client.serverInfo.name, title: (e.client.serverInfo as any).title, version: e.client.serverInfo.version } : undefined,
-      endpoint: e.bundled ? undefined : endpoint(e.config),
+      endpoint: e.bundled ? undefined : endpoint(shown),
       sign_in: !!e.config.url && !e.config.bearer_env && !e.config.headers_helper,
       ...(e.plugin ? { plugin: e.plugin } : {}),
       sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,
@@ -1638,8 +1655,20 @@ export class McpManager {
     return [...this.entries.values()].filter((e) => e.state === "ready" && !e.session).map((e) => e.name);
   }
 
+  // The config a server's instructions were published under, as a digest:
+  // the config itself can hold a value the owner gave a plugin's setting,
+  // which is not written to the state folder.
   private configKey(e: Entry) {
-    return canon({ ...e.config, enabled: undefined });
+    return digest(canon({ ...e.config, enabled: undefined }));
+  }
+
+  private writePublished(at?: string) {
+    try {
+      writeFileSync(this.publishedPath + ".tmp", JSON.stringify(this.published), { mode: 0o600 });
+      renameSync(this.publishedPath + ".tmp", this.publishedPath);
+    } catch (err) {
+      this.errors.capture("server", err, { at: "mcp instructions", ...(at ? { mcp: at } : {}) });
+    }
   }
 
   private publish(e: Entry, published: string | undefined) {
@@ -1649,12 +1678,7 @@ export class McpManager {
     const key = this.configKey(e), was = this.published[e.name];
     if (was && was.key === key && was.instructions === (instructions ?? null)) return;
     this.published[e.name] = { key, instructions: instructions ?? null };
-    try {
-      writeFileSync(this.publishedPath + ".tmp", JSON.stringify(this.published));
-      renameSync(this.publishedPath + ".tmp", this.publishedPath);
-    } catch (err) {
-      this.errors.capture("server", err, { at: "mcp instructions", mcp: e.name });
-    }
+    this.writePublished(e.name);
   }
 
   // What the server published the last time it connected under this config.

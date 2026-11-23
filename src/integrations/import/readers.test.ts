@@ -317,3 +317,80 @@ test("Gemini CLI files are read once until they change, and a listing reads no m
     spy.mockRestore();
   }
 });
+
+// A PNG of noise (it does not compress): w x h, grey.
+const noisePng = (w: number, h: number): Buffer => {
+  const { deflateSync } = require("node:zlib") as typeof import("node:zlib");
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(Bun.hash.crc32(body) >>> 0, 8 + data.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 0;
+  const rows = Buffer.alloc((w + 1) * h);
+  let x = 0x9e3779b9;
+  for (let i = 0; i < rows.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; rows[i] = i % (w + 1) === 0 ? 0 : x & 0xff; }
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(rows, { level: 1 })), chunk("IEND", Buffer.alloc(0))]);
+};
+
+test("an OpenCode image is read once however many parts name it, fitted to what Keel stores, and a copy carries a bounded share of images", async () => {
+  const { opencodeSessions, readOpencode } = await import("./opencode.ts");
+  const { OWNER_MEDIA_BYTES } = await import("../../engine/compact.ts");
+  const { imageSize } = await import("../../engine/images.ts");
+  const { STORE } = await import("../../providers/image-limits.ts");
+  const p = join(dir, "oc-images", "opencode.db");
+  require("node:fs").mkdirSync(join(dir, "oc-images"), { recursive: true });
+  const db = new Database(p, { create: true });
+  db.exec("CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, directory text NOT NULL, title text, model text, time_updated integer NOT NULL, time_archived integer)");
+  db.exec("CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, data text NOT NULL)");
+  db.exec("CREATE TABLE blob (hash text PRIMARY KEY, mime text NOT NULL, bytes integer NOT NULL, data blob NOT NULL)");
+  const big = noisePng(2400, 2400), broken = Buffer.concat([big.subarray(0, 40), Buffer.alloc(200, 7)]);
+  const hashOf = (b: Buffer) => new Bun.CryptoHasher("sha256").update(b).digest("hex");
+  for (const b of [big, broken]) db.query("INSERT INTO blob VALUES (?, 'image/png', ?, ?)").run(hashOf(b), b.length, b);
+  const model = { providerID: "scripted", id: "stand-in" };
+  const rows: [string, unknown][] = [["user", { text: "Look at the screens." }]];
+  // Thirty calls, each returning the same large screenshot; then a prompt with an image that cannot be decoded.
+  for (let i = 0; i < 30; i++) rows.push(["assistant", { model, finish: "tool-calls", content: [{ type: "tool", id: `c${i}`, name: "screenshot", state: { status: "completed", input: {}, content: [{ type: "text", text: `shot ${i}` }, { type: "file", uri: `media:${hashOf(big)}`, mime: "image/png", name: "screen.png" }] } }] }]);
+  rows.push(["user", { text: "And this one?", files: [{ uri: `media:${hashOf(broken)}`, mime: "image/png", name: "broken.png" }] }]);
+  rows.forEach(([type, data], i) => db.query("INSERT INTO session_message VALUES (?, 'ses_img', ?, ?, ?, ?)").run(`m${i}`, type, i, 1000 + i, JSON.stringify(data)));
+  db.query("INSERT INTO session_v2 (id, directory, title, model, time_updated) VALUES ('ses_img', ?, 'Screens', ?, 2000)").run(dir, JSON.stringify(model));
+  db.close();
+
+  // Count the reads of the blob table's bytes.
+  const query = Database.prototype.query;
+  let reads = 0;
+  Database.prototype.query = function (this: Database, sql: string) {
+    const st = query.call(this, sql) as any;
+    if (/SELECT data FROM blob/.test(sql) && !st.__counted) { const get = st.get.bind(st); st.get = (...a: any[]) => (reads++, get(...a)); st.__counted = true; }
+    return st;
+  } as any;
+  let r;
+  try { r = await readOpencode(opencodeSessions(p).find((f) => f.id === "ses_img")!, p); } finally { Database.prototype.query = query; }
+  expect(reads).toBe(2); // one a hash
+
+  const images = r.events.flatMap((e) => (e.kind === "tool_result" ? e.data.results.flatMap((x: any) => (Array.isArray(x.content) ? x.content : [])) : [])).filter((b: any) => b.type === "image");
+  expect(images.length).toBeGreaterThan(0);
+  expect(images.length).toBeLessThan(30);
+  for (const im of images) {
+    const s = imageSize(im.data)!;
+    expect(Math.max(s.w, s.h)).toBeLessThanOrEqual(STORE.edge!);
+    expect(im.data.length).toBeLessThanOrEqual(STORE.base64!);
+  }
+  expect(images.reduce((n: number, im: any) => n + im.data.length, 0)).toBeLessThanOrEqual(OWNER_MEDIA_BYTES);
+  // The newest calls keep theirs; an older one says why it has none.
+  const last = r.events.findLast((e) => e.kind === "tool_result")!.data.results[0].content;
+  expect(last.map((b: any) => b.type)).toEqual(["text", "image"]);
+  const first = r.events.find((e) => e.kind === "tool_result")!.data.results[0].content;
+  expect(first[1]).toEqual({ type: "text", text: "[unavailable: an older image, past what one copy carries]" });
+  // The image that cannot be decoded is named in the prompt, not carried.
+  const prompt = r.events.findLast((e) => e.kind === "user")!.data;
+  expect(prompt.images).toBeUndefined();
+  expect(prompt.text).toContain("[unavailable: an image: its data is damaged or cut short]");
+  expect(r.counts.media).toBe(images.length);
+  expect(r.notes.join(" ")).toContain(`skipped: images past ${OWNER_MEDIA_BYTES / 1024 / 1024} MB of images in one copy`);
+  expect(r.notes.join(" ")).toContain("1 skipped: images Keel could not fit to its image limits (its data is damaged or cut short)");
+});

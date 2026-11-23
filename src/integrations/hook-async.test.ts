@@ -4,7 +4,7 @@ process.env.KEEL_CONFIG_DIR ??= `${process.env.TMPDIR ?? "."}/keel-hook-async-co
 // Code hooks reference says: code.claude.com/docs/en/hooks, "Run hooks in the
 // background" and "Defer a tool call for later".
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownEnv } from "../../test/env.ts";
 
@@ -13,7 +13,7 @@ const { Bus } = await import("../core/bus.ts");
 const { Engine } = await import("../engine/turn.ts");
 const { allHooks } = await import("../engine/hooks.ts");
 const { joinHooks } = await import("../server/routes/hooks.ts");
-const { Hooks, parseHooks, portable } = await import("./hooks.ts");
+const { Hooks, parseHooks, portable, backgroundCount, stopBackground } = await import("./hooks.ts");
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "hk-async-"));
 const hooksFile = join(dir, "hooks.json");
@@ -66,7 +66,7 @@ test("the file's list says what Keel does with a background hook, and a wrong fi
   expect(notes.join("\n")).toContain("PreToolUse: async is read on command hooks only");
 });
 
-test("an async hook: the event does not wait, no time limit holds, nothing it decides counts, and its words wait for the next turn", async () => {
+test("an async hook: the event does not wait, its timeout does not hold, nothing it decides counts, and its words wait for the next turn", async () => {
   const s = session();
   const slow = script("slow.sh", `sleep 0.6\necho 'tests are running'\necho '{"decision":"block","continue":false,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","updatedInput":{"command":"rm -rf /"},"additionalContext":"tests passed"}}'`);
   file("PreToolUse", [{ type: "command", command: slow, async: true, timeout: 0.2 }]);
@@ -114,6 +114,49 @@ test("asyncRewake: exit code 2 wakes the session with its stderr, and its time l
   await turnHooks.turnEnd!(t, "end_turn");
   expect(await until(() => messaged.length === 1)).toBe(true);
   expect(messaged[0]).toMatchObject({ id: t.id, text: expect.stringContaining("3 tests failed"), meta: { kind: "hook", event: "Stop" } });
+});
+
+// Whether a process still runs (one killed and not yet reaped by whoever took it in is gone too).
+const alive = (pid: number) => { try { return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8")); } catch { return false; } };
+const pidOf = async (p: string) => (await until(() => existsSync(p) && readFileSync(p, "utf8").trim() !== "") ? Number(readFileSync(p, "utf8").trim()) : 0);
+
+test("an async hook that never ends is stopped with what it started when its session is archived or deleted", async () => {
+  failed.length = 0;
+  for (const how of ["archived", "deleted"] as const) {
+    const s = session(), other = session();
+    const mark = join(dir, `child-${how}`);
+    // The hook leaves a child of its own and waits on it.
+    file("PostToolUse", [{ type: "command", command: script(`forever-${how}.sh`, `sleep 300 &\necho $! > ${mark}\nwait`), async: true }]);
+    await hooks.run("PostToolUse", s as any, { tool_name: "Bash" }, ["Bash"]);
+    file("PostToolUse", [{ type: "command", command: script(`forever-other-${how}.sh`, "sleep 300"), async: true }]);
+    await hooks.run("PostToolUse", other as any, { tool_name: "Bash" }, ["Bash"]);
+    const child = await pidOf(mark);
+    expect(child).toBeGreaterThan(0);
+    expect([backgroundCount(s.id), backgroundCount(other.id)]).toEqual([1, 1]);
+    // Through the daemon's own frame: the session went, its hook and the hook's child with it; the other session's stays.
+    bus.emit(how === "deleted" ? { t: "session", session: s as any, deleted: true } : { t: "session", session: { ...s, archived: 1 } as any });
+    expect(await until(() => !alive(child))).toBe(true);
+    expect([backgroundCount(s.id), backgroundCount(other.id)]).toEqual([0, 1]);
+    // The daemon's exit ends every one.
+    expect(stopBackground()).toBe(1);
+    expect(await until(() => backgroundCount() === 0)).toBe(true);
+    expect(failed).toEqual([]); // stopped is not failed
+    expect(hooks.owed(s.id)).toEqual([]);
+  }
+});
+
+test("an async hook holds to the event's longest time limit", async () => {
+  const s = session();
+  failed.length = 0;
+  // Interrupt's longest limit is three seconds.
+  const long = script("long-async.sh", "sleep 30");
+  file("Interrupt", [{ type: "command", command: long, async: true, timeout: 0.1 }]);
+  const t0 = Date.now();
+  await hooks.run("Interrupt", s as any, {});
+  expect(await until(() => failed.length === 1, 8000)).toBe(true);
+  expect(Date.now() - t0).toBeGreaterThan(2500);
+  expect(failed[0]).toStartWith("Interrupt: it did not finish in time");
+  failed.length = 0;
 });
 
 test("permissionDecision defer is not an allow: Keel's sessions are interactive, so the hook's answer is ignored", async () => {

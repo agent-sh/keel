@@ -814,9 +814,11 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   }
   left.push(...(def.notTaken ?? []));
   // Its memory folder, with what MEMORY.md holds now; on another machine it is not where the agent works.
-  const memory = def.memory && !placed && !memoryOff() ? agentMemory(def.memory, def.name, child.workspace) : undefined;
+  const mem = def.memory && !placed && !memoryOff() ? agentMemory(def.memory, def.name, child.workspace) : undefined;
+  const memory = mem && "dir" in mem ? mem : undefined;
+  if (mem && "refused" in mem) left.push(`its ${def.memory} memory folder: ${mem.refused}`);
   if (def.memory && placed) left.push(`its ${def.memory} memory folder: it is on this machine, and the agent's tools run on ${placed.name}`);
-  if (def.memory && !placed && !memory) left.push(`its ${def.memory} memory folder: auto memory is turned off in Claude Code's settings`);
+  if (def.memory && !placed && !mem) left.push(`its ${def.memory} memory folder: auto memory is turned off in Claude Code's settings`);
   // (It keeps its folder with Read, Write and Edit, as in Claude Code, whatever its tools list names.)
   const stored: AgentDef = memory && def.tools ? { ...def, tools: [...new Set([...def.tools, "Read", "Write", "Edit"])] } : def;
   const preloaded: string[] = [];

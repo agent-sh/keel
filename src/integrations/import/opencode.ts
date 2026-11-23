@@ -24,6 +24,10 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ATTACHMENT_MAX } from "../../engine/attachments.ts";
+import { OWNER_MEDIA_BYTES } from "../../engine/compact.ts";
+import { fitImage, imageKey } from "../../engine/image-fit.ts";
+import { STORE } from "../../providers/image-limits.ts";
+import type { ImageBlock } from "../../core/types.ts";
 import { Builder, clip, unavailable, type Found, type Read } from "./types.ts";
 
 export const opencodeHome = () => process.env.KEEL_IMPORT_OPENCODE_DIR ?? join(process.env.XDG_DATA_HOME?.startsWith("/") ? process.env.XDG_DATA_HOME : join(homedir(), ".local", "share"), "opencode");
@@ -102,15 +106,46 @@ export function opencodeSessions(path = opencodeDb(), budgetMs = Infinity): Foun
   return out.sort((a, b) => b.updated_ms - a.updated_ms);
 }
 
-// The bytes (base64) a `media:<sha256>` reference names in OpenCode's blob table.
-type Blobs = (uri: unknown) => string | undefined;
-function blobs(d: Database): Blobs {
-  const q = has(d, "blob") ? d.query<{ data: Uint8Array }, [string]>("SELECT data FROM blob WHERE hash = ?") : null;
-  return (uri) => {
-    const hash = typeof uri === "string" ? uri.match(/^media:([0-9a-f]{64})$/)?.[1] : undefined;
-    const row = hash && q ? q.get(hash) : null;
-    return row ? Buffer.from(row.data).toString("base64") : undefined;
-  };
+// OpenCode's blob table: the bytes a `media:<sha256>` reference names. Each
+// hash is read once in an import, however many parts name it; an image's
+// bytes are read only when it is fitted (see Pending), and a file's bytes as
+// base64 are kept for the import (one string, shared by every part naming it).
+class Blobs {
+  private q: ReturnType<Database["query"]> | null;
+  private len: ReturnType<Database["query"]> | null;
+  private read = new Map<string, string | undefined>();
+  constructor(d: Database) {
+    const ok = has(d, "blob");
+    this.q = ok ? d.query("SELECT data FROM blob WHERE hash = ?") : null;
+    this.len = ok ? d.query("SELECT 1 FROM blob WHERE hash = ?") : null;
+  }
+  hash(uri: unknown): string | undefined {
+    return typeof uri === "string" ? uri.match(/^media:([0-9a-f]{64})$/)?.[1] : undefined;
+  }
+  // Whether the table holds the bytes (read nothing of them).
+  holds(uri: unknown): boolean {
+    const h = this.hash(uri);
+    return !!h && (this.read.has(h) ? this.read.get(h) !== undefined : !!this.len?.get(h));
+  }
+  get(uri: unknown): string | undefined {
+    const h = this.hash(uri);
+    if (!h || !this.q) return undefined;
+    if (!this.read.has(h)) {
+      const row = this.q.get(h) as { data: Uint8Array } | null;
+      this.read.set(h, row ? Buffer.from(row.data).toString("base64") : undefined);
+    }
+    return this.read.get(h);
+  }
+  // Read for an image that is now fitted: its base64 is not held any longer.
+  drop(hash: string) { this.read.delete(hash); }
+}
+
+// An image of the source before it is fitted: its bytes inline (a data URI, a
+// prompt file's data) or a blob's hash. fitImages makes each one an image
+// within what Keel stores, or a line that says why it is not here.
+class Pending {
+  constructor(readonly media_type: string, readonly data?: string, readonly hash?: string) {}
+  get type() { return "image"; }
 }
 
 // A tool's output parts as a result: text, and an image only when its bytes are here (a data URI or a blob).
@@ -120,12 +155,63 @@ function partsOf(parts: any[], blob: Blobs): string | any[] {
     if (p?.type === "text") out.push({ type: "text", text: String(p.text ?? "") });
     else if (p?.type === "file") {
       const inline = typeof p.uri === "string" ? p.uri.match(/^data:([^;,]+);base64,(.*)$/) : null;
-      const [type, data] = inline ? [inline[1]!, inline[2]!] : [String(p.mime ?? ""), blob(p.uri)];
-      if (data !== undefined && type.startsWith("image/")) out.push({ type: "image", media_type: type, data });
+      const type = inline ? inline[1]! : String(p.mime ?? "");
+      if (type.startsWith("image/") && (inline || blob.holds(p.uri))) out.push(new Pending(type, inline?.[2], inline ? undefined : blob.hash(p.uri)));
       else out.push(unavailable(`file ${p.name ?? p.uri ?? ""}`.trim()));
     }
   }
   return out.length === 1 && out[0].type === "text" ? out[0].text : out;
+}
+
+// Every image of the copy, fitted to what Keel stores (STORE: an image over
+// it is scaled down, one that cannot be is left out and named), each source
+// image fitted once however many times the history names it. The images are
+// taken newest first within OWNER_MEDIA_BYTES of base64 in all, the bound a
+// compaction carries the owner's media within (every image of a history goes
+// in each of its requests); older ones leave a line in their place.
+async function fitImages(events: { kind: string; data: any }[], blob: Blobs, skip: (why: string) => void, counts: { media: number }) {
+  const done = new Map<string, ImageBlock | { refused: string }>();
+  let total = 0, full = false;
+  const one = async (p: Pending): Promise<ImageBlock | string> => {
+    const drop = (why: string, line: string) => { skip(why); counts.media--; return line; };
+    if (full) return drop(`images past ${OWNER_MEDIA_BYTES / 1024 / 1024} MB of images in one copy (the newest are kept)`, "[unavailable: an older image, past what one copy carries]");
+    const key = p.hash ?? (p.data !== undefined ? imageKey(p.data) : "");
+    let f = done.get(key);
+    if (!f) {
+      const data = p.data ?? blob.get(`media:${p.hash}`);
+      if (p.hash) blob.drop(p.hash);
+      const r = data === undefined ? { refused: "OpenCode no longer holds its bytes" } : await fitImage({ type: "image", media_type: p.media_type, data }, STORE);
+      f = "refused" in r ? { refused: r.refused } : r.block;
+      done.set(key, f);
+    }
+    if ("refused" in f) return drop(`images Keel could not fit to its image limits (${f.refused})`, `[unavailable: an image: ${f.refused}]`);
+    if (total + f.data.length > OWNER_MEDIA_BYTES) { full = true; return one(p); }
+    total += f.data.length;
+    return f;
+  };
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.kind === "user" && Array.isArray(e.data.images) && e.data.images.some((x: unknown) => x instanceof Pending)) {
+      const kept: any[] = [], lines: string[] = [];
+      for (const x of e.data.images) {
+        if (!(x instanceof Pending)) { kept.push(x); continue; }
+        const r = await one(x);
+        if (typeof r === "string") lines.push(r); else kept.push(r);
+      }
+      e.data = { ...e.data, text: [e.data.text, ...lines].filter(Boolean).join("\n"), images: kept.length ? kept : undefined };
+    } else if (e.kind === "tool_result") {
+      for (const r of e.data.results) {
+        if (!Array.isArray(r.content) || !r.content.some((x: unknown) => x instanceof Pending)) continue;
+        const out: any[] = [];
+        for (const x of r.content) {
+          if (!(x instanceof Pending)) { out.push(x); continue; }
+          const got = await one(x);
+          out.push(typeof got === "string" ? { type: "text", text: got } : got);
+        }
+        r.content = out;
+      }
+    }
+  }
 }
 // One reply's steps: its calls with their results after them, and the text
 // that came after a result as the next step's (OpenCode keeps a reply's steps
@@ -153,10 +239,11 @@ function promptFiles(files: any[], blob: Blobs, skip: (why: string) => void): an
   const out: any[] = [];
   for (const f of files) {
     const mime = String(f?.mime ?? "");
-    const data = typeof f?.data === "string" ? f.data : blob(f?.uri);
     if (!IMAGES.has(mime) && mime !== "text/plain" && mime !== "application/x-directory" && mime !== "application/pdf") { skip(`files attached to a prompt of a kind OpenCode does not send to its model (${mime || "no type"})`); continue; }
-    if (data === undefined) { skip("files attached to a prompt whose bytes OpenCode no longer holds"); continue; }
-    if (IMAGES.has(mime)) { out.push({ type: "image", media_type: mime, data }); continue; }
+    const inline = typeof f?.data === "string" ? f.data : undefined;
+    if (inline === undefined && !blob.holds(f?.uri)) { skip("files attached to a prompt whose bytes OpenCode no longer holds"); continue; }
+    if (IMAGES.has(mime)) { out.push(new Pending(mime, inline, inline === undefined ? blob.hash(f?.uri) : undefined)); continue; }
+    const data = inline ?? blob.get(f?.uri)!;
     const size = Buffer.byteLength(data, "base64");
     if (size > ATTACHMENT_MAX) { skip(`files attached to a prompt over ${ATTACHMENT_MAX / 1024 / 1024} MiB`); continue; }
     const where = f.source?.type === "uri" ? String(f.source.uri).replace(/^file:\/\//, "") : undefined;
@@ -176,7 +263,7 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
   const skip = (why: string) => { b.counts.skipped++; skipped.set(why, (skipped.get(why) ?? 0) + 1); };
   let model = f.model;
   let compactions = 0;
-  const blob = blobs(d);
+  const blob = new Blobs(d);
   const v2 = has(d, "session_v2") && !!d.query("SELECT 1 FROM session_v2 WHERE id = ?").get(f.id);
   if (v2) {
     const rows = d.query<{ id: string; type: string; data: string; time_created: number }, [string]>("SELECT id, type, data, time_created FROM session_message WHERE session_id = ? ORDER BY seq").all(f.id);
@@ -277,6 +364,7 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
       }
     }
   }
+  await fitImages(b.events, blob, skip, b.counts);
   if (compactions) notes.push(`OpenCode compacted this conversation ${compactions === 1 ? "once" : `${compactions} times`}: all of it is here, and the model reads from the last summary on, with the messages OpenCode kept beside it, as it did there.`);
   const n = b.counts.thoughts_dropped;
   if (n) notes.push(`${n} reasoning item${n === 1 ? " is" : "s are"} not carried: ${n === 1 ? "it belongs" : "they belong"} to the model that wrote ${n === 1 ? "it" : "them"}.`);

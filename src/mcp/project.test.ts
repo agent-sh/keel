@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectFile, projectKey, runnable } from "./project.ts";
+import { agentKey, isAgentKey, projectFile, projectKey, runnable } from "./project.ts";
 
 test("a project server's address and headers read none of the owner's variables; its command does as Claude Code does", () => {
   const env = { DATABASE_URL: "postgres://u:pw@db/x", GH_PAT: "ghp_x", SENTRY_DSN: "https://k@s/1", NPM_AUTH: "npmA", OPENAI_API_KEY: "sk-x", HOME: "/h" };
@@ -30,4 +30,14 @@ test("a worktree of a repository keeps its approvals under the main checkout", (
   // The file is the worktree's own, found from a folder below it.
   mkdirSync(join(wt, "deep"), { recursive: true });
   expect(projectFile(join(wt, "deep"))).toEqual({ root: wt, file: join(wt, ".mcp.json") });
+});
+
+test("a project folder whose name ends in .md is a project's key, not an agent file's", () => {
+  const d = realpathSync(mkdtempSync(join(tmpdir(), "keel-agent-key-")));
+  mkdirSync(join(d, "notes.md"));
+  mkdirSync(join(d, "app", ".claude", "agents"), { recursive: true });
+  writeFileSync(join(d, "app", ".claude", "agents", "reviewer.md"), "---\nname: reviewer\n---\n");
+  expect(isAgentKey(projectKey(join(d, "notes.md")))).toBe(false);
+  expect(isAgentKey(agentKey(join(d, "app", ".claude", "agents", "reviewer.md")))).toBe(true);
+  expect(isAgentKey(d)).toBe(false);
 });

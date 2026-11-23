@@ -17,9 +17,12 @@ export const SCOPES: readonly MemoryScope[] = ["user", "project", "local"];
 export const MEMORY_LINES = 200;
 export const MEMORY_BYTES = 25 * 1024;
 
-// The folder of an agent's memory, for an agent working in `cwd`.
-export function memoryDir(scope: MemoryScope, agent: string, cwd: string, home = importHome()): string {
+// The folder of an agent's memory, for an agent working in `cwd`. None for
+// a name that is only dots (or nothing) once made a folder's name: ".." would
+// be the scope's own parent folder (~/.claude for the user scope).
+export function memoryDir(scope: MemoryScope, agent: string, cwd: string, home = importHome()): string | null {
   const name = agent.replace(/[^\w.-]+/g, "-");
+  if (/^\.*$/.test(name)) return null;
   if (scope === "user") return join(home, ".claude", "agent-memory", name);
   const project = rootOf(cwd) ?? cwd;
   return join(project, ".claude", scope === "project" ? "agent-memory" : "agent-memory-local", name);
@@ -69,8 +72,9 @@ export function memoryBlock(scope: MemoryScope, dir: string, memory: string | nu
 }
 
 // The block for an agent, with its MEMORY.md read now.
-export function agentMemory(scope: MemoryScope, agent: string, cwd: string): { dir: string; block: string } {
+export function agentMemory(scope: MemoryScope, agent: string, cwd: string): { dir: string; block: string } | { refused: string } {
   const dir = memoryDir(scope, agent, cwd);
+  if (dir === null) return { refused: `the agent's name "${agent}" is no name a folder can have` };
   // Only its start is read: past the byte bound nothing of it is given.
   let memory: string | null = null, more = false;
   try {

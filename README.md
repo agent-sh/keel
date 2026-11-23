@@ -1035,7 +1035,8 @@ names.
 | `mcp_tool` | `server`, `tool`, `input`, `timeout`, `onFailure` | A tool of an MCP server Keel is connected to. `${tool_input.file_path}` in `input` is filled from the event: alone it keeps its type, inside a text it is written into it |
 
 A command hook with `async: true` runs in the background. The event does
-not wait for it, no `timeout` holds, and nothing it answers has effect
+not wait for it, its `timeout` does not hold (the event's longest limit does:
+an hour on most events), and nothing it answers has effect
 (`decision`, `permissionDecision`, `continue`, `updatedInput`): what it would
 have controlled has already gone on. When it ends, its `additionalContext`
 and `systemMessage` reach the model with the session's next turn, not
@@ -1047,7 +1048,9 @@ delivered yet. `asyncRewake: true` runs the same way within its `timeout`,
 and an exit code 2 wakes the session with the hook's stderr (or its stdout
 when stderr is empty), stored as a message to the session like any other. A
 session you stopped is not started by it: the message waits behind your
-stop. `onFailure` does nothing on a background hook. Settings lists each
+stop. A background hook still running when its session is archived or
+deleted, or when the daemon stops, is stopped with every process it started.
+`onFailure` does nothing on a background hook. Settings lists each
 background hook in its file's notes. Both fields are read on command hooks
 only.
 
@@ -1223,6 +1226,9 @@ its servers and hooks wait. A value reaches its MCP servers and a command
 hook's `args` as `${user_config.KEY}`, its skills and agents the same way (a
 sensitive one as a placeholder), and its hooks as `CLAUDE_PLUGIN_OPTION_<KEY>`;
 a shell-form hook command or a headers helper that names one is not taken.
+Settings > MCP servers shows a plugin's server with a sensitive value as the
+`${user_config.KEY}` it was written with, and nothing Keel keeps in its state
+folder holds the value.
 Parts Keel has no equivalent of (output styles, LSP servers, monitors, themes,
 `bin/`, MCP bundles, npm and archive sources) are named at install as not
 taken, with why.

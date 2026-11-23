@@ -129,6 +129,12 @@ export function substitute<T>(v: T, text: Record<string, string>): T {
   return v;
 }
 
+// The values as a config may be shown with them: a sensitive one stays the
+// reference the plugin wrote (${user_config.KEY}), never its value.
+export function shownValues(specs: Specs, text: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(text).map(([k, v]) => [k, specs[k]?.sensitive ? "${user_config." + k + "}" : v]));
+}
+
 // A skill's or an agent's text: a plain value is filled in; a sensitive one
 // becomes a placeholder, never its value (the text goes to a model).
 export function fillContent(body: string, specs: Specs, text: Record<string, string>): string {
