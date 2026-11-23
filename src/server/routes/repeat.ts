@@ -3,7 +3,7 @@
 // again in a shell (engine/wait-poll.ts): a line naming the wait tool.
 import { registerHooks } from "../../engine/hooks.ts";
 import { observe, refuse, reset } from "../../engine/repeat.ts";
-import { observeWait, resetWait } from "../../engine/wait-poll.ts";
+import { observeWait, resetWait, stepWait } from "../../engine/wait-poll.ts";
 import type { RouteModule } from "../app.ts";
 
 export const repeatRoutes: RouteModule = ({ providers }) => {
@@ -27,6 +27,7 @@ export const repeatRoutes: RouteModule = ({ providers }) => {
       if (typeof result.content === "string") result.content = `${result.content}\n\n${note}`;
       else result.content = [...result.content, { type: "text", text: note }];
     },
+    stepDone: (s) => stepWait(s.id),
     turnEnd: (s) => { reset(s.id); resetWait(s.id); },
   });
   return {};

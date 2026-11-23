@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { observeWait, pollNote, resetWait, waitKey } from "./wait-poll.ts";
+import { observeWait, pollNote, resetWait, stepWait, waitKey } from "./wait-poll.ts";
 
 const bash = (command: string) => ["Bash", { command }] as const;
 
@@ -27,9 +27,28 @@ test("an empty write_stdin after an empty write_stdin on the same session gets i
 test("a first wait does not get it, and a call between two waits breaks the run", () => {
   const s = "wait-poll-test";
   resetWait(s);
+  // One call a step, the steps one after another (the hook ends each step).
+  const step = (tool: string, input: object) => { const note = observeWait(s, tool, input, "WaitFor"); stepWait(s); return note; };
+  expect(step("Bash", { command: "sleep 60" })).toBeNull();
+  expect(step("Bash", { command: "sleep 60" })).not.toBeNull();
+  expect(step("Read", { file_path: "x" })).toBeNull();
+  expect(step("Bash", { command: "sleep 60" })).toBeNull();
+  resetWait(s);
+});
+
+test("two of the same wait in one step are not one polled after the other", () => {
+  const s = "wait-poll-batch";
+  resetWait(s);
   expect(observeWait(s, "Bash", { command: "sleep 60" }, "WaitFor")).toBeNull();
+  expect(observeWait(s, "Bash", { command: "sleep 60" }, "WaitFor")).toBeNull();
+  stepWait(s);
+  // The next step polls it again: now it is.
   expect(observeWait(s, "Bash", { command: "sleep 60" }, "WaitFor")).not.toBeNull();
-  expect(observeWait(s, "Read", { file_path: "x" }, "WaitFor")).toBeNull();
+  stepWait(s);
+  // A step that did other work beside its wait breaks the run.
+  observeWait(s, "Bash", { command: "sleep 60" }, "WaitFor");
+  observeWait(s, "Read", { file_path: "x" }, "WaitFor");
+  stepWait(s);
   expect(observeWait(s, "Bash", { command: "sleep 60" }, "WaitFor")).toBeNull();
   resetWait(s);
 });

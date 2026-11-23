@@ -77,14 +77,21 @@ export function pollNote(prev: string | null | undefined, key: string | null, wa
   return `[harness] This is the same wait as your last step, and each poll is a model request. ${waitTool} wakes you when the condition holds (a file, a log line, a process ending, a timer, pull request checks) and takes no steps meanwhile: call it and end your turn instead of polling.`;
 }
 
-// The last call of each session in this turn, as a wait key (null: it was not a wait).
-const last = new Map<string, string | null>();
-// After a call: the line for its result, if any. Every call is seen, so any
-// other call between two waits breaks the run.
+// The calls of each session's last step and of the step that runs, as wait keys (null: it was not a
+// wait). A call is the same wait polled again when the step before it waited only, on this wait:
+// two calls of one step (a batch) are not one after the other, and a step with other work breaks the run.
+const steps = new Map<string, { prev: (string | null)[]; cur: (string | null)[] }>();
+// After a call: the line for its result, if any.
 export function observeWait(sessionId: string, tool: string, input: unknown, waitTool: string | undefined): string | null {
   const key = waitKey(tool, input);
-  const note = pollNote(last.get(sessionId), key, waitTool);
-  last.set(sessionId, key);
-  return note;
+  const st = steps.get(sessionId) ?? steps.set(sessionId, { prev: [], cur: [] }).get(sessionId)!;
+  st.cur.push(key);
+  const waitedOnly = st.prev.length > 0 && st.prev.every((k) => k !== null);
+  return waitedOnly && key && st.prev.includes(key) ? pollNote(key, key, waitTool) : null;
 }
-export const resetWait = (sessionId: string) => void last.delete(sessionId);
+// A step's calls are all stored: the next step's calls are read against them.
+export function stepWait(sessionId: string) {
+  const st = steps.get(sessionId);
+  if (st) { st.prev = st.cur; st.cur = []; }
+}
+export const resetWait = (sessionId: string) => void steps.delete(sessionId);
