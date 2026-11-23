@@ -4,7 +4,8 @@
 // outlives its timeout instead of killing it.
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { backgrounded, startJob, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
+import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
+import { backgrounded, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
 import { notFound } from "./missing.ts";
 import { TRACE_CAP } from "../checks/named.ts";
 import type { ToolContext } from "./types.ts";
@@ -86,13 +87,17 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   const trap = `${end}${track ? `pwd -P >| ${shq(cwdFile)} 2>/dev/null` : ""}`;
   const head = `${debug ? `set -T\ntrap ${shq(debug)} DEBUG\n` : ""}${trap ? `trap ${shq(trap)} EXIT\n` : ""}`;
   const script = `${head}exec 2>&1\n${o.command}`;
-  const job = startJob({
+  // A heavy command waits here for its slot (src/tools/heavy.ts); its timeout starts once it runs.
+  const slot = await takeFor(ctx, o.command);
+  if (slot === "aborted") { if (traceFile) rmSync(traceFile, { force: true }); return { state: "refused", error: ABORTED_TEXT }; }
+  const said = waitedLine(slot);
+  const job = startHeld({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,
     argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, callId: ctx.callId,
     // In the foreground the call stops the command when its turn is stopped (below).
     handle: o.handle, stops: !o.background, traceFile,
-  });
-  if (o.background) return { state: "running", job, output: "" };
+  }, slot);
+  if (o.background) return { state: "running", job, output: said };
 
   const finished = await waitJob(job, o.timeoutMs, ctx.signal);
   if (!finished) {
@@ -100,10 +105,10 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
     // too: what follows the sleep still runs.
     if (ctx.signal.aborted || o.onTimeout === "kill") {
       await stopJob(job, ctx.signal.aborted ? "was interrupted" : `was killed at its ${Math.round(o.timeoutMs / 1000)}s timeout`);
-      return { state: "done", output: takeUnread(job), exitCode: job.exitCode ?? null, signal: job.signal, job };
+      return { state: "done", output: said + takeUnread(job), exitCode: job.exitCode ?? null, signal: job.signal, job };
     }
     backgrounded(job);
-    return { state: "running", job, output: takeUnread(job) };
+    return { state: "running", job, output: said + takeUnread(job) };
   }
   let cwdNote: string | undefined;
   if (track && existsSync(cwdFile)) {
@@ -115,7 +120,7 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
       else { cwds.set(ctx.sessionId, ctx.cwd); cwdNote = `Shell cwd was reset to ${ctx.cwd}`; }
     }
   }
-  return { state: "done", output: takeUnread(job), exitCode: job.exitCode ?? null, signal: job.signal, cwdNote, job };
+  return { state: "done", output: said + takeUnread(job), exitCode: job.exitCode ?? null, signal: job.signal, cwdNote, job };
 }
 
 export const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;

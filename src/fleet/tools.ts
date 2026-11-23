@@ -9,6 +9,10 @@ import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Fleet } from "./fleet.ts";
 import { HttpError, type Messages } from "./messages.ts";
 import { remoteExec } from "./remote.ts";
+import { pool } from "../tools/heavy.ts";
+import { runShell } from "../tools/shell.ts";
+import { resolve } from "node:path";
+import { contains } from "../core/paths.ts";
 import { messageLine, sayAt } from "../admin/daemon-log.ts";
 
 let fleet: Fleet | undefined;
@@ -46,11 +50,11 @@ const machinesList: Tool = {
 
 const runOn: Tool = {
   name: "keel__run_on",
-  description: "Run one shell command on another machine of the fleet (by name), in its granted directory or a cwd inside it. The session stays where it is. Waits for a slot in that machine's job queue.",
+  description: "Run one shell command on another machine of the fleet (by name), in its granted directory or a cwd inside it. The session stays where it is. Waits for a slot in that machine's job queue, and a heavy command (a test suite, a build, a browser) for a slot of that machine's heavy-command pool. machine \"auto\": the owner's placement rules choose, a heavy command counted as heavy; when they keep it here it runs in this session's folder.",
   input_schema: {
     type: "object",
     properties: {
-      machine: { type: "string", description: "Machine name or id, from keel__machines_list" },
+      machine: { type: "string", description: "Machine name or id, from keel__machines_list, or auto" },
       command: { type: "string", description: "The shell command" },
       cwd: { type: "string", description: "Directory on that machine, inside its granted directory" },
     },
@@ -63,7 +67,23 @@ const runOn: Tool = {
   async run(input, ctx) {
     if (!fleet) return fail("The fleet is not running.");
     if (typeof input.command !== "string") return fail("command must be one string.");
-    const m = fleet.byName(String(input.machine ?? ""));
+    let name = String(input.machine ?? "");
+    if (name === "auto") {
+      const placed = await fleet.placeWork({ kind: "run", heavy: !!pool.heavy(input.command) });
+      if (typeof placed === "string") return fail(placed);
+      if (placed.machine_id === "local") {
+        // Kept here: the session's own shell, its heavy-command slot included (src/tools/heavy.ts).
+        const dir = input.cwd ? resolve(ctx.cwd, String(input.cwd)) : ctx.cwd;
+        if (!contains(ctx.cwd, dir)) return fail(`${dir} is outside this session's folder ${ctx.cwd}: a command kept here runs only there.`);
+        const r = await runShell(ctx, { command: input.command, cwd: dir, timeoutMs: 10 * 60_000, onTimeout: "kill" });
+        if (r.state === "refused") return fail(r.error);
+        const out = r.output.trimEnd();
+        const code = r.state === "done" ? r.exitCode : null;
+        return { content: `[ran here: ${placed.reason}]\n${out || "(no output)"}${code ? `\nExit code ${code}` : ""}`, is_error: !!code };
+      }
+      name = placed.machine_id;
+    }
+    const m = fleet.row(name) ?? fleet.byName(name);
     if (!m) return fail(`No machine named ${input.machine}. Known: ${fleet.rows().map((r) => r.name).join(", ") || "none"}.`);
     if (!m.workspace_root) return fail(`${m.name} has no granted directory: the owner sets one in Settings, Machines.`);
     const release = await fleet.acquire(m.id, ctx.signal).catch((e) => e as Error);

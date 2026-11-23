@@ -64,6 +64,8 @@ export type Job = {
   // Where the shell reports the commands it runs (a check's run, src/checks), and what it reported.
   traceFile?: string;
   trace?: string;
+  // The heavy-command slot it holds while it runs (src/tools/heavy.ts), given back at its end.
+  slot?: { release(): void };
   pid: number;
   boot?: string;         // its process's start time, read when it started (Linux)
   readOff: number;       // bytes of the log already handed to the model
@@ -174,7 +176,12 @@ export type StartOpts = {
   handle?: Handle;
   stops?: boolean;       // the call stops the command when its turn is stopped
   traceFile?: string;    // the shell reports the commands it runs here (read when the job ends, then removed)
+  slot?: { release(): void };  // a heavy-command slot taken for it: held while it runs
 };
+
+// A command that runs without having asked for a slot (one a restart left running) takes one
+// while it runs, if it is heavy (set by src/tools/heavy.ts).
+export const jobSlots: { count?: (sessionId: string, command: string) => { release(): void } | undefined } = {};
 
 export function startJob(o: StartOpts): Job {
   // Bun reports a working directory that is not there as ENOENT of the
@@ -199,7 +206,7 @@ export function startJob(o: StartOpts): Job {
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
-    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, traceFile: o.traceFile } as Job;
+    log, started, background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops, traceFile: o.traceFile, slot: o.slot } as Job;
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
@@ -360,6 +367,7 @@ export const endKey = (j: Pick<Job, "id">) => `job-end:${j.id}`;
 function finish(job: Job, code: number | null, signal: string | null, at?: number) {
   if (job.ended !== undefined) return;
   job.ended = at ?? Date.now();
+  try { job.slot?.release(); } catch {}
   job.exitCode = code;
   job.signal = signal;
   if (job.background) queueMicrotask(() => jobsChanged.tell?.(job.sessionId));
@@ -663,6 +671,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
     const job: Job = { ...base, pty: false, wake: m.wake, front: !m.background || undefined, stopping: !!m.stopping, stopReason: m.stopping ? m.stop_reason : undefined, background: m.background || !m.stopping, exited: new Promise<void>((r) => (resolve = r)) };
     jobs.set(job.id, job);
     adopted.set(job.id, { job, meta: m, resolve });
+    try { job.slot = jobSlots.count?.(job.sessionId, job.command); } catch {}
     finishStop(job);
     n++;
   }

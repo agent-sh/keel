@@ -7,6 +7,7 @@ import { cn } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 import { fmtMs } from "./UsagePanel.tsx";
+import { HeavyPool, type HeavyView } from "./HeavyPool.tsx";
 
 export const fmtBytes = (b: number | null | undefined) => {
   if (b == null) return "none";
@@ -26,6 +27,7 @@ type Report = {
   sessions: { session_id: string; processes: number; rss_bytes: number; cpu_percent: number; total: { cpu_user_ms: number; cpu_system_ms: number; processes: number } }[];
   disk: { path: string; free_bytes: number; total_bytes: number } | null;
   history: { ts_ms: number; cpu_percent: number; daemon_cpu_percent: number; rss_bytes: number; daemon_rss_bytes: number; processes: number }[];
+  heavy?: HeavyView; // absent from a daemon before the heavy-command pool
 };
 
 const th = "px-4 py-1.5 font-normal whitespace-nowrap";
@@ -91,6 +93,8 @@ export function ResourcesPanel() {
             : ` It was started from a terminal${sw?.unit ? ` (it runs in ${sw.unit})` : ""}, where nothing keeps it out of swap: a service unit with MemorySwapMax=0 does.`}
         </p>
       )}
+
+      {r.heavy && <HeavyPool v={r.heavy} />}
 
       <section className="rounded-lg border border-line bg-raised p-4 shadow-1">
         <h3 className="mb-3 text-base font-medium">Memory <span className="text-caption font-normal text-faint">last hour</span></h3>

@@ -6,6 +6,7 @@ import type { MachineRow } from "./db.ts";
 import type { Fleet } from "./fleet.ts";
 import { LinkError } from "./link.ts";
 import { vault } from "../safety/secrets.ts";
+import { whoOf } from "../tools/heavy.ts";
 
 // What is sent to another machine names a secret, never holds its value: that
 // machine puts back one it holds under the same name, or refuses by name.
@@ -39,7 +40,7 @@ export async function remoteRun(
   try {
     const r = await fleet.hands(m.id, "/api/fleet/hands", {
       method: "POST",
-      body: JSON.stringify({ session: ctx.sessionId, call: callId, detach: true, tool: call.tool, input, cwd, root, sandbox: !!call.sandbox }),
+      body: JSON.stringify({ session: ctx.sessionId, call: callId, detach: true, tool: call.tool, input, cwd, root, sandbox: !!call.sandbox, who: whoOf(ctx) }),
       signal: ctx.signal,
       timeout: CALL_MS,
       retryMs: CALL_MS,
@@ -67,7 +68,7 @@ export async function remoteExec(fleet: Fleet, m: MachineRow, ctx: ToolContext, 
   const sent = p0.value;
   fleet.step(ctx.sessionId, ctx.callId, m.id);
   try {
-    const r = await fleet.hands(m.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script: sent.script, cwd: sent.cwd, root, confined: ctx.confined }), signal: ctx.signal, timeout: CALL_MS });
+    const r = await fleet.hands(m.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script: sent.script, cwd: sent.cwd, root, confined: ctx.confined, session: ctx.sessionId, who: whoOf(ctx) }), signal: ctx.signal, timeout: CALL_MS });
     const b = (await r.json().catch(() => ({}))) as { code?: number; out?: string; error?: string };
     if (!r.ok || b.error) return { content: `Error [PEER]: ${m.name} answered: ${b.error ?? `HTTP ${r.status}`}`, is_error: true };
     const out = (b.out ?? "").trimEnd();

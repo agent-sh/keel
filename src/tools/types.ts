@@ -8,6 +8,8 @@ import type { WebUse } from "../safety/addresses.ts";
 export type ToolContext = {
   sessionId: string;
   parentId?: string;
+  // Whose call it is in the heavy-command line when the parent is not known here (a call another machine sent).
+  heavyWho?: "session" | "agent";
   // A question started or stopped waiting for an answer.
   questionChanged?: () => void;
   // Set by the engine: whether this text is in what the model sees now (the

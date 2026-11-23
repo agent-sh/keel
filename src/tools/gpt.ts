@@ -8,7 +8,8 @@ import { heldFile } from "../core/store-files.ts";
 import { hold } from "./files.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, type Question } from "./interact.ts";
-import { cleanTerm, findJob, hasUnread, running, startJob, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
+import { cleanTerm, findJob, hasUnread, running, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
+import { ABORTED_TEXT, startHeld, takeFor, waitedLine } from "./heavy.ts";
 import { goneCwd, logDir, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
@@ -103,13 +104,16 @@ const exec_command: Tool = {
     const sp = extractShellApplyPatch(cmd);
     if (sp) return runPatch(sp.patch, sp.cd ? atCwd(cwd, sp.cd) : cwd, ctx);
     const shell = execShell(input);
+    // A heavy command waits for its slot first (src/tools/heavy.ts); the yield counts from its start.
+    const slot = await takeFor(ctx, cmd);
+    if (slot === "aborted") return fail(`exec_command failed: ${ABORTED_TEXT}`);
     const t0 = Date.now();
-    const job = startJob({
+    const job = startHeld({
       sessionId: ctx.sessionId, command: cmd, cwd, logDir: logDir(ctx), pty: !!input.tty,
       argv: [shell, input.login === false ? "-c" : "-lc", cmd], wrap: ctx.wrapSpawn, callId: ctx.callId, handle: "num",
-    });
+    }, slot);
     await waitJob(job, clamp(input.yield_time_ms, 10_000, 250, 30_000), ctx.signal);
-    return ok(execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, MAX_TOKENS)));
+    return ok(waitedLine(slot) + execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, MAX_TOKENS)));
   },
 };
 

@@ -14,6 +14,7 @@ import { listJobs, logPath, ownerRun, readJobLog, stopOne, waitOne } from "../to
 import type { ToolOutput } from "../tools/types.ts";
 import { localFacts } from "./facts.ts";
 import { execArgv, namedSecrets, runHands } from "./hands.ts";
+import { ABORTED_TEXT, pool, waitedLine } from "../tools/heavy.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -193,6 +194,10 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
         const argv = execArgv(named.value.script, resolve(b.root), b.confined && typeof b.confined === "object" ? b.confined : undefined);
         if ("error" in argv) return json({ error: argv.error });
         return keepalive(async () => {
+          // A heavy script takes this machine's slot first (src/tools/heavy.ts), as its tool calls do.
+          const slot = await pool.take({ session: typeof b.session === "string" ? b.session : "peer", who: b.who === "agent" ? "agent" : "session", command: named.value.script, signal: req.signal });
+          if (slot === "aborted") return { code: 130, out: ABORTED_TEXT };
+          try {
           const p = Bun.spawn(argv, {
             // (`view`: a script of the daemon's own, a session's move, whose git reads the repository in `cwd` through this machine's view of it.
             // `fetch`: it fills a work tree there, and may fetch what a partial clone lacks as far as that reaches: GitOpts.fetch.)
@@ -200,7 +205,8 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
             timeout: 10 * 60_000, // the longest a shell call may run in any family
           });
           const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
-          return { code, out: vault.mask((out + err).slice(-200_000)) };
+          return { code, out: waitedLine(slot) + vault.mask((out + err).slice(-200_000)) };
+          } finally { slot?.release(); }
         });
       },
     },

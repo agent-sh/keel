@@ -6,7 +6,8 @@ import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, 
 import { join } from "node:path";
 import { conceal, concealDeep } from "../core/conceal.ts";
 import { SessionMap } from "../core/session-map.ts";
-import { findJob, jobsOf, lastLineOf, type Meta, running, startJob, stopJob, toolEnv, waitJob } from "./jobs.ts";
+import { findJob, jobsOf, lastLineOf, type Meta, running, stopJob, toolEnv, waitJob } from "./jobs.ts";
+import { pool, startHeld } from "./heavy.ts";
 import { removedNote } from "./spill.ts";
 
 export type TermJob = {
@@ -185,7 +186,8 @@ function range(path: string, from: number, max: number): { text: string; from: n
 // The owner's own command, in the session's folder: no gate (it is the owner's),
 // the same environment the session's commands get. `done` gets the end.
 export function ownerRun(spillRoot: string, sessionId: string, command: string, cwd: string, done?: (j: TermJob) => void) {
-  const job = startJob({ sessionId, command, cwd, logDir: jobsDir(spillRoot, sessionId), argv: ["bash", "-c", `exec 2>&1\n${command}`], env: toolEnv(sessionId), by: "owner" });
+  // It never waits for a heavy-command slot: it takes one, over the pool when none is free.
+  const job = startHeld({ sessionId, command, cwd, logDir: jobsDir(spillRoot, sessionId), argv: ["bash", "-c", `exec 2>&1\n${command}`], env: toolEnv(sessionId), by: "owner" }, pool.count({ session: sessionId, command }, "owner"));
   if (done) job.exited.then(() => done(listJobs(spillRoot, sessionId).find((j) => j.id === job.id)!));
   return job;
 }

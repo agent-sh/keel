@@ -290,6 +290,12 @@ export class Tracer {
           if (f.status.kind === "retry" && f.status.unreachable) this.wait(f.session_id, key, "provider wait", { since: f.status.unreachable });
           else if (f.status.kind === "retry") this.wait(f.session_id, key, "retry wait", { attempt: f.status.attempt, max: f.status.max });
           else if (f.status.kind === "compacting") this.wait(f.session_id, key, "compaction", { auto: f.status.auto });
+        } else if (f.t === "feature" && f.name === "heavy" && f.data?.key) {
+          // A command that waits for a heavy-command slot (src/tools/heavy.ts): the wait is the turn's.
+          const h = f.data as { key: string; session_id: string; state: string; pattern?: string; call_id?: string; waited_ms?: number };
+          const key = `heavy:${h.key}`;
+          if (h.state === "waiting") this.wait(h.session_id, key, "slot wait", { pattern: h.pattern, call_id: h.call_id });
+          else this.endWait(key, { outcome: h.state === "started" ? "started" : "stopped", waited_ms: h.waited_ms });
         } else if (f.t === "feature" && f.name === "approval" && f.data?.id) {
           const a = f.data as { id: string; session_id: string; state: string; tool?: string; risk?: string; call_id?: string; choice?: string; by?: AnsweredBy };
           const key = `approval:${a.id}`;

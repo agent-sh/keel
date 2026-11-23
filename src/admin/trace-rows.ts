@@ -13,6 +13,7 @@ export function waitLabel(s: SpanLite): string {
   if (s.name === "approval wait" && a.tool) return `${name} for ${a.tool}`;
   if (s.name === "retry wait" && a.attempt) return `${name} before attempt ${a.attempt + 1}`;
   if (s.name === "daemon stall") return "Daemon unresponsive";
+  if (s.name === "slot wait") return "Heavy-command slot wait";
   return name;
 }
 
@@ -57,20 +58,26 @@ export function turnGaps(spans: SpanLite[], turnSpan: string, now = Date.now()):
 
 // Where a turn's time went, by kind: requests, tools, waits, and the rest
 // (the gaps, long and short). Spans that overlap (tools run side by side) are
-// counted once, to the kind that started first.
+// counted once, to the kind that started first; a wait inside another span
+// (a tool call held for a heavy-command slot) is the wait's.
 export function turnAccount(spans: SpanLite[], turnSpan: string, now = Date.now()): { total: number; request: number; tool: number; wait: number; other: number } {
   const turn = spans.find((s) => s.span_id === turnSpan);
   const acc = { total: 0, request: 0, tool: 0, wait: 0, other: 0 };
   if (!turn) return acc;
   const end = turn.end_ms ?? now;
   acc.total = Math.max(0, end - turn.start_ms);
-  let at = turn.start_ms;
-  for (const k of spans.filter((s) => s.parent_id === turnSpan).sort((a, b) => a.start_ms - b.start_ms)) {
-    const from = Math.max(at, k.start_ms), to = Math.min(end, k.end_ms ?? now);
-    if (to <= from) continue;
-    const kind = k.kind === "request" || k.kind === "tool" || k.kind === "wait" ? k.kind : "other";
-    acc[kind] += to - from;
-    at = to;
+  const kids = spans.filter((s) => s.parent_id === turnSpan).map((k) => ({
+    from: Math.max(turn.start_ms, k.start_ms), to: Math.min(end, k.end_ms ?? now),
+    kind: (k.kind === "request" || k.kind === "tool" || k.kind === "wait" ? k.kind : "other") as "request" | "tool" | "wait" | "other",
+    start: k.start_ms,
+  })).filter((k) => k.to > k.from);
+  const marks = [...new Set(kids.flatMap((k) => [k.from, k.to]))].sort((a, b) => a - b);
+  for (let i = 0; i + 1 < marks.length; i++) {
+    const a = marks[i]!, b = marks[i + 1]!;
+    const on = kids.filter((k) => k.from <= a && k.to >= b);
+    if (!on.length) continue;
+    const k = on.find((x) => x.kind === "wait") ?? on.reduce((x, y) => (y.start < x.start ? y : x));
+    acc[k.kind] += b - a;
   }
   acc.other = Math.max(0, acc.total - acc.request - acc.tool - acc.wait);
   return acc;

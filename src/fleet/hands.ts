@@ -45,6 +45,8 @@ export type HandsRequest = {
   cwd: string;
   root: string;
   sandbox?: boolean;
+  // Whose call it is on the calling machine, for this machine's heavy-command line: a session's own or an agent's.
+  who?: "session" | "agent";
 };
 
 // Resolve through links where the path exists (its nearest existing ancestor
@@ -113,7 +115,7 @@ export async function runHands(q: HandsRequest, spillRoot: string, signal: Abort
   seenBySession.set(q.session, seen);
   const callId = typeof q.call === "string" && q.call ? q.call : crypto.randomUUID();
   const ctx: ToolContext = {
-    sessionId: q.session, cwd: q.cwd, signal, seen, spillDir, callId,
+    sessionId: q.session, cwd: q.cwd, signal, seen, spillDir, callId, heavyWho: q.who === "agent" ? "agent" : "session",
     wrapSpawn: q.sandbox ? (argv) => confine(argv, { sandbox: "workspace-write", network: false }, q.root, undefined, readOptsFor(sandboxScope(q.root))) : undefined,
   };
   let input = q.input;

@@ -23,6 +23,7 @@ import { plansWaiting } from "../server/routes/plan.ts";
 import { secretsWaiting } from "../server/routes/secrets.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { jobsOf, liveJobs, running } from "../tools/jobs.ts";
+import { pool } from "../tools/heavy.ts";
 import { errorClass } from "../admin/classes.ts";
 import { toolLine } from "../../ui/src/lib/tools.ts";
 import { D, slotGate } from "./core.ts";
@@ -220,7 +221,7 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   const down = pending.filter((p) => p.kind === "unreachable");
   const blocked = !own && status?.kind === "tool" && status.names.every((n) => WAITING_TOOLS.has(n)) && down.length > 0 && down.length === (l.kids.get(s.id)?.length ?? 0);
   const outage = own ? { since: own.since, message: own.message } : blocked ? { since: Math.min(...down.map((p) => p.since ?? Date.now())), agents: down.length } : undefined;
-  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: stepOf(l.d.store, s, status.names) } : {}), ...(outage ? { outage } : {}) } : {};
+  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: pool.lineOf(s.id) ?? stepOf(l.d.store, s, status.names) } : {}), ...(outage ? { outage } : {}) } : {};
   // Its agents that run, when one of them says more than a count: a goal's check.
   const runs = (l.kids.get(s.id) ?? []).filter((k) => k.status === "running");
   const running = runs.length && runs.every((k) => k.type === "verifier") ? { running: "Checking that the goal is met" } : {};
@@ -250,6 +251,8 @@ export function progressOf(s: Session, l: Lens, f: WatchFacts): Progress | null 
   }
   if (st.kind !== "tool") return null;
   if ((f.agents ?? 0) > 0 || st.names.every((n) => WAITING_TOOLS.has(n))) return null;
+  // A call that waits in the heavy-command line waits for the machine: it is not stuck.
+  if (pool.waits(s.id)) return null;
   const text = f.step || `Running ${st.names.slice(0, 3).join(", ")}`;
   // A command says it is alive by writing: its log's last change is its last progress.
   const jobs = jobsOf(s.id).filter((j) => !j.background && running(j) && j.started >= st.since - 1000);
