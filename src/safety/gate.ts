@@ -85,6 +85,19 @@ export function workspaceBins(path: string, workspace: string): string[] {
 
 // What a call does, its relative paths resolved where the tool resolves them.
 const cwdOf = (call: ToolCall) => call.tool.cwdOf?.(call.ctx, call.input);
+
+// The tools that reach the web by themselves, outside any sandbox: a web
+// fetch takes a method and a body, so it can send as well as read. A session
+// whose network is off gets none of them (the readers only for local files).
+// `name` is the tool's own; mcp_call is judged by the tool it calls.
+const WEB_TOOLS = new Set(["webfetch", "websearch", "web_fetch", "web_search", "google_web_search"]);
+export function webRefusal(name: string, input: any): string | null {
+  const inner = name === "mcp_call" ? String(input?.tool ?? "") : name;
+  const bare = inner.replace(/^mcp__/, "").split("__").pop()!.toLowerCase();
+  if (WEB_TOOLS.has(bare)) return `Refused: this session has no network, and ${inner} reaches the web. Work from the files you have.`;
+  if (inner === "AskReaders" && Array.isArray(input?.urls) && input.urls.length) return "Refused: this session has no network, and AskReaders fetches the urls it is given. Ask about local files (paths) only.";
+  return null;
+}
 export const classifyCall = (call: ToolCall): CallClass => classify(call.tool, call.input, cwdOf(call) ?? call.ctx.cwd);
 
 export type SandboxProfile = "off" | "workspace-write" | "read-only";
@@ -712,6 +725,10 @@ export class Gate {
   // (an escalation the owner allowed). Confinement follows the class the gate
   // judged, never a field of the input.
   async beforeTool(session: Session, call: ToolCall): Promise<ToolGate> {
+    if (!this.perm(session.id).network) {
+      const web = webRefusal(call.tool.name, call.input);
+      if (web) return { deny: web };
+    }
     const r = await this.check(session, call);
     if ("deny" in r) return r;
     const p = this.perm(session.id);

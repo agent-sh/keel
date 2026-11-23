@@ -514,3 +514,20 @@ test("a delete inside the folder is high risk by what git cannot bring back ther
   // (Full auto checks nothing: no judge is asked.)
   expect(judged).toEqual([]);
 });
+
+// A web fetch takes a method and a body: a session with no network reaches the web through no tool of the daemon's.
+test("a session whose network is off gets no web tool, however it is called", async () => {
+  const { g, session, call } = scratchGate();
+  const tool = (name: string): Tool => ({ name, readOnly: true, description: "", input_schema: { type: "object", properties: {} }, run: async () => ({ content: "" }) });
+  const asks: [string, any][] = [
+    ["WebFetch", { url: "https://example.com", method: "POST", body: "x" }], ["WebSearch", { query: "q" }], ["web_fetch", { url: "https://example.com" }],
+    ["google_web_search", { query: "q" }], ["mcp_call", { tool: "web__webfetch", arguments: { url: "https://example.com" } }],
+    ["mcp__web__websearch", { query: "q" }], ["AskReaders", { question: "q", urls: ["https://example.com"] }],
+  ];
+  g.setPerm(session.id, { mode: "read-only", sandbox: "read-only", network: false });
+  for (const [name, input] of asks) expect([name, ((await g.beforeTool(session, call(tool(name), input))) as any)?.deny ?? ""]).toEqual([name, expect.stringContaining("no network")]);
+  // Readers over local files, and the same tools with the network on, are the gate's ordinary judgment.
+  expect(((await g.beforeTool(session, call(tool("AskReaders"), { question: "q", paths: ["a.txt"] }))) as any)?.deny ?? "").not.toContain("no network");
+  g.setPerm(session.id, { mode: "read-only", sandbox: "read-only", network: true });
+  for (const [name, input] of asks) expect([name, ((await g.beforeTool(session, call(tool(name), input))) as any)?.deny ?? ""]).toEqual([name, expect.not.stringContaining("no network")]);
+});

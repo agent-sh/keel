@@ -6,7 +6,8 @@ import { ownSessionEnd } from "../../automation/alerts.ts";
 import { deleteKey, saveKey } from "../../providers/creds.ts";
 import { parseRepo } from "../../prreview/decide.ts";
 import { forgetToken, TOKEN_CRED, token } from "../../prreview/github.ts";
-import { PrWatcher, TAG, type Auto } from "../../prreview/watch.ts";
+import { PrWatcher, REVIEW_ENV_DROPPED, TAG, type Auto } from "../../prreview/watch.ts";
+import { registerEnvDrop } from "../../tools/jobs.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -20,6 +21,15 @@ const guard = async (f: () => Promise<Response> | Response) => {
   }
 };
 
+// Whether the turn that ended answers the review's own task: the newest prompt
+// that is the task or the owner's own words (a note of the harness, such as a
+// restart's, continues the turn it is in) is the task.
+function reviewTurn(deps: Deps, id: string): boolean {
+  const evs = deps.store.events(id, Math.max(0, deps.store.lastSeq(id) - 200));
+  const u = evs.findLast((e) => e.kind === "user" && (!(e.data as any)?.kind || (e.data as any).kind === "pr_review"));
+  return !u || (u.data as any).kind === "pr_review";
+}
+
 const g = globalThis as { __keelPrWatcher?: PrWatcher };
 export const prWatcher = () => g.__keelPrWatcher;
 
@@ -28,8 +38,11 @@ export const prReviewRoutes: RouteModule = (deps: Deps) => {
   const w = new PrWatcher(deps);
   g.__keelPrWatcher = w;
   registerHooks({ turnEnd(s, reason) { if (g.__keelPrWatcher === w) w.turnEnded(s.id, reason); } });
-  // A review session's end is told by its own alert (ready, posted, failed), not as a finished turn.
-  ownSessionEnd.set("pr-reviews", (id) => !!w.bySession(id));
+  // The end of a review's own turn is told by its own alert (ready, posted,
+  // failed), not as a finished turn too. A later turn of the session (the
+  // owner asks the reviewer something) is told as any other.
+  ownSessionEnd.set("pr-reviews", (id) => !!w.bySession(id) && reviewTurn(deps, id));
+  registerEnvDrop("pr-reviews", (id) => (w.bySession(id) ? REVIEW_ENV_DROPPED : []));
   if (!runMode.client) {
     w.recover();
     w.schedule();

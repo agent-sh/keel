@@ -96,6 +96,10 @@ const OWN_ENV = /^(KEEL_(SUPERVISED|DRAIN_MS|WAIT_FOR_PID)|BUN_GC_TIMER_DISABLE)
 // Variables a feature adds to a session's commands (the secrets it was given).
 const envProviders: ((sessionId: string) => Record<string, string>)[] = [];
 export const registerEnv = (f: (sessionId: string) => Record<string, string>) => void envProviders.push(f);
+// Variables a feature keeps from a session's commands (a review of another person's code gets no GitHub credentials).
+// Keyed by the feature, so a hot reload replaces its entry.
+const envDrops = new Map<string, (sessionId: string) => readonly string[]>();
+export const registerEnvDrop = (id: string, f: (sessionId: string) => readonly string[]): (() => void) => (envDrops.set(id, f), () => void envDrops.delete(id));
 
 // Variables one tool call adds for the process it starts (a secret a command
 // refers to as $KEEL_SECRET_<id>): taken by the job that call starts.
@@ -107,7 +111,9 @@ export function toolEnv(sessionId: string, extra: Record<string, string> = {}): 
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !SECRET_ENV.test(k) && !OWN_ENV.test(k)) env[k] = v;
   for (const f of envProviders) Object.assign(env, f(sessionId));
-  return { ...env, KEEL_SESSION: sessionId, ...extra };
+  const out: Record<string, string> = { ...env, KEEL_SESSION: sessionId, ...extra };
+  for (const f of envDrops.values()) for (const k of f(sessionId)) delete out[k];
+  return out;
 }
 
 // No pager for a command a session runs, whichever tool starts it: on a terminal a pager takes keys, and less runs

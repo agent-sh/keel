@@ -22,6 +22,8 @@ export class GitHubStandin {
   posted: Posted[] = [];
   log: Logged[] = [];
   interval = 1;
+  // Pull requests a page (GitHub's per_page, unless set): a small page makes a list of several pages, each with its own ETag.
+  pageSize?: number;
   private server: Server | null = null;
   url = "";
 
@@ -34,20 +36,26 @@ export class GitHubStandin {
         res.end(body === undefined ? "" : JSON.stringify(body));
       };
       if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(401, { message: "Bad credentials" });
-      const list = (body: unknown) => {
+      const list = (body: unknown, more: Record<string, string> = {}) => {
         const etag = `"${createHash("sha1").update(JSON.stringify(body)).digest("hex")}"`;
-        if (req.headers["if-none-match"] === etag) return send(304, undefined, { etag });
-        send(200, body, { etag });
+        if (req.headers["if-none-match"] === etag) return send(304, undefined, { etag, ...more });
+        send(200, body, { etag, ...more });
       };
       const m = /^\/repos\/([^/]+)\/([^/]+)\/(pulls|issues\/comments|pulls\/(\d+)\/reviews)$/.exec(u.pathname);
       if (!m) return send(404, { message: "Not Found" });
       const repo = `${m[1]}/${m[2]}`;
       if (!this.pulls.has(repo)) return send(404, { message: "Not Found" });
       if (m[3] === "pulls" && req.method === "GET") {
-        return list(this.pulls.get(repo)!.map((p) => ({
+        // Newest first, as GitHub's default order; a page at a time with a Link to the next.
+        const size = this.pageSize ?? (Number(u.searchParams.get("per_page")) || 30);
+        const page = Math.max(1, Number(u.searchParams.get("page")) || 1);
+        const all = [...this.pulls.get(repo)!].sort((a, b) => b.number - a.number);
+        const next = new URL(`${this.url}${u.pathname}${u.search}`);
+        next.searchParams.set("page", String(page + 1));
+        return list(all.slice((page - 1) * size, page * size).map((p) => ({
           number: p.number, title: p.title, draft: !!p.draft, html_url: `https://github.example/${repo}/pull/${p.number}`, user: { login: p.user ?? "dev" },
           head: { sha: p.head, ref: `feature-${p.number}` }, base: { ref: p.base ?? "main", repo: { full_name: repo, clone_url: this.clone.get(repo) } },
-        })).sort((a, b) => b.number - a.number));
+        })), page * size < all.length ? { link: `<${next}>; rel="next"` } : {});
       }
       if (m[3] === "issues/comments" && req.method === "GET") {
         return list([...this.comments.get(repo)!].sort((a, b) => b.id - a.id).slice(0, Number(u.searchParams.get("per_page")) || 30).map((c) => ({

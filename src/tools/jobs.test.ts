@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stopKind } from "../core/stops.ts";
-import { ackNotices, adoptJobs, awaited, cutCommand, drainNotices, jobEnded, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob } from "./jobs.ts";
+import { ackNotices, adoptJobs, awaited, cutCommand, drainNotices, jobEnded, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob, registerEnvDrop } from "./jobs.ts";
+import { ownEnv } from "../../test/env.ts";
 
 // A daemon that starts background commands and exits (a restart); this
 // process plays the next daemon.
@@ -682,4 +683,16 @@ test("the end of a waited-on command that starts no turn is a note for the next 
     expect(notes.map((n) => [n.text, n.job])).toEqual([[`Background command \`${cmd.slice(0, 80)}\` (ID ${j.id}) exited with code 3. Output: ${j.log}`, j.id]]);
     expect(drainNotices("s21")).toEqual([]);
   } finally { jobEnded.tell = undefined; }
+});
+
+// A feature keeps variables from one session's commands (a pull request's reviewer gets no GitHub token); the rest keep them.
+ownEnv({ GH_TOKEN: "env-drop-probe" });
+test("a variable a feature keeps from a session's commands is not in them, and only in them", () => {
+  const off = registerEnvDrop("env-drop-test", (id) => (id === "reviewer" ? ["GH_TOKEN"] : []));
+  try {
+    expect(toolEnv("reviewer").GH_TOKEN).toBeUndefined();
+    expect(toolEnv("reviewer", { GH_TOKEN: "given" }).GH_TOKEN).toBeUndefined();
+    expect(toolEnv("other").GH_TOKEN).toBe("env-drop-probe");
+  } finally { off(); }
+  expect(toolEnv("reviewer").GH_TOKEN).toBe("env-drop-probe");
 });

@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { GitHubStandin } from "./fixtures/github-standin.ts";
+import { GitHubStandin, TOKEN } from "./fixtures/github-standin.ts";
 import { daemon, exited, ROOT } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
@@ -15,7 +15,10 @@ import { shoot } from "./shots.ts";
 const REPO = "acme/widgets";
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" }).trim();
 
-test("pull requests are reviewed from GitHub's events, once a head, drafts posted by the owner", async ({ page }) => {
+test("pull requests are reviewed from GitHub's events, once a head, drafts posted by the owner", async ({ page, request }) => {
+  // Another person's code is reviewed only inside the sandbox: where it cannot run, a review is refused (not run unconfined).
+  const { sandbox } = await (await request.get("/api/permissions/settings")).json();
+  test.skip(!sandbox.available, `sandbox unavailable: ${sandbox.reason}`);
   test.setTimeout(300_000);
   const state = join(ROOT, `pr-review-${Date.now()}`);
   const work = join(state, "work");
@@ -42,7 +45,10 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
   const gh = new GitHubStandin();
   await gh.start();
   gh.repo(REPO, bare);
-  const env = { KEEL_GITHUB_API: gh.url, KEEL_GH_BIN: join(process.cwd(), "test/e2e/fixtures/gh-standin.sh") };
+  // One pull request a page: the list is several pages, and a change to one leaves the others answering 304.
+  gh.pageSize = 1;
+  // The daemon holds a GitHub token in its environment: the reviewer's commands must not.
+  const env = { KEEL_GITHUB_API: gh.url, KEEL_GH_BIN: join(process.cwd(), "test/e2e/fixtures/gh-standin.sh"), GH_TOKEN: TOKEN };
   let d = await daemon(state, 0, false, env);
   const api = (path: string, init?: RequestInit) => fetch(d.url + path, { ...init, headers: { "content-type": "application/json" } }).then((r) => r.json() as any);
   const reviews = async () => (await api("/api/pr-reviews")).reviews as any[];
@@ -57,7 +63,7 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
     await page.getByTestId("pr-watch-add").click();
     const card = page.getByTestId("pr-watch");
     await expect(card).toHaveAttribute("data-repo", REPO);
-    await expect(page.getByTestId("pr-credentials")).toHaveAttribute("data-source", "gh");
+    await expect(page.getByTestId("pr-credentials")).toHaveAttribute("data-source", "env");
     await expect(card.getByTestId("pr-watch-status")).toContainText("read", { timeout: 20_000 });
     await expect(card.getByTestId("pr-watch-status")).toContainText("every 1 s, as GitHub asks");
     await expect.poll(() => gh.gets(`/repos/${REPO}/pulls`).filter((l) => l.status === 304).length, { timeout: 15_000 }).toBeGreaterThan(0);
@@ -72,6 +78,8 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
     expect(r2.why).toBe("opened");
     expect(r2.findings.map((f: any) => [f.file, f.line, f.title])).toEqual([["b.py", 3, "divides by zero when b is 0"]]);
     expect(gh.posted).toEqual([]);
+    // The reviewer ran confined: read-only, in the sandbox, with no network.
+    expect((await api(`/api/sessions/${r2.session_id}/permissions`)).perm).toMatchObject({ mode: "read-only", sandbox: "read-only", network: false });
     // The Inbox says a draft is ready, once, and the review session is not filed as finished too.
     const { alerts } = await api("/api/alerts");
     expect(alerts.filter((a: any) => a.kind === "review").map((a: any) => a.title)).toEqual([`Review ready: ${REPO}#2`]);
@@ -100,6 +108,18 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
     await shoot(page, "pr-review-04-posted");
     // A second post of the same review posts nothing.
     expect((await fetch(`${d.url}/api/pr-reviews/${r2.id}/post`, { method: "POST" })).status).toBe(409);
+
+    // The owner asks the reviewer one more thing: its command reads the head's files in the sandbox, without the
+    // daemon's GitHub token, and that turn's end is told in the Inbox as any turn's is.
+    await page.goto(`${d.url}/settings/pull-requests`);
+    const ask = [{ name: "Bash", input: { command: "cat b.py; echo GH=[${GH_TOKEN:-none}]" } }];
+    await api(`/api/sessions/${r2.session_id}/messages`, { method: "POST", body: JSON.stringify({ text: `script:calls ${JSON.stringify(ask)}` }) });
+    await expect.poll(async () => (await api(`/api/sessions/${r2.session_id}`)).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(2);
+    const out = (await api(`/api/sessions/${r2.session_id}`)).events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).map((x: any) => String(x.content)).join("\n");
+    expect(out).toContain("def ratio(a, b):");
+    expect(out).toContain("GH=[none]");
+    expect(out).not.toContain(TOKEN);
+    await expect.poll(async () => (await api("/api/alerts")).alerts.filter((a: any) => a.session_id === r2.session_id && a.kind === "finished").length, { timeout: 10_000 }).toBe(1);
 
     // A comment asks for a review of the pull request that was open before: only one from someone with write access counts.
     gh.comments.get(REPO)!.push({ id: 100, pr: 1, body: "@keel review", association: "NONE", user: "drive-by" });
@@ -141,10 +161,12 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
     // Once a head, across everything above: four heads, four reviews, never two of one.
     const all = await reviews();
     expect(all.map((r) => r.head).sort()).toEqual([h1, h2, h2b, h2c].sort());
-    // Never faster than GitHub asked (1 s here), for each listing.
-    for (const path of [`/repos/${REPO}/pulls`, `/repos/${REPO}/issues/comments`]) {
-      const at = gh.gets(path).map((l) => l.at);
-      for (let i = 1; i < at.length; i++) expect(at[i]! - at[i - 1]!).toBeGreaterThanOrEqual(900);
+    // An unchanged page still counts: #1 sat on a page that answered 304 while #2's changed, and its checkout is there.
+    expect(existsSync(join(state, "pr-review/wt/acme", `widgets-pr1-${h1.slice(0, 7)}`))).toBe(true);
+    // Never faster than GitHub asked (1 s here), for each page of each listing.
+    for (const path of new Set(gh.log.filter((l) => l.method === "GET").map((l) => l.path))) {
+      const at = gh.log.filter((l) => l.method === "GET" && l.path === path).map((l) => l.at);
+      for (let i = 1; i < at.length; i++) expect([path, at[i]! - at[i - 1]! >= 900]).toEqual([path, true]);
     }
   } finally {
     d.proc.kill("SIGTERM");
