@@ -436,10 +436,19 @@ export class Engine {
       store, errors,
       append: (id, kind, data) => this.append(id, kind, data),
       isRunning: (id) => this.running.has(id),
+      isHeld: (id) => this.held.has(id),
       draining: () => this.draining,
+      waitShape: (id) => this.waitShape?.(id),
+      replan: (id) => {
+        const s = this.store.session(id);
+        if (s && !this.running.has(id)) void this.step(s, s.model).then((st) => { if (!this.running.has(id)) this.planPark(this.store.session(id) ?? s, st); })
+          .catch((e) => this.errors.capture("provider", e, { session: id, at: "cache plan after a model switch" }));
+      },
       call: async (id, st, messages, signal, tokens) => {
         const res = await this.call(id, st as Step, messages, signal, new Map(), this.store.session(id)!, true, "warm", { tokens, base: messages });
-        this.store.addUsage(id, res.usage);
+        // Counted with the session's usage, without moving it in the list: a warm read is not work
+        // (and a session moved as recent would be planned again by every start: resumeIdle).
+        this.store.addUsage(id, res.usage, { keepPlace: true });
         this.emitSession(id);
         return res;
       },
@@ -483,6 +492,7 @@ export class Engine {
 
   private setHold(id: string, by: string | null) {
     this.held.set(id, by);
+    this.cachePlans.end(id, "held"); // nothing is sent for a session that is held
     // (Owed when the store takes no writes: a stop holds the queue in memory at once.)
     this.store.sqlOrLater("hold", [id, by], "a stop's hold on the queue");
   }
@@ -1528,6 +1538,8 @@ export class Engine {
           outages?.left(id);
           throw abortError();
         }
+        // A warm read is tried once, and says nothing to the session: its plan decides again.
+        if (purpose === "warm") throw e;
         // A canary that did not fail pre-send falls back to the usual policy.
         // It no longer waits in the outage, even if it did not show recovery.
         if (down && !waitForProvider) outages?.left(id);
@@ -1671,18 +1683,26 @@ export class Engine {
   // the agent waits (a foreground command, wait_for, its own agents), and on
   // the short lifetime each wake would write its whole context again.
   private sent = new SessionMap<number>(256);
-  // A warm request (src/engine/cache-plans.ts) keeps the lifetime the session has: its read is what
-  // keeps the cache, so the request after it is not late.
+  // A warm request (src/engine/cache-plans.ts) asks for the lifetime the session's last request
+  // asked for (a read with another marker would keep the entry at another lifetime), and counts
+  // as the request before the next: the wake after a warm read is not late.
+  private lifeAsked = new SessionMap<"short" | "long">(256);
   private cacheLife(id: string, st: Step, purpose?: ProviderRequest["purpose"]): "short" | "long" | undefined {
     const lives = cacheLives(st.provider.wire);
     const now = Date.now();
     const prev = this.sent.get(id);
     this.sent.set(id, now);
     if (!lives) return undefined;
+    if (purpose === "warm") return this.lifeAsked.get(id) ?? (this.store.session(id)?.settings.cache_long ? "long" : "short");
+    const life = this.lifeFor(id, st, lives, now, prev);
+    this.lifeAsked.set(id, life);
+    return life;
+  }
+  private lifeFor(id: string, st: Step, lives: { short: number; long: number }, now: number, prev: number | undefined): "short" | "long" {
     if (this.store.session(id)?.settings.cache_long) return "long";
-    if (purpose === "warm") return "short";
-    // After a restart: the reply before this request, whatever its cache did.
-    const before = prev ?? this.lineage(id).findLast((e) => e.kind === "assistant")?.ts;
+    // After a restart: the reply before this request, whatever its cache did, or a warm read after it
+    // (a wake it kept warm is not late: a longer marker there would write the context again).
+    const before = prev ?? (Math.max(this.lineage(id).findLast((e) => e.kind === "assistant")?.ts ?? 0, this.cachePlans.warmedAt(id, st.info.id)) || undefined);
     if (!before || now - before <= lives.short - PAUSE_MARGIN_MS) return "short";
     this.store.mergeSettings(id, { cache_long: true });
     return "long";
@@ -2342,7 +2362,7 @@ export class Engine {
     for (const { id } of this.store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated > ? AND archived = 0").all(since)) {
       const s = this.store.session(id);
       // A session parked on a wait gets its cache plan again (its step is built for it: few wait).
-      if (s && !this.running.has(id) && this.waitShape?.(id)) {
+      if (s && !this.running.has(id) && !this.held.has(id) && this.waitShape?.(id)) {
         let planned = false;
         try { const st = await this.step(s, s.model); planned = !this.running.has(id) && this.planPark(this.store.session(id) ?? s, st); }
         catch (e) { this.errors.capture("provider", e, { session: id, at: "cache plan after a restart" }); }
@@ -2391,13 +2411,25 @@ export class Engine {
   // time, deadline and how long its earlier waits of that kind lasted.
   waitShape?: (id: string) => WaitShape | undefined;
 
+  // A session's waits were settled with no wake (cancelled, its agent stopped): its plan ends with nothing left to wait for.
+  waitsSettled(id: string) {
+    if (!this.waitShape?.(id)) this.cachePlans.end(id, "cancelled");
+  }
+
   // A session parked on a wait: its cache plan (src/engine/cache-plan.ts). False when it waits on nothing or has no plan.
   private planPark(session: Session, st: Step, step: () => Promise<Step> = async () => st): boolean {
+    // A session the owner (or another stop) holds starts nothing, and nothing is sent for it.
+    if (this.held.has(session.id)) return false;
     const shape = this.waitShape?.(session.id);
     if (!shape) return false;
     const events = this.lineage(session.id);
     const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
     const used = this.used(events, st);
+    // Its wake compacts anyway, from a summary that holds: a warm cache would serve nothing.
+    if (used >= limit) {
+      const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(session.id);
+      if (have && preparedHolds(events, have.covered, false, JSON.parse(have.data))) return true;
+    }
     // A summary is a choice where idle compaction would make one: a long context worth summarizing.
     const summary = session.settings.idle_compact !== false && used >= idleMinTokens(limit) && worthSummarizing(summarizable(events)) && !this.summaryGaveUp(session.id, events, st, false);
     const out = Math.ceil(SUMMARY_ROOM_BYTES(st) / bytesPerToken(st.info.id));

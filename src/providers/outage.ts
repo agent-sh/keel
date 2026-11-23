@@ -195,10 +195,11 @@ export class Outages {
     } catch {}
   }
 
-  private join(o: Open, session: string | undefined, retry?: Retry) {
+  // `at`: when the request failed (the first session's is the outage's own start, to the millisecond).
+  private join(o: Open, session: string | undefined, retry?: Retry, at = this.now()) {
     if (!session) return;
     const previous = o.sessions.get(session);
-    o.sessions.set(session, { at: previous?.at ?? this.now(), retry });
+    o.sessions.set(session, { at: previous?.at ?? at, retry });
     this.persist();
     if (!previous) this.tell("waiting", session, this.info(o));
   }
@@ -268,7 +269,7 @@ export class Outages {
       };
       signal.addEventListener("abort", onAbort, { once: true });
       at.waiters.push(w);
-      this.join(at, who.session, who.retry);
+      this.join(at, who.session, who.retry, now);
       this.arm(at);
     });
   }

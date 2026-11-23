@@ -25,6 +25,7 @@ export type WaitShape = {
   due?: number;      // when it ends for sure (a timer)
   deadline?: number; // when it ends at the latest
   past?: number[];   // how long earlier waits of the same kind lasted in this session, ms
+  since?: number;    // when the wait began (its record's creation), kept across restarts
 };
 
 export type Costs = { ping: number; lapse: number; summary?: number }; // dollars
@@ -73,21 +74,31 @@ export function expectedEnd(w: WaitShape, started: number, now: number): { end: 
 // `step` (the lifetime less the margin) after the last.
 export const pingsTo = (from: number, end: number, step: number) => (end <= from ? 0 : Math.ceil((end - from) / step));
 
+// A request is sent before the cache lapses with a margin to spare (a long
+// context's request takes up to half a minute, and timers run late): the plan
+// acts half a margin before the last moment it may (`at`), and never warms or
+// summarizes past that moment (the cache may be gone: a "read" would write it).
+export const stepOf = (life: number, margin: number) => Math.max(1, life - 1.5 * margin);
+
 export function decide(p: PlanIn): Plan {
-  const step = Math.max(1, p.life - p.margin);
-  const at = p.touched + step; // the last moment a request still finds the cache
+  const step = stepOf(p.life, p.margin);
+  const at = p.touched + step;
   const lapse = p.costs.lapse;
   const exp = expectedEnd(p.wait, p.started, p.now);
   const expect = exp ? { ms: Math.max(0, exp.end - p.started), from: exp.from } : undefined;
   const base = { at, ...(expect ? { expect } : {}) };
   // It ends while the cache still holds: nothing to do.
   if (exp?.sure && exp.end <= p.touched + p.life - p.margin) return { ...base, choice: "none", costs: { lapse }, why: "the wait ends while the cache holds" };
+  // Past the last moment a request still finds the cache: nothing is sent (a daemon that was down, a timer that ran late).
+  if (p.now >= p.touched + p.life - p.margin) return { ...base, choice: "lapse", costs: { lapse }, why: "the cache lapsed before anything could be sent" };
   const summary = p.costs.summary;
+  // The warm requests of one wait never cost more in all than one rewrite (`spent` counts them across restarts).
+  const within = (more: number) => p.warmable && p.spent + more <= lapse;
   // A known length (or a deadline that bounds it): the cheapest of the three.
   const bound = exp?.sure ? exp.end : p.wait.deadline;
   if (bound !== undefined && (exp?.sure || !exp)) {
     const pings = pingsTo(at, bound, step);
-    const warm = p.warmable ? pings * p.costs.ping : undefined;
+    const warm = within(pings * p.costs.ping) ? pings * p.costs.ping : undefined;
     const best = cheapest({ warm, summary, lapse });
     const sure = exp?.sure ? `the wait ends in ${mins(bound - p.now)}` : `the wait ends within ${mins(bound - p.now)} (its deadline)`;
     // A deadline is only a bound: it decides when warm is cheapest even if the wait lasts to it; else the length is not known.
@@ -96,12 +107,12 @@ export function decide(p: PlanIn): Plan {
   if (exp && exp.end > p.now) {
     // The usual length: the cheapest for that. Once the wait outlasts it, the rule for an unknown length holds.
     const pings = pingsTo(at, exp.end, step);
-    const warm = p.warmable ? pings * p.costs.ping : undefined;
+    const warm = within(pings * p.costs.ping) ? pings * p.costs.ping : undefined;
     const best = cheapest({ warm, summary, lapse });
     return { ...base, choice: best, pings, costs: { ...(warm !== undefined ? { warm } : {}), ...(summary !== undefined ? { summary } : {}), lapse }, why: `waits of this kind here last about ${mins(exp.end - p.started)}: ${words(best)}` };
   }
   // Unknown length: warm while the warm requests cost less than one rewrite.
-  if (p.warmable && p.spent + p.costs.ping <= lapse && (summary === undefined || p.spent + p.costs.ping <= summary)) {
+  if (within(p.costs.ping) && (summary === undefined || p.spent + p.costs.ping <= summary)) {
     return { ...base, choice: "warm", costs: { warm: p.spent + p.costs.ping, ...(summary !== undefined ? { summary } : {}), lapse }, why: "its length is not known: kept warm while that costs less than writing the context again" };
   }
   const best = summary !== undefined && summary < lapse ? "summary" : "lapse";

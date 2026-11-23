@@ -1087,3 +1087,17 @@ test("reports that come in a burst wake the parent once", async () => {
   for (const w of ["one", "two", "three"]) expect(text).toContain(w);
   expect(agents.REPORT_SETTLE).toEqual({ quietMs: 2_000, maxMs: 10_000 });
 });
+
+// A report that settles goes with a wake already due soon: it does not hold that wake back.
+test("a report that settles leaves a wake's short coalesce as it was", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Wake and a report" });
+  store.append(p.id, "assistant", { blocks: [] });
+  const [a, b] = await Promise.all([1, 2].map((i) => agents.spawn(p.id, { prompt: `part ${i}`, isolation: "none", background: true })));
+  const inputs = () => store.events(p.id).filter((e) => e.kind === "user" && ["wake", "wait", "subagent"].includes(e.data.kind));
+  deliver(p.id, "[harness] A wait fired.", { kind: "wait" }, { coalesceMs: 300 });
+  end(a!, "end_turn", "the first report"); // b still works: it would settle for two seconds
+  await Bun.sleep(700);
+  expect(inputs()).toHaveLength(1);
+  expect(String(inputs()[0]!.data.text)).toContain("the first report");
+  end(b!, "end_turn");
+});

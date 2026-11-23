@@ -47,7 +47,13 @@ type Deps = {
   errors: ErrorTracker;
   append(id: string, kind: "note", data: unknown): StoredEvent;
   isRunning(id: string): boolean;
+  // The owner's Stop (or another stop that holds the queue) holds the session: nothing is sent for it.
+  isHeld(id: string): boolean;
   draining(): boolean;
+  // What the session waits on now; nothing once its waits were cancelled, fired or the agent stopped.
+  waitShape(id: string): WaitShape | undefined;
+  // The session's model changed while it waited: its plan is made again for the new route.
+  replan(id: string): void;
   // One request beside the history, quiet, priced and measured like any other.
   call(id: string, st: PlanStep, messages: Message[], signal: AbortSignal, fitTokens: number): Promise<ProviderResult>;
   // The context's summary, prepared while the cache is warm (idle compaction's own).
@@ -88,7 +94,20 @@ export class CachePlans {
   private refused = new Set<string>();
 
   constructor(private d: Deps) {
+    // The last warm read of a session's context, and what the warm reads of its wait (the one
+    // that began at `since`) cost so far: a restart goes on with the same cap and the same start.
     d.store.migrate("CREATE TABLE IF NOT EXISTS cache_warm (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, model TEXT NOT NULL, ts INTEGER NOT NULL)");
+    for (const [col, type] of [["since", "INTEGER"], ["spent", "REAL NOT NULL DEFAULT 0"], ["pings", "INTEGER NOT NULL DEFAULT 0"]] as const)
+      if (!d.store.columnExists("cache_warm", col)) d.store.migrate(`ALTER TABLE cache_warm ADD COLUMN ${col} ${type}`);
+    // Routes that refused a warm request: none is sent there again.
+    d.store.migrate("CREATE TABLE IF NOT EXISTS cache_warm_refused (route TEXT PRIMARY KEY, ts INTEGER NOT NULL, error TEXT)");
+    for (const r of d.store.db.query<{ route: string }, []>("SELECT route FROM cache_warm_refused").all()) this.refused.add(r.route);
+  }
+
+  // What the warm reads of the wait that began at `since` cost so far, and how many there were.
+  private kept(id: string, since: number): { spent: number; pings: number } {
+    const r = this.d.store.db.query<{ since: number | null; spent: number; pings: number }, [string]>("SELECT since, spent, pings FROM cache_warm WHERE session_id = ?").get(id);
+    return r && r.since === since ? { spent: r.spent, pings: r.pings } : { spent: 0, pings: 0 };
   }
 
   // When a warm request last read this context's cache on `model` (0: none).
@@ -124,9 +143,12 @@ export class CachePlans {
     if (life <= 0) return undefined; // nothing says how long the provider keeps it
     const long = !!cacheLives(o.st.provider.wire);
     const now = Date.now();
+    // A park goes on from when its wait began, with what its warm reads cost before a restart.
+    const started = o.kind === "park" && o.shape.since ? o.shape.since : now;
+    const had = o.kind === "park" ? this.kept(o.id, started) : { spent: 0, pings: 0 };
     const run: Run = {
-      id: o.id, kind: o.kind, shape: o.shape, started: now, touched: o.touched, tokens: o.tokens, extra: o.extra,
-      spent: 0, pings: 0, missed: 0, read: 0, written: 0, done: [], abort: new AbortController(), step: o.step, messages: o.messages,
+      id: o.id, kind: o.kind, shape: o.shape, started, touched: o.touched, tokens: o.tokens, extra: o.extra,
+      spent: had.spent, pings: had.pings, missed: 0, read: 0, written: 0, done: [], abort: new AbortController(), step: o.step, messages: o.messages,
       price, life, warmable: warmable && !this.refused.has(o.st.info.id), long, model: o.st.info.id,
       first: undefined as any, last: undefined as any,
     };
@@ -165,7 +187,16 @@ export class CachePlans {
     if (this.runs.get(r.id) !== r || this.d.draining()) return;
     const s = this.d.store.session(r.id);
     if (!s || s.archived) return this.end(r.id, "gone");
-    if (r.kind === "park" && this.d.isRunning(r.id)) return this.end(r.id, "woke");
+    if (this.d.isHeld(r.id)) return this.end(r.id, "held");
+    if (r.kind === "park") {
+      if (this.d.isRunning(r.id)) return this.end(r.id, "woke");
+      // Its waits were cancelled (the agent was stopped) or ended: nothing is waited for any more.
+      const shape = this.d.waitShape(r.id);
+      if (!shape) return this.end(r.id, "cancelled");
+      r.shape = shape;
+      // Another model now: its route's cache is another one.
+      if (s.model !== r.model) { this.end(r.id, "switched"); return this.d.replan(r.id); }
+    }
     r.last = this.decide(r, Date.now());
     if (r.last.choice !== "warm" && r.last.choice !== "summary") return;
     const st = await r.step();
@@ -182,7 +213,10 @@ export class CachePlans {
     } catch (e) {
       if (r.abort.signal.aborted) return;
       // A route that refuses the request (a platform without it) gets none again; the plan goes on without.
-      if (typeof (e as any)?.status === "number" && (e as any).status >= 400 && (e as any).status < 500 && (e as any).status !== 429) this.refused.add(r.model);
+      if (typeof (e as any)?.status === "number" && (e as any).status >= 400 && (e as any).status < 500 && (e as any).status !== 429) {
+        this.refused.add(r.model);
+        this.d.store.db.query("INSERT OR REPLACE INTO cache_warm_refused (route, ts, error) VALUES (?, ?, ?)").run(r.model, Date.now(), String((e as Error)?.message ?? e).slice(0, 300));
+      }
       r.warmable = false;
       this.d.errors.capture("provider", e, { session: r.id, at: "a request that keeps the cache warm" }, { group: `warm request refused: ${r.model}` });
       r.last = this.decide(r, Date.now());
@@ -199,7 +233,7 @@ export class CachePlans {
     // A warm request that read nothing found the cache gone: it wrote it again.
     if (u.cache_read < 0.5 * r.tokens) r.missed++;
     r.touched = t0;
-    this.d.store.db.query("INSERT OR REPLACE INTO cache_warm (session_id, model, ts) VALUES (?, ?, ?)").run(r.id, r.model, t0);
+    this.d.store.db.query("INSERT OR REPLACE INTO cache_warm (session_id, model, ts, since, spent, pings) VALUES (?, ?, ?, ?, ?, ?)").run(r.id, r.model, t0, r.started, r.spent, r.pings);
     r.last = this.decide(r, Date.now());
     this.arm(r);
   }
@@ -211,7 +245,7 @@ export class CachePlans {
     this.runs.delete(id);
     clearTimeout(r.timer);
     r.abort.abort();
-    if (why === "replaced" || why === "park" || why === "gone") return;
+    if (why === "replaced" || why === "park" || why === "gone" || why === "switched") return;
     const now = Date.now();
     // Nothing to tell: it ended before the cache would have lapsed, and nothing was sent.
     const lapsed = now > r.touched + r.life - marginOf(r.life);

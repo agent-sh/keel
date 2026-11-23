@@ -1373,6 +1373,7 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
   if (isEnded(a) && !engine.isRunning(a.session_id)) return stopBelow(a, by), a;
   if (stopping.has(id)) return a;
   waits.cancelForSession(a.session_id);
+  engine.cachePlans?.end(a.session_id, "stopped"); // nothing more is sent to keep its cache (also when it waited on no wait of its own)
   lineAt(a.parent_id)?.leave(`wake:${a.id}`);
   stopping.set(id, by);
   dropPending(a.session_id);

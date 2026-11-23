@@ -101,6 +101,8 @@ export function deliver(sessionId: string, text: string, meta: Record<string, un
   // A session the owner is archiving or deleting right now: kept back, and sent only if it stays (closingOver).
   if (D().engine.isClosing?.(sessionId)) return true;
   if (D().engine.isRunning(sessionId) || opts.hold || opts.ride) return true; // flushed by the turn-end hook, or with the next input
+  // An input that settles goes with one already due soon (a wake's short coalesce): it neither waits longer nor delays that one.
+  if (opts.settle && timers.has(sessionId) && !settling.has(sessionId)) return true;
   if (opts.settle) {
     // Each input that comes moves the end of the settle, never past its most.
     const now = Date.now();

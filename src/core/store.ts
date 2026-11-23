@@ -1809,9 +1809,11 @@ export class Store {
     return this.error(id);
   }
 
-  addUsage(id: string, u: Usage) {
+  // `keepPlace`: the session keeps its place in the list (a request that is no work of its own, such as a warm read).
+  addUsage(id: string, u: Usage, o: { keepPlace?: boolean } = {}) {
     const s = this.session(id);
     if (!s) return;
-    this.updateSession(id, { usage: addUsage(s.usage, u) });
+    if (!o.keepPlace) return void this.updateSession(id, { usage: addUsage(s.usage, u) });
+    this.db.query("UPDATE sessions SET usage = ?, rev = rev + 1 WHERE id = ?").run(JSON.stringify(addUsage(s.usage, u)), id);
   }
 }

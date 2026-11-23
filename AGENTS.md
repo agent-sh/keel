@@ -31,7 +31,10 @@ under `~/.cache/keel-work/bun/research/`.
   lifetime, on a wait it set or a long tool step: a one-token read keeps the cache warm (where the
   provider documents that a read refreshes it), its summary is prepared while warm, or it lapses,
   whichever the model's price and the wait's length make cheapest, told in its timeline
-  (`src/engine/cache-plan.ts` decides, `src/engine/cache-plans.ts` runs it).
+  (`src/engine/cache-plan.ts` decides, `src/engine/cache-plans.ts` runs it). Nothing is sent
+  for a session that is held, whose waits are gone (its agent stopped), or whose cache has
+  lapsed; the warm reads of one wait never cost more in all than one rewrite, across restarts
+  (`cache_warm`), and a warm read is tried once and moves no session in the list.
 - A change to a tool or a prompt block reaches a live session late by design
   (its tools and prompt are pinned, see above): when its cache is cold, or
   after `build_pin.max_age_hours` (24 by default). Mark it urgent in `URGENT`
