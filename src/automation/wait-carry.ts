@@ -78,7 +78,8 @@ const WAIT_CHANNELS = /nanosleep|hrtimer|^do_sys_poll$|poll_schedule|^do_select$
 
 // Where the kernel holds a thread that waits on one file, whose kind says what it waits for: a
 // socket's or a terminal's read (wait_woken), a pipe's.
-export const HELD_ON_FILE = /^wait_woken$|^pipe_/;
+// (Newer kernels name a pipe read anon_pipe_read, older ones pipe_wait_readable.)
+export const HELD_ON_FILE = /^wait_woken$|pipe_/;
 
 // What was seen of one of a job's processes in /proc: each of its threads, where the kernel holds it,
 // and for one held on a file (HELD_ON_FILE), what that file is (`/proc/PID/fd/N`'s link) and whether
@@ -91,8 +92,11 @@ export type ProcLook = { comm: string; threads: ThreadLook[]; childOutside: bool
 export function waitingThread(t: ThreadLook): boolean {
   if (t.state === "D") return true;
   if (t.wchan && t.wchan !== "0" && WAIT_CHANNELS.test(t.wchan)) return true;
+  // A file the daemon may not read (a process that left the daemon's tree: ptrace_scope keeps its
+  // fds from it) says nothing of what it waits on: unknown is not stalled.
+  if (HELD_ON_FILE.test(t.wchan) && !t.fd) return true;
   if (t.wchan === "wait_woken") return !!t.fd?.startsWith("socket:");
-  if (/^pipe_/.test(t.wchan)) return !!t.fifo;
+  if (/pipe_/.test(t.wchan)) return !!t.fifo;
   return false;
 }
 // Whether a process of a job is waiting on something rather than stuck: a waiting program, any of its

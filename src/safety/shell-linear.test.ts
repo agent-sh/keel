@@ -171,9 +171,11 @@ test("a line of many commands that change folder, write, run elsewhere or delete
       const d = decide({ kind: "shell", command: line(n), cwd: "/w" }, facts(mode));
       if (("ask" in d && d.ask.risk === "high") !== high) wrong.push(`${mode}: ${n.toLocaleString("en-US")} x ${label}: ${high ? "not high risk" : "high risk"}`);
     }
-    const small = best(line(2_000), mode).ms, big = best(line(5_000), mode).ms;
-    // (A few milliseconds of either are noise.)
-    if (big > 4 * small + 10) wrong.push(`${mode}: ${label}: 2,000 parts ${small.toFixed(0)} ms, 5,000 parts ${big.toFixed(0)} ms`);
+    // Both under PARTS_MAX (4,096), so both are read whole: four times the parts in linear time is
+    // four times the time; reading the line again for every part would be sixteen. (A few
+    // milliseconds of either are noise.)
+    const small = best(line(1_000), mode).ms, big = best(line(4_000), mode).ms;
+    if (big > 7 * small + 10) wrong.push(`${mode}: ${label}: 1,000 parts ${small.toFixed(0)} ms, 4,000 parts ${big.toFixed(0)} ms`);
   }
   expect(wrong).toEqual([]);
 }, 120_000);

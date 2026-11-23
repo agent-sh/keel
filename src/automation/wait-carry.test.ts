@@ -59,6 +59,11 @@ test("a job's process that waits on something is not stuck: a timer, the network
   // A named FIFO another program writes; the job's own pipe, whose writer is in the job.
   expect(p({ wchan: "pipe_wait_readable", fd: "/w/ff", fifo: true })).toBe(true);
   expect(p({ wchan: "pipe_wait_readable", fd: "pipe:[77]", fifo: false })).toBe(false);
+  expect(p({ wchan: "anon_pipe_read", fd: "/w/ff", fifo: true })).toBe(true);
+  expect(p({ wchan: "anon_pipe_read", fd: "pipe:[78]", fifo: false })).toBe(false);
+  // A thread held on a file the daemon cannot read is not called stuck.
+  expect(p({ wchan: "wait_woken" })).toBe(true);
+  expect(p({ wchan: "anon_pipe_read" })).toBe(true);
   // A main thread that joins a sleeping thread: the sleeper says it waits.
   expect(waitingProc({ comm: "python3", threads: [t({ wchan: "futex_do_wait" }), t({ wchan: "hrtimer_nanosleep" })], childOutside: false })).toBe(true);
   // A shell waiting on its own command, a deadlock, a stopped process: not waiting on anything outside.

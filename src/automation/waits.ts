@@ -266,7 +266,7 @@ function openWaited(path: string, w: Pick<WaitRecord, "id" | "session_id">): Ope
   if (!allowed) return { not: "hidden", real };
   let fd: number;
   // (O_NONBLOCK: a FIFO put at the path since the look does not hold the open; a regular file's reads are the same.)
-  try { fd = openSync(real, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch (e: any) { return { not: e?.code === "ENOENT" ? "missing" : e?.code === "ELOOP" ? "hidden" : "special", real }; }
+  try { fd = openSync(real, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY | constants.O_NOFOLLOW); } catch (e: any) { return { not: e?.code === "ENOENT" ? "missing" : e?.code === "ELOOP" ? "hidden" : "special", real }; }
   try {
     const f = fstatSync(fd);
     if (!f.isFile() || `${f.dev}:${f.ino}` !== ident) { closeSync(fd); return { not: f.isFile() ? "hidden" : "special", real }; }
