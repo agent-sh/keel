@@ -136,7 +136,7 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
     model: (m: string, p?: ModelPick) => {
       const s = getState().sessions[id];
       const change = p?.effort && s?.model === m ? (p.effort === s.settings.effort ? { model: m } : { effort: p.effort }) : { model: m, ...(p?.effort ? { effort: p.effort } : {}) };
-      return switchSession(id, change).catch(reportError);
+      return switchSession(id, change, { compactFirst: p?.compactFirst }).catch(reportError);
     },
     send: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { images, client_id }),
     queue: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { mode: "queue", images, client_id }),

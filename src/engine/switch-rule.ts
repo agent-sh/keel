@@ -1,6 +1,8 @@
-// What a session keeps of its effort across a model switch, for the server
-// (the switch itself) and the page (the model picker shows on each row the
-// effort a pick of it would run at). Pure: the page imports it.
+// What a model switch keeps and what it costs, for the server (the switch
+// and its question) and the page (the model picker shows on each row the
+// effort a pick of it runs at and what it re-reads). Pure: the page imports it.
+import { priceOf } from "../providers/pricing.ts";
+import type { Price } from "../providers/types.ts";
 
 // Effort levels from least to most: a level the new model does not list goes
 // to the nearest one it does (xhigh on a model that stops at high runs high).
@@ -34,3 +36,41 @@ export function stepEffort(cur: string | undefined, offered: readonly string[], 
   if (i < 0) return offered.includes("high") ? "high" : offered[0];
   return offered[Math.max(0, Math.min(offered.length - 1, i + by))];
 }
+
+// What a switch costs past staying: the next request reads the cached prefix
+// again without the cache, at the new model's cache write rate (its input
+// rate when it states none: priceOf), against reading it from the cache of
+// the model the conversation ran on at that model's read rate. `extra` is
+// the difference; with no read rate known it is the whole re-read (the most
+// the switch can add). Undefined when the new model has no price.
+export function switchCost(tokens: number, from: Price | undefined, to: Price | undefined): { cost?: number; cached?: number; extra?: number } {
+  const none = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+  const cost = tokens > 0 ? priceOf({ ...none, cache_write: tokens }, to) : 0;
+  const cached = tokens > 0 ? (from?.cache_read !== undefined ? priceOf({ ...none, cache_read: tokens }, from) : undefined) : 0;
+  return { cost, cached, extra: cost === undefined ? undefined : Math.max(0, cost - (cached ?? 0)) };
+}
+
+// The amount a switch must add before the picker asks, in USD, unless the
+// owner set another (Settings, Providers; the model_switch.ask_usd setting).
+// What is worth a question is the owner's call; the default is one cent, the
+// smallest amount a provider's bill shows: a switch that adds less changes no
+// line of a bill, and the cost is already on the picker's row before the
+// press. 0 asks before every switch that loses a warm cache.
+export const ASK_USD_DEFAULT = 0.01;
+
+// Whether a switch asks first, and why. Asked:
+// - "context": the conversation is past where the new model compacts, so its
+//   next request summarizes it first (what the model sees changes, and the
+//   summary is a request of its own). Asked at any cost.
+// - "unpriced": the cache is lost and the new model has no price: the cost
+//   cannot be shown to be small.
+// - "cost": the re-read adds at least `askUsd` past staying on the cache.
+// Not asked: nothing cached is lost, or it adds less than `askUsd`.
+export function asksFirst(o: { lost: { cost_usd?: number; cached_cost_usd?: number } | null; over: boolean; askUsd: number }): { ask: boolean; why?: "context" | "unpriced" | "cost"; extra_usd?: number } {
+  if (o.over) return { ask: true, why: "context", ...(o.lost?.cost_usd !== undefined ? { extra_usd: extra(o.lost) } : {}) };
+  if (!o.lost) return { ask: false };
+  if (o.lost.cost_usd === undefined) return { ask: true, why: "unpriced" };
+  const x = extra(o.lost);
+  return x >= o.askUsd ? { ask: true, why: "cost", extra_usd: x } : { ask: false, extra_usd: x };
+}
+const extra = (l: { cost_usd?: number; cached_cost_usd?: number }) => Math.max(0, (l.cost_usd ?? 0) - (l.cached_cost_usd ?? 0));

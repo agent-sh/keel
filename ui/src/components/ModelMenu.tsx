@@ -3,18 +3,24 @@ import { Check, ChevronLeft, ChevronRight, EyeOff, Image, ImageOff, RefreshCw, S
 import { TriggerLabel, triggerClass } from "./ModelPicker.tsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { composing } from "../lib/keys.ts";
-import { actions, ensureModels, reportError, useStore } from "../lib/store.ts";
-import { cn, fmtTokens } from "../lib/utils.ts";
+import { actions, api, ensureModels, reportError, useStore } from "../lib/store.ts";
+import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
 import { buildGroups, buildItems, countLabel, hiddenReason, providerOrder, type Group, type Item } from "../lib/picker.ts";
 import { notePick, recentPicks } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
 import { loadPeerModels, usePeerModels } from "../lib/peer-models.ts";
 import { machineName } from "../lib/fleet.ts";
 import type { Session } from "../../../src/core/types.ts";
-import { carriedEffort, stepEffort } from "../../../src/engine/switch-rule.ts";
+import { carriedEffort, stepEffort, switchCost } from "../../../src/engine/switch-rule.ts";
 
-// What a pick carries besides the model: the effort the owner set on its row.
-export type ModelPick = { effort?: string };
+// What a pick carries besides the model: the effort the owner set on its row,
+// and Compact first, the row's second action.
+export type ModelPick = { effort?: string; compactFirst?: boolean };
+
+// What the session's cache is worth to a switch, read when the menu opens:
+// the tokens a request on another model reads again, until when, on which
+// model they are cached, and whether the current model can compact first.
+type CacheFacts = { cached_tokens: number; warm_until?: number; ran_on: string; can_compact: boolean };
 
 // The lists themselves are built in lib/picker.ts. With no query: favorites,
 // recent picks, then one group per provider (the default model's provider,
@@ -35,7 +41,8 @@ function startedOn(sessions: Record<string, Session>): string {
 // shows the effort a pick of it runs at (the session's, moved to the nearest
 // level the model lists), Left and Right change it on the highlighted row
 // (with the search field empty, or with Alt), a press on it steps it, and
-// Enter applies both.
+// Enter applies both. Each row also says what a switch to it re-reads without
+// the prompt cache and what that adds, and offers Compact first (Shift+Enter).
 export function ModelMenu({ value, onChange, compact, openSignal, machine, placeholder, session }: { value: string; onChange: (id: string, pick?: ModelPick) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string; session?: string }) {
   const [open, setOpen] = useState(!!openSignal);
   const [query, setQuery] = useState("");
@@ -68,6 +75,19 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   const pickOf = (i: Item): ModelPick | undefined => (session && efforts[i.value] !== undefined ? { effort: efforts[i.value] } : undefined);
   const setEffort = (i: Item, next: string | undefined) => { if (next && next !== effortOf(i)) setEfforts((e) => ({ ...e, [i.value]: next })); };
   const step = (i: Item, by: -1 | 1) => setEffort(i, stepEffort(effortOf(i), offered.get(i.value) ?? [], by));
+  const [facts, setFacts] = useState<CacheFacts | null>(null);
+  useEffect(() => {
+    if (!open || !session) return;
+    let live = true;
+    api<CacheFacts>(`/api/sessions/${session}/switch-warning`).then((f) => live && setFacts(f)).catch((e) => reportError(e, { at: "model picker" }));
+    return () => { live = false; setFacts(null); };
+  }, [open, session]);
+  const prices = useMemo(() => new Map(models.map((m) => [m.id, m.price])), [models]);
+  // What a switch to the row loses: nothing on the model the cache is on, or once the cache is cold.
+  const lossOf = (i: Item) => {
+    if (!facts || !facts.cached_tokens || i.value === facts.ran_on || (facts.warm_until !== undefined && Date.now() >= facts.warm_until)) return undefined;
+    return { tokens: facts.cached_tokens, ...switchCost(facts.cached_tokens, prices.get(facts.ran_on), prices.get(i.value)) };
+  };
   useEffect(() => { if (open) actions.loadLimits().catch((e) => reportError(e, { at: "limits" })); }, [open]);
 
   // Built once per listing change; a keystroke only filters these.
@@ -123,7 +143,8 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
     if (gone) setHint("The highlighted model left the listing. Nothing is highlighted: move with the arrows to choose.");
   }, [all]);
   const release = () => { if (held) setHeld(null); };
-  const choose = (i: Item) => { notePick(i.value); onChange(i.value, pickOf(i)); setOpen(false); setQuery(""); };
+  const choose = (i: Item, compactFirst?: boolean) => { notePick(i.value); onChange(i.value, compactFirst ? { ...pickOf(i), compactFirst } : pickOf(i)); setOpen(false); setQuery(""); };
+  const canCompact = (i: Item) => !!facts?.can_compact && !!lossOf(i);
 
   return (
     <Combobox.Root
@@ -159,7 +180,9 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
             aria-label="Choose a model"
             data-testid="model-popup"
             className={cn(
-              "@container/picker flex max-h-[min(33rem,var(--available-height))] w-[min(30rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg border border-line bg-raised shadow-3",
+              "@container/picker flex max-h-[min(33rem,var(--available-height))] flex-col overflow-hidden rounded-lg border border-line bg-raised shadow-3",
+              // A session's rows carry its effort and Compact first besides: wider, so the name keeps the row's middle.
+              session ? "w-[min(36rem,calc(100vw-1.5rem))]" : "w-[min(30rem,calc(100vw-1.5rem))]",
               SHEET.popup,
               "origin-[var(--transform-origin)] transition-[scale,opacity]",
               "data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0",
@@ -178,6 +201,14 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                     e.preventDefault();
                     (e as any).preventBaseUIHandler?.();
                     step(i, e.key === "ArrowLeft" ? -1 : 1);
+                    return;
+                  }
+                  if (session && e.key === "Enter" && e.shiftKey) {
+                    const i = current();
+                    if (!i || !canCompact(i)) return;
+                    e.preventDefault();
+                    (e as any).preventBaseUIHandler?.();
+                    choose(i, true);
                     return;
                   }
                   if (held && e.key === "Enter") {
@@ -269,12 +300,16 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         </Combobox.ItemIndicator>
                         <span className={cn("col-start-2 flex min-w-0 items-center gap-1.5", NARROW.apart)}>
                           <span className={cn("min-w-0 text-balance [overflow-wrap:anywhere]", item.hidden && "max-w-[55%]", NARROW.name)} data-testid="model-name">{item.label}</span>
+                          {session && !item.hidden && <CacheCost loss={lossOf(item)} />}
                           {item.value === def && <span data-testid="model-default" className="shrink-0 rounded-xs bg-accent-soft px-1 text-micro font-medium text-accent-ink">default</span>}
                           {!group.provider && !item.hidden && <span className={cn("min-w-16 shrink-[8] truncate text-micro text-faint", NARROW.wrap)} title={item.providerLabel} data-testid="model-provider">{item.providerLabel}</span>}
                           {item.hidden && <span className={cn("min-w-0 truncate text-micro text-faint", NARROW.wrap)} title={`${hiddenReason(item)} (${item.providerLabel})`} data-testid="hidden-reason">{hiddenReason(item)}</span>}
                         </span>
                         <span className={cn("col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint", NARROW.tail)}>
                           <span className={cn("contents", NARROW.actions)}>
+                            {session && !item.hidden && canCompact(item) && (
+                              <TextAction quiet testid="compact-first" label="Compact first" title={`Summarize the conversation on the current model from its warm cache, then switch (Shift+Enter)`} onPress={() => choose(item, true)} />
+                            )}
                             {session && !item.hidden && effortOf(item) && (
                               <EffortChip
                                 value={effortOf(item)!}
@@ -326,10 +361,11 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                 </Combobox.Group>
               )}
             </Combobox.List>
-            <div className={cn("flex shrink-0 items-center gap-3 border-t border-line px-3 py-1.5 text-micro text-faint", own && NARROW.gone)}>
+            <div className={cn("flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-3 py-1.5 text-micro text-faint [&>span]:whitespace-nowrap", own && NARROW.gone)}>
               {own ? (
                 <>
                   {session && <span className="inline-flex items-center gap-1 pointer-coarse:hidden" data-testid="effort-keys"><Kbd keys="arrowleft" /><Kbd keys="arrowright" /> effort</span>}
+                  {session && facts?.can_compact && !!facts.cached_tokens && <span className="inline-flex items-center gap-1 pointer-coarse:hidden"><Kbd keys="shift+enter" /> compact first</span>}
                   <span className="inline-flex items-center gap-1 pointer-coarse:hidden"><Kbd keys="mod+f" /> favorite</span>
                   <span className="inline-flex items-center gap-1 pointer-coarse:hidden"><Kbd keys="mod+h" /> hide</span>
                   <span className="ml-auto">Search finds hidden models</span>
@@ -425,8 +461,23 @@ function EffortChip({ value, changed, onStep }: { value: string; changed: boolea
   );
 }
 
+// What a switch to the row adds: the warm prefix read again without the
+// cache, priced from the catalog (the new model's write rate against the
+// current one's read rate). Tokens alone when the row's model has no price.
+function CacheCost({ loss }: { loss?: { tokens: number; cost?: number; cached?: number; extra?: number } }) {
+  if (!loss) return null;
+  const priced = loss.extra !== undefined;
+  const title = `A switch re-reads about ${fmtTokens(loss.tokens)} cached tokens without the prompt cache${loss.cost !== undefined ? `: about ${fmtCost(loss.cost)}${loss.cached !== undefined ? `, against ${fmtCost(loss.cached)} from the cache` : ""}` : "; this model states no price"}`;
+  return (
+    <span data-testid="row-cache-cost" title={title} className={cn("shrink-0 whitespace-nowrap text-micro tabular-nums", priced ? "text-faint" : "text-warn")}>
+      {priced ? `+${fmtCost(loss.extra)}` : `${fmtTokens(loss.tokens)} uncached`}
+    </span>
+  );
+}
+
 // A worded action inside an option, for the choices an icon cannot tell apart.
-function TextAction({ label, title, testid, onPress }: { label: string; title?: string; testid: string; onPress: () => void }) {
+// `quiet`: shown on the highlighted row only (and always under a finger), as the icons are.
+function TextAction({ label, title, testid, onPress, quiet }: { label: string; title?: string; testid: string; onPress: () => void; quiet?: boolean }) {
   return (
     <span
       role="button"
@@ -435,7 +486,11 @@ function TextAction({ label, title, testid, onPress }: { label: string; title?: 
       data-testid={testid}
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
-      className="shrink-0 rounded-xs px-1.5 py-0.5 text-micro text-accent-ink hover:bg-line pointer-coarse:inline-flex pointer-coarse:min-h-[2.9rem] pointer-coarse:items-center pointer-coarse:px-3"
+      className={cn(
+        "shrink-0 rounded-xs px-1.5 py-0.5 text-micro text-accent-ink hover:bg-line pointer-coarse:inline-flex pointer-coarse:min-h-[2.9rem] pointer-coarse:items-center pointer-coarse:px-3",
+        // Kept in the layout while hidden: nothing moves under the pointer when the row is highlighted.
+        quiet && "invisible group-hover/row:visible group-data-highlighted/row:visible pointer-coarse:visible",
+      )}
     >
       {label}
     </span>

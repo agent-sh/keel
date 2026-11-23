@@ -8,7 +8,7 @@
 // the last request already used.
 import type { StoredEvent } from "../core/types.ts";
 import { checkpointAt, warmReplyAt } from "./compact.ts";
-import { priceOf } from "../providers/pricing.ts";
+import { switchCost } from "./switch-rule.ts";
 import type { ModelInfo, Wire } from "../providers/types.ts";
 
 const MIN = 60_000;
@@ -122,9 +122,7 @@ export function switchWarning(o: {
   const tokens = cached;
   // Priced the way the request will be: a prefix past a context tier is
   // written (or read) at that tier's rate.
-  const none = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
-  const cost = priceOf({ ...none, cache_write: tokens }, o.to.price);
-  const cachedCost = o.from?.price?.cache_read !== undefined ? priceOf({ ...none, cache_read: tokens }, o.from.price) : undefined;
+  const { cost, cached: cachedCost } = switchCost(tokens, o.from?.price, o.to.price);
   return {
     cached_tokens: cached,
     warm_until: warmUntil,

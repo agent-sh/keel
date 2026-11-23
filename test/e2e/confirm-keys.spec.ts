@@ -84,6 +84,9 @@ test("the question before a model switch is not answered by words typed on after
   await expect(page.getByTestId("turn-end")).toHaveCount(1);
   const model = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.model;
   const confirm = page.getByTestId("confirm");
+  // The stand-in's cache is worth a tenth of a cent: asked about only when the owner asks about every lost cache.
+  const kept = (await (await request.get("/api/settings")).json()).settings.model_switch ?? null;
+  expect((await request.patch("/api/settings", { data: { model_switch: { ask_usd: 0 } } })).ok()).toBe(true);
 
   // The cache is warm, so the switch asks. The owner types on: the first Space lands on Cancel, not on Switch.
   const composer = page.getByTestId("composer");
@@ -107,5 +110,6 @@ test("the question before a model switch is not answered by words typed on after
   await composer.press("Enter");
   await confirm.getByRole("button", { name: "Switch" }).click();
   await expect.poll(model).not.toBe(STAND_IN);
+  await request.patch("/api/settings", { data: { model_switch: kept } });
   await request.delete(`/api/sessions/${session.id}`);
 });

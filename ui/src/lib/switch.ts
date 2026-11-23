@@ -1,9 +1,12 @@
-// A model or effort switch. Asked first when it costs something: a warm
-// prompt cache the next request reads again without (the tokens and the
-// cost), or a context past the new model's compaction line (the next request
-// summarizes it first, on the new model). If idle and the current model is
-// available, the owner can compact on it first: that summary reads the
-// cache it has now, and the new model starts from the summary.
+// A model or effort switch. Asked first only when it is material (the daemon
+// decides it by asksFirst in src/engine/switch-rule.ts): a warm prompt cache
+// the next request reads again without, for at least the owner's amount
+// (Settings, Providers) or at a price nobody states, or a context past the
+// new model's compaction line (the next request summarizes it first, on the
+// new model). If idle and the current model is available, the owner can
+// compact on it first: that summary reads the cache it has now, and the new
+// model starts from the summary. `compactFirst`: the owner chose that on the
+// picker's row, so nothing is asked.
 import type { SwitchWarning } from "../../../src/engine/cachewarn.ts";
 import { choose, confirmAction } from "../components/Confirm.tsx";
 import { announce } from "./announce.ts";
@@ -13,13 +16,13 @@ import { fmtCost, fmtTokens } from "./utils.ts";
 
 type Fit = { used: number; window: number; compact_at: number; over: boolean };
 
-export async function switchSession(id: string, change: { model?: string; effort?: string }): Promise<boolean> {
+export async function switchSession(id: string, change: { model?: string; effort?: string }, opts: { compactFirst?: boolean } = {}): Promise<boolean> {
   let patching = false;
   try {
     const q = new URLSearchParams();
     if (change.model) q.set("model", change.model);
     if (change.effort) q.set("effort", change.effort);
-    const { warning, fit, unchanged, can_compact_first } = await api<{ warning: SwitchWarning | null; fit?: Fit; unchanged?: boolean; can_compact_first?: boolean }>(`/api/sessions/${id}/switch-warning?${q}`);
+    const { warning, fit, unchanged, can_compact_first, ask } = await api<{ warning: SwitchWarning | null; fit?: Fit; unchanged?: boolean; can_compact_first?: boolean; ask?: boolean }>(`/api/sessions/${id}/switch-warning?${q}`);
     if (unchanged) {
       const text = "This session is already on that model.";
       tipSay(null, text, 4200);
@@ -27,7 +30,15 @@ export async function switchSession(id: string, change: { model?: string; effort
       return false;
     }
     const over = !!change.model && !!fit?.over;
-    if (warning || over) {
+    if (opts.compactFirst && change.model) {
+      if (!can_compact_first) {
+        const text = "Compact first is not possible now (a turn is running, or the current model is unavailable): nothing was switched.";
+        tipSay(null, text, 6500);
+        announce(text, "alert");
+        return false;
+      }
+      await api(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ for_model: change.model }) });
+    } else if (ask) {
       const models = getState().models;
       const name = models.find((m) => m.id === change.model)?.name ?? change.model;
       const parts: string[] = [];

@@ -1,11 +1,20 @@
 // What a model or effort switch does to the session's prompt cache, for the
-// pickers to warn before they switch.
+// pickers to warn before they switch. `ask`: whether the switch is worth a
+// question (asksFirst in src/engine/switch-rule.ts, at the owner's
+// model_switch.ask_usd). `ran_on` and `can_compact`: what the picker needs to
+// price each row and to offer Compact first on it.
+import { settings, registerSettings } from "../../admin/settings.ts";
 import { switchWarning } from "../../engine/cachewarn.ts";
+import { ASK_USD_DEFAULT, asksFirst } from "../../engine/switch-rule.ts";
 import { COMPACT_SHARE, contextTokens } from "../../engine/compact.ts";
 import type { RouteModule } from "../app.ts";
 import { carrySettings, resolveSwitchModel, switchCompactionBlock } from "../switch.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+
+registerSettings("model_switch", { ask_usd: ASK_USD_DEFAULT }, (v) =>
+  typeof v.ask_usd === "number" && Number.isFinite(v.ask_usd) && v.ask_usd >= 0 ? undefined : "ask_usd is an amount in USD, 0 or more");
+const askUsd = () => { const v = Number(settings().model_switch?.ask_usd); return Number.isFinite(v) && v >= 0 ? v : ASK_USD_DEFAULT; };
 
 export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
   "/api/sessions/:id/switch-warning": {
@@ -28,12 +37,15 @@ export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
       const used = contextTokens(lineage, to.id).used;
       const compactAt = s.settings.compact_at ?? Math.floor(to.context * COMPACT_SHARE);
       const fit = { used, window: to.context, compact_at: compactAt, over: used >= compactAt };
-      return json({ ...switchWarning({
+      const w = switchWarning({
         lineage, now: Date.now(), to, toEffort: effort,
         from: providers.cachedModel(ranOn),
         toWire: providers.get(to.provider)?.wire ?? "anthropic_messages",
         fromWire: providers.get(ranOn.slice(0, ranOn.indexOf(":")))?.wire ?? "anthropic_messages",
-      }), fit, running, ...(unchanged ? { unchanged: true } : {}), can_compact_first: moving && !running && !switchCompactionBlock(providers, s.model) });
+      });
+      const can = !running && !switchCompactionBlock(providers, s.model);
+      const rule = asksFirst({ lost: w.warning, over: moving && fit.over, askUsd: askUsd() });
+      return json({ ...w, fit, running, ...(unchanged ? { unchanged: true } : {}), ...rule, ask_usd: askUsd(), ran_on: ranOn, can_compact: can, can_compact_first: moving && can });
     },
   },
 });

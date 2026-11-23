@@ -1,7 +1,8 @@
 import { ArrowLeft, Bot, ChevronDown, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
-import { actions, reportError, useStore, useModels } from "../lib/store.ts";
+import { actions, api, reportError, useStore, useModels } from "../lib/store.ts";
+import { ASK_USD_DEFAULT } from "../../../src/engine/switch-rule.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { settingsFind } from "../lib/settings-find.macro.ts" with { type: "macro" };
@@ -89,6 +90,40 @@ function General() {
   );
 }
 
+// The amount a model switch must add before the picker asks (the daemon's model_switch.ask_usd).
+function SwitchAskField() {
+  const [value, setValue] = useState<number | null>(null);
+  const [text, setText] = useState<string | null>(null);
+  const [bad, setBad] = useState(false);
+  useEffect(() => { api<{ settings: Record<string, any> }>("/api/settings").then((r) => setValue(Number(r.settings.model_switch?.ask_usd ?? ASK_USD_DEFAULT))).catch(reportError); }, []);
+  const save = () => {
+    if (text === null || value === null) return;
+    const v = text.trim() === "" ? 0 : Number(text.trim().replace(/^\$/, ""));
+    if (!Number.isFinite(v) || v < 0) return setBad(true);
+    setBad(false);
+    if (v === value) return setText(null);
+    api<{ settings: Record<string, any> }>("/api/settings", { method: "PATCH", body: JSON.stringify({ model_switch: { ask_usd: v } }) })
+      .then((r) => { setValue(Number(r.settings.model_switch.ask_usd)); setText(null); })
+      .catch((e) => { setBad(true); reportError(e); });
+  };
+  return (
+    <label className={cn("flex h-8 items-center gap-1 rounded-md border bg-raised px-2.5 text-ui", bad ? "border-danger" : "border-line-strong")}>
+      <span className="text-muted">$</span>
+      <input
+        aria-label="Ask before a model switch that adds at least this many US dollars"
+        data-testid="switch-ask-usd"
+        inputMode="decimal"
+        disabled={value === null}
+        value={text ?? (value === null ? "" : String(value))}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => e.key === "Enter" && !composing(e) && (e.currentTarget as HTMLInputElement).blur()}
+        className="w-16 bg-transparent text-right tabular-nums outline-none"
+      />
+    </label>
+  );
+}
+
 function Models() {
   const models = useModels();
   const def = useStore((s) => s.defaultModel);
@@ -103,6 +138,12 @@ function Models() {
       <Card>
         <SettingRow label="Default model" hint="New sessions start on it. It comes from the daemon's configuration.">
           <span className="text-ui text-muted">{models.find((m) => m.id === def)?.name ?? (def || "None")}</span>
+        </SettingRow>
+        <SettingRow
+          label="Ask before a model switch that adds at least"
+          hint="A switch to another model reads the cached conversation again without the cache, and the model picker shows on each row what that adds. A switch asks first when it adds at least this much, when the new model has no price, or when the conversation is past where the new model compacts. 0 asks before every switch that loses a warm cache."
+        >
+          <SwitchAskField />
         </SettingRow>
         <SettingRow label="Small models" hint="They read long material for every session (files and logs handed to readers, a long page, new mail) and write session titles, best first; the next one reads when one is not listed or fails. Empty: the cheapest model of the session's own provider, and a session's title only from a model cheaper than its own.">
           <SmallModels />
