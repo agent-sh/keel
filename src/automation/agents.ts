@@ -1639,7 +1639,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
   if (by) stopBelow(a, by);
   else if (reason === "budget") stopBelow(a, "ancestor");
   const status: AgentStatus = by ? "stopped" : reason === "error" ? "failed" : INCOMPLETE.has(reason) ? "incomplete" : "completed";
-  settling.set(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
+  settleEnd(a.id, finish(a, status, { stopped_by: by ?? null, end_reason: reason }));
 }
 
 // Its new and changed tests, run on the base without its change (src/checks/before-run.ts). The run starts when
@@ -1701,6 +1701,12 @@ function tellOwedBefore(parentId?: string) {
 // Agents whose ended turn is being settled (a work agent's worktree is read
 // first): a message meanwhile waits for it, then continues the agent.
 const settling = new Map<string, Promise<unknown>>();
+// An agent's end being written. A later settle of the same agent (its successor's, once the handover
+// cleared this one) is not dropped by this one's end.
+function settleEnd(id: string, work: Promise<unknown>) {
+  const p: Promise<unknown> = work.catch((e) => capture(e, { at: "agent settle", agent: id })).finally(() => { if (settling.get(id) === p) settling.delete(id); });
+  settling.set(id, p);
+}
 const SCHEMA_TRIES = 2;
 
 // The last round's final message: what a structured report is read from.
@@ -1916,6 +1922,9 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
     return c;
   })();
   if (!child) return "gone";
+  // The lost context's end is over: it handed its task on. A stop from now on is the successor's, and
+  // ends the agent as stopped, not as a second end of a report being written.
+  settling.delete(a.id);
   const g = perm.gate;
   if (g) g.setPerm(child.id, g.perm(old.id));
   bus.emit({ t: "session", session: store.session(child.id)! });
@@ -2323,7 +2332,7 @@ export function onCutTurn(sessionId: string, cut: { stalled: number }): "continu
 export function onCutTurnHeld(sessionId: string, why: string) {
   const a = byChild(sessionId);
   if (!a || isEnded(a)) return;
-  settling.set(a.id, finish(a, "failed", { stopped_by: null, end_reason: "restart", note: why }).catch((e) => capture(e, { at: "agent settle", agent: a.id })).finally(() => settling.delete(a.id)));
+  settleEnd(a.id, finish(a, "failed", { stopped_by: null, end_reason: "restart", note: why }));
 }
 
 // After a restart: results still owed are delivered, and an agent recorded as
