@@ -792,7 +792,8 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await expect(slot(page, 0)).toHaveAttribute("data-look", "");
   await slot(page, 0).getByTestId("look-keep").click();
   await expect(toast.getByTestId("undo-words")).toHaveText("Kept in the pane: Coordinator: release train 2.4");
-  await row(page, other).dblclick();
+  await row(page, reader).dblclick();
+  await expect(slot(page, 0)).toHaveAttribute("data-holds", reader);
   await expect(toast).toHaveCount(0);
   // On a phone the offer hangs from the top edge, clear of the message box.
   await page.setViewportSize({ width: 390, height: 844 });

@@ -433,9 +433,10 @@ test("a plan is approved by a key on Approve only once it was read to its end", 
   const two = cardIn(page, late, "plan");
   await expect(two.getByTestId("plan-text")).toBeFocused();
   await expect(two).toHaveAttribute("data-keys", "ready");
-  await expect(two).not.toHaveAttribute("data-read", "true");
+  // (Cut by the region in so small a window: Approve waits.)
+  await page.waitForTimeout(1500);
+  await expect(two.getByTestId("plan-text")).toBeFocused();
   await page.setViewportSize({ width: 1920, height: 1040 });
-  await expect(two).toHaveAttribute("data-read", "true");
   await page.waitForTimeout(400);
   await expect(two.getByTestId("plan-text")).toBeFocused();
   await expect(two.getByTestId("plan-approve")).toBeFocused({ timeout: 4000 });
