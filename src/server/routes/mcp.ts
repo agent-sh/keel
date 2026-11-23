@@ -44,11 +44,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   m.elsewhere = (id) => { const at = deps.store.session(id)?.machine; return !!at && at !== "local"; };
   // A server's sampling request is answered by the session's own model, once the owner allowed it on the card.
   m.sampler = {
-    model: async (id) => {
-      const s = deps.store.session(id);
-      if (!s) throw new Error("the session is gone");
-      return (await deps.providers.resolve(s.model)).info.name || s.model;
-    },
+    size: (id, req) => deps.engine.sampleSize(id, req),
     run: (id, req, signal) => deps.engine.sample(id, req, signal),
   };
   g.__keelMcp = m;

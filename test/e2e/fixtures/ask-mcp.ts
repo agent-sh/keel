@@ -20,7 +20,8 @@
 // - `forever` asks again after every answer (ASK_MCP_FOREVER times), `many`
 //   asks ASK_MCP_MANY questions at once;
 // - `later` asks after two seconds, `hold` only waits (ASK_MCP_HOLD ms);
-// - `sample` asks for a reply of the client's model (sampling/createMessage).
+// - `sample` asks for a reply of the client's model (sampling/createMessage);
+//   `sample_big` asks with a message no model's window of the stand-ins holds.
 // ASK_MCP_LOG: a file that gets one JSON line per answer the server received.
 import { appendFileSync } from "node:fs";
 
@@ -68,6 +69,7 @@ const TOOLS = [
     tool("slow", "Works for a while before each of its questions"),
     tool("hold", "Waits"),
     tool("sample", "Asks the client's model for a reply"),
+    tool("sample_big", "Asks the client's model to read a very long message"),
   ]),
 ];
 
@@ -126,6 +128,10 @@ async function legacy(name: string): Promise<unknown> {
         modelPreferences: { hints: [{ name: "claude-3-sonnet" }] },
         maxTokens: 100,
       });
+      return r.result ?? r.error;
+    }
+    case "sample_big": {
+      const r = await request("sampling/createMessage", { messages: [{ role: "user", content: { type: "text", text: "word ".repeat(300_000) } }], maxTokens: 100 });
       return r.result ?? r.error;
     }
     case "hold":

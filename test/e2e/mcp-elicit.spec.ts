@@ -450,7 +450,8 @@ test("a server's sampling request is the owner's to allow, and its reply the own
     await run(page, "asker__sample");
     await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
     await expect(card.getByTestId("question-from")).toHaveText("MCP server asker is asking");
-    await expect(words).toContainText("asks for a reply from");
+    await expect(card.getByTestId("question-label")).toHaveText(/^What asker would send to /);
+    await expect(card).toContainText(/About \d+ tokens of the model's window of \d+; (it costs at most about \$[\d.]+ at the list price|no price is known for it)\./);
     await expect(words).toContainText("You answer geography questions in one sentence.");
     await expect(words).toContainText("What is the capital of France?");
     await expect(card).toContainText("It would prefer claude-3-sonnet");
@@ -467,7 +468,7 @@ test("a server's sampling request is the owner's to allow, and its reply the own
     await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
     await card.getByTestId("question-option").filter({ hasText: "Send" }).click();
     await card.getByTestId("question-submit").click();
-    await expect(words).toContainText("answered. Send this reply to asker?", { timeout: 30_000 });
+    await expect(card.getByTestId("question-label")).toHaveText(/'s reply, for asker$/, { timeout: 30_000 });
     await expect(words).toContainText("Paris is the capital of France.");
     await shoot(page, "mcp-sample-02-reply");
     await card.getByTestId("question-option").filter({ hasText: "Send" }).click();
@@ -481,15 +482,22 @@ test("a server's sampling request is the owner's to allow, and its reply the own
     await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
     await card.getByTestId("question-option").filter({ hasText: "Send" }).click();
     await card.getByTestId("question-submit").click();
-    await expect(words).toContainText("Paris is the capital of France.", { timeout: 30_000 });
+    await expect(card.getByTestId("question-label")).toHaveText(/'s reply, for asker$/, { timeout: 30_000 });
     await card.getByTestId("question-other").first().fill("Paris.");
     await card.getByTestId("question-submit").click();
     await ends(3);
     await expect(last).toContainText('"text":"Paris."');
 
-    // 5. Both servers were told Keel offers sampling.
-    await run(page, "asker__caps");
+    // 5. A request the model cannot read is refused before any card.
+    await run(page, "asker__sample_big");
     await ends(4);
+    await expect(last).toContainText("over");
+    await expect(last).toContainText("window");
+    await expect(card).toHaveCount(0);
+
+    // 6. Both servers were told Keel offers sampling.
+    await run(page, "asker__caps");
+    await ends(5);
     await expect(last).toContainText('"sampling":{}');
     expect(await k.errors()).toEqual([]);
   } finally {

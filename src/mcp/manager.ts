@@ -1086,7 +1086,8 @@ export class McpManager {
   // The session's model, for a server's sampling request (the daemon sets it):
   // its name for the card, and one reply with no tools and no history.
   sampler?: {
-    model(sessionId: string): Promise<string>;
+    // The model's name, the request's size in tokens, its window and the most it can cost (null: no price known).
+    size(sessionId: string, req: SampleRequest): Promise<{ model: string; tokens: number; window: number; cost: number | null }>;
     run(sessionId: string, req: SampleRequest, signal: AbortSignal): Promise<{ text: string; model: string; stop: string }>;
   };
 
@@ -1099,12 +1100,16 @@ export class McpManager {
     const req = samplingOf(params);
     if ("refuse" in req) throw new RpcError(req.code, req.refuse);
     if (!this.sampler) throw new RpcError(-32603, "no model answers sampling requests here");
-    const model = await this.sampler.model(ctx.sessionId).catch((e) => { throw new RpcError(-32603, `the session's model cannot answer: ${(e as Error).message}`); });
+    const size = await this.sampler.size(ctx.sessionId, req).catch((e) => { throw new RpcError(-32603, `the session's model cannot answer: ${(e as Error).message}`); });
+    const model = size.model;
+    // One the model cannot read is refused before the owner is asked.
+    if (size.window && size.tokens + req.maxTokens > size.window) throw new RpcError(-32602, `the request is about ${size.tokens} tokens, and with its reply of up to ${req.maxTokens} it is over ${model}'s window of ${size.window}`);
+    const cost = size.cost === null ? "no price is known for it" : `it costs at most about $${size.cost < 0.01 ? size.cost.toFixed(4) : size.cost.toFixed(2)} at the list price`;
     const send = await this.onCard(server, ctx, card, call, `${server} asks to use this session's model`, {
-      from: server,
-      message: `${server} asks for a reply from ${model}. This is what it would send:\n\n${req.shown}`,
+      from: server, label: `What ${server} would send to ${model}`,
+      message: req.shown,
       questions: [{ id: "send", question: `Send this to ${model}?`, options: [{ label: "Send" }] }],
-      notes: req.notes,
+      notes: [`About ${size.tokens} tokens of ${size.window ? `the model's window of ${size.window}` : "input"}; ${cost}.`, ...req.notes],
     });
     if (send === null) throw new RpcError(-1, "the owner made no choice: the request was not sent");
     if (send === DECLINED) { call.declined++; throw new RpcError(-1, "the owner rejected the sampling request"); }
@@ -1117,9 +1122,9 @@ export class McpManager {
     const text = withoutHidden(r.text);
     const seen = cardText(text, "The reply");
     const reply = await this.onCard(server, ctx, card, call, `${model} answered ${server}`, {
-      from: server,
-      message: `${model} answered. Send this reply to ${server}?\n\n${seen.shown || "(an empty reply)"}`,
-      questions: [{ id: "reply", question: "Send this reply, or type the reply to send instead", options: [{ label: "Send" }] }],
+      from: server, label: `${model}'s reply, for ${server}`,
+      message: seen.shown || "(an empty reply)",
+      questions: [{ id: "reply", question: `Send this reply to ${server}, or type the reply to send instead`, options: [{ label: "Send" }] }],
       notes: [...(seen.note ? [seen.note] : []), `It stopped with ${r.stop}.`],
     });
     if (reply === null) throw new RpcError(-1, "the owner made no choice: the reply was not sent");

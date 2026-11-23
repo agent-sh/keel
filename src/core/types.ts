@@ -173,7 +173,8 @@ export type QueueItem = { id: string; session_id: string; text: string; images?:
 // `sensitive`: a field looks like a secret; an answer is sent only when the owner says to send it anyway.
 // `secret` (a question): its answer is typed masked.
 export type AskedQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multiSelect?: boolean; optional?: boolean; secret?: boolean };
-export type Asked = { id: string; from: string; message: string; questions: AskedQuestion[]; notes?: string[]; note?: string; round?: number; sensitive?: boolean };
+// `label`: what the card says the message is (default: the server's own words).
+export type Asked = { id: string; from: string; label?: string; message: string; questions: AskedQuestion[]; notes?: string[]; note?: string; round?: number; sensitive?: boolean };
 export type PendingQuestion = { session_id: string; call_id: string; parent_id?: string; asked?: Asked };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);

@@ -3218,10 +3218,27 @@ export class Engine {
   // after the owner allowed it (src/mcp/manager.ts sample): the server's
   // system prompt and messages, no tools, none of the session's history,
   // booked to the session as a side request.
+  // What such a request is for the session's model, before the owner allows
+  // it: its name, the request's tokens counted from its bytes at the model's
+  // bytes a token, its window, and the most it can cost at the list price
+  // (the reply at its bound). Null cost: no price is known.
+  async sampleSize(id: string, req: { system?: string; messages: Message[]; maxTokens: number }): Promise<{ model: string; tokens: number; window: number; cost: number | null }> {
+    const session = this.store.session(id);
+    if (!session) throw new Error("the session is gone");
+    const { info } = await this.providers.resolve(session.model);
+    const tokens = Math.ceil((utf8Bytes(req.system ?? "") + messagesBytes(req.messages, info.id)) / bytesPerToken(info.id));
+    const price = info.price ?? this.providers.catalog.lookup(info.model)?.price;
+    const cost = price ? (tokens * price.input + Math.min(req.maxTokens, info.output || req.maxTokens) * price.output) / 1e6 : null;
+    return { model: info.name || info.model, tokens, window: info.context, cost };
+  }
+
   async sample(id: string, req: { system?: string; messages: Message[]; maxTokens: number }, signal: AbortSignal): Promise<{ text: string; model: string; stop: string }> {
     const session = this.store.session(id);
     if (!session) throw new Error("the session is gone");
     const { provider, info } = await this.providers.resolve(session.model);
+    // A request counted over the model's window is never sent.
+    const size = await this.sampleSize(id, req);
+    if (size.window && size.tokens + Math.min(req.maxTokens, info.output || req.maxTokens) > size.window) throw new Error(`the request is about ${size.tokens} tokens with its reply, over ${size.model}'s window of ${size.window}`);
     const st: Step = { provider, info: { ...info, output: Math.min(info.output || req.maxTokens, req.maxTokens) }, tools: [], system: req.system ?? "", systemSplit: 0 };
     const res = await this.call(id, st, req.messages, signal, new Map(), session, true, "sampling");
     this.store.addUsage(id, res.usage);
