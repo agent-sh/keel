@@ -66,7 +66,7 @@ export const CHANNEL_NAME: Record<string, string> = { desktop: "Desktop", comman
 // What each alert kind means in the Bridge's state colors: violet needs you,
 // amber is work (an agent speaking, a limit closing in), red failed, sea green done.
 export const ALERT_STATE: Record<Alert["kind"], Watch> = {
-  approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail", refused: "work", declined: "fail", machine: "idle", outage: "wait", review: "done",
+  approval: "need", question: "need", limit: "work", agent: "work", failed: "fail", loop_failed: "fail", finished: "done", snooze_over: "idle", regression: "fail", refused: "work", declined: "fail", machine: "idle", outage: "wait", review: "done", mcp: "need",
 };
 
 // An alert's mark is its state's own shape, the one the rail, the panes and the start page draw:

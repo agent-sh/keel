@@ -31,6 +31,9 @@ import { conceal } from "../core/conceal.ts";
 import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
 import { runMode } from "../core/runmode.ts";
 import { serverName } from "../plugins/manifest.ts";
+import { changeDigest, defOf, diffTools, instructionsChange, offered, readPins, type InstructionsChange, type Pin, type ToolChange } from "./pins.ts";
+import { envHint, maskProxy, proxyCredentials, serverEnv } from "./env.ts";
+import { classify, type ClassKey, type ServerClass } from "./class.ts";
 
 // How often one call's server may ask (2025-11-25 client/elicitation, security
 // considerations: "Clients SHOULD implement rate limiting"). A question past
@@ -107,6 +110,13 @@ export type McpServerState = {
   read_tools: string[];   // the tools the owner marked as reads (they run without asking)
   hinted_reads: string[]; // the tools the server itself calls read-only (its word, not a read until marked)
   tool_hints: Record<string, ("destructive" | "open_world" | "idempotent")[]>; // what else the server says of a tool (src/mcp/hints.ts)
+  // Tools it lists that the owner has not accepted (src/mcp/pins.ts): held from the model, a changed one
+  // offered as accepted meanwhile. `digest` names this set of changes; accepting names it back.
+  // `instructions`: its instructions changed too (the system prompt keeps the accepted ones meanwhile).
+  held?: { digest: string; changes: ToolChange[]; instructions?: InstructionsChange };
+  pinned_at?: number; // when its tool definitions were last accepted
+  pinned_at_upgrade?: boolean; // pinned as it was when this build first ran, and the owner has not looked yet
+  class?: ServerClass; // what kind of server it is (src/mcp/class.ts); not of a server Keel brings
   last_connected?: number;
   era?: "modern" | "legacy";
   version?: string;
@@ -220,6 +230,14 @@ type Entry = {
   channel?: boolean;
   // A session's own server from its project's .mcp.json (the owner approved it), not from its editor.
   project?: string;
+  // What the model is offered of `tools` (src/mcp/pins.ts), made again when the listing or a pin changes.
+  view?: { from: McpTool[]; rev: number; tools: McpTool[] };
+  // What of `tools` and `instr` the owner has not accepted, made again on the same terms (the panel asks every second or two).
+  diff?: { from: McpTool[]; rev: number; instr: string | null; changes: ToolChange[]; instructions?: InstructionsChange };
+  // The instructions it gave at its last connect, as a prompt would carry them (concealed); null: none.
+  instr?: string | null;
+  // Its first call since it connected has not ended yet: a failure of it says what of the environment it went without.
+  firstCall?: boolean;
 };
 
 // What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
@@ -271,7 +289,10 @@ export function sessionEnv(c: McpServerConfig, confined: boolean, from: Record<s
   return env;
 }
 
-function serverEnv(c: McpServerConfig): Record<string, string> {
+// A server Keel brings (the memory store, the Chrome bridge, voice) is Keel's
+// own program and is started as it always was: the daemon's environment
+// without credential-shaped names. An owner's server gets serverEnv (env.ts).
+function bundledEnv(c: McpServerConfig): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !SECRET.test(k)) env[k] = v;
   for (const k of c.env_vars ?? []) if (process.env[k] !== undefined) env[k] = process.env[k]!;
@@ -320,7 +341,7 @@ export async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv
 const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn the plugin off or remove it in Settings > Plugins`;
 
 // (Whether it is on and whether its events are taken are not what the server is: neither restarts it.)
-const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined });
+const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined, class: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined, class: undefined });
 
 // How long the prompt list of a server that does not say when it changes is
 // used before it is read again: the composer's own window before it asked
@@ -363,6 +384,8 @@ export class McpManager {
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
     this.publishedPath = join(stateDir, "mcp-instructions.json");
     this.askedPath = join(stateDir, "mcp-asked.json");
+    this.pinsPath = join(stateDir, "mcp-pins.json");
+    this.loadPins();
     // (Entries of sessions that are gone are never asked about: only the newest are kept.)
     try { this.asked = new Set((JSON.parse(readFileSync(this.askedPath, "utf8")) as string[]).slice(-200)); } catch {} // none kept
     try { this.published = JSON.parse(readFileSync(this.publishedPath, "utf8")); } catch {} // none kept yet
@@ -648,6 +671,7 @@ export class McpManager {
       return null;
     }
     if (e) this.drop(name);
+    else this.ownerAdded.add(name);
     this.addEntry(name, now);
     if (now.enabled !== false) this.ensure(name).catch(() => {});
     return e ? "changed" : "added";
@@ -681,6 +705,7 @@ export class McpManager {
       }
       this.addEntry(name, c);
     }
+    this.markUpgrade();
     if (!runMode.client) {
       try { this.syncSources(); } catch (e) { this.errors.capture("server", e, { at: "mcp sources sync" }); }
       this.watchSources();
@@ -723,7 +748,7 @@ export class McpManager {
         } catch {
           return [];
         }
-        return e.tools.map((t) => this.catalogTool(e, t));
+        return this.view(e).map((t) => this.catalogTool(e, t));
       },
       pending: () => (e.state === "connecting" ? [e.label ?? name] : []),
       failed: () => {
@@ -737,7 +762,7 @@ export class McpManager {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];
         if (e.bundled) return (e.client ? e.tools : e.bundled.tools).map((t) => this.catalogTool(e, t));
-        return e.state === "ready" ? e.tools.map((t) => this.catalogTool(e, t)) : [];
+        return e.state === "ready" ? this.view(e).map((t) => this.catalogTool(e, t)) : [];
       },
     });
     return e;
@@ -793,7 +818,7 @@ export class McpManager {
       return { kind: "http", url: c.url!, headers: Object.fromEntries(Object.entries(c.headers ?? {}).map(([k, v]) => [k, String(v)])), ...(c.transport === "sse" || e.sse ? { sse: true } : {}) };
     }
     if (c.command) {
-      return { kind: "stdio", command: expand(c.command), args: (c.args ?? []).map((a) => expand(a)), env: serverEnv(c), cwd: c.cwd ? expand(c.cwd) : this.workspace, started: (p) => track(this.stateDir, p, e.name) };
+      return { kind: "stdio", command: expand(c.command), args: (c.args ?? []).map((a) => expand(a)), env: e.bundled ? bundledEnv(c) : serverEnv(c), cwd: c.cwd ? expand(c.cwd) : this.workspace, started: (p) => track(this.stateDir, p, e.name) };
     }
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(c.headers ?? {})) headers[k] = expand(String(v));
@@ -926,6 +951,8 @@ export class McpManager {
         }
         if (gone !== undefined || client.isClosed) throw new Error(`${name} closed during discovery: ${gone ?? "the connection is closed"}`);
         e.tools = tools;
+        e.firstCall = true;
+        this.settle(e, client.instructions);
         e.client = client;
         e.era = client.era;
         e.state = "ready";
@@ -942,7 +969,7 @@ export class McpManager {
         client.onListChanged = () => {
           const mine = ++asked;
           client.listTools().then(
-            (t) => { if (mine === asked && e.client === client) e.tools = t; },
+            (t) => { if (mine === asked && e.client === client) { e.tools = t; this.settle(e, client.instructions); } },
             (err) => { if (mine === asked && e.client === client) this.errors.capture("server", err, { mcp: name, at: "tools/list after a change" }); },
           );
         };
@@ -966,12 +993,13 @@ export class McpManager {
             e.error = "Sign in to use this server.";
           } else if (e.state !== "disabled") {
             e.state = "error";
-            e.error = err.message;
+            e.error = this.withEnvHint(e, err.message);
             if (e.failures++ === 0) {
               this.errors.capture("server", err, { mcp: name });
               this.told(e, "failed", err.message);
             }
           }
+          if (this.upgradePending.has(name)) this.tellUpgrade();
           throw err;
         })
         .finally(() => { if (e.abort === abort) e.connecting = undefined; }));
@@ -1005,9 +1033,12 @@ export class McpManager {
     try {
       client = await this.ensure(name);
     } catch (err) {
-      const msg = e?.state === "needs_auth" ? (e.session ? `${shown} asks for a sign-in, which a server the editor passed cannot do here: the editor passes its credentials in the server's headers.` : `${shown} needs sign-in: the owner signs in from the MCP servers panel.`) : (err as Error).message;
+      const msg = e?.state === "needs_auth" ? (e.session ? `${shown} asks for a sign-in, which a server the editor passed cannot do here: the editor passes its credentials in the server's headers.` : `${shown} needs sign-in: the owner signs in from the MCP servers panel.`) : e?.state === "error" ? this.withEnvHint(e, (err as Error).message) : (err as Error).message;
       return { content: `MCP server ${shown} is not available: ${msg}`, is_error: true };
     }
+    // A tool the owner has not accepted is not sent, however the call was made.
+    const held = this.withheld(e, tool);
+    if (held) return { content: held, is_error: true };
     // Keep the same entry and listing across connection setup and (for HTTP)
     // header preparation. Those awaits are still before the request is sent.
     const authorize = ctx.authorizationError ? () => ctx.authorizationError!() ??
@@ -1027,6 +1058,11 @@ export class McpManager {
       if (client.era === "legacy" && client.unnamedRequests) client.drop(`a call of ${shown}__${tool} was ended because of the questions it asked, and the server may still be asking`);
     }, client, readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
     // What the model is told besides the result: what the server asked that got no answer, and why.
+    // The first call since it connected, when the server itself failed it (an error it answered, or a
+    // failure on the way: not Keel's end of the call, not the owner's), says what of the environment it went without.
+    const first = e?.firstCall && e.client === client;
+    if (e && first) e.firstCall = false;
+    const envNote = () => { if (first && e && this.stdioOwn(e)) call.notes.add(envHint(e.label ?? e.name, e.config, serverEnv(e.config))); };
     const noted = (out: ToolOutput): ToolOutput => {
       if (!call.notes.size) return out;
       const text = [...call.notes].map((n) => `[keel] ${n}`).join("\n");
@@ -1072,12 +1108,16 @@ export class McpManager {
           ? " It may have run before it failed. Its server says a second call with the same arguments changes nothing more (idempotentHint)."
           : " It may have run, or run in part, before it failed: check what it did before calling it again.";
       const said = (err as Error).message;
+      if (!ctx.signal.aborted) envNote();
       return noted({ content: `${shown}__${tool} failed: ${again ? `${said.replace(/[.\s]+$/, "")}.${again}` : said}`, is_error: true });
     }
     this.callEnded(ctx.sessionId, card);
     // The schema of the tool as it was listed when the call went out (a list that changed meanwhile is the next call's).
     const declared = tools?.find((t) => t.name === tool)?.outputSchema;
     const schema = declared && typeof declared === "object" && !Array.isArray(declared) ? declared : undefined;
+    if (r.isError) envNote();
+    // A proxy's user and password the base passed it are masked in what its text says, as in its stderr and log lines.
+    if (e && this.stdioOwn(e)) r = maskedText(r);
     return noted(await toOutput(r, ctx, `${shown}__${tool}`, schema));
   }
 
@@ -1367,6 +1407,8 @@ export class McpManager {
       read_tools: e.bundled ? [] : (e.config.read_tools ?? []),
       hinted_reads: e.bundled ? [] : e.tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name),
       tool_hints: e.bundled ? {} : Object.fromEntries(e.tools.map((t) => [t.name, hintWords(hintsOf(t.annotations))] as const).filter(([, w]) => w.length)),
+      ...this.heldOf(e),
+      ...(e.bundled ? {} : { class: classify(shown, !!e.config.url && this.oauth.signedIn(e.name)) }),
       last_connected: e.last,
       era: e.client?.era,
       version: e.client?.version,
@@ -1403,6 +1445,7 @@ export class McpManager {
     const bad = validate(name, config);
     if (bad) return bad;
     this.save({ ...this.cfg.servers, [name]: config });
+    this.ownerAdded.add(name);
     if (this.entries.get(name)?.plugin) this.movePlugin(name);
     this.drop(name);
     this.addEntry(name, config);
@@ -1465,6 +1508,253 @@ export class McpManager {
     c.notify(STATUS_METHOD, params).catch((err) => this.errors.capture("server", err, { mcp: entry, at: "mcp channel status" }));
   }
 
+  // ---- tool definitions on a leash (src/mcp/pins.ts) ----
+
+  private pinsPath: string;
+  private pins: Record<string, Pin> = {};
+  // Servers set up before pins were kept that have not listed yet: each is
+  // pinned as it is at its first listing, marked so, and told in one alert.
+  private upgradePending = new Set<string>();
+  // No pins file when this manager began, in a state an older build kept MCP
+  // servers in (it wrote what they published): every server of the owner's
+  // that lists in this run, but one the owner adds in it, was set up before pins.
+  private pinsFresh = false;
+  private pinsMissing = false;
+  private upgradeRun = false;
+  private ownerAdded = new Set<string>();
+  // The pins file could not be read: no server is pinned anew from what it
+  // lists (that would accept whatever it lists now); each is held whole until
+  // the owner accepts it again.
+  private pinsBroken = false;
+  // Goes up with every change of a pin: an offered view of an older one is made again.
+  private pinsRev = 0;
+  // The owner is told of a set of changes once (the daemon's route raises the alert).
+  onToolsHeld?: (server: string, changes: ToolChange[], instructions?: InstructionsChange) => void;
+  // Servers set up before this build were pinned as they are: told once a batch.
+  onUpgradePinned?: (servers: string[]) => void;
+
+  private loadPins() {
+    let text: string;
+    try {
+      text = readFileSync(this.pinsPath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return this.pinsFailed(err as Error);
+      this.pinsMissing = true;
+      this.pinsFresh = this.upgradeRun = existsSync(this.publishedPath);
+      return;
+    }
+    try {
+      const f = readPins(text);
+      this.pins = f.servers;
+      this.upgradePending = new Set(f.upgrade ?? []);
+    } catch (err) {
+      this.pinsFailed(err as Error);
+    }
+  }
+
+  // The file stays as it was, beside the one written next, for the owner to look at.
+  private pinsFailed(err: Error) {
+    this.pinsBroken = true;
+    let kept = "";
+    try {
+      const to = `${this.pinsPath}.broken-${Date.now()}`;
+      renameSync(this.pinsPath, to);
+      kept = ` It is kept as ${to}.`;
+    } catch {} // nothing to keep: the file could not be read at all
+    this.errors.capture("server", new Error(`The MCP pins file ${this.pinsPath} cannot be read (${err.message}): every server of the owner's is held until its tools are accepted again in Settings > MCP servers.${kept}`), { at: "mcp pins" });
+  }
+
+  // The first start after pins began: every server of the owner's it finds
+  // was set up before. A start with no pins file writes one at once, empty
+  // or not: a server added in this run that has not listed by the next is
+  // the owner's new one, not one set up before pins.
+  private markUpgrade() {
+    if (!this.pinsMissing || runMode.client) return;
+    this.pinsMissing = false;
+    if (this.pinsFresh) for (const e of this.entries.values()) if (this.leashed(e) && !this.pins[e.name]) this.upgradePending.add(e.name);
+    this.pinsFresh = false;
+    this.writePins();
+  }
+
+  // Pinned: the owner's servers. A server Keel brings ships its own list; a
+  // session's own is the editor's or a project's, and lives with its session.
+  private leashed(e: Entry) {
+    return !e.bundled && !e.session;
+  }
+  private pinIdent(e: Entry) {
+    return digest(endpoint(e.config)).slice(0, 16);
+  }
+  private pinOf(e: Entry): Pin | undefined {
+    const p = this.leashed(e) ? this.pins[e.name] : undefined;
+    return p && p.ident === this.pinIdent(e) ? p : undefined;
+  }
+
+  private writePins(at?: string) {
+    this.pinsRev++;
+    try {
+      mkdirSync(this.stateDir, { recursive: true });
+      const f = { version: 1, servers: this.pins, ...(this.upgradePending.size ? { upgrade: [...this.upgradePending] } : {}) };
+      writeFileSync(this.pinsPath + ".tmp", JSON.stringify(f), { mode: 0o600 });
+      renameSync(this.pinsPath + ".tmp", this.pinsPath);
+    } catch (err) {
+      this.errors.capture("server", err, { at: "mcp pins", ...(at ? { mcp: at } : {}) });
+    }
+  }
+
+  // A listing came: the first one of a server the owner added is what the
+  // owner accepted with it; a later one that differs is held, and the owner
+  // is told once of each set of changes. A tool the server no longer lists
+  // stays pinned (it is not offered): one that comes back as it was needs no
+  // second look. `instructions` are the ones it gave at its connect.
+  private settle(e: Entry, instructions: string | undefined) {
+    if (!this.leashed(e)) return;
+    const instr = instructions === undefined ? null : conceal(instructions);
+    e.instr = instr;
+    const ident = this.pinIdent(e);
+    let p = this.pins[e.name];
+    if (!p || p.ident !== ident) {
+      if (!p && this.pinsBroken) p = this.pins[e.name] = { ident, at: Date.now(), tools: [], instructions: null };
+      else {
+        const upgrade = this.upgradePending.delete(e.name) || (this.upgradeRun && !p && !this.ownerAdded.has(e.name));
+        this.pins[e.name] = { ident, at: Date.now(), tools: e.tools.map(defOf), instructions: instr, ...(upgrade ? { upgrade: "untold" as const } : {}) };
+        this.writePins(e.name);
+        if (upgrade) this.tellUpgrade();
+        return;
+      }
+    }
+    const { changes, instructions: changed } = this.changesOf(e);
+    const told = changes.length || changed ? changeDigest(changes, changed) : undefined;
+    if (told === p.told) return;
+    if (told) p.told = told;
+    else delete p.told;
+    this.writePins(e.name);
+    if (told) {
+      try { this.onToolsHeld?.(e.name, changes, changed); } catch (err) { this.errors.capture("server", err, { at: "mcp tools held", mcp: e.name }); }
+    }
+  }
+
+  // The servers pinned as they were when this build first ran are told in one
+  // alert, once none of those still waiting to list is connecting.
+  private tellUpgrade() {
+    if ([...this.upgradePending].some((n) => this.entries.get(n)?.state === "connecting")) return;
+    const untold = Object.entries(this.pins).filter(([, p]) => p.upgrade === "untold").map(([n]) => n);
+    if (!untold.length) return;
+    for (const n of untold) this.pins[n]!.upgrade = "told";
+    this.writePins();
+    try { this.onUpgradePinned?.(untold); } catch (err) { this.errors.capture("server", err, { at: "mcp pinned at upgrade" }); }
+  }
+
+  // The owner looked at a server pinned at the upgrade.
+  pinSeen(name: string) {
+    const p = this.pins[name];
+    if (!p?.upgrade) return;
+    delete p.upgrade;
+    this.writePins(name);
+  }
+
+  // What the model is offered of a server's listing.
+  private view(e: Entry): McpTool[] {
+    if (!this.leashed(e)) return e.tools;
+    if (e.view && e.view.from === e.tools && e.view.rev === this.pinsRev) return e.view.tools;
+    const p = this.pinOf(e);
+    // A listing not settled yet (none came) offers what is pinned of it: nothing.
+    const tools = p ? offered(p.tools, e.tools) : [];
+    e.view = { from: e.tools, rev: this.pinsRev, tools };
+    return tools;
+  }
+
+  // The instructions a session's prompt carries of an owner's server: the
+  // accepted ones. Before its first listing, what it last published (that is
+  // what its first listing pins); none while the pins file could not be read.
+  private pinnedInstructions(e: Entry): string | undefined {
+    const p = this.pinOf(e);
+    if (p) return p.instructions ?? undefined;
+    return this.pinsBroken ? undefined : this.lastPublished(e)?.instructions;
+  }
+
+  private changesOf(e: Entry): { changes: ToolChange[]; instructions?: InstructionsChange } {
+    const instr = e.instr ?? null;
+    if (e.diff && e.diff.from === e.tools && e.diff.rev === this.pinsRev && e.diff.instr === instr) return e.diff;
+    const p = this.pinOf(e);
+    const changes = p ? diffTools(p.tools, e.tools).changes : [];
+    // (Instructions are compared once it has connected: before that there is nothing of its own to compare.)
+    const instructions = p && e.instr !== undefined ? instructionsChange(p.instructions, instr) : undefined;
+    e.diff = { from: e.tools, rev: this.pinsRev, instr, changes, ...(instructions ? { instructions } : {}) };
+    return e.diff;
+  }
+  private heldOf(e: Entry): Pick<McpServerState, "held" | "pinned_at" | "pinned_at_upgrade"> {
+    const p = this.pinOf(e);
+    if (!p) return {};
+    const { changes, instructions } = this.changesOf(e);
+    return {
+      pinned_at: p.at,
+      ...(p.upgrade ? { pinned_at_upgrade: true } : {}),
+      ...(changes.length || instructions ? { held: { digest: changeDigest(changes, instructions), changes, ...(instructions ? { instructions } : {}) } } : {}),
+    };
+  }
+
+  // Why a call of this tool is not sent: the owner has not accepted it.
+  private withheld(e: Entry | undefined, tool: string): string | undefined {
+    if (!e || !this.leashed(e) || e.state !== "ready") return;
+    const c = this.changesOf(e).changes.find((x) => x.name === tool);
+    if (c?.kind === "added") return `${e.name}__${tool} is new and the owner has not accepted it yet; it is not offered until then.`;
+  }
+
+  // An owner's command, started with serverEnv (env.ts).
+  private stdioOwn(e: Entry) {
+    return this.leashed(e) && !!e.config.command && !e.config.url;
+  }
+  // A failure of an owner's command, with what of the environment it went
+  // without in its first line (the panel and the model read that line; what
+  // it printed stays after it).
+  private withEnvHint(e: Entry, message: string): string {
+    if (!this.stdioOwn(e)) return message;
+    if (message.includes("Keel passes a base set of variables")) return message;
+    const at = message.indexOf("\n");
+    const head = at < 0 ? message : message.slice(0, at), tail = at < 0 ? "" : message.slice(at);
+    return `${head.replace(/[.\s]+$/, "")}. ${envHint(e.label ?? e.name, e.config, serverEnv(e.config))}${tail}`;
+  }
+
+  // The owner accepts what the server lists now. `digest` is the set of
+  // changes the owner was shown: one the server changed again since is not
+  // taken on the strength of the older look.
+  acceptTools(name: string, digest: string) {
+    const e = this.entries.get(name);
+    if (!e || !this.leashed(e)) throw Object.assign(new Error(`no MCP server of the owner's named ${name}`), { status: 404 });
+    const { changes, instructions } = this.changesOf(e);
+    if (!changes.length && !instructions) return;
+    if (!digest) throw Object.assign(new Error("an acceptance names the change set the owner was shown (held.digest)"), { status: 400 });
+    if (changeDigest(changes, instructions) !== digest) throw Object.assign(new Error(`${name} changed its tools again since: look at them again`), { status: 409 });
+    this.pins[name] = { ident: this.pinIdent(e), at: Date.now(), tools: e.tools.map(defOf), instructions: e.instr ?? null };
+    this.writePins(name);
+  }
+
+  // What kind of server it is, for the guards that weigh where content comes
+  // from and where it goes. None for a server Keel brings (it is judged by its own word).
+  classOf(name: string): ServerClass | undefined {
+    const e = this.entries.get(name);
+    if (!e || e.bundled) return;
+    return classify(e.shown ?? e.config, !!e.config.url && !e.session && this.oauth.signedIn(e.name));
+  }
+
+  // The owner answers what kind of server it is; null forgets an answer (the config's reading stands again).
+  setClass(name: string, answers: Partial<Record<ClassKey, boolean | null>>) {
+    const e = this.entries.get(name)!;
+    if (e.bundled) throw new Error(`${name} is built in: it is judged by Keel's own word`);
+    if (e.plugin) throw new Error(pluginWord(e.plugin));
+    const k: Partial<Record<ClassKey, boolean>> = { ...e.config.class };
+    for (const key of ["outside", "sends", "account"] as const) {
+      if (!(key in answers)) continue;
+      const v = answers[key];
+      if (v === null) delete k[key];
+      else if (typeof v === "boolean") k[key] = v;
+    }
+    const c: McpServerConfig = { ...e.config, class: k };
+    if (!Object.keys(k).length) delete c.class;
+    this.save({ ...this.cfg.servers, [name]: c });
+    e.config = c;
+  }
+
   // The owner marks which of a server's tools are reads (they run without asking).
   setReads(name: string, tools: string[]) {
     const e = this.entries.get(name)!;
@@ -1484,6 +1774,10 @@ export class McpManager {
     this.save(rest);
     this.drop(name);
     this.oauth.forget(name);
+    if (this.pins[name]) {
+      delete this.pins[name];
+      this.writePins(name);
+    }
   }
 
   // A call still running on the old client finishes there (its result is
@@ -1673,11 +1967,16 @@ export class McpManager {
       // A source file that failed to read says nothing about its servers.
       if (!hit) { if (!failed.length) this.gone.add(name); continue; }
       this.gone.delete(name);
-      if (canon(sourced(c)) === canon({ ...sourced(hit.config), sync: undefined })) continue;
+      // The variables a server is passed are the source's and the owner's both: a name the owner
+      // added in Keel (env_vars) stays when the source changes, and is no change of the source.
+      const vars = [...new Set([...(c.env_vars ?? []), ...(hit.config.env_vars ?? [])])];
       const next: McpServerConfig = { ...sourced(hit.config), sync: c.sync };
+      if (vars.length) next.env_vars = vars; else delete next.env_vars;
+      if (canon(sourced(c)) === canon(sourced(next))) continue;
       if (c.enabled === false) next.enabled = false;
       if (c.read_tools) next.read_tools = c.read_tools;
       if (c.channel) next.channel = true;
+      if (c.class) next.class = c.class;
       if (validate(name, next)) continue;
       changed[name] = next;
     }
@@ -1830,7 +2129,7 @@ export class McpManager {
   // the config itself can hold a value the owner gave a plugin's setting,
   // which is not written to the state folder.
   private configKey(e: Entry) {
-    return digest(canon({ ...e.config, enabled: undefined }));
+    return digest(canon({ ...e.config, enabled: undefined, class: undefined }));
   }
 
   private writePublished(at?: string) {
@@ -1876,7 +2175,7 @@ export class McpManager {
       await Promise.race([Promise.all(unknown.map(settled)), new Promise((r) => (timer = setTimeout(r, waitMs)))]);
       clearTimeout(timer);
     }
-    return live().map((e) => ({ name: e.name, instructions: e.bundled?.instructions ?? e.client?.instructions ?? this.lastPublished(e)?.instructions }));
+    return live().map((e) => ({ name: e.name, instructions: e.bundled ? e.bundled.instructions ?? e.client?.instructions ?? this.lastPublished(e)?.instructions : this.leashed(e) ? this.pinnedInstructions(e) : e.client?.instructions ?? this.lastPublished(e)?.instructions }));
   }
 }
 
@@ -1889,4 +2188,14 @@ export function promptText(msgs: PromptMessage[]): string {
 export function resourceText(items: ResourceItem[]): string {
   if (items.length === 1 && items[0]!.text !== undefined) return items[0]!.text;
   return items.map((i) => i.text !== undefined ? `--- ${i.uri}${i.mimeType ? ` (${i.mimeType})` : ""}\n${i.text}` : `--- ${i.uri}: binary ${i.mimeType ?? "data"}, ${i.bytes} bytes`).join("\n");
+}
+
+// A result's text blocks with a proxy's credentials masked (the result as it was when the environment has none).
+function maskedText(r: McpCallResult): McpCallResult {
+  if (!proxyCredentials().length) return r;
+  const out: McpCallResult = { ...r, content: r.content?.map((b: any) => (b?.type === "text" && typeof b.text === "string" ? { ...b, text: maskProxy(b.text) } : b)) };
+  if (r.structuredContent !== undefined) {
+    try { out.structuredContent = JSON.parse(maskProxy(JSON.stringify(r.structuredContent))); } catch {} // a mask that broke the JSON leaves it as it was
+  }
+  return out;
 }

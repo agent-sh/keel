@@ -10,6 +10,7 @@
 import { chunks, pumpLines, pumpText } from "../core/proc.ts";
 import { CHANNEL_CAP, CHANNEL_METHOD } from "./channel.ts";
 import { vault } from "../safety/secrets.ts";
+import { maskProxy } from "./env.ts";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
@@ -172,6 +173,9 @@ export const TOOL_CEILING_MS = 100_000_000;
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; hold: () => () => void; progressed?: (progress: unknown) => void };
 
+// Errors that carry a server's stderr already.
+const told = new WeakSet<Error>();
+
 export class McpClient {
   era: "modern" | "legacy" = "legacy";
   version = LEGACY_VERSION;
@@ -246,7 +250,11 @@ export class McpClient {
     const err = e instanceof Error ? e : new Error(String(e));
     const tail = this.stderrTail.trim().split("\n").slice(-6).join("\n");
     // (A server can echo a value it was given, such as a plugin's sensitive setting: known values are hidden.)
-    if (tail && !(err instanceof AuthRequired)) err.message += `\nstderr: ${vault.redact(tail, null, "output")}`;
+    // (An exit fails the connect with its stderr already told: it is told once.)
+    if (tail && !(err instanceof AuthRequired) && !told.has(err)) {
+      err.message += `\nstderr: ${vault.redact(maskProxy(tail), null, "output")}`;
+      told.add(err);
+    }
     return err;
   }
 

@@ -136,6 +136,11 @@ function Inbox({ onClose }: { onClose: () => void }) {
   const open = async (a: Alert) => {
     note(a.id, null);
     if (!a.read) auto.read({ ids: [a.id] }).catch(reportError);
+    // A server's changed tools are looked at where they are accepted.
+    if (a.data?.mcp_server) {
+      navigate({ name: "settings", section: "mcp" });
+      return onClose();
+    }
     if (!a.session_id) return;
     let t: Target;
     try {

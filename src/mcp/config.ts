@@ -35,6 +35,8 @@ export type McpServerConfig = {
   sync?: { source: string; name: string };
   // Its events may be pushed into the sessions that take them (src/mcp/channel.ts). The owner's, off by default.
   channel?: boolean;
+  // The owner's answers of what kind of server it is (src/mcp/class.ts); one not given is read from the config.
+  class?: Partial<Record<"outside" | "sends" | "account", boolean>>;
 };
 
 export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: string]: unknown };
@@ -142,6 +144,10 @@ function normalize(c: any): McpServerConfig {
   else if (typeof c.headersHelper === "string") out.headers_helper = c.headersHelper;
   if (c.sync && typeof c.sync.source === "string" && typeof c.sync.name === "string") out.sync = { source: c.sync.source, name: c.sync.name };
   if (c.channel === true) out.channel = true;
+  if (c.class && typeof c.class === "object") {
+    const k = Object.fromEntries(["outside", "sends", "account"].filter((x) => typeof c.class[x] === "boolean").map((x) => [x, c.class[x]]));
+    if (Object.keys(k).length) out.class = k;
+  }
   return out;
 }
 

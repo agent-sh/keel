@@ -6,6 +6,7 @@
 // the lines it still sends are kept the same way.
 
 import { conceal } from "../core/conceal.ts";
+import { maskProxy } from "./env.ts";
 
 // The syslog levels the spec takes, mildest first.
 export const LEVELS = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"] as const;
@@ -23,7 +24,7 @@ export const LINE_MAX = 4000;
 // A secret value the vault knows is shown as its placeholder (a server may log the token it was given).
 export function logLine(params: { level?: unknown; logger?: unknown; data?: unknown }, ts = Date.now()): LogLine {
   const level = (LEVELS as readonly unknown[]).includes(params.level) ? (params.level as Level) : "info";
-  const raw = conceal(typeof params.data === "string" ? params.data : JSON.stringify(params.data) ?? "");
+  const raw = conceal(maskProxy(typeof params.data === "string" ? params.data : JSON.stringify(params.data) ?? ""));
   const text = raw.length > LINE_MAX ? `${raw.slice(0, LINE_MAX)}... (${raw.length - LINE_MAX} more characters)` : raw;
   return { ts, level, ...(typeof params.logger === "string" && params.logger ? { logger: conceal(params.logger.slice(0, 200)) } : {}), text };
 }

@@ -265,6 +265,6 @@ export function binding(c: McpServerConfig, key: Uint8Array): string {
 // The part of a config the source decides. The owner's own choices in Keel
 // (on or off, which tools are reads, what it follows) are not the source's.
 export function sourced(c: McpServerConfig): McpServerConfig {
-  const { enabled: _e, read_tools: _r, sync: _s, channel: _c, ...rest } = c;
+  const { enabled: _e, read_tools: _r, sync: _s, channel: _c, class: _k, ...rest } = c;
   return rest;
 }

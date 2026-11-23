@@ -529,3 +529,126 @@ test("an agent file's own MCP servers run for that agent once the owner approves
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Feature: servers on a leash. A server's tool definitions and instructions
+// are the ones the owner accepted: when it rewrites a description or its
+// instructions, widens a schema or adds a tool, the change is shown once and
+// the model keeps the accepted ones (and gets no new tool) until the owner
+// accepts it. The server starts with a
+// small base of the daemon's environment and what its config names, and is
+// classed (outside content, sends outward, holds an account) in its settings.
+test("a server that changes its tools is held until the owner accepts the change", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "needs the scripted stand-in: script:find says what the model's request carries");
+  const { writeFileSync, rmSync, mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "keel-leash-"));
+  const flip = join(dir, "flip");
+  const LEASH = `${import.meta.dirname}/fixtures/leash-mcp.ts`;
+  await request.delete("/api/mcp/servers/leash").catch(() => {});
+  const told = async () => ((await (await request.get("/api/alerts?limit=200")).json()).alerts as any[]).filter((a) => a.kind === "mcp" && a.data?.mcp_server === "leash").length;
+  const toldBefore = await told();
+  const sessions: string[] = [];
+  try {
+    expect((await request.post("/api/mcp/servers", { data: { name: "leash", command: "bun", args: [LEASH, "--flip", flip], env: { MODE: "probe" } } })).ok()).toBe(true);
+    // A session asks the stand-in to run calls and to say what its request carries.
+    const session = async () => {
+      const { session: s } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Leash" } })).json();
+      sessions.push(s.id);
+      await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "full-auto" } });
+      const events = async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events as any[];
+      const replies = async () => (await events()).filter((e) => e.kind === "assistant").map((e) => (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join(""));
+      return {
+        id: s.id,
+        // Sends the prompt and waits for the turn's last reply.
+        say: async (text: string) => {
+          const ends = (await events()).filter((e) => e.kind === "turn_end").length;
+          await request.post(`/api/sessions/${s.id}/messages`, { data: { text } });
+          await expect.poll(async () => (await events()).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(ends + 1);
+          return (await replies()).at(-1)!;
+        },
+        results: async () => (await events()).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data.results[0].content)),
+      };
+    };
+    const search = `script:calls ${JSON.stringify([{ name: "search_tools", input: { query: "select:leash__lookup,leash__upload" } }])}`;
+    const find = "script:find Wording-one Wording-two leashextra leashdrop Instructions-one Instructions-two";
+
+    const a = await session();
+    // Its environment: the base and what its config names; nothing the daemon was started with besides.
+    await a.say(`script:calls ${JSON.stringify([{ name: "mcp_call", input: { tool: "leash__environment", arguments: {} } }])}`);
+    // (The result is the server's JSON on its first line; what Keel adds follows it.)
+    const out = JSON.parse((await a.results()).at(-1)!) as string;
+    const env = JSON.parse(out.split("\n")[0]!);
+    expect(env.MODE).toBe("probe");
+    expect(env.PATH).toBeTruthy();
+    // (Playwright's browser folder is a tool location the base passes; the runner's other settings are not.)
+    expect(Object.keys(env).filter((k) => /^(KEEL_|ANTHROPIC_|OPENAI_|AWS_|PLAYWRIGHT_(?!BROWSERS_PATH$))|TOKEN|KEY|SECRET/.test(k))).toEqual([]);
+
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "leash" }).first().click();
+    const row = panel.locator('[data-testid="mcp-server"][data-name="leash"]');
+    await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+    // Classed from its config: a local command is assumed to fetch and send; it names no credential.
+    const cls = (k: string) => row.locator(`[data-testid="mcp-class-row"][data-key="${k}"]`);
+    await expect(cls("sends")).toHaveAttribute("data-by", "assumed");
+    await expect(cls("account")).toHaveAttribute("data-yes", "false");
+    // The owner's answer stands over it, and is kept with the server.
+    await cls("sends").getByTestId("seg-no").click();
+    await expect(cls("sends")).toHaveAttribute("data-by", "owner");
+    await expect(cls("sends")).toHaveAttribute("data-yes", "false");
+
+    // The server rewrites lookup, widens its schema and adds upload.
+    writeFileSync(flip, "");
+    const held = row.getByTestId("mcp-held");
+    await expect(held).toBeVisible({ timeout: 20_000 });
+    await expect(row.getByTestId("mcp-held-count")).toHaveText("2 not accepted");
+    await expect(held.locator('[data-testid="mcp-held-tool"][data-tool="lookup"]')).toHaveAttribute("data-kind", "changed");
+    await expect(held.locator('[data-testid="mcp-held-tool"][data-tool="upload"]')).toHaveAttribute("data-kind", "added");
+    await expect(held.locator('[data-testid="mcp-held-tool"][data-tool="lookup"] [data-field="description"] [data-testid="mcp-held-now"]')).toContainText("Wording-two");
+    await expect(panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "leash" }).first()).toContainText("changed");
+    await expect(row.getByTestId("mcp-pinning")).toContainText("Project and editor servers are not pinned");
+    // Told once: the inbox has one alert for this change.
+    await expect.poll(told).toBe(toldBefore + 1);
+    // Connected again, it gives new instructions too: held beside the tools, and told as a change of its own.
+    await row.getByTestId("mcp-reconnect").click();
+    await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+    await expect(row.getByTestId("mcp-held-count")).toHaveText("3 not accepted");
+    await expect(held.locator('[data-testid="mcp-held-instructions"] [data-testid="mcp-held-was"]')).toContainText("Instructions-one");
+    await expect(held.locator('[data-testid="mcp-held-instructions"] [data-testid="mcp-held-now"]')).toContainText("Instructions-two");
+    await expect.poll(told).toBe(toldBefore + 2);
+    // Listed again as it is, nothing more is told.
+    await row.getByTestId("mcp-reconnect").click();
+    await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
+    await expect(held).toBeVisible();
+    expect(await told()).toBe(toldBefore + 2);
+    await shoot(page, "mcp-15-tools-held");
+
+    // Meanwhile the model is offered the accepted lookup and instructions, and no upload.
+    const b = await session();
+    await b.say(search);
+    const before = (await b.say(find)).split("\n");
+    expect(before[0]).toContain("Wording-one");
+    expect(before[4]).toContain("Instructions-one");
+    expect([...before.slice(1, 4), before[5]]).toEqual(["Not in the request.", "Not in the request.", "Not in the request.", "Not in the request."]);
+    // A call of the new tool is not sent.
+    await b.say(`script:calls ${JSON.stringify([{ name: "mcp_call", input: { tool: "leash__upload", arguments: { path: "/x" } } }])}`);
+    expect((await b.results()).at(-1)).toContain("No tool named leash__upload");
+
+    // The owner accepts: a session from here is offered what the server lists.
+    await row.getByTestId("mcp-accept").click();
+    await expect(held).toHaveCount(0);
+    await expect(panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "leash" }).first()).not.toContainText("changed");
+    await shoot(page, "mcp-16-tools-accepted");
+    const c = await session();
+    await c.say(search);
+    const after = (await c.say(find)).split("\n");
+    expect([after[0], after[4]]).toEqual(["Not in the request.", "Not in the request."]);
+    for (const line of [...after.slice(1, 4), after[5]]) expect(line).not.toBe("Not in the request.");
+  } finally {
+    for (const id of sessions) await request.delete(`/api/sessions/${id}`).catch(() => {});
+    await request.delete("/api/mcp/servers/leash").catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -7,6 +7,8 @@ import { ChevronRight, Download, Eye, Globe, KeyRound, LogOut, RefreshCw, Rotate
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
+import type { ToolChange, ToolDef, ToolField } from "../../../../src/mcp/pins.ts";
+import { CLASS_KEYS, type ClassKey } from "../../../../src/mcp/class.ts";
 import type { ProjectServer, ProjectState } from "../../../../src/mcp/project.ts";
 import { api, reportError, failed, useStore } from "../../lib/store.ts";
 import type { Outcome } from "../../../../src/mcp/channel.ts";
@@ -66,13 +68,13 @@ function ProjectReader({ p, x, decide }: { p: ProjectState; x: ProjectServer; de
       <ReaderHead
         title={x.name}
         path={x.target}
-        desc={p.agent
+        desc={(p.agent
           ? waiting
             ? `The agent file ${p.agent} defines this server for itself. Keel starts it for that agent while it works only once you approve it, as it reads now: a change to its entry waits for you again.`
             : x.state === "approved" ? `The ${p.agent} agent gets it while it works, inside its own sandbox, and it ends when the agent finishes. A change to its entry waits for you again.` : "It is never started for this agent."
           : waiting
           ? "This project's .mcp.json names this server. Keel starts it for the sessions working in the project only once you approve it, as it reads now: a change to its entry waits for you again."
-          : x.state === "approved" ? "Sessions working in this project get it, inside their own sandbox. A change to its entry in .mcp.json waits for you again." : "It is never started for this project."}
+          : x.state === "approved" ? "Sessions working in this project get it, inside their own sandbox. A change to its entry in .mcp.json waits for you again." : "It is never started for this project.") + (x.state !== "rejected" ? " Its tools are not pinned: a change of what it lists reaches its sessions without asking." : "")}
         facts={[
           ["State", <span data-testid="mcp-project-state">{PROJECT_LABEL[x.state]}</span>],
           p.agent ? ["Agent file", tilde(p.file ?? p.root)] : ["Project", tilde(p.root)],
@@ -94,6 +96,9 @@ function ProjectReader({ p, x, decide }: { p: ProjectState; x: ProjectServer; de
 
 function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
   const base = `/api/mcp/servers/${encodeURIComponent(s.name)}`;
+  // Pinned as it was when this build first ran: opening it is the look; the note stays while it is open.
+  const [upgraded] = useState(!!s.pinned_at_upgrade);
+  useEffect(() => { if (s.pinned_at_upgrade) act(`${base}/pin-seen`); }, []);
   const canSignIn = s.state === "needs_auth" || (s.sign_in && !s.signed_in && s.state === "error");
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="mcp-server" data-name={s.name} data-state={s.state}>
@@ -104,6 +109,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         facts={[
           ["State", LABEL[s.state]],
           ["Tools", <span data-testid="mcp-tool-count">{toolCount(s)}</span>],
+          ...(s.held ? [["Held", <span className="text-st-need" data-testid="mcp-held-count">{s.held.changes.length + (s.held.instructions ? 1 : 0)} not accepted</span>] as [string, React.ReactNode]] : []),
           ["Transport", s.sse ? "http, SSE (older)" : s.transport],
           ...(s.bundled ? [["Source", <span data-testid="mcp-bundled">Built in · {s.bundled}</span>] as [string, React.ReactNode]] : []),
           ...(s.plugin ? [["Source", <button type="button" className="underline decoration-line-strong underline-offset-2 hover:text-accent" data-testid="mcp-plugin" onClick={() => navigate({ name: "settings", section: "plugins" })}>Plugin · {s.plugin}</button>] as [string, React.ReactNode]] : []),
@@ -128,16 +134,30 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         )}
       </ReaderHead>
       <div className="k-reader-body">
+        {upgraded && (
+          <div className="k-issue" data-tone="quiet" data-testid="mcp-pinned-upgrade">
+            <div className="font-semibold">Pinned at upgrade</div>
+            <p className="mt-0.5 text-muted">Keel now pins each server's tools and instructions. {s.name} was set up before, so what it listed{s.pinned_at ? ` on ${when(s.pinned_at)}` : ""} was taken as accepted. Look its tools over below; a later change waits for you.</p>
+          </div>
+        )}
+        {s.held && <ToolChanges s={s} base={base} act={act} />}
         {offered(s) && s.tool_names.length > 0 && (s.bundled || s.plugin ? (
           <div>
             <div className="k-sub k-label">Tools</div>
             <div className="flex flex-wrap gap-1">{s.tool_names.map((t) => <span key={t} className="k-chip font-mono">{t}</span>)}</div>
           </div>
         ) : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
+        {s.class && <ClassSection s={s} base={base} act={act} />}
         {!s.bundled && <ChannelSection s={s} base={base} act={act} />}
         {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
         {(s.logging || s.log_rev > 0) && <ServerLog s={s} base={base} />}
         {!offered(s) && !s.error && <p className="text-caption text-faint">Its tools show once it connects.</p>}
+        {!s.bundled && (
+          <p className="text-caption text-faint" data-testid="mcp-pinning">
+            {s.session ? "Not pinned: a server an editor passes lives with its session, and a change of what it lists is not held."
+              : `${s.pinned_at ? `Its tools and instructions are pinned as accepted on ${when(s.pinned_at)}` : "Its tools and instructions are pinned at its first listing"}: a change waits for you. Project and editor servers are not pinned.`}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -218,6 +238,106 @@ const HINT_SAYS = {
   open_world: "The server says it reaches services outside this machine.",
   idempotent: "The server says calling it again with the same arguments changes nothing more.",
 } as const;
+const FIELD_WORD: Record<ToolField, string> = { title: "title", description: "description", input_schema: "input schema", annotations: "annotations" };
+const fieldText = (d: ToolDef | undefined, f: ToolField) => {
+  const v = d?.[f === "input_schema" ? "inputSchema" : f];
+  // A schema on one line, wrapped: the two sides read against each other without scrolling.
+  return v === undefined ? "(none)" : typeof v === "string" ? v : JSON.stringify(v).replace(/([,:])(?=["{[\w])/g, "$1 ");
+};
+
+// What a server lists that the owner has not accepted (src/mcp/pins.ts): each
+// tool new or changed, its accepted text beside the listed one, and one
+// acceptance for the set as shown. Until then sessions get the accepted ones.
+function ToolChanges({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
+  const held = s.held!;
+  return (
+    <div className="k-issue" data-tone="need" data-testid="mcp-held" data-digest={held.digest}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <div className="min-w-0 flex-1 font-semibold">{s.name} changed its {held.changes.length ? `tools${held.instructions ? " and instructions" : ""}` : "instructions"}</div>
+        <button type="button" className="k-btn" data-ink data-testid="mcp-accept" onClick={() => act(`${base}/accept`, { digest: held.digest })}>Accept the change</button>
+      </div>
+      <p className="mt-0.5 text-muted">
+        They differ from what you accepted{s.pinned_at ? ` on ${when(s.pinned_at)}` : ""}. Sessions are offered the accepted definitions and instructions, and a new tool not at all, until you accept the change. To stop using the server, remove it.
+      </p>
+      <ul className="mt-2.5 flex flex-col gap-2.5">
+        {held.instructions && (
+          <li data-testid="mcp-held-instructions">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-mono text-micro text-fg">instructions</span>
+              <span className="text-micro text-faint">what every session's system prompt says of the server</span>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-1.5">
+              <div className="min-w-0">
+                <div className="k-label">instructions, accepted</div>
+                <pre className="mt-0.5 max-h-[12rem] overflow-auto rounded-md bg-code px-2 py-1 font-mono text-micro whitespace-pre-wrap break-words text-muted" data-testid="mcp-held-was">{held.instructions.was ?? "(none)"}</pre>
+              </div>
+              <div className="min-w-0">
+                <div className="k-label">instructions, given now</div>
+                <pre className="mt-0.5 max-h-[12rem] overflow-auto rounded-md bg-code px-2 py-1 font-mono text-micro whitespace-pre-wrap break-words" data-testid="mcp-held-now">{held.instructions.now ?? "(none)"}</pre>
+              </div>
+            </div>
+          </li>
+        )}
+        {held.changes.map((c: ToolChange) => (
+          <li key={c.name} data-testid="mcp-held-tool" data-tool={c.name} data-kind={c.kind}>
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-mono text-micro text-fg">{c.name}</span>
+              <span className="text-micro text-faint">{c.kind === "added" ? "new tool" : `changed: ${c.fields.map((f) => FIELD_WORD[f]).join(", ")}`}</span>
+            </div>
+            {(c.kind === "added" ? (["description", "input_schema"] as ToolField[]) : c.fields).map((f) => (
+              <div key={f} className={cn("mt-1 grid gap-1.5", c.kind === "changed" && "grid-cols-2")} data-testid="mcp-held-field" data-field={f}>
+                {c.kind === "changed" && (
+                  <div className="min-w-0">
+                    <div className="k-label">{FIELD_WORD[f]}, accepted</div>
+                    <pre className="mt-0.5 max-h-[12rem] overflow-auto rounded-md bg-code px-2 py-1 font-mono text-micro whitespace-pre-wrap break-words text-muted" data-testid="mcp-held-was">{fieldText(c.was, f)}</pre>
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <div className="k-label">{FIELD_WORD[f]}, {c.kind === "changed" ? "listed now" : "as listed"}</div>
+                  <pre className="mt-0.5 max-h-[12rem] overflow-auto rounded-md bg-code px-2 py-1 font-mono text-micro whitespace-pre-wrap break-words" data-testid="mcp-held-now">{fieldText(c.now, f)}</pre>
+                </div>
+              </div>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const CLASS_WORD: Record<ClassKey, { q: string; yes: string; no: string }> = {
+  outside: { q: "Returns outside content", yes: "What it returns can be written by others (pages, mail, issues).", no: "What it returns is the owner's own." },
+  sends: { q: "Can send outward", yes: "A call's arguments can leave the machine.", no: "It keeps what it is given on this machine." },
+  account: { q: "Holds an account", yes: "It acts as you somewhere.", no: "It acts as no one." },
+};
+const BY_WORD = { owner: "your answer", config: "read from its config", assumed: "assumed" } as const;
+
+// What kind of server it is, for the guards that weigh where content comes
+// from and goes (src/mcp/class.ts): read from its config, else assumed, and
+// the owner's answer over both.
+function ClassSection({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
+  const c = s.class!;
+  const put = (key: ClassKey, v: boolean | null) => act(`${base}/class`, { [key]: v }, "PUT");
+  return (
+    <div data-testid="mcp-class">
+      <div className="k-sub k-label">What kind of server it is</div>
+      <div className="flex flex-col gap-1.5">
+        {CLASS_KEYS.map((k) => (
+          <div key={k} className="flex flex-wrap items-center gap-x-3 gap-y-1" data-testid="mcp-class-row" data-key={k} data-yes={c[k].yes} data-by={c[k].by}>
+            <span className="w-[11rem] text-caption text-fg">{CLASS_WORD[k].q}</span>
+            {s.plugin ? <span className="text-caption text-muted">{c[k].yes ? "Yes" : "No"}</span>
+              : <Seg value={c[k].yes ? "yes" : "no"} options={[["yes", "Yes"], ["no", "No"]]} label={CLASS_WORD[k].q} onChange={(v) => put(k, v === "yes")} />}
+            <span className="min-w-0 flex-1 text-micro text-faint">
+              {c[k].yes ? CLASS_WORD[k].yes : CLASS_WORD[k].no} {c[k].by === "owner" ? "Your answer." : `${c[k].why[0]!.toUpperCase()}${c[k].why.slice(1)} (${BY_WORD[c[k].by]}).`}
+              {c[k].by === "owner" && !s.plugin && <button type="button" className="k-link ml-2 hover:text-fg hover:underline" data-testid="mcp-class-forget" onClick={() => put(k, null)}>Forget my answer</button>}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
   const [all, setAll] = useState(false);
   const reads = new Set(s.read_tools);
@@ -235,12 +355,14 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
           const read = reads.has(t);
           const hint = s.hinted_reads.includes(t);
           const says = s.tool_hints?.[t] ?? [];
+          const held = s.held?.changes.find((c) => c.name === t)?.kind;
           return (
             <button
               key={t}
               type="button"
               data-testid="mcp-tool-read"
               data-tool={t}
+              data-held={held}
               data-hints={says.join(" ") || undefined}
               aria-pressed={read}
               title={`${read ? "Counts as a read: runs without asking. Click to ask first again." : "Asks before it runs. Click to count it as a read."}${hint ? " The server calls it read-only." : ""}${says.map((w) => ` ${HINT_SAYS[w]}`).join("")}`}
@@ -252,6 +374,7 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
             >
               {read && <Eye className="size-3" aria-hidden />}
               {t}
+              {held && <span className="text-st-need" aria-hidden>·{held === "added" ? "new" : "changed"}</span>}
               {hint && !read && <span className="text-faint" aria-hidden>·ro</span>}
               {says.map((w) => <span key={w} className={w === "destructive" ? "text-danger" : "text-faint"} aria-hidden>·{HINT_MARK[w]}</span>)}
             </button>
@@ -636,7 +759,7 @@ export default function McpServers() {
     }
   };
   const all = servers ?? [];
-  const entry = (s: McpServerState) => ({ id: s.name, name: s.name, desc: s.bundled ?? tilde(s.target), mark: mcpMark(s), markLabel: LABEL[s.state], aside: s.state === "ready" || s.state === "idle" ? `${s.tools}` : LABEL[s.state].toLowerCase(), testid: "mcp-entry" });
+  const entry = (s: McpServerState) => ({ id: s.name, name: s.name, desc: s.bundled ?? tilde(s.target), mark: s.held ? "need" as const : mcpMark(s), markLabel: s.held ? "Tools changed" : s.pinned_at_upgrade ? "Pinned at upgrade" : LABEL[s.state], aside: s.held ? "changed" : s.pinned_at_upgrade ? "pinned at upgrade" : s.state === "ready" || s.state === "idle" ? `${s.tools}` : LABEL[s.state].toLowerCase(), testid: "mcp-entry" });
   const groups: Group[] = [
     { id: "yours", title: "Yours", path: "mcp.json", entries: all.filter((s) => !s.bundled && !s.plugin).map(entry) },
     { id: "plugins", title: "From plugins", entries: all.filter((s) => s.plugin).map((s) => ({ ...entry(s), desc: `${s.plugin} · ${tilde(s.target)}` })) },
@@ -652,6 +775,7 @@ export default function McpServers() {
   const ready = all.filter((s) => s.state === "ready" || s.state === "idle" || s.state === "armed");
   const waiting = all.filter((s) => s.state === "needs_auth").length;
   const failing = all.filter((s) => mcpMark(s) === "fail").length;
+  const changedServers = all.filter((s) => s.held).length;
   const rows = importRows(importable);
   const fresh = rows.filter((r) => !r.configured).length;
   const freshAll = rows.filter((r) => !r.configured && !r.first.project).length;
@@ -661,10 +785,11 @@ export default function McpServers() {
     <div data-testid="mcp-panel">
       <FolderLine global="Tools load on demand: the model searches for them" tally={[
         { n: all.length, label: "servers" },
-        { n: ready.reduce((n, s) => n + s.tools, 0), label: "tools offered" },
+        { n: ready.reduce((n, s) => n + s.tools - (s.held?.changes.filter((c) => c.kind === "added").length ?? 0), 0), label: "tools offered" },
         ...(waiting ? [{ n: waiting, label: "need sign-in", tone: "need" as const }] : []),
         ...(failing ? [{ n: failing, label: "failed", tone: "fail" as const }] : []),
         ...(pendingProjects ? [{ n: pendingProjects, label: "wait for your approval", tone: "need" as const }] : []),
+        ...(changedServers ? [{ n: changedServers, label: changedServers === 1 ? "changed its tools" : "changed their tools", tone: "need" as const }] : []),
       ]} />
       {note && (
         <div className="k-issue mb-3 flex items-center gap-2" data-tone="quiet" data-testid="mcp-note">

@@ -28,7 +28,8 @@ import { costLine, costs, rankWaiting, type WaitCost, type WaitNow } from "../co
 // `review`: a pull request review from GitHub is ready, was posted, or failed (src/prreview/watch.ts).
 // `outage`: an incident of the daemon's, across sessions (src/automation/incidents.ts): a provider down
 // or failing, a refused credential, the judge, a stall, a stop of the daemon, the disk. One an incident.
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine", "outage", "review"] as const;
+// `mcp`: an MCP server changed its tool definitions and they wait for the owner (src/mcp/pins.ts).
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine", "outage", "review", "mcp"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
 // Sent means the channel took it, not that the owner saw it.

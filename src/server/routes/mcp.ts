@@ -22,6 +22,7 @@ import * as channels from "../../automation/channels.ts";
 import { confine, sandboxStatus } from "../../safety/sandbox.ts";
 import { readOptsFor } from "../../safety/sandbox-config.ts";
 import { sandboxScope } from "../../safety/sandbox-view.ts";
+import { alertHook } from "../../automation/core.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -49,6 +50,19 @@ export const mcpRoutes: RouteModule = (deps) => {
     run: (id, req, signal) => deps.engine.sample(id, req, signal),
   };
   g.__keelMcp = m;
+  // A server that changed its tools is told to the owner once a change (src/mcp/pins.ts); the model is offered what the owner accepted.
+  const list = (n: string[]) => (n.length > 4 ? `${n.slice(0, 4).join(", ")} and ${n.length - 4} more` : n.join(", "));
+  m.onToolsHeld = (name, changes, instructions) => {
+    const added = changes.filter((c) => c.kind === "added").map((c) => c.name), changed = changes.filter((c) => c.kind === "changed").map((c) => c.name);
+    const what = [changed.length ? `changed ${list(changed)}` : "", added.length ? `added ${list(added)}` : "", instructions ? "rewrote its instructions" : ""].filter(Boolean);
+    const said = what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0];
+    alertHook.raise?.("mcp", null, `${name} changed its tools`, `The MCP server ${name} ${said}. Sessions keep the definitions and instructions you accepted, and a new tool is not offered, until you accept the change in Settings > MCP servers.`, { mcp_server: name });
+  };
+  // Servers set up before pins were kept are pinned as they list now: the owner is told once, to look them over.
+  m.onUpgradePinned = (names) => {
+    const n = names.length;
+    alertHook.raise?.("mcp", null, `${n} server${n === 1 ? " was" : "s were"} pinned as ${n === 1 ? "it is" : "they are"} now: review in Settings > MCP servers`, `Keel now pins each MCP server's tools and instructions, and holds a later change until you accept it. ${list(names)} ${n === 1 ? "was" : "were"} set up before, so what ${n === 1 ? "it lists" : "they list"} now was taken as accepted. Look ${n === 1 ? "it" : "them"} over in Settings > MCP servers.`, n === 1 ? { mcp_server: names[0] } : {});
+  };
   installMcpTools(m);
   // A call whose server asked the owner a question waits on the owner: a
   // drain does not wait for it, and a restart asks again on the same card.
@@ -279,6 +293,41 @@ export const mcpRoutes: RouteModule = (deps) => {
         const b = await body(req);
         if (!Array.isArray(b.tools)) return bad("tools is a list of tool names");
         try { m.setReads(req.params.name, b.tools); } catch (e) { return bad((e as Error).message, 409); }
+        return servers();
+      },
+    },
+    // The owner accepts the tool definitions a server lists now (the change set the owner was shown: `digest`).
+    "/api/mcp/servers/:name/accept": {
+      POST: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        if (typeof b.digest !== "string" || !b.digest) return bad("digest is required: the change set you were shown (held.digest)");
+        try { m.acceptTools(req.params.name, b.digest); } catch (e) { return bad((e as Error).message, (e as { status?: number }).status ?? 400); }
+        return servers();
+      },
+    },
+    // The owner looked at a server that was pinned as it was when this build first ran.
+    "/api/mcp/servers/:name/pin-seen": {
+      POST: (req: any) => known(req.params.name) ?? (m.pinSeen(req.params.name), servers()),
+    },
+    // The owner says what kind of server it is: each of outside, sends and account true, false, or null to forget the answer.
+    "/api/mcp/servers/:name/class": {
+      PUT: async (req: any) => {
+        const k = known(req.params.name);
+        if (k) return k;
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        const answers: Record<string, boolean | null> = {};
+        for (const key of ["outside", "sends", "account"]) {
+          if (!(key in b)) continue;
+          if (b[key] !== null && typeof b[key] !== "boolean") return bad(`${key} is true, false or null`);
+          answers[key] = b[key];
+        }
+        try { m.setClass(req.params.name, answers); } catch (e) { return bad((e as Error).message, 409); }
         return servers();
       },
     },
