@@ -66,6 +66,7 @@ export function useHand() {
   const [held, setHeld] = useState(false);
   const at = useRef({
     pointer: false, focus: false, rows: null as HTMLElement | null,
+    list: null as HTMLElement | null, // the list the pointer is in
     kept: 0, // menus of the list's rows that are open over it
     moved: 0, // when the pointer last moved, pressed or scrolled in the list
     idle: undefined as ReturnType<typeof setTimeout> | undefined,
@@ -82,8 +83,9 @@ export function useHand() {
     else a.timer = setTimeout(() => { letGo(); setHeld(false); }, LEAVE_MS);
   }, []);
   // The pointer is a hand while it moves: at rest for IDLE_MS it holds nothing until it moves again.
-  const stir = useCallback(() => {
+  const stir = useCallback((e?: { currentTarget: EventTarget | null }) => {
     const a = at.current;
+    if (e?.currentTarget instanceof HTMLElement) a.list = e.currentTarget;
     a.moved = performance.now();
     if (!a.pointer) set({ pointer: true });
     if (a.idle !== undefined) return;
@@ -104,9 +106,13 @@ export function useHand() {
   }, [set]);
   useEffect(() => {
     const look = () => { if (at.current.focus) set({}); };
+    // The pointer is somewhere else now. The list's own leave can be lost: when what was under the pointer
+    // is taken out of the page (a pin's icon drawn anew under it) the browser tells no one it left.
+    const away = (e: PointerEvent) => { const l = at.current.list; if (at.current.pointer && l && !(e.target instanceof Node && l.contains(e.target))) rest(); };
     addEventListener("focusin", look);
-    return () => { removeEventListener("focusin", look); clearTimeout(at.current.timer); clearTimeout(at.current.idle); };
-  }, [set]);
+    addEventListener("pointerover", away, true);
+    return () => { removeEventListener("focusin", look); removeEventListener("pointerover", away, true); clearTimeout(at.current.timer); clearTimeout(at.current.idle); };
+  }, [set, rest]);
   const on = useRef({
     onPointerEnter: stir,
     onPointerMove: stir,
