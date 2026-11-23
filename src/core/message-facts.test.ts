@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { requestShape } from "../admin/trace.ts";
 import { zoneBytes } from "../admin/zones.ts";
 import type { Message } from "./types.ts";
-import { blobSize, markOf, messageFacts } from "./message-facts.ts";
+import { blobSize, keyBlocks, markOf, messageFacts } from "./message-facts.ts";
 
 // As the store hands bodies out: frozen all the way down.
 const frozen = <T>(v: T): T => {
@@ -60,4 +60,19 @@ test("what is kept is what a fresh measure gives, and a message with a new block
   expect(messageFacts(asAssistant)).toEqual(fresh(asAssistant));
   const extra = { role: "user", content: [stored(1), img], note: 1 } as unknown as Message;
   expect(messageFacts(extra)).toEqual(fresh(extra));
+});
+
+test("a message read again from the table, as new objects of the same text, is still known", () => {
+  const text = JSON.stringify({ results: [{ type: "tool_result", tool_use_id: "t1", content: "r ".repeat(20_000) }] });
+  const read = () => { const body = frozen(JSON.parse(text)); keyBlocks(body, text); return { role: "user", content: [body.results[0]] } as Message; };
+  const first = read();
+  const facts = messageFacts(first);
+  // The run was given back and read again: other objects, the same text.
+  const again = read();
+  expect(again.content[0]).not.toBe(first.content[0]);
+  expect(longTexts(() => { expect(messageFacts(again)).toBe(facts); })).toBe(0);
+  // Another text is another message.
+  const other = JSON.stringify({ results: [{ type: "tool_result", tool_use_id: "t1", content: "s ".repeat(20_000) }] });
+  const body = frozen(JSON.parse(other)); keyBlocks(body, other);
+  expect(messageFacts({ role: "user", content: [body.results[0]] } as Message).mark).not.toBe(facts.mark);
 });

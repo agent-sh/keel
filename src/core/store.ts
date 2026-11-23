@@ -16,6 +16,7 @@ import { encodeOwed, OWED_FILE, OWED_FILE_MAX, OWED_V, owedLineKey, owedRefusal,
 import { fileFacts, openedLog, restLog, sealLog } from "./log-pages.ts";
 import { holdStore, logBytes, storePath } from "./store-files.ts";
 import { Side } from "./side.ts";
+import { keyBlocks } from "./message-facts.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
 
 // Every transaction of this connection begins as a writer (BEGIN IMMEDIATE).
@@ -130,6 +131,12 @@ const rowToEvent = (r: EventRow): StoredEvent => ({ ...r, parent: r.parent ?? nu
 
 // Cached events are shared by every reader: frozen, so a reader that changes
 // one fails loudly instead of changing what the next reader sees.
+// A body as the table holds it, parsed and frozen, its blocks known by its text (src/core/message-facts.ts).
+function parsedBody(text: string): unknown {
+  const v = deepFreeze(JSON.parse(text));
+  keyBlocks(v, text);
+  return v;
+}
 function deepFreeze<T>(v: T): T {
   if (v && typeof v === "object" && !Object.isFrozen(v)) {
     Object.freeze(v);
@@ -1000,7 +1007,7 @@ export class Store {
       // The kept copy is what a read from the table would give (a JSON round trip).
       const run = at % RUN === 0 ? (k.runs[at / RUN] = { data: [], bytes: 0, used: ++this.tick }) : k.runs[Math.floor(at / RUN)];
       if (run && run.data.length === at % RUN) {
-        run.data.push(deepFreeze(JSON.parse(text)));
+        run.data.push(parsedBody(text));
         run.bytes += text.length * BODY_COST;
         run.used = ++this.tick;
         this.charge(k, text.length * BODY_COST);
@@ -1010,7 +1017,7 @@ export class Store {
         // Its run is not in memory: the body is kept by itself (see `fresh`), a few runs' worth at most.
         if ((k.fresh?.size ?? 0) >= 4 * RUN) this.dropFresh(k);
         const bytes = text.length * BODY_COST;
-        (k.fresh ??= new Map()).set(at, { data: deepFreeze(JSON.parse(text)), bytes });
+        (k.fresh ??= new Map()).set(at, { data: parsedBody(text), bytes });
         this.charge(k, bytes);
       }
       // The branch that ended at its parent now ends at it. An event on another
@@ -1153,7 +1160,7 @@ export class Store {
     }
     const run: Run = { data: [], bytes: 0, used: ++this.tick };
     for (const r of rows) {
-      run.data.push(deepFreeze(JSON.parse(r.data)));
+      run.data.push(parsedBody(r.data));
       run.bytes += r.data.length * BODY_COST;
     }
     if (k.gone) {

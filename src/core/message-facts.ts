@@ -5,8 +5,9 @@
 // Each was a JSON text of the whole history made for every request, four in all, and a long
 // session's requests are megabytes each: the daemon's memory rose by hundreds of MB of those texts
 // between two collections. A message whose blocks are the stored ones (frozen: the store hands out
-// bodies that cannot change) is worked out once and kept for as long as its blocks are; a message
-// with a block made for this request is worked out again each time. What is kept is the same value
+// bodies that cannot change) is worked out once and kept, also when its run is read again from the
+// table (its blocks are known by the text they were read from); a message with a block made for this
+// request is worked out again each time. What is kept is the same value
 // a fresh reading gives, so a fingerprint stored before (telemetry's prefix) still matches.
 import type { Message } from "./types.ts";
 
@@ -29,15 +30,50 @@ function stored(m: Message): boolean {
   return true;
 }
 
-// By the message's first block: the messages that began with it (a projection may merge it with
-// the blocks after it differently once), each with its blocks.
+// The blocks of a stored body, by the text the body was read from: the same text read again (its
+// run was given back and read once more) gives new objects with the same keys, so a message made of
+// them is still known. Set by the store as it parses a body (keyBlocks).
+const keys = new WeakMap<object, string>();
+export function keyBlocks(body: unknown, text: string): void {
+  if (!body || typeof body !== "object") return;
+  const h = `${Bun.hash(text).toString(36)}.${text.length.toString(36)}`;
+  for (const list of [(body as { blocks?: unknown }).blocks, (body as { results?: unknown }).results]) {
+    if (!Array.isArray(list)) continue;
+    list.forEach((b, i) => { if (b && typeof b === "object") keys.set(b, `${h}.${i}`); });
+  }
+}
+
+// Facts of messages whose blocks all have keys, by the role and the keys; bounded, the oldest read go first.
+const KEPT = 8192;
+const byKey = new Map<string, MessageFacts>();
+// And of messages of frozen blocks without keys, by the message's first block: the messages that began
+// with it (a projection may merge it with the blocks after it differently once), each with its blocks.
 type Seen = { role: string; blocks: readonly object[]; facts: MessageFacts };
 const SEEN_PER_BLOCK = 4;
 const seen = new WeakMap<object, Seen[]>();
 const same = (s: Seen, m: Message) => s.role === m.role && s.blocks.length === m.content.length && s.blocks.every((b, i) => b === m.content[i]);
 
+function keyOf(m: Message): string | undefined {
+  let k = m.role;
+  for (const b of m.content as object[]) {
+    const x = keys.get(b);
+    if (x === undefined) return undefined;
+    k += ` ${x}`;
+  }
+  return k;
+}
+
 export function messageFacts(m: Message): MessageFacts {
   if (!stored(m)) return reckon(m);
+  const key = keyOf(m);
+  if (key !== undefined) {
+    const had = byKey.get(key);
+    if (had) { byKey.delete(key); byKey.set(key, had); return had; }
+    const facts = reckon(m);
+    byKey.set(key, facts);
+    if (byKey.size > KEPT) byKey.delete(byKey.keys().next().value!);
+    return facts;
+  }
   const first = m.content[0] as object;
   const list = seen.get(first);
   const hit = list?.find((s) => same(s, m));
