@@ -175,7 +175,8 @@ test("a parked subagent notifies its busy parent before the final report", async
     expect(parked[0].data.text).not.toContain("child-only wait details");
     const waited = events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results)
       .find((r: any) => String(r.content).includes('"timed_out":true'));
-    expect(JSON.parse(waited.content).status[a.id]).toBe("waiting");
+    // (The memory store's block for the call may follow the tool's own JSON: src/integrations/tacit.ts appends it to the result.)
+    expect(JSON.parse(String(waited.content).replace(/\n*<memory [^>]*>[\s\S]*<\/memory>\s*$/, "")).status[a.id]).toBe("waiting");
     const ends = events.filter((e: any) => e.kind === "turn_end");
     const report = events.find((e: any) => e.kind === "user" && e.data.agent_id === a.id && e.data.report_id);
     expect(ends[0].seq).toBeLessThan(parked[0].seq);
