@@ -21,6 +21,7 @@
 // The reads import nothing of the daemon: the read thread loads them
 // (read-tasks.ts).
 import type { Database } from "bun:sqlite";
+import { KIND_OF, PART_BITS, SEARCH_TABLE, searchTable } from "./search-index.ts";
 
 // `below`: where the read goes on from (a place in the index, or a seq when
 // the index cannot be asked), null from the newest. `max`: how many index
@@ -35,7 +36,7 @@ const END = Number.MAX_SAFE_INTEGER;
 // A name the index can look up: it holds a letter or a digit (the index's words are made of those).
 const worded = (name: string) => /[\p{L}\p{N}]/u.test(name);
 // Whether every name can be asked of the index (else the replies themselves are looked through, on the read thread).
-export const namedByIndex = (db: Database, names: string[]) => names.every(worded) && !!db.query("SELECT 1 FROM sqlite_master WHERE name = 'search_idx'").get();
+export const namedByIndex = (db: Database, names: string[]) => names.every(worded) && !!searchTable(db);
 
 type ReplyRow = { seq: number; id: string; data: string };
 function callsOf(rows: ReplyRow[], wanted: string[]): NamedReply[] {
@@ -71,8 +72,12 @@ export function callsNamed(db: Database, a: NamedAsk): NamedPage {
   // session's events (a row is written with its event, and an index made
   // again is filled in the events' order).
   const match = `text : (${a.names.map((n) => `^"${n.replaceAll('"', '""')}"`).join(" OR ")})`;
-  const found = db.query<{ doc: number; id: string; session: string; kind: string }, [string, number, number]>(
-    "SELECT rowid AS doc, event_id AS id, session_id AS session, kind FROM search_idx WHERE search_idx MATCH ? AND rowid < ? ORDER BY rowid DESC LIMIT ?",
+  // (The index of this layout says which event a row is of by its number; the one before, while it is read, by its columns.)
+  const T = searchTable(db);
+  const found = db.query<{ doc: number; id: string; session: string; kind: string }, [string, number, number]>(T === SEARCH_TABLE
+    ? `SELECT w.rowid AS doc, e.id AS id, e.session_id AS session, ${KIND_OF("e", `(w.rowid & ${(1 << PART_BITS) - 1})`)} AS kind
+       FROM ${SEARCH_TABLE} w JOIN events e ON e.rowid = (w.rowid >> ${PART_BITS}) WHERE ${SEARCH_TABLE} MATCH ? AND w.rowid < ? ORDER BY w.rowid DESC LIMIT ?`
+    : "SELECT rowid AS doc, event_id AS id, session_id AS session, kind FROM search_idx WHERE search_idx MATCH ? AND rowid < ? ORDER BY rowid DESC LIMIT ?",
   ).all(match, a.below ?? END, a.max);
   const ids = [...new Set(found.filter((f) => f.session === a.session && f.kind === "tool_use").map((f) => f.id))];
   const reply = db.query<ReplyRow, [string, string, number]>("SELECT seq, id, data FROM events WHERE id = ? AND session_id = ? AND seq < ? AND kind = 'assistant'");

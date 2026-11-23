@@ -8,6 +8,9 @@
 // `daemon.checkpoint`: the checkpoint thread's counts (passes, starts of the
 // log, how long it held the write lock, the most frames the log held).
 import { restOf } from "../../core/rest.ts";
+// `daemon.search_fill`: a search index made again, filled on its thread
+// (search-fill.ts): running, events filled, how long it took.
+import { fill } from "./search-fill.ts";
 import { Resources } from "../../admin/resources.ts";
 import { checkpointerOf } from "../../core/checkpoint.ts";
 import type { RouteModule } from "../app.ts";
@@ -31,7 +34,7 @@ export const resourceRoutes: RouteModule = ({ store, bus }) => {
         // What the daemon holds of its sessions' events: how many sessions, the memory they are charged, and the budget.
         // And what its checkpoint thread did with the store's log (src/core/checkpoint.ts): absent when none works.
         const checkpoint = checkpointerOf(store)?.counts;
-        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, ...(checkpoint ? { checkpoint } : {}) } });
+        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) } });
       },
     },
   };
