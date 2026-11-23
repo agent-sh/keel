@@ -112,6 +112,8 @@ test("another machine is named in a narrow pane's head, and its part of the list
     // The far machine's sessions are in the list once its relay has told of them.
     await expect(page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${farId}"]`)).toBeAttached({ timeout: 30_000 });
     // Four panes: each about 440 px. The far session's head names its machine.
+    // Set from a page of this origin that runs none of the app: an open page writes its own panes back over them.
+    await page.goto("/api/daemon");
     await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 })); }, [local[0], farId, local[1], local[2]]);
     await page.goto(`/s/${local[0]}`);
     const pane = page.locator(`section.k-station[data-station="${farId}"]`);
@@ -122,6 +124,8 @@ test("another machine is named in a narrow pane's head, and its part of the list
     await expect(page.locator(`section.k-station[data-station="${local[1]}"]`).getByTestId("station-machine")).toHaveCount(0);
     await shoot(page, "fleet-presence-02-narrow-head");
     // A short window: the far machine's part begins below the list's view, and the foot names it.
+    // Set from a page of this origin that runs none of the app: an open page writes its own panes back over them.
+    await page.goto("/api/daemon");
     await page.evaluate((slots) => localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots, sizes: {}, active: 0 })), [local[0], local[1]]);
     await page.setViewportSize({ width: 1440, height: 700 });
     await page.goto(`/s/${local[0]}`);

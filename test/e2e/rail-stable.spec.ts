@@ -800,7 +800,8 @@ test("a busy list is quiet, and a row pinned with the pointer moves when the poi
     const reader = await mk("Reading the notes");
     const other = await mk("Notes for later");
     for (const id of [reader, other]) await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say The notes are long." } });
-    await page.goto(`/s/${reader}`);
+    // Set from a page of this origin that runs none of the app: an open page writes its own panes back over them.
+    await page.goto("/api/daemon");
     await page.evaluate((slots) => localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots, sizes: {}, active: 0 })), [reader, other]);
     await page.goto(`/s/${reader}`);
     await expect(page.locator("section.k-station")).toHaveCount(2);

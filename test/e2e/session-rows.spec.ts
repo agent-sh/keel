@@ -299,6 +299,8 @@ test("what needs you is named in a long list, and keeps its reason in a narrow o
     await expect(page.getByTestId("approval").first()).toBeVisible();
     // Four panes: the list is narrow, and the asking row says what it asks on a line of its own.
     await page.setViewportSize({ width: 1920, height: 1040 });
+    // Set from a page of this origin that runs none of the app: an open page writes its own panes back over them.
+    await page.goto("/api/daemon");
     await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 })); }, others.slice(0, 4));
     await page.goto(`/s/${others[0]}`);
     await expect(page.locator("section.k-station:not([inert] *)")).toHaveCount(4);
