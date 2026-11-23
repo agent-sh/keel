@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS check_pending (call_id TEXT PRIMARY KEY, data TEXT NO
 CREATE TABLE IF NOT EXISTS check_anyway (session_id TEXT NOT NULL, key TEXT NOT NULL, tree TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (session_id, key, tree)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS check_runs_key_tree ON check_runs(key, tree, ended);
 CREATE INDEX IF NOT EXISTS check_runs_session ON check_runs(session_id, ended, id);
+CREATE INDEX IF NOT EXISTS check_runs_tree ON check_runs(tree, ended);
 `;
 
 let store: Store | undefined;
@@ -83,6 +84,9 @@ export function bindLedger(s: Store) {
 }
 // (A test that bound a store of its own lets go of it: the ledger is process-wide.)
 export const unbindLedger = () => { store = undefined; };
+// The passes and failures of every check on one tree, newest first (an agent's work note, src/automation/leftovers.ts).
+export const decidedOn = (tree: string, limit = 200): Run[] =>
+  !tree ? [] : db()?.query<Run, [string, number]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_tree WHERE tree = ? AND result IN ('pass', 'fail') ORDER BY ended DESC LIMIT ?`).all(tree, limit) ?? [];
 export const setKeep = (n: number) => { keep = n; };
 export const bound = () => keep;
 const db = () => store?.db;

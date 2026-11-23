@@ -366,12 +366,18 @@ async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessi
 // What landing the branch needs, on lines of their own (landing.ts): its tip, the base's commits it lacks, its
 // conflict with the base from the overlap forecast's table, and the named checks that passed on its files as
 // they are (the check ledger, by the tree they ran on). Read as the agent ends; nothing is fetched.
+const FORECAST_WAIT_MS = 10_000;
 async function landingOf(store: Store, w: Worktree, sha: string | null, dirty: number): Promise<string> {
   try {
     const ov = forecastOf(store);
-    const against = ov && sha ? await ov.againstBase(w.repo_root, w.branch).catch(() => undefined) : undefined;
+    // (The forecast's pass is bounded by its git calls only: an agent's report does not wait on it past
+    // FORECAST_WAIT_MS.)
+    const late = Symbol("late");
+    const asked = ov && sha ? await Promise.race([ov.againstBase(w.repo_root, w.branch).catch(() => undefined), Bun.sleep(FORECAST_WAIT_MS).then(() => late)]) : undefined;
+    const against = asked === late ? undefined : (asked as Awaited<ReturnType<NonNullable<typeof ov>["againstBase"]>> | undefined);
     const base = against?.base ?? w.base;
     const conflict: BaseConflict = !ov ? { state: "unknown", why: "no overlap forecast runs here" }
+      : asked === late ? { state: "unknown", why: "the forecast did not finish in time" }
       : !against ? { state: "unknown", why: "the repository has no base branch, or the branch has no tip" }
       : against.state === "stale" ? { state: "unknown", why: "the forecast holds no row of these tips" }
       : against.state === "error" ? { state: "unknown", why: `git could not merge them: ${against.why}` }
