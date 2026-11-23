@@ -8,6 +8,7 @@
 // any error that is not a recognized modern one, as the spec's dual-era client
 // section says. Most servers in use today are legacy.
 import { chunks, pumpLines, pumpText } from "../core/proc.ts";
+import { CHANNEL_CAP, CHANNEL_METHOD } from "./channel.ts";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
@@ -141,6 +142,10 @@ export class McpClient {
   onListChanged?: () => void;
   // The resource list changed, or (after a subscription) one resource's body did.
   onResources?: (change: { list: true } | { uri: string }) => void;
+  // An event the server pushed (src/mcp/channel.ts), heard only from a server
+  // that declared the channel capability, as Claude Code registers its listener.
+  onChannel?: (params: unknown) => void;
+  get channel() { return !!this.capabilities.experimental?.[CHANNEL_CAP]; }
   // Set late, it still hears a close that already happened.
   private closeHook?: (why: string) => void;
   private closedWhy?: string;
@@ -300,6 +305,7 @@ export class McpClient {
     if (msg.method === "notifications/tools/list_changed") this.onListChanged?.();
     else if (msg.method === "notifications/resources/list_changed") this.onResources?.({ list: true });
     else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
+    else if (msg.method === CHANNEL_METHOD && this.channel) this.onChannel?.(msg.params);
   }
 
   // A legacy server's own request (2025-11-25: elicitation/create is sent

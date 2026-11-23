@@ -24,6 +24,7 @@ const from = {
   debug: () => import("./debug.ts").then((m): Record<string, Command> => ({ debug: m.debug })),
   import: () => import("./imports.ts").then((m): Record<string, Command> => ({ import: m.importCmd })),
   port: () => import("./port.ts").then((m): Record<string, Command> => ({ port: m.portCmd })),
+  mcp: () => import("./mcp.ts").then((m): Record<string, Command> => ({ mcp: m.mcpCmd })),
   completion: () => import("./help.ts").then((m): Record<string, Command> => ({ completion: m.completion })),
 } satisfies Record<string, () => Promise<Record<string, Command>>>;
 
@@ -40,7 +41,7 @@ export const WHERE: Record<string, keyof typeof from> = {
   providers: "providers",
   messages: "inspect", changes: "inspect", cost: "inspect",
   run: "run", "-p": "run", "--print": "run",
-  rules: "rules", debug: "debug", import: "import", port: "port", completion: "completion",
+  rules: "rules", debug: "debug", import: "import", port: "port", mcp: "mcp", completion: "completion",
 };
 
 export const isCommand = (name: string): boolean => Object.hasOwn(WHERE, name);

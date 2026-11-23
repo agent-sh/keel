@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename } from "node:path";
 import { ATTACHMENT_MAX, attachmentPath, saveAttachment } from "../../engine/attachments.ts";
+import { bodyOf } from "../../mcp/channel.ts";
 import { TEXT_MEDIA } from "../../engine/compact.ts";
 import { imageType } from "../../engine/images.ts";
 import type { Server } from "bun";
@@ -149,6 +150,7 @@ function originOf(e: StoredEvent, titleOf: (sid: string) => string | undefined, 
       return { origin: "parent", label: `Message from ${(pid && titleOf(pid)) || "the parent session"}`, text, meta: { parent_id: pid, agent_id: d.agent_id ?? null } };
     }
     case "peer": return { origin: "peer", label: "Message from another session", text, meta: { from: d.from ?? null, message_id: d.message_id ?? null } };
+    case "channel": return { origin: "channel", label: `Event from ${d.source ?? "a connected source"}`, text: bodyOf(text), meta: { source: d.source ?? null, event_id: d.event_id ?? null } };
   }
   if (text.startsWith('<external_input source="peer_session"')) return { origin: "peer", label: "Message from another session", text };
   return null;

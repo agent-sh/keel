@@ -12,6 +12,7 @@ import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { Markdown } from "../Markdown.tsx";
+import { ChannelEvent } from "../ChannelEvent.tsx";
 import { AgentMark, agentSaid, IconButton, STATE_INK, StopAgent, useAgentSaid, type AgentSaid } from "./bits.tsx";
 
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
@@ -209,6 +210,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
       </div>
     </Shell>
   );
+  if (kind === "channel") return <ChannelEvent e={e} />;
   if (reportCards || wakeCard || parkCards.length || (failCard && !fails.rest)) {
     // A part with no card of its own in the same input (a loop run, a goal's
     // input, a steer that brought reports along): as it reads, first, since it

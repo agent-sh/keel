@@ -90,7 +90,7 @@ const WHO: Record<string, string> = {
   owner: "the owner", queued: "a queued prompt", steer: "a steer", continue: "the owner's Resume", harness: "a harness note", restart: "a daemon restart",
   voice: "the owner by voice", hook: "a stop hook", momentum: "a momentum message", wait: "a wait wake", wake: "several wakes",
   subagent: "an agent report", loop: "a loop run", goal: "a goal check", task: "its parent's task", parent: "its parent",
-  peer: "another session", task_start: "a task from another session", verify_goal: "a goal verification", review: "a review request",
+  peer: "another session", channel: "an event from a connected source", task_start: "a task from another session", verify_goal: "a goal verification", review: "a review request",
   review_fix: "review findings", diagnostic: "a diagnostic", helper_digest: "the helper's digest", failures: "a failure notice",
   command: "the end of a command it waited on", provider_wait: "Keel, after the provider's wait",
 };
@@ -99,7 +99,7 @@ const LEAD: Record<string, string> = {
   owner: "Owner prompt", queued: "Queued prompt", steer: "Steer", continue: "Owner's Resume", harness: "Harness note", restart: "Resumed after a daemon restart",
   voice: "Owner by voice", hook: "Stop hook", momentum: "Momentum message", wait: "Wait wake", wake: "Several wakes",
   subagent: "Agent report", loop: "Loop run", goal: "Goal check", task: "Parent's task", parent: "Parent's message",
-  peer: "Message from another session", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
+  peer: "Message from another session", channel: "Event from a connected source", task_start: "Task from another session", verify_goal: "Goal verification", review: "Review request",
   review_fix: "Review findings", diagnostic: "Diagnostic", helper_digest: "Helper digest", failures: "Failure notice",
   command: "Command ended", provider_wait: "Resumed by itself after the provider's wait",
 };

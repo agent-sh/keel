@@ -11,7 +11,7 @@ export const ownerPrompt = (d: { kind?: unknown; origin?: unknown } | undefined)
 // Delivered input the transcript shows as a notice of its own (an agent's task
 // or report, a wake, a loop run), and a message from another session: neither
 // reads as a prompt of the owner's.
-export const SYSTEM_INPUT: ReadonlySet<unknown> = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal", "failures"]);
+export const SYSTEM_INPUT: ReadonlySet<unknown> = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal", "failures", "channel"]);
 export const PEER_PREFIX = '<external_input source="peer_session"';
 type Shown = { kind: string; data: { kind?: unknown; origin?: unknown; text?: unknown } };
 export const isPeerMessage = (e: Shown) => e.kind === "user" && (e.data.kind === "peer" || String(e.data.text ?? "").startsWith(PEER_PREFIX));

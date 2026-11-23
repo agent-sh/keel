@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
+import { bodyOf } from "../../../src/mcp/channel-text.ts";
 import { isLive, useAuto } from "../lib/automation.ts";
 import { heldWords } from "../../../src/core/state-words.ts";
 import { actions, api, reportError, reportUnlessGone, useStore, type BuildState, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
@@ -21,6 +22,9 @@ const chipBtn = "grid size-6 place-items-center rounded-md text-faint hover:text
 // `place`: the row's index among the queued (not steered) prompts; `off`: it
 // was queued on a branch the chat no longer shows.
 // `held`: the session is stopped and its queue waits for the owner to resume.
+// A queued event from outside reads as its source and its words, not its frame (src/mcp/channel.ts).
+const shownText = (q: QueueItem) => q.meta?.kind === "channel" ? `${String(q.meta.source ?? "")}: ${bodyOf(q.text)}` : q.text;
+
 function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId: string; place: number; off: boolean; held: boolean }) {
   // The one word of a message that waits, and when it is taken (src/core/state-words.ts).
   const waits = heldWords({ steer: q.steer, held });
@@ -73,7 +77,7 @@ function QueueRow({ q, sessionId, place, off, held }: { q: QueueItem; sessionId:
           className={cn(words, "rounded-md border border-line bg-sunken px-2 py-0.5 text-ui outline-none")}
         />
       ) : (
-        <span className={cn(words, "truncate text-ui")} title={q.text}>{q.text}</span>
+        <span className={cn(words, "truncate text-ui")} title={q.text}>{shownText(q)}</span>
       )}
       {!editing && <span className="shrink-0 text-caption text-faint" data-testid="queue-when" data-steer={q.steer || undefined}>{waits.when}</span>}
       {!editing && off && <span className="inline-flex shrink-0 items-center gap-1 text-caption text-warn" data-testid="queue-off-branch" title="Written while the chat showed another branch"><GitBranch className="size-3.5 shrink-0" />On another branch</span>}

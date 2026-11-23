@@ -60,7 +60,7 @@ function WebhookBox({ loop }: { loop: LoopRecord }) {
     <div className="mt-3 flex flex-col gap-2">
       <div className="flex items-center gap-2 text-caption text-muted">
         {loop.signed ? <ShieldCheck className="size-3.5 text-ok" /> : <KeyRound className="size-3.5" />}
-        <span data-testid="webhook-mode">{loop.signed ? "Signed requests only (HMAC-SHA256, five-minute window, each delivery once)" : "Anyone with the URL can start a run"}</span>
+        <span data-testid="webhook-mode">{loop.signed ? "Signed requests only (HMAC-SHA256, five-minute window, each delivery once)" : loop.push ? "Anyone with the URL can push an event" : "Anyone with the URL can start a run"}{loop.push ? " · each request is an event in the session" : ""}</span>
         <button
           type="button"
           data-testid="rotate-key"
@@ -148,6 +148,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const [signed, setSigned] = useState(true);
+  const [push, setPush] = useState(false);
   const [keys, setKeys] = useState<{ hook_key: string; hook_secret?: string } | null>(null);
   const isHook = schedule.trim().toLowerCase() === "webhook";
   const field = "w-full rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none focus:border-line-strong placeholder:text-faint";
@@ -159,7 +160,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
         e.preventDefault();
         setErr("");
         try {
-          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(isHook ? { signed } : {}) });
+          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(isHook ? { signed, ...(push ? { push } : {}) } : {}) });
           if (l.hook_key) setKeys({ hook_key: l.hook_key, hook_secret: l.hook_secret });
           else onDone(l.id);
         } catch (x) {
@@ -176,6 +177,12 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
         <label className="flex items-center gap-2 text-ui">
           <input type="checkbox" data-testid="new-loop-signed" checked={signed} onChange={(e) => setSigned(e.target.checked)} className="accent-[var(--accent)]" />
           Check signatures (HMAC, timestamp, replay window)
+        </label>
+      )}
+      {isHook && (
+        <label className="flex items-center gap-2 text-ui">
+          <input type="checkbox" data-testid="new-loop-push" checked={push} onChange={(e) => setPush(e.target.checked)} className="accent-[var(--accent)]" />
+          Push each request into the session as an event (read at its next step), not a run after its turn
         </label>
       )}
       {err && <p className="text-caption text-danger">{err}</p>}

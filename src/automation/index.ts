@@ -21,6 +21,7 @@ import * as failures from "./failures.ts";
 import * as outage from "./outage.ts";
 import * as snooze from "./snooze.ts";
 import * as undelivered from "./undelivered.ts";
+import * as channels from "./channels.ts";
 import { afterCallOff, afterTurn, capture, clip, D, flush, hasPending, setDeps, stopperOf } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
@@ -73,6 +74,7 @@ function init(deps: Deps) {
   consult.migrate();
   goals.migrate();
   silent.migrate();
+  channels.migrate();
   failures.init();
   outage.bind();
   // A called-off restart checks the goal turns its drain put off.
@@ -498,7 +500,7 @@ export const automationRoutes: RouteModule = (deps) => {
           deps.bus.emit({ t: "session", session: s });
           sid = s.id;
         }
-        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, tz: b.tz, created_by: "owner", signed: b.signed === undefined ? undefined : !!b.signed, min_interval_seconds: b.min_interval_seconds });
+        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, tz: b.tz, created_by: "owner", signed: b.signed === undefined ? undefined : !!b.signed, min_interval_seconds: b.min_interval_seconds, push: b.push === true });
         return json({ ...r.loop, hook_key: r.hook_key, hook_secret: r.hook_secret }, 201);
       }),
     },
@@ -525,7 +527,14 @@ export const automationRoutes: RouteModule = (deps) => {
       POST: async (req: any) => {
         const text = await req.text();
         const r = loops.webhook(req.params.key, text, req.headers);
-        return r.status === 200 ? json({ ok: true }) : bad(r.error ?? "refused", r.status);
+        if (r.status !== 200) return bad(r.error ?? "refused", r.status);
+        // A push loop's sender is told what became of its event: taken, waiting behind the owner's stop, a duplicate.
+        if (r.pushed) {
+          const p = await r.pushed;
+          const o = p.outcomes[0]!;
+          return o.state === "refused" ? json({ ok: false, state: o.state, error: o.reason }, o.reason?.includes("in a minute") ? 429 : 409) : json({ ok: true, state: o.state });
+        }
+        return json({ ok: true });
       },
     },
 

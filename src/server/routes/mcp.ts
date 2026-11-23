@@ -13,6 +13,7 @@ import { score } from "../../mcp/tools.ts";
 import { gate, presence } from "./permissions.ts";
 import { hookMcp } from "../../integrations/hooks.ts";
 import * as activity from "../../automation/activity.ts";
+import * as channels from "../../automation/channels.ts";
 import { confine, sandboxStatus } from "../../safety/sandbox.ts";
 import { readOptsFor } from "../../safety/sandbox-config.ts";
 import { sandboxScope } from "../../safety/sandbox-view.ts";
@@ -104,7 +105,21 @@ export const mcpRoutes: RouteModule = (deps) => {
     },
   });
 
-  const servers = () => json({ servers: m.list() });
+  // A server's pushed events go into the sessions that take them: the one an
+  // editor's own server is for, or those the owner named for one of theirs.
+  // The server is told what became of each, when it asked to be (STATUS_CAP).
+  m.onChannel = (from, params) => {
+    const targets = !from.on ? null : from.session ? [from.session] : channels.sessionsOf(from.server).map((x) => x.id);
+    void channels.push({ key: `mcp:${from.entry}`, name: from.server, via: "mcp" }, targets, params)
+      .then((p) => m.tellChannel(from.entry, { ...(p.event_id ? { event_id: p.event_id } : {}), outcomes: p.outcomes }))
+      .catch((e) => deps.errors.capture("server", e, { at: "mcp channel", mcp: from.entry }));
+  };
+  // Each server with where its events go and what became of the latest ones.
+  const withChannels = (list: ReturnType<typeof m.list>) => list.map((x) => x.bundled ? x : ({
+    ...x,
+    channel: { ...x.channel, sessions: x.session ? [] : channels.sessionsOf(x.name), recent: channels.recentOf(`mcp:${x.session ? `${x.name}@${x.session}` : x.name}`) },
+  }));
+  const servers = () => json({ servers: withChannels(m.list()) });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
   // A plugin's server goes and stops with its plugin (Settings > Plugins).
   const plugins = (name: string) => { const p = m.pluginOf(name); return p ? bad(`${name} comes with the plugin ${p}: turn the plugin off or remove it in Settings > Plugins`, 409) : null; };
@@ -130,7 +145,7 @@ export const mcpRoutes: RouteModule = (deps) => {
     // They run with the session's permissions and nothing more (see
     // McpManager.setSessionServers), and are never written to the owner's file.
     "/api/sessions/:id/mcp": {
-      GET: (req: any) => (deps.store.session(req.params.id) ? json({ servers: m.list(req.params.id) }) : bad("no such session", 404)),
+      GET: (req: any) => (deps.store.session(req.params.id) ? json({ servers: withChannels(m.list(req.params.id)) }) : bad("no such session", 404)),
       PUT: async (req: any) => {
         const s = deps.store.session(req.params.id);
         if (!s) return bad("no such session", 404);
@@ -173,7 +188,33 @@ export const mcpRoutes: RouteModule = (deps) => {
     },
     "/api/mcp/servers/:name": {
       DELETE: (req: any) =>
-        known(req.params.name) ?? plugins(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), servers())),
+        known(req.params.name) ?? plugins(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), channels.forget(req.params.name), servers())),
+    },
+    // Whether a server's pushed events are taken (src/mcp/channel.ts), off by default.
+    // { on } alone: the server's switch (off keeps the sessions named, so on again
+    // takes up where it was). { on, session }: that session takes its events or
+    // stops; a session named while the switch is off turns it on, which is what
+    // naming one asks for. A session's own server has the one switch, for its session.
+    "/api/mcp/servers/:name/channel": {
+      POST: async (req: any) => {
+        const b = await body(req);
+        if (typeof b.on !== "boolean") return bad("on is true or false");
+        const session = typeof b.session === "string" && b.session ? b.session : undefined;
+        const from = m.channelOf(req.params.name, session);
+        if (!from) return bad(`no MCP server named ${req.params.name}`, 404);
+        const guard = b.on ? needs(req) : null;
+        if (guard) return guard;
+        try {
+          if (from.session || !session) m.setChannel(req.params.name, b.on, from.session);
+          else {
+            channels.listen(req.params.name, session, b.on);
+            if (b.on && !from.on) m.setChannel(req.params.name, true);
+          }
+        } catch (e) {
+          return bad((e as Error).message, (e as { status?: number }).status ?? 400);
+        }
+        return session ? json({ servers: withChannels(m.list(session)) }) : servers();
+      },
     },
     // The owner marks tools of a server as reads; a remote device needs the passkey.
     "/api/mcp/servers/:name/reads": {

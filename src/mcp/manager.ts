@@ -23,6 +23,7 @@ import { reapLeft, track } from "./procs.ts";
 import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { conceal } from "../core/conceal.ts";
+import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
 import { runMode } from "../core/runmode.ts";
 import { serverName } from "../plugins/manifest.ts";
 
@@ -109,7 +110,15 @@ export type McpServerState = {
   sync?: { source: string; name: string; label: string; gone: boolean }; // follows another agent's entry
   plugin?: string; // the installed plugin it comes with (it goes and stops with the plugin)
   endpoint?: string; // what the server is, whatever it is called (sources.ts endpoint)
+  // Its pushed events (src/mcp/channel.ts): taken at all (the owner's switch, off by default),
+  // whether the connected server declares the capability, and whether it asks to be told what became of each.
+  // (The daemon's route adds the sessions that take them and the latest events, with what became of each.)
+  channel: { on: boolean; declared: boolean; status: boolean; sessions?: { id: string; title: string }[]; recent?: Pushed[] };
 };
+
+// Where a pushed event came from: the server's name as sessions know it, its
+// entry, the one session it is for (an editor's own), and whether the owner takes its events.
+export type ChannelFrom = { server: string; entry: string; session?: string; on: boolean };
 
 // One item of a resources/read result, as the server gave it (a body is never fetched beyond it).
 export type ResourceItem = { uri: string; mimeType?: string; text?: string; bytes?: number };
@@ -179,6 +188,8 @@ type Entry = {
   ran?: boolean;
   // A server an installed plugin brought: the plugin's id (`given` is the plugin's name for the server).
   plugin?: string;
+  // A session's own server: its events go into its session (the owner's switch, kept in memory with it).
+  channel?: boolean;
 };
 
 // What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
@@ -252,7 +263,8 @@ async function helperHeaders(cmd: string, timeoutMs = 10_000): Promise<Record<st
 
 const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn the plugin off or remove it in Settings > Plugins`;
 
-const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined }) === JSON.stringify({ ...b, enabled: undefined });
+// (Whether it is on and whether its events are taken are not what the server is: neither restarts it.)
+const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined, channel: undefined }) === JSON.stringify({ ...b, enabled: undefined, channel: undefined });
 
 // How long a server that refused the Streamable HTTP request is given to name
 // its address the older way, when nothing says it speaks that transport.
@@ -548,7 +560,7 @@ export class McpManager {
     const e = this.entries.get(name);
     if (e?.bundled || e?.session) return null;
     if (!now) return e ? (this.drop(name), "removed") : null;
-    if (e && same(e.config, now) && (e.config.enabled === false) === (now.enabled === false)) return "unchanged";
+    if (e && same(e.config, now) && (e.config.enabled === false) === (now.enabled === false)) { e.config = now; return "unchanged"; }
     const bad = validate(name, now);
     if (bad) {
       this.errors.capture("server", new Error(`mcp.json server ${name} is not used: ${bad}`), { at: "mcp config" });
@@ -747,6 +759,11 @@ export class McpManager {
           client.close();
           throw new Error(`${name} was changed while it connected`);
         }
+        // Heard from the start: an event sent while its tools are listed is not lost.
+        client.onChannel = (params) => {
+          if (this.entries.get(name) !== e || e.state === "disabled") return;
+          try { this.onChannel?.(this.channelFrom(e), params); } catch (err) { this.errors.capture("server", err, { mcp: name, at: "mcp channel event" }); }
+        };
         // Watched from the start: a server that exits during discovery is not ready.
         let gone: string | undefined;
         client.onClose = (why) => {
@@ -1059,6 +1076,7 @@ export class McpManager {
       prompts: !!e.client?.capabilities.prompts,
       resources_rev: e.resourcesRev,
       resource_updates: e.updates,
+      channel: { on: this.channelOn(e), declared: !!e.client?.channel, status: !!e.client?.capabilities.experimental?.[STATUS_CAP] },
     } as McpServerState;
     });
   }
@@ -1079,6 +1097,61 @@ export class McpManager {
     this.addEntry(name, config);
     if (config.enabled !== false) this.ensure(name).catch(() => {});
     return null;
+  }
+
+  // Pushed events (src/mcp/channel.ts). The daemon's route takes them.
+  onChannel?: (from: ChannelFrom, params: unknown) => void;
+  // A plugin's server is not the owner's file's: whether its events are taken is kept in the state.
+  private pluginChannelsPath = () => join(this.stateDir, "mcp-plugin-channels.json");
+  private pluginOn?: Set<string>;
+  private pluginChannels(): Set<string> {
+    if (!this.pluginOn) try { this.pluginOn = new Set(JSON.parse(readFileSync(this.pluginChannelsPath(), "utf8")) as string[]); } catch { this.pluginOn = new Set(); } // none on yet
+    return this.pluginOn;
+  }
+  private channelOn(e: Entry) {
+    return e.session ? !!e.channel : e.plugin ? this.pluginChannels().has(e.name) : !!e.config.channel;
+  }
+  private channelFrom(e: Entry): ChannelFrom {
+    return { server: e.label ?? e.name, entry: e.name, ...(e.session ? { session: e.session } : {}), on: this.channelOn(e) };
+  }
+  // The entry a name means: the owner's server, else the session's own under that name.
+  private named(name: string, session?: string): Entry | undefined {
+    const e = this.entries.get(name);
+    if (e && !e.session) return e;
+    return session ? [...this.entries.values()].find((x) => x.session === session && x.label === name) : undefined;
+  }
+  channelOf(name: string, session?: string): ChannelFrom | undefined {
+    const e = this.named(name, session);
+    return e && !e.bundled ? this.channelFrom(e) : undefined;
+  }
+  // The owner takes a server's events or stops taking them. The owner's server
+  // keeps it in its file; a session's own keeps it as long as it lives.
+  setChannel(name: string, on: boolean, session?: string): ChannelFrom {
+    const e = this.named(name, session);
+    if (!e) throw Object.assign(new Error(`no MCP server named ${name}`), { status: 404 });
+    if (e.bundled) throw Object.assign(new Error(`${name} is built in: it sends no events`), { status: 409 });
+    if (e.session) e.channel = on;
+    else if (e.plugin) {
+      const set = new Set(this.pluginChannels());
+      if (on) set.add(e.name);
+      else set.delete(e.name);
+      mkdirSync(this.stateDir, { recursive: true });
+      writeFileSync(this.pluginChannelsPath(), JSON.stringify([...set]));
+      this.pluginOn = set; // only once it is written
+    } else if (!!e.config.channel !== on) {
+      const c: McpServerConfig = { ...e.config };
+      if (on) c.channel = true;
+      else delete c.channel;
+      this.save({ ...this.cfg.servers, [name]: c });
+      e.config = c;
+    }
+    return this.channelFrom(e);
+  }
+  // What became of an event, to a server that asked to be told (STATUS_CAP).
+  tellChannel(entry: string, params: Record<string, unknown>) {
+    const c = this.entries.get(entry)?.client;
+    if (!c?.capabilities.experimental?.[STATUS_CAP] || c.isClosed) return;
+    c.notify(STATUS_METHOD, params).catch((err) => this.errors.capture("server", err, { mcp: entry, at: "mcp channel status" }));
   }
 
   // The owner marks which of a server's tools are reads (they run without asking).
@@ -1265,6 +1338,7 @@ export class McpManager {
       const next: McpServerConfig = { ...sourced(hit.config), sync: c.sync };
       if (c.enabled === false) next.enabled = false;
       if (c.read_tools) next.read_tools = c.read_tools;
+      if (c.channel) next.channel = true;
       if (validate(name, next)) continue;
       changed[name] = next;
     }

@@ -4,6 +4,7 @@
 export const INPUT_LABEL: Record<string, string> = {
   subagent: "Report from a child agent", task: "Task from the parent session", wait: "Wait update", wake: "Wait update",
   loop: "Loop run", goal: "Goal check", steer: "Steer", harness: "Keel note", peer: "Message from another session",
+  channel: "Event from a connected source",
 };
 
 export function inputKind(d: any): string | null {

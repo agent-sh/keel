@@ -32,6 +32,8 @@ export type McpServerConfig = {
   headers_helper?: string;             // a command printing a JSON object of headers, run at each connect
   // Imported from another agent and kept in step with it: the source and its name for the server there.
   sync?: { source: string; name: string };
+  // Its events may be pushed into the sessions that take them (src/mcp/channel.ts). The owner's, off by default.
+  channel?: boolean;
 };
 
 export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: string]: unknown };
@@ -137,6 +139,7 @@ function normalize(c: any): McpServerConfig {
   if (typeof c.headers_helper === "string") out.headers_helper = c.headers_helper;
   else if (typeof c.headersHelper === "string") out.headers_helper = c.headersHelper;
   if (c.sync && typeof c.sync.source === "string" && typeof c.sync.name === "string") out.sync = { source: c.sync.source, name: c.sync.name };
+  if (c.channel === true) out.channel = true;
   return out;
 }
 

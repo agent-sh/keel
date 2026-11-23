@@ -7,6 +7,7 @@ import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { stopSays } from "../core/stoppers.ts";
 import { loopLine, sayAt } from "../admin/daemon-log.ts";
+import * as channels from "./channels.ts";
 
 // Loops: a prompt that runs again in its session on an interval, a calendar
 // schedule, its own pace (the model names the next delay), or a webhook. The
@@ -38,6 +39,9 @@ export type LoopRecord = {
   signed?: boolean;
   min_interval?: number | null;
   tz?: string | null; // a calendar schedule's time zone (IANA): its times travel with it
+  // A webhook loop whose requests are events pushed into its session (channels.ts), read
+  // at the working turn's next step, instead of runs of its prompt after the turn ends.
+  push?: boolean;
 };
 
 export type RunRecord = {
@@ -128,6 +132,7 @@ CREATE TABLE IF NOT EXISTS webhook_seen (loop_id TEXT NOT NULL, msg_id TEXT NOT 
   if (!store.columnExists("loops", "hook_secret")) store.migrate("ALTER TABLE loops ADD COLUMN hook_secret TEXT");
   if (!store.columnExists("loops", "min_interval")) store.migrate("ALTER TABLE loops ADD COLUMN min_interval INTEGER");
   if (!store.columnExists("loop_runs", "outcome")) store.migrate("ALTER TABLE loop_runs ADD COLUMN outcome TEXT");
+  if (!store.columnExists("loops", "push")) store.migrate("ALTER TABLE loops ADD COLUMN push INTEGER NOT NULL DEFAULT 0");
   if (!store.columnExists("loops", "tz")) {
     // A calendar loop made before zones were kept followed this machine's clock: it keeps that zone.
     store.migrate("ALTER TABLE loops ADD COLUMN tz TEXT");
@@ -136,14 +141,14 @@ CREATE TABLE IF NOT EXISTS webhook_seen (loop_id TEXT NOT NULL, msg_id TEXT NOT 
   db().query("DELETE FROM webhook_seen WHERE ts < ?").run(Date.now() - SEEN_KEEP);
 }
 
-type Row = Omit<LoopRecord, "enabled" | "next_runs" | "signed"> & {
-  enabled: number; hook_hash: string | null; hook_secret: string | null; fallback_used: number; webhook_pending: string | null; last_hook_ms: number | null;
+type Row = Omit<LoopRecord, "enabled" | "next_runs" | "signed" | "push"> & {
+  enabled: number; push: number; hook_hash: string | null; hook_secret: string | null; fallback_used: number; webhook_pending: string | null; last_hook_ms: number | null;
 };
 function toRec(r: Row): LoopRecord {
-  const { hook_hash, hook_secret, fallback_used, webhook_pending, last_hook_ms, ...rest } = r;
+  const { hook_hash, hook_secret, fallback_used, webhook_pending, last_hook_ms, push, ...rest } = r;
   void hook_hash; void fallback_used; void webhook_pending; void last_hook_ms;
   const rec: LoopRecord = { ...rest, enabled: !!r.enabled };
-  if (r.kind === "webhook") rec.signed = !!hook_secret;
+  if (r.kind === "webhook") { rec.signed = !!hook_secret; rec.push = !!push; }
   // A schedule stored before the parser refused it lists no times (the scheduler turns the loop off).
   if (r.kind === "cron") try { rec.next_runs = nextRuns(r.schedule, Date.now(), 3, r.tz ?? undefined); } catch { rec.next_runs = []; }
   return rec;
@@ -212,7 +217,7 @@ function nextDue(l: Pick<LoopRecord, "kind" | "schedule" | "tz">, from: number):
 export type CreateInput = {
   session_id: string; name?: string; prompt?: string; schedule: string; max_runs?: number | null; until_ms?: number | null;
   created_by?: "owner" | "model"; min_delay_seconds?: number; max_delay_seconds?: number; first_delay_seconds?: number;
-  signed?: boolean; min_interval_seconds?: number;
+  signed?: boolean; min_interval_seconds?: number; push?: boolean;
   tz?: string | null; // a calendar schedule's zone; this machine's when not given
 };
 
@@ -240,7 +245,7 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
   const sch = parseSchedule(input.schedule);
   const by = input.created_by ?? "owner";
   if (sch.kind === "webhook" && by === "model") throw new Error("a webhook loop is the owner's to create: its key is the owner's");
-  if (sch.kind !== "webhook" && (input.signed || input.min_interval_seconds !== undefined)) throw new Error("signed and min_interval_seconds are for a webhook loop");
+  if (sch.kind !== "webhook" && (input.signed || input.push || input.min_interval_seconds !== undefined)) throw new Error("signed, push and min_interval_seconds are for a webhook loop");
   let minInterval: number | null = null;
   if (input.min_interval_seconds !== undefined && input.min_interval_seconds !== null) {
     const m = Number(input.min_interval_seconds);
@@ -270,9 +275,9 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
     if (input.signed) secret = newSecret();
   }
   const name = (input.name ?? prompt.split("\n")[0]!).slice(0, 80);
-  db().query(`INSERT INTO loops (id, session_id, name, prompt, schedule, kind, schedule_text, created, created_by, max_runs, until_ms, next_ms, min_delay, max_delay, hook_hash, hook_secret, min_interval, tz)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, input.session_id, name, prompt, schedule, sch.kind, sch.text, now, by, maxRuns, Number.isFinite(until as number) ? until : null, first, minD, maxD, hash, secret, minInterval, tz);
+  db().query(`INSERT INTO loops (id, session_id, name, prompt, schedule, kind, schedule_text, created, created_by, max_runs, until_ms, next_ms, min_delay, max_delay, hook_hash, hook_secret, min_interval, tz, push)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, input.session_id, name, prompt, schedule, sch.kind, sch.text, now, by, maxRuns, Number.isFinite(until as number) ? until : null, first, minD, maxD, hash, secret, minInterval, tz, input.push ? 1 : 0);
   const loop = get(id)!;
   emit("loop", loop);
   return { loop, hook_key: hookKey, hook_secret: secret ?? undefined };
@@ -661,8 +666,10 @@ export function verifySignature(secret: string, body: string, h: Headers, now = 
   return { error: "the request is not signed (webhook-signature or X-Hub-Signature-256)" };
 }
 
-// POST /api/webhooks/:key. The answer never says whether the key exists.
-export function webhook(key: string, body: string, headers: Headers = new Headers()): { status: number; error?: string } {
+// POST /api/webhooks/:key. The answer never says whether the key exists: a
+// wrong key is answered as a taken request. (A push loop's answer says what
+// became of the event, which only the key's holder can ask.)
+export function webhook(key: string, body: string, headers: Headers = new Headers()): { status: number; error?: string; pushed?: Promise<channels.Pushed> } {
   if (body.length > BODY_CAP) return { status: 413, error: "the body is over 16 KB" };
   const r = db().query<Row, [string]>("SELECT * FROM loops WHERE hook_hash = ?").get(sha(key));
   const now = Date.now();
@@ -673,15 +680,19 @@ export function webhook(key: string, body: string, headers: Headers = new Header
     return { status: 200 };
   }
   const l = toRec(r);
+  let delivery: string | undefined;
   if (r.hook_secret) {
     const v = verifySignature(r.hook_secret, body, headers, now);
     if ("error" in v) { skip(l, now, `its signature was refused: ${v.error}`); return { status: 401, error: v.error }; }
+    delivery = v.id;
+    // A push is stored once under its delivery id (input_keys): a resend is told it is a duplicate.
     const fresh = db().query("INSERT OR IGNORE INTO webhook_seen (loop_id, msg_id, ts) VALUES (?, ?, ?)").run(l.id, v.id, now).changes;
-    if (!fresh) { skip(l, now, "a delivery it had already taken was sent again"); return { status: 200 }; }
+    if (!fresh && !l.push) { skip(l, now, "a delivery it had already taken was sent again"); return { status: 200 }; }
   }
   if (!l.enabled) { skip(l, now, "the loop was off when its webhook was called"); return { status: 200 }; }
   if (l.until_ms && now >= l.until_ms) { skip(l, now, "the loop had expired"); return { status: 200 }; }
   if (l.max_runs && l.runs >= l.max_runs) { skip(l, now, "the loop had run its runs"); return { status: 200 }; }
+  if (l.push) return { status: 200, pushed: pushEvent(l, body, delivery ?? deliveryId(headers)) };
   const open = openRun(l.session_id)?.loop_id === l.id;
   const free = (r.last_hook_ms ?? 0) + gapOf(r);
   if (open || now < free) {
@@ -696,6 +707,29 @@ export function webhook(key: string, body: string, headers: Headers = new Header
   db().query("UPDATE loops SET last_hook_ms = ? WHERE id = ?").run(now, l.id);
   start(l, now, { body });
   return { status: 200 };
+}
+
+// The id a sender gives a delivery, signed or not: a resend under it is one event.
+const deliveryId = (h: Headers) => {
+  const id = h.get("webhook-id") ?? h.get("x-github-delivery") ?? h.get("idempotency-key");
+  return id && id.length <= 200 ? id : undefined;
+};
+
+// A push loop's request: an event into its session, read at the working
+// turn's next step or starting a turn when it is idle, as a connected
+// server's event is (channels.ts). Its rate is the events' own; the loop's
+// minimum interval is for runs, which an event is not. Each push counts
+// toward max_runs.
+function pushEvent(l: LoopRecord, body: string, delivery?: string): Promise<channels.Pushed> {
+  return channels.push({ key: `loop:${l.id}`, name: l.name, via: "webhook", ref: l.id }, [l.session_id], { content: body, meta: { loop: l.id, ...(delivery ? { event_id: delivery } : {}) } }).then((p) => {
+    const o = p.outcomes[0];
+    if (o && o.state !== "refused" && o.state !== "duplicate") {
+      const cur = get(l.id);
+      patch(l.id, { runs: (cur?.runs ?? 0) + 1, last_ms: Date.now(), last_status: "pushed" });
+      activity.record("loop", "push", l.session_id, `Loop "${l.name}" pushed an event into the session${o.state === "held" ? ", where it waits behind the owner's stop" : ""}`, { loop_id: l.id });
+    } else if (o?.state === "refused") skip(l, p.at, `its event was not delivered: ${o.reason}`);
+    return p;
+  });
 }
 
 const gapOf = (r: Row) => (r.min_interval ?? 0) * 1000 || WEBHOOK_MIN_INTERVAL;

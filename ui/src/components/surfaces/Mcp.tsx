@@ -7,8 +7,10 @@ import { ChevronRight, Download, Eye, Globe, KeyRound, LogOut, RefreshCw, Rotate
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
-import { api, reportError, failed } from "../../lib/store.ts";
-import { ago, cn } from "../../lib/utils.ts";
+import { api, reportError, failed, useStore } from "../../lib/store.ts";
+import type { Outcome } from "../../../../src/mcp/channel.ts";
+import { Select } from "../Select.tsx";
+import { ago, cn, when } from "../../lib/utils.ts";
 import { Connect } from "./McpConnect.tsx";
 import { navigate } from "../../lib/ui.ts";
 import { Blank, FolderLine, Ledger, ReaderHead, Seg, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
@@ -92,9 +94,68 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
             <div className="flex flex-wrap gap-1">{s.tool_names.map((t) => <span key={t} className="k-chip font-mono">{t}</span>)}</div>
           </div>
         ) : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
+        {!s.bundled && <ChannelSection s={s} base={base} act={act} />}
         {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
         {!offered(s) && !s.error && <p className="text-caption text-faint">Its tools show once it connects.</p>}
       </div>
+    </div>
+  );
+}
+
+// What became of one event in one session, in a few words (src/mcp/channel.ts Outcome).
+const OUTCOME: Record<Outcome["state"], string> = {
+  started: "started a turn", next_step: "read at the next step", waiting: "waits for the daemon's start", held: "waits behind your stop",
+  duplicate: "a resend: not taken twice", refused: "not delivered",
+};
+
+// Events the server pushes into sessions (src/mcp/channel.ts). Off by
+// default: the switch says whether its events are taken at all, the list
+// which sessions take them (an editor's own server is for its own session).
+function ChannelSection({ s, base, act }: { s: McpServerState; base: string; act: Act }) {
+  const sessions = useStore((st) => st.sessions);
+  const ch = s.channel;
+  const named = new Set((ch.sessions ?? []).map((x) => x.id));
+  const open = Object.values(sessions).filter((x) => !x.archived && !x.parent_id && !named.has(x.id)).sort((a, b) => b.updated - a.updated).slice(0, 40);
+  const title = (id?: string) => (id && (sessions[id]?.title || ch.sessions?.find((x) => x.id === id)?.title)) || (id ? `session ${id.slice(-8)}` : "");
+  const post = (body: { on: boolean; session?: string }) => act(`${base}/channel`, s.session ? { ...body, session: s.session } : body);
+  return (
+    <div data-testid="mcp-channel" data-on={ch.on || undefined}>
+      <div className="k-sub k-label flex items-center gap-2">
+        <span className="min-w-0 flex-1">Events it pushes into sessions</span>
+        <Toggle testid="mcp-channel-toggle" on={ch.on} label={`${ch.on ? "Stop taking" : "Take"} ${s.name}'s events`} onChange={(on) => post({ on })} />
+      </div>
+      <p className="text-caption text-muted" data-testid="mcp-channel-says">
+        {!ch.declared && s.state === "ready" ? "It declares no channel, so it sends no events. " : ch.declared ? "It is a channel: it can push chat, CI or webhook events. " : ""}
+        {s.session ? (ch.on ? "Its events go into the session that passed it." : "Off: its events are dropped.")
+          : !ch.on ? "Off: its events are dropped." : named.size ? "Each event is read at a working session's next step, or starts a turn in an idle one. A session you stopped keeps it until you go on." : "On, but no session takes its events yet: name one below."}
+      </p>
+      {!s.session && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="mcp-channel-sessions">
+          {(ch.sessions ?? []).map((x) => (
+            <span key={x.id} className="k-chip inline-flex items-center gap-1" data-testid="mcp-channel-session" data-session={x.id}>
+              {title(x.id)}
+              <button type="button" aria-label={`Stop sending its events to ${title(x.id)}`} className="text-faint hover:text-fg" onClick={() => post({ on: false, session: x.id })}><X className="size-3" /></button>
+            </span>
+          ))}
+          {open.length > 0 && (
+            <Select value="" onChange={(e) => e.target.value && post({ on: true, session: e.target.value })} aria-label="Add a session that takes its events" data-testid="mcp-channel-add" className="h-7 text-caption">
+              <option value="">Add a session…</option>
+              {open.map((x) => <option key={x.id} value={x.id}>{x.title || `session ${x.id.slice(-8)}`}</option>)}
+            </Select>
+          )}
+        </div>
+      )}
+      {!!ch.recent?.length && (
+        <ul className="mt-2.5 flex flex-col gap-1 text-caption" data-testid="mcp-channel-recent">
+          {ch.recent.slice(0, 6).map((p, i) => (
+            <li key={`${p.at}-${i}`} className="flex flex-wrap items-baseline gap-x-2" data-testid="mcp-channel-event">
+              <span className="text-faint tabular-nums" title={when(p.at)}>{ago(p.at)}</span>
+              {p.event_id && <span className="font-mono text-micro text-faint">{p.event_id}</span>}
+              <span className="text-muted">{p.outcomes.map((o) => `${o.session ? `${title(o.session)}: ` : ""}${OUTCOME[o.state]}${o.reason && o.state === "refused" ? ` (${o.reason})` : ""}`).join(" · ")}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -24,6 +24,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["port", "bring your setup from Claude Code, Codex, Hermes and the Rust Keel"],
     ["models", "the models the providers list"],
     ["providers", "the providers; add, test and probe an endpoint or a local server"],
+    ["mcp", "the MCP servers; channel: take the events a server pushes into sessions"],
   ]],
   ["Daemon", [
     ["serve", "run the daemon (the agent loop, the API and the workbench)"],
@@ -102,6 +103,7 @@ const FIRST: [commands: string[], what: Words][] = [
   [["import"], "list harnesses folders preview run batch file index"],
   [["login", "logout"], "xai"],
   [["plugin"], "install list enable disable update remove check"],
+  [["mcp"], "list channel"],
   [["service"], "install"],
   [["completion"], SHELLS.join(" ")],
   [["help"], "commands"],
