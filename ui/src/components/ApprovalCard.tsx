@@ -451,6 +451,21 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     // Reading on through a long text by keys, while some of it was never in view: End reads to the
     // end of the card, Space a page on. (Once all of it was in view they are what they always are.)
     if ((e.key === "End" || e.key === " ") && !e.shiftKey && readOn(t, e.key === "End")) { e.preventDefault(); return; }
+    // The answers' own numbers (drawn on them while the keyboard is on the card or its list): 1 Allow once,
+    // 2 Always allow, 3 Deny, of the card the keyboard is on (on the list itself, its first card). Each is
+    // that answer's own press by a key, under the same rule (an Allow of a text not read, or pressed too
+    // soon after it showed, does nothing and says why); a number no answer has types nothing anywhere.
+    if (/^[1-3]$/.test(e.key) && !e.shiftKey) {
+      e.preventDefault();
+      const card = t.closest<HTMLElement>('[data-testid="approval"]') ?? e.currentTarget.querySelector<HTMLElement>(':scope > [data-testid="approval"]');
+      const answer = card?.querySelector<HTMLElement>(`:scope [data-testid="${ANSWER_KEYS[Number(e.key) - 1]}"]:not(:disabled)`);
+      if (!answer || e.repeat) return;
+      // (Deny answers nothing by itself, it opens the reason: still not as the keyboard arrives.)
+      const no = e.key === "3" ? keyRefused(t, e.repeat) : "";
+      if (no) { tipSay(answer, no, SETTLE_MS); return; }
+      answer.click();
+      return;
+    }
     // Words typed while a card has the keyboard are for the message box: they go there, and so does the Enter after them.
     if (typeToBox(e)) return;
     // Up and Down move between the list's stops: the "allow all" action, then each card's first answer.
@@ -1032,6 +1047,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // What the hint line may say (see where it is drawn): `ready` exactly when Enter on its Allow
   // would answer; `arming` while the page is about to make that so, or how to get there.
   const ready = keysOn === "once" && keyLive && !mustOpenKey && hold.keys === "ready";
+  // The answers' numbers are drawn while the keyboard is on this card, or on the list it leads (not on a finger's screen).
+  const digits = !touch && (keysOn === "once" || keysOn === "card" || (keysOn === "list" && first));
   const coming = keysOn === "card" || (keysOn === "list" && first);
   const heldLine = heldWhy ? `${heldWhy}: Down, then Enter allows once` : "";
   const arming = ready || shut || left > 0 ? ""
@@ -1327,19 +1344,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
               shut ? "border border-line text-fg" : "bg-accent text-accent-fg hover:opacity-90",
             )}
           >
-            Allow once
+            Allow once{!touch && <Digit n={1} on={digits} />}
             {/* (Drawn anew with each arrival of the keyboard, so it fills for that arrival's settle time.) */}
             {armingNow && <span key={hold.at + hold.key} className="k-arm" aria-hidden="true" data-testid="allow-arming" style={{ "--k-arm": `${armFor}ms` } as CSSProperties} />}
           </button>
           {nudge.line}
-          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}
+          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} digits={touch ? null : digits} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}
           <button
             disabled={busy}
             data-testid="deny"
             onClick={() => setDenying(true)}
-            className="h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+            className="relative h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
           >
-            Deny
+            Deny{!touch && <Digit n={3} on={digits} />}
           </button>
           {err ? <span className={cn("ml-auto min-w-0 basis-full text-micro text-danger", !dense && "sm:basis-auto sm:truncate")} role="alert" title={err} data-testid="approval-error">{err}</span>
             // Why the answers wait, beside them, before anything was pressed: the text is to be opened
@@ -1378,6 +1395,15 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   );
 }
 
+// An answer's number, drawn on its corner while the keyboard is on the card (bridge.css: .k-digit). It
+// takes no room: a button that grew as the keyboard came would move under a pointer pressing it (the
+// press goes down as the click moves the keyboard there, and the answer has not stood still).
+function Digit({ n, on }: { n: number; on: boolean }) {
+  return on ? <kbd aria-hidden="true" className="k-digit" data-testid="approval-digit">{n}</kbd> : null;
+}
+// The answers a number names on an approval card, in their order on it.
+const ANSWER_KEYS = ["allow-once", "allow-always", "deny"] as const;
+
 // A card's foot: its answers (or the reason form, or the note that it is closed). While a card
 // taller than the region above the message box is being read, the foot stays in the region's
 // view (bridge.css, on the card's data-foot: at the region's foot, or under the list's bar for a
@@ -1392,7 +1418,7 @@ const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as c
 // `live` and `armed`: as the card's Allow once, the grant does not open within the settle time.
 // `unread`: the card is not all read: a grant opened while it was (the window was resized since,
 // and the text wraps anew or is cut) closes, and grants nothing.
-function AlwaysButton({ a, busy, live, armed, refusal, unread, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; refusal: (stood: boolean, key: Element | null) => string; unread: boolean; onGrant: (rules: Suggest[], session: boolean) => void }) {
+function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }: { a: Approval; digits: boolean | null; busy: boolean; live: boolean; armed: () => boolean; refusal: (stood: boolean, key: Element | null) => string; unread: boolean; onGrant: (rules: Suggest[], session: boolean) => void }) {
   const [rules, setRules] = useState<Suggest[]>(a.suggest);
   const [open, setOpen] = useState(false);
   useEffect(() => { if (unread) setOpen(false); }, [unread]);
@@ -1415,9 +1441,9 @@ function AlwaysButton({ a, busy, live, armed, refusal, unread, onGrant }: { a: A
         onMouseDown={pressed.onMouseDown}
         aria-disabled={!live || undefined}
         data-testid="allow-always"
-        className="k-btn k-btn-lg k-grant shrink-0 gap-1 whitespace-nowrap data-popup-open:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+        className="k-btn k-btn-lg k-grant relative shrink-0 gap-1 whitespace-nowrap data-popup-open:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
       >
-        Always allow <ChevronDown className="size-3.5 text-faint" />
+        Always allow <ChevronDown className="size-3.5 text-faint" />{digits !== null && <Digit n={2} on={digits} />}
       </Popover.Trigger>
       {nudge.line}
       <Popover.Portal>
