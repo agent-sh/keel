@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS trace_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL
 const SCRUB_VERSION = "2";
 
 export const SPAN_DAYS = 14;
+// The spans owed at a start, oldest first. Without CROSS JOIN, SQLite reads every span in the
+// order of its start (spans_start) to look each one up among the few owed, and skips the sort:
+// seconds on a store of two weeks of spans with their requests, before the daemon listens.
+export const OWED_AT_START = "SELECT o.span_id, o.first FROM spans_owed o CROSS JOIN spans s ON s.span_id = o.span_id ORDER BY s.start_ms";
 // A prompt that waited in the queue this long has that wait in its turn's trace; a shorter one is no wait to speak of.
 const QUEUE_WAIT_MS = 1000;
 // How many traces a list returns: when the caller names no number, and at most.
@@ -320,7 +324,7 @@ export class Tracer {
     this.handed = true;
     // A span that was pruned meanwhile is owed to nobody.
     this.store.db.run("DELETE FROM spans_owed WHERE span_id NOT IN (SELECT span_id FROM spans)");
-    const rows = this.store.db.query<{ span_id: string; first: number }, []>("SELECT o.span_id, o.first FROM spans_owed o JOIN spans s ON s.span_id = o.span_id ORDER BY s.start_ms").all();
+    const rows = this.store.db.query<{ span_id: string; first: number }, []>(OWED_AT_START).all();
     this.store.db.run("UPDATE spans_owed SET first = 0");
     this.owed = rows.length;
     return rows.map((r) => ({ span: this.span(r.span_id), first: !!r.first })).filter((x): x is { span: Span; first: boolean } => !!x.span);

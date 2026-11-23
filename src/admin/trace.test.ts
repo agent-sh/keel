@@ -6,7 +6,7 @@ import { gunzipSync } from "node:zlib";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { KEEP_REQUEST_BYTES, SPAN_DAYS, packRequest, parseTraceparent, requestShape, type Span, spawnContext, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
+import { KEEP_REQUEST_BYTES, OWED_AT_START, SPAN_DAYS, packRequest, parseTraceparent, requestShape, type Span, spawnContext, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
 
 // A tracer over a store of its own, with the hooks it registered. Closing takes
 // the hooks away with the store: a turn of a later test file would call them.
@@ -323,6 +323,19 @@ test("a start finds the spans left running by an index of them alone", () => {
     const plan = (sql: string) => store.db.query<{ detail: string }, [number]>(`EXPLAIN QUERY PLAN ${sql}`).all(0).map((r) => r.detail).join("; ");
     expect(plan("SELECT span_id FROM spans WHERE status = 'running' AND start_ms < ? ORDER BY start_ms")).toContain("USING INDEX spans_running");
     expect(plan("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, MAX(start_ms, ?)) WHERE status = 'running'")).toContain("USING INDEX spans_running");
+  } finally {
+    close();
+  }
+});
+
+// The spans owed to the collector are a few; the store keeps two weeks of spans. A start reads
+// the owed ones and looks each up, never every span in the order of its start.
+test("a start reads the owed spans without reading every span", () => {
+  const { store, close } = tracer();
+  try {
+    const plan = store.db.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${OWED_AT_START}`).all().map((r) => r.detail);
+    expect(plan[0]).toMatch(/^SCAN o\b/);
+    expect(plan.join("; ")).not.toMatch(/SCAN s\b/);
   } finally {
     close();
   }
