@@ -199,6 +199,45 @@ test("a value found later never changes history already sent", () => {
   expect(JSON.stringify(v.maskSent("s1 other", [m1, m2]))).not.toContain(value);
 });
 
+// A value a rule found by its name is a known value: stored text holds it
+// nowhere, in the same string or in another string of the same event. A copy
+// left would go masked in the next request and as stored after a restart,
+// which forgets the value: the cached history would change there.
+test("a value found by its name is replaced wherever else the stored text holds it", () => {
+  const v = new Vault();
+  const value = ["k9Xq", "7Lm2pQ8", "rT4w"].join("");
+  const one = v.redact(`API_KEY=${value} and again ${value}`, "s1", "prompt");
+  expect(one).not.toContain(value);
+  expect(one.match(/\[secret:[0-9a-f]{8}\]/g)).toHaveLength(2);
+  const other = ["x2Mn", "8Qw4Ze", "6Yp1"].join("");
+  const deep = v.redactDeep({ content: [{ type: "text", text: `bare ${other}` }, { type: "text", text: `TOKEN=${other}` }] }, "s1", "output");
+  expect(JSON.stringify(deep)).not.toContain(other);
+});
+
+// A message that went masked (a value its stored event holds was found after
+// it was stored: another result of the same batch) goes the same after a
+// restart, when no value is known: the bytes the provider cached.
+test("a message sent masked goes the same after a restart", () => {
+  const rows = new Map<string, Map<string, string>>();
+  const log = {
+    load: (key: string) => [...(rows.get(key) ?? [])],
+    save: (key: string, mark: string, m: string) => void (rows.get(key) ?? rows.set(key, new Map()).get(key)!).set(mark, m),
+  };
+  const value = ["fixture", "late", "value", "0123456789"].join("-");
+  const m1 = { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: `bare ${value}` }, { type: "tool_result", tool_use_id: "b", content: "API_KEY=[secret:00000000]" }] };
+  const before = new Vault();
+  before.sentLog = log;
+  before.add(value, "test", "output", "s1");
+  const sent = JSON.stringify(before.maskSent("s1 m", [m1]));
+  expect(sent).not.toContain(value);
+  const m2 = { role: "assistant", content: [{ type: "text", text: "next" }] };
+  const after = new Vault();
+  after.sentLog = log;
+  const again = after.maskSent("s1 m", [m1, m2]);
+  expect(JSON.stringify(again[0])).toBe(JSON.stringify(JSON.parse(sent)[0]));
+  expect(again[1]).toBe(m2);
+});
+
 // After a restart (a new Vault, the same key and ledger) a value seen again
 // has its old placeholder, and one whose value is gone is told apart from
 // text that only looks like a placeholder.

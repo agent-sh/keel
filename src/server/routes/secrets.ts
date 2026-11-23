@@ -112,6 +112,18 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     has: (id) => owed.has(id) || !!issued.get(id),
   };
 
+  // The messages that went to a model masked, as they went (vault.maskSent): a
+  // restart sends them the same bytes. Only placeholders are in them. The key is
+  // the session and the route, as maskSent names it.
+  store.migrate(`CREATE TABLE IF NOT EXISTS secret_sent (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, route TEXT NOT NULL, mark TEXT NOT NULL, message TEXT NOT NULL, PRIMARY KEY (session_id, route, mark))`);
+  const sentRows = store.db.query<{ mark: string; message: string }, [string, string]>("SELECT mark, message FROM secret_sent WHERE session_id = ? AND route = ?");
+  const sentSave = store.db.query("INSERT OR IGNORE INTO secret_sent (session_id, route, mark, message) VALUES (?, ?, ?, ?)");
+  const split = (key: string): [string, string] => { const i = key.indexOf(" "); return [key.slice(0, i), key.slice(i + 1)]; };
+  vault.sentLog = {
+    load: (key) => sentRows.all(...split(key)).map((r) => [r.mark, r.message]),
+    save: (key, mark, message) => void sentSave.run(...split(key), mark, message),
+  };
+
   // Everything stored is redacted; images, signatures and reasoning stay byte-exact.
   store.redact = (sessionId, kind, value) => {
     if (typeof value === "string") return vault.redact(value, sessionId, kind === "title" || kind === "queue" ? "prompt" : "output");

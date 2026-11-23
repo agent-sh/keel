@@ -231,10 +231,15 @@ export function shellRefs(text: string, name: (id: string | undefined, varName: 
 
 // What is kept of the placeholders issued: ids and names, never a value.
 export type Ledger = { issued(id: string, kind: string, name?: string): void; has(id: string): boolean };
+// What is kept of the messages a model was sent with a value masked (maskSent):
+// the message as it went, by the mark of the message it was made from. Only
+// placeholders are in it, never a value. `key`: the session and the route.
+export type SentLog = { load(key: string): [mark: string, message: string][]; save(key: string, mark: string, message: string): void };
 
 export class Vault {
   private byValue = new Map<string, Entry>();
   ledger: Ledger | null = null;
+  sentLog: SentLog | null = null;
   // The key placeholder ids are made with, kept across restarts by the caller.
   private key: Uint8Array = randomBytes(32);
   useKey(key: Uint8Array) {
@@ -335,12 +340,22 @@ export class Vault {
     if (!hits.length) return out;
     let r = "";
     let at = 0;
+    const found = new Set<Entry>();
     for (const h of hits) {
       const e = this.add(h.value, h.kind, source, sessionId);
+      found.add(e);
       r += out.slice(at, h.start) + this.placeholder(e);
       at = h.end;
     }
-    return r + out.slice(at);
+    r += out.slice(at);
+    // A value a rule found by its context (`API_KEY=...`) is a known value from
+    // now on: it is replaced wherever else the text holds it, as every later
+    // request would mask it (mask). Stored with one occurrence left, the next
+    // request would carry the text masked and a request after a restart, which
+    // no longer knows the value, the text as stored: the history the provider
+    // cached would change there.
+    for (const e of [...found].sort((a, b) => b.value.length - a.value.length)) if (r.includes(e.value)) r = r.split(e.value).join(this.placeholder(e));
+    return r;
   }
 
   // The longest end of `text` (8 characters at least) that is the start of a known value which goes on after it.
@@ -396,6 +411,13 @@ export class Vault {
   // A JSON value with every string redacted, except what must stay byte-exact
   // (images, provider signatures and opaque reasoning).
   redactDeep<T>(v: T, sessionId: string | null, source: Source): T {
+    const known = this.byValue.size;
+    const out = this.redactWalk(v, sessionId, source);
+    // A value found in one of its strings is replaced in the strings before it
+    // too: the whole value is stored as a request would carry it (see redact).
+    return this.byValue.size > known ? this.redactWalk(out, sessionId, source) : out;
+  }
+  private redactWalk<T>(v: T, sessionId: string | null, source: Source): T {
     const walk = (x: any, key?: string): any => {
       if (typeof x === "string") return key === "data" || key === "signature" || key === "opaque" ? x : this.redact(x, sessionId, source);
       if (Array.isArray(x)) {
@@ -538,13 +560,41 @@ export class Vault {
   // goes to: another model, or the first request after a restart, has no part
   // sent before, so every known value is masked there and a value never
   // reaches a provider that did not have it.
+  //
+  // A message that went masked is kept as it went (`sentLog`, in the store), and
+  // goes so again whenever the part sent before is not known here: after a
+  // restart, which forgets every value, the stored message would go with the
+  // value in it, and the history the provider cached would change there.
   private sent = new Map<string, { marks: string[]; out: any[] }>();
+  private went = new Map<string, Map<string, any>>();
+  private wentOf(key: string): Map<string, any> {
+    let w = this.went.get(key);
+    if (!w) {
+      w = new Map();
+      try { for (const [mark, m] of this.sentLog?.load(key) ?? []) w.set(mark, JSON.parse(m)); } catch {}
+      this.went.set(key, w);
+      if (this.went.size > 256) this.went.delete(this.went.keys().next().value!);
+    }
+    return w;
+  }
   maskSent<T extends any[]>(key: string, messages: T): T {
     const marks = messages.map((m) => Bun.hash(JSON.stringify(m)).toString(36));
     const prev = this.sent.get(key);
     let k = 0;
     if (prev) while (k < marks.length && k < prev.marks.length && marks[k] === prev.marks[k]) k++;
-    const tail = this.byValue.size ? this.mask(messages.slice(k)) : messages.slice(k);
+    const rest = messages.slice(k);
+    const masked = this.byValue.size ? this.mask(rest) : rest;
+    const went = this.sentLog ? this.wentOf(key) : undefined;
+    const tail = rest.map((m, j) => {
+      const was = went?.get(marks[k + j]!);
+      if (was) return was;
+      const now = masked[j];
+      if (went && now !== m) {
+        went.set(marks[k + j]!, now);
+        try { this.sentLog!.save(key, marks[k + j]!, JSON.stringify(now)); } catch {}
+      }
+      return now;
+    });
     const out = [...(prev?.out.slice(0, k) ?? []), ...tail];
     this.sent.delete(key);
     this.sent.set(key, { marks, out });
