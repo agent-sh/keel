@@ -497,9 +497,11 @@ export function siblings(workspace: string, worktrees: string[] = []): string[] 
     const at = locate(workspace);
     if (!at) return [];
     const ws = real(workspace);
-    // What names a checkout is in the git directory, where a sandboxed command of a main checkout writes. So a
-    // checkout is taken only when it and the repository name each other: its own `.git` file points back at the
-    // directory that names it. A forged entry needs that file in a folder the sandbox could already write.
+    // What names a checkout is in the git directory. A sandboxed command cannot write it (a main checkout's git
+    // directory is read-only in its sandbox, and a worktree's view of it too), but a command the owner let out of
+    // the sandbox can. So a checkout is taken only when it and the repository name each other: its own `.git` file
+    // points back at the directory that names it. A forged entry needs that file in a folder the sandbox could
+    // already write.
     const back = (dot: string, dir: string): boolean => {
       if (basename(dot) !== ".git" || !isAbsolute(dot) || kind(dot) !== "file") return false;
       const named = /^gitdir: (.+)$/m.exec(readFileSync(dot, "utf8"))?.[1]?.trim();

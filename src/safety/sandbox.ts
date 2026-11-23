@@ -188,13 +188,20 @@ function cloneGitBinds(workspace: string): string[] {
 //   are read-only as a whole, as a clone's are.
 //
 //   Those three are binds of a file in a folder a commit must write, the one
-//   place where the protection is the file's and not the folder's: git outside
-//   the sandbox rewrites them only by `git config --worktree` or
-//   `git sparse-checkout` in that worktree, and `git worktree repair` or
-//   `move`. A command already running then can write the new file until it
-//   ends; the next command gets a bind of it again. config.worktree is read
-//   only once the repository's config (read-only above) turns per-worktree
-//   config on, and Keel's own git ignores what it could name (src/core/git.ts).
+//   place where the protection is the file's and not the folder's. git
+//   rewrites `gitdir` and `commondir` in place (`git worktree repair` and
+//   `move` keep the file), so their bind holds. `config.worktree` is renamed
+//   into place by `git config --worktree` and `git sparse-checkout`: run by
+//   hand in that worktree while a sandboxed command of it is running, they
+//   leave that command a writable file until it ends; the next command gets a
+//   bind of it again. git reads it only once the repository's config
+//   (read-only above) turns per-worktree config on, and Keel's own git ignores
+//   what it could name (src/core/git.ts).
+//
+//   Its `modules` folder is bound only when it is there. A first `git
+//   submodule update --init` makes it, and the git directories in it are the
+//   command's own until it ends; the session's kept profile is made again for
+//   the next command (profileOf).
 // - `packed-refs` is the one file at the top that git rewrites from a linked
 //   worktree, and it takes a lock beside it for every ref it deletes, the
 //   ones of its own directory (CHERRY_PICK_HEAD, MERGE_HEAD) included. It is
@@ -422,7 +429,7 @@ export function gitShut(workspace: string): string | undefined {
         if (dir === dirname(dir)) return undefined;
       }
     }
-    if (kind === "dir") return "this session's folder is the repository's main checkout, and its git directory is read-only in the sandbox as a whole: the repository's config and hooks are in it, and git runs what they name outside the sandbox. git status, diff, log and show work; staging, commits, checkouts, branches and stashes fail. A session in a worktree of this repository commits";
+    if (kind === "dir") return "this session's folder is the repository's main checkout, and its git directory is read-only in the sandbox as a whole: the repository's config and hooks are in it, and git runs what they name outside the sandbox. git status, diff, log, show, blame and grep work. Everything that writes it fails: git add, commit, restore, checkout and switch (also checkout -- FILE), branch, tag, stash, fetch and pull, merge, rebase, cherry-pick, reset. A session in a worktree of this repository commits: the owner moves this session to a new worktree, with its uncommitted work, by typing /worktree in its composer or by the command 'Move this session to a new worktree'";
     if (!linkedGitBinds(workspace).length) return "the sandbox could not open this worktree's git directories, so they are read-only here and commits fail: their layout is not the one git makes for a linked worktree, or the repository's git directory holds more folders than a sandbox can bind";
   } catch {} // unreadable: nothing to say
   return undefined;
@@ -476,7 +483,16 @@ let PROFILE_MS = 5_000;
 // (A test makes a kept profile old at once.)
 export const setProfileAge = (ms: number) => void (PROFILE_MS = ms);
 type Perm = { sandbox: "workspace-write" | "read-only"; network: boolean };
-const profiles = new Map<string, { at: number; argv: string[]; busy?: boolean }>();
+// `mark`: a name on disk whose kind the profile was made from and that a command can change, with that kind: a
+// linked worktree's own `modules` folder, which is bound read-only only when it is there (see linkedGitBinds). A
+// first `git submodule update --init` makes it: the next command gets a profile that binds it, not the kept one.
+type Kept = { at: number; argv: string[]; busy?: boolean; view: View; mark?: [string, ReturnType<typeof kindOf>] };
+const profiles = new Map<string, Kept>();
+const markOf = (workspace: string, perm: Perm): Kept["mark"] => {
+  if (perm.sandbox !== "workspace-write") return undefined;
+  const own = linkedWorktree(workspace)?.own;
+  return own ? [join(own, "modules"), kindOf(join(own, "modules"))] : undefined;
+};
 // Every kept profile is dropped (the owner changed what a sandbox shows; a test changed the disk).
 export function forgetProfiles() { profiles.clear(); forgetViews(); }
 function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, scratch: string[], read: ReadOpts): string[] {
@@ -485,6 +501,12 @@ function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">
   const flock = flockPath();
   const layered = !!flock && overlays(bwrap);
   const have = profiles.get(key);
+  if (have?.mark && kindOf(have.mark[0]) !== have.mark[1]) {
+    // (The view is the kept one: only the binds of git's files are made again.)
+    const mark = markOf(workspace, p);
+    profiles.set(key, { at: have.at, view: have.view, mark, argv: compose(bwrap, p, workspace, scratch, have.view, flock, read.root) });
+    return profiles.get(key)!.argv;
+  }
   if (have) {
     if (Date.now() - have.at >= PROFILE_MS && !have.busy) {
       const asked = viewOnThread({ workspace, profile: p.sandbox, read, env: { ...process.env }, layered, offers: offeredPaths(), state: dirname(gitViewsDir()) });
@@ -493,16 +515,21 @@ function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">
         void asked.then((view) => {
           // (No answer: the kept one stays for another round.)
           if (profiles.get(key) !== have) return;
-          if (view) profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root) });
+          if (view) profiles.set(key, { at: Date.now(), view, mark: markOf(workspace, p), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root) });
           else { have.busy = false; have.at = Date.now(); }
         });
-      } else profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock, read.root) });
+      } else {
+        const view = readView(workspace, p.sandbox, read, process.env, layered);
+        profiles.set(key, { at: Date.now(), view, mark: markOf(workspace, p), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root) });
+      }
     }
     return profiles.get(key)!.argv;
   }
-  const argv = compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock, read.root);
+  const view = readView(workspace, p.sandbox, read, process.env, layered);
+  const mark = markOf(workspace, p);
+  const argv = compose(bwrap, p, workspace, scratch, view, flock, read.root);
   if (profiles.size > 256) profiles.clear();
-  profiles.set(key, { at: Date.now(), argv });
+  profiles.set(key, { at: Date.now(), view, mark, argv });
   return argv;
 }
 

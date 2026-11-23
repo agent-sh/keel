@@ -510,6 +510,25 @@ test.skipIf(!sandboxStatus().available)("a submodule's hooks and config are read
       const r = run(from, `(cd libs/sub && ${commit}) >/dev/null 2>&1 || echo refused-commit; (echo '[core]' >> ${dir}/config) 2>/dev/null || echo refused-config; (: > ${dir}/hooks/post-checkout) 2>/dev/null || echo refused-hook; mv ${dir} ${dir}-x 2>/dev/null || echo refused-move; (${commit}) 2>/dev/null`);
       expect([from, r.out]).toEqual([from, `refused-commit\nrefused-config\nrefused-hook\nrefused-move\n${from === wt ? "committed\n" : ""}`]);
     }
+    // A worktree with no submodule yet: a first init makes its git directories, and they are read-only from the
+    // very next command on, which runs with the profile the session keeps for a few seconds.
+    const fresh = join(root, "top-fresh");
+    git(top, "worktree", "add", "-q", "-b", "f", fresh);
+    // (The submodule's source is cloned into the worktree's folder: the sandbox shows nothing of the scratch folder around it.)
+    git(root, "clone", "-q", sub, join(fresh, "src-sub"));
+    git(top, "config", "submodule.libs/sub.url", join(fresh, "src-sub"));
+    const made = join(top, ".git/worktrees/top-fresh/modules/libs/sub");
+    const tmp = process.env.TMPDIR;
+    process.env.TMPDIR = mkdtempSync(join(tmpdir(), "keel-sandbox-tmp-"));
+    try {
+      const kept = (script: string) => Bun.spawnSync(confine(["bash", "-c", script], { sandbox: "workspace-write", network: false }, fresh), { cwd: fresh, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_ALLOW_PROTOCOL: "file" } }).stdout.toString();
+      expect(kept("git -c protocol.file.allow=always submodule update -q --init >/dev/null 2>&1 && echo inited")).toBe("inited\n");
+      expect(existsSync(join(made, "HEAD"))).toBe(true);
+      expect(kept(`(echo '[core]' >> ${made}/config) 2>/dev/null || echo refused-config; (cd libs/sub && ${commit}) >/dev/null 2>&1 || echo refused-commit; (${commit}) 2>/dev/null`)).toBe("refused-config\nrefused-commit\ncommitted\n");
+    } finally {
+      rmSync(process.env.TMPDIR!, { recursive: true, force: true });
+      process.env.TMPDIR = tmp;
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

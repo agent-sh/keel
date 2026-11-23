@@ -733,9 +733,11 @@ a rewrite still cannot write the new config.
 - A session in the main checkout gets its `.git` read-only as a whole: the
   repository's config and hooks are in it, at the top where git also writes
   the main checkout's index and `HEAD`. `git status`, `diff`, `log`, `show`,
-  `blame` and `grep` work; staging, commits, checkouts, branches, stashes,
-  `git fetch` and `git worktree add` fail with "Read-only file system", and
-  the command is told that a session in a worktree of the repository commits.
+  `blame` and `grep` work; whatever writes it fails with "Read-only file
+  system": staging, commits, `restore` and `checkout -- FILE`, checkouts,
+  branches, tags, stashes, fetch, merge, rebase and `git worktree add`. The
+  command is told so, and that a session in a worktree of the repository
+  commits: `/worktree` moves the session there with its uncommitted work.
 - A submodule's git directory has its config and hooks at its top too: it is
   read-only as a whole, from the main checkout and from a worktree. Commits
   inside a submodule fail in a sandboxed session.
@@ -807,15 +809,16 @@ What the sandbox does not stop:
   as a submodule. Keel's own git calls never do (`src/core/git.ts`). So is a
   folder whose `.git` is a symbolic link: nothing pins a link, so such a
   folder gets no git protection and no git access.
-- A linked worktree's own `config.worktree`, and the `gitdir` and
-  `commondir` files that say where it is, are single files in the folder a
-  commit writes, kept read-only by a bind on each file. When git outside the
-  sandbox replaces one of them while a sandboxed command is still running
-  (`git config --worktree` or `git sparse-checkout` in that worktree, `git
-  worktree repair` or `move`), that command sees the new file without the
-  bind and can write it until it ends. git reads `config.worktree` only once
-  the repository's config, which stays read-only, turns per-worktree config
-  on. The repository's shared `config` and hooks have no such gap.
+- A linked worktree's own `config.worktree` is a single file in the folder
+  a commit writes, kept read-only by a bind on the file. `git config
+  --worktree` and `git sparse-checkout` replace it with a new file: run by
+  hand in that worktree while a sandboxed command of it is still running,
+  they leave that command the new file without the bind, to write until it
+  ends. git reads `config.worktree` only once the repository's config, which
+  stays read-only, turns per-worktree config on. The `gitdir` and
+  `commondir` files beside it are rewritten in place (`git worktree repair`,
+  `move`) and stay read-only. The repository's shared `config` and hooks,
+  and every submodule's, have no such gap.
 - A command that was moved to the background is compared when the call
   returns, not when the command ends.
 - In a repository whose refs are in reftable, the main checkout's `HEAD` is
