@@ -1922,6 +1922,10 @@ export function resolveInTree(sessionId: string, target: string): AgentRecord {
     const t = target.trim().toLowerCase();
     const a = all.find((x) => x.id === target) ?? all.find((x) => x.session_id === target) ?? [...all].sort((x, y) => x.created - y.created).reverse().find((x) => x.title.toLowerCase() === t);
     if (a) return a;
+    // A session above the agent (the one that started it, or the tree's root) is not an agent: what it is owed is the report.
+    let up = parentOf(sessionId);
+    for (let n = 0; up && n < 64; n++, up = parentOf(up))
+      if (up === target.trim()) throw new Error(`"${target}" is ${n ? "a session above the one that started you" : "the session that started you"}, not an agent of this tree: it takes no message. Your final answer is your report to the session that started you, sent when you end your turn.`);
     throw new Error(`no agent "${target}" in this session's tree; agents: ${all.map((x) => `${x.id} (${x.title})`).join(", ") || "none"}`);
   }
 }

@@ -91,6 +91,17 @@ const settled = () => Bun.sleep(5);
 const tool = (name: string) => automationTools.find((t) => t.name === name)!;
 const ctx = { sessionId: parent.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
 
+test("an agent that messages the session that started it is told that its report is what goes there", async () => {
+  const a = await spawn();
+  const r = await tool("SendMessage").run({ to: parent.id, message: "a word" }, { ...ctx, sessionId: a.session_id });
+  expect(r.is_error).toBe(true);
+  expect(String(r.content)).toContain("is the session that started you, not an agent of this tree");
+  const other = await tool("SendMessage").run({ to: "no-such-agent", message: "a word" }, { ...ctx, sessionId: a.session_id });
+  expect(String(other.content)).toContain("no agent \"no-such-agent\" in this session's tree");
+  end(a, "end_turn");
+  await settled();
+});
+
 test("blocking spawns wake on failed admission and a raised limit, and detach when cancelled", async () => {
   const p = store.createSession({ model: parent.model, workspace: dir, title: "Slots" });
   store.append(p.id, "assistant", { blocks: [] });
