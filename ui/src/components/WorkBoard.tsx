@@ -1,7 +1,7 @@
 // The work board: one card per agent of the session's tree, with its task and state, its branch and
 // head, and four facts the daemon keeps of it (src/board/board.ts): the named checks on its head's tree,
 // the latest review of its branch, whether the base holds it, and whether what runs holds it. A
-// reviewer's verdict line is quoted under its card as the reviewer's words.
+// reviewer's words (its verdict's why, or its LAND line) are quoted under its card as its own.
 import { Check, CircleDashed, GitBranch, Loader2, Minus, RefreshCw, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
@@ -52,15 +52,23 @@ function checksFact(r: BoardRow) {
   return <Fact name="Checks on head" tone={c.failed.length ? "bad" : c.passed.length && !c.notRun.length ? "ok" : "none"} value={value} title={all} testid="board-checks" state={c.failed.length ? "failed" : c.notRun.length ? "partial" : "passed"} />;
 }
 
+const SOURCE: Record<string, string> = {
+  verdict: "its keel__verdict call",
+  output: "its structured answer",
+  panel: "the Review panel's verdict",
+  words: "its report's words only: it gave no structured verdict, so the board takes it as neither approved nor refused",
+};
+
 function reviewFact(r: BoardRow) {
   const v = r.review;
   if (!v) return <Fact name="Review" tone="none" value="none" testid="board-review" state="none" />;
-  const word = v.verdict === "pending" ? "running" : v.verdict;
-  // Approved is the one word the board must never say wrongly: a review of another head is stale, whatever it said.
+  const word = v.verdict === "pending" ? "running" : v.verdict === "words" ? "words only" : v.verdict;
+  // Approved is the one word the board must never say wrongly: only a structured verdict on this head says it.
   const tone: Tone = v.verdict === "approved" && v.current === true ? "ok" : v.verdict === "refused" ? "bad" : v.verdict === "pending" ? "wait" : "none";
   const who = v.how === "panel" ? "The Review panel" : `${v.title} (agent ${v.by})`;
   const said = v.was ? `; it said ${v.was}${v.of ? ` of ${sha(v.of)}` : ""}${v.verdict === "stale" ? ", not of the head now" : ", of a head not known"}` : "";
-  return <Fact name="Review" tone={tone} value={<>{word}{v.verdict === "stale" && v.of ? <span className="text-faint"> · of {sha(v.of)}</span> : v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${who}${v.tip ? ` was started on ${sha(v.tip)}` : ""}${said}`} testid="board-review" state={v.verdict} />;
+  const from = v.source ? `; read from ${SOURCE[v.source] ?? v.source}` : "";
+  return <Fact name="Review" tone={tone} value={<>{word}{v.verdict === "stale" && v.of ? <span className="text-faint"> · of {sha(v.of)}</span> : v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${who}${v.tip ? ` was started on ${sha(v.tip)}` : ""}${said}${from}`} testid="board-review" state={v.verdict} />;
 }
 
 function landedFact(r: BoardRow) {

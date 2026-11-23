@@ -9,11 +9,13 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user
 // Feature: the work board. A coordinator starts three agents that commit on branches of their own:
 // alpha runs the repository's named check and lands through the landing queue onto a main that moved
 // (so main holds its patch, not its commit) and the after-land step runs on it; beta is reviewed by an
-// agent started with `reviews: <its branch>` that refuses it by its head (its findings use words like
-// "accepts"), and main gets a commit with beta's subject but not its change; gamma is still working. A
-// second reviewer, with a worktree of its own, names alpha's branch in its task only and says LAND: yes.
-// At the end gamma starts a child that "reviews" gamma's own branch: that is not gamma's review; then a
-// reviewer of the coordinator approves gamma's head and the branch moves on: that review reads stale.
+// agent started with `reviews: <its branch>` that refuses its head with keel__verdict, and main gets a
+// commit with beta's subject but not its change; gamma is still working. A second reviewer, with a
+// worktree of its own, names alpha's branch in its task only and approves its head with keel__verdict.
+// At the end gamma starts a child that approves gamma's own branch: that is not gamma's review. Then a
+// reviewer of the coordinator writes only "LAND: yes" (words only, never approved), another gives a
+// structured yes and then a structured no on gamma's head (refused: the newest), and the branch moves
+// on: that verdict reads stale.
 // The board (the API, the coordinator's keel__work_board and the Board panel) says of each what git,
 // the check ledger, the landing queue and the agents table say: alpha landed as patches and live,
 // approved; beta not landed, refused with the reviewer's line; gamma working, not landed, no review.
@@ -62,12 +64,15 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   writeFileSync(join(repo, "other.md"), "other\nLane beta\n");
   git(repo, "commit", "-qam", "Lane beta");
 
-  // Two reviewers: one started with `reviews` that refuses beta's head, one with a worktree of its own whose task names alpha's branch and approves it.
+  // Two reviewers, each with a structured verdict: one started with `reviews` that refuses beta's head, one
+  // with a worktree of its own whose task names alpha's branch and approves alpha's head.
   const betaTip = git(repo, "rev-parse", beta.branch).trim();
-  const refusal = `LAND: no for ${betaTip.slice(0, 9)} (P1-1)`;
+  const alphaHead = git(repo, "rev-parse", alpha.branch).trim();
+  const refusal = "P1-1: the parser accepts bad input; line 12 must keep its number.";
+  const verdict = (commit: string, land: "yes" | "no", why: string) => ({ name: "keel__verdict", input: { commit, land, why } });
   await send(coord, ask("Start two reviewers.", `script:batch ${JSON.stringify([
-    { name: "spawn_agent", input: { message: `Review it.\nscript:say ${refusal}\\n\\nP1-1: the parser accepts bad input; line 12 must keep its number.`, agent_type: "explorer", reviews: beta.branch } },
-    { name: "spawn_agent", input: { message: `Review the branch ${alpha.branch}.\nscript:say Checked the diff; nothing blocks it.\\n\\nLAND: yes` } },
+    { name: "spawn_agent", input: { message: `Review it.\n${calls([verdict(betaTip.slice(0, 9), "no", refusal)])}`, agent_type: "explorer", reviews: beta.branch } },
+    { name: "spawn_agent", input: { message: `Review the branch ${alpha.branch}.\n${calls([verdict(alphaHead, "yes", "Checked the diff; nothing blocks it.")])}` } },
   ])}`));
   await expect.poll(async () => (await agentsOf()).filter((a) => a.reviews?.length && a.status === "completed").length, { timeout: 60_000 }).toBe(2);
   const refuser = (await agentsOf()).find((a) => a.reviews?.includes(beta.branch))!;
@@ -95,10 +100,10 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const a = rowOf(b, alpha.id), be = rowOf(b, beta.id), g = rowOf(b, gamma.id), rv = rowOf(b, refuser.id);
   expect(a).toMatchObject({ state: "completed", branch: alpha.branch, head: alphaTip, landed: { state: "yes", how: "patch" }, live: { state: "yes", at: main, how: "after step passed" } });
   expect(a.checks).toEqual({ state: "known", passed: ["notes"], failed: [], notRun: [] });
-  expect(a.review).toMatchObject({ by: approver.id, how: "task", verdict: "approved", line: "LAND: yes", current: true });
+  expect(a.review).toMatchObject({ by: approver.id, how: "task", verdict: "approved", source: "verdict", line: "Checked the diff; nothing blocks it.", current: true });
   expect(be).toMatchObject({ state: "completed", head: betaTip, landed: { state: "no", missing: 1 }, live: null });
   expect(be.checks).toEqual({ state: "known", passed: [], failed: [], notRun: ["notes"] });
-  expect(be.review).toMatchObject({ by: refuser.id, how: "named", verdict: "refused", line: refusal, tip: betaTip, current: true });
+  expect(be.review).toMatchObject({ by: refuser.id, how: "named", verdict: "refused", source: "verdict", line: refusal, tip: betaTip, of: betaTip, current: true });
   expect(g).toMatchObject({ state: "running", landed: { state: "no", missing: 1 }, review: null, worktree: "here" });
   expect(rv).toMatchObject({ branch: null, reviews: [beta.branch], landed: null });
   expect(rowOf(b, approver.id).reviews).toEqual([alpha.branch]);
@@ -137,27 +142,41 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await shoot(page, "work-board-02-phone");
   await page.setViewportSize({ width: 1920, height: 1040 });
 
-  // Gamma ends when the spec lets it, then starts a child that approves gamma's own branch: the board does not take it for a review.
+  // Gamma ends when the spec lets it, then starts a child that approves gamma's own head: the board does not take it for a review.
   writeFileSync(gate, "");
   await expect.poll(async () => (await by("Lane gamma")).status, { timeout: 60_000 }).toBe("completed");
   await idle(gamma.session_id);
-  await send(gamma.session_id, calls([{ name: "spawn_agent", input: { message: "Review my work.\nscript:say LAND: yes", agent_type: "explorer", reviews: gamma.branch } }]));
+  const gammaHead = git(repo, "rev-parse", gamma.branch).trim();
+  await send(gamma.session_id, calls([{ name: "spawn_agent", input: { message: `Review my work.\n${calls([verdict(gammaHead, "yes", "Mine looks fine.")])}`, agent_type: "explorer", reviews: gamma.branch } }]));
   const own = async () => ((await (await request.get(`/api/sessions/${gamma.session_id}/agents`)).json()).agents as any[]).find((x) => x.reviews?.includes(gamma.branch));
   await expect.poll(async () => (await own())?.status, { timeout: 60_000 }).toBe("completed");
   const after = await board();
   expect(after.total).toBe(6);
   expect(rowOf(after, gamma.id).review).toBeNull();
 
-  // A reviewer of the coordinator approves gamma's head; then gamma's branch moves. The approval is of a
-  // head that is no longer the branch's: stale, never approved.
-  await send(coord, ask("Review gamma.", `script:batch ${JSON.stringify([{ name: "spawn_agent", input: { message: "Review it.\nscript:say LAND: yes", agent_type: "explorer", reviews: gamma.branch } }])}`));
-  await expect.poll(async () => (await agentsOf()).some((a) => a.reviews?.includes(gamma.branch) && a.status === "completed"), { timeout: 60_000 }).toBe(true);
-  await idle(coord);
-  await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 15_000 }).toBe("approved");
+  // A reviewer of the coordinator writes only "LAND: yes": its words, quoted, never approved.
+  await send(coord, ask("Review gamma in words.", `script:batch ${JSON.stringify([{ name: "spawn_agent", input: { message: "Review it.\nscript:say Read the diff.\\n\\nLAND: yes", agent_type: "explorer", reviews: gamma.branch } }])}`));
+  await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 30_000 }).toBe("words");
+  expect(rowOf(await board(), gamma.id).review).toMatchObject({ source: "words", line: "LAND: yes", current: true });
+  await send(coord, calls([{ name: "keel__work_board", input: { agent: gamma.id } }]));
+  expect(await told()).toContain("review words only (no structured verdict");
+  await page.reload();
+  await openPanel(page, "board");
+  await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "words");
+  await expect(card(gamma.id).getByTestId("board-verdict")).toContainText("LAND: yes");
+  await page.mouse.move(0, 0);
+  await shoot(page, "work-board-03-words");
+
+  // Another gives a structured yes, then a structured no, on gamma's head: refused, the newest.
+  await send(coord, ask("Review gamma.", `script:batch ${JSON.stringify([{ name: "spawn_agent", input: { message: `Review it.\n${calls([verdict(gammaHead, "yes", "First pass looks fine."), verdict(gammaHead, "no", "Second pass: line 6 lost its number.")])}`, agent_type: "explorer", reviews: gamma.branch } }])}`));
+  await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 30_000 }).toBe("refused");
+  expect(rowOf(await board(), gamma.id).review).toMatchObject({ source: "verdict", line: "Second pass: line 6 lost its number.", current: true });
+
+  // Gamma's branch moves: the verdict is of a head that is no longer the branch's, stale, never refused or approved.
   const wt = (await by("Lane gamma")).worktree as string;
   git(wt, "commit", "-q", "--allow-empty", "-m", "Lane gamma, more");
   await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 15_000 }).toBe("stale");
-  expect(rowOf(await board(), gamma.id).review).toMatchObject({ was: "approved", current: false });
+  expect(rowOf(await board(), gamma.id).review).toMatchObject({ was: "refused", current: false, of: gammaHead });
   await page.reload();
   await openPanel(page, "board");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "stale");

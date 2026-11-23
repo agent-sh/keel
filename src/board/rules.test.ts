@@ -1,22 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { boardText, landedFrom, namedIn, reviewsInput, verdictOf, type Board, type BoardRow } from "./rules.ts";
+import * as R from "./rules.ts";
+import { boardText, landedFrom, namedIn, reviewsInput, type Board, type BoardRow } from "./rules.ts";
 
-describe("verdictOf", () => {
-  test("a line that says it is the verdict decides, wherever it is", () => {
-    expect(verdictOf("I read the diff.\nIt looks fine overall.\n\n**Verdict:** refused. Line 12 breaks the parser.")).toMatchObject({ verdict: "refused", line: "Verdict: refused. Line 12 breaks the parser." });
-    expect(verdictOf("## Review\nVerdict: approve, ready to land.")).toMatchObject({ verdict: "approved", line: "Verdict: approve, ready to land." });
-    // On the labeled line the plain words count; "not approved" refuses.
-    expect(verdictOf("Decision: no").verdict).toBe("refused");
-    expect(verdictOf("Verdict - correct").verdict).toBe("approved");
-    expect(verdictOf("Verdict: not approved yet").verdict).toBe("refused");
-  });
-  test("a JSON report is read by its verdict key", () => {
-    expect(verdictOf('```json\n{"verdict":"incorrect","summary":"One P1."}\n```')).toMatchObject({ verdict: "refused", line: "verdict: incorrect · One P1." });
-    expect(verdictOf('{"approved": true}').verdict).toBe("approved"); // a yes-or-no key
-    expect(verdictOf('{"decision": "approve"}').verdict).toBe("approved");
-  });
-  test("an empty report", () => expect(verdictOf(null)).toMatchObject({ verdict: "unclear", line: "" }));
-});
+const A = "01fe3b3a9c0d1e2f3a4b5c6d7e8f901234567890", B = "acd2cc0b1e2f3a4b5c6d7e8f9012345678901234", C = "4b5c6d7e8f9012345678901234567890abcdef12";
 
 describe("namedIn", () => {
   const cands = [{ branch: "keel/fix-a-1", tip: "abcdef1234567890abcdef1234567890abcdef12" }, { branch: "keel/fix-a", tip: "1111111111111111111111111111111111111111" }];
@@ -66,7 +52,7 @@ describe("boardText", () => {
   test("agents that need the coordinator get a line each, the rest their ids", () => {
     const text = boardText(board([
       row({ id: "work1", state: "running", title: "Working lane", landed: { state: "no", missing: 2 } }),
-      row({ id: "refd1", review: { by: "rev1", title: "Review", how: "named", state: "completed", verdict: "refused", line: "Verdict: refused. It breaks X.", tip: "c".repeat(40), of: "c".repeat(40), current: true, at: 3 } }),
+      row({ id: "refd1", review: { by: "rev1", title: "Review", how: "named", state: "completed", verdict: "refused", source: "verdict", line: "It breaks X.", tip: "c".repeat(40), of: "c".repeat(40), current: true, at: 3 } }),
       row({ id: "land1", landed: { state: "yes", how: "patch" }, live: { state: "yes", at: "d".repeat(40), how: "after step passed" } }),
       row({ id: "rev1", branch: null, checks: null, landed: null, reviews: ["keel/lane"] }),
       row({ id: "gone1", branch: "keel/gone", head: null, landed: { state: "unknown", why: "its branch is gone" } }),
@@ -75,7 +61,7 @@ describe("boardText", () => {
     expect(lines[0]).toBe("Work board: 5 agents (1 working, 4 done); base main at bbbbbbbbb.");
     // A fact that says nothing (no review, a worktree removed) is left out of a board line.
     expect(lines[1]).toBe('work1 working "Working lane" · keel/lane@ccccccccc · checks passed typecheck; not run unit · not landed (2 commits)');
-    expect(lines[2]).toContain('review refused by rev1 ("Review"), reviewer wrote: "Verdict: refused. It breaks X."');
+    expect(lines[2]).toContain('review refused by rev1 ("Review"), reviewer wrote: "It breaks X."');
     expect(lines).toContain("Landed (and live where a deploy is known): land1.");
     expect(lines).toContain("Reviewers done: rev1 (keel/lane).");
     expect(lines).toContain("Done, branch removed: gone1.");
@@ -89,5 +75,46 @@ describe("boardText", () => {
     // Not landed says what git cannot see; a head the queue landed says it is the queue's word.
     expect(boardText(board([row({ id: "n1" })]), { agent: "n1" })).toContain("not landed (1 commit the base lacks; a squash or edited patches are not seen)");
     expect(boardText(board([row({ id: "q1", landed: { state: "yes", how: "queue" } })]), { agent: "q1" })).toContain("landed by the landing queue (git does not see its patches on main: a squash or edited patches)");
+  });
+});
+
+describe("the heads a task may name by its digits", () => {
+  test("not a tip that is where its worktree started, nor one other refs share", () => {
+    const cands = [
+      { branch: "keel/a", tip: A as string | null, madeFrom: "0".repeat(40) },
+      { branch: "keel/same-as-main", tip: C, madeFrom: "0".repeat(40) },
+      { branch: "keel/nothing", tip: B, madeFrom: B },
+    ];
+    const kept = R.matchableTips(cands, [A, C, C]);
+    expect(kept.map((c) => c.tip)).toEqual([A, null, null]);
+    expect(R.namedIn(`on origin/main ${C.slice(0, 9)}, review ${A.slice(0, 7)}`, kept)).toEqual([{ branch: "keel/a", by: "head" }]);
+    expect(R.namedIn("review keel/nothing", kept)).toEqual([{ branch: "keel/nothing", by: "name" }]);
+  });
+});
+
+describe("landed and live", () => {
+  const head = "h".repeat(40);
+  test("a head the base holds, with no record of its start, made before the agent started: nothing of its own", () => {
+    expect(R.landedFrom({ head, madeFrom: null, ancestor: true, cherry: undefined, headTime: 100, since: 500 })).toEqual({ state: "nothing" });
+    expect(R.landedFrom({ head, madeFrom: null, ancestor: true, cherry: undefined, headTime: 900, since: 500 })).toEqual({ state: "yes", how: "ancestor" });
+  });
+  test("a head the landing queue landed whose patches the base does not show is the queue's word", () => {
+    expect(R.queueLanded({ state: "no", missing: 2 }, { state: "landed", current: true })).toEqual({ state: "yes", how: "queue" });
+    expect(R.queueLanded({ state: "no", missing: 2 }, { state: "landed", current: false })).toEqual({ state: "no", missing: 2 });
+  });
+  test("live: whichever deploy holds the head", () => {
+    const after = { sha: "a".repeat(40), how: "after step passed" as const, at: 1 }, daemon = { sha: "d".repeat(40), how: "this daemon" as const, at: null };
+    expect(R.liveFrom([{ deploy: after, holds: { state: "no", missing: 1 } }, { deploy: daemon, holds: { state: "yes", how: "ancestor" } }])).toEqual({ state: "yes", at: daemon.sha, how: "this daemon" });
+    expect(R.liveFrom([{ deploy: after, holds: { state: "no", missing: 1 } }])).toEqual({ state: "no", at: after.sha, how: "after step passed" });
+  });
+});
+
+describe("live of a head the queue landed", () => {
+  test("is read from the commit the queue put on the base", () => {
+    const fn = (R as Record<string, unknown>).liveSha as ((r: Pick<R.BoardRow, "head" | "landed" | "queue">) => string | null) | undefined;
+    expect(typeof fn).toBe("function");
+    const q = { id: "q", state: "landed", why: null, landed: "e".repeat(40), tip: "c".repeat(40), current: true, updated: 1 };
+    expect(fn!({ head: "c".repeat(40), landed: { state: "yes", how: "queue" }, queue: q })).toBe("e".repeat(40));
+    expect(fn!({ head: "c".repeat(40), landed: { state: "yes", how: "patch" }, queue: q })).toBe("c".repeat(40));
   });
 });

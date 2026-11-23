@@ -25,7 +25,7 @@ import { git as gitRead, locate } from "../core/git.ts";
 import { matchableTips, namedIn, reviewsInput } from "../board/rules.ts";
 import * as leftovers from "./leftovers.ts";
 import { contains, realOf } from "../core/paths.ts";
-import { parseWrites } from "../safety/write-scope.ts";
+import { isReviewer, parseWrites } from "../safety/write-scope.ts";
 import * as writeAsks from "./write-asks.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
@@ -975,8 +975,10 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   if (wantEffort && !effort && (input.effort || def.format !== "codex")) left.push(`the effort ${wantEffort}: ${model} does not list it`);
   if (left.length) leftOut.set(id, left);
   if (scope.json && scope.why) scopeOut.set(id, writeAsks.spawnLine(store.session(child.id) ?? child, scope.json, scope.why));
+  const reviews = await reviewsAt(parentId, parent.workspace, input).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
   const task = [
     preamble(depth, max), def.body, memory?.block ?? "", ...preloaded,
+    reviews || isReviewer(def.name) ? VERDICT_LINE : "",
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Change the repository only there (a scratch folder your task names is yours too) and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
     placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Change the repository only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
@@ -990,7 +992,6 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // as history is: a secret in it is its placeholder.
   // task_at: where the parent's own words start, so the page shows them verbatim.
   const budget = mergeBudget(def.budget, parseBudget(input.budget));
-  const reviews = await reviewsAt(parentId, parent.workspace, input).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
   store.db.query(
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes, reviews) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
@@ -1007,10 +1008,14 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   return begin(id, input, model, signal);
 }
 
+// What a reviewer is told of the work board (src/board/rules.ts pickReview): its words are never read as a verdict.
+export const VERDICT_LINE = "The work board takes your review verdict only from the tool keel__verdict: for each commit you judge, call it with the commit, land yes or no, and why in one line. A LAND line in your report is shown as your words only, never as approved or refused.";
+
 // The branches an agent reviews, with each one's tip as it starts (what it reviewed), as the work board
 // reads them (src/board/board.ts): the ones its spawn names in `reviews`, else the branches of its tree's
 // agents its task names by their whole name or their head (an agent with a branch of its own counts as
-// their reviewer only when its report says LAND or a labelled verdict: src/board/rules.ts pickReview).
+// their reviewer only when it gave a verdict, or its LAND line names the branch or its head:
+// src/board/rules.ts pickReview).
 // The tips come from one for-each-ref a repository; a head named only by its digits counts when no other
 // ref shares it, it moved from where its worktree started, and the base does not hold it.
 async function reviewsAt(parentId: string, workspace: string, input: SpawnInput): Promise<string | null> {
@@ -2431,6 +2436,9 @@ export function resolveInTree(sessionId: string, target: string): AgentRecord {
   }
 }
 
+const VERDICT_TOOL = "keel__verdict";
+const SEARCHES = new Set(["ToolSearch", "tool_search", "search_tools"]);
+
 // Tool lists hold at call time; the request keeps the parent's tool list so
 // the cached prefix is shared.
 // The permission gate's read-only mode holds a read-only agent (it knows which
@@ -2445,6 +2453,8 @@ export function gate(sessionId: string, toolName: string, input?: any, names: st
   }
   const def = defOf(a.id);
   if (!def) return undefined;
+  // Any agent may give the work board a verdict, and load the tool to do it, whatever its tools list names.
+  if (names.includes(VERDICT_TOOL) || (SEARCHES.has(toolName) && JSON.stringify(input ?? {}).includes(VERDICT_TOOL))) return undefined;
   const entry = (list: string[], n: string) => list.find((t) => toolOfEntry(t).toLowerCase() === n.toLowerCase());
   // A dispatched tool (mcp_call) is in the list when the dispatcher, or the tool it runs by either of its names, is.
   const own = [toolName, names[0]!, ...names.filter((n) => n.startsWith("mcp__"))];

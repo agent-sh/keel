@@ -1,7 +1,7 @@
 // The work board: per agent of a session's tree, its task, state, branch and head, the named checks that
-// passed on its head's tree, the latest review of its branch with the verdict line, whether the base holds
+// passed on its head's tree, the latest review of its branch (approved or refused only from a structured verdict), whether the base holds
 // its head (or the same patches), and whether what runs holds it. Every column is read from what the
-// daemon keeps or git says, never from what a model wrote about its work; a reviewer's verdict line is
+// daemon keeps or git says, never from what a model wrote about its work; a reviewer's words are
 // quoted as its. The database is read on the read thread (src/board/facts.ts), git in processes of its
 // own, a few at a time; nothing waits on the loop. A board is kept for a few seconds, and what git said of
 // a pair of commits for as long as the daemon runs (a pair's answer never changes).
@@ -40,6 +40,9 @@ export class WorkBoard {
   stats = { reads: 0, built: 0, git: 0 };
 
   constructor(private store: Store, private deps: BoardDeps) {}
+
+  // A board that a new fact makes old (a reviewer's verdict): read again next time.
+  forget(root: string) { this.boards.delete(root); }
 
   read(root: string, fresh = false): Promise<Board> {
     this.stats.reads++;
@@ -170,7 +173,7 @@ export class WorkBoard {
     for (const r of rows.values()) {
       if (!r.branch) continue;
       r.review = pickReview(facts.reviews, r) ?? null;
-      const who = r.review && r.review.how === "task" ? rows.get(r.review.by) : undefined;
+      const who = r.review && (r.review.how === "task" || r.review.how === "verdict") ? rows.get(r.review.by) : undefined;
       if (who && !who.reviews.includes(r.branch)) who.reviews.push(r.branch);
       const q = facts.queue.filter((x) => x.branch === r.branch && (!r.repo || x.repo === r.repo)).sort((a, b) => b.updated - a.updated)[0];
       if (q) r.queue = { id: q.id, state: q.state, why: q.why, landed: q.landed, tip: q.tip, current: !!r.head && q.tip === r.head, updated: q.updated };
