@@ -24,6 +24,8 @@ import { configDir } from "../providers/config.ts";
 import { carriedPlugins, preloadSkill } from "../tools/skills.ts";
 import { catalogSources } from "../tools/catalog.ts";
 import { enabledUnits } from "../plugins/registry.ts";
+import { fillContent } from "../plugins/options.ts";
+import { valuesOf } from "../plugins/settings.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
@@ -426,7 +428,11 @@ export function definitions(cwd: string): AgentDef[] {
   for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
   // Agents of the plugins Keel installed (while enabled) and of the Claude Code
   // plugins the owner carried, as Claude Code names them (<plugin>:<agent>).
-  for (const u of enabledUnits()) for (const d of readFiles(u.agents.map((a) => a.file), "owner", true)) byName.set(`${u.id}:${d.name}`, { ...d, name: `${u.id}:${d.name}` });
+  // Its settings fill ${user_config.KEY} in the agent's text, a sensitive one as a placeholder (src/plugins/options.ts).
+  for (const u of enabledUnits()) {
+    const v = u.options ? valuesOf(u) : null;
+    for (const d of readFiles(u.agents.map((a) => a.file), "owner", true)) byName.set(`${u.id}:${d.name}`, { ...d, name: `${u.id}:${d.name}`, ...(v && d.body ? { body: fillContent(d.body, v.specs, v.text) } : {}) });
+  }
   for (const p of carriedPlugins()) for (const d of readDir(join(p.dir, "agents"), "owner", true)) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
   const dirs: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {

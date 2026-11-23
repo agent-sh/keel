@@ -6,11 +6,13 @@
 // commands and agents it gives, its hooks and MCP servers with their paths
 // filled in, and the lines of what it runs the owner agreed to. Nothing of
 // a plugin runs but what its record says, and only while it is enabled.
+// Its settings' plain values are kept here too; a sensitive one is not.
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { configDir } from "../providers/config.ts";
 import type { HookGroups, NotTaken } from "./manifest.ts";
+import type { OptionValue, Specs } from "./options.ts";
 
 // Where it came from: a folder, or a git repository (`ref` a branch, tag or
 // commit; `sub` the plugin's folder in it); `entry` the marketplace entry
@@ -41,6 +43,12 @@ export type Unit = {
   consent: { at: number; lines: string[] };
   // The repository folder that offered it, when it came from one.
   offeredBy?: string;
+  // Its settings (the manifest's userConfig), the plain values the owner
+  // gave, and which sensitive ones were given: their values are in the
+  // system keyring only (src/plugins/settings.ts), never in this file.
+  options?: Specs;
+  values?: Record<string, OptionValue>;
+  secrets?: string[];
 };
 export type Registry = { plugins: Unit[] };
 

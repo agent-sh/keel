@@ -8,7 +8,9 @@ import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { registerHooks } from "../engine/hooks.ts";
-import { enabledUnits } from "../plugins/registry.ts";
+import { enabledUnits, unitOf } from "../plugins/registry.ts";
+import { fillContent } from "../plugins/options.ts";
+import { valuesOf } from "../plugins/settings.ts";
 import { claudeAllow } from "../integrations/port-permissions.ts";
 import type { RuleKind } from "../safety/policy.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
@@ -312,6 +314,8 @@ export function renderSkill(body: string, args: string, names: string[], vars: R
     out += c;
   }
   out = out.replace(/\$\{(CLAUDE_SKILL_DIR|CLAUDE_PROJECT_DIR|CLAUDE_SESSION_ID|CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|KEEL_SKILL_DIR|KEEL_SESSION_ID)\}/g, (all, k) => vars[k] ?? all);
+  // A plugin's settings (src/plugins/options.ts): a plain value, or the placeholder of a sensitive one.
+  out = out.replace(/\$\{user_config\.([A-Za-z_][A-Za-z0-9_]*)\}/g, (all, k) => vars[`user_config.${k}`] ?? all);
   if (args.trim() && !used) out = `${out.trimEnd()}\n\nARGUMENTS: ${args}`;
   return out;
 }
@@ -321,7 +325,16 @@ function varsOf(skill: Skill, cwd: string, sessionId: string): Record<string, st
   return {
     CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root, ...(skill.data ? { CLAUDE_PLUGIN_DATA: skill.data } : {}) } : {}), CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
     CLAUDE_SESSION_ID: sessionId, KEEL_SESSION_ID: sessionId,
+    ...(skill.scope === "plugin" && skill.plugin ? settingVars(skill.plugin) : {}),
   };
+}
+
+// ${user_config.KEY} of a plugin's skill: each setting as fillContent gives it (a sensitive one is never its value).
+function settingVars(id: string): Record<string, string> {
+  const u = unitOf(id);
+  if (!u?.options) return {};
+  const { specs, text } = valuesOf(u);
+  return Object.fromEntries(Object.keys(specs).map((k) => [`user_config.${k}`, fillContent(`\${user_config.${k}}`, specs, text)]));
 }
 
 // A skill's allowed-tools as Keel's rules: each one maps as a Claude Code

@@ -5,6 +5,7 @@
 //   skills/<name>/SKILL.md, commands/*.md, agents/*.md  -> <plugin>:<name>
 //   hooks/hooks.json and the manifest's `hooks`        -> hooks that run
 //   .mcp.json and the manifest's `mcpServers`          -> MCP servers
+//   the manifest's `userConfig`                         -> its settings (options.ts)
 // and every other part is named as not taken, with why. Component paths are
 // relative to the plugin's root, start with "./" and stay inside it;
 // `commands` and `agents` replace their default folder, `skills` adds to its
@@ -14,6 +15,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { contains } from "../core/paths.ts";
+import { parseUserConfig, refsIn, type Specs } from "./options.ts";
 
 export type HookGroups = Record<string, { matcher?: string; hooks: any[] }[]>;
 export type NotTaken = { part: string; why: string };
@@ -29,6 +31,8 @@ export type Plugin = {
   agents: { name: string; file: string }[];
   hooks: HookGroups;
   mcp: Record<string, Record<string, unknown>>;
+  // Its settings (userConfig): what the owner gives values for (src/plugins/options.ts).
+  options: Specs;
   notTaken: NotTaken[];
   // What keeps it from being installed (a bad name, a path out of its folder, a file that is not JSON).
   problems: string[];
@@ -68,11 +72,10 @@ function ownName(file: string, fallback: string): string {
 }
 
 // The manifest's fields that Keel takes, and what each of the others is.
-const TAKEN_KEYS = new Set(["$schema", "name", "displayName", "version", "description", "author", "homepage", "repository", "license", "keywords", "metadata", "icon", "documentationUrl", "supportUrl", "privacyPolicyUrl", "termsOfServiceUrl", "defaultEnabled", "engines", "network", "types", "skills", "commands", "agents", "hooks", "mcpServers", "strict", "source", "category", "tags", "relevance", "headers", "headersHelper"]);
+const TAKEN_KEYS = new Set(["$schema", "name", "displayName", "version", "description", "author", "homepage", "repository", "license", "keywords", "metadata", "icon", "documentationUrl", "supportUrl", "privacyPolicyUrl", "termsOfServiceUrl", "defaultEnabled", "engines", "network", "types", "skills", "commands", "agents", "hooks", "mcpServers", "userConfig", "strict", "source", "category", "tags", "relevance", "headers", "headersHelper"]);
 const NOT_TAKEN: Record<string, string> = {
   outputStyles: "Keel has no output style setting: a style's text belongs in an instructions file",
   lspServers: "Keel finds and starts language servers itself (Settings > Language servers)",
-  userConfig: "Keel has no prompt for a plugin's settings: what reads them gets nothing",
   channels: "Keel has no message channels from plugins",
   dependencies: "Keel does not install other plugins for one: install each yourself",
   workflows: "Keel has no plugin workflows",
@@ -106,7 +109,7 @@ export function readPlugin(root: string, entry?: MarketEntry): Plugin {
   // The entry's own component fields: the manifest when there is no plugin.json, added to it when
   // strict (the default), a conflict when not.
   const COMPONENTS = ["skills", "commands", "agents", "hooks", "mcpServers"];
-  const fromEntry = entry ? Object.fromEntries(Object.entries(entry.fields).filter(([k]) => COMPONENTS.includes(k) || NOT_TAKEN[k] || k === "experimental")) : {};
+  const fromEntry = entry ? Object.fromEntries(Object.entries(entry.fields).filter(([k]) => COMPONENTS.includes(k) || k === "userConfig" || NOT_TAKEN[k] || k === "experimental")) : {};
   if (entry && has && entry.strict === false && Object.keys(fromEntry).length) problems.push(`the marketplace entry declares ${Object.keys(fromEntry).join(", ")} beside a plugin.json while strict is false, which Claude Code refuses as a conflict`);
   const m: Record<string, any> = { ...(has ? {} : entry?.fields ?? {}), ...manifest };
   if (has && entry && entry.strict !== false) for (const [k, v] of Object.entries(fromEntry)) m[k] = m[k] === undefined ? v : k === "hooks" || k === "mcpServers" ? [...asList(m[k]), ...asList(v)] : [...asList(m[k]), ...asList(v)];
@@ -191,6 +194,16 @@ export function readPlugin(root: string, entry?: MarketEntry): Plugin {
     else mergeMcp(v, "the manifest's mcpServers");
   }
 
+  // Its settings, and every reference to one in what it runs naming one it declares.
+  const uc = parseUserConfig(m.userConfig);
+  problems.push(...uc.problems);
+  const options = uc.problems.length ? {} : uc.specs;
+  if (!uc.problems.length) {
+    const unknown = (v: unknown, what: string) => { for (const k of refsIn(v)) if (!options[k]) problems.push(`${what} names \${user_config.${k}}, which its userConfig does not declare`); };
+    for (const [n, c] of Object.entries(mcp)) unknown(c, `MCP server ${n}`);
+    for (const [event, groups] of Object.entries(hooks)) unknown(groups, `a hook on ${event}`);
+  }
+
   // What it holds that Keel has no part for: named, never dropped in silence.
   for (const [k, why] of Object.entries(NOT_TAKEN)) if (m[k] !== undefined) notTaken.push({ part: k, why });
   if (m.experimental && typeof m.experimental === "object") for (const k of Object.keys(m.experimental)) notTaken.push({ part: `experimental.${k}`, why: "an experimental Claude Code part Keel has no equivalent of" });
@@ -203,7 +216,7 @@ export function readPlugin(root: string, entry?: MarketEntry): Plugin {
 
   const author = typeof m.author === "string" ? m.author : str(m.author?.name);
   return {
-    name, root, skills, commands, agents, hooks, mcp, notTaken, problems,
+    name, root, skills, commands, agents, hooks, mcp, options, notTaken, problems,
     ...(str(m.version) ? { version: str(m.version) } : entry?.version ? { version: entry.version } : {}),
     ...(str(m.description) ?? entry?.description ? { description: str(m.description) ?? entry?.description } : {}),
     ...(author ? { author } : {}),

@@ -1216,9 +1216,16 @@ yours, a built-in one or another plugin's has it; then the plugin's id goes
 before it. A plugin that a repository's `.claude/settings.json` names
 (`enabledPlugins`, from a marketplace in `extraKnownMarketplaces`) is offered
 in Settings > Plugins for that folder and installed only when you say yes.
+A plugin's settings (its manifest's `userConfig`) are given in Settings >
+Plugins after it is installed: a plain value is kept in its record, a
+sensitive one in the system keyring only. While a required value is missing,
+its servers and hooks wait. A value reaches its MCP servers and a command
+hook's `args` as `${user_config.KEY}`, its skills and agents the same way (a
+sensitive one as a placeholder), and its hooks as `CLAUDE_PLUGIN_OPTION_<KEY>`;
+a shell-form hook command or a headers helper that names one is not taken.
 Parts Keel has no equivalent of (output styles, LSP servers, monitors, themes,
-`bin/`, `userConfig`, MCP bundles, npm and archive sources) are named at
-install as not taken, with why.
+`bin/`, MCP bundles, npm and archive sources) are named at install as not
+taken, with why.
 
 ## Subagent concurrency
 

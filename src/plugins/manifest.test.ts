@@ -14,14 +14,14 @@ const tree = (files: Record<string, string>) => {
 
 test("a Claude Code plugin is read as it is: its parts, and what Keel does not take", () => {
   const root = tree({
-    ".claude-plugin/plugin.json": JSON.stringify({ name: "kit", version: "1.2.0", description: "A kit", author: { name: "Ann" }, commands: ["./more/"], outputStyles: "./styles/", userConfig: { token: {} } }),
+    ".claude-plugin/plugin.json": JSON.stringify({ name: "kit", version: "1.2.0", description: "A kit", author: { name: "Ann" }, commands: ["./more/"], outputStyles: "./styles/", userConfig: { token: { type: "string", title: "Token", description: "The API token", sensitive: true } } }),
     "skills/greet/SKILL.md": "---\nname: hello\ndescription: say hello\n---\nHi",
     "skills/notes/README.md": "not a skill",
     "commands/ignored.md": "replaced by the manifest's commands",
     "more/stamp.md": "Stamp it",
     "agents/checker.md": "---\nname: checker\ndescription: checks\n---\nCheck.",
     "hooks/hooks.json": JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "${CLAUDE_PLUGIN_ROOT}/hook.sh" }] }] } }),
-    ".mcp.json": JSON.stringify({ mcpServers: { db: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/db.js"] } } }),
+    ".mcp.json": JSON.stringify({ mcpServers: { db: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/db.js"], env: { TOKEN: "${user_config.token}" } } } }),
     ".lsp.json": "{}",
     "styles/terse.md": "Be terse.",
     "bin/tool": "#!/bin/sh",
@@ -36,7 +36,16 @@ test("a Claude Code plugin is read as it is: its parts, and what Keel does not t
   expect(p.agents.map((a) => a.name)).toEqual(["checker"]);
   expect(Object.keys(p.hooks)).toEqual(["UserPromptSubmit"]);
   expect(Object.keys(p.mcp)).toEqual(["db"]);
-  expect(p.notTaken.map((n) => n.part).sort()).toEqual([".lsp.json", "bin/", "outputStyles", "userConfig"]);
+  expect(p.options).toEqual({ token: { type: "string", title: "Token", description: "The API token", sensitive: true } });
+  expect(p.notTaken.map((n) => n.part).sort()).toEqual([".lsp.json", "bin/", "outputStyles"]);
+  // A reference to a setting the manifest does not declare, and an option that is not strict, keep it from loading.
+  const bad = readPlugin(tree({
+    ".claude-plugin/plugin.json": JSON.stringify({ name: "k2", userConfig: { a: { type: "string", title: "A", description: "", colour: "red" } } }),
+    ".mcp.json": JSON.stringify({ mcpServers: { s: { command: "x", args: ["${user_config.nope}"] } } }),
+  }));
+  expect(bad.problems).toEqual(["userConfig.a: colour is not a field of an option"]);
+  const undeclared = readPlugin(tree({ ".claude-plugin/plugin.json": JSON.stringify({ name: "k3", userConfig: {} }), ".mcp.json": JSON.stringify({ mcpServers: { s: { command: "x", args: ["${user_config.nope}"] } } }) }));
+  expect(undeclared.problems).toEqual(["MCP server s names ${user_config.nope}, which its userConfig does not declare"]);
 });
 
 test("no manifest: the folder's name and the standard layout; a path out of the folder is refused", () => {

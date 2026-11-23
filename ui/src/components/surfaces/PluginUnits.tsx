@@ -2,17 +2,25 @@
 // on and off, an update said before it is applied, removal, and the install
 // field with its consent step (src/plugins/installer.ts). Nothing a plugin
 // runs starts before the owner said yes to its lines here.
-import { ArrowUpCircle, PackagePlus, Trash2, X } from "lucide-react";
+import { ArrowUpCircle, KeyRound, PackagePlus, Save, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, failed } from "../../lib/store.ts";
+import { Select } from "../Select.tsx";
 import { MarkDot, ReaderHead, tail, tilde, Toggle, type Mark } from "./kit.tsx";
 
+// A setting of a plugin (its userConfig option); `value` is never sent for a sensitive one.
+type Setting = {
+  key: string; type: "string" | "number" | "boolean" | "directory" | "file"; title: string; description: string;
+  required?: boolean; default?: string | number | boolean | string[]; options?: string[]; multiple?: boolean; sensitive?: boolean; min?: number; max?: number;
+  value?: string | number | boolean | string[] | null; set?: boolean;
+};
 export type UnitView = {
   id: string; name: string; version: string; description: string | null; author: string | null; homepage: string | null;
   source: string; entry: string | null; commit: string | null; dir: string; data: string; enabled: boolean; installed: number; updated: number; offered_by: string | null;
   skills: string[]; commands: string[]; agents: string[]; hooks: { event: string; matcher: string | null; what: string }[];
   mcp: { name: string; label: string; what: string; state: string; tools: string[]; error: string | null }[];
   not_taken: { part: string; why: string }[]; notes: string[]; runs: string[];
+  settings?: Setting[]; waiting?: { key: string; title: string; why: string }[];
 };
 export type Offer = { key: string; plugin: string; marketplace: string; from: string; input?: string; installed?: string; problem?: string };
 export type Units = { plugins: UnitView[]; offers: Offer[]; home: string; registry: string };
@@ -21,6 +29,7 @@ type PlanView = {
   skills: string[]; commands: string[]; agents: string[]; hooks: { event: string; matcher?: string; what: string }[]; mcp: { name: string; label: string; what: string }[];
   runs: string[]; consent: string | null; not_taken: { part: string; why: string }[]; notes: string[]; problems: string[];
   fetched: string[]; bytes: number;
+  settings?: Setting[];
   update?: { id: string; from: string; changes: string[]; runs_changed: boolean; same: boolean };
 };
 type MarketView = { kind: "marketplace"; token: string; input: string; name: string; owner?: string; description?: string; plugins: { name: string; description?: string; version?: string; from: string; unsupported?: string }[] };
@@ -29,10 +38,107 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 // Where a plugin comes from, as the owner reads it: a local repository by its folder.
 export const sourceLabel = (s: string) => (s.startsWith("file://") ? `${tilde(s.slice(7))} (git)` : tilde(s));
 const size = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`);
-export const unitMark = (u: UnitView): Mark => (!u.enabled ? "off" : u.mcp.some((m) => m.state === "error") ? "fail" : u.mcp.some((m) => m.state === "connecting") ? "work" : "on");
+export const unitMark = (u: UnitView): Mark => (!u.enabled ? "off" : u.waiting?.length ? "need" : u.mcp.some((m) => m.state === "error") ? "fail" : u.mcp.some((m) => m.state === "connecting") ? "work" : "on");
 export const unitBrings = (u: { skills: unknown[]; commands: unknown[]; agents: unknown[]; hooks: unknown[]; mcp: unknown[] }) =>
   [[u.skills.length, "skill"], [u.commands.length, "command"], [u.agents.length, "agent"], [u.hooks.length, "hook"], [u.mcp.length, "MCP server"]].filter(([n]) => n).map(([n, w]) => plural(n as number, w as string)).join(", ") || "nothing Keel runs";
-const mcpMarkOf = (state: string): Mark => (state === "ready" || state === "idle" ? "on" : state === "disabled" ? "off" : state === "connecting" ? "work" : state === "needs_auth" ? "need" : "fail");
+const mcpMarkOf = (state: string): Mark => (state === "ready" || state === "idle" ? "on" : state === "disabled" ? "off" : state === "connecting" ? "work" : state === "needs_auth" || state === "waiting" ? "need" : "fail");
+const shownValue = (v: Setting["default"]) => (Array.isArray(v) ? v.join(", ") : String(v));
+const flags = (o: Setting) => [o.required && "required", o.sensitive && "sensitive", o.default !== undefined && `default ${shownValue(o.default)}`].filter(Boolean).join(" · ");
+
+// The settings a plugin asks for, as the plan says them: given after it is installed.
+function PlanSettings({ settings }: { settings: Setting[] }) {
+  return (
+    <div data-testid="plan-settings">
+      <div className="k-sub k-label">Settings it asks for</div>
+      <p className="text-caption text-muted">You give their values after it is installed. A sensitive one goes to the system keyring, never to a file.</p>
+      <ul className="k-plugset-list">
+        {settings.map((o) => (
+          <li key={o.key} data-testid="plan-setting" data-key={o.key}>
+            <b>{o.title}</b> <code className="font-mono text-micro text-faint">{o.key}</code>{flags(o) && <span className="text-micro text-faint"> · {flags(o)}</span>}
+            {o.description && <p>{o.description}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// The owner's values for a plugin's settings. Only what changed is sent; a
+// sensitive value is typed, saved to the keyring and never shown back.
+function UnitSettings({ u, folder, onChange }: { u: UnitView; folder: string; onChange: () => void }) {
+  const settings = u.settings ?? [];
+  const [draft, setDraft] = useState<Record<string, string | boolean>>({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState(false);
+  const shown = (o: Setting): string | boolean => {
+    if (o.key in draft) return draft[o.key]!;
+    if (o.sensitive) return "";
+    const v = o.value ?? null;
+    if (o.type === "boolean") return v === null ? o.default === true : v === true;
+    return v === null ? "" : Array.isArray(v) ? v.join("\n") : String(v);
+  };
+  const set = (k: string, v: string | boolean) => { setSaved(false); setDraft((d) => ({ ...d, [k]: v })); };
+  const save = async (values: Record<string, string | boolean | null>) => {
+    setBusy(true); setErr("");
+    try {
+      await api(`/api/plugins/installed/${encodeURIComponent(u.id)}/settings`, { method: "POST", body: JSON.stringify({ values, cwd: folder }) });
+      setDraft({}); setSaved(true); onChange();
+    } catch (e) { setErr(failed(e, { at: "plugin settings" })); } finally { setBusy(false); }
+  };
+  const changed = Object.keys(draft).filter((k) => !(settings.find((o) => o.key === k)?.sensitive && draft[k] === ""));
+  const field = "h-ctl-lg w-full rounded-[0.1875rem] border border-line-strong bg-bg px-2.5 text-ui";
+  return (
+    <div data-testid="unit-settings">
+      <div className="k-sub k-label">Settings</div>
+      <form className="k-form k-plugset-form" noValidate onSubmit={(e) => { e.preventDefault(); if (changed.length) void save(Object.fromEntries(changed.map((k) => [k, draft[k]!]))); }}>
+        {settings.map((o) => {
+          const v = shown(o);
+          const id = `setting-${u.id}-${o.key}`;
+          const missing = u.waiting?.some((w) => w.key === o.key);
+          return (
+            <div key={o.key} className="k-plugset" data-testid="setting" data-key={o.key} data-missing={missing || undefined}>
+              <label htmlFor={id}>
+                <span className="flex items-baseline gap-2">
+                  <span className="text-fg">{o.title}</span>
+                  {o.required && <span className="k-chip" data-tone={missing ? "need" : undefined}>required</span>}
+                  {o.sensitive && <span className="k-chip"><KeyRound /> {o.set ? "saved in the keyring" : "sensitive"}</span>}
+                </span>
+              </label>
+              {o.type === "boolean" ? (
+                <div className="k-form-row"><Toggle testid="setting-input" on={v === true} label={o.title} onChange={(on) => set(o.key, on)} /><span className="text-caption text-muted">{v === true ? "on" : "off"}</span></div>
+              ) : o.options ? (
+                <Select value={String(v)} onChange={(e) => set(o.key, e.target.value)} aria-label={o.title} data-testid="setting-input" className={field}>
+                  {!o.required && <option value="">{o.default !== undefined ? `The default (${shownValue(o.default)})` : "None"}</option>}
+                  {o.required && v === "" && <option value="" disabled>Pick one</option>}
+                  {o.options.map((x) => <option key={x} value={x}>{x}</option>)}
+                </Select>
+              ) : o.multiple ? (
+                <textarea id={id} data-testid="setting-input" value={String(v)} onChange={(e) => set(o.key, e.target.value)} placeholder={o.default !== undefined ? shownValue(o.default) : "One a line"} />
+              ) : (
+                <input
+                  id={id} data-testid="setting-input" autoComplete="off" spellCheck={false}
+                  type={o.sensitive ? "password" : o.type === "number" ? "number" : "text"}
+                  {...(o.type === "number" ? { min: o.min, max: o.max } : {})}
+                  data-mono={o.type === "directory" || o.type === "file" || undefined}
+                  value={String(v)} onChange={(e) => set(o.key, e.target.value)}
+                  placeholder={o.sensitive ? (o.set ? "Saved: type to replace it" : "Type it to save it to the keyring") : o.default !== undefined ? `The default: ${shownValue(o.default)}` : o.type === "directory" ? "/full/path/to/a/folder" : o.type === "file" ? "/full/path/to/a/file" : ""}
+                />
+              )}
+              <p className="k-form-hint">{o.description}{o.type === "number" && (o.min !== undefined || o.max !== undefined) ? ` From ${o.min ?? "any"} to ${o.max ?? "any"}.` : ""}</p>
+              {o.sensitive && o.set && <div><button type="button" className="k-btn" data-quiet disabled={busy} data-testid="setting-forget" onClick={() => save({ [o.key]: null })}><Trash2 /> Forget it</button></div>}
+            </div>
+          );
+        })}
+        {err && <p className="k-form-err" data-testid="settings-error">{err}</p>}
+        <div className="k-form-row">
+          <button type="submit" className="k-btn" data-ink disabled={busy || !changed.length} data-testid="settings-save"><Save /> {busy ? "Saving" : "Save"}</button>
+          {saved && !changed.length && <span className="text-caption text-muted" data-testid="settings-saved">Saved</span>}
+        </div>
+      </form>
+    </div>
+  );
+}
 
 // One row of what a plugin brings: the kind, then its names.
 function Part({ what, children, testid }: { what: string; children: ReactNode; testid?: string }) {
@@ -108,6 +214,7 @@ function PlanBody({ plan, onDone, onCancel }: { plan: PlanView; onDone: (u: Unit
           <ol>{plan.runs.map((r, i) => <li key={i} data-testid="plan-run">{r}</li>)}</ol>
         </section>
       )}
+      {plan.settings && plan.settings.length > 0 && <PlanSettings settings={plan.settings} />}
       <NotTaken items={plan.not_taken} notes={plan.notes} testid="plan" />
       {plan.problems.length > 0 && <ul className="k-issue" data-testid="plan-problems">{plan.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
       {err && <p className="k-issue" data-testid="plan-error">{err}</p>}
@@ -258,6 +365,12 @@ export function UnitReader({ u, folder, onChange }: { u: UnitView; folder: strin
           {u.agents.length > 0 && <Part what="Agents" testid="unit-agents"><Chips names={u.agents} /></Part>}
           {!u.skills.length && !u.commands.length && !u.agents.length && <Part what="Parts"><span className="text-caption text-faint">No skills, commands or agents.</span></Part>}
         </dl>
+        {u.enabled && u.waiting && u.waiting.length > 0 && (
+          <p className="k-issue" data-tone="need" data-testid="unit-waiting">
+            Its servers and hooks wait for {u.waiting.length === 1 ? "a value" : "values"}: {u.waiting.map((w) => `${w.title} (${w.why})`).join(", ")}. Give {u.waiting.length === 1 ? "it" : "them"} below.
+          </p>
+        )}
+        {u.settings && u.settings.length > 0 && <UnitSettings key={`${u.id}-${u.updated}`} u={u} folder={folder} onChange={() => onChange()} />}
         {u.hooks.length > 0 && (
           <div data-testid="unit-hooks">
             <div className="k-sub k-label">Hooks{u.enabled ? "" : ", not running"}</div>

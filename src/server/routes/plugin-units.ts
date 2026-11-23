@@ -7,6 +7,7 @@ import type { McpManager } from "../../mcp/manager.ts";
 import { Installer, type Plan } from "../../plugins/installer.ts";
 import { fillLine, runsOf } from "../../plugins/manifest.ts";
 import { installedUnits, pluginsHome, registryPath, unitOf, type Unit } from "../../plugins/registry.ts";
+import { valuesOf } from "../../plugins/settings.ts";
 import type { RouteModule } from "../app.ts";
 import { presence } from "./permissions.ts";
 
@@ -34,6 +35,12 @@ export const pluginUnitRoutes: RouteModule = (deps) => {
 
   // A plugin as the page and the command line show it, with its servers as they are now.
   const view = (u: Unit) => {
+    // Its settings: a plain value as given, a sensitive one only whether it was given.
+    const v = valuesOf(u);
+    const hold = u.enabled && v.missing.length > 0;
+    const settings = Object.entries(v.specs).map(([key, o]) => ({
+      key, ...o, ...(o.sensitive ? { set: (u.secrets ?? []).includes(key) } : { value: u.values?.[key] ?? null, set: u.values?.[key] !== undefined }),
+    }));
     const live = new Map((mcp()?.list() ?? []).filter((s) => s.plugin === u.id).map((s) => [s.name, s]));
     const servers = (mcp()?.list() ?? []).filter((s) => s.plugin === u.id);
     return {
@@ -46,8 +53,9 @@ export const pluginUnitRoutes: RouteModule = (deps) => {
       hooks: runsOf(u.hooks ?? {}, {}).map((r) => ({ event: (r as any).event, matcher: (r as any).matcher ?? null, what: r.what })),
       mcp: u.mcp.map((m) => {
         const s = live.get(m.label) ?? servers.find((x) => x.name.startsWith(`${u.id}-${m.name}`));
-        return { name: m.name, label: s?.name ?? m.label, what: runsOf({}, { [m.label]: m.config })[0]?.what ?? "", state: u.enabled ? s?.state ?? "missing" : "disabled", tools: s?.tool_names ?? [], error: s?.error ?? null };
+        return { name: m.name, label: s?.name ?? m.label, what: runsOf({}, { [m.label]: m.config })[0]?.what ?? "", state: !u.enabled ? "disabled" : hold ? "waiting" : s?.state ?? "missing", tools: s?.tool_names ?? [], error: s?.error ?? null };
       }),
+      settings, waiting: hold ? v.missing : [],
       not_taken: u.notTaken, notes: u.notes, runs: u.consent.lines.map((l) => fillLine(l, { root: u.dir, data: u.data })),
     };
   };
@@ -87,6 +95,17 @@ export const pluginUnitRoutes: RouteModule = (deps) => {
         const b = await body(req);
         if (b.enabled !== false) { const guard = needs(req); if (guard) return guard; }
         const u = await installer.setEnabled(req.params.id, b.enabled !== false);
+        return json({ plugin: view(u), ...listing(cwdOf(req, b)) });
+      }),
+    },
+    // { values: { KEY: value } }: the owner's values for its settings; an empty one takes the owner's back.
+    "/api/plugins/installed/:id/settings": {
+      POST: (req: any) => attempt(async () => {
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        if (!b.values || typeof b.values !== "object" || Array.isArray(b.values)) return bad("give the values as an object of setting to value");
+        const u = await installer.setValues(req.params.id, b.values);
         return json({ plugin: view(u), ...listing(cwdOf(req, b)) });
       }),
     },

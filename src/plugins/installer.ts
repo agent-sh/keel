@@ -14,7 +14,11 @@
 //   of what it runs asks again.
 // remove: its record and its folder go. Nothing of the owner's is written:
 //   not mcp.json, not hooks.json, not skills.json.
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync } from "node:fs";
+// settings: the values of its userConfig, given by the owner after it is
+//   installed (src/plugins/settings.ts); its servers start with them filled
+//   in, and while a required one has no value neither its servers nor its
+//   hooks run.
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync } from "node:fs";
 import { contains } from "../core/paths.ts";
 import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -25,7 +29,9 @@ import { parseConfig, validate, type McpServerConfig } from "../mcp/config.ts";
 import { carriedPlugins, discoverSkills } from "../tools/skills.ts";
 import { cloneInto, copyFolder, folderDigest, folderSize, parseSource, type Source } from "./fetch.ts";
 import { changes, chooseId, consentKey, entrySource, fill, fillLine, versionProblem, readMarketplace, readPlugin, resolveNames, runLine, runsOf, type HookGroups, type MarketEntry, type NotTaken, type Plugin, type Run, type Summary } from "./manifest.ts";
+import { checkValue, hookRefusal, serverRefusal, substitute, type OptionSpec, type OptionValue } from "./options.ts";
 import { installedUnits, pluginsHome, readRegistry, unitOf, writeRegistry, type Unit, type UnitSource } from "./registry.ts";
+import { dropSecret, forgetPlugin, loadSecrets, putSecret, valuesOf } from "./settings.ts";
 
 // What the daemon gives the installer: the MCP servers' names and the way to start and stop a plugin's.
 export type Host = {
@@ -42,6 +48,8 @@ export type Plan = {
   hooks: { event: string; matcher?: string; what: string }[]; mcp: { name: string; label: string; what: string }[];
   runs: string[]; consent: string | null; not_taken: NotTaken[]; notes: string[]; problems: string[];
   fetched: string[]; bytes: number;
+  // The settings it asks for (its userConfig), given after it is installed.
+  settings: (OptionSpec & { key: string })[];
   update?: { id: string; from: string; changes: string[]; runs_changed: boolean; same: boolean };
 };
 
@@ -98,7 +106,64 @@ export class Installer {
 
   // Every installed plugin's servers started (the daemon's start).
   startAll() {
-    for (const u of installedUnits()) this.host.setServers(u.id, u.enabled ? u.mcp : []);
+    for (const u of installedUnits()) void this.start(u);
+  }
+
+  // A plugin's servers as its record and its settings say: none while it is
+  // off or a required setting has no value, else each with the values filled in.
+  private async start(u: Unit) {
+    if (!u.enabled) return this.host.setServers(u.id, []);
+    if (u.secrets?.length) await loadSecrets(u);
+    // The record may have changed while the keyring answered: the newest one decides.
+    const now = unitOf(u.id);
+    if (!now || !now.enabled) return this.host.setServers(u.id, []);
+    const v = valuesOf(now);
+    if (v.missing.length) return this.host.setServers(u.id, []);
+    this.host.setServers(u.id, now.options ? now.mcp.map((m) => ({ ...m, config: substitute(m.config, v.text) })) : now.mcp);
+  }
+
+  // The owner's values for a plugin's settings. `values`: key to value; an
+  // empty value takes the owner's back (the default holds again). A sensitive
+  // value goes to the keyring only; the record keeps that it was given.
+  setValues(id: string, given: Record<string, unknown>): Promise<Unit> {
+    return this.serial(async () => {
+      const u = unitOf(id);
+      if (!u) throw fail(404, `no plugin ${id} is installed`);
+      const options = u.options ?? {};
+      const values = { ...u.values };
+      const secrets = new Set(u.secrets ?? []);
+      const secret: [string, string | null][] = [];
+      for (const [k, raw] of Object.entries(given)) {
+        const o = options[k];
+        if (!o) throw fail(400, `${id} has no setting ${k}`);
+        const c = checkValue(o, raw);
+        if (c.error) throw fail(400, `${o.title}: the value ${c.error}`);
+        if (c.value !== undefined && (o.type === "directory" || o.type === "file")) {
+          const path = String(c.value);
+          let ok = false;
+          try { const st = statSync(path); ok = o.type === "directory" ? st.isDirectory() : st.isFile(); } catch {}
+          if (!path.startsWith("/") || !ok) throw fail(400, `${o.title}: ${path} is not ${o.type === "directory" ? "a folder" : "a file"} on this machine (give its full path)`);
+        }
+        if (o.sensitive) secret.push([k, c.value === undefined ? null : String(c.value)]);
+        else if (c.value === undefined) delete values[k];
+        else values[k] = c.value;
+      }
+      for (const [k, v] of secret) {
+        if (v === null) { await dropSecret(id, k); secrets.delete(k); continue; }
+        try { await putSecret(id, k, v); } catch (e) {
+          throw fail(409, `the keyring did not take ${options[k]!.title} (${(e as Error).message}): a sensitive setting is kept only in the system keyring, and this machine has none that answers`);
+        }
+        secrets.add(k);
+      }
+      const reg = readRegistry();
+      const next: Unit = { ...u };
+      delete next.values; delete next.secrets;
+      if (Object.keys(values).length) next.values = values;
+      if (secrets.size) next.secrets = [...secrets].sort();
+      writeRegistry({ plugins: reg.plugins.map((x) => (x.id === id ? next : x)) });
+      await this.start(next);
+      return next;
+    });
   }
 
   private sweep() {
@@ -207,6 +272,8 @@ export class Installer {
     // The plugin's servers as Keel starts them: Claude Code's shape read as mcp.json reads it.
     const mcp: Staged["mcp"] = [];
     for (const [name, raw] of Object.entries(p.mcp)) {
+      const refused = serverRefusal(raw);
+      if (refused) { notTaken.push({ part: `MCP server ${name}`, why: refused }); continue; }
       let config: McpServerConfig;
       try { config = parseConfig(JSON.stringify({ servers: { [name]: raw } })).servers[name]!; } catch (e) { notTaken.push({ part: `MCP server ${name}`, why: (e as Error).message }); continue; }
       // Which tools run without asking is the owner's word, never a plugin's; and a plugin's server follows no other agent's entry.
@@ -224,7 +291,13 @@ export class Installer {
     // plugin (plugin:<id>:<server>, found when the hook runs), so a server of
     // the owner's that later takes the name is never the one it calls.
     const byName = new Map(mcp.flatMap((s) => [[s.name, `plugin:${b.id}:${s.name}`], [`plugin:${p.name}:${s.name}`, `plugin:${b.id}:${s.name}`]] as [string, string][]));
-    const mapped: HookGroups = Object.fromEntries(Object.entries(p.hooks).map(([ev, groups]) => [ev, groups.map((g) => ({ ...g, hooks: (g.hooks ?? []).map((h: any) => (h?.type === "mcp_tool" && byName.has(h.server) ? { ...h, server: byName.get(h.server) } : h)) }))]));
+    // A hook that names a setting where a shell would read it again does not run (plugins-reference, "Fields that run through a shell").
+    const allowed = (ev: string) => (h: any) => {
+      const why = hookRefusal(h);
+      if (why) notTaken.push({ part: `hook on ${ev}`, why });
+      return !why;
+    };
+    const mapped: HookGroups = Object.fromEntries(Object.entries(p.hooks).map(([ev, groups]) => [ev, groups.map((g) => ({ ...g, hooks: (g.hooks ?? []).filter(allowed(ev)).map((h: any) => (h?.type === "mcp_tool" && byName.has(h.server) ? { ...h, server: byName.get(h.server) } : h)) })).filter((g) => g.hooks.length)]));
     const parsed = parseHooks(JSON.stringify({ hooks: mapped }));
     for (const x of [...parsed.problems, ...parsed.notes]) notTaken.push({ part: "hooks", why: x });
     const hooks = parsed.groups as HookGroups;
@@ -261,6 +334,7 @@ export class Installer {
       // The lines with the plugin's folders filled in; the key is of the lines as the plugin wrote them, so a new version folder is no new consent.
       runs: lines.map(shown), consent: lines.length ? consentKey(lines) : null, not_taken: s.notTaken, notes: s.notes, problems: s.problems,
       fetched: s.fetched, bytes: s.bytes,
+      settings: Object.entries(p.options).map(([key, o]) => ({ key, ...o })),
     };
     if (s.update) {
       const u = unitOf(s.update)!;
@@ -312,6 +386,22 @@ export class Installer {
         consent: { at: agreed ? prev!.consent.at : now, lines },
         ...(s.offeredBy ? { offeredBy: s.offeredBy } : {}),
       };
+      // Its settings: the values given before that the new version still takes.
+      const options = s.plugin.options;
+      const dropped: string[] = [];
+      if (Object.keys(options).length) {
+        unit.options = options;
+        const values: Record<string, OptionValue> = {};
+        for (const [k, v] of Object.entries(prev?.values ?? {})) {
+          const o = options[k];
+          const c = o && !o.sensitive ? checkValue(o, v) : null;
+          if (c?.value !== undefined) values[k] = c.value;
+        }
+        if (Object.keys(values).length) unit.values = values;
+        const secrets = (prev?.secrets ?? []).filter((k) => options[k]?.sensitive);
+        if (secrets.length) unit.secrets = secrets;
+      }
+      for (const k of prev?.secrets ?? []) if (!unit.secrets?.includes(k)) dropped.push(k);
       const reg = readRegistry();
       try {
         writeRegistry({ plugins: [...reg.plugins.filter((u) => u.id !== unit.id), unit] });
@@ -322,7 +412,8 @@ export class Installer {
         throw e;
       }
       this.staged.delete(token);
-      this.host.setServers(unit.id, unit.enabled ? unit.mcp : []);
+      for (const k of dropped) await dropSecret(unit.id, k).catch(() => {});
+      await this.start(unit);
       if (prev && prev.dir !== dir) await rm(prev.dir, { recursive: true, force: true }).catch(() => {});
       if (trash) await rm(trash, { recursive: true, force: true }).catch(() => {});
       await rm(s.dir, { recursive: true, force: true }).catch(() => {});
@@ -345,7 +436,7 @@ export class Installer {
       if (!u) throw fail(404, `no plugin ${id} is installed`);
       const next = { ...u, enabled };
       if (u.enabled !== enabled) writeRegistry({ plugins: reg.plugins.map((x) => (x.id === id ? next : x)) });
-      this.host.setServers(id, enabled ? next.mcp : []);
+      await this.start(next);
       return next;
     });
   }
@@ -363,6 +454,8 @@ export class Installer {
       if (!u) throw fail(404, `no plugin ${id} is installed`);
       this.host.setServers(id, []);
       writeRegistry({ plugins: reg.plugins.filter((x) => x.id !== id) });
+      for (const k of u.secrets ?? []) await dropSecret(id, k).catch(() => {});
+      forgetPlugin(id);
       await rm(join(pluginsHome(), id), { recursive: true, force: true });
       return u;
     });

@@ -32,6 +32,8 @@ import { shellText } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { timed } from "../admin/stall.ts";
 import { enabledUnits, type Unit } from "../plugins/registry.ts";
+import { substitute } from "../plugins/options.ts";
+import { hookOptions, waiting } from "../plugins/settings.ts";
 
 // The events Keel fires, the ones existing hook files use most first. What
 // each carries and what its hooks can answer: README, Hooks.
@@ -587,12 +589,14 @@ export class Hooks {
     const out: Source[] = [];
     for (const u of enabledUnits()) {
       if (!u.hooks || !Object.keys(u.hooks).length) continue;
+      // A plugin that waits for a required setting runs none of its hooks.
+      if (waiting(u)) continue;
       let src = this.plugins.get(u);
       if (!src) {
         const text = JSON.stringify({ hooks: u.hooks }, null, 2);
         const { groups, problems } = parseHooks(text);
         const env = { CLAUDE_PLUGIN_ROOT: u.dir, CLAUDE_PLUGIN_DATA: u.data, KEEL_PLUGIN_ROOT: u.dir, KEEL_PLUGIN_DATA: u.data };
-        for (const g of Object.values(groups)) for (const x of g ?? []) for (const h of x.hooks) PLUGIN_ENV.set(h, env);
+        for (const g of Object.values(groups)) for (const x of g ?? []) for (const h of x.hooks) PLUGIN_ENV.set(h, { env, plugin: u.id });
         const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
         src = { path: u.dir, scope: "plugin", plugin: u.id, text, sha256: sha(text), active: true, events, problems, covers: [], groups };
         this.plugins.set(u, src);
@@ -791,18 +795,22 @@ const OUT_MAX = 1_000_000;
 type Out = { code: number | null; stdout: string; stderr: string };
 
 // A plugin's hook runs with its folders in its environment (code.claude.com/docs/en/plugins-reference).
-const PLUGIN_ENV = new WeakMap<object, Record<string, string>>();
+// Its settings are read when it runs (a sensitive one is in the keyring, read once): CLAUDE_PLUGIN_OPTION_<KEY>
+// in its environment, and ${user_config.KEY} in its args (src/plugins/settings.ts).
+const PLUGIN_ENV = new WeakMap<object, { env: Record<string, string>; plugin: string }>();
 
 async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number): Promise<Out> {
   const root = projectRoot(folder);
   // A session whose folder is gone, or is on another machine, still runs its hooks (one that denies must still deny): in the home folder.
   const cwd = existsSync(folder) ? folder : homedir();
   // With `args` the program runs as given, no shell: each argument is one word, and the project folder's placeholders are filled in.
+  const own = PLUGIN_ENV.get(h);
+  const opts = own ? hookOptions(own.plugin) : { text: {}, env: {} };
   const place = (x: string) => x.replace(/\$\{(?:KEEL|CLAUDE)_PROJECT_DIR\}/g, root);
-  const argv = h.args ? [place(h.command), ...h.args.map(place)] : ["bash", "-c", h.command];
+  const argv = h.args ? [place(h.command), ...h.args.map((a) => (own ? substitute(place(a), opts.text) : place(a)))] : ["bash", "-c", h.command];
   let p: ReturnType<typeof Bun.spawn>;
   try {
-    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, ...PLUGIN_ENV.get(h), KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
+    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, ...own?.env, ...opts.env, KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
   } catch (e) {
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }
