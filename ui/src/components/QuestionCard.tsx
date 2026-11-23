@@ -328,6 +328,13 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
       e.preventDefault();
       return setNudge(keyRefused(t, e.repeat) || "Not yet: the keyboard has only just arrived");
     }
+    // Rested here by a step of the sequence after an answer one key gave by itself (lib/asks.ts,
+    // noteOneKey): no number is the card's until the owner's own Down or Tab. It answers nothing, and
+    // the card says what does.
+    if (/^[1-9]$/.test(e.key) && !e.shiftKey && !owned(t) && hold.keys !== "" && !hold.take && q.options[Number(e.key) - 1]) {
+      e.preventDefault();
+      return setNudge("Down first, then a number answers");
+    }
     if (/^[1-9]$/.test(e.key) && !e.shiftKey && owned(t) && keysSettled(t)) {
       const o = q.options[Number(e.key) - 1];
       if (!o) return;

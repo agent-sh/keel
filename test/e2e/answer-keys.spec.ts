@@ -781,6 +781,43 @@ test("an Enter after a question answered by one number allows nothing in the nex
   await drop(request, quiet, q, next);
 });
 
+// Two questions in a row: the second's number, pressed as the first's was, is not dropped in
+// silence. The card says what answers it: Down first, then the number.
+test("a number on the question after one a number answered says Down first, and answers after Down", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  await watchKeys(page);
+  const ws = folder("sequence-two-questions");
+  const quiet = await create(request, "Nothing waits here", ws);
+  const q1 = await create(request, "First question", ws);
+  await ask(request, q1, "question");
+  const q2 = await create(request, "Second question", ws);
+  await ask(request, q2, "question");
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  for (const id of [q1, q2]) await expect(row(page, id)).toHaveAttribute("data-watch", "need");
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${q1}$`));
+  const first = cardIn(page, q1, "question");
+  await expect(first).toHaveAttribute("data-keys", "ready");
+  await page.keyboard.press("1");
+  await expect(page).toHaveURL(new RegExp(`/s/${q2}$`));
+  const second = cardIn(page, q2, "question");
+  await expect(second).toHaveAttribute("data-keys", "ready");
+  await expect(second).not.toHaveAttribute("data-own", "true");
+  await page.keyboard.press("2");
+  await expect(second.getByTestId("question-nudge")).toHaveText("Down first, then a number answers");
+  await expect(page.locator(`[data-station="${q2}"]`).getByTestId("composer")).toHaveValue("");
+  await shoot(page, "answer-keys-09-down-first");
+  await page.keyboard.press("ArrowDown");
+  await expect(second).toHaveAttribute("data-own", "true");
+  await expect(second).toHaveAttribute("data-keys", "ready");
+  await page.keyboard.press("2");
+  await expect.poll(() => answersOf(request, q2), { timeout: 10_000 }).toEqual({ "0": { picked: ["Amber"] } });
+  expect(await answersOf(request, q1)).toEqual({ "0": { picked: ["Teal"] } });
+  await drop(request, quiet, q1, q2);
+});
+
 test("the sequence stays with the owner: it goes on through a grant, ends when they do something else, and after a quiet minute", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
