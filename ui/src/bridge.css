@@ -477,6 +477,11 @@
 
 /* The narrow list: with little room beside the panes a session is its mark and its title, cut
    with an ellipsis. The state is the mark; the card beside the row says the rest. */
+/* The narrow list's own controls are their icons, side by side (their names are their tips), so no word of theirs is cut. */
+.k-rail[data-narrow] .k-rail-acts { flex-direction: row; flex-wrap: wrap; padding-inline: 0.375rem; }
+.k-rail[data-narrow] .k-rail-acts .k-act { flex: 1 1 0; justify-content: center; min-width: 2rem; padding: 0; }
+.k-rail[data-narrow] .k-rail-acts :is(.k-act-label, .k-act-key) { display: none; }
+.k-rail[data-narrow] .k-rail-acts .k-act-mark { position: absolute; right: 0.25rem; top: 0.25rem; width: 0.5rem; height: 0.5rem; padding: 0; border-radius: 50%; overflow: hidden; color: transparent; }
 .k-rail[data-narrow] .k-index { padding-inline: 0.375rem; }
 .k-rail[data-narrow] .k-row { gap: 0.4375rem; padding: 0 0.25rem 0 0.4375rem; }
 .k-rail[data-narrow] :is(.k-row-sub, .k-row-end) { display: none; }

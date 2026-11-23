@@ -107,6 +107,8 @@ test("five and six panes: a titled list, and a map that brings in a pane off the
         const shows = await title.evaluate((el, name) => el.textContent === name && (el.scrollWidth <= el.clientWidth + 1 || el.clientWidth >= 6 * parseFloat(getComputedStyle(el).fontSize)), titles[i]!);
         expect(shows, `${titles[i]} reads on its row`).toBe(true);
       }
+      // The list's own controls are not cut: at this width they are their icons.
+      expect(await rail.evaluate((el) => [...el.querySelectorAll<HTMLElement>(".k-rail-acts .k-act, .k-rail-acts .k-act *")].filter((n) => n.getClientRects().length && n.scrollWidth > n.clientWidth + 1).map((n) => n.textContent))).toEqual([]);
       await expect(row(ids[1]!)).toHaveAttribute("data-watch", "need");
       await expect(row(ids[4]!)).toHaveAttribute("data-watch", "need");
       await expect(row(ids[2]!)).toHaveAttribute("data-watch", "fail");
