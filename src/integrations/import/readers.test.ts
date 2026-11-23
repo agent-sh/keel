@@ -11,6 +11,8 @@ import { claudeFound, readClaude } from "./claude.ts";
 import { damageNotes, readLines } from "./files.ts";
 import { readCodex } from "./codex.ts";
 import { readKeel } from "./keel.ts";
+import { toMessages } from "../../engine/turn.ts";
+import type { StoredEvent } from "../../core/types.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-import-"));
 
@@ -161,4 +163,52 @@ test("a Codex rollout keeps namespaced tools apart, its discovery, agent and dec
   expect(viewed.events.find((e) => e.kind === "tool_result")?.data.results).toEqual([{ type: "tool_result", tool_use_id: "v", content: [pixel, { type: "text", text: "viewed" }, { type: "text", text: "[unavailable: audio file aud-1]" }, { type: "text", text: "[unavailable: encrypted content]" }], is_error: undefined }]);
   // Imported definitions are history: notes carry them, and no result loads a tool (a tool_reference).
   for (const r of [search, declared]) expect(JSON.stringify(r.events)).not.toContain("tool_reference");
+});
+
+// The events of a copy as the store would hold them, for the wire's view of them.
+const stored = (evs: { kind: string; data: any; ts: number }[]) => evs.map((e, i) => ({ ...e, id: `e${i}`, seq: i, session_id: "s", parent: i ? `e${i - 1}` : null }) as unknown as StoredEvent);
+const wire = (evs: { kind: string; data: any; ts: number }[]) => JSON.stringify(toMessages(stored(evs)));
+
+test("a compacted Claude Code conversation is copied whole, and the model reads from its last summary on", async () => {
+  const p = join(dir, "compacted.jsonl");
+  const base = { sessionId: "c", cwd: dir, isSidechain: false, timestamp: new Date().toISOString() };
+  writeFileSync(p, [
+    { ...base, type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "first question about apples" } },
+    { ...base, type: "assistant", uuid: "a1", parentUuid: "u1", message: { id: "a1", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "apples answered" }] } },
+    { ...base, type: "system", subtype: "compact_boundary", uuid: "b1", parentUuid: null, logicalParentUuid: "a1", content: "Conversation compacted", compactMetadata: { trigger: "manual", preTokens: 1000 } },
+    { ...base, type: "user", uuid: "s1", parentUuid: "b1", isCompactSummary: true, message: { role: "user", content: "Summary: the owner asked about apples." } },
+    { ...base, type: "user", uuid: "u2", parentUuid: "s1", message: { role: "user", content: "now pears" } },
+    { ...base, type: "assistant", uuid: "a2", parentUuid: "u2", message: { id: "a2", role: "assistant", model: "global.anthropic.claude-sonnet-5-5", content: [{ type: "text", text: "pears answered" }] } },
+  ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const r = await readClaude(p);
+  expect(r.events.map((e) => e.kind)).toEqual(["user", "assistant", "compaction", "user", "assistant"]);
+  expect(r.events[2]!.data).toMatchObject({ mode: "summary", summary: "Summary: the owner asked about apples.", trigger: "owner" });
+  expect(r.found.model).toBe("global.anthropic.claude-sonnet-5-5");
+  const sent = wire(r.events);
+  expect(sent).toContain("Summary: the owner asked about apples.");
+  expect(sent).not.toContain("apples answered");
+  expect(sent).toContain("pears answered");
+});
+
+test("a compacted Codex rollout is copied whole; the model reads Codex's summary and kept messages", async () => {
+  const p = join(dir, "rollout-compacted.jsonl");
+  const t = Date.now();
+  const line = (i: number, type: string, payload: unknown) => JSON.stringify({ timestamp: new Date(t + i).toISOString(), type, payload });
+  const msg = (role: string, text: string) => ({ type: "message", role, content: [{ type: role === "assistant" ? "output_text" : "input_text", text }] });
+  writeFileSync(p, [
+    line(0, "session_meta", { id: "cx", cwd: dir, source: "cli" }),
+    line(1, "turn_context", { model: "gpt-6.1", cwd: dir }),
+    line(2, "response_item", msg("user", "first ask about plums")),
+    line(3, "response_item", msg("assistant", "plums answered")),
+    line(4, "compacted", { message: "Summary of plums.", replacement_history: [msg("user", "first ask about plums"), msg("user", "Prefix. Summary of plums.")] }),
+    line(5, "response_item", msg("user", "and figs")),
+    line(6, "response_item", msg("assistant", "figs answered")),
+  ].join("\n") + "\n");
+  const r = await readCodex(p);
+  expect(r.events.map((e) => e.kind)).toEqual(["user", "assistant", "compaction", "user", "assistant"]);
+  expect(r.events[2]!.data).toMatchObject({ summary: "Summary of plums.", owner_messages: ["first ask about plums"] });
+  const sent = wire(r.events);
+  expect(sent).toContain("Summary of plums.");
+  expect(sent).not.toContain("plums answered");
+  expect(sent).toContain("figs answered");
 });

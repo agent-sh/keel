@@ -1,8 +1,9 @@
 // Claude Code: one JSON-lines transcript per session under
 // ~/.claude/projects/<folder slug>/<session id>.jsonl, subagents under
 // <session id>/subagents/. Records chain by parentUuid; the branch shown is the
-// chain from the newest record back, which also starts after a compaction (its
-// summary is the first message of the chain).
+// chain from the newest record back; a compaction's boundary record has no
+// parent and names the record it follows (logicalParentUuid), so the chain
+// goes on through it, and its summary is a checkpoint in the copy.
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -138,7 +139,10 @@ export async function readClaude(path: string): Promise<Read> {
   if (!leaf) for (const r of records) if (r.uuid && (r.type === "user" || r.type === "assistant")) leaf = r; // a subagent's file is all sidechain
   const chain: any[] = [];
   const seen = new Set<string>();
-  for (let r = leaf; r && !seen.has(r.uuid); r = r.parentUuid ? byId.get(r.parentUuid) : undefined) {
+  // A compaction's boundary starts a chain of its own (no parent): the record it
+  // follows is its logical parent, so the history before it is read too.
+  const up = (r: any) => (r.parentUuid ? byId.get(r.parentUuid) : r.type === "system" && r.subtype === "compact_boundary" && r.logicalParentUuid ? byId.get(r.logicalParentUuid) : undefined);
+  for (let r = leaf; r && !seen.has(r.uuid); r = up(r)) {
     seen.add(r.uuid);
     chain.push(r);
   }
@@ -150,8 +154,10 @@ export async function readClaude(path: string): Promise<Read> {
   const b = new Builder();
   const notes: string[] = [];
   let lastMsg: string | undefined;
+  let trigger: string | undefined, compactions = 0;
   for (const r of chain) {
     const ts = Date.parse(r.timestamp) || st.mtimeMs;
+    if (r.type === "system" && r.subtype === "compact_boundary") { trigger = r.compactMetadata?.trigger; continue; }
     if (r.type === "user") {
       const c = r.message?.content;
       // A meta message is model-visible and not the owner's words: a note the model reads.
@@ -164,8 +170,10 @@ export async function readClaude(path: string): Promise<Read> {
       // Claude Code's marker of a reply the owner stopped.
       if (typeof c === "string" ? INTERRUPTED.test(c) : Array.isArray(c) && c.length === 1 && c[0]?.type === "text" && INTERRUPTED.test(c[0].text ?? "")) { b.interrupted(); continue; }
       if (r.isCompactSummary) {
-        b.note(typeof c === "string" ? c : resultText(c) as string, ts, true);
-        notes.push("Starts at Claude Code's last compaction: the summary it made is the first message.");
+        const text = typeof c === "string" ? c : resultText(c);
+        b.compacted(typeof text === "string" ? text : text.filter((x: any) => x.type === "text").map((x: any) => x.text).join("\n"), ts, { trigger: trigger === "auto" ? "threshold" : trigger === "manual" ? "owner" : undefined });
+        compactions++;
+        trigger = undefined;
         continue;
       }
       if (typeof c === "string") {
@@ -194,6 +202,7 @@ export async function readClaude(path: string): Promise<Read> {
       lastMsg = m.id;
     }
   }
+  if (compactions) notes.push(`Claude Code compacted this conversation ${compactions === 1 ? "once" : `${compactions} times`}: all of it is here, and the model reads from the last summary on, as it did there.`);
   notes.push(...damageNotes(lines));
   if (b.counts.thoughts_dropped) notes.push(`${b.counts.thoughts_dropped} thinking block${b.counts.thoughts_dropped === 1 ? " is" : "s are"} not carried: signatures belong to the model that wrote them.`);
   return { found, events: b.events, counts: b.counts, notes };

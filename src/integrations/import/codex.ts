@@ -72,7 +72,7 @@ const parseArgs = (a: any) => {
   try { return JSON.parse(a); } catch { return { input: a }; }
 };
 
-const COMPACTED = "Starts at Codex's last compaction: the history it kept is where this begins.";
+const COMPACTED = "Codex compacted this conversation: all of it is here, and the model reads from what Codex kept on, as it did there.";
 
 // A call's tool by namespace and name, the way Keel names the same tool
 // (mcp__<server>__<tool>): two servers' "lookup" stay two tools. A name
@@ -118,10 +118,14 @@ export async function readCodex(path: string): Promise<Read> {
     const p = r.payload ?? {};
     if (r.type === "turn_context" && p.model) model = p.model;
     if (r.type === "compacted") {
-      // What Codex replaces the history with after a compaction.
-      b.events.length = 0;
-      if (Array.isArray(p.replacement_history)) for (const item of p.replacement_history) take(item, ts);
-      else if (p.message) b.note(String(p.message), ts, true);
+      // Codex replaces the model's history here: with its summary (`message`)
+      // and the owner's messages it kept, else with the items it names. The
+      // history before stays; a checkpoint holds what the model reads from here.
+      const items: any[] = Array.isArray(p.replacement_history) ? p.replacement_history : [];
+      const said = items.filter((i) => i?.type === "message" && i.role === "user").map((i) => textOf(i.content)).filter((t) => t.trim() && !injected(t));
+      const summary = String(p.message ?? "").trim() || said.pop() || "";
+      b.compacted(summary || "Codex replaced the conversation before this point with what follows.", ts, { owner_messages: said.filter((t) => !summary || !t.includes(summary)) });
+      for (const item of items) if (!(item?.type === "message" && (item.role === "user" || item.role === "developer" || item.role === "system"))) take(item, ts);
       if (!notes.includes(COMPACTED)) notes.push(COMPACTED);
       continue;
     }

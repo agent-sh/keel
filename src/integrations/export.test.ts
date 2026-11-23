@@ -241,7 +241,9 @@ test("Codex resume adds display events without changing model history or Keel re
     const old = await readCodex(oldPath), updated = await readCodex(newPath);
     expect(updated.events).toEqual(old.events);
     expect(updated.events.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["What changed?", "Include the result", ...delivered.map((e) => e.data.text), "", "Continue interrupted work"]);
-    expect(updated.events.filter((e) => e.kind === "note").map((e) => e.data.text)).toEqual(["Earlier context", "Model only"]);
+    // Keel's own summary comes back as the checkpoint it was, not a note.
+    expect(updated.events.filter((e) => e.kind === "compaction").map((e) => e.data.summary)).toEqual(["Earlier context"]);
+    expect(updated.events.filter((e) => e.kind === "note").map((e) => e.data.text)).toEqual(["Model only"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

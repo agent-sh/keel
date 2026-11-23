@@ -93,6 +93,12 @@ export class Builder {
     if (prev) prev.data.results.push(block);
     else this.events.push({ kind: "tool_result", data: { results: [block] }, ts });
   }
+  // The source compacted its context here: what came before stays in the
+  // history, and the model reads from this summary on (a Keel checkpoint,
+  // src/engine/compact.ts), as the source's model did.
+  compacted(summary: string, ts: number, extra: { owner_messages?: string[]; trigger?: string } = {}) {
+    this.events.push({ kind: "compaction", data: { mode: "summary", summary, imported: true, ...(extra.owner_messages?.length ? { owner_messages: extra.owner_messages } : {}), ...(extra.trigger ? { trigger: extra.trigger } : {}) }, ts });
+  }
   note(text: string, ts: number, model = false) {
     this.events.push({ kind: "note", data: { text, model: model || undefined, imported: true }, ts });
   }
