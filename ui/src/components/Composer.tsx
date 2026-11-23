@@ -12,7 +12,7 @@ import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, keepText, keptText, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
-import { getState, onFeature, reportError, reportUnlessGone, useStore, failed, whileHeard } from "../lib/store.ts";
+import { getState, onFeature, reportError, reportUnlessGone, useStore, useModels, failed, whileHeard, type ListedModel } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
 import { menuClosed, stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
@@ -434,7 +434,11 @@ const SessionComposer = memo(function SessionComposer({
     let under = 0;
     // (What lies over the box, like the resting box's tools button, takes no room under the text.)
     for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) if (getComputedStyle(x).position !== "absolute") under += x.getBoundingClientRect().height;
-    const above = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    // The attachments give way to a long draft down to one row (it scrolls), so what is above
+    // the text counts that row, not all of them.
+    const strip = box.querySelector<HTMLElement>(':scope > [data-testid="attachments"]');
+    const yields = strip ? strip.getBoundingClientRect().height - parseFloat(getComputedStyle(strip).minHeight) : 0;
+    const above = el.getBoundingClientRect().top - box.getBoundingClientRect().top - Math.max(0, yields);
     box.style.minHeight = `${above + least + under + parseFloat(getComputedStyle(box).borderBottomWidth)}px`;
   };
   const fitNow = useRef(fit);
@@ -920,7 +924,7 @@ const SessionComposer = memo(function SessionComposer({
 
       <p role="status" className="sr-only" data-testid="saved-status">{said}</p>
       {images.length > 0 && (
-        <div className="flex max-h-[9.25rem] shrink-0 flex-wrap gap-2 overflow-y-auto px-3 pt-3" data-testid="attachments">
+        <div className="k-scroll-more flex max-h-[9.25rem] min-h-[4.75rem] shrink-[99] flex-wrap gap-2 px-3 pt-3" data-testid="attachments">
           {images.map((a) => (
             <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${fmtSize(a.bytes)}`}>
               {a.file ? (
@@ -949,7 +953,7 @@ const SessionComposer = memo(function SessionComposer({
           {info.name} cannot use tools{info.known_from?.tools ? ` (${TOOLS_FROM[info.known_from.tools]})` : ""}: it answers in text only, without reading files or running commands.
         </div>
       )}
-      {images.length > 0 && info && <Capability name={info.name} images={info.images} pdf={info.pdf} shots={images.some((a) => !a.file)} pdfs={images.some((a) => a.file?.media_type === "application/pdf")} />}
+      {images.length > 0 && info && <Capability info={info} local={!splitId(sid ?? "")?.machine} shots={images.filter((a) => !a.file).length} pdfs={images.some((a) => a.file?.media_type === "application/pdf")} onUse={pickModel} onChoose={() => setPickerSignal((n) => n + 1)} />}
 
       <textarea
         ref={ref}
@@ -1264,22 +1268,41 @@ const TOOLS_FROM = { owner: "you set it", probe: "the probe found it", listing: 
 
 // What the chosen model does with what is attached, before Send: a model that
 // says yes, one that says no, and one whose listing says nothing are three
-// different answers.
-function Capability({ name, images, pdf, shots, pdfs }: { name: string; images?: boolean; pdf?: boolean; shots: boolean; pdfs: boolean }) {
+// different answers. Each says what becomes of the screenshot, and when the
+// model is not known to read it, names one that does (or opens the picker).
+function Capability({ info, local, shots, pdfs, onUse, onChoose }: { info: ListedModel; local: boolean; shots: number; pdfs: boolean; onUse: (id: string) => void; onChoose: () => void }) {
   const lines: { text: string; warn: boolean }[] = [];
+  const many = shots > 1;
   if (shots) {
-    lines.push(images === true ? { text: "Reads images", warn: false }
-      : images === false ? { text: `Screenshot will not be sent: ${name} does not read images`, warn: true }
-      : { text: "Image support unverified; the screenshot will be sent", warn: false });
+    lines.push(info.images === true ? { text: "Reads images", warn: false }
+      : info.images === false ? { text: `${many ? "Screenshots" : "Screenshot"} will not be sent: ${info.name} does not read images`, warn: true }
+      : { text: `${info.name} does not say it reads images: sent as ${many ? "they are" : "it is"}, left out with a note if refused`, warn: false });
   }
   if (pdfs) {
-    lines.push(pdf === true ? { text: "Reads PDFs", warn: false }
-      : pdf === false ? { text: `${name} does not read PDFs: the file goes as a saved path`, warn: true }
+    lines.push(info.pdf === true ? { text: "Reads PDFs", warn: false }
+      : info.pdf === false ? { text: `${info.name} does not read PDFs: the file goes as a saved path`, warn: true }
       : { text: "PDF support unverified; the file goes as a saved path, not inline", warn: false });
   }
   return (
-    <div className="flex flex-wrap gap-x-3 px-4 pt-1.5 text-caption" data-testid="attach-capability" role="status">
-      {lines.map((l) => <span key={l.text} className={l.warn ? "text-warn" : "text-faint"}>{l.text}</span>)}
+    <div className="flex flex-wrap items-baseline gap-x-3 px-4 pt-1.5 text-caption" data-testid="attach-capability" role="status">
+      {lines.map((l, i) => (
+        <span key={l.text} className={l.warn ? "text-warn" : "text-faint"}>
+          {l.text}
+          {i === 0 && shots > 0 && info.images !== true && <ImageReader current={info} local={local} onUse={onUse} onChoose={onChoose} />}
+        </span>
+      ))}
     </div>
   );
+}
+
+// The way to a model that reads images: one listed that says so (of the same
+// provider first), else the model picker.
+function ImageReader({ current, local, onUse, onChoose }: { current: ListedModel; local: boolean; onUse: (id: string) => void; onChoose: () => void }) {
+  const models = useModels();
+  const readers = local ? models.filter((m) => m.images === true && !m.hidden && m.id !== current.id) : [];
+  const pick = readers.find((m) => m.provider === current.provider) ?? readers[0];
+  const link = "ml-2 font-medium text-accent underline-offset-2 hover:underline focus-visible:underline";
+  return pick
+    ? <button type="button" data-testid="image-reader" className={link} title={`${pick.name} reads images`} onClick={() => onUse(pick.id)}>Use {pick.name}</button>
+    : <button type="button" data-testid="image-reader" className={link} onClick={onChoose}>Choose a model that reads images</button>;
 }

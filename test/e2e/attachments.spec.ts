@@ -94,7 +94,8 @@ test("text, PDF and other files attached to a prompt", async ({ page, request })
 
 // What the chosen model does with an attachment is said before Send: a model
 // that reads no images holds a new screenshot (nothing starts, the draft
-// stays); one whose listing says nothing sends it and says that is unverified.
+// stays); one whose listing says nothing sends it, says what becomes of it if
+// refused, and names a listed model that reads images.
 test("attachments: the model's image and PDF support before Send", async ({ page, request }) => {
   const ids = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!ids.includes("scripted:stand-in-text"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
@@ -116,12 +117,32 @@ test("attachments: the model's image and PDF support before Send", async ({ page
   await shoot(page, "attach-03-text-only-held");
   expect((await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "user")).toHaveLength(0);
 
-  // On a model whose listing says nothing about images: sent, and said to be unverified.
+  // On a model whose listing says nothing about images: sent, what happens if it cannot read
+  // them said in one sentence, and a listed model that reads them one press away.
   await page.getByTestId("model-picker").click();
   await page.getByPlaceholder("Search models").fill("scripted:stand-in");
   await page.locator('[data-group="exact"] [data-testid="model-option"]').click();
-  await expect(line).toContainText("Image support unverified; the screenshot will be sent");
+  await expect(line).toContainText("Scripted stand-in does not say it reads images: sent as it is, left out with a note if refused");
   await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
+  const reader = page.getByTestId("image-reader");
+  await expect(reader).toHaveText("Use Scripted backup");
+  await shoot(page, "attach-04-unverified-reader");
+  await reader.click();
+  await expect(page.getByTestId("model-picker")).toContainText("Scripted backup");
+  await expect(line).toContainText("Reads images");
+  await expect(reader).toHaveCount(0);
+
+  // A long draft in a short window: the screenshots give way to one row that scrolls, and
+  // the draft keeps the room.
+  await page.setViewportSize({ width: 1000, height: 460 });
+  await page.getByTestId("attach-input").setInputFiles(Array.from({ length: 11 }, (_, i) => ({ name: `more${i}.png`, mimeType: "image/png", buffer: png(40 * (i % 6), 90, 160) })));
+  await expect(page.getByTestId("attachments").locator("img")).toHaveCount(12);
+  await composer.fill(Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of a long draft.`).join("\n"));
+  const strip = page.getByTestId("attachments");
+  const thumb = (await strip.locator("img").first().boundingBox())!.height;
+  await expect.poll(async () => (await strip.boundingBox())!.height).toBeLessThan(thumb * 1.6);
+  expect((await composer.boundingBox())!.height).toBeGreaterThan((await strip.boundingBox())!.height * 1.5);
+  await shoot(page, "attach-05-long-draft-short-window");
   await request.delete(`/api/sessions/${session.id}`);
 });
 

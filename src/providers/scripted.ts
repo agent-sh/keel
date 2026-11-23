@@ -153,9 +153,11 @@ export class ScriptedProvider implements Provider {
     return [
       // Reads PDFs (`script:find` looks inside one); says nothing about images.
       { model: "stand-in", name: "Scripted stand-in", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, pdf: true },
-      { model: "stand-in-backup", name: "Scripted backup", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
-      // Says it reads no images: the composer holds a new screenshot for it.
+      // Says it reads images: the composer names it to a draft with a screenshot for a model that does not say so.
+      { model: "stand-in-backup", name: "Scripted backup", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, images: true },
+      // Says nothing about images either.
       { model: STRICT, name: "Scripted strict window", context: STRICT_WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" } },
+      // Says it reads no images: the composer holds a new screenshot for it.
       { model: "stand-in-text", name: "Scripted text only", context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" }, images: false },
       ...FAMILY_STAND_INS.map(({ model, name, family }) => ({ model, name, family, context: WINDOW, output: OUTPUT, efforts: ["low", "high"], price, billing: { kind: "per_token" as const } })),
     ];
