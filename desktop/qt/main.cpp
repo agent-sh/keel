@@ -714,6 +714,7 @@ public:
         // says whether the page is loaded again (it counts: a page that keeps ending is left).
         connect(page, &QWebEnginePage::renderProcessTerminated, this, [this](QWebEnginePage::RenderProcessTerminationStatus status, int code) {
             static const char *names[] = {"normal", "abnormal", "crashed", "killed"};
+            forget();
             say({{"t", "crashed"}, {"win", id}, {"status", names[std::clamp(int(status), 0, 3)]}, {"code", code}});
         });
         connect(bar, &Bar::startAsked, this, [this] { say({{"t", "start"}, {"win", id}}); });
@@ -728,6 +729,15 @@ public:
         sized.setInterval(250);
         connect(&sized, &QTimer::timeout, this, [this] { tellSize(); });
     }
+    // What the page said it does with the app went with the page: the one that comes next says
+    // so itself, or says nothing. A page that came back with none of the app's script in it (see
+    // the README's limits) is then a page like a browser tab's: its paste keys are the engine's,
+    // and its files are kept by the rule for a page that announces none.
+    void forget()
+    {
+        pastes = announces = false;
+        savingUntil = 0;
+    }
     // A window the owner closed is not destroyed: this engine keeps the buffers of a page whose
     // process went (two a window, for the life of the program; a bare program of a window and a
     // web view shows the same, and so does discarding the page or sending it to another
@@ -737,6 +747,7 @@ public:
     void retire()
     {
         hide();
+        forget();
         page->mode = Page::Away;
         page->origin.clear();
         page->scripts().clear();
@@ -1010,18 +1021,23 @@ public:
         } else if (!w) {
             return;
         } else if (t == "load") {
+            w->forget();
             w->page->mode = Page::App;
             w->page->origin = m["origin"].toString();
             script(w, senderScript() + "\n" + m["script"].toString());
             w->bar->title->setText(m["title"].toString("Keel"));
             w->view->load(QUrl(m["url"].toString()));
         } else if (t == "html") {
+            w->forget();
             w->page->mode = Page::Away;
             w->page->origin.clear();
             script(w, senderScript());
             w->bar->title->setText("Keel");
             w->view->setHtml(m["html"].toString(), QUrl("about:blank"));
         } else if (t == "reload") {
+            w->forget();
+            if (heldFor == w->id)
+                heldKey.reset();
             w->view->reload();
         } else if (t == "js") {
             w->page->runJavaScript(m["src"].toString());

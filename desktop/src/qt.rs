@@ -378,6 +378,8 @@ fn heard(start: u64, line: &str) {
         // The page's own process ended (a crash, or the script heap's bound): it is loaded again
         // and told so, a few times; a page that keeps ending is left, with a button in the bar.
         ("crashed", Some(win)) => {
+            // What the page said it does with the app went with it: the next one says so itself.
+            win.gate.borrow_mut().announces(false);
             let again = may_reload(&mut win.stops.borrow_mut(), Instant::now());
             (inner.note)("page-stopped", json!({ "window": win.id, "again": again, "status": s("status") }));
             if win.showing.get() != Showing::App {
