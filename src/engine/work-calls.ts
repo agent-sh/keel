@@ -29,9 +29,24 @@ const program = (w: string[]) => {
   return { name: (w[i] ?? "").split("/").pop() ?? "", args: w.slice(i + 1) };
 };
 
+// A shell line without the bodies of its here-documents: what a heredoc
+// holds is a program's input or a file's text (a script, code with `>` in
+// it), not commands of the line.
+export function withoutHeredocs(command: string): string {
+  const out: string[] = [];
+  let end: string | null = null;
+  for (const l of command.split("\n")) {
+    if (end !== null) { if (l.trim() === end) end = null; continue; }
+    out.push(l);
+    const m = l.match(/<<-?\s*['"]?([\w.-]+)['"]?/);
+    if (m) end = m[1]!;
+  }
+  return out.join("\n");
+}
+
 // The commands of a shell line: split on its separators (a quoted separator
 // splits too: a read is then missed, never invented).
-export const segments = (command: string) => command.split(/&&|\|\||[;|\n]/).filter((s) => s.trim());
+export const segments = (command: string) => withoutHeredocs(command).split(/&&|\|\||[;|\n]/).filter((s) => s.trim());
 
 // The files a shell command prints, when that is all it can show of the
 // outside: [] when it prints none or runs a program that can reach another

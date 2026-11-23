@@ -121,6 +121,11 @@ test("an activity row says what its records say and never passes text through", 
 test("marks: compactions, model switches and restored files, without their text", () => {
   expect(markRow({ id: "m", ts: 5, kind: "compaction", data: { mode: "summary", auto: 1, tokens_before: 150_000 } }, "t1")).toMatchObject({ kind: "compaction", text: "Context compacted by itself, from 150k tokens", turn_event: "t1" });
   expect(markRow({ id: "m", ts: 5, kind: "compaction", data: { mode: "summary", trigger: "model", auto: 1 } })!.text).toBe("The model started a fresh context");
+  // What it kept, by count: never an identifier or a path.
+  const probe = { files: 9, files_kept: 9, files_summary: 1, anchors: 52, anchors_kept: 40, anchors_summary: 8, unsupported: 1 };
+  expect(markRow({ id: "m", ts: 5, kind: "compaction", data: { mode: "summary", auto: 1, probe } })).toMatchObject({
+    text: "Context compacted by itself; kept 9 of 9 files written and 40 of 52 recurring identifiers (without the trail 1 and 8); 1 identifier of the summary found in nothing it read", tone: "plain",
+  });
   expect(markRow({ id: "m", ts: 5, kind: "note", data: { kind: "model_told", from: "bedrock:model-a", to: "scripted:stand-in" } })).toMatchObject({ kind: "model", text: "Model changed from model-a to stand-in" });
   // A turn's end is told by the turn's row: a restart makes no second row saying the same.
   expect(markRow({ id: "m", ts: 5, kind: "turn_end", data: { reason: "restart", crashed: true } })).toBeNull();

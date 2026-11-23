@@ -8,6 +8,7 @@ import type { AssistantBlock, Message, PromptBlock, StoredEvent, Usage } from ".
 import { ownerPrompt } from "../core/owner.ts";
 import { imageTokens } from "./images.ts";
 import { fileTexts, type FileText } from "./work-calls.ts";
+import { probeOf, spanOf, trailOf, trailText } from "./trail.ts";
 
 // Share of the model's window at which a turn compacts before its next call.
 export const COMPACT_SHARE = 0.85;
@@ -540,8 +541,11 @@ export function fixedContext(lineage: readonly StoredEvent[], prior: { key: stri
 }
 
 // What a summary checkpoint stores besides how it was made: the settled
-// summary and its statements, the fixed context it carries, and the owner's
-// newest words in what the statements leave of the budget.
+// summary and its statements, the fixed context it carries, the owner's
+// newest words in what the statements leave of the budget, and the artifact
+// trail of the work (trail.ts: made from the events, carried on from the
+// checkpoint before, its text stored so the next requests carry the same
+// bytes) with the probe of what the compaction kept.
 // `settled`: the summary already checked against the conversation (settleAsk:
 // the check reads every message of the branch, and a caller that can wait has
 // it made off the loop).
@@ -550,7 +554,15 @@ export function checkpointData(lineage: readonly StoredEvent[], summary: string,
   const prev = cp.at >= 0 && lineage[cp.at]!.data.mode === "summary" ? lineage[cp.at]!.data : undefined;
   const fixed = fixedContext(lineage, prev?.fixed ?? []);
   const said = (settled.statements ?? []).reduce((n, s) => n + utf8Bytes(s.text), 0);
-  return { ...settled, ...(fixed.length ? { fixed } : {}), ...keptMessages(lineage, Math.max(0, budget - said)) };
+  const kept = keptMessages(lineage, Math.max(0, budget - said));
+  // The span the summary covers: what the context held since the checkpoint before.
+  const span = spanOf(lineage.slice(cp.at >= 0 ? cp.keepFrom : 0).filter((e) => e.kind !== "compaction"));
+  const trail = trailOf(span, prev?.trail);
+  const keptText = [...kept.owner_messages, ...(kept.other_messages ?? [])].join("\n");
+  const trail_text = trailText(trail, `${settled.summary}\n${keptText}`);
+  const support = prev ? [prev.summary ?? "", prev.trail_text ?? "", ...(prev.owner_messages ?? []), ...(prev.other_messages ?? []), ...(prev.fixed ?? []).map((f: { text: string }) => f.text)].join("\n") : "";
+  const probe = probeOf(span, settled.summary, keptText, trail_text, support);
+  return { ...settled, ...(fixed.length ? { fixed } : {}), ...kept, trail, ...(trail_text ? { trail_text } : {}), probe };
 }
 
 // The statements the branch's last summary stored.
@@ -621,9 +633,10 @@ export function excerpt(text: string, budget: number): string | null {
   return head + note(total - headBytes - tailBytes) + tail;
 }
 
-export function summaryMessage(data: { summary: string; fixed?: { key: string; text: string }[]; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[] }): Message {
+export function summaryMessage(data: { summary: string; trail_text?: string; fixed?: { key: string; text: string }[]; owner_messages?: string[]; owner_media?: PromptBlock[][]; other_messages?: string[] }): Message {
   const fixed = data.fixed?.length ? `\n\n[Instructions loaded before the compaction (instruction files of subfolders, skills, prompts), carried unchanged:]\n${data.fixed.map((f) => f.text).join("\n\n")}` : "";
-  const head = `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${fixed}`;
+  const trail = data.trail_text ? `\n\n${data.trail_text}` : "";
+  const head = `[harness] This conversation was compacted. Summary of everything before this point:\n\n${data.summary}${trail}${fixed}`;
   const msgs = data.owner_messages ?? [];
   const wrap = (t: string) => `<message>\n${t}\n</message>`;
   const others = data.other_messages?.length ? `\n\n[Other messages delivered before the compaction (agent reports, wakes, loop runs, tasks, messages from other sessions; not the owner's words), oldest first:]\n${data.other_messages.map(wrap).join("\n")}` : "";
@@ -851,7 +864,7 @@ function eventBytes(e: StoredEvent, per: number): number {
   if (e.kind === "assistant") return e.data.stop === "refusal" ? 0 : replyBytes(e.data.blocks ?? []);
   if (e.kind === "tool_result") return jsonBytes(e.data.results ?? [], per);
   if (e.kind === "note") return e.data.model ? utf8Bytes(String(e.data.text ?? "")) : 0;
-  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, fixed: e.data.fixed, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
+  if (e.kind === "compaction") return e.data.mode === "summary" ? jsonBytes({ summary: e.data.summary, trail_text: e.data.trail_text, fixed: e.data.fixed, owner_messages: e.data.owner_messages, owner_media: e.data.owner_media, other_messages: e.data.other_messages }, per) : 0;
   if (e.kind !== "user") return 0;
   let n = utf8Bytes(String(e.data.text ?? ""));
   for (const b of (e.data.images ?? []) as any[]) n += b.type === "attachment" ? attachmentBytes(b) : jsonBytes(b, per);

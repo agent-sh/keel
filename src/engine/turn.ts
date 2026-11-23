@@ -1,4 +1,5 @@
 import { type Wire, wireOf, wireScope } from "../providers/wiretap.ts";
+import { timed } from "../admin/stall.ts";
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -2412,7 +2413,7 @@ export class Engine {
         const summary = res.summary;
         if (!summary) return;
         const settled = await this.settled(events, summary);
-        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(events, summary, this.wordsBudget(st), settled), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(events, summary, this.wordsBudget(st), settled)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         if (abort.signal.aborted || !this.preparationHolds(id, covered.id, data)) return;
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
@@ -2718,7 +2719,7 @@ export class Engine {
       }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(upto, summary, this.wordsBudget(st, opts.next), settled), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(upto, summary, this.wordsBudget(st, opts.next), settled)), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);

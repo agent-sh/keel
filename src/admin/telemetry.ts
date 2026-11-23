@@ -12,6 +12,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { promptOf } from "../engine/prompt-store.ts";
 import { adoptionBetween, EXPIRED } from "../engine/build-pin.ts";
 import { errorText } from "../engine/retry.ts";
+import { keptTotals } from "../engine/trail.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { errorClass } from "./classes.ts";
 import { armOf, experimentTables } from "./experiments.ts";
@@ -608,6 +609,9 @@ export class Telemetry {
           owner_messages: (d.owner_messages ?? []).length,
           owner_tokens: Math.round((d.owner_messages ?? []).reduce((n: number, t: string) => n + t.length, 0) / 4),
           verbatim_events: d.covered ? this.keptVerbatim(r.session_id, d.covered, r.id) : 0,
+          // What it kept of the work, by rule (src/engine/trail.ts); null for one from before the probe.
+          probe: d.probe ?? null,
+          trail_bytes: d.trail_text ? Buffer.byteLength(d.trail_text) : 0,
         } : null,
         duration_ms: d.duration_ms ?? null,
         input_tokens: u ? u.input + u.cache_read + u.cache_write : 0, output_tokens: u?.output ?? 0, cache_read_tokens: u?.cache_read ?? 0,
@@ -629,6 +633,7 @@ export class Telemetry {
       after_hit_ratio: ratio(list.flatMap((c) => c.cache.after)),
       before_hit_ratio: ratio(list.flatMap((c) => (c.cache.before ? [c.cache.before] : []))),
       by_trigger: Object.fromEntries([...group(list, (c) => c.trigger).entries()].map(([k, v]) => [k, v.length])),
+      kept: keptTotals(list.filter((c) => !c.session_gone).map((c) => ({ session_id: c.session_id, title: c.session_title, probe: c.kept?.probe }))),
     };
     return { total, after_requests: AFTER_REQUESTS, compactions: list.slice(0, limit) };
   }

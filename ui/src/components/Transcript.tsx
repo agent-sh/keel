@@ -33,6 +33,7 @@ import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
 import { CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
 import { agentLive, hhmm } from "../../../src/core/watch.ts";
+import { probeWords } from "../../../src/engine/trail.ts";
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
@@ -342,6 +343,13 @@ function Checkpoint({ e, sid, undoable }: { e: StoredEvent; sid: string; undoabl
         </Divider>
       </summary>
       <div className="mt-2 rounded-lg border border-line bg-raised px-4 py-3 text-ui text-muted"><Markdown text={e.data.summary} /></div>
+      {probeWords(e.data.probe) && <p className="mt-2 px-1 text-caption text-muted" data-testid="compacted-probe">What it kept of the work, counted by the harness: {probeWords(e.data.probe)}.</p>}
+      {e.data.trail_text && (
+        <div className="mt-2 rounded-lg border border-line bg-sunken px-4 py-3 text-caption text-muted" data-testid="compacted-trail">
+          <div className="k-label mb-1.5">Artifact trail, made from the events by the harness, not by the model</div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-caption leading-relaxed text-muted">{String(e.data.trail_text).replace(/^\[[^\n]*\]\n+/, "")}</pre>
+        </div>
+      )}
     </details>
   );
 }

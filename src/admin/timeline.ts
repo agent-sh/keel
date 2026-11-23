@@ -57,7 +57,11 @@ const SETTLE_MS = 2000;
 // What a mark's data may give: a few named fields, never its text.
 const PICK = `CASE WHEN kind IN ('turn_start', 'turn_end') THEN data ELSE json_object(
   'kind', data ->> '$.kind', 'from', data ->> '$.from', 'to', data ->> '$.to', 'mode', data ->> '$.mode', 'auto', data ->> '$.auto',
-  'trigger', data ->> '$.trigger', 'tokens_before', data ->> '$.tokens_before', 'error_id', data ->> '$.error_id') END`;
+  'trigger', data ->> '$.trigger', 'tokens_before', data ->> '$.tokens_before', 'error_id', data ->> '$.error_id',
+  -- A compaction's probe: its counts, never the identifiers it names.
+  'probe', CASE WHEN kind = 'compaction' AND data ->> '$.probe.files' IS NOT NULL THEN json_object('files', data ->> '$.probe.files', 'files_kept', data ->> '$.probe.files_kept',
+    'files_summary', data ->> '$.probe.files_summary', 'anchors', data ->> '$.probe.anchors', 'anchors_kept', data ->> '$.probe.anchors_kept',
+    'anchors_summary', data ->> '$.probe.anchors_summary', 'unsupported', data ->> '$.probe.unsupported') END) END`;
 
 export const PAGE = 50;
 export const PAGE_MAX = 200;

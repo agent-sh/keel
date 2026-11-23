@@ -14,6 +14,7 @@ import { classOfText, errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
 import { FAIL_WORD, NEEDS, STATE_WORD, failWord, limitWord, unreachableSince } from "../core/state-words.ts";
 import { ownerStop, stopSays, stopper } from "../core/stoppers.ts";
+import { probeWords } from "../engine/trail.ts";
 
 export type TimelineKind =
   | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files" | "check"
@@ -229,7 +230,8 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
   const row = (kind: TimelineKind, sub: string, text: string, tone: Tone = "plain"): TimelineRow => clean({ id: e.id, ts: e.ts, kind, sub, tone, text, turn_event: turn });
   if (e.kind === "compaction") {
     const text = d.mode === "clear" ? "Context cleared" : d.trigger === "model" ? "The model started a fresh context" : d.auto ? "Context compacted by itself" : "Context compacted by the owner";
-    return row("compaction", String(d.mode ?? "summary"), `${text}${tokens(d.tokens_before)}`);
+    const kept = probeWords(d.probe);
+    return row("compaction", String(d.mode ?? "summary"), `${text}${tokens(d.tokens_before)}${kept ? `; ${kept}` : ""}`);
   }
   if (e.kind !== "note") return null;
   switch (d.kind) {

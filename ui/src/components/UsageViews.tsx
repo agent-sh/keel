@@ -240,11 +240,17 @@ type CacheRow = { ts_ms: number; prompt_tokens: number; cache_read: number; cach
 type Compaction = {
   event_id: string; session_id: string; session_title?: string; session_gone: boolean; ts_ms: number; mode: string; trigger: string; ahead: boolean; focus: string | null;
   tokens_before: number | null; tokens_after: number | null; duration_ms: number | null; cost_usd: number | null; priced: boolean; input_tokens: number; output_tokens: number;
-  kept: { summary_tokens: number; owner_messages: number; owner_tokens: number; verbatim_events: number } | null;
+  kept: { summary_tokens: number; owner_messages: number; owner_tokens: number; verbatim_events: number; probe: Probe | null; trail_bytes: number } | null;
   cache: { before: CacheRow | null; after: CacheRow[] };
 };
+// What a compaction kept of its span, counted by rule (src/engine/trail.ts).
+type Probe = { files: number; files_kept: number; files_summary: number; anchors: number; anchors_kept: number; anchors_summary: number; ids: number; unsupported: number; unsupported_ids?: string[]; trail_bytes: number };
+type KeptTotals = {
+  measured: number; threshold: number; unsupported: number; files_kept: number | null; anchors_kept: number | null; files_summary: number | null; anchors_summary: number | null;
+  low: { session_id: string; title?: string; compactions: number; files_kept: number | null; anchors_kept: number | null }[];
+};
 type Compactions = {
-  total: { count: number; tokens_before: number; tokens_after: number; measured_after: number; paired: { count: number; tokens_before: number; tokens_after: number }; cost_usd: number; unpriced: number; duration_p50_ms: number | null; after_hit_ratio: number | null; before_hit_ratio: number | null; by_trigger: Record<string, number> };
+  total: { count: number; tokens_before: number; tokens_after: number; measured_after: number; paired: { count: number; tokens_before: number; tokens_after: number }; cost_usd: number; unpriced: number; duration_p50_ms: number | null; after_hit_ratio: number | null; before_hit_ratio: number | null; by_trigger: Record<string, number>; kept: KeptTotals };
   after_requests: number; compactions: Compaction[];
 };
 const TRIGGER: Record<string, string> = { threshold: "the context reached the limit", overflow: "a request did not fit", owner: "asked for", idle: "the cache expired while idle" };
@@ -263,12 +269,29 @@ export function CompactionsView({ range }: { range: Range }) {
           sub={!t.count ? "no compaction" : t.paired.count ? `average, from ${fmtTokens(t.paired.tokens_before / t.paired.count)} before; ${t.paired.count} of ${t.count} measured` : `no request after any of the ${t.count} yet`} />
         <Stat label="Cost of the summaries" value={t.unpriced ? (t.cost_usd ? `${fmtUsd(t.cost_usd)}+` : "unknown") : fmtUsd(t.cost_usd)} sub={`median ${fmtMs(t.duration_p50_ms)} to write`} />
         <Stat label="Cache after" value={fmtPct(t.after_hit_ratio)} sub={`of the next ${r.after_requests} requests; ${fmtPct(t.before_hit_ratio)} before`} />
+        <Stat testid="compactions-kept" label="Files kept" value={t.kept.measured ? fmtPct(t.kept.files_kept) : "not measured"}
+          sub={t.kept.measured ? `without trail ${fmtPct(t.kept.files_summary)}` : "none measured here"} />
+        <Stat testid="compactions-kept-ids" label="Identifiers kept" value={t.kept.measured ? fmtPct(t.kept.anchors_kept) : "not measured"}
+          sub={t.kept.measured ? `without trail ${fmtPct(t.kept.anchors_summary)}` : "none measured here"} />
       </Stats>
+      {t.kept.low.length > 0 && (
+        <p className="rounded-lg bg-warn/10 px-3 py-2 text-ui text-warn" data-testid="compactions-low">
+          {t.kept.low.length === 1 ? "One session's compactions keep" : `${t.kept.low.length} sessions' compactions keep`} less than {fmtPct(t.kept.threshold)} of the files they wrote or the identifiers that recur in their work, no more than a summary alone kept before the trail:{" "}
+          {t.kept.low.slice(0, 5).map((l, i) => (
+            <span key={l.session_id}>
+              {i > 0 && ", "}
+              <button type="button" className="k-link font-medium underline-offset-2 hover:underline" onClick={() => openSession(l.session_id)}>{l.title || "a session"}</button>
+              {` (${fmtPct(l.files_kept)} of files, ${fmtPct(l.anchors_kept)} of identifiers)`}
+            </span>
+          ))}
+          {t.kept.low.length > 5 ? ` and ${t.kept.low.length - 5} more` : ""}.
+        </p>
+      )}
       <Panel title="Each compaction" hint="newest first; open one for what it kept and how the cache came back" testid="compactions-list">
         {r.compactions.length ? (
           <Table
-            head={["When", "Session", "Why", "Before", "After", "Took", "Cost", "Cache after"]}
-            align={["l", "l", "l", "r", "r", "r", "r", "r"]}
+            head={["When", "Session", "Why", "Before", "After", "Kept", "Took", "Cost", "Cache after"]}
+            align={["l", "l", "l", "r", "r", "r", "r", "r", "r"]}
             onRow={(i) => setOpen(open === r.compactions[i]!.event_id ? null : r.compactions[i]!.event_id)}
             expanded={(i) => {
               const c = r.compactions[i]!;
@@ -280,7 +303,7 @@ export function CompactionsView({ range }: { range: Range }) {
               c.session_gone ? <span className="text-faint">deleted session</span> : <button type="button" className="k-link max-w-48 truncate text-accent hover:underline" onClick={(e) => { e.stopPropagation(); openSession(c.session_id, c.event_id); }}>{c.session_title || "the session"}</button>,
               c.mode === "clear" ? "cleared" : `${TRIGGER[c.trigger] ?? c.trigger}${c.ahead ? ", prepared ahead" : ""}`,
               c.tokens_before == null ? "?" : fmtTokens(c.tokens_before), c.tokens_after == null ? "not yet" : fmtTokens(c.tokens_after),
-              fmtMs(c.duration_ms), c.mode === "clear" ? "none" : c.priced && c.cost_usd != null ? fmtUsd(c.cost_usd) : "unknown", hits(c),
+              keptCell(c.kept?.probe), fmtMs(c.duration_ms), c.mode === "clear" ? "none" : c.priced && c.cost_usd != null ? fmtUsd(c.cost_usd) : "unknown", hits(c),
             ])}
           />
         ) : <p className="k-empty">No compaction in this range.</p>}
@@ -289,11 +312,20 @@ export function CompactionsView({ range }: { range: Range }) {
   );
 }
 
+// Files and identifiers kept, as shares; "none" when the span had neither.
+const keptCell = (p: Probe | null | undefined) => {
+  if (!p) return <span className="text-faint">not measured</span>;
+  const part = (k: number, n: number, what: string) => (n ? `${Math.round((k / n) * 100)}% ${what}` : null);
+  return [part(p.files_kept, p.files, "files"), part(p.anchors_kept, p.anchors, "ids")].filter(Boolean).join(", ") || "none";
+};
+
 function CompactionDetail({ c }: { c: Compaction }) {
   const row = (label: string, value: ReactNode) => <div className="flex gap-3"><span className="w-40 shrink-0 text-faint">{label}</span><span className="tabular-nums">{value}</span></div>;
   return (
     <div className="flex flex-col gap-1 text-caption text-muted" data-testid="compaction-detail">
       {c.kept && row("Kept", `a summary of ${fmtTokens(c.kept.summary_tokens)}, ${c.kept.owner_messages} of the owner's messages word for word (${fmtTokens(c.kept.owner_tokens)})${c.kept.verbatim_events ? `, ${c.kept.verbatim_events} recent events as they were` : ""}`)}
+      {c.kept?.probe && row("Work kept", `${c.kept.probe.files_kept} of ${c.kept.probe.files} files written and ${c.kept.probe.anchors_kept} of ${c.kept.probe.anchors} recurring identifiers, with a trail of ${c.kept.trail_bytes.toLocaleString()} bytes; the summary and kept messages alone named ${c.kept.probe.files_summary} and ${c.kept.probe.anchors_summary}`)}
+      {c.kept?.probe?.unsupported ? row("Not in the work", `${c.kept.probe.unsupported} of the ${c.kept.probe.ids} identifiers the summary names appear in nothing it read${c.kept.probe.unsupported_ids?.length ? `: ${c.kept.probe.unsupported_ids.join(", ")}` : ""}`) : null}
       {c.focus && row("Focus asked", c.focus)}
       {c.mode !== "clear" && row("Summary request", `${fmtTokens(c.input_tokens)} in, ${fmtTokens(c.output_tokens)} out`)}
       {row("Request before", c.cache.before ? `${fmtTokens(c.cache.before.prompt_tokens)} sent, ${fmtPct(c.cache.before.hit_ratio)} read from cache` : "none")}
