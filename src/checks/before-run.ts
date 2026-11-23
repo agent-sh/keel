@@ -119,7 +119,12 @@ async function sweep() {
   for (const n of names) {
     const c = commonOf(join(dir(), n));
     if (c) commons.add(c);
-    rmSync(join(dir(), n), { recursive: true, force: true });
+    // (A run's tool folder can hold an overlay's work folder the kernel made with no access: opened first.
+    // One that cannot be removed is said and left; the others, and the prune, go on.)
+    try {
+      if (n.endsWith(".tool")) openLayers(join(dir(), n));
+      rmSync(join(dir(), n), { recursive: true, force: true });
+    } catch (e) { d!.capture(e, { at: "fails before sweep", path: n }); }
   }
   for (const c of commons) if (existsSync(c)) await git(c, ["worktree", "prune"], { timeout: 30_000 }).catch(() => {});
 }

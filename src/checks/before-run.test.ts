@@ -1,7 +1,7 @@
 // The fails-before run on a real repository: what a test leaves running does not hold the run, and the run is
 // confined by the session's own sandbox profile.
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -91,6 +91,19 @@ test.skipIf(!scoped)("a file's scope ends by its own time limit, whatever happen
   const command = `u=$(basename "$(cut -d: -f3 /proc/self/cgroup)"); v=$(systemctl --user show -p RuntimeMaxUSec --value "$u"); echo "$u $v"; [ -n "$v" ] && [ "$v" != infinity ]`;
   const r = await runOne({ cwd: tool, tool, env: { ...process.env } as Record<string, string>, command, limitMs: 120_000, unit: `keel-before-${process.pid}-0-limit` });
   expect(r.state).toBe("passes");
+});
+
+// A run's tool folder a killed daemon left can hold an overlay's work folder the kernel made with no access:
+// the next start removes it all the same, and the folders after it.
+test("a cut run's overlay layers are removed at the next start", async () => {
+  const base = join(store.stateDir, "checks", "before");
+  const work = join(base, "999998.tool", "layers", "0", "work", "work");
+  mkdirSync(work, { recursive: true });
+  writeFileSync(join(base, "999998.tool", "layers", "0", "work", "x"), "x");
+  chmodSync(work, 0o000);
+  mkdirSync(join(base, "999999.tool"), { recursive: true });
+  await bindBefore({ store, bus: new Bus(), perm: (id) => gate.perm(id), confine: (id, ws, tool, shown) => gate.confineFor(id, ws, tool, shown), capture: (e) => { throw e; } });
+  expect([existsSync(join(base, "999998.tool")), existsSync(join(base, "999999.tool"))]).toEqual([false, false]);
 });
 
 test.skipIf(!scoped)("a scope a killed daemon left is stopped at the next start, with what runs in it", async () => {
