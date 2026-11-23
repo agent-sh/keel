@@ -26,6 +26,8 @@ export function registerShared(...tools: Tool[]) {
   for (const t of tools) if (!shared.some((s) => s.name === t.name)) shared.push(t);
 }
 registerShared(AskReaders, ask_readers);
+// A shared tool by its name (what an external agent is offered runs through it).
+export const sharedTool = (name: string): Tool | undefined => shared.find((t) => t.name === name);
 
 // Tools only some sessions get (the helper's): asked per session, appended in
 // name order after the shared ones, so a session's tool prefix stays stable.

@@ -22,7 +22,7 @@ import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
-import { asksOwner, registerPinnedDeferred, sessionToolsKey, toolsFor } from "../tools/registry.ts";
+import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
 import { holds, ownerStop } from "../core/stoppers.ts";
@@ -2017,6 +2017,18 @@ export class Engine {
         append: (kind, data) => { this.deltas.end(id); return this.append(id, kind, data); },
         delta: (kind, index, text) => this.deltas.push(id, { kind, index, text }),
         status: (s) => this.status(id, s),
+        runTool: (which, input, callId) => {
+          const tool = typeof which === "string" ? sharedTool(which) : which;
+          const name = typeof which === "string" ? which : which.name;
+          if (!tool) return Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: callId, content: noSuchTool(name), is_error: true });
+          const seen = this.seen.get(id) ?? new Map();
+          this.seen.set(id, seen);
+          const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id), parentId: session.parent_id ?? undefined,
+            questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }) };
+          const u: ToolUseBlock = { type: "tool_use", id: callId, name, input: input ?? {} };
+          // (Tracked as the turn's own calls are: a card it waits on is a wait on the owner. What it showed is the agent's to show.)
+          return this.tracked(id, u, this.runTool(session, [tool], u, ctx)).finally(() => this.shown.delete(callId));
+        },
       });
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : r.reason;
       if (r.usage) { usage = r.usage; this.store.addUsage(id, usage); this.emitSession(id); }

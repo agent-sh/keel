@@ -200,6 +200,11 @@ export type ExternalIO = {
   append(kind: StoredEvent["kind"], data: unknown): StoredEvent;
   delta(kind: "text" | "thinking", index: number, text: string): void;
   status(s: TurnStatus): void;
+  // A tool of Keel's run for the agent, as a call of this session's model
+  // would run: the owner's hooks, the permission gate, then the tool. A shared
+  // tool by its name, or one the runner makes (a terminal's command). The
+  // result is the agent's to show; nothing of the call is stored here.
+  runTool(tool: string | Tool, input: unknown, id: string): Promise<ToolResultBlock>;
 };
 export type ExternalTurn = (io: ExternalIO) => Promise<{ reason: string; usage?: Usage }>;
 

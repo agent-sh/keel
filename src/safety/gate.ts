@@ -610,6 +610,25 @@ export class Gate {
   // The turn is over: its grant ends, and so does one no turn took.
   turnEnded(sessionId: string) {
     this.turnGrants.delete(sessionId);
+    this.answeredShell.delete(sessionId);
+  }
+
+  // A command an external agent asked about and the gate allowed (src/acp/external.ts), which the agent then
+  // runs in a terminal of Keel's: the same text is let through once in this turn, without a second card. It
+  // still goes through every check that refuses (the mode, the rules, the never-allowed commands) and runs
+  // confined. Not in Auto, whose answer is bound to the call it judged.
+  private answeredShell = new Map<string, string[]>();
+  answeredOnce(sessionId: string, command: string) {
+    const list = this.answeredShell.get(sessionId) ?? [];
+    if (list.length >= 64) list.shift();
+    this.answeredShell.set(sessionId, [...list, command]);
+  }
+  private takeAnswered(sessionId: string, command: string): boolean {
+    const list = this.answeredShell.get(sessionId);
+    const i = list?.indexOf(command) ?? -1;
+    if (i < 0) return false;
+    list!.splice(i, 1);
+    return true;
   }
 
   addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session", bind?: string): Rule {
@@ -982,6 +1001,7 @@ export class Gate {
     const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     if (cls.kind === "control") return { cls };
+    if (mode !== "auto" && cls.kind === "shell" && call.tool.answeredBefore && this.takeAnswered(session.id, cls.command)) return { cls };
     // A hook's allow (the owner's own hooks file, or a repository's they read
     // and pinned) answers the card this call would open, and nothing more
     // (hookMayAnswer): what is refused above stays refused (Read only, Plan,

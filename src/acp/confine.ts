@@ -17,7 +17,8 @@ import type { AcpAgent } from "./agents.ts";
 import { readOptsFor } from "../safety/sandbox-config.ts";
 import { programPaths, sandboxScope, type ReadOpts } from "../safety/sandbox-view.ts";
 
-const withProgram = (o: ReadOpts, argv: string[]): ReadOpts => ({ ...o, read: [...(o.read ?? []), ...programPaths(argv)] });
+const withOwn = (o: ReadOpts, own: string[]): ReadOpts => (own.length ? { ...o, own: [...(o.own ?? []), ...own] } : o);
+const withProgram = (o: ReadOpts, ...argvs: string[][]): ReadOpts => ({ ...o, read: [...(o.read ?? []), ...argvs.flatMap((a) => programPaths(a))] });
 
 // Harness names whose folders an agent of that id (or program) writes.
 const HARNESSES = ["opencode", "kimi", "claude", "codex", "gemini", "qwen", "goose", "cursor", "augment", "auggie", "crush", "droid", "factory"];
@@ -89,7 +90,11 @@ export type AgentConfinement = { argv: string[]; confined: boolean; note: string
 
 // How the agent of a session starts, and the plain words for its card.
 // `start`: the agent starts now (its folders are made); else only described.
-export function confineAgent(agent: AcpAgent, perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, start = true): AgentConfinement {
+// `give`: what Keel gives it besides (src/acp/served.ts): folders of Keel's own
+// state, read-only (its tools' socket and the relay that reaches it), and the
+// programs it starts there.
+export type Give = { own: string[]; programs: string[][] };
+export function confineAgent(agent: AcpAgent, perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, start = true, give: Give = { own: [], programs: [] }): AgentConfinement {
   const argv = [agent.run!.command, ...agent.run!.args];
   const st = sandboxStatus();
   if (perm.sandbox === "off") return { argv, confined: false, writable: [], note: `${agent.name} runs unconfined: the sandbox is off for it, so its own shell and file access are not limited (only what it asks Keel for is judged).` };
@@ -99,7 +104,7 @@ export function confineAgent(agent: AcpAgent, perm: Pick<SessionPerm, "sandbox" 
   return {
     // (What the owner lets this workspace's commands read holds for its agent too. The agent's own program is the
     // owner's choice: it is shown with what its command line names.)
-    argv: confine(argv, perm, workspace, writable, withProgram(readOptsFor(sandboxScope(workspace)), argv)),
+    argv: confine(argv, perm, workspace, writable, withOwn(withProgram(readOptsFor(sandboxScope(workspace)), argv, ...give.programs), give.own)),
     confined: true,
     writable,
     note: `${agent.name} runs in the command sandbox (${perm.sandbox}): ${where}${perm.network ? "" : ", with no network (its model service included)"}.`,

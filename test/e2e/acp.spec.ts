@@ -391,6 +391,73 @@ test("acp client", async ({ page, request }) => {
   await request.delete("/api/acp/agents/standin");
 });
 
+// Feature: an ACP agent Keel drives gets Keel's tools and terminals. Its
+// session/new carries one MCP server of Keel's, which serves the owner's MCP
+// servers' tools through a socket the agent's sandbox reaches; each call is
+// judged by the gate as the session's own model's would be (one card, not a
+// second for the agent's own permission request). Its terminal/create runs
+// the command as a command of the session: judged, confined, and its output
+// shown in the call that embeds it.
+test("acp client tools", async ({ page, request }) => {
+  const standin = join(import.meta.dirname, "fixtures/acp-agent-standin.ts");
+  const echo = join(import.meta.dirname, "fixtures/echo-mcp.ts");
+  const server = `acpecho${Date.now().toString(36)}`;
+  await request.delete("/api/acp/agents/standin-t").catch(() => {});
+  expect((await request.post("/api/mcp/servers", { data: { name: server, command: "bun", args: [echo] } })).ok()).toBe(true);
+  expect((await request.post("/api/acp/agents", { data: { id: "standin-t", command: "bun", args: [standin] } })).ok()).toBe(true);
+  try {
+    await expect.poll(async () => ((await (await request.get("/api/mcp/servers")).json()).servers as { name: string; state: string }[]).find((x) => x.name === server)?.state, { timeout: 20_000 }).toBe("ready");
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-tools-${Date.now()}`);
+    mkdirSync(ws, { recursive: true });
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "acp:standin-t" } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "workspace-write" } });
+    await page.goto(`/s/${session.id}`);
+
+    await page.getByTestId("composer").fill("keel tools");
+    await page.keyboard.press("Enter");
+    const card = page.getByTestId("approval").first();
+    await expect(card.getByTestId("approval-summary")).toContainText("through keel", { timeout: 30_000 });
+    await expect(page.getByTestId("approval")).toHaveCount(1);
+    await shoot(page, "acp-16-served-card");
+    await card.getByTestId("allow-once").click();
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+    // (Among the tools of every server the daemon runs.)
+    await expect(page.getByTestId("assistant-text").last()).toContainText(`${server}__add, ${server}__echo`);
+    await expect(page.getByTestId("assistant-text").last()).toContainText("permission: yes; result: echo: through keel");
+
+    // The agent asks about its command, then runs it in a terminal of Keel's: one card for both.
+    await page.getByTestId("composer").fill("terminal");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("approval").first().getByTestId("approval-summary")).toContainText("echo made > term.txt", { timeout: 30_000 });
+    await page.getByTestId("approval").first().getByTestId("allow-once").click();
+    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
+    await expect(page.getByTestId("assistant-text").last()).toContainText("exit 0; output: from the terminal");
+    expect(readFileSync(join(ws, "term.txt"), "utf8")).toBe("made\n");
+    const cards = ((await (await request.get(`/api/sessions/${session.id}/approvals?all=1`)).json()).approvals as { summary: string }[]);
+    expect(cards.filter((a) => a.summary.includes("echo made > term.txt"))).toHaveLength(1);
+    const call = page.getByTestId("tool-call").filter({ hasText: "echo made > term.txt" }).last();
+    await expect(call).toHaveAttribute("data-state", "ok");
+    const results = ((await (await request.get(`/api/sessions/${session.id}/events`)).json()).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
+    expect(JSON.stringify(results.at(-1).content)).toContain("from the terminal");
+    await call.locator(".k-line").first().click();
+    await expect(call).toContainText("from the terminal");
+    await shoot(page, "acp-17-terminal");
+
+    // The owner's Stop stops what a terminal of the turn still runs.
+    await page.getByTestId("composer").fill("terminal wait");
+    await page.keyboard.press("Enter");
+    // (A command that only waits asks nothing.)
+    const long = async () => ((await (await request.get(`/api/sessions/${session.id}/terminal`)).json()).commands as { command: string; state: string; job_id?: string }[]).filter((j) => j.command === "sleep 600" && j.job_id);
+    await expect.poll(async () => (await long()).map((j) => j.state === "running")).toEqual([true]);
+    await page.getByTestId("stop").click();
+    await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 });
+    await expect.poll(async () => (await long()).map((j) => j.state === "running")).toEqual([false]);
+  } finally {
+    await request.delete("/api/acp/agents/standin-t");
+    await request.delete(`/api/mcp/servers/${server}`);
+  }
+});
+
 // Feature: an ACP agent's models. ACP states them only in a session's setup
 // (session config options, category model; a reasoning level is category
 // thought_level): Keel asks each agent once, lists each model under the

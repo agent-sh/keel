@@ -110,6 +110,8 @@ export type Tool = ToolSpec & {
   // The effective command Auto can judge, or undefined for an unsupported
   // invocation (custom interpreter, login startup, intercepted commands).
   autoShell?(input: any): { command: string; interpreter: string; options?: unknown } | undefined;
+  // A command an external agent already asked about runs without a second card (src/acp/terminals.ts; the gate's answeredOnce).
+  answeredBefore?: true;
   // A dispatcher (mcp_call) names the tool it will run, so the permission gate
   // judges and grants that tool, not the dispatcher.
   // `cls`, when given, is what the call does (a drive tool judges its target).

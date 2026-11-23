@@ -7,11 +7,15 @@
 // judged by keel's gate (the session's mode and grants, else a card the owner
 // answers), and it reads and writes files through keel, judged the same way.
 //
+// It is offered Keel's tools (the owner's MCP servers, src/acp/served.ts) as
+// an MCP server of its session, and runs its commands in terminals of Keel's
+// (src/acp/terminals.ts), both judged and run as the session's own would be.
+//
 // Spec: agentclientprotocol.com/protocol/v1 (initialize, session/new, load,
 // resume, prompt, cancel, close; session/update, session/request_permission,
-// fs/read_text_file, fs/write_text_file toward the client).
+// fs/read_text_file, fs/write_text_file, terminal/* toward the client).
 import { heldFile, heldWrite } from "../core/store-files.ts";
-import type { AgentConfinement } from "./confine.ts";
+import type { AgentConfinement, Give } from "./confine.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
@@ -23,6 +27,12 @@ import { shellText, type CallClass } from "../safety/policy.ts";
 import type { AcpAgent, AcpAgents } from "./agents.ts";
 import { AcpConnection } from "./rpc.ts";
 import { mergeChoices, pickable, settle, splitModel, unknownCurrent, withOptions, type AgentChoices } from "./choices.ts";
+import { catalogTools } from "../tools/catalog.ts";
+import { clearServed, SERVED_NAME, ServedTools, type ServedTool } from "./served.ts";
+import { AcpTerminals } from "./terminals.ts";
+
+// Terminals for the agent, when the gate runs: `answered` is told each command the agent asked about and was allowed.
+export type Terminals = { answered(sessionId: string, command: string): void };
 
 type Json = any;
 export const ACP_PREFIX = "acp:";
@@ -82,13 +92,14 @@ export function asToolUse(tc: Json): { name: string; input: Json } {
 }
 
 // What a finished call left: its content blocks as a keel result.
-export function resultOf(tc: Json): ToolResultBlock {
+// `terminal`: what a terminal it embeds shows now (its command and output).
+export function resultOf(tc: Json, terminal: (id: string) => string | undefined = () => undefined): ToolResultBlock {
   const out: ({ type: "text"; text: string } | { type: "image"; media_type: string; data: string })[] = [];
   for (const c of tc.content ?? []) {
     if (c?.type === "content" && c.content?.type === "text" && c.content.text) out.push({ type: "text", text: c.content.text });
     else if (c?.type === "content" && c.content?.type === "image" && c.content.data) out.push({ type: "image", media_type: c.content.mimeType, data: c.content.data });
     else if (c?.type === "diff") out.push({ type: "text", text: `${c.oldText == null ? "Wrote" : "Edited"} ${c.path}` });
-    else if (c?.type === "terminal") out.push({ type: "text", text: `[terminal ${c.terminalId}]` });
+    else if (c?.type === "terminal") out.push({ type: "text", text: terminal(String(c.terminalId)) ?? `[terminal ${c.terminalId}]` });
   }
   if (!out.length && tc.rawOutput !== undefined) out.push({ type: "text", text: typeof tc.rawOutput === "string" ? tc.rawOutput : JSON.stringify(tc.rawOutput) });
   const failed = tc.status === "failed";
@@ -121,6 +132,17 @@ export function streamedInput(tc: Json): Json | null {
   try { const v = JSON.parse(text); return v && typeof v === "object" && !Array.isArray(v) ? v : null; } catch { return null; }
 }
 
+// The served tool a call of the agent is, when one field of it names exactly one of `served`: its tool name
+// (`mcp__keel__<tool>`, as Claude's agent gives it in `_meta.claudeCode.toolName` and `name`), or its title as
+// that name or as `keel: <tool>` with the server named keel. Never a name found inside a field: a title is the
+// agent's words, and another tool's title can hold any text (Gemini titles a call with its arguments).
+export function servedCall(tc: Json, served: ReadonlySet<string>): string | undefined {
+  if (tc?.kind && tc.kind !== "other") return undefined;
+  const full = (n: unknown) => (typeof n === "string" && n.startsWith(`mcp__${SERVED_NAME}__`) && served.has(n.slice(SERVED_NAME.length + 7)) ? n.slice(SERVED_NAME.length + 7) : undefined);
+  const titled = tc?._meta?.claudeCode?.mcpServer?.name === SERVED_NAME && typeof tc.title === "string" && tc.title.startsWith(`${SERVED_NAME}: `) && served.has(tc.title.slice(SERVED_NAME.length + 2)) ? tc.title.slice(SERVED_NAME.length + 2) : undefined;
+  return full(tc?._meta?.claudeCode?.toolName) ?? full(tc?.name) ?? full(tc?.title) ?? titled;
+}
+
 const ALLOW = ["allow_once", "allow_always"];
 const REJECT = ["reject_once", "reject_always"];
 // Keel answers once: a standing answer is a grant in keel, never the agent's "always".
@@ -128,7 +150,9 @@ export const optionFor = (options: Json[], allow: boolean): string | undefined =
   (options.find((o) => o.kind === (allow ? "allow_once" : "reject_once")) ?? options.find((o) => (allow ? ALLOW : REJECT).includes(o.kind)))?.optionId;
 
 // `choices`: what the agent's session offers now (its setup result, then its updates).
-type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Json; choices: AgentChoices; missed?: string; turn?: TurnState };
+type Live = { agent: AcpAgent; conn: AcpConnection; acpSession: string; caps: Json; choices: AgentChoices; missed?: string; turn?: TurnState;
+  served?: ServedTools; offered: Set<string>; terms: AcpTerminals;
+  closed: AbortController };  // aborted when the agent's connection ends
 type TurnState = {
   io: ExternalIO;
   session: Session;
@@ -144,8 +168,13 @@ export class AcpRunner {
   private live = new Map<string, Live>();
   private starting = new Map<string, Promise<Live>>();
 
+  // `confine`: how the agent's process starts, with what Keel gives it besides its own folders (the served tools' folder
+  // and the program that reaches it). `shell`: terminals for the agent; with none it gets no terminal.
   constructor(private store: Store, private agents: AcpAgents, private judge: Judge, private capture: (e: unknown, ctx: Json) => void,
-    private confine: (s: Session, agent: AcpAgent) => AgentConfinement = (_s, a) => ({ argv: [a.run!.command, ...a.run!.args], confined: false, note: `${a.name} runs unconfined.`, writable: [] })) {
+    private confine: (s: Session, agent: AcpAgent, give: Give) => AgentConfinement = (_s, a) => ({ argv: [a.run!.command, ...a.run!.args], confined: false, note: `${a.name} runs unconfined.`, writable: [] }),
+    private shell?: Terminals) {
+    // (No agent of an earlier daemon runs now: the folders it served tools in go.)
+    try { clearServed(store.stateDir); } catch (e) { capture(e, { at: "acp served tools" }); }
     store.migrate("CREATE TABLE IF NOT EXISTS acp_links (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, agent TEXT NOT NULL, acp_session TEXT NOT NULL, ts INTEGER NOT NULL)");
   }
 
@@ -169,23 +198,36 @@ export class AcpRunner {
   private async open(s: Session, id: string, io: ExternalIO): Promise<Live> {
     const agent = this.agents.get(id);
     if (!agent?.run) throw Object.assign(new Error(`the ACP agent ${id} is not installed here`), { expected: true });
+    // Keel's tools, served on a socket of the session's own: a server that cannot listen leaves the agent without them, said once.
+    const live = { agent, acpSession: "", caps: {}, choices: {}, offered: new Set<string>(), terms: new AcpTerminals(this.store.stateDir), closed: new AbortController() } as Live;
+    const served = new ServedTools(this.store.stateDir, s.id, {
+      list: () => this.offer(s, live),
+      call: (name, args, callId) => live.turn
+        ? live.turn.io.runTool("mcp_call", { tool: name, arguments: args }, callId)
+        : Promise.resolve({ type: "tool_result", tool_use_id: callId, is_error: true, content: "Keel runs its tools for the agent only while a turn of the session runs." }),
+    }, (e) => this.capture(e, { session: s.id, agent: id, at: "acp served tools" }));
+    try { await served.listen(); live.served = served; } catch (e) {
+      served.close();
+      this.capture(e, { session: s.id, agent: id, at: "acp served tools" });
+      io.append("note", { kind: "acp", text: `${agent.name} is not offered your MCP servers in this session: Keel could not open their channel (${(e as Error).message}).` });
+    }
     // Its own process is confined as Keel's commands are; the session is told how.
-    const c = this.confine(s, agent);
+    const c = this.confine(s, agent, live.served ? { own: [live.served.dir, live.served.relayDir], programs: [[process.execPath]] } : { own: [], programs: [] });
     const conn = new AcpConnection(c.argv, { cwd: s.workspace, env: agent.run.env }, (m) => this.capture(new Error(m), { session: s.id, agent: id }));
     io.append("note", { kind: "acp", sandbox: c.confined ? "on" : "off", text: c.note });
-    const live: Live = { agent, conn, acpSession: "", caps: {}, choices: {} };
+    live.conn = conn;
     conn.onNotification = (method, params) => { if (method === "session/update") this.update(live, params); };
     conn.onRequest = (method, params) => this.request(live, method, params);
-    void conn.exited.then(() => { if (this.live.get(s.id) === live) this.live.delete(s.id); });
+    void conn.exited.then(() => { this.closeLive(live); if (this.live.get(s.id) === live) this.live.delete(s.id); });
     try {
       const init = await conn.request("initialize", {
         protocolVersion: 1,
-        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
+        clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: !!this.shell },
         clientInfo: { name: "keel", title: "Keel", version: "0.1.0" },
       });
       live.caps = init?.agentCapabilities ?? {};
       const link = this.store.db.query<{ agent: string; acp_session: string }, [string]>("SELECT agent, acp_session FROM acp_links WHERE session_id = ?").get(s.id);
-      const base = { cwd: s.workspace, mcpServers: [] };
+      const base = { cwd: s.workspace, mcpServers: live.served ? [live.served.config()] : [] };
       if (link && link.agent === id) {
         // The same conversation again after a restart: resumed without replay where offered, else loaded (its replay is not stored again).
         try {
@@ -212,10 +254,25 @@ export class AcpRunner {
       }
     } catch (e) {
       conn.close();
+      this.closeLive(live);
       throw e;
     }
     this.live.set(s.id, live);
     return live;
+  }
+
+  // What the agent is offered of Keel's tools: the MCP servers' tools this session reaches, by their full names.
+  private async offer(s: Session, live: Live): Promise<ServedTool[]> {
+    const tools = (await catalogTools(s.id)).filter((t) => t.mcp && !t.hidden);
+    live.offered = new Set(tools.map((t) => t.qualified));
+    return tools.map((t) => ({ name: t.qualified, description: t.description, inputSchema: t.input_schema, readOnly: t.readOnly }));
+  }
+
+  private closeLive(live: Live) {
+    live.closed.abort();
+    live.served?.close();
+    live.served = undefined;
+    void live.terms.closeAll().catch((e) => this.capture(e, { agent: live.agent.id, at: "acp terminals" }));
   }
 
   // A setup result: what the agent offers in this session, and in its listing.
@@ -258,10 +315,16 @@ export class AcpRunner {
     if (!prompt.length) return { reason: "end_turn" };
     io.status({ kind: "model", since: Date.now(), model: s.model });
     const live = await this.connect(s, io);
+    // (A server that connected or changed since the agent listed Keel's tools: it is told to list them again.)
+    void live.served?.refresh().catch((e) => this.capture(e, { session: s.id, at: "acp served tools" }));
     await this.settleChoices(live, s, io);
     const t: TurnState = { io, session: s, text: "", thinking: "", calls: new Map(), stored: new Set(), done: new Set(), cost: live.turn?.lastCost };
     live.turn = t;
-    const cancel = () => live.conn.notify("session/cancel", { sessionId: live.acpSession });
+    // (The owner's Stop also stops what its terminals still run.)
+    const cancel = () => {
+      live.conn.notify("session/cancel", { sessionId: live.acpSession });
+      void live.terms.stopRunning().catch((e) => this.capture(e, { session: s.id, at: "acp terminals" }));
+    };
     io.signal.addEventListener("abort", cancel, { once: true });
     try {
       const answer = live.conn.request("session/prompt", { sessionId: live.acpSession, prompt });
@@ -303,7 +366,7 @@ export class AcpRunner {
     if (t.done.has(tc.toolCallId)) return;
     if (!t.stored.has(tc.toolCallId)) this.flush(t, [tc]);
     t.done.add(tc.toolCallId);
-    t.io.append("tool_result", { results: [resultOf(tc)] });
+    t.io.append("tool_result", { results: [resultOf(tc, (id) => this.live.get(t.session.id)?.terms.shown(id))] });
   }
 
   private update(live: Live, p: Json) {
@@ -363,6 +426,13 @@ export class AcpRunner {
 
   // The agent's requests: permission and files, all judged by keel's gate.
   private async request(live: Live, method: string, p: Json): Promise<Json> {
+    // A terminal's output, end and release are asked for also between turns: they judge nothing.
+    if (this.shell && p?.sessionId === live.acpSession) {
+      if (method === "terminal/output") return live.terms.output(p);
+      if (method === "terminal/kill") return live.terms.kill(p);
+      if (method === "terminal/release") return live.terms.release(p);
+      if (method === "terminal/wait_for_exit") return live.terms.waitForExit(p, live.turn?.io.signal ?? live.closed.signal);
+    }
     const t = live.turn;
     const s = t?.session;
     if (!t || !s || p.sessionId !== live.acpSession) throw Object.assign(new Error("no turn is running in this session"), { code: -32002 });
@@ -376,8 +446,17 @@ export class AcpRunner {
         if (tc.toolCallId) { t.calls.set(tc.toolCallId, tc); if (!t.stored.has(tc.toolCallId)) this.flush(t, [tc]); }
         const options: Json[] = p.options ?? [];
         if (signal.aborted) return { outcome: { outcome: "cancelled" } };
-        const verdict = await this.judge(s, { id: tc.toolCallId ?? crypto.randomUUID(), name: `acp__${live.agent.id}__${tc.kind ?? "other"}`, cls: classOf(tc, s.workspace), input: asToolUse(tc).input, signal });
+        // A call of Keel's own tools is judged when it reaches Keel (served.ts): asked here too, the owner would answer twice.
+        // (The call as announced and as asked about are read apart: one field of either names it whole.)
+        if (servedCall(prev, live.offered) ?? servedCall(p.toolCall, live.offered)) {
+          const optionId = optionFor(options, true);
+          return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
+        }
+        const cls = classOf(tc, s.workspace);
+        const verdict = await this.judge(s, { id: tc.toolCallId ?? crypto.randomUUID(), name: `acp__${live.agent.id}__${tc.kind ?? "other"}`, cls, input: asToolUse(tc).input, signal });
         if (signal.aborted) return { outcome: { outcome: "cancelled" } };
+        // (An allowed command the agent then runs in a terminal of Keel's is not asked about again.)
+        if (!verdict && cls.kind === "shell") this.shell?.answered(s.id, cls.command);
         const optionId = optionFor(options, !verdict);
         return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
       }
@@ -415,9 +494,11 @@ export class AcpRunner {
         try { await writeFile(h.io, String(p.content ?? "")); } finally { h.close(); }
         return null;
       }
-      default:
-        throw Object.assign(new Error(`method not found: ${method}`), { code: -32601 });
+      case "terminal/create":
+        if (!this.shell) break;
+        return live.terms.create(s, p, (tool, input, id) => t.io.runTool(tool, input, id));
     }
+    throw Object.assign(new Error(`method not found: ${method}`), { code: -32601 });
   }
 
   // The session is gone or archived: its agent conversation is closed and the process ends.
@@ -425,6 +506,7 @@ export class AcpRunner {
     const l = this.live.get(sessionId);
     if (!l) return;
     this.live.delete(sessionId);
+    this.closeLive(l);
     if (l.caps.sessionCapabilities?.close) void l.conn.request("session/close", { sessionId: l.acpSession }).catch(() => {}).finally(() => l.conn.close());
     else l.conn.close();
   }

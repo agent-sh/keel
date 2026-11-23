@@ -5,6 +5,8 @@
 // with "wait" hangs until session/cancel; "again" answers with what it was
 // told before, so a test sees the agent keep its own history. Its models and
 // reasoning levels are config options; "which model" names the current ones.
+// "keel tools" starts the MCP server the client passed in session/new, lists
+// its tools and calls one; "terminal" runs a command in a client terminal.
 const out = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 let next = 1;
 const waiting = new Map<number, (m: any) => void>();
@@ -14,6 +16,34 @@ const said: string[] = [];
 let cwd = "";
 let cancel: (() => void) | null = null;
 let cost = 0;
+let mcpServers: any[] = [];
+let clientCaps: any = {};
+
+// The client's MCP server, started as an agent starts one: its command with its arguments and variables, over stdio.
+async function viaMcp(server: any, calls: [string, any][]): Promise<any[]> {
+  const env = { ...process.env, ...Object.fromEntries((server.env ?? []).map((v: any) => [v.name, v.value])) };
+  const child = Bun.spawn([server.command, ...server.args], { env, stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const reader = child.stdout.getReader();
+  let buf = "";
+  let n = 0;
+  const rpc = async (method: string, params: unknown) => {
+    const id = ++n;
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    child.stdin.flush();
+    for (;;) {
+      const i = buf.indexOf("\n");
+      if (i >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (m.id === id) return m; continue; }
+      const { value, done } = await reader.read();
+      if (done) throw new Error("the MCP server ended");
+      buf += new TextDecoder().decode(value);
+    }
+  };
+  const out: any[] = [await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "standin", version: "1" } })];
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  for (const [m, p] of calls) out.push(await rpc(m, p));
+  child.kill();
+  return out;
+}
 // Its models and reasoning levels, as session config options; "which model" is answered with the current ones.
 const config = { model: "fast", effort: "low" };
 const configOptions = () => [
@@ -31,6 +61,60 @@ async function prompt(id: number, p: any) {
   if (/again/.test(text)) {
     update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Before, you said: ${said.join(" | ")}` } });
     said.push(text);
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
+  if (/keel tools/.test(text)) {
+    const keel = mcpServers.find((m) => m.name === "keel");
+    if (!keel) {
+      update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `No keel server among ${JSON.stringify(mcpServers)}` } });
+      return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+    }
+    const [, listed] = await viaMcp(keel, [["tools/list", {}]]);
+    const names: string[] = (listed.result?.tools ?? []).map((t: any) => t.name).sort();
+    const echo = names.find((n) => n.endsWith("__echo"))!;
+    // Asked as Claude's agent asks for an MCP tool: the client answers it without a card of its own.
+    update(s, { sessionUpdate: "tool_call", toolCallId: "call-mcp", title: `mcp__keel__${echo}`, kind: "other", status: "pending", rawInput: { text: "through keel" } });
+    const perm = await ask("session/request_permission", { sessionId: s, toolCall: { toolCallId: "call-mcp", title: `mcp__keel__${echo}`, kind: "other", rawInput: { text: "through keel" } },
+      options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }] });
+    const [, called] = await viaMcp(keel, [["tools/call", { name: echo, arguments: { text: "through keel" } }]]);
+    const said = (called.result?.content ?? []).map((c: any) => c.text).join("");
+    update(s, { sessionUpdate: "tool_call_update", toolCallId: "call-mcp", status: called.result?.isError ? "failed" : "completed", content: [{ type: "content", content: { type: "text", text: said } }] });
+    update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `tools: ${names.join(", ")}; permission: ${perm.result?.outcome?.optionId}; result: ${said}` } });
+    return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  }
+  if (/terminal/.test(text)) {
+    if (!clientCaps.terminal) {
+      update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "The client has no terminal." } });
+      return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+    }
+    // As Claude's agent does: it asks about the command, then runs it in a terminal of the client's.
+    const long = /terminal wait/.test(text);
+    const line = long ? "sleep 600" : "echo made > term.txt; echo from the terminal";
+    update(s, { sessionUpdate: "tool_call", toolCallId: "call-term", title: long ? "Wait a while" : "Run the note script", kind: "execute", status: "pending", rawInput: { command: line } });
+    const asked = await ask("session/request_permission", { sessionId: s, toolCall: { toolCallId: "call-term", title: line, kind: "execute", rawInput: { command: line } },
+      options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }] });
+    if (asked.result?.outcome?.optionId !== "yes") {
+      update(s, { sessionUpdate: "tool_call_update", toolCallId: "call-term", status: "failed" });
+      update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Not allowed." } });
+      return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+    }
+    const made = await ask("terminal/create", { sessionId: s, command: "bash", args: ["-c", line], cwd, outputByteLimit: 4096 });
+    if (made.error) {
+      update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Refused: ${made.error.message}` } });
+      return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+    }
+    const terminalId = made.result.terminalId;
+    update(s, { sessionUpdate: "tool_call_update", toolCallId: "call-term", status: "in_progress", content: [{ type: "terminal", terminalId }] });
+    if (long) {
+      // Until the client stops the turn: the command is left to the client to stop.
+      await new Promise<void>((r) => (cancel = r));
+      return out({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+    }
+    const exit = await ask("terminal/wait_for_exit", { sessionId: s, terminalId });
+    const o = await ask("terminal/output", { sessionId: s, terminalId });
+    update(s, { sessionUpdate: "tool_call_update", toolCallId: "call-term", status: "completed" });
+    await ask("terminal/release", { sessionId: s, terminalId });
+    update(s, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `exit ${exit.result?.exitCode}; output: ${o.result?.output.trim()}` } });
     return out({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
   }
   said.push(text);
@@ -77,8 +161,9 @@ process.stdin.on("data", (d) => {
     if (!line.trim()) continue;
     const m = JSON.parse(line);
     if (m.method === undefined) { waiting.get(m.id)?.(m); waiting.delete(m.id); continue; }
+    if (m.method === "initialize") clientCaps = m.params?.clientCapabilities ?? {};
     if (m.method === "initialize") out({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: false, sessionCapabilities: { close: {} } }, agentInfo: { name: "standin", version: "1" }, authMethods: [] } });
-    else if (m.method === "session/new") { cwd = m.params.cwd; out({ jsonrpc: "2.0", id: m.id, result: { sessionId: `standin-${Date.now()}`, configOptions: configOptions() } }); }
+    else if (m.method === "session/new") { cwd = m.params.cwd; mcpServers = m.params.mcpServers ?? []; out({ jsonrpc: "2.0", id: m.id, result: { sessionId: `standin-${Date.now()}`, configOptions: configOptions() } }); }
     else if (m.method === "session/set_config_option") {
       const key = m.params.configId === "model" ? "model" : m.params.configId === "effort" ? "effort" : null;
       if (!key) out({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: `no option ${m.params.configId}` } });

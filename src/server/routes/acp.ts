@@ -8,6 +8,7 @@ import { allHooks, registerHooks, type TurnHooks } from "../../engine/hooks.ts";
 import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { AcpProvider, readCustom, writeCustom } from "../../acp/agents.ts";
 import { AcpRunner, agentOf, isAcpModel, type Judge } from "../../acp/external.ts";
+import type { Terminals } from "../../acp/external.ts";
 import type { Tool } from "../../tools/types.ts";
 import { gate, presence } from "./permissions.ts";
 
@@ -32,13 +33,16 @@ export const acpRoutes: RouteModule = (deps) => {
     const r = await gate.check(s, { id: c.id, tool, input: c.input, ctx: { sessionId: s.id, cwd: s.workspace, signal: c.signal, seen: new Map(), spillDir: "" } });
     return "deny" in r ? r : undefined;
   };
+  // A terminal's command runs through the engine's chain (the owner's hooks, then the gate); a command the agent
+  // asked about and the gate allowed is answered there once more without a card.
+  const terminals: Terminals | undefined = gate ? { answered: (sid, command) => gate!.answeredOnce(sid, command) } : undefined;
   g.__keelAcp?.dispose();
   // The agent's process follows the session's sandbox and network, as its commands would.
   const permOf = (sessionId?: string) => gate ? (sessionId ? gate.perm(sessionId) : { sandbox: gate.defaultSandbox(), network: true }) : { sandbox: "off" as const, network: true };
   // What an agent offers (its models, else its modes) is asked of it once per program, as a new session's agent would run.
   provider.agents.argvOf = (a, cwd) => confineAgent(a, permOf(), cwd, false).argv;
   provider.agents.onLearned = () => void deps.providers.refresh("acp").catch((e) => deps.errors.capture("provider", e, { at: "acp listing" }));
-  const runner = (g.__keelAcp = new AcpRunner(deps.store, provider.agents, judge, (e, ctx) => deps.errors.capture("provider", e, ctx), (s, a) => confineAgent(a, permOf(s.id), s.workspace)));
+  const runner = (g.__keelAcp = new AcpRunner(deps.store, provider.agents, judge, (e, ctx) => deps.errors.capture("provider", e, ctx), (s, a, give) => confineAgent(a, permOf(s.id), s.workspace, true, give), terminals));
   // Registered once per hook list (a hot reload may make a new one); it calls the runner of now.
   g.__keelAcpHook ??= { external: (s) => (g.__keelAcp?.claims(s) ? (io) => g.__keelAcp!.turn(s, io) : undefined) };
   if (!allHooks().includes(g.__keelAcpHook)) registerHooks(g.__keelAcpHook);
