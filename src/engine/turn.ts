@@ -126,6 +126,17 @@ export function restartText(cut: number, owed: number, unstarted = false): strin
   return `[harness] The daemon restarted during your previous turn${parts.length ? `; ${parts.join("; ")}` : ""}. Continue where it left off.`;
 }
 
+// Whether the branch holds a restart message no reply came after: walked back from its end to the
+// last reply, reading the body of a prompt alone.
+export function unreadRestart(line: readonly StoredEvent[]): boolean {
+  for (let i = line.length - 1; i >= 0; i--) {
+    const e = line[i]!;
+    if (e.kind === "assistant") return false;
+    if (e.kind === "user" && e.data.origin === "restart") return true;
+  }
+  return false;
+}
+
 // What a call that names a tool the session does not have is answered with.
 // When the attempt that answered a request was sent: a request that waited out
 // an outage or retried was answered by its last attempt, which read or wrote the
@@ -3856,8 +3867,11 @@ export class Engine {
     const end = line.at(-1);
     if (end?.kind !== "turn_end" || end.data.reason !== "restart") return false;
     const owed = owedCalls(id, line).length;
-    const told = line.findLastIndex((e) => e.kind === "user" && e.data.origin === "restart");
-    if (owed && told >= 0 && !line.slice(told).some((e) => e.kind === "assistant")) return true;
+    // A restart message the model has not read yet: looked for back to the last reply only, by kind
+    // first (a body is read for a prompt alone). Looked for over the whole branch, a session that was
+    // never told of a restart read every prompt back to its first, and the runs that hold them, from
+    // before its last checkpoint too, where nothing had read them ahead (warmContext).
+    if (owed && unreadRestart(line)) return true;
     const cut = line.slice(line.findLastIndex((e) => e.kind === "turn_start"));
     const parked = cut.findLast((e) => e.kind === "note" && e.data.kind === "provider_wait");
     const retry = parked?.data.retry ?? end.data.provider_retry;
