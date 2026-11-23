@@ -1,11 +1,11 @@
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { FileDiff, FolderX, History, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, onFeature, reportError, reportUnlessGone, failed } from "../lib/store.ts";
 import { stoppingShells } from "../lib/shells.ts";
-import { ago, cn } from "../lib/utils.ts";
-import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
+import { ago, cn, scrollMotion } from "../lib/utils.ts";
+import { DiffView, FileList, RevertButton, type FileChange } from "./DiffView.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 
 type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
@@ -18,8 +18,9 @@ type RewindResult = {
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 type Pending = { title: string; body: { turn?: number; paths?: string[] }; preview: RewindResult };
 
-// What the session changed, in the side panel: the whole session's diff with
-// a revert per file, and each turn's diff with "rewind to before this turn".
+// What the session changed, in the side panel: the list of the changed files
+// and the whole session's diff, with a revert per file, and each turn's diff
+// with a revert of the files to before it. One verb, Revert, for all of them.
 export function ChangesPanel({ session }: { session: Session }) {
   const sessionId = session.id;
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -32,6 +33,9 @@ export function ChangesPanel({ session }: { session: Session }) {
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<string>("session");
   const panel = useId();
+  const sessionBox = useRef<HTMLDivElement>(null);
+  // A path of the file list: its diff, at the top of the panel.
+  const jump = (path: string) => sessionBox.current?.querySelector(`[data-testid="diff-file"][data-path="${CSS.escape(path)}"]`)?.scrollIntoView({ behavior: scrollMotion(), block: "start" });
   // With the folder gone there is nothing to put files back into: the diffs
   // still read, the reverts are not offered.
   const gone = !!session.workspace_gone;
@@ -80,13 +84,13 @@ export function ChangesPanel({ session }: { session: Session }) {
     }
   };
 
-  // The files as they are now are read again after a restore, failed or not.
+  // The files as they are now are read again after a revert, failed or not.
   const run = async (body: object) => {
     setErr("");
     try {
-      // Background commands in the folder would write over the restore: the owner may stop them first.
+      // Background commands in the folder would write over the revert: the owner may stop them first.
       setPending(null);
-      const r = await stoppingShells((stop) => api<RewindResult>(`/api/sessions/${sessionId}/rewind`, { method: "POST", body: JSON.stringify({ ...body, stop_shells: stop || undefined }) }), { verb: "Restore", where: "this folder" });
+      const r = await stoppingShells((stop) => api<RewindResult>(`/api/sessions/${sessionId}/rewind`, { method: "POST", body: JSON.stringify({ ...body, stop_shells: stop || undefined }) }), { verb: "Revert", where: "this folder" });
       if (r) setDone(r);
     } catch (e) {
       setErr(failed(e, { at: "ChangesPanel" }));
@@ -130,12 +134,12 @@ export function ChangesPanel({ session }: { session: Session }) {
             {err ? err : (
               <>
                 <span className={cn(done!.failed.length > 0 && "text-danger")}>
-                  {done!.failed.length ? `Restored ${done!.files.length} of ${done!.files.length + done!.failed.length} files` : `Restored ${plural(done!.files.length, "file")}`}
+                  {done!.failed.length ? `Reverted ${done!.files.length} of ${done!.files.length + done!.failed.length} files` : `Reverted ${plural(done!.files.length, "file")}`}
                   {done!.merged.length ? ` (in ${done!.merged.length} only the session's change, around later edits)` : ""}
                   {done!.skipped.length ? `, kept ${done!.skipped.length} changed outside the session` : ""}
                   {done!.uncaptured.length ? `, kept ${done!.uncaptured.length} over the checkpoint size limit` : ""}
-                  {done!.blocked?.length ? `, skipped ${plural(done!.blocked.length, "restore path")} to protect large files` : ""}.
-                  {done!.failed.length > 0 && <span className="block text-caption" data-testid="rewind-failed">Not restored: {done!.failed.map((f) => `${f.path} (${f.error})`).join("; ")}</span>}
+                  {done!.blocked?.length ? `, skipped ${plural(done!.blocked.length, "path")} to protect large files` : ""}.
+                  {done!.failed.length > 0 && <span className="block text-caption" data-testid="rewind-failed">Not reverted: {done!.failed.map((f) => `${f.path} (${f.error})`).join("; ")}</span>}
                 </span>
                 {done!.undo && (
                   <button data-testid="rewind-undo" className="k-link font-medium text-accent hover:underline" onClick={() => { run({ checkpoint: done!.undo }); }}>
@@ -147,7 +151,7 @@ export function ChangesPanel({ session }: { session: Session }) {
             <button className="ml-auto text-faint hover:text-fg" onClick={() => { setDone(null); setErr(""); }}><X className="size-3.5" /></button>
           </div>
         )}
-        {tab === "session" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="min-h-0 flex-1 overflow-y-auto p-4">
+        {tab === "session" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} ref={sessionBox} className="min-h-0 flex-1 overflow-y-auto p-4">
           {all && all.files.length > 0 && gone && (
             <p className="k-notice mb-3 items-start text-caption text-muted" data-testid="revert-gone" role="note">
               <FolderX className="mt-px size-3.5 shrink-0 text-st-fail" aria-hidden="true" />
@@ -168,6 +172,9 @@ export function ChangesPanel({ session }: { session: Session }) {
               </button>
             </div>
           )}
+          {all && all.files.length > 1 && (
+            <FileList files={all.files} onJump={jump} actions={(f) => canRevert && <RevertButton path={f.path} onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />} />
+          )}
           {all && (
             <DiffView
               files={all.files}
@@ -176,7 +183,7 @@ export function ChangesPanel({ session }: { session: Session }) {
               truncated={all.truncated}
               partial={all.partial}
               loadFile={firstTurn === undefined ? undefined : fileDiff(`from=${firstTurn}`)}
-              actions={(f) => canRevert && <RevertButton onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />}
+              actions={(f) => canRevert && <RevertButton path={f.path} onClick={() => ask(`Revert ${f.path}?`, { turn: firstTurn, paths: [f.path] })} />}
               onHunk={!canRevert ? undefined : async (h) => {
                 setErr("");
                 try {
@@ -205,11 +212,11 @@ export function ChangesPanel({ session }: { session: Session }) {
                     <span className="w-8 text-right text-micro tabular-nums text-faint">{ago(t.created)}</span>
                     {!gone && !t.elsewhere && !t.unavailable && <button
                       data-testid="rewind-turn"
-                      onClick={(e) => { e.preventDefault(); ask("Rewind files to before this turn?", { turn: t.turn }); }}
+                      onClick={(e) => { e.preventDefault(); ask("Revert the files to before this turn?", { turn: t.turn }); }}
                       className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-caption text-muted hover:bg-hover hover:text-fg"
-                      title="Put files back as they were before this turn"
+                      title="Put the files back as they were before this turn (this turn and the ones after it)"
                     >
-                      <RotateCcw className="size-3.5" /> Rewind files
+                      <RotateCcw className="size-3.5" /> Revert from here
                     </button>}
                   </summary>
                   <div className="border-t border-line p-3">
@@ -229,10 +236,10 @@ export function ChangesPanel({ session }: { session: Session }) {
             <AlertDialog.Title className="font-semibold">{pending?.title}</AlertDialog.Title>
             <AlertDialog.Description className="mt-1 text-ui text-muted">
               {pending?.preview.incomplete
-                ? "The restore this undoes was cut before its result was recorded, so what it changed is not known. Nothing goes back unless you pick it below."
+                ? "The revert this undoes was cut before its result was recorded, so what it changed is not known. Nothing goes back unless you pick it below."
                 : !restorePaths.length
-                ? "No files selected to restore."
-                : "These files go back as they were. An undo point is saved first."}
+                ? "No files selected to revert."
+                : restorePaths.length === 1 ? "The file goes back as it was. An undo point is saved first, so Undo brings it back." : "These files go back as they were. An undo point is saved first, so Undo brings them back."}
               {" This does not rewind chat history for this session or its child sessions."}
             </AlertDialog.Description>
             {pending && (
@@ -251,7 +258,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                 {pending.preview.blocked?.map(({ path, uncaptured }) => (
                   <li key={path} className="flex items-start gap-2 text-faint" data-testid="rewind-blocked">
                     <FileDiff className="size-3.5 shrink-0" />
-                    <span className="min-w-0 break-all">{path}<span className="block font-sans text-micro">Not restored: protects {uncaptured}</span></span>
+                    <span className="min-w-0 break-all">{path}<span className="block font-sans text-micro">Kept: protects {uncaptured}</span></span>
                   </li>
                 ))}
               </ul>
@@ -260,8 +267,8 @@ export function ChangesPanel({ session }: { session: Session }) {
               <label className="mt-3 flex items-start gap-2 text-ui">
                 <input type="checkbox" checked={includeOutside} onChange={(e) => setIncludeOutside(e.target.checked)} className="mt-0.5 accent-[var(--accent)]" data-testid="include-outside" />
                 <span>
-                  {pending.preview.incomplete ? `Restore these ${plural(pending.preview.skipped.length, "file")} too` : `Also restore ${plural(pending.preview.skipped.length, "file")} changed outside the session`}
-                  <span className="block text-caption text-muted">{pending.preview.incomplete ? "Each one differs from the undo point; you, another session or the cut restore changed it." : "Kept by default: someone else (you, or another session) edited them since."}</span>
+                  {pending.preview.incomplete ? `Revert these ${plural(pending.preview.skipped.length, "file")} too` : `Also revert ${plural(pending.preview.skipped.length, "file")} changed outside the session`}
+                  <span className="block text-caption text-muted">{pending.preview.incomplete ? "Each one differs from the undo point; you, another session or the cut revert changed it." : "Kept by default: someone else (you, or another session) edited them since."}</span>
                 </span>
               </label>
             )}
@@ -273,7 +280,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                 disabled={!restorePaths.length}
                 className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg enabled:hover:opacity-90 disabled:opacity-50"
               >
-                Restore files
+                Revert
               </button>
             </div>
           </AlertDialog.Popup>
@@ -283,14 +290,14 @@ export function ChangesPanel({ session }: { session: Session }) {
   );
 }
 
-// One path in the restore preview: what happens to it.
+// One path in the revert preview: what will happen to it.
 function PreviewRow({ path, remove, outside, off, merged, conflict }: { path: string; remove: boolean; outside?: boolean; off?: boolean; merged?: boolean; conflict?: boolean }) {
   return (
     <li className={cn("flex items-center gap-2", off && "text-faint")}>
       <FileDiff className={cn("size-3.5 shrink-0", outside ? "text-warn" : "text-accent")} />
       <span className={cn("min-w-0 truncate", off && "line-through")}>{path}</span>
       <span className={cn("ml-auto shrink-0 font-sans text-micro", remove ? "text-danger" : "text-faint")}>
-        {merged ? "the turn's change taken back, the later edit kept" : off ? (conflict ? "kept: a later edit overlaps the turn's change" : "kept: changed outside") : remove ? "removed: not there before" : "restored"}
+        {merged ? "the turn's change taken back, the later edit kept" : off ? (conflict ? "kept: a later edit overlaps the turn's change" : "kept: changed outside") : remove ? "deleted: not there before" : "goes back"}
       </span>
     </li>
   );

@@ -378,10 +378,40 @@ function CommentForm({ l, side, text, label, onText, onClose, onAdd }: { l: Patc
   );
 }
 
-export function RevertButton({ onClick, title = "Revert this file" }: { onClick: () => void; title?: string }) {
+// A file's revert, said in words: the button reads "Revert" and names its file to a screen reader.
+export function RevertButton({ path, onClick }: { path: string; onClick: () => void }) {
   return (
-    <button data-testid="revert-file" title={title} onClick={onClick} className="grid size-6 place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger">
-      <Undo2 className="size-3.5" />
+    <button type="button" data-testid="revert-file" aria-label={`Revert ${path}`} title={`Put ${path} back as it was before the session changed it`} onClick={onClick}
+      className="inline-flex h-ctl-sm shrink-0 items-center gap-1 rounded-md px-1.5 font-sans text-micro font-medium text-muted hover:bg-danger-soft hover:text-danger">
+      <Undo2 className="size-3" aria-hidden="true" />Revert
     </button>
+  );
+}
+
+// The changed files as a list above their diffs: a path goes to its diff, `actions` stand at each row's end.
+export function FileList({ files, onJump, actions }: { files: FileChange[]; onJump: (path: string) => void; actions?: (f: FileChange) => ReactNode }) {
+  return (
+    <ul className="mb-3 overflow-hidden rounded-xl border border-line bg-raised" data-testid="changes-files" aria-label="Changed files">
+      {files.map((f) => {
+        const st = STATUS[f.status[0]!] ?? { label: f.status, cls: "text-muted" };
+        const slash = f.path.lastIndexOf("/");
+        return (
+          <li key={f.path} data-testid="changes-file" data-file={f.path} className="flex items-center gap-2 border-b border-line py-1 pl-1 pr-2 last:border-b-0">
+            <button type="button" aria-label={`Show the diff of ${f.path}`} onClick={() => onJump(f.path)}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-hover">
+              <span className={cn("w-3 shrink-0 text-center font-mono text-micro font-semibold", st.cls)} title={st.label} aria-label={st.label}>{f.status[0]}</span>
+              <span className="min-w-0 truncate font-mono text-caption">
+                {slash > 0 && <span className="text-faint">{f.path.slice(0, slash + 1)}</span>}{f.path.slice(slash + 1)}
+              </span>
+              {f.outside && <span className="shrink-0 rounded-full bg-warn/15 px-1.5 text-micro text-warn" title="Changed outside the session's own tool calls">outside</span>}
+              <span className="ml-auto shrink-0 font-mono text-micro tabular-nums">
+                <span className="text-ok">+{f.added}</span> <span className="text-danger">-{f.removed}</span>
+              </span>
+            </button>
+            {actions?.(f)}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
