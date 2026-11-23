@@ -516,7 +516,7 @@ export type Where = {
   home: string;
   rel: (abs: string) => string | undefined;     // a folder from the repository's top, or undefined outside it
   // Whether the shell has the variable in its environment: an assignment to it is seen by what runs
-  // after it (the daemon's own environment, which the shell is started with, by default).
+  // after it (the environment a session's commands get, src/checks/runs.ts; the process's by default).
   environ?: (name: string) => boolean;
 };
 export type Match = {

@@ -9,7 +9,7 @@ import { conceal } from "../core/conceal.ts";
 import { realOf } from "../core/paths.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { ToolCall, ToolGate } from "../engine/hooks.ts";
-import type { Job } from "../tools/jobs.ts";
+import { toolEnv, type Job } from "../tools/jobs.ts";
 import { moveShell } from "../tools/shell.ts";
 import { countsOf } from "./counts.ts";
 import { baseOf, commitTree, fromTop, inputsOf, keyOf, markAnyway, namedFor, onTree, onTrees, owe, owed, record, repoOf, takeAnyway, treeOf, type Repo } from "./ledger.ts";
@@ -44,18 +44,20 @@ export function commandOf(call: ToolCall): string | undefined {
 }
 
 // Which checks a command run in `folder` runs, with the repository they are of: the one its leading
-// `cd`s go to, else the folder's own.
-export function checksIn(folder: string, command: string): { repo: Repo; matches: Match[] } | undefined {
+// `cd`s go to, else the folder's own. `sessionId`: whose shell runs it (the environment its commands get).
+export function checksIn(folder: string, command: string, sessionId?: string): { repo: Repo; matches: Match[] } | undefined {
   const home = homedir();
   const repo = repoOf(firstFolder(command, folder, home)) ?? repoOf(folder);
   if (!repo) return undefined;
   const named = namedFor(repo);
   if (!named?.checks.length) return undefined;
-  const matches = matchAll(command, named, { cwd: folder, home, rel: (d) => fromTop(repo, d) });
+  let env: Record<string, string> | undefined;
+  const environ = (n: string) => (env ??= sessionId ? toolEnv(sessionId) : { ...process.env } as Record<string, string>)[n] !== undefined;
+  const matches = matchAll(command, named, { cwd: folder, home, rel: (d) => fromTop(repo, d), environ });
   return matches.length ? { repo, matches } : undefined;
 }
-export function checkIn(folder: string, command: string): { repo: Repo; match: Match } | undefined {
-  const got = checksIn(folder, command);
+export function checkIn(folder: string, command: string, sessionId?: string): { repo: Repo; match: Match } | undefined {
+  const got = checksIn(folder, command, sessionId);
   return got && { repo: got.repo, match: got.matches[0]! };
 }
 
@@ -83,7 +85,7 @@ export async function beforeCall(s: Session, call: ToolCall): Promise<ToolGate> 
   const command = commandOf(call);
   if (!command) return;
   const folder = call.tool.cwdOf?.(call.ctx, call.input) ?? call.ctx.cwd;
-  const found = checksIn(folder, command);
+  const found = checksIn(folder, command, s.id);
   if (!found) return;
   // A tool that cannot say when a check itself started records one only when it is the whole command.
   const traced = !!call.tool.tracesChecks;
@@ -185,7 +187,7 @@ async function store(p: Pending, job: Job): Promise<Stored | undefined> {
 // A job started: the owner's own run of a check is looked at now (its tree, as it starts).
 export function jobStarted(job: Job) {
   if (job.by !== "owner" || job.callId) return;
-  const found = checkIn(job.cwd, job.command);
+  const found = checkIn(job.cwd, job.command, job.sessionId);
   if (!found) return;
   if (!found.match.alone) return;
   const m = found.match;
