@@ -14,6 +14,7 @@
 // command of the session started waiting for a slot, moved in line, started or
 // left the line (the session's state and its turn's trace read it).
 import { restOf } from "../../core/rest.ts";
+import { collected } from "../../core/collector.ts";
 // `daemon.search_fill`: a search index made again, filled on its thread
 // (search-fill.ts): running, events filled, how long it took.
 import { fill } from "./search-fill.ts";
@@ -42,7 +43,7 @@ export const resourceRoutes: RouteModule = ({ store, bus }) => {
         // What the daemon holds of its sessions' events: how many sessions, the memory they are charged, and the budget.
         // And what its checkpoint thread did with the store's log (src/core/checkpoint.ts): absent when none works.
         const checkpoint = checkpointerOf(store)?.counts;
-        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
+        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), given_back: restOf()?.last ?? null, collector: collected, ...(checkpoint ? { checkpoint } : {}), ...(fill.running || fill.ms !== undefined ? { search_fill: fill } : {}) }, heavy: pool.view() });
       },
     },
   };

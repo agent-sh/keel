@@ -11,13 +11,14 @@ import { buildInfo } from "../core/build.ts";
 import { handLock } from "../core/daemon-lock.ts";
 import { relaunchArgv } from "../core/relaunch.ts";
 import { Rest } from "../core/rest.ts";
+import { collected, type Collector, wholeDue } from "../core/collector.ts";
 import { startTimes } from "../core/start-trace.ts";
 import { addAdmission } from "../server/admission.ts";
 import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
 import { IDLE_MAX_MS, pulse } from "../core/pulse.ts";
 import { beatLife, endLife, lifeDraining, restarts } from "./life.ts";
-import { describeStall, type Stall, StallMonitor, TurnWatch, unanswered, watchWith } from "./stall.ts";
+import { describeStall, type Stall, StallMonitor, timed, TurnWatch, unanswered, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
 import { liveJobs } from "../tools/jobs.ts";
@@ -207,13 +208,24 @@ export class Daemon {
     // (the runtime's own timer for it is off: src/core/relaunch.ts). Asked ten times a second, as that
     // timer asked, it cost 4 to 8 points of a processor under twelve working sessions and the loop's
     // waits were no shorter.
+    // And for a whole collection when the heap has grown well past what the last one left (src/core/collector.ts).
     let heapWas = 0;
+    const last: Collector = { left: heapSize(), at: Date.now() };
     beats.join("collector", () => {
       if (!monitor.working()) return;
       const size = heapSize();
       if (size === heapWas) return;
       heapWas = size;
-      Bun.gc(false);
+      if (!wholeDue(size, last, Date.now())) { Bun.gc(false); return; }
+      const t0 = performance.now();
+      timed(() => `a whole collection of a heap of ${Math.round(size / 1e6)} MB`, () => Bun.gc(true));
+      const ms = Math.round(performance.now() - t0);
+      last.left = heapWas = heapSize();
+      last.at = Date.now();
+      collected.wholes++;
+      collected.last_ms = ms;
+      collected.longest_ms = Math.max(collected.longest_ms, ms);
+      collected.left_bytes = last.left;
     }, { every: 1000 });
     // Memory given back: once no turn has run for a minute, and when its unit's bound is passed (src/core/rest.ts).
     const rest = (this.rest = new Rest({ store: this.deps.store, say: (line) => this.deps.errors.capture("server", Object.assign(new Error(line), { stack: undefined }), { at: "memory pressure" }, { group: "memory pressure" }) }));
