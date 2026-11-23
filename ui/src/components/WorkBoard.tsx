@@ -6,6 +6,7 @@ import { Check, CircleDashed, GitBranch, Loader2, Minus, RefreshCw, X } from "lu
 import { useState, type ReactNode } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession } from "../lib/automation.ts";
+import { branchGone } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
 import { failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -72,7 +73,7 @@ function liveFact(r: BoardRow) {
   if (!r.landed || r.landed.state !== "yes") return r.landed ? <Fact name="Live" tone="none" value="n/a" title="Not landed, so nothing that runs holds it" testid="board-live" state="n/a" /> : null;
   const v = r.live;
   if (!v || v.state === "unknown") return <Fact name="Live" tone="none" value="no deploy record" title={v?.why} testid="board-live" state="unknown" />;
-  return <Fact name="Live" tone={v.state === "yes" ? "ok" : "none"} value={v.state === "yes" ? `yes · ${v.how}` : `not yet · ${v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
+  return <Fact name="Live" tone={v.state === "yes" ? "ok" : "none"} value={`${v.state === "yes" ? "yes" : "not yet"} · ${v.how === "after step passed" ? "after step" : v.how}`} title={`${v.how} at ${sha(v.at)}`} testid="board-live" state={v.state} />;
 }
 
 function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
@@ -90,14 +91,15 @@ function Card({ r, below }: { r: BoardRow; below: Board["rows"] }) {
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
           <GitBranch className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
           <span className="min-w-0 truncate font-mono text-fg" title={r.branch}>{short(r.branch)}</span>
-          <span className="shrink-0 font-mono text-micro text-muted" data-testid="board-head">{sha(r.head)}</span>
+          {r.head && <span className="shrink-0 font-mono text-micro text-muted" data-testid="board-head">{sha(r.head)}</span>}
           {!!r.behind && r.landed?.state !== "yes" && <span className="shrink-0 text-micro text-warn">{r.behind} behind {r.base ?? "the base"}</span>}
-          {r.worktree === "gone" && <span className="shrink-0 text-micro text-faint">worktree removed</span>}
+          {r.worktree === "gone" && !branchGone(r) && <span className="shrink-0 text-micro text-faint">worktree removed</span>}
         </div>
       ) : (
         <p className="text-caption text-muted">{reviewing ? <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span></> : "no branch of its own"}{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>
       )}
-      {r.branch && (
+      {r.branch && branchGone(r) && <p className="text-caption text-muted" data-testid="board-gone">{r.reviews.length > 0 && <>reviews <span className="font-mono text-fg">{r.reviews.map(short).join(", ")}</span> · </>}Branch removed at its end; nothing left to land{r.ended ? ` · ended ${ago(r.ended)}` : ""}</p>}
+      {r.branch && !branchGone(r) && (
         <div className="grid grid-cols-2 gap-1.5 @[30rem]:grid-cols-4">
           {checksFact(r)}{reviewFact(r)}{landedFact(r)}{liveFact(r)}
         </div>

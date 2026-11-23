@@ -69,14 +69,16 @@ describe("boardText", () => {
       row({ id: "refd1", review: { by: "rev1", title: "Review", how: "named", state: "completed", verdict: "refused", line: "Verdict: refused. It breaks X.", tip: "c".repeat(40), current: true, at: 3 } }),
       row({ id: "land1", landed: { state: "yes", how: "patch" }, live: { state: "yes", at: "d".repeat(40), how: "after step passed" } }),
       row({ id: "rev1", branch: null, checks: null, landed: null, reviews: ["keel/lane"] }),
+      row({ id: "gone1", branch: "keel/gone", head: null, landed: { state: "unknown", why: "its branch is gone" } }),
     ]));
     const lines = text.split("\n");
-    expect(lines[0]).toBe("Work board: 4 agents (1 working, 3 done); base main at bbbbbbbbb.");
+    expect(lines[0]).toBe("Work board: 5 agents (1 working, 4 done); base main at bbbbbbbbb.");
     // A fact that says nothing (no review, a worktree removed) is left out of a board line.
     expect(lines[1]).toBe('work1 working "Working lane" · keel/lane@ccccccccc · checks passed typecheck; not run unit · not landed (2 commits)');
     expect(lines[2]).toContain('review refused by rev1 ("Review"), reviewer wrote: "Verdict: refused. It breaks X."');
     expect(lines).toContain("Landed (and live where a deploy is known): land1.");
     expect(lines).toContain("Reviewers done: rev1 (keel/lane).");
+    expect(lines).toContain("Done, branch removed: gone1.");
     // Small: a coordinator reads it in a few hundred tokens.
     expect(text.length).toBeLessThan(700);
   });

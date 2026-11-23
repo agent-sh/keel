@@ -12,7 +12,7 @@ import { git } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, TreeRun } from "./facts.ts";
-import { landedFrom, liveFrom, pickReview, queueLanded, type Board, type BoardRow, type Deploy, type Landed } from "./rules.ts";
+import { landedFrom, liveFrom, pickReview, queueLanded, toLand, type Board, type BoardRow, type Deploy, type Landed } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -192,7 +192,7 @@ export class WorkBoard {
     });
     // Live agents first, then work not landed yet, then the rest; newest first within each (as Claude Code's
     // task list keeps finished work below running work).
-    const rank = (r: BoardRow) => (r.state === "running" || r.state === "waiting" ? 0 : r.landed && r.landed.state !== "yes" && r.landed.state !== "nothing" ? 1 : 2);
+    const rank = (r: BoardRow) => (r.state === "running" || r.state === "waiting" ? 0 : toLand(r) ? 1 : 2);
     const ordered = [...rows.values()].sort((a, b) => rank(a) - rank(b) || b.created - a.created);
     return { session_id: root, rows: ordered, total: facts.total, repos, at: Date.now(), took_ms: Math.round(performance.now() - t0) };
   }

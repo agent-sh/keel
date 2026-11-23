@@ -336,6 +336,12 @@ export function rowLine(r: BoardRow, full = false): string {
   return parts.join(" · ");
 }
 
+// A finished agent whose branch and worktree are gone (removed at its end: it kept no commit, or its
+// work was taken): nothing of it is left to land.
+export const branchGone = (r: BoardRow) => !!r.branch && !r.head && r.worktree === "gone" && !live(r.state);
+// Work a coordinator still owes a landing: a branch not landed, or one git could not read.
+export const toLand = (r: BoardRow) => !!r.landed && r.landed.state !== "yes" && r.landed.state !== "nothing" && !branchGone(r);
+
 // The board in a few hundred tokens: each agent that needs the coordinator in a line of its own (one that
 // works, or whose branch is not landed), the rest by their ids on one line. `all`: every row in full;
 // `agent`: that row alone, in full.
@@ -350,16 +356,18 @@ export function boardText(b: Board, o: { all?: boolean; agent?: string } = {}): 
   const repo = b.repos.length === 1 ? b.repos[0]! : undefined;
   const noChecks = b.rows.some((r) => r.checks?.state === "none") && !b.rows.some((r) => r.checks && r.checks.state !== "none");
   const out = [`Work board: ${b.total} ${b.total === 1 ? "agent" : "agents"} (${[...counts].map(([k, n]) => `${n} ${k}`).join(", ")})${repo ? `; base ${repo.base ?? "?"} at ${short(repo.base_tip)}${repo.deploys.length ? `, live at ${repo.deploys.map((d) => `${short(d.sha)} (${d.how})`).join(", ")}` : ""}` : ""}${noChecks ? "; the repository names no checks" : ""}.`];
-  const attention = (r: BoardRow) => o.all || live(r.state) || (r.landed && r.landed.state !== "yes" && r.landed.state !== "nothing") || (r.landed?.state === "yes" && r.live?.state === "no");
+  const attention = (r: BoardRow) => o.all || live(r.state) || toLand(r) || (r.landed?.state === "yes" && r.live?.state === "no");
   const shown = b.rows.filter(attention);
   out.push(...shown.map((r) => rowLine(r)));
   const rest = b.rows.filter((r) => !attention(r));
   const landedIds = rest.filter((r) => r.landed?.state === "yes").map((r) => r.id);
   const reviewers = rest.filter((r) => !r.branch && r.reviews.length).map((r) => `${r.id} (${r.reviews.join(", ")})`);
-  const other = rest.filter((r) => r.landed?.state !== "yes" && !(!r.branch && r.reviews.length)).map((r) => r.id);
+  const gone = rest.filter((r) => branchGone(r)).map((r) => r.id);
+  const other = rest.filter((r) => r.landed?.state !== "yes" && !branchGone(r) && !(!r.branch && r.reviews.length)).map((r) => r.id);
   if (landedIds.length) out.push(`Landed${rest.some((r) => r.live?.state === "yes") ? " (and live where a deploy is known)" : ""}: ${landedIds.join(", ")}.`);
   if (reviewers.length) out.push(`Reviewers done: ${reviewers.join(", ")}.`);
   if (other.length) out.push(`Done with no branch to land: ${other.join(", ")}.`);
+  if (gone.length) out.push(`Done, branch removed: ${gone.join(", ")}.`);
   if (b.total > b.rows.length) out.push(`${b.total - b.rows.length} older agents are not on the board.`);
   if (!o.all && rest.length) out.push("all: true lists every row; agent: <id> shows one row in full.");
   return out.join("\n");

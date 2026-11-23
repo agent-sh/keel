@@ -92,7 +92,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const b = await board();
   expect(b.total).toBe(5);
   const a = rowOf(b, alpha.id), be = rowOf(b, beta.id), g = rowOf(b, gamma.id), rv = rowOf(b, refuser.id);
-  expect(a).toMatchObject({ state: "completed", branch: alpha.branch, head: alphaTip, landed: { state: "yes", how: "patch" }, live: { state: "yes", at: main, how: "after step" } });
+  expect(a).toMatchObject({ state: "completed", branch: alpha.branch, head: alphaTip, landed: { state: "yes", how: "patch" }, live: { state: "yes", at: main, how: "after step passed" } });
   expect(a.checks).toEqual({ state: "known", passed: ["notes"], failed: [], notRun: [] });
   expect(a.review).toMatchObject({ by: approver.id, how: "task", verdict: "approved", line: "LAND: yes", current: true });
   expect(be).toMatchObject({ state: "completed", head: betaTip, landed: { state: "no", missing: 1 }, live: null });
@@ -108,6 +108,7 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   expect(text).toContain(`${gamma.id} working \\"Lane gamma\\"`);
   expect(text).toContain(`review refused by ${refuser.id}`);
   expect(text).toContain(`Landed (and live where a deploy is known): ${alpha.id}.`);
+  expect(text).toContain(`Done, branch removed: ${approver.id}.`);
   expect(text.length).toBeLessThan(2400);
 
   // The Board panel, at the desktop size and the phone's, in both themes.
@@ -123,6 +124,8 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await expect(card(beta.id).getByTestId("board-verdict")).toContainText(refusal);
   await expect(card(beta.id).getByTestId("board-reviewer")).toContainText(`Reviewer ${refuser.title} wrote:`);
   await expect(card(gamma.id).getByTestId("board-live")).toHaveAttribute("data-state", "n/a");
+  // The reviewer with a worktree of its own kept no commit: its branch went at its end, and nothing of it waits to land.
+  await expect(card(approver.id).getByTestId("board-gone")).toBeVisible();
   await expect(card(gamma.id)).toHaveAttribute("data-state", "running");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "none");
   await page.mouse.move(0, 0);
