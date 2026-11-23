@@ -261,3 +261,67 @@ test("a server that refuses the POST and names no address the older way is tried
     s.stop();
   }
 }, 20_000);
+
+// The server numbers its requests apart from Keel's: its question can carry the
+// id of Keel's own call in flight. Whatever it sends back to Keel's answer is
+// no message (Codex fixed the same, openai/codex#63075): only 202 or 204 takes
+// it, anything else is the server's failure, and the call gets its own result.
+test("what a server sends back to Keel's answer never answers Keel's own request of the same number", async () => {
+  const replies = ["409", "200", "sse", "202", "204"] as const;
+  let mode: (typeof replies)[number] = "409";
+  let release = () => {};
+  const enc = new TextEncoder();
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const m = await req.json() as any;
+      if (m.method === "initialize") return json({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "same-ids" } } });
+      // The call's stream asks a question with the call's own id, and answers once Keel's answer was posted.
+      if (m.method === "tools/call") {
+        const body = new ReadableStream<Uint8Array>({
+          start(ctl) {
+            ctl.enqueue(enc.encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: m.id, method: "elicitation/create", params: { message: "ok?", requestedSchema: { type: "object", properties: {} } } })}\n\n`));
+            release = () => setTimeout(() => {
+              ctl.enqueue(enc.encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: `call ${m.id}` }] } })}\n\n`));
+              ctl.close();
+            }, 100);
+          },
+        });
+        return new Response(body, { headers: { "content-type": "text/event-stream" } });
+      }
+      if (m.method) return new Response(null, { status: 202 }); // a notification
+      // Keel's answer to the question: what comes back names Keel's call.
+      release();
+      const wrong = { jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: "not the call's result" }] } };
+      if (mode === "409") return json({ jsonrpc: "2.0", id: m.id, error: { code: -32600, message: "conflict" } }, 409);
+      if (mode === "200") return json(wrong);
+      if (mode === "sse") return new Response(`data: ${JSON.stringify(wrong)}\n\n`, { headers: { "content-type": "text/event-stream" } });
+      return new Response(null, { status: Number(mode) });
+    },
+  });
+  const refused: string[] = [];
+  const c = await McpClient.connect({ kind: "http", url: server.url.href, headers: {} }, 5000, "legacy");
+  c.onAnswerRefused = (r) => refused.push(`${r.method} ${r.session}: ${r.why}`);
+  try {
+    for (const r of replies) {
+      mode = r;
+      const dropped: string[] = [];
+      const out = await c.callTool("ask", {}, undefined, 5000, undefined, undefined, {
+        session: "s1",
+        ask: async () => ({ action: "accept", content: {} }),
+        dropped: (method, why) => dropped.push(`${method}: ${why}`),
+      });
+      expect((out.content?.[0] as any)?.text).toMatch(/^call \d+$/);
+      const ack = r === "202" || r === "204";
+      if (!ack) await until(() => dropped.length === 1, "the call told of the refused answer");
+      expect(dropped.length).toBe(ack ? 0 : 1);
+      if (!ack) expect(dropped[0]).toContain(`HTTP ${r === "409" ? 409 : 200}`);
+    }
+    expect(refused.length).toBe(3);
+    expect(refused[0]).toStartWith("elicitation/create s1: HTTP 409");
+  } finally {
+    c.close();
+    server.stop(true);
+  }
+});

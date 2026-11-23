@@ -802,6 +802,8 @@ export class McpManager {
           e.error = why;
           this.told(e, "failed", why);
         };
+        // An answer to a request of the server's own that it did not take: its failure, in the scope of the call that asked.
+        client.onAnswerRefused = (r) => this.errors.capture("server", new Error(`MCP server ${name} did not take Keel's answer to its ${r.method}: ${r.why}`), { mcp: name, at: "mcp answer", ...(r.session ? { session: r.session } : {}) });
         // A server without the tools capability may still answer; one that
         // does not just has no tools (unless it went away meanwhile).
         let tools: McpTool[];

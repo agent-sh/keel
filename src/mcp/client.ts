@@ -310,7 +310,7 @@ export class McpClient {
       return;
     }
     // The server asks whether the client is there (2025-11-25 Ping: an empty result, promptly).
-    if (msg.method === "ping" && msg.id !== undefined) return this.write({ jsonrpc: "2.0", id: msg.id, result: {} });
+    if (msg.method === "ping" && msg.id !== undefined) return this.answer({ jsonrpc: "2.0", id: msg.id, result: {} }, "ping");
     if (msg.method && msg.id !== undefined) return void this.serverRequest(msg, origin);
     if (msg.method === "notifications/tools/list_changed") this.onListChanged?.();
     else if (msg.method === "notifications/resources/list_changed") this.onResources?.({ list: true });
@@ -337,11 +337,11 @@ export class McpClient {
   //   session's folder then.
   outside?: InputHandler;
   private async serverRequest(msg: any, origin?: number | string) {
-    const reply = (body: object) => this.write({ jsonrpc: "2.0", id: msg.id, ...body });
+    let asker: Pending | undefined;
+    const reply = (body: object) => this.answer({ jsonrpc: "2.0", id: msg.id, ...body }, String(msg.method), asker?.input);
     const refuse = (code: number, message: string) => reply({ error: { code, message } });
     const method = String(msg.method);
     if (!Object.hasOwn(offered(this.t, this.era), method.split("/")[0]!)) return refuse(-32601, `keel does not support ${method}`);
-    let asker: Pending | undefined;
     if (origin !== undefined) asker = this.pending.get(origin)?.input ? this.pending.get(origin) : undefined;
     else {
       const calls = [...this.pending.values()].filter((p) => p.input); // oldest first
@@ -401,6 +401,24 @@ export class McpClient {
     } else {
       this.post(msg).catch(() => {});
     }
+  }
+
+  // Keel's answer to a request of the server's own (a ping, a question, the
+  // folders). Over HTTP the server takes it with 202 or 204 and nothing else
+  // (2025-11-25 transports: a posted response is accepted with 202 and no
+  // body). Whatever else it sends back is no message: the server numbers its
+  // requests apart from Keel's, so a body with an id could be taken as the
+  // answer to Keel's own request of that number. Any other status is the
+  // server's failure, said to its owner and to the call the request was for.
+  onAnswerRefused?: (r: { method: string; why: string; session?: string }) => void;
+  private answer(msg: { jsonrpc: "2.0"; id: unknown; result?: unknown; error?: unknown }, method: string, call?: CallInput) {
+    if (this.t.kind === "stdio") return this.write(msg);
+    this.post(msg).catch((e) => {
+      if (this.closed) return;
+      const why = (e as Error).message;
+      call?.dropped?.(method, `the server did not take Keel's answer (${why})`);
+      try { this.onAnswerRefused?.({ method, why, ...(call ? { session: call.session } : {}) }); } catch {}
+    });
   }
 
   private failAll(e: Error) {
@@ -564,6 +582,13 @@ export class McpClient {
     const sid = res.headers.get("mcp-session-id");
     if (sid && this.era === "legacy") this.sessionId = sid;
     if (res.status === 202 || res.status === 204) return;
+    // An answer Keel posted: nothing in the reply is read (see answer). The
+    // older transport takes a POST with any 2xx, its messages come on its stream.
+    if (msg.id !== undefined && msg.method === undefined) {
+      void res.body?.cancel().catch(() => {});
+      if (t.sse && res.ok) return;
+      throw new Error(`HTTP ${res.status} to a posted answer, where 202 or 204 is the acknowledgement`);
+    }
     const ctype = res.headers.get("content-type") ?? "";
     if (!res.ok) {
       const text = await res.text().catch(() => "");
