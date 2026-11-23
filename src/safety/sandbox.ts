@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { atCwd, contains, realOf } from "../core/paths.ts";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
 import type { SessionPerm } from "./gate.ts";
 import { IN_SANDBOX, proxyDir, RELAY_START, relayFiles, viewOnThread } from "./net-proxy.ts";
@@ -99,17 +99,24 @@ export function inScope(argv: string[], props: string[]): string[] {
 // (sparse checkout does, also long after a file was planted). A confined
 // command must not write any of them, for its own checkout or another's.
 //
-// A read-only bind does it for a path that exists, so the ones that are
-// missing are made first, empty: a hooks folder a template left out, a
-// config.worktree nobody wrote yet. And a path is only safe when it cannot be
-// swapped: a folder that is no mount point can be renamed away and a copy
-// put in its place, with the read-only files inside it left behind. So every
-// folder between the writable root and a protected file is a mount point of
-// its own (a bind onto itself), which the kernel refuses to rename or remove.
+// They are closed by the folder that holds them, never by a bind of the file
+// alone. A bind of a file holds the file it found when the command started: git
+// rewrites its config by writing a new file and renaming it over the old one
+// (git config, git push -u, git remote add), and the kernel then takes the
+// bind away from the name in every sandbox that had it (a mount on a name
+// replaced from outside is detached). The name is then the new file, in a
+// folder the command can write, for as long as the command runs: a terminal or
+// a dev server of the session. A read-only bind of the folder holds whatever
+// the folder holds, now and later, and a mount point of the sandbox's own is
+// never renamed or removed from inside it.
 //
-// Nothing pins a symbolic link. A git directory whose hooks or config is a
-// link (or anything but a plain folder or file) is read-only as a whole:
-// commits fail there with "Read-only file system" until the owner runs them.
+// So a git directory whose top holds that code is read-only as a whole: a
+// normal clone's `.git`, and every submodule's under `modules`. git status,
+// diff, log, show, blame and grep work there; a commit, staging, a checkout and
+// a branch fail with "Read-only file system" until the owner runs them, or a
+// session in a worktree of the repository does (below). A linked worktree's own
+// directory holds no hooks and no config of the repository: it stays writable
+// for its commits, see linkedGitBinds.
 
 const kindOf = (p: string): "dir" | "file" | "other" | "none" => {
   try {
@@ -131,17 +138,6 @@ function plainFile(p: string): boolean {
 const ro = (p: string) => ["--ro-bind", p, p];
 const pin = (p: string) => ["--bind", p, p];
 
-// One git directory's hooks, config and config.worktree, read-only. Null when
-// one of them cannot be pinned.
-function codeOf(dir: string): string[] | null {
-  const hooks = join(dir, "hooks"), config = join(dir, "config"), own = join(dir, "config.worktree");
-  return plainDir(hooks) && plainFile(config) && plainFile(own) ? [...ro(hooks), ...ro(config), ...ro(own)] : null;
-}
-
-// The git directories one profile pins one by one (the repository's, its
-// worktrees', its submodules'). Past this many the rest are read-only as a whole.
-const GIT_DIRS_MAX = 256;
-
 // Where a path that exists is, as the kernel walks it (realOf: never by the path's text). It throws for one that is
 // not there, as realpath does.
 function there(p: string): string {
@@ -150,77 +146,14 @@ function there(p: string): string {
   return r;
 }
 
-// A git directory inside the writable folder: a normal clone's `.git`, or a
-// submodule's under `modules`. It stays writable (a commit writes it) with
-// its code read-only, and so is the code of what lives inside it: each
-// submodule's git directory, and each linked worktree's directory. A linked
-// worktree checked out anywhere outside `root` is another checkout's, and
-// read-only as a whole. One whose folder is inside `root` is the session's
-// own (it made it, or it can write that folder and the `.git` file in it
-// anyway): its directory stays writable and nothing in it is a mount point,
-// so the session can also remove a worktree it made.
-function guardGitDir(dir: string, root: string, budget: { left: number }): string[] {
-  const code = budget.left-- > 0 ? codeOf(dir) : null;
-  if (!code) return ro(dir);
-  const out = [...pin(dir), ...code];
-  const worktrees = join(dir, "worktrees");
-  const kind = kindOf(worktrees);
-  if (kind === "dir") {
-    out.push(...pin(worktrees));
-    for (const name of readdirSync(worktrees)) {
-      const wt = join(worktrees, name);
-      const k = kindOf(wt);
-      if (k === "file") continue;
-      if (k !== "dir") return ro(dir);
-      if (!within(root, wt)) out.push(...ro(wt));
-    }
-  } else if (kind !== "none") return ro(dir);
-  const modules = modulesOf(join(dir, "modules"), root, budget);
-  return modules ? [...out, ...modules] : ro(dir);
-}
-
-// Whether the linked worktree a `worktrees/<name>` directory belongs to is
-// checked out inside `root`. Its `gitdir` file names the folder's `.git`; a
-// command can rewrite that file only for a directory it could already write.
-function within(root: string, wt: string): boolean {
-  try {
-    const folder = there(dirname(atCwd(wt, readFileSync(join(wt, "gitdir"), "utf8").trim())));
-    return folder === root || folder.startsWith(root + sep);
-  } catch {
-    return false; // a folder that is gone: not the session's
-  }
-}
-
-// The submodules' git directories under a `modules` folder (a submodule named
-// a/b lives in modules/a/b). Null when the folder itself cannot be pinned.
-function modulesOf(modules: string, root: string, budget: { left: number }): string[] | null {
-  const kind = kindOf(modules);
-  if (kind === "none") return [];
-  if (kind !== "dir") return null;
-  const out = pin(modules);
-  for (const name of readdirSync(modules)) {
-    const d = join(modules, name);
-    const k = kindOf(d);
-    if (k === "file") continue;
-    if (k !== "dir") return null;
-    if (budget.left <= 0) out.push(...ro(d));
-    else if (kindOf(join(d, "HEAD")) === "file") out.push(...guardGitDir(d, root, budget));
-    else out.push(...(modulesOf(d, root, (budget.left--, budget)) ?? ro(d))); // a part of a longer name
-  }
-  return out;
-}
-
-// A normal clone: `.git` is a folder of the workspace. Anything else there (a
-// link, a file that is no worktree pointer) gets no binding: what it points
+// A normal clone: `.git` is a folder of the workspace, read-only as a whole
+// (its submodules' and its worktrees' directories with it). Anything else there
+// (a link, a file that is no worktree pointer) gets no binding: what it points
 // at is outside the workspace and stays read-only, and inside it is the
 // session's own folder.
 function cloneGitBinds(workspace: string): string[] {
   const git = join(workspace, ".git");
-  try {
-    return kindOf(git) === "dir" ? guardGitDir(git, there(workspace), { left: GIT_DIRS_MAX }) : [];
-  } catch {
-    return ro(git); // a listing that failed halfway: closed
-  }
+  return kindOf(git) === "dir" ? ro(git) : [];
 }
 
 // A linked worktree keeps git's files outside its folder: its own directory
@@ -245,10 +178,23 @@ function cloneGitBinds(workspace: string): string[] {
 //   the code (hooks, config, config.worktree), the main checkout's HEAD, index
 //   and in-progress state, the other worktrees' directories, the submodules.
 //   A name that is not there cannot be made: nothing a confined command does
-//   at the top reaches the repository.
+//   at the top reaches the repository. Every mount point there is a folder of
+//   Keel's own, which no git outside the sandbox renames, and each plain file
+//   is a link read through one read-only bind of the whole top: a config that
+//   git outside rewrites by a rename is the new file, read-only, for as long
+//   as the command runs.
 // - The worktree's own directory is writable, apart from its config.worktree
 //   and the two files that say where it is. Its submodules' git directories
-//   are guarded like a clone's.
+//   are read-only as a whole, as a clone's are.
+//
+//   Those three are binds of a file in a folder a commit must write, the one
+//   place where the protection is the file's and not the folder's: git outside
+//   the sandbox rewrites them only by `git config --worktree` or
+//   `git sparse-checkout` in that worktree, and `git worktree repair` or
+//   `move`. A command already running then can write the new file until it
+//   ends; the next command gets a bind of it again. config.worktree is read
+//   only once the repository's config (read-only above) turns per-worktree
+//   config on, and Keel's own git ignores what it could name (src/core/git.ts).
 // - `packed-refs` is the one file at the top that git rewrites from a linked
 //   worktree, and it takes a lock beside it for every ref it deletes, the
 //   ones of its own directory (CHERRY_PICK_HEAD, MERGE_HEAD) included. It is
@@ -396,10 +342,14 @@ export function linkedGitBinds(workspace: string): string[] {
   if (!at) return [];
   const { dot, own, common } = at;
   try {
-    // The session's own config.worktree, made empty when missing (see codeOf).
+    // The session's own config.worktree, made empty when missing: a bind needs
+    // a file, and one planted before the repository turns per-worktree config
+    // on would be read from then on.
     if (!plainFile(join(own, "config.worktree"))) return [];
-    const modules = modulesOf(join(own, "modules"), there(workspace), { left: GIT_DIRS_MAX });
-    if (!modules) return [];
+    // Its submodules' git directories, each with a config and hooks at its top: read-only as a whole.
+    const subs = kindOf(join(own, "modules"));
+    if (subs !== "none" && subs !== "dir") return [];
+    const modules = subs === "dir" ? ro(join(own, "modules")) : [];
     // The logs of the shared refs are a store git makes at a first commit. A
     // bare repository has none, and nothing can be made at the top from
     // inside: the folder is made here (empty; git decides by itself what it
@@ -467,11 +417,13 @@ export function gitShut(workspace: string): string | undefined {
     const kind = kindOf(join(workspace, ".git"));
     if (kind === "none") {
       for (let dir = dirname(workspace); ; dir = dirname(dir)) {
-        if (kindOf(join(dir, ".git")) !== "none") return `this session's folder is inside the repository at ${dir}, and that repository's git directory is outside the session's folder, so it is read-only here. Commits and every other git write fail. A session opened at ${dir} can commit`;
+        const up = kindOf(join(dir, ".git"));
+        if (up !== "none") return `this session's folder is inside the repository at ${dir}, and that repository's git directory is outside the session's folder, so it is read-only here. Commits and every other git write fail. ${up === "dir" ? `A session in a worktree of ${dir}` : `A session opened at ${dir}`} can commit`;
         if (dir === dirname(dir)) return undefined;
       }
     }
-    if (kind !== "dir" && !linkedGitBinds(workspace).length) return "the sandbox could not open this worktree's git directories, so they are read-only here and commits fail: their layout is not the one git makes for a linked worktree, or the repository's git directory holds more folders than a sandbox can bind";
+    if (kind === "dir") return "this session's folder is the repository's main checkout, and its git directory is read-only in the sandbox as a whole: the repository's config and hooks are in it, and git runs what they name outside the sandbox. git status, diff, log and show work; staging, commits, checkouts, branches and stashes fail. A session in a worktree of this repository commits";
+    if (!linkedGitBinds(workspace).length) return "the sandbox could not open this worktree's git directories, so they are read-only here and commits fail: their layout is not the one git makes for a linked worktree, or the repository's git directory holds more folders than a sandbox can bind";
   } catch {} // unreadable: nothing to say
   return undefined;
 }

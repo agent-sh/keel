@@ -700,14 +700,17 @@ table once for every folder it binds, and a home with many toolchains has
 some 40 of them. Small settings files are not bound one by one for that
 reason: they are copies in one folder, bound once.
 
-A session can commit. That needs git's own files to be writable, so the
-profile opens them and keeps read-only what git would run outside the sandbox
-later, for this checkout or another:
+A session in a worktree can commit. That needs git's own files to be
+writable, so the profile opens them and keeps read-only what git would run
+outside the sandbox later, for this checkout or another: the hooks, `config`
+and `config.worktree` of the repository and of its submodules. They are kept
+read-only by the folder that holds them, not by a bind of each file: git
+rewrites a config by writing a new file and renaming it into place (`git
+config`, `git push -u`, a new remote), and a bind of the old file no longer
+covers the name after that. A read-only folder covers whatever it holds, for
+as long as a command runs, so a terminal or a dev server started before such
+a rewrite still cannot write the new config.
 
-- The hooks, `config` and `config.worktree` of the repository and of its
-  submodules. In a checkout's own git directory a hooks folder or a
-  `config.worktree` that is missing is made empty first, so there is always
-  something to keep read-only.
 - A session in a linked worktree gets its own directory in the repository's
   common git directory, and the shared stores there: objects, refs, logs,
   and `reftable`, `lfs` and `rr-cache` when the repository has them.
@@ -725,10 +728,17 @@ later, for this checkout or another:
   read-only too: it steers the main checkout's own git. The worktree's own
   merge, rebase, cherry-pick, revert and bisect keep their state in its own
   directory and work as usual.
-- A session in the main checkout keeps its `.git` writable, the state of its
-  own operations included. The directories of linked worktrees checked out
-  outside its folder are read-only. A worktree it makes inside its folder is
-  its own, to commit in and to remove.
+  Its own `config.worktree` is made empty when it is missing, so there is
+  always something to keep read-only.
+- A session in the main checkout gets its `.git` read-only as a whole: the
+  repository's config and hooks are in it, at the top where git also writes
+  the main checkout's index and `HEAD`. `git status`, `diff`, `log`, `show`,
+  `blame` and `grep` work; staging, commits, checkouts, branches, stashes,
+  `git fetch` and `git worktree add` fail with "Read-only file system", and
+  the command is told that a session in a worktree of the repository commits.
+- A submodule's git directory has its config and hooks at its top too: it is
+  read-only as a whole, from the main checkout and from a worktree. Commits
+  inside a submodule fail in a sandboxed session.
 - The folders that hold those files cannot be renamed away or replaced.
 
 git is told a few things in a sandbox, through the environment
@@ -742,8 +752,7 @@ carries):
 - In a worktree session no gc or maintenance starts after a commit (neither
   can run there), `git fsck` does not report that `packed-refs` is a link,
   which it is in the view, and `git repack` does not write the server info
-  under `info`, which is read-only there. A session in the main checkout
-  runs its gc as always.
+  under `info`, which is read-only there.
 
 What still runs into the read-only config, in every sandboxed session:
 `git config`, `git remote add`, `git branch -u`, `git push -u`, `--track`.
@@ -771,10 +780,11 @@ run outside the sandbox: Claude Code's Bash takes
 first: by you on a card, and in full auto by what settles a high-risk call
 there, which reads the command whole or refuses it.
 
-`git submodule update` of a submodule that is already checked out rewrites
-that submodule's config, which is read-only: it fails in a sandboxed
-session. A first `git submodule update --init` in a linked worktree works,
-and so do commits inside a submodule.
+`git submodule update` of a submodule that is already checked out writes in
+that submodule's git directory, which is read-only: it fails in a sandboxed
+session. A first `git submodule update --init` in a linked worktree that has
+no submodule yet works: the git directories it makes are the session's own
+until the command ends, and read-only from the next command on.
 
 What the sandbox does not stop:
 
@@ -797,14 +807,15 @@ What the sandbox does not stop:
   as a submodule. Keel's own git calls never do (`src/core/git.ts`). So is a
   folder whose `.git` is a symbolic link: nothing pins a link, so such a
   folder gets no git protection and no git access.
-- In the main checkout, `config` and `config.worktree` are single files in a
-  folder the session writes, kept read-only by a bind on each file. When
-  another process replaces one of them while a sandboxed command is still
-  running (`git config`, a new remote, a branch's upstream), that command
-  sees the new file without the bind and can write it until it ends. The
-  shared `config` of a linked worktree's repository has no such gap; the
-  worktree's own `config.worktree`, which git reads only when the
-  repository turns per-worktree config on, has it.
+- A linked worktree's own `config.worktree`, and the `gitdir` and
+  `commondir` files that say where it is, are single files in the folder a
+  commit writes, kept read-only by a bind on each file. When git outside the
+  sandbox replaces one of them while a sandboxed command is still running
+  (`git config --worktree` or `git sparse-checkout` in that worktree, `git
+  worktree repair` or `move`), that command sees the new file without the
+  bind and can write it until it ends. git reads `config.worktree` only once
+  the repository's config, which stays read-only, turns per-worktree config
+  on. The repository's shared `config` and hooks have no such gap.
 - A command that was moved to the background is compared when the call
   returns, not when the command ends.
 - In a repository whose refs are in reftable, the main checkout's `HEAD` is

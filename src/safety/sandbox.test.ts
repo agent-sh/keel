@@ -69,7 +69,9 @@ test("a linked worktree's git directories are writable only when the layout conf
     // A session in a folder inside a repository: the git directory is above it.
     mkdirSync(join(main, "pkg/deep"), { recursive: true });
     expect(gitShut(join(main, "pkg/deep"))).toContain(`this session's folder is inside the repository at ${main}`);
-    expect([gitShut(main), gitShut(root)]).toEqual([undefined, undefined]);
+    // The main checkout: its git directory is read-only as a whole, and the session is told so.
+    expect(gitShut(main)).toContain("this session's folder is the repository's main checkout, and its git directory is read-only in the sandbox as a whole");
+    expect(gitShut(root)).toBeUndefined();
     // Only the worktree's own config.worktree is made (empty): nothing is added to the shared directory.
     expect(readFileSync(join(common, "worktrees/wt/config.worktree"), "utf8")).toBe("");
     for (const absent of ["config.worktree", "modules", "keel-sandbox"]) expect(existsSync(join(common, absent))).toBe(false);
@@ -131,7 +133,8 @@ const commit = "git -c user.name=k -c user.email=k@k commit -q --allow-empty -m 
 // What a repository's files run outside the sandbox later is read-only for a
 // confined command, in a linked worktree and in a normal clone: the hooks
 // (also when the folder was missing), the config, and every config.worktree
-// (also before the repository turns per-worktree config on).
+// (also before the repository turns per-worktree config on). A normal clone's
+// git directory is read-only as a whole.
 test.skipIf(!sandboxStatus().available)("a confined command cannot plant code for git to run outside the sandbox", () => {
   const root = scratch();
   try {
@@ -148,14 +151,12 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
     ];
     for (const from of [wt, main]) {
       const r = run(from, [commit, ...plant(common).map((c, i) => `(${c}) 2>/dev/null || echo refused-${i}`)].join("; "));
-      expect(r.out).toContain("committed");
-      // (The main checkout may start a submodule: its last line is the one thing it is let do.)
-      for (let i = 0; i < (from === wt ? 6 : 5); i++) expect(r.out).toContain(`refused-${i}`);
-      // From the worktree nothing was made at the top, a hooks folder included.
-      if (from === wt) for (const absent of ["hooks", "config.worktree", "modules"]) expect(existsSync(join(common, absent))).toBe(false);
+      // A worktree commits; the main checkout's git directory is read-only as a whole (its config is in it).
+      expect([from, r.out.includes("committed")]).toEqual([from, from === wt]);
+      for (let i = 0; i < 6; i++) expect(r.out).toContain(`refused-${i}`);
+      // Nothing was made at the top, a hooks folder included.
+      for (const absent of ["hooks", "config.worktree", "modules"]) expect(existsSync(join(common, absent))).toBe(false);
     }
-    expect(existsSync(join(common, "hooks/post-checkout"))).toBe(false);
-    expect(readFileSync(join(common, "config.worktree"), "utf8")).toBe("");
     expect(existsSync(join(common, "worktrees/other/config.worktree"))).toBe(false); // that whole directory is read-only
     // The worktree's own pointer, its own config.worktree and where it says it is.
     const own = run(wt, `(echo x > .git) 2>/dev/null || echo refused-pointer; for f in config.worktree gitdir commondir; do (echo x > ${common}/worktrees/wt/$f) 2>/dev/null || echo refused-$f; done`);
@@ -167,22 +168,19 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
     expect(swapped.out).toBe("refused-move\nrefused-remove\nrefused-swap\nrefused-link\n");
     expect(readFileSync(join(wt, ".git"), "utf8")).toBe(pointer);
 
-    // A normal clone's git directory cannot be swapped for a copy: renamed
-    // away, the read-only files would stay behind in the old one.
-    const swap = run(main, "mv .git old 2>&1; cp -r .git copy && mv .git/hooks .git/hooks2 2>&1; mv .git/worktrees .git/w2 2>&1; ls -d .git/hooks .git/worktrees");
-    expect(swap.out).toContain(".git/hooks\n.git/worktrees");
-    expect(swap.out.match(/Device or resource busy/g)).toHaveLength(3);
-    expect(existsSync(join(main, "old"))).toBe(false);
-    // Nor replaced by a repository the session made, or removed as a folder.
+    // A normal clone's git directory cannot be swapped for a copy, replaced by
+    // a repository the session made, or removed as a folder; nothing in it moves.
     const config = readFileSync(join(main, ".git/config"), "utf8");
+    const swap = run(main, "mv .git old 2>&1; mv .git/worktrees .git/w2 2>&1; ls -d .git/worktrees");
+    expect(swap.out).toContain(".git/worktrees");
+    expect(swap.out.match(/Device or resource busy|Read-only file system/g)).toEqual(["Device or resource busy", "Read-only file system"]);
+    expect(existsSync(join(main, "old"))).toBe(false);
     const replaced = run(main, "git init -q fake; (mv -T fake/.git .git) 2>/dev/null || echo refused-swap; (mv .git/config .git/config2) 2>/dev/null || echo refused-config; (rmdir .git) 2>/dev/null || echo refused-rmdir; rm -rf fake copy");
     expect(replaced.out).toBe("refused-swap\nrefused-config\nrefused-rmdir\n");
     expect(readFileSync(join(main, ".git/config"), "utf8")).toBe(config);
-    // A worktree the session makes inside its folder is its own: to commit
-    // in, and to remove in a later command. The one beside the folder is not.
-    const nested = run(main, `git worktree add -q -b inner inner 2>&1 && cd inner && ${commit}`);
-    expect(nested.out).toContain("committed");
-    expect(run(main, `cd inner && ${commit}; cd .. && git worktree remove --force inner && git worktree prune && git worktree list | wc -l`).out).toBe("committed\n3\n");
+    // No worktree is made from the main checkout (its directory would be under
+    // the read-only one), and the one beside the folder is not removed.
+    expect(run(main, "git worktree add -q -b inner inner >/dev/null 2>&1 || echo refused").out).toBe("refused\n");
     expect(existsSync(join(common, "worktrees/inner"))).toBe(false);
     expect(run(main, `git worktree remove --force ${join(root, "other")} >/dev/null 2>&1 || echo refused`).out).toBe("refused\n");
     expect(existsSync(join(common, "worktrees/other/HEAD"))).toBe(true);
@@ -195,6 +193,60 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
     const l = run(linked, "echo ran; (echo x >> .git/config) 2>/dev/null || echo refused-config; (: > .git/refs/heads/zz) 2>/dev/null || echo refused-ref");
     expect(l.out).toBe("ran\nrefused-config\nrefused-ref\n");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// git rewrites a config by writing a new file and renaming it into place. A
+// command that was already running when git outside did that (a terminal, a
+// dev server) still cannot write the config or add a hook: in a main checkout,
+// in a linked worktree, and in a submodule's git directory.
+test.skipIf(!sandboxStatus().available)("the config and the hooks stay read-only for a running command after git outside rewrites the config", async () => {
+  const root = scratch();
+  const tmp = process.env.TMPDIR;
+  process.env.TMPDIR = mkdtempSync(join(tmpdir(), "keel-sandbox-tmp-"));
+  try {
+    const { main, wt, common } = repo(root);
+    writeFileSync(join(main, "f"), "one\n");
+    git(main, "add", "f");
+    git(main, "commit", "-q", "-m", "a file");
+    writeFileSync(join(main, "f"), "two\n");
+    const sub = join(root, "sub");
+    mkdirSync(sub);
+    git(sub, "init", "-q", "-b", "main");
+    git(sub, "commit", "-q", "--allow-empty", "-m", "first");
+    git(main, "submodule", "add", "-q", sub, "libs/sub");
+    const subDir = join(common, "modules/libs/sub");
+    const inode = (f: string) => Bun.spawnSync(["stat", "-c", "%i", f], { stdout: "pipe" }).stdout.toString().trim();
+    // The command starts, git outside sets a value (each config is a new file then), and the command goes on.
+    const during = async (ws: string, inside: string) => {
+      rmSync(join(ws, "go"), { force: true });
+      rmSync(join(ws, "ready"), { force: true });
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${inside}`], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      for (let i = 0; i < 200 && !existsSync(join(ws, "ready")); i++) await Bun.sleep(25);
+      const was = [inode(join(common, "config")), inode(join(subDir, "config"))];
+      git(main, "config", "keel.test", "outside");
+      git(join(main, "libs/sub"), "config", "keel.test", "outside");
+      expect([inode(join(common, "config")), inode(join(subDir, "config"))].map((n, i) => n !== was[i])).toEqual([true, true]);
+      writeFileSync(join(ws, "go"), "");
+      const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+      return out;
+    };
+    const plant = (dir: string) => `(echo '[core]' >> ${dir}/config) 2>/dev/null || echo refused-config; (echo '#!/bin/sh' > ${dir}/hooks/post-checkout) 2>/dev/null || echo refused-hook`;
+    // The main checkout: closed, its submodule's too, and git still reads it.
+    const inMain = await during(main, `${plant(common)}; ${plant(subDir)}; git status --short -uno; git diff --stat | tail -1; git log --oneline | wc -l; git config keel.test`);
+    expect(inMain).toBe("refused-config\nrefused-hook\nrefused-config\nrefused-hook\nA  .gitmodules\n M f\nA  libs/sub\n 1 file changed, 1 insertion(+), 1 deletion(-)\n2\noutside\n");
+    // A linked worktree: the repository's config and hooks are closed, and it still commits.
+    const inWt = await during(wt, `${plant(common)}; ${commit}`);
+    expect(inWt).toBe("refused-config\nrefused-hook\ncommitted\n");
+    for (const dir of [common, subDir]) {
+      expect(readFileSync(join(dir, "config"), "utf8")).not.toContain("[core]\n[core]");
+      expect(readFileSync(join(dir, "config"), "utf8").trimEnd().endsWith("test = outside")).toBe(true);
+      expect(existsSync(join(dir, "hooks/post-checkout"))).toBe(false);
+    }
+  } finally {
+    rmSync(process.env.TMPDIR!, { recursive: true, force: true });
+    process.env.TMPDIR = tmp;
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -437,12 +489,13 @@ test.skipIf(!sandboxStatus().available)("a worktree of a bare repository commits
   }
 });
 
-// A submodule's git directory, inside the main checkout's: its code is
-// read-only as the repository's own, and commits in the submodule still work.
+// A submodule's git directory holds its config and hooks at its top, as a
+// clone's does: read-only as a whole, from the main checkout that holds it and
+// from a worktree whose own directory holds it. The worktree still commits.
 test.skipIf(!sandboxStatus().available)("a submodule's hooks and config are read-only from the checkout that holds it", () => {
   const root = scratch();
   try {
-    const sub = join(root, "sub"), top = join(root, "top");
+    const sub = join(root, "sub"), top = join(root, "top"), wt = join(root, "top-wt");
     mkdirSync(sub);
     git(sub, "init", "-q", "-b", "main");
     git(sub, "commit", "-q", "--allow-empty", "-m", "first");
@@ -450,9 +503,13 @@ test.skipIf(!sandboxStatus().available)("a submodule's hooks and config are read
     git(top, "init", "-q", "-b", "main");
     git(top, "submodule", "add", "-q", sub, "libs/sub");
     git(top, "commit", "-q", "-m", "with a submodule");
-    const dir = join(top, ".git/modules/libs/sub");
-    const r = run(top, `cd libs/sub && ${commit}; (echo '[core]' >> ${dir}/config) 2>/dev/null || echo refused-config; (: > ${dir}/hooks/post-checkout) 2>/dev/null || echo refused-hook; mv ${top}/.git/modules/libs ${top}/.git/modules/x 2>/dev/null || echo refused-move`);
-    expect(r.out).toBe("committed\nrefused-config\nrefused-hook\nrefused-move\n");
+    git(top, "worktree", "add", "-q", "-b", "w", wt);
+    git(wt, "submodule", "update", "-q", "--init");
+    for (const [from, dir] of [[top, join(top, ".git/modules/libs/sub")], [wt, join(top, ".git/worktrees/top-wt/modules/libs/sub")]] as const) {
+      expect(existsSync(join(dir, "HEAD"))).toBe(true);
+      const r = run(from, `(cd libs/sub && ${commit}) >/dev/null 2>&1 || echo refused-commit; (echo '[core]' >> ${dir}/config) 2>/dev/null || echo refused-config; (: > ${dir}/hooks/post-checkout) 2>/dev/null || echo refused-hook; mv ${dir} ${dir}-x 2>/dev/null || echo refused-move; (${commit}) 2>/dev/null`);
+      expect([from, r.out]).toEqual([from, `refused-commit\nrefused-config\nrefused-hook\nrefused-move\n${from === wt ? "committed\n" : ""}`]);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

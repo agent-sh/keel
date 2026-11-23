@@ -499,20 +499,21 @@ test.skipIf(!sandboxStatus().available)("another checkout is taken only when it 
     // The real one is another checkout of the repository.
     expect(siblings(repo)).toEqual([linked]);
     expect(siblings(linked)).toEqual([repo]);
-    // A command of a main-checkout session writes entries that name the owner's documents, Keel's state, a sibling
-    // project and a folder with a .git file of its own making that points nowhere back.
+    // Entries that name the owner's documents, Keel's state, a sibling project and a folder with a .git file of its
+    // own making that points nowhere back. A command of a main-checkout session cannot write them (the git directory
+    // is read-only in its sandbox); one the owner let out of the sandbox can.
     const forged: [string, string][] = [["docs", join(docs, ".git")], ["state", join(state(), ".git")], ["other", join(other, ".git")], ["spill", join(state(), "spill/.git")]];
     writeFileSync(join(state(), "spill/.git"), "gitdir: /nowhere\n");
-    const made = run(forged.map(([name, to]) => `mkdir -p .git/worktrees/${name} && echo ${to} > .git/worktrees/${name}/gitdir && echo ../.. > .git/worktrees/${name}/commondir && cp .git/HEAD .git/worktrees/${name}/HEAD`).join("; ") + "; echo made", { at: repo });
-    expect(made).toBe("made\n");
+    const forge = forged.map(([name, to]) => `mkdir -p .git/worktrees/${name} && echo ${to} > .git/worktrees/${name}/gitdir && echo ../.. > .git/worktrees/${name}/commondir && cp .git/HEAD .git/worktrees/${name}/HEAD`).join("; ");
+    expect(run(`(${forge}) 2>/dev/null || echo refused`, { at: repo })).toBe("refused\n");
+    expect(Bun.spawnSync(["bash", "-c", forge], { cwd: repo }).exitCode).toBe(0);
     expect(siblings(repo)).toEqual([linked]);
     // The next command sees none of them, and neither does a file tool.
     expect(run(`cat ${join(docs, "tax.txt")} ${join(other, ".env")} ${join(state(), "api-token")} 2>&1 | grep -c 'No such file'; cat ${join(linked, "a.txt")}`, { at: repo })).toBe("3\na\n");
     for (const p of [join(docs, "tax.txt"), join(other, ".env")]) expect([p, shownTo(p, repo).shown]).toEqual([p, false]);
     expect(shownTo(join(linked, "a.txt"), repo).shown).toBe(true);
     // A folder whose .git file points back at an entry is one the command could already write: it is inside the session's folder.
-    const mine = run(`mkdir -p made-wt .git/worktrees/mine && echo "gitdir: $PWD/.git/worktrees/mine" > made-wt/.git && echo "$PWD/made-wt/.git" > .git/worktrees/mine/gitdir; echo ok`, { at: repo });
-    expect(mine).toBe("ok\n");
+    expect(Bun.spawnSync(["bash", "-c", `mkdir -p made-wt .git/worktrees/mine && echo "gitdir: $PWD/.git/worktrees/mine" > made-wt/.git && echo "$PWD/made-wt/.git" > .git/worktrees/mine/gitdir`], { cwd: repo }).exitCode).toBe(0);
     expect(siblings(repo)).toEqual([linked]);
     // A worktree Keel made, in its state, is one of the repository's checkouts only to the session whose agent's it
     // is: another session's worktree of the same repository is that session's.
