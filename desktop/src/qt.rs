@@ -380,10 +380,21 @@ fn heard(start: u64, line: &str) {
             // What the page said it does with the app went with it: the next one says so itself.
             win.gate.borrow_mut().announces(false);
             if win.showing.get() != Showing::App {
-                // The app's own page: put back as it is.
-                (inner.note)("page-stopped", json!({ "window": win.id, "again": true, "status": s("status") }));
+                // The app's own page: put back as it is, three times a minute at most.
+                let wait = win.rec.borrow_mut().own_ended(Instant::now());
+                (inner.note)("page-stopped", json!({ "window": win.id, "again": true, "own": true, "wait_ms": wait.as_millis() as u64, "status": s("status") }));
                 win.showing.set(Showing::Nothing);
-                return (win.ask)(&win, Ask::Lost);
+                if wait.is_zero() {
+                    return (win.ask)(&win, Ask::Lost);
+                }
+                let me = Rc::downgrade(&win);
+                glib::timeout_add_local_once(wait, move || {
+                    // (Put on a page meanwhile, by the daemon's coming or going: nothing more to do.)
+                    if let Some(win) = me.upgrade().filter(|w| w.showing.get() == Showing::Nothing) {
+                        (win.ask)(&win, Ask::Lost);
+                    }
+                });
+                return;
             }
             let next = win.rec.borrow_mut().ended(Instant::now());
             (inner.note)("page-stopped", json!({ "window": win.id, "again": next != Step::Leave, "status": s("status") }));
@@ -391,7 +402,9 @@ fn heard(start: u64, line: &str) {
         }
         ("start", Some(win)) => {
             // The same button, in a window whose page kept ending: it loads the page again.
-            let again = win.rec.borrow_mut().again();
+            // With the daemon away it starts Keel, as it says.
+            let up = *win.link.borrow() == Link::Up;
+            let again = if up { win.rec.borrow_mut().again() } else { None };
             if let Some(watch) = again {
                 // (Watched like any other load: a page that stays silent is left again.)
                 win.renew();
@@ -572,6 +585,7 @@ impl Engine for Qt {
             gate: RefCell::new(Gate::default()),
             away_js: RefCell::new(String::new()),
             rec: RefCell::new(Recovery::default()),
+            bar: RefCell::new(String::new()),
             failed: Cell::new(0),
             size: Cell::new((size.0, size.1, maximized)),
             visible: Cell::new(false),
@@ -621,6 +635,8 @@ struct Win {
     away_js: RefCell<String>,
     /// What is known of a page whose process ended, or that came back and says nothing (view.rs).
     rec: RefCell<Recovery>,
+    /// What the bar said last (`bar_said`).
+    bar: RefCell<String>,
     /// Loads of the daemon's page that failed in a row (`retry_after`).
     failed: Cell<u32>,
     /// Width, height, maximized, as the other program last said.
@@ -720,9 +736,16 @@ impl Win {
                 // One that was loaded again because its process had ended is told so, once.
                 // (Told when the load finished, the word could reach a document whose page
                 // was not listening yet, and was then never said.)
-                if paste && self.showing.get() == Showing::App && self.rec.borrow_mut().spoke() {
-                    self.tell(&json!({ "reloaded": "stopped" }));
-                    (self.inner.note)("told-reloaded", json!({ "window": self.id }));
+                // A page that was left and speaks now is left no more.
+                if paste && self.showing.get() == Showing::App {
+                    let left = self.rec.borrow().stopped();
+                    if self.rec.borrow_mut().spoke() {
+                        self.tell(&json!({ "reloaded": "stopped" }));
+                        (self.inner.note)("told-reloaded", json!({ "window": self.id }));
+                    }
+                    if left {
+                        self.pill_now();
+                    }
                 }
                 self.gate.borrow_mut().announces(saving);
                 self.inner.send(&json!({ "t": "can", "win": self.id, "paste": paste, "saving": saving }));
@@ -790,8 +813,10 @@ impl Win {
     fn pill_now(&self) {
         let link = self.link.borrow().clone();
         let over_page = self.showing.get() == Showing::App;
-        // A page that kept ending: said in the bar, with the button that loads it again.
-        if over_page && self.rec.borrow().stopped() {
+        // A page that kept ending, while the daemon is up: said in the bar, with the button that
+        // loads it again. With the daemon away, the bar says that, and its button starts Keel.
+        if over_page && link == Link::Up && self.rec.borrow().stopped() {
+            self.bar_said("This page keeps stopping", true);
             return self.inner.send(&json!({ "t": "pill", "win": self.id, "show": true, "text": "This page keeps stopping", "dot": false, "start": true, "label": "Load again", "tip": "The page of this window ended several times in a minute, perhaps for want of memory, and was left. Your sessions go on in Keel." }));
         }
         let coming = over_page && link == Link::Up && self.loading.get() && self.slow.get();
@@ -802,7 +827,18 @@ impl Win {
             Link::Up => "",
         };
         let tip = if coming { "" } else { "What the sessions were doing is not known until Keel is back. Messages you send wait and go out then." };
-        self.inner.send(&json!({ "t": "pill", "win": self.id, "show": over_page && (link != Link::Up || coming), "text": text, "dot": link == Link::Restarting || coming, "start": over_page && link == Link::Down, "label": "Start", "tip": tip }));
+        let show = over_page && (link != Link::Up || coming);
+        self.bar_said(if show { text } else { "" }, over_page && link == Link::Down);
+        self.inner.send(&json!({ "t": "pill", "win": self.id, "show": show, "text": text, "dot": link == Link::Restarting || coming, "start": over_page && link == Link::Down, "label": "Start", "tip": tip }));
+    }
+
+    /// What the bar says, for the app's log when it changes (the end-to-end check reads it).
+    fn bar_said(&self, text: &str, start: bool) {
+        if *self.bar.borrow() == text {
+            return;
+        }
+        *self.bar.borrow_mut() = text.to_string();
+        (self.inner.note)("bar", json!({ "window": self.id, "text": text, "start": start }));
     }
 }
 

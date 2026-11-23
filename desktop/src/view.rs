@@ -104,6 +104,8 @@ pub struct Recovery {
     watch: Option<u32>,
     watches: u32,
     renews: u32,
+    /// When the app's own page (the calm page while the daemon is away) was put back, of late.
+    own: Vec<std::time::Instant>,
 }
 
 impl Recovery {
@@ -143,11 +145,26 @@ impl Recovery {
         Some(self.leave())
     }
 
-    /// The page's own first word. Whether it is owed the word that it was loaded again.
+    /// The page's own first word. Whether it is owed the word that it was loaded again. A page
+    /// that was left and speaks now (loaded again some other way: a link, a moved daemon) is
+    /// left no more, and the bar says so no more.
     pub fn spoke(&mut self) -> bool {
         self.watch = None;
         self.renews = 0;
+        self.stopped = false;
         std::mem::take(&mut self.owed)
+    }
+
+    /// The process of the app's own page ended. How long to wait before it is put back: at
+    /// once three times in a minute, then each time a place in the minute is free again, so a
+    /// page that keeps ending is put back no more than three times a minute.
+    pub fn own_ended(&mut self, now: std::time::Instant) -> std::time::Duration {
+        let minute = std::time::Duration::from_secs(60);
+        // (A put-back still to come counts: its time is ahead of now.)
+        self.own.retain(|t| now.saturating_duration_since(*t) < minute);
+        let at = if self.own.len() < RELOADS { now } else { (self.own[self.own.len() - RELOADS] + minute).max(now) };
+        self.own.push(at);
+        at.saturating_duration_since(now)
     }
 
     /// The owner pressed the bar's button. None: the page was not left. Else the page is loaded
@@ -235,6 +252,40 @@ mod tests {
             left.ended(std::time::Instant::now());
         }
         assert!(left.stopped() && left.again().is_some() && !left.spoke());
+    }
+
+    // The review's case: a page that was left and then loaded and spoke kept the bar until its button.
+    #[test]
+    fn a_left_page_that_speaks_is_left_no_more() {
+        let mut r = Recovery::default();
+        let t0 = std::time::Instant::now();
+        for s in 0..4 {
+            r.ended(t0 + std::time::Duration::from_secs(s));
+        }
+        assert!(r.stopped());
+        r.spoke();
+        assert!(!r.stopped());
+        // The button then does nothing of its own: the page is not left.
+        assert_eq!(r.again(), None);
+    }
+
+    // The review's case: the app's own page was put back at once however often its process ended.
+    #[test]
+    fn the_apps_own_page_is_put_back_three_times_a_minute_at_most() {
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        let secs = |d: std::time::Duration| d.as_secs();
+        let mut r = Recovery::default();
+        assert_eq!([secs(r.own_ended(at(0))), secs(r.own_ended(at(1))), secs(r.own_ended(at(2)))], [0, 0, 0]);
+        // The fourth waits for the first to leave the minute, the fifth for the second.
+        assert_eq!(secs(r.own_ended(at(3))), 57);
+        assert_eq!(secs(r.own_ended(at(4))), 57);
+        // Long after, at once again.
+        assert_eq!(secs(r.own_ended(at(300))), 0);
+        // The page's own rule is apart: its endings do not count here.
+        let mut p = Recovery::default();
+        p.ended(at(0));
+        assert_eq!(secs(p.own_ended(at(0))), 0);
     }
 }
 

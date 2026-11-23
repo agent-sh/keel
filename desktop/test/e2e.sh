@@ -661,7 +661,7 @@ wait_for 12 "grep -q '^END' '$D/dropper.out'" || true
 # and the button's load is watched like any other (both engines follow one rule)
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
 PORT_C=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-(python3 "$HERE/listener.py" "$PORT_C" 200 150 health > "$D/silent.out" 2>&1 &)
+(python3 "$HERE/listener.py" "$PORT_C" 200 150 health > "$D/silent.out" 2>&1 & echo $! > "$D/silent.pid")
 sleep 0.5; (export KEEL_URL="http://127.0.0.1:$PORT_C"; launch)
 wait_for 30 '[ "$(windows)" = 1 ]'; wait_for 20 "grep -q 'REQUEST GET / ' '$D/silent.out'" || true; sleep 3
 silents=$(logged page-silent); stops=$(logged page-stopped)
@@ -684,6 +684,44 @@ else
   check "the bar's button, which has the keyboard, loads the page again" "wait_for 20 \"[ \\\"\\\$(grep -c 'REQUEST GET / ' '$D/silent.out')\\\" -gt $loads ]\""
 fi
 check "the button's load is watched too: silent again, the page is loaded anew" "wait_for 20 \"[ \\\"\\\$(logged page-silent)\\\" -gt $silents ]\""
+# The daemon goes away while the page is left: the bar says Keel is not running, with Start, not that the page keeps stopping.
+check "silent twice more, the page is left again" "wait_for 40 \"[ \\\"\\\$(logged page-silent)\\\" -ge $((silents + 3)) ] && last page-silent | grep -q '\\\"left\\\":true'\" && wait_for 5 \"last bar | grep -q 'keeps stopping'\""
+sig -TERM "$(cat "$D/silent.pid")"
+check "the daemon gone, the bar of the page left says Keel is not running, and offers Start" "wait_for 40 \"last bar | grep -q '\\\"text\\\":\\\"Keel is not running\\\"' && last bar | grep -q '\\\"start\\\":true'\""
+shot 13d-left-page-daemon-gone
+
+# --- 11c. a page that was left and then speaks after all (slow, not stopped) is left no more: the bar's words go
+# (The listener's page asks it every second whether to speak, and speaks once the check says so.)
+(eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+PORT_E=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+rm -f "$D/late.speak"
+(python3 "$HERE/listener.py" "$PORT_E" 200 150 health,late "$D/late.speak" > "$D/late.out" 2>&1 & echo $! > "$D/late.pid")
+sleep 0.5; (export KEEL_URL="http://127.0.0.1:$PORT_E"; launch)
+wait_for 30 '[ "$(windows)" = 1 ]'; wait_for 20 "grep -q 'REQUEST GET / ' '$D/late.out'" || true; sleep 3
+silents=$(logged page-silent); stops=$(logged page-stopped)
+for p in $(renderers); do sig -KILL "$p"; done
+wait_for 15 "[ \"\$(logged page-stopped)\" -gt $stops ]" || fail "the page's process did not end for the late page's case"
+check "a page that does not speak in time is loaded anew twice, then left" "wait_for 45 \"[ \\\"\\\$(logged page-silent)\\\" -ge $((silents + 3)) ] && last page-silent | grep -q '\\\"left\\\":true'\" && wait_for 5 \"last bar | grep -q 'keeps stopping'\""
+touch "$D/late.speak"
+check "the page left speaks after all: it is left no more, and the bar's words go" "wait_for 20 \"last bar | grep -q '\\\"text\\\":\\\"\\\"'\""
+shot 13e-left-page-spoke
+sig -TERM "$(cat "$D/late.pid")"
+
+# --- 11d. the app's own page whose process keeps ending is put back three times a minute, then waits
+(eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+PORT_F=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+aways=$(logged away); (export KEEL_URL="http://127.0.0.1:$PORT_F"; launch)
+wait_for 30 '[ "$(windows)" = 1 ]'; wait_for 20 "[ \"\$(logged away)\" -gt $aways ]" || fail "the app's own page did not come for its case"
+for i in 1 2 3 4; do
+  wait_for 20 '[ -n "$(renderers)" ]'; sleep 1
+  stops=$(logged page-stopped); aways=$(logged away)
+  for p in $(renderers); do sig -KILL "$p"; done
+  wait_for 15 "[ \"\$(logged page-stopped)\" -gt $stops ]" || fail "the own page's process did not end (time $i)"
+  [ "$i" -lt 4 ] && wait_for 15 "[ \"\$(logged away)\" -gt $aways ]"
+done
+check "three times it is put back at once, the fourth waits for its place in the minute" "[ \"\$(grep '\"what\":\"page-stopped\"' '$D/shell.jsonl' | grep '\"own\":true' | tail -4 | grep -c '\"wait_ms\":0[,}]')\" = 3 ] && last page-stopped | grep -q '\"wait_ms\":[1-9][0-9]\\{4\\}'"
+sleep 5
+check "and is not put back meanwhile" "[ \"\$(logged away)\" = $aways ]"
 
 # --- 12. an address that is not this machine's: the first page says so, and nothing is started there
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'

@@ -219,6 +219,8 @@ struct Win {
     ask: Rc<dyn Fn(&Rc<Win>, Ask)>,
     /// The away page's last state, said again once that page has loaded.
     away_js: RefCell<String>,
+    /// What the bar said last (`bar_said`).
+    bar: RefCell<String>,
     title: gtk::Label,
     pill: gtk::Box,
     pill_text: gtk::Label,
@@ -309,6 +311,7 @@ impl Win {
             rec: RefCell::new(Recovery::default()),
             ask: ask.clone(),
             away_js: RefCell::new(String::new()),
+            bar: RefCell::new(String::new()),
             title,
             pill,
             pill_text,
@@ -357,10 +360,17 @@ impl Win {
                 // (This engine's paste keys stay its own: it gives no frame the keyboard it was not given.)
                 Some(Asked1::Can { paste, saving }) => {
                     // The page itself speaks: one that was loaded again because its process
-                    // had ended is told so, once, now that it listens.
-                    if paste && win.showing.get() == Showing::App && win.rec.borrow_mut().spoke() {
-                        win.tell(&json!({ "reloaded": "stopped" }));
-                        a(&win, Ask::Note("told-reloaded", json!({ "window": win.id })));
+                    // had ended is told so, once, now that it listens; one that was left is
+                    // left no more.
+                    if paste && win.showing.get() == Showing::App {
+                        let left = win.rec.borrow().stopped();
+                        if win.rec.borrow_mut().spoke() {
+                            win.tell(&json!({ "reloaded": "stopped" }));
+                            a(&win, Ask::Note("told-reloaded", json!({ "window": win.id })));
+                        }
+                        if left {
+                            win.pill_now();
+                        }
                     }
                     win.gate.borrow_mut().announces(saving)
                 }
@@ -521,10 +531,21 @@ impl Win {
             let Some(win) = weak.upgrade() else { return };
             win.gate.borrow_mut().announces(false);
             if win.showing.get() != Showing::App {
-                // The app's own page: put back as it is.
-                (win.ask)(&win, Ask::Note("page-stopped", json!({ "window": win.id, "again": true })));
+                // The app's own page: put back as it is, three times a minute at most.
+                let wait = win.rec.borrow_mut().own_ended(Instant::now());
+                (win.ask)(&win, Ask::Note("page-stopped", json!({ "window": win.id, "again": true, "own": true, "wait_ms": wait.as_millis() as u64 })));
                 win.showing.set(Showing::Nothing);
-                return (win.ask)(&win, Ask::Lost);
+                if wait.is_zero() {
+                    return (win.ask)(&win, Ask::Lost);
+                }
+                let me = Rc::downgrade(&win);
+                glib::timeout_add_local_once(wait, move || {
+                    // (Put on a page meanwhile, by the daemon's coming or going: nothing more to do.)
+                    if let Some(win) = me.upgrade().filter(|w| w.showing.get() == Showing::Nothing) {
+                        (win.ask)(&win, Ask::Lost);
+                    }
+                });
+                return;
             }
             let next = win.rec.borrow_mut().ended(Instant::now());
             (win.ask)(&win, Ask::Note("page-stopped", json!({ "window": win.id, "again": next != Step::Leave })));
@@ -573,8 +594,9 @@ impl Win {
         win.pill_start.connect_clicked(move |_| {
             let Some(win) = weak.upgrade() else { return };
             // The same button, in a window whose page kept stopping: it loads the page again,
-            // watched like any other load.
-            let again = win.rec.borrow_mut().again();
+            // watched like any other load. With the daemon away it starts Keel, as it says.
+            let up = *win.link.borrow() == Link::Up;
+            let again = if up { win.rec.borrow_mut().again() } else { None };
             match again {
                 Some(watch) => {
                     win.view.reload();
@@ -681,26 +703,43 @@ impl Win {
     fn pill_now(&self) {
         let link = self.link.borrow().clone();
         let over_page = self.showing.get() == Showing::App;
-        if over_page && self.rec.borrow().stopped() {
+        // A page that kept stopping, while the daemon is up: with the daemon away, the bar says
+        // that, and its button starts Keel.
+        if over_page && link == Link::Up && self.rec.borrow().stopped() {
             self.pill.set_visible(true);
             self.dot.set_visible(false);
             self.pill.set_tooltip_text(Some("The page stopped several times, or came back and said nothing. Your sessions went on in Keel."));
             self.pill_text.set_label("This page keeps stopping");
             self.pill_start.set_label("Load again");
-            return self.pill_start.set_visible(true);
+            self.pill_start.set_visible(true);
+            return self.bar_said("This page keeps stopping");
         }
         self.pill_start.set_label("Start");
         let coming = over_page && link == Link::Up && self.loading.get() && self.slow.get();
-        self.pill.set_visible(over_page && (link != Link::Up || coming));
+        let show = over_page && (link != Link::Up || coming);
+        self.pill.set_visible(show);
         self.pill_start.set_visible(over_page && link == Link::Down);
         self.dot.set_visible(link == Link::Restarting || coming);
         self.pill.set_tooltip_text(if coming { None } else { Some("What the sessions were doing is not known until Keel is back. Messages you send wait and go out then.") });
-        self.pill_text.set_label(match link {
+        let text = match link {
             Link::Restarting => "Reconnecting",
             Link::Down => "Keel is not running",
             Link::Up if coming => "Opening",
             Link::Up => "",
-        });
+        };
+        self.pill_text.set_label(text);
+        self.bar_said(if show { text } else { "" });
+    }
+
+    /// What the bar says, for the app's log when it changes (the end-to-end check reads it).
+    fn bar_said(&self, text: &str) {
+        if *self.bar.borrow() == text {
+            return;
+        }
+        *self.bar.borrow_mut() = text.to_string();
+        if let Some(me) = self.me.borrow().upgrade() {
+            (self.ask)(&me, Ask::Note("bar", json!({ "window": self.id, "text": text, "start": self.pill_start.is_visible() })));
+        }
     }
 }
 
