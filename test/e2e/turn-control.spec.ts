@@ -60,7 +60,7 @@ test("steer, queue, stop and send now", async ({ page, request }) => {
   await expect(page.getByTestId("assistant-text").last()).toContainText(/after-stop/i);
   await expect(page.getByTestId("queue")).toHaveCount(0);
   await expect(page.getByTestId("turn-end").last()).toContainText("$");
-  await expect(page.getByTestId("session-usage")).toContainText("cached");
+  await expect(page.getByTestId("session-usage")).toHaveAttribute("title", /cached/);
   await shoot(page, "turn-04-sent-now");
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;

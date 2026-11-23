@@ -29,3 +29,17 @@ test("a pane's head shows its tools when it is pointed at or focused", async ({ 
   await head.getByTestId("station-pin").focus();
   await settles(tools, 1);
 });
+
+test("the head says what the session cost, once, and opens Usage", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Head cost" } })).json();
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:say Done." } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.usage.output, { timeout: 30_000 }).toBeGreaterThan(0);
+  await page.goto(`/s/${session.id}`);
+  const usage = page.getByTestId("session-header").getByTestId("session-usage");
+  // One figure: the cost, no token counts beside it (they are in its title).
+  await expect(usage).toHaveText(/^\$\d+\.\d+$/);
+  await expect(usage).toHaveAttribute("title", /in \(\d+% cached\), .* out/);
+  await usage.click();
+  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "usage");
+  await shoot(page, "quiet-02-head-cost");
+});

@@ -455,17 +455,4 @@ export const EffortPicker = memo(function EffortPicker({ sessionId, openSignal }
   );
 });
 
-// Session totals: input (and what of it was cached), output, cost.
-export function UsageSummary({ sessionId }: { sessionId: string }) {
-  const u = useStore((s) => s.sessions[sessionId]?.usage);
-  if (!u) return null;
-  const prompt = u.input + u.cache_read + u.cache_write;
-  return (
-    <span className="k-session-usage text-caption text-faint tabular-nums" data-testid="session-usage" title="This session: tokens in (share read from cache), tokens out, cost at catalog prices">
-      {fmtTokens(prompt)} in{prompt ? ` (${Math.round((100 * u.cache_read) / prompt)}% cached)` : ""} · {fmtTokens(u.output)} out
-      {u.cost !== undefined ? ` · ${fmtCost(u.cost)}` : ""}
-    </span>
-  );
-}
-
 export const QueueIcon = ListPlus;

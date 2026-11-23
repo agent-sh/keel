@@ -15,7 +15,7 @@ import { archive } from "../lib/sessops.ts";
 import { auto } from "../lib/automation.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
 import { SessionSnoozeButton } from "./automation/Snooze.tsx";
-import { PanelsButton } from "./SidePanel.tsx";
+import { openPanel, PanelsButton } from "./SidePanel.tsx";
 import { MachineChip } from "./Fleet.tsx";
 import { iconButton, itemClass, popupClass } from "./ui.tsx";
 
@@ -269,14 +269,18 @@ export function SessionHeader({ session }: { session: Session }) {
         )}
       </div>
       <div data-tools="" className="k-head-tools">
-      {input_ + u.output > 0 && !out.includes("usage") && <span
+      {/* What the session cost, one figure; the tokens behind it are in its title and the Usage panel it opens. */}
+      {input_ + u.output > 0 && !out.includes("usage") && <button
+        type="button"
         data-tool="usage"
-        className="k-session-usage hidden shrink-0 px-2 text-caption tabular-nums text-faint md:inline"
-        title={`Input ${input_.toLocaleString()} tokens (${u.cache_read.toLocaleString()} read from cache), output ${u.output.toLocaleString()}`}
+        className="k-session-usage hidden h-7 shrink-0 items-center rounded-md px-2 text-caption tabular-nums text-faint hover:bg-hover hover:text-fg md:inline-flex"
+        title={`${fmtTokens(input_)} in (${cached}% cached), ${fmtTokens(u.output)} out. Open Usage`}
+        aria-label={`${u.cost !== undefined ? `Cost ${fmtSessionCost(u.cost)}` : `${fmtTokens(input_ + u.output)} tokens`}. Open Usage`}
         data-testid="session-usage"
+        onClick={() => openPanel("usage")}
       >
-        {fmtTokens(input_)} in <span className="text-faint">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">{fmtSessionCost(u.cost)}</span> : null}
-      </span>}
+        {u.cost !== undefined ? <span data-testid="session-cost">{fmtSessionCost(u.cost)}</span> : `${fmtTokens(input_ + u.output)} tokens`}
+      </button>}
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
       </div>
       {folded.length > 0 && <MoreTools tools={folded} live={live} list={list} changed={later} />}
