@@ -1326,10 +1326,11 @@ test("an agent file's tool entries with a specifier work as Claude Code reads th
   writeFileSync(join(folder, "nopush.md"), ["---", "name: nopush", "description: Never pushes", "disallowedTools: Bash(git push *)", "---", "Work."].join("\n"));
   writeFileSync(join(folder, "coordinator.md"), ["---", "name: coordinator", "description: Leads", "tools: Agent(worker, researcher), Read, Bash", "---", "Lead."].join("\n"));
   writeFileSync(join(folder, "flow.md"), ["---", "name: flow", "description: x", "tools: [Agent(worker, researcher), Read]", "---", "x"].join("\n"));
+  writeFileSync(join(folder, "status.md"), ["---", "name: status", "description: Reads status", "tools: Bash(git status), Read", "---", "Look."].join("\n"));
   const defs = agents.definitions(dir);
   expect(defs.find((d) => d.name === "coordinator")!.tools).toEqual(["Agent(worker, researcher)", "Read", "Bash"]);
   expect(defs.find((d) => d.name === "flow")!.tools).toEqual(["Agent(worker, researcher)", "Read"]);
-  for (const type of ["nopush", "coordinator"])
+  for (const type of ["nopush", "coordinator", "status"])
     await tool("Agent").run({ description: type, prompt: "go", subagent_type: type, run_in_background: true, isolation: "none" }, ctx as any);
   const nopush = agents.list(parent.id).find((x) => x.type === "nopush")!;
   const lead = agents.list(parent.id).find((x) => x.type === "coordinator")!;
@@ -1338,7 +1339,11 @@ test("an agent file's tool entries with a specifier work as Claude Code reads th
   expect(agents.gate(nopush.session_id, "Read", { file_path: join(dir, "a") })).toBeUndefined();
   for (const t of ["Agent", "Read", "Bash"]) expect(agents.gate(lead.session_id, t, {})).toBeUndefined();
   expect(agents.gate(lead.session_id, "Write", { file_path: join(dir, "a") })).toContain("not in this agent's tools");
-  for (const a of [nopush, lead]) end(a, "end_turn");
+  // Another tool with a specifier in tools grants nothing (fail-closed), and the refusal says why.
+  const status = agents.list(parent.id).find((x) => x.type === "status")!;
+  for (const command of ["git status", "rm -rf build"]) expect(agents.gate(status.session_id, "Bash", { command })).toContain("grants no Bash");
+  expect(agents.gate(status.session_id, "Read", { file_path: join(dir, "a") })).toBeUndefined();
+  for (const a of [nopush, lead, status]) end(a, "end_turn");
   await settled();
 });
 

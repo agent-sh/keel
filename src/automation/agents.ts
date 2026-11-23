@@ -410,6 +410,17 @@ export const toolOfEntry = (entry: string) => {
   const cut = entry.indexOf("(");
   return (cut > 0 ? entry.slice(0, cut) : entry).trim();
 };
+// The tool an entry of `tools` grants: its own name, or Agent with a type list.
+// Any other tool with a specifier (`Bash(git status)`) grants nothing: the doc
+// gives a specifier in `tools` a meaning for Agent only, and reading it as the
+// whole tool would grant all of Bash where the file asked for one command.
+// Granting just the matching calls would make the shell matcher an allowlist
+// boundary (compound commands, subshells, interpreters), which it is not: the
+// way to allow some commands is the tool in `tools` and rules for the rest.
+export const grantOfEntry = (entry: string): string | undefined => {
+  const name = toolOfEntry(entry);
+  return name === entry.trim() || name.toLowerCase() === "agent" ? name : undefined;
+};
 
 // What a Claude Code agent file asks for beyond its prompt and tools. A
 // plugin's agent has no hooks, mcpServers or permissionMode, as there
@@ -2370,7 +2381,11 @@ export function gate(sessionId: string, toolName: string, input?: any, names: st
   const entry = (list: string[], n: string) => list.find((t) => toolOfEntry(t).toLowerCase() === n.toLowerCase());
   // A dispatched tool (mcp_call) is in the list when the dispatcher, or the tool it runs by either of its names, is.
   const own = [toolName, names[0]!, ...names.filter((n) => n.startsWith("mcp__"))];
-  if (def.tools && !own.some((n) => entry(def.tools!, n))) return `${toolName} is not in this agent's tools (${def.tools.join(", ")}).`;
+  if (def.tools && !own.some((n) => def.tools!.some((t) => grantOfEntry(t)?.toLowerCase() === n.toLowerCase()))) {
+    const named = own.map((n) => entry(def.tools!, n)).find(Boolean);
+    const why = named ? `; its definition's tools entry ${named} grants no ${toolOfEntry(named)}: a specifier in tools is read for Agent only, so list ${toolOfEntry(named)} itself to allow it` : "";
+    return `${toolName} is not in this agent's tools (${def.tools.join(", ")})${why}.`;
+  }
   for (const n of names) {
     const e = def.disallowed && entry(def.disallowed, n);
     if (!e) continue;
