@@ -64,6 +64,10 @@ const start: Record<string, string | undefined> = { ...scratch, ...Object.fromEn
 // (its afterAll ran in between; what the new file registered while loading
 // was not there then).
 await import("../src/tools/skills.ts");
+// What the automation modules run on a timer against the parts a file set (the
+// looks at agents parked on a command) stops when the next file starts, whether
+// or not that file sets parts of its own (src/automation/core.ts partsGone).
+const { partsGone } = await import("../src/automation/core.ts");
 const kept = new Set<object>(allHooks());
 const seen = new Set<string>();
 let file = "";
@@ -115,6 +119,7 @@ beforeEach(() => {
   const fresh = Object.keys(require.cache).filter((k) => /\.test\.tsx?$/.test(k) && !seen.has(k));
   if (!fresh.length) return;
   for (const k of fresh) seen.add(k);
+  partsGone();
   try {
     leftBehind();
   } finally {

@@ -8,6 +8,14 @@ import type { Deps } from "../server/app.ts";
 // The daemon's parts, set once when the automation routes are built (before any
 // turn runs). Tools reach the engine and the store through this.
 let deps: Deps | undefined;
+// What a module runs on a timer against the parts (the looks at agents parked on
+// a command read the store): stopped when they go (`partsGone`).
+const onGone = new Set<() => void>();
+export const whenPartsGo = (stop: () => void) => void onGone.add(stop);
+// The parts are no longer read: what runs on a timer against them stops. Also
+// at the start of each test file (test/preload.ts): one file's timer never fires
+// into the next file's store.
+export const partsGone = () => { for (const stop of onGone) stop(); };
 // What a module set up against the parts before these (the failure notice's
 // rider reads its store's table) goes with them: it is set up again for these.
 export const setDeps = (d: Deps) => {
@@ -15,6 +23,7 @@ export const setDeps = (d: Deps) => {
   for (const t of timers.values()) clearTimeout(t);
   timers.clear();
   settling.clear();
+  partsGone();
   deps = d;
   rider.get = undefined;
 };

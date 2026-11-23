@@ -222,6 +222,27 @@ test("a run that keeps a processor busy beside its server is not taken for a ser
   agents.stop(a.id);
 });
 
+// The looks at a park on a command read the parts they were made under: when the parts are set again (the
+// next test file's, in one process), they stop, and none of them reads the new store.
+test("the looks at a park on a command stop when the parts are set again", async () => {
+  const p = parentOf("parts set again");
+  const a = await spawn(p.id);
+  const j = bg(a.session_id, "sleep 30", "a long run");
+  end(a, "end_turn", "Running.");
+  expect(agents.get(a.id)!.status).toBe("waiting");
+  const other = new Store(join(dir, "other"));
+  const theirs: unknown[] = [];
+  setDeps({ ...deps, store: other, errors: { capture: (...x: unknown[]) => void theirs.push(x) } });
+  try {
+    await Bun.sleep(2 * agents.PARK_LOOK_MS + 200);
+    expect(theirs).toEqual([]);
+  } finally {
+    setDeps(deps);
+    await jobs.stopJob(j, "was stopped by the test");
+    agents.stop(a.id);
+  }
+});
+
 test("the sockets that serve are read from the /proc/net tables", () => {
   const tcp = [
     "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",

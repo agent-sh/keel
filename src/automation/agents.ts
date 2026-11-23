@@ -12,7 +12,7 @@ import * as beforeRun from "../checks/before-run.ts";
 import { awaited, beingStopped, listens, sampleServing, unfinished } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, slotGate, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, whenPartsGo, withdraw } from "./core.ts";
 import { Line, limitWords } from "./slots.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
@@ -1658,6 +1658,10 @@ function wakeLongParks(rows: AgentRecord[], now: number) {
 const onCommand = new Map<string, { reason: string; told: boolean }>();
 export const PARK_LOOK_MS = 2_000;
 let parkLook: ReturnType<typeof setTimeout> | undefined;
+// Counts the times the looks were stopped: a look that was under way then (it waits for its read) ends
+// without a word and without looking again.
+let parkLooks = 0;
+whenPartsGo(() => { clearTimeout(parkLook); parkLook = undefined; onCommand.clear(); parkLooks++; });
 function parkOnCommand(a: AgentRecord, reason: string) {
   onCommand.set(a.id, { reason, told: false });
   void lookAtParks([a.id]);
@@ -1670,9 +1674,11 @@ const lookAgain = () => {
 // (Still parked: waiting, no turn at work.)
 const stillParked = (id: string) => { const a = get(id); return a && a.status === "waiting" && !D().engine.isRunning(a.session_id) ? a : undefined; };
 async function lookAtParks(ids = [...onCommand.keys()]) {
+  const looks = parkLooks;
   try {
     const parked = ids.flatMap((id) => { const a = stillParked(id); if (!a) onCommand.delete(id); return a ? [a] : []; });
     await sampleServing(parked.flatMap((a) => unfinished(a.session_id, taskStart(a))));
+    if (looks !== parkLooks) return;
     for (const p of parked) {
       const at = onCommand.get(p.id), a = stillParked(p.id);
       if (!at || !a) { onCommand.delete(p.id); continue; }
@@ -1687,6 +1693,7 @@ async function lookAtParks(ids = [...onCommand.keys()]) {
       }
     }
   } catch (e) {
+    if (looks !== parkLooks) return;
     // (A look that cannot be made drops what it looked at: kept, the next look would fail the same way
     // every PARK_LOOK_MS, one Errors row each.)
     for (const id of ids) onCommand.delete(id);
