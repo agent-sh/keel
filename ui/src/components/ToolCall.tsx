@@ -1,13 +1,14 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
 import { Brain, Check, Circle, CircleDot, Link2, RotateCcw, SquareTerminal, X } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
+import { scrollToError } from "../lib/error-scroll.ts";
 import { CALL_STOPPED, NOT_RUN, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, shortPaths, smallChange } from "../lib/work.ts";
 import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
@@ -320,7 +321,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {marks.length > 0 && <p className="k-mark-why" data-testid="mark-why">{marks.map((m) => m.why).join(" ")}</p>}
           {lead}
           {/* (A stop's or a restart's words are written for the model, not printed by the command.) */}
-          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} held={held && picked === null && !shell.background} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : undefined} />}
+          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} held={held && picked === null && !shell.background} failed={state === "error"} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : undefined} />}
           {plan && plan.length > 0 && <div className={rejected ? "opacity-60" : undefined}><PlanCard items={plan} explanation={input.explanation} /></div>}
           {files && (
             <CallDiff files={files} actions={(f) => (
@@ -431,12 +432,15 @@ const CUT = /\n\n\[\.\.\. (\d+) (?:characters|chars) cut[^\]]*\]\n\n/;
 // `held`: the command has ended and its card stays as it stood: the tail of the output it was following.
 // (Not a command that was moved to the background: its result says so, and that is what its card shows.)
 // `quiet`: what the output says when the call has ended and printed nothing (who stopped it, if anyone did).
-function Terminal({ name, input, command, whole: onLine, out, running, held, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; held?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
+// `failed`: the command failed: its output opens at the first line that says the error, not at its start or its end.
+function Terminal({ name, input, command, whole: onLine, out, running, held, failed, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; held?: boolean; failed?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
   const body = shellBody(name, out).trimEnd();
   const big = TOO_LARGE.exec(body);
   const cut = big ? null : CUT.exec(body);
   const shown = big ? big[3]! : body;
   const [whole, setWhole] = useState(false);
+  const box = useRef<HTMLPreElement>(null);
+  useLayoutEffect(() => { if (failed && box.current) scrollToError(box.current); }, [failed, shown]);
   const above = !!command && !onLine && (command.includes("\n") || command.length > LINE_COMMAND);
   return (
     <div className="k-terminal k-copyable overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
@@ -449,17 +453,17 @@ function Terminal({ name, input, command, whole: onLine, out, running, held, ses
       )}
       {name === "write_stdin" && input.chars && <pre className="border-b border-line px-2.5 py-1.5 text-accent-ink">{JSON.stringify(input.chars)}</pre>}
       {/* A held call goes on showing what its follower showed; one whose follower never got a line shows its result. */}
-      {(running || (held && !!callId && !!tails.get(callId)?.text)) && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} follow ended={!running} quiet={quiet} />
+      {(running || (held && !!callId && !!tails.get(callId)?.text)) && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} follow ended={!running} failed={failed} quiet={quiet} />
         : whole && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} onLeave={() => setWhole(false)} />
         : shown ? (
           <Copyable text={() => stripAnsiText(shown)} label="Copy the output" testid="copy-output">
             {cut ? (
-              <pre className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted">
+              <pre ref={box} className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted">
                 <Ansi text={shown.slice(0, cut.index)} />
                 <span className="k-out-gap" data-testid="output-gap">{Number(cut[1]).toLocaleString("en-US")} characters not shown here</span>
                 <Ansi text={shown.slice(cut.index + cut[0].length)} />
               </pre>
-            ) : <pre className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted"><Ansi text={shown} /></pre>}
+            ) : <pre ref={box} className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted"><Ansi text={shown} /></pre>}
           </Copyable>
         ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">{quiet}</p>}
       {/* The command is on the call's line: its copy button stands with the output's. */}
@@ -487,7 +491,8 @@ const POLL_MS = 1000, POLL_MAX_MS = 15_000;
 const tails = new Map<string, { text: string; at: number }>();
 // `ended`: the command a follower follows has ended: it reads what is left once and asks no more.
 // `quiet`: what a follower says once the command has ended with nothing printed.
-function CallLog({ sessionId, callId, follow, ended, onLeave, quiet }: { sessionId: string; callId: string; follow?: boolean; ended?: boolean; onLeave?: () => void; quiet?: string }) {
+// `failed`: the command it followed has failed: the box goes from the end to the first line that says the error, when one does.
+function CallLog({ sessionId, callId, follow, ended, failed, onLeave, quiet }: { sessionId: string; callId: string; follow?: boolean; ended?: boolean; failed?: boolean; onLeave?: () => void; quiet?: string }) {
   const over = useRef(false);
   over.current = !!ended;
   // (A follower starts from what was followed of this call before: the call is drawn by more than one
@@ -538,7 +543,11 @@ function CallLog({ sessionId, callId, follow, ended, onLeave, quiet }: { session
     t = setTimeout(pull, 150);
     return () => { stop = true; clearTimeout(t); document.removeEventListener("visibilitychange", shown); };
   }, [sessionId, callId, follow]);
-  useEffect(() => { const p = pre.current; if (p && follow) p.scrollTop = p.scrollHeight; }, [text, follow]);
+  useLayoutEffect(() => {
+    const p = pre.current;
+    if (!p || !follow) return;
+    if (!(ended && failed && scrollToError(p))) p.scrollTop = p.scrollHeight;
+  }, [text, follow, ended, failed]);
   const go = (from: number, before: number[]) => read(from).then((r) => { setText(r.text); setPart({ ...r, before }); if (pre.current) pre.current.scrollTop = 0; }).catch((e) => reportError(e, { at: "call log" }));
   if (gone) return <p className="k-out-more" data-testid="output-gone"><span>The command's log is no longer kept.</span>{onLeave && <button type="button" onClick={onLeave} className="k-out-link">Back</button>}</p>;
   return (

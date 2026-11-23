@@ -220,6 +220,55 @@ test("a running command shows its output as it arrives, stays as it stood when i
   await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
 });
 
+// Whether a line of a box of output stands inside what the box shows (it scrolls on its own).
+const lineShown = (box: ReturnType<Page["locator"]>, needle: string) => box.evaluate((el, needle) => {
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    const at = n.textContent!.indexOf(needle);
+    if (at < 0) continue;
+    const range = document.createRange();
+    range.setStart(n, at);
+    range.setEnd(n, at + needle.length);
+    const r = range.getBoundingClientRect(), b = el.getBoundingClientRect();
+    return r.top >= b.top && r.bottom <= b.bottom;
+  }
+  return null;
+}, needle);
+
+test("a failed command's output opens at its first error line, and its line quotes it", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  await page.goto(`/s/${session.id}`);
+  // A test run's shape: passing lines, the assertion, then a long stack and the runtime's version at the end.
+  const fail = "AssertionError [ERR_ASSERTION]: 7 == 8";
+  const command = `echo '> app@1.0.0 test'; sleep 2; for i in $(seq 1 40); do echo "ok $i passed"; done; echo '${fail}'; for i in $(seq 1 40); do echo "    at frame $i (test.js:$i:8)"; done; echo 'Node.js v26.13.0'; exit 1`;
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command, description: "Run the tests" } }])}` } });
+  const call = page.locator('[data-testid="tool-call"][data-tool="Bash"]');
+  await expect(call).toHaveAttribute("data-state", "running", { timeout: 30_000 });
+  await expect(call.getByTestId("live-output")).toContainText("> app@1.0.0 test", { timeout: 15_000 });
+  // Followed while it runs, then held open when it fails: the box shows the error line, not the stack's end.
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  await expect(call).toHaveAttribute("data-state", "error");
+  const live = call.getByTestId("live-output");
+  await expect(live).toContainText("Node.js v26.13.0");
+  await expect.poll(() => lineShown(live, fail)).toBe(true);
+  expect(await lineShown(live, "Node.js v26.13.0")).toBe(false);
+  await shoot(page, "work-09-failed-at-error");
+  // After a reload the call is a line that quotes the error; opened, its output stands at that line too.
+  await page.reload();
+  await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
+  await expect(call.getByTestId("tool-why")).toHaveText(fail);
+  await call.locator(".k-line").click();
+  const out = call.getByTestId("terminal").locator("pre").last();
+  await expect(out).toContainText("Node.js v26.13.0");
+  await expect.poll(() => lineShown(out, fail)).toBe(true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await call.scrollIntoViewIfNeeded();
+  await expect.poll(() => lineShown(out, fail)).toBe(true);
+  await shoot(page, "work-09-failed-at-error-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+});
+
 test("an edit's diff is numbered from the file's own lines and folds what did not change", async ({ page, request }) => {
   const ws = join(ROOT, `work-edit-${Date.now()}`);
   mkdirSync(ws, { recursive: true });

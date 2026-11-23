@@ -11,6 +11,7 @@ import { HOOK_BLOCKED, RESTART_CUT, notRun, stopKind, stoppedRunning, turnedAway
 import { patchFiles, resultText, shellStatus, toolKind, type ToolKind, splitDiagnostics, splitMemory, splitNested } from "./tools.ts";
 import { NEEDS, STATE_WORD, countWord } from "../../../src/core/state-words.ts";
 import { agentTitle } from "../../../src/automation/agent-title.ts";
+import { errorLine } from "./error-line.ts";
 
 // `card`: a call with a card of its own (a question, code, readers): always a step by itself, as is a plan update.
 // `agents`: agents started; the ones started one after another are one step, also across the few words
@@ -257,7 +258,7 @@ export function failureLine(result?: ToolResultBlock, cwd?: string): string {
   const own = splitNested(splitDiagnostics(splitMemory(resultText(result)).text).text).text.replace(/<memory [^>]*>[\s\S]*?(<\/memory>|$)/g, "");
   const lines = own.replace(/\u001b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
   const body = lines.filter((l) => !/^(Exit code|Exit Code:|Process exited with code) ?-?\d+$/.test(l));
-  const line = shortPaths(body.find((l) => /\b(error|failed|failure|cannot|not found|no such|denied|refused|does not exist|timed out|killed)\b/i.test(l)) ?? body[0] ?? lines[0] ?? "", cwd);
+  const line = shortPaths(body[errorLine(body)] ?? body[0] ?? lines[0] ?? "", cwd);
   if (line.length <= LINE_MAX) return line;
   const head = line.slice(0, LINE_MAX);
   // Back to the last whole word, unless that gives up most of the line (one long path or token).
