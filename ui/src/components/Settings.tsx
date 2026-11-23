@@ -69,12 +69,19 @@ function General() {
       <SettingRow label="Theme" hint="Follow the system, or keep one.">
         <Segmented<ThemePref> label="Theme" value={theme} onChange={setTheme} options={[{ value: "system", label: "System" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} />
       </SettingRow>
-      <SettingRow label="Text size" hint={`${SCALE_NAMES[SCALES.indexOf(scale as (typeof SCALES)[number])] ?? "Default"}, ${Math.round(scale * 100)}%. Ctrl + and Ctrl - step it from anywhere, Ctrl 0 puts the default back.`}>
+      <SettingRow label="Text size" hint={`${SCALE_NAMES[SCALES.indexOf(scale as (typeof SCALES)[number])] ?? "Default"}, ${Math.round(scale * 100)}%.${matchMedia("(pointer: coarse)").matches ? "" : " Ctrl + and Ctrl - step it from anywhere, Ctrl 0 puts the default back."}`}>
         <TextSize />
       </SettingRow>
-      <SettingRow label="Send with" hint={enterSends ? "Enter sends, Shift Enter makes a new line." : "Ctrl Enter sends, Enter makes a new line."}>
-        <Segmented label="Send with" value={enterSends ? "enter" : "mod"} onChange={(v) => savePref("enterSends", v === "enter")} options={[{ value: "enter", label: "Enter" }, { value: "mod", label: "Ctrl Enter" }]} />
-      </SettingRow>
+      {/* A touch screen's keyboard has a return key and no Ctrl or Shift: there the choice is what that key does. */}
+      {matchMedia("(pointer: coarse)").matches ? (
+        <SettingRow label="Return key" hint={enterSends ? "The return key sends the message." : "The return key makes a new line; Send sends."}>
+          <Segmented label="Return key" value={enterSends ? "enter" : "mod"} onChange={(v) => savePref("enterSends", v === "enter")} options={[{ value: "enter", label: "Sends" }, { value: "mod", label: "New line" }]} />
+        </SettingRow>
+      ) : (
+        <SettingRow label="Send with" hint={enterSends ? "Enter sends, Shift Enter makes a new line." : "Ctrl Enter sends, Enter makes a new line."}>
+          <Segmented label="Send with" value={enterSends ? "enter" : "mod"} onChange={(v) => savePref("enterSends", v === "enter")} options={[{ value: "enter", label: "Enter" }, { value: "mod", label: "Ctrl Enter" }]} />
+        </SettingRow>
+      )}
     </Card>
   );
 }

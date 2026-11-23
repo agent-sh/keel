@@ -945,6 +945,8 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     await expect(planCard).toHaveCount(1, { timeout: 15_000 });
     await expect(planCard.getByTestId("plan-text")).toContainText("Change the retry policy");
     await shoot(page, "restart-08-plan-after-restarts");
+    // (Approve takes a press once the plan was read: all of it in view for a moment.)
+    await expect(planCard).toHaveAttribute("data-read", "true");
     await planCard.getByTestId("plan-approve").click();
     await expect(planCard).toHaveCount(0, { timeout: 15_000 });
     await expect(page.getByTestId("assistant-text").last()).toContainText("The owner approved the plan", { timeout: 15_000 });

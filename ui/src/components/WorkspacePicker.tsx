@@ -106,7 +106,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
               <input
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
-                placeholder="Type a path, Enter to open it; filters the repositories"
+                placeholder={matchMedia("(pointer: coarse)").matches ? "Type a path to open it; filters the repositories" : "Type a path, Enter to open it; filters the repositories"}
                 className="h-8 w-full rounded-sm bg-sunken px-2.5 font-mono text-caption outline-none placeholder:font-sans placeholder:text-faint"
               />
             </form>

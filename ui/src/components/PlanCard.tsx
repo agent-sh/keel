@@ -1,7 +1,7 @@
 import { ClipboardList, Pencil } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
-import { SETTLE_MS } from "../lib/approvals.ts";
+import { sawLines, SETTLE_MS, unseenLines, type Lines } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, noteAnswer, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { setOpenPlans } from "../lib/plans.ts";
@@ -51,8 +51,18 @@ export function PlanCards({ sessionId }: { sessionId: string }) {
 // The card is held to the one rule of lib/asks.ts. The keyboard comes to the
 // plan's text, never to Approve: there the arrows and the page keys scroll it,
 // and what is typed goes to the message box. Approve is one Tab away, and a key
-// on it approves only a plan that was read: its text fits its box, or was
-// scrolled to its end.
+// on it approves only a plan that was read.
+//
+// Read is the approval cards' rule (lib/approvals.ts), the same for a key, a
+// click and a tap: every line of the plan has been in view, where words show
+// (the window, the region above the message box, the plan's own box, less the
+// foot that holds Approve). While the owner scrolls each view counts as it is
+// read; a view the page put there counts once it has stood the settle time.
+// Approve stays at the card's foot while the card goes on under the region's
+// edge (where that leaves the plan a third of the region), so it is in view
+// without scrolling the plan; a press there before the plan was read is refused
+// and says how much of it was not seen. End and
+// Page Down on the text read on a step at a time, so no line is jumped over.
 function Plan({ c, first }: { c: Card; first: boolean }) {
   const [editing, setEditing] = useState(false);
   const [plan, setPlan] = useState(c.plan);
@@ -63,29 +73,84 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const root = useRef<HTMLDivElement>(null);
   const text = useRef<HTMLDivElement>(null);
   const approve = useRef<HTMLButtonElement>(null);
+  const foot = useRef<HTMLElement | null>(null);
+  const footRef = (n: HTMLElement | null) => { foot.current = n; };
   useAskKeys(root, first);
   const hold = useHold(root);
   const [at, setAt] = useState<"" | "text" | "approve">(""); // where in the card the keyboard is
   const [read, setRead] = useState(false);
+  // The lines not seen yet (`n`), those of them out of view now (`out`), and whether the plan is longer than where it shows.
+  const [left, setLeft] = useState({ n: 0, out: 0, total: 1, long: false });
+  const lines = useRef<Lines | undefined>(undefined);
+  const handAt = useRef(0); // the owner's own hand on the plan or the region: a scroll after it is theirs
+  const see = useRef(() => {});
   useEffect(() => {
     const el = text.current;
     if (!el) return;
     const tray = el.closest<HTMLElement>('[data-testid="composer-tray"]');
-    // Being written by the owner, or shown to its last line where that line is on screen: read.
-    const see = () => {
-      if (editing) return setRead(true);
-      const r = el.getBoundingClientRect(), box = tray?.getBoundingClientRect();
-      const shown = r.height > 0 && r.bottom <= Math.min(innerHeight, box?.bottom ?? innerHeight) + 0.5 && r.bottom > Math.max(0, box?.top ?? 0);
-      if (shown && el.scrollHeight - el.scrollTop - el.clientHeight <= 2) setRead(true);
+    // Being written by the owner is read; else what of the plan has been in view, as above.
+    see.current = () => {
+      const r = el.getBoundingClientRect(), box = tray?.getBoundingClientRect(), f = foot.current?.getBoundingClientRect();
+      // The foot stays at the region's edge where it leaves the plan a third of the region or more (a
+      // shorter region scrolls it with the card). Where it lies over the text, what it covers is not in view.
+      const stick = !!f && !!box && f.height > 0 && f.height * 3 <= box.height * 2;
+      foot.current?.toggleAttribute("data-stick", stick);
+      const stuck = stick && f!.top < r.bottom - 1 && f!.bottom > r.top;
+      foot.current?.toggleAttribute("data-stuck", stuck);
+      if (editing) { setRead(true); return; }
+      if (read) return;
+      const cs = getComputedStyle(el);
+      const line = parseFloat(cs.lineHeight) || 1.5 * parseFloat(cs.fontSize) || 24;
+      const padTop = parseFloat(cs.paddingTop) || 0, padBottom = parseFloat(cs.paddingBottom) || 0;
+      const content = el.scrollHeight - padTop - padBottom;
+      const total = Math.max(1, Math.round(content / line));
+      const inner = r.top + el.clientTop;
+      const top = Math.max(0, box?.top ?? 0, inner), bottom = Math.min(innerHeight, box?.bottom ?? innerHeight, inner + el.clientHeight, stuck ? f!.top : Infinity);
+      const y = (v: number) => v - inner + el.scrollTop - padTop;
+      const shows = r.width > 0 && bottom > top && document.visibilityState === "visible" && !el.closest("[inert]");
+      // A view that reaches the plan's first or last words covers its first or last line whole.
+      const view: [number, number] | null = shows ? [y(top) <= 1 ? 0 : y(top), y(bottom) >= content - 1 ? total * line : y(bottom)] : null;
+      lines.current = sawLines(lines.current, { total, line, view }, performance.now() - handAt.current < SETTLE_MS, performance.now());
+      const u = unseenLines(lines.current);
+      const long = content > bottom - top + 1;
+      setLeft((was) => (was.n === u.n && was.out === u.out && was.total === total && was.long === long ? was : { n: u.n, out: u.out, total, long }));
+      if (u.n === 0) setRead(true);
     };
-    see();
-    el.addEventListener("scroll", see, { passive: true });
-    tray?.addEventListener("scroll", see, { passive: true });
-    const sized = new ResizeObserver(see);
+    const see_ = () => see.current();
+    const hand = () => { handAt.current = performance.now(); };
+    see_();
+    el.addEventListener("scroll", see_, { passive: true });
+    tray?.addEventListener("scroll", see_, { passive: true });
+    for (const ev of ["pointerdown", "wheel", "touchmove", "keydown"] as const) (tray ?? el).addEventListener(ev, hand, { capture: true, passive: true });
+    const sized = new ResizeObserver(see_);
     sized.observe(el);
     if (tray) sized.observe(trayGauge(tray)!);
-    return () => { el.removeEventListener("scroll", see); tray?.removeEventListener("scroll", see); sized.disconnect(); };
-  }, [editing]);
+    // A view that stands counts after the settle time, and nothing tells when that is: read again meanwhile.
+    const tick = read ? 0 : window.setInterval(see_, 200);
+    return () => {
+      el.removeEventListener("scroll", see_); tray?.removeEventListener("scroll", see_);
+      for (const ev of ["pointerdown", "wheel", "touchmove", "keydown"] as const) (tray ?? el).removeEventListener(ev, hand, { capture: true });
+      sized.disconnect(); window.clearInterval(tick);
+    };
+  }, [editing, read]);
+  // End and Page Down on the text read on through the plan a step at a time, each step under the
+  // height of what shows, read as the owner's own scroll: the plan's box first, then the region.
+  const readOn = (end: boolean) => {
+    const el = text.current, tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
+    if (!el) return;
+    const go = () => {
+      const f = foot.current?.hasAttribute("data-stuck") ? foot.current.offsetHeight : 0;
+      const frame = Math.min(el.clientHeight, tray ? tray.clientHeight - f : el.clientHeight);
+      const step = Math.max(16, Math.round(frame * 0.6));
+      handAt.current = performance.now();
+      if (el.scrollTop + el.clientHeight < el.scrollHeight - 1) el.scrollTop += step;
+      else if (tray && el.getBoundingClientRect().bottom > tray.getBoundingClientRect().bottom - f + 1 && tray.scrollTop + tray.clientHeight < tray.scrollHeight - 1) tray.scrollTop += step;
+      else return false;
+      see.current();
+      return true;
+    };
+    if (go() && end) { const next = () => { if (go()) requestAnimationFrame(next); }; requestAnimationFrame(next); }
+  };
   const [nudge, setNudge] = useState("");
   useEffect(() => {
     if (!nudge) return;
@@ -100,7 +165,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   return (
     <div
       ref={root}
-      className="animate-in overflow-hidden rounded-2xl border border-accent/40 bg-raised shadow-2"
+      className="animate-in overflow-clip rounded-2xl border border-accent/40 bg-raised shadow-2"
       data-testid="plan-card"
       data-ask-card=""
       data-keys={hold.keys || undefined}
@@ -113,7 +178,10 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
         if (e.key === "Tab" && !e.shiftKey && on === text.current && approve.current) { e.preventDefault(); approve.current.focus(); }
         else if (e.key === "ArrowUp" && on === approve.current) { e.preventDefault(); text.current?.focus(); }
         // On the text the scrolling keys are the plan's own: End reads it to its end, not the conversation.
-        else if (on === text.current && ["End", "Home", "PageUp", "PageDown"].includes(e.key)) e.stopPropagation();
+        else if (on === text.current && ["End", "Home", "PageUp", "PageDown"].includes(e.key)) {
+          e.stopPropagation();
+          if (!read && (e.key === "End" || e.key === "PageDown")) { e.preventDefault(); readOn(e.key === "End"); }
+        }
       }}
       onFocus={(e) => setAt((e.target as Element) === text.current ? "text" : (e.target as Element) === approve.current ? "approve" : "")}
       onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setAt(""); }}
@@ -125,20 +193,20 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
           <Pencil className="size-3" /> {editing ? "Done editing" : "Edit"}
         </button>
       </div>
-      <div ref={text} tabIndex={-1} data-ask="" className="mx-4 mt-2 max-h-80 overflow-auto rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none focus-visible:border-line-strong" data-testid="plan-text">
+      <div ref={text} tabIndex={-1} data-ask="" className="mx-4 mt-2 max-h-80 overflow-auto rounded-lg border max-sm:max-h-none max-sm:overflow-visible border-line bg-bg px-3 py-2 text-ui outline-none focus-visible:border-line-strong" data-testid="plan-text">
         {editing
           ? <textarea value={plan} onChange={(e) => setPlan(e.target.value)} rows={12} className="w-full resize-y bg-transparent font-mono text-caption outline-none" />
           : <Markdown text={plan} />}
       </div>
       {back ? (
-        <form className="flex items-center gap-2 px-4 py-3" onSubmit={(e) => { e.preventDefault(); send({ approve: false, feedback }); }}>
+        <form ref={footRef} className="k-plan-foot flex items-center gap-2 px-4 py-3" onSubmit={(e) => { e.preventDefault(); send({ approve: false, feedback }); }}>
           <input autoFocus value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="What to change in the plan" data-testid="plan-feedback"
             className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong" />
           <button type="submit" className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">Send back</button>
           <button type="button" onClick={() => setBack(false)} className="h-8 rounded-lg px-2 text-ui text-faint hover:text-fg">Cancel</button>
         </form>
       ) : (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+        <div ref={footRef} className="k-plan-foot flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
           {/* One unit: the mode the work goes on in, named, and the approval that starts it. They wrap inside it, never apart. */}
           <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-lg border border-line bg-sunken p-1" role="group" aria-label="Approve the plan" data-testid="plan-approval">
             <span className="flex min-w-0 flex-[1_1_auto] flex-wrap items-center gap-x-2 gap-y-1">
@@ -153,8 +221,10 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
               disabled={!plan.trim()}
               title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"}
               onClick={(e) => {
-                // A key approves only a plan that was read (the card's own rule, first), and not as the keyboard arrives, under a dialog or by a held key.
-                const no = e.detail === 0 ? (read ? "" : "Read the plan to its end first") || keyRefused(e.currentTarget) : "";
+                // Only a plan that was read is approved, by any press (the card's own rule, first); a key not
+                // as the keyboard arrives, under a dialog or when held.
+                const unread = read ? "" : e.detail === 0 ? "Read the plan to its end first" : left.out > 0 ? `${share(left)} of the plan not seen yet: scroll through it` : "Approve takes a press once the plan has stood a moment in view";
+                const no = unread || (e.detail === 0 ? keyRefused(e.currentTarget) : "");
                 if (no) return setNudge(no);
                 void send({ approve: true, mode, plan });
               }}
@@ -165,10 +235,19 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
           </div>
           <button data-testid="plan-back" onClick={() => setBack(true)} className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">Keep planning</button>
           {err ? <span className="ml-auto text-micro text-danger">{err}</span>
-            // What the keys do where the keyboard is, or why a key did nothing.
-            : <span className={cn("ml-auto text-micro max-sm:hidden pointer-coarse:hidden", nudge ? "text-warn" : "text-faint", !hint && "invisible")} role={nudge ? "status" : undefined} data-testid="plan-hint">{hint || "Enter approves the plan"}</span>}
+            // Why a press did nothing, on every screen.
+            : nudge ? <span className="ml-auto text-micro text-warn" role="status" data-testid="plan-hint">{nudge}</span>
+            // A plan longer than where it shows: how much of it was not seen yet (no key is named).
+            : (!hint || TOUCH.matches) && !read && left.long && left.n > 0 ? <span className="ml-auto text-micro text-warn tabular-nums" role="status" data-testid="plan-left">{share(left)} not seen yet</span>
+            // What the keys do where the keyboard is (where there is one).
+            : <span className={cn("ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden", !hint && "invisible")} data-testid="plan-hint">{hint || "Enter approves the plan"}</span>}
         </div>
       )}
     </div>
   );
 }
+
+// What of the plan was not seen, as a share of it: its lines are of a height, its rows of words are not.
+const share = (l: { n: number; total: number }) => `${Math.max(1, Math.round((100 * l.n) / l.total))}%`;
+// No keyboard: what a press refuses is said, a key is not.
+const TOUCH = matchMedia("(pointer: coarse)");

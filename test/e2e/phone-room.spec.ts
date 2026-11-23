@@ -182,6 +182,7 @@ test.describe("on a phone", () => {
   // Feature: on a phone every target a finger presses is 2.75rem each way (44 px at the default
   // text size) and none lies over another: the start page, a session page and its header, the
   // message box at rest and with its tools, the dock, the list, the menus, and each kind of card.
+  // None of them names a key (Enter, Esc, Ctrl and the like): a phone has no keyboard.
   test("every target is a finger's size, and none lies over another", async ({ page, request }) => {
     const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
     test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
@@ -208,11 +209,16 @@ test.describe("on a phone", () => {
         seen.push(`${where}: ${bad.count}`);
         expect(bad.small, `${where}: targets under 2.75rem`).toEqual([]);
         expect(bad.over, `${where}: targets over one another`).toEqual([]);
+        expect(await keyWords(page), `${where}: words of keys`).toEqual([]);
       };
 
       await page.goto("/");
       await expect(page.getByTestId("home-open").first()).toBeVisible();
       await check("start page");
+      await page.getByTestId("workspace-picker").tap();
+      await expect(page.getByRole("dialog").or(page.getByRole("menu")).first()).toBeVisible();
+      await check("folder picker");
+      await page.keyboard.press("Escape");
       await page.goto(`/s/${plain}`);
       await expect(pane.getByTestId("assistant-text").last()).toBeVisible();
       await check("session at rest");
@@ -236,6 +242,8 @@ test.describe("on a phone", () => {
       await page.goto(`/s/${ask}`);
       await expect(pane.getByTestId("allow-once")).toBeVisible();
       await check("approval card");
+      // What else waits is said without the key that goes there, and without what is left of its words.
+      await expect(pane.getByTestId("waiting-elsewhere")).toHaveText(/wait for you\.$/, { useInnerText: true });
       await shoot(page, "phone-04-targets-approval");
       await page.goto(`/s/${q}`);
       await expect(pane.getByTestId("question-option").first()).toBeVisible();
@@ -244,6 +252,9 @@ test.describe("on a phone", () => {
       await page.goto(`/s/${plan}`);
       await expect(pane.getByTestId("plan-approve")).toBeVisible();
       await check("plan card");
+      await page.goto("/settings/general");
+      await expect(page.getByText("Text size")).toBeVisible();
+      await check("settings");
       console.log(`targets measured: ${seen.join(", ")}`);
     } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
   });
@@ -291,5 +302,28 @@ async function misfits(page: Page) {
       if (x > 0.5 && y > 0.5) over.push(`${a.n} over ${b.n}`);
     }
     return { count: items.length, small, over };
+  });
+}
+
+// Words of keys on screen and in the fields' placeholders, outside what a message says.
+async function keyWords(page: Page) {
+  return page.evaluate(() => {
+    const keys = /\b(Enter|Esc|Escape|Ctrl|Cmd|Alt|Shift|Tab|PgUp|PgDn|Page Up|Page Down)\b|[⌘⌥⇧↵⏎]/;
+    const out: string[] = [];
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+      const el = t.parentElement;
+      if (!el || !t.textContent?.trim() || !keys.test(t.textContent)) continue;
+      if (el.closest("[inert], .prose-keel, pre, code, [data-testid=user-text], [data-testid=plan-text], .sr-only")) continue;
+      const b = el.getBoundingClientRect();
+      if (b.width < 2 || b.height < 2 || b.bottom <= 0 || b.top >= innerHeight) continue;
+      if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+      out.push(`${el.closest("[data-testid]")?.getAttribute("data-testid") ?? el.tagName}: ${t.textContent.trim().slice(0, 60)}`);
+    }
+    for (const el of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[placeholder], textarea[placeholder]")) {
+      const b = el.getBoundingClientRect();
+      if (b.width > 2 && b.bottom > 0 && b.top < innerHeight && keys.test(el.placeholder)) out.push(`${el.dataset.testid ?? el.tagName} placeholder: ${el.placeholder}`);
+    }
+    return out;
   });
 }

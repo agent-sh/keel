@@ -183,6 +183,15 @@ test("plan approval stays paired with its mode on a narrow screen", async ({ pag
   // It still approves in the mode picked.
   await choose(mode, "full-auto");
   await expect(mode).toHaveText("Full auto");
+  // Approve takes the press once every line of the plan was in view: read through it from its top.
+  await card.getByTestId("plan-text").evaluate((el) => el.scrollIntoView({ block: "start" }));
+  const tray = (await page.locator(`[data-station="${session.id}"]`).getByTestId("composer-tray").boundingBox())!;
+  for (let i = 0; i < 40 && !(await card.getAttribute("data-read")); i++) {
+    await page.mouse.move(tray.x + tray.width / 2, tray.y + 20);
+    await page.mouse.wheel(0, 60);
+    await page.waitForTimeout(60);
+  }
+  await expect(card).toHaveAttribute("data-read", "true");
   await approve.click();
   await expect(card).toHaveCount(0);
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/plan`)).json()).plan?.mode).toBe("full-auto");
@@ -231,4 +240,53 @@ test("a plan decision the endpoint does not understand is refused and the plan s
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
   expect(await open()).toEqual([]);
   await request.delete(`/api/sessions/${session.id}`);
+});
+
+// Feature: on a phone a plan's Approve is in view when the plan comes, at the foot of its card
+// while the card goes on under the message box, and a tap on it approves only a plan that was
+// read: every line of it has been in view (the approval cards' rule). A tap before that is
+// refused and says how much was not seen; scrolling through the plan reads it.
+test.describe("on a phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("Approve stands in view, and a tap approves only a plan that was read", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "A long plan on a phone" } })).json();
+    const open = async () => (await (await request.get(`/api/sessions/${session.id}/plan`)).json()).open.length as number;
+    try {
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "plan", sandbox: "off" } });
+      const steps = Array.from({ length: 30 }, (_, i) => `${i + 1}. Step ${i + 1}: change the part of the retry loop that bounds the delay.`).join("\n");
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "present_plan", input: { plan: steps } }])}` } });
+      await expect.poll(open, { timeout: 30_000 }).toBe(1);
+      await page.goto(`/s/${session.id}`);
+      const pane = page.locator(".k-station[data-helm]");
+      const card = pane.getByTestId("plan-card");
+      const approve = card.getByTestId("plan-approve");
+      await expect(card).toBeVisible();
+      // In view, whole, and nothing lies over it (the message box was over half of it).
+      const free = () => approve.evaluate((el) => { const b = el.getBoundingClientRect(); const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height - 2); return b.top >= 0 && b.bottom <= innerHeight && !!at && el.contains(at); });
+      await expect(approve).toBeInViewport({ ratio: 1 });
+      expect(await free()).toBe(true);
+      await shoot(page, "plan-02-phone-arrival");
+      // A tap before the plan was read approves nothing, and says why, in words of no key.
+      await page.waitForTimeout(1200);
+      await approve.tap();
+      await expect(card.getByTestId("plan-hint")).toHaveText(/not seen yet/);
+      await expect(card).not.toContainText(/\b(Enter|Tab|Esc)\b/);
+      await shoot(page, "plan-03-phone-unread");
+      expect(await open()).toBe(1);
+      // Scrolled through as a finger does, a step at a time: read, with Approve in view all along.
+      const tray = pane.getByTestId("composer-tray");
+      const box = (await tray.boundingBox())!;
+      for (let i = 0; i < 60 && !(await card.getAttribute("data-read")); i++) {
+        await page.mouse.move(box.x + box.width / 2, box.y + 40);
+        await page.mouse.wheel(0, 120);
+        await page.waitForTimeout(50);
+        expect(await free()).toBe(true);
+      }
+      await expect(card).toHaveAttribute("data-read", "true");
+      await approve.tap();
+      await expect.poll(open).toBe(0);
+    } finally { await request.delete(`/api/sessions/${session.id}`); }
+  });
 });

@@ -935,6 +935,13 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-tray:has(.k-approval[data-foot])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
 .k-tray:has(.k-ask-list[data-bar-stays]):has(.k-approval[data-foot])[data-more="up down"] { mask-image: none; }
 .k-approval[data-foot] > .k-ask-foot { box-shadow: 0 -1px 0 var(--line); }
+/* A plan's foot (its Approve) stays at the region's foot while the card goes on under it (PlanCard.tsx),
+   where nothing fades, with a hairline over the text it lies on. */
+.k-plan-foot { background: var(--raised); }
+.k-plan-foot[data-stick] { position: sticky; bottom: 0; z-index: 1; }
+.k-plan-foot[data-stuck] { box-shadow: 0 -1px 0 var(--line); }
+.k-tray:has(.k-plan-foot[data-stuck])[data-more="down"] { mask-image: none; }
+.k-tray:has(.k-plan-foot[data-stuck])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
 /* The control that opens a request's text and folds it again keeps the width of its longest
    label, so no answer comes under a pointer that rests on it when its words change. */
 .k-ask-open { display: inline-grid; align-items: center; justify-items: center; }

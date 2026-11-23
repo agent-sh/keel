@@ -5,6 +5,7 @@ import { dropRepeats, keyRefused, noteAnswer, useAskKeys, useHold } from "../lib
 import { composing } from "../lib/keys.ts";
 import { secrets, useSecrets, type SecretMeta, type SecretRequest } from "../lib/secrets.ts";
 import { reportError, failed } from "../lib/store.ts";
+import { cn } from "../lib/utils.ts";
 
 const NONE: never[] = [];
 
@@ -143,7 +144,7 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
       <p className="px-4 pb-3 -mt-1 text-micro text-faint">
         {err ? <span className="text-danger" role="alert" data-testid="secret-error">{err}</span>
           // While the keyboard is on the card itself, what gets it into the field. Marked once a key typed here went nowhere.
-          : onCard ? <span className={dropped ? "text-warn" : undefined} role="status" data-testid="secret-hint" data-dropped={dropped || undefined}>{TO_FIELD}{dropped ? ": what is typed here goes nowhere" : ""}</span>
+          : onCard ? <span className={cn("pointer-coarse:hidden", dropped && "text-warn")} role="status" data-testid="secret-hint" data-dropped={dropped || undefined}>{TO_FIELD}{dropped ? ": what is typed here goes nowhere" : ""}</span>
           : `Held in memory for this session as $${r.name}; a restart forgets it.`}
       </p>
     </div>

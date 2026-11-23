@@ -308,7 +308,7 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
     <p className="mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint" data-testid="waiting-elsewhere" data-on={on || undefined} role="status" title={words}>
       <span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />
       {on ? <span className="min-w-0 truncate"><span className="text-muted">Answering in sequence.</span> {n}: the next opens when this is answered.</span>
-        : <><span className="min-w-0 truncate">{n}.</span><Kbd keys={KEYS} className="shrink-0" /><span className="shrink-0">goes to the next.</span></>}
+        : <><span className="min-w-0 truncate">{n}.</span><Kbd keys={KEYS} className="shrink-0" /><span className="shrink-0 pointer-coarse:hidden">goes to the next.</span></>}
     </p>
   );
 }
