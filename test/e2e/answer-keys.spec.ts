@@ -608,7 +608,9 @@ test("what waits across sessions is answered in sequence, one key each", async (
 test("the sequence stays with the owner: it goes on through a grant, ends when they do something else, and after a quiet minute", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
-  const ws = folder("sequence-ends");
+  // A long folder: the second request's path is cut by its box, as it is on a machine whose scratch
+  // folder is deep. Its card must hold still for the first one's Allow to take the keyboard.
+  const ws = folder(`sequence-ends-${"deep-".repeat(12)}`);
   const quiet = await create(request, "Nothing waits here", ws);
   // One session with two requests of different tools (each is answered on its own), and two more sessions.
   const two = await create(request, "Two requests", ws);

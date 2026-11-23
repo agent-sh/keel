@@ -207,7 +207,10 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
           sum: sum ? stand(was?.sum, seenAt(sum, text, true).at, now) : undefined,
           once: control(part("allow-once"), was?.once),
           always: control(part("allow-always"), was?.always),
-          cut: !!sum && sum.scrollHeight > sum.clientHeight + 1,
+          // Once cut, cut while it waits: the card says so with lines of its own, which can give the text
+          // the width it fits in, and a cut read again from that would draw the card one way, then the
+          // other, every reading (and no answer on the list would ever stand still long enough to count).
+          cut: !!sum && (!!was?.cut || sum.scrollHeight > sum.clientHeight + 1),
         });
       }
     }
@@ -1203,8 +1206,16 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             // Why the answers wait, beside them, before anything was pressed: the text is to be opened
             // (the list's Enter does that while the list has the keyboard), or so many of its lines have
             // not been in view. (In the answers' own row, so the card keeps its height when it goes.)
-            : shut ? <span className="ml-auto text-micro text-warn" role="status" data-testid="approval-open-first">{touch ? tapSays : enterOpens ? enterSays : openFirst}.</span>
-            : left > 0 ? <span className="ml-auto text-micro text-warn tabular-nums" role="status" data-testid="approval-left">{leftText}</span>
+            // A row (a dense card) whose text its box cuts keeps the room of the longest of these two lines
+            // whether one shows or not: a line that came and went would move the answers under the text
+            // and back, the text would wrap another way, and that would decide the line again.
+            : shut || left > 0 || (dense && cut) ? (
+              <span className="ml-auto grid justify-items-end text-micro text-warn">
+                {dense && cut && <span className="invisible col-start-1 row-start-1" aria-hidden="true">{`${touch ? tapSays : enterOpens ? enterSays : openFirst}.`.length >= `${count(unseen?.total ?? 0)} not seen yet`.length ? `${touch ? tapSays : enterOpens ? enterSays : openFirst}.` : `${count(unseen?.total ?? 0)} not seen yet`}</span>}
+                {shut ? <span className="col-start-1 row-start-1" role="status" data-testid="approval-open-first">{touch ? tapSays : enterOpens ? enterSays : openFirst}.</span>
+                  : left > 0 ? <span className="col-start-1 row-start-1 tabular-nums" role="status" data-testid="approval-left">{leftText}</span> : null}
+              </span>
+            )
             // What Enter does, true at every moment. "Enter allows once" stands only while its Allow has
             // the keyboard and a press would answer. Before that, while the keyboard is on its way to the
             // Allow or the Allow still waits out its settle time, the line says so, dimmer; for a
