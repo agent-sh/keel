@@ -14,4 +14,3 @@ export function runsAt(at: At | undefined, where?: Where, shell = true): Where |
   const inside = !at?.away && (cwd === root || cwd.startsWith(`${root}/`));
   return inside ? { folder: cwd, branch: where.branch } : { folder: cwd };
 }
-
