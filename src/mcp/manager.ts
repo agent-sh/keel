@@ -23,7 +23,7 @@ import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validat
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
-import { readText } from "../core/proc.ts";
+import { chunksUntil } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { conceal } from "../core/conceal.ts";
 import { STATUS_CAP, STATUS_METHOD, type Pushed } from "./channel.ts";
@@ -261,12 +261,34 @@ function serverEnv(c: McpServerConfig): Record<string, string> {
 // A headers helper prints a JSON object of header names and values (Claude
 // Code's headersHelper, Codex's http_headers_helper). Run at each connect;
 // the values never reach a log.
+// What is read of a helper's output: headers are a few kilobytes.
+const HELPER_OUTPUT_MAX = 1_000_000;
 // `run`: where and how a project's helper runs (its folder, an environment of
 // its own, the session's sandbox); the owner's own helpers run as the daemon.
-async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv?: string[]; cwd?: string; env?: Record<string, string> } = {}): Promise<Record<string, string>> {
-  const p = Bun.spawn(run.argv ?? ["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore", ...(run.cwd ? { cwd: run.cwd } : {}), ...(run.env ? { env: run.env } : {}) });
-  const timer = setTimeout(() => p.kill(), timeoutMs);
-  const [out, err, code] = await Promise.all([readText(p.stdout, "mcp headers helper"), readText(p.stderr, "mcp headers helper"), p.exited]).finally(() => clearTimeout(timer));
+export async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv?: string[]; cwd?: string; env?: Record<string, string> } = {}): Promise<Record<string, string>> {
+  // A group of its own: what it starts in the background goes with it. Its
+  // pipes are read until every writer is gone, and not past its time.
+  const p = Bun.spawn(run.argv ?? ["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true, ...(run.cwd ? { cwd: run.cwd } : {}), ...(run.env ? { env: run.env } : {}) });
+  const group = () => { try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill("SIGKILL"); } catch { /* gone already */ } } };
+  let late = false;
+  let stop!: () => void;
+  const stopped = new Promise<void>((r) => (stop = r));
+  const timer = setTimeout(() => { late = true; group(); stop(); }, timeoutMs);
+  const read = async (pipe: ReadableStream<Uint8Array>) => {
+    const dec = new TextDecoder();
+    let text = "";
+    for await (const c of chunksUntil(pipe, stopped)) if (text.length < HELPER_OUTPUT_MAX) text += dec.decode(c, { stream: true });
+    return text + dec.decode();
+  };
+  const reading = Promise.all([read(p.stdout), read(p.stderr)]);
+  const code = await p.exited;
+  clearTimeout(timer);
+  // It ended: what it left running is stopped, so the pipes end with what was written.
+  group();
+  // (A process that left the group holds a pipe open: it is not waited for past a moment more.)
+  const grace = setTimeout(stop, 1000);
+  const [out, err] = await reading.finally(() => { clearTimeout(grace); stop(); });
+  if (late) throw new Error(`the headers helper did not finish within ${Math.round(timeoutMs / 1000)} s and was stopped`);
   if (code !== 0) throw new Error(`the headers helper exited with ${code}${err.trim() ? `: ${err.trim().slice(0, 200)}` : ""}`);
   let h: unknown;
   try { h = JSON.parse(out); } catch { throw new Error("the headers helper did not print a JSON object"); }

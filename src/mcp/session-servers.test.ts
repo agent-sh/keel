@@ -224,3 +224,23 @@ test("an approved project server keeps its SSE transport, headers helper and tim
     s.stop();
   }
 }, 30_000);
+
+// Review of round 3, P2-c: a helper that hangs, or leaves a child holding its output, is stopped whole.
+test("a headers helper is stopped with what it started: past its time, and when it ends leaving a child behind", async () => {
+  const { helperHeaders } = await import("./manager.ts");
+  const d = mkdtempSync(join(tmpdir(), "keel-mcp-helper-"));
+  const alive = (p: number) => { try { process.kill(p, 0); return true; } catch { return false; } };
+  const pid = (f: string) => Number(readFileSync(join(d, f), "utf8"));
+  // Hangs, with a child in the background: refused at its time, and neither is left running.
+  let t0 = Date.now();
+  await expect(helperHeaders(`sleep 30 & echo $! > ${d}/bg; echo $$ > ${d}/sh; sleep 30; echo '{}'`, 500)).rejects.toThrow("did not finish within 1 s");
+  expect(Date.now() - t0).toBeLessThan(3000);
+  for (let i = 0; i < 40 && (alive(pid("bg")) || alive(pid("sh"))); i++) await Bun.sleep(25);
+  expect([alive(pid("bg")), alive(pid("sh"))]).toEqual([false, false]);
+  // Prints its headers and ends, its child still holding the output: the headers come at once, and the child is stopped.
+  t0 = Date.now();
+  expect(await helperHeaders(`sleep 30 & echo $! > ${d}/left; echo '{"Authorization":"Bearer t"}'`, 5000)).toEqual({ Authorization: "Bearer t" });
+  expect(Date.now() - t0).toBeLessThan(2500);
+  for (let i = 0; i < 40 && alive(pid("left")); i++) await Bun.sleep(25);
+  expect(alive(pid("left"))).toBe(false);
+}, 20_000);
