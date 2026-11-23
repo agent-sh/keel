@@ -70,6 +70,15 @@ Approve: each change asks starts it in ask (the one a phone with no screen
 lock offers). Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
+## Agents
+
+A session that started agents shows them under its header as one line: how
+many, how many work, fail or need you. Tapped, it opens the tree: each agent
+under the one that started it, oldest first, with its state, and an agent
+that needs you opens it by itself. An agent's row opens its session, which
+leads back up to its starter; Back returns to where it was opened from. The
+session list counts the agents at work under a session.
+
 ## Changes
 
 The file mark in a session's header opens what the session changed in its
@@ -168,6 +177,7 @@ so it proves nothing about who built it.
 | `Wire.kt` | the daemon's shapes and the signed messages, as pure functions |
 | `Feed.kt` | what the app holds of the daemon and how sync answers and stream frames change it, as plain state |
 | `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
+| `ui/Agents.kt` | a session's agents, as a tree |
 | `ui/Changes.kt` | a session's changes and one file's diff |
 | `Attach.kt` | what is picked for the next message: read, fitted, uploaded; the transcript's images |
 | `Approve.kt` | the biometric approval and the lock-screen approve activity |

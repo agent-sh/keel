@@ -5,6 +5,7 @@ import dev.avifenesh.keel.ui.blocks
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 // Pure logic of the app. What it shares with the daemon (signed bytes, shapes) is in ContractTest.
@@ -119,6 +120,21 @@ class WireTest {
         // The headers are not lines; a binary file has none.
         assertEquals(emptyList<DiffLine>(), diffLines("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ"))
         assertEquals(FileChange("src/a/b.kt", "M", 1, 0).let { it.name to it.dir }, "b.kt" to "src/a")
+    }
+
+    @Test fun theAgentTreeListsEachAgentFollowedByItsOwnOldestFirst() {
+        fun c(id: String, parent: String?, created: Double) = Chat(id, id, "idle", created, 0, false, false, "", "", parent, created = created)
+        // A root with two agents; the first started a worker, which started a checker; a loop in damaged data.
+        val chats = listOf(c("root", null, 0.0), c("b", "root", 2.0), c("a", "root", 1.0), c("a1", "a", 3.0), c("a1x", "a1", 4.0),
+            c("other", null, 0.0), c("o1", "other", 1.0), c("x", "y", 1.0), c("y", "x", 1.0))
+        assertEquals(listOf(Triple("a", 1, 2), Triple("a1", 2, 1), Triple("a1x", 3, 0), Triple("b", 1, 0)), agentTree(chats, "root").map { Triple(it.chat.id, it.depth, it.below) })
+        assertEquals(listOf("a1x"), agentTree(chats, "a1").map { it.chat.id })
+        assertEquals(emptyList<String>(), agentTree(chats, "b").map { it.chat.id })
+        val byId = chats.associateBy { it.id }
+        assertEquals("root", rootOf(byId, "a1x"))
+        assertEquals("root", rootOf(byId, "root"))
+        // A loop ends: x and y each name the other.
+        assertTrue(rootOf(byId, "x") in setOf("x", "y"))
     }
 
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {

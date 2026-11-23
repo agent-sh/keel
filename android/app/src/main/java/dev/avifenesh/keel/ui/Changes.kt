@@ -40,8 +40,9 @@ import dev.avifenesh.keel.Route
 import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.ago
 
+/** `load`: where the changes come from (the daemon; a screen test gives its own). */
 @Composable
-fun ChangesScreen(id: String) {
+fun ChangesScreen(id: String, load: suspend () -> Changes = { Hub.changes(id) }) {
     val k = k()
     val chats by Hub.chats.collectAsState()
     val working by Hub.working.collectAsState()
@@ -51,7 +52,7 @@ fun ChangesScreen(id: String) {
     // Read again when asked, and when a turn of the session ends (it may have changed more).
     val running = id in working
     LaunchedEffect(id, again, running) {
-        runCatching { Hub.changes(id) }.onSuccess { data = it; error = "" }.onFailure { error = it.message ?: "The changes did not load" }
+        runCatching { load() }.onSuccess { data = it; error = "" }.onFailure { error = it.message ?: "The changes did not load" }
     }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Head("Changes", sub = { Txt(chats[id]?.title ?: "Session", T.meta, k.muted, maxLines = 1) },
@@ -143,11 +144,11 @@ private fun FileRow(f: FileChange, onOpen: () -> Unit) {
 }
 
 @Composable
-fun DiffScreen(r: Route.Diff) {
+fun DiffScreen(r: Route.Diff, load: suspend () -> FileDiff = { Hub.fileDiff(r.id, r.path, r.turn) }) {
     val k = k()
     var data by remember(r) { mutableStateOf<FileDiff?>(null) }
     var error by remember(r) { mutableStateOf("") }
-    LaunchedEffect(r) { runCatching { Hub.fileDiff(r.id, r.path, r.turn) }.onSuccess { data = it; error = "" }.onFailure { error = it.message ?: "The diff did not load" } }
+    LaunchedEffect(r) { runCatching { load() }.onSuccess { data = it; error = "" }.onFailure { error = it.message ?: "The diff did not load" } }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Head(r.path.substringAfterLast('/'), sub = { Txt(listOf(r.label, r.path.substringBeforeLast('/', "")).filter { it.isNotBlank() }.joinToString(" · "), T.meta, k.muted, maxLines = 1) },
             lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = Route.Changes(r.id) }) }) {

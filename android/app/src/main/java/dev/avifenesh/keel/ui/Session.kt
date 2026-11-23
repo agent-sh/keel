@@ -67,7 +67,7 @@ import dev.avifenesh.keel.stateOf
 import kotlinx.coroutines.launch
 
 @Composable
-fun SessionScreen(act: MainActivity, id: String) {
+fun SessionScreen(act: MainActivity, id: String, back: Route? = null) {
     val k = k()
     val chats by Hub.chats.collectAsState()
     val all by Hub.msgs.collectAsState()
@@ -112,7 +112,7 @@ fun SessionScreen(act: MainActivity, id: String) {
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
         Head(chat?.title ?: "Session", sub = {
             StateTag(state, when (state) { State.WORKING -> working[id]?.let { elapsed(it, now) }.orEmpty(); else -> "" })
-        }, lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = Route.Tabs(0) }) }) {
+        }, lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = back ?: Route.Tabs(0) }) }) {
             IconBtn(Ic.FileDiff, "Changes", { Ui.route.value = Route.Changes(id) }, tint = k.muted)
             IconBtn(Ic.ChartColumn, "Session usage", {
                 if (usage != null) usage = null
@@ -120,6 +120,8 @@ fun SessionScreen(act: MainActivity, id: String) {
             }, tint = if (usage != null) k.fg else k.muted)
         }
         Rule()
+        // Its agents, and its starter when it is one: one line until opened.
+        AgentsBar(id, chats, cards.values.filter { it.pending }.map { it.chatId }.toSet(), working, now) { Ui.openFrom(it, Route.Session(id, back)) }
         usage?.let { Txt(it, T.meta, k.muted, Modifier.fillMaxWidth().background(k.panel).padding(horizontal = S.lg, vertical = 8.dp)) }
         if (error.isNotBlank()) Notice(error, modifier = Modifier.padding(S.md))
         val items = msgs.filter { it.kind != "deleted" }

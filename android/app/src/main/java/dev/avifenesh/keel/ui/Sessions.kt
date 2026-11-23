@@ -156,6 +156,11 @@ private fun SessionRow(r: Row3, now: Double) {
                     else -> c.preview
                 }
                 Txt(line, T.small, if (r.state == State.FAILED) k.fail else k.muted, Modifier.weight(1f), maxLines = 2)
+                // Agents at work under it, at any depth: the session is busy even between its own turns.
+                if (c.agents > 0) {
+                    Spacer(Modifier.width(S.sm))
+                    Txt("${c.agents} agent${if (c.agents == 1) "" else "s"}", T.meta, k.work, maxLines = 1, modifier = Modifier.semantics { contentDescription = "agents-of-${c.title}" })
+                }
                 if (c.unread > 0) {
                     Spacer(Modifier.width(S.sm))
                     Box(Modifier.clip(RoundedCornerShape(S.rPill)).background(k.ink).padding(horizontal = 7.dp, vertical = 1.dp)) { Txt("${c.unread}", T.label, k.inkFg) }

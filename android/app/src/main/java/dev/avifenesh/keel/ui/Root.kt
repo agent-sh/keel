@@ -65,8 +65,8 @@ fun Root(act: MainActivity) {
         if (!Ui.paired.value) PairScreen(act)
         else when (val r = Ui.route.value) {
             is Route.Session -> {
-                BackHandler { Ui.route.value = Route.Tabs(0) }
-                SessionScreen(act, r.id)
+                BackHandler { Ui.route.value = r.back ?: Route.Tabs(0) }
+                SessionScreen(act, r.id, r.back)
             }
             is Route.Changes -> {
                 BackHandler { Ui.route.value = Route.Session(r.id) }

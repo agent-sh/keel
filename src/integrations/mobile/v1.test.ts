@@ -903,8 +903,12 @@ describe("the wire contract", () => {
     running.add(parent.id);
     bus.emit({ t: "delta", session_id: parent.id, kind: "text", index: 0, text: "Looking at the" } as any);
 
+    // The parent's agent at work: its row counts it.
+    store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("ag-contract", parent.id, s.id, "Fix the build", "general-purpose", "fx:saved", 1, "running", Date.now());
     // Answers to requests.
     take("sync", (await call("GET", "/v1/sync?since=0")).body);
+    store.db.query("DELETE FROM agents WHERE id = 'ag-contract'").run();
     take("page", (await call("GET", `/v1/chats/${s.id}/messages?paged=1&limit=3`)).body);
     take("receipt", (await call("POST", `/v1/chats/${parent.id}/messages`, { ...wire.examples.send[0], client_id: "contract-receipt" })).body);
     // A prompt that carries a photo and a file.

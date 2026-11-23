@@ -29,7 +29,8 @@ class App : Application() {
 
 sealed class Route {
     data class Tabs(val tab: Int) : Route()
-    data class Session(val id: String) : Route()
+    /** `back`: where Back leads (the session it was opened from, for an agent's), else the list. */
+    data class Session(val id: String, val back: Route? = null) : Route()
     /** What a session changed. */
     data class Changes(val id: String) : Route()
     /** One file's diff, of one turn (`turn`) or since the session's first (null); `label` names which. */
@@ -50,6 +51,8 @@ object Ui {
     val unpaired = mutableStateOf<Unpaired?>(null)
     val theme = mutableIntStateOf(0)
     fun open(chat: String) { route.value = Route.Session(chat) }
+    /** An agent's session (or its starter's) opened from a session: Back returns there. */
+    fun openFrom(chat: String, from: Route.Session) { route.value = Route.Session(chat, back = from) }
 }
 
 class MainActivity : FragmentActivity() {

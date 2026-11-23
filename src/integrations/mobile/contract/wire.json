@@ -12,7 +12,8 @@
   "upload and upload_ref are the daemon's side of attaching a file: the answer to POST /v1/upload?name=<name>&mime=<type> with the file's bytes as the body (the example is the answer for a 1x1 PNG named photo.png), and how a prompt names it in `attachments`. The app uploads each file when it is picked and sends a prompt that names the uploads (send.attachments, each an upload_ref). It checks a file against me.uploads.max_bytes before it sends the bytes, and scales a photo to me.uploads.image_edge on its long edge (the edge the daemon stores a photo at). The stored message lists what it carried in meta.attachments, an image under a `media` id that GET /v1/media/<media> serves.",
   "A permission card that waits carries what the read-first rule needs (src/safety/card.ts, the one form every client gets): `text` is the whole text to judge with each hidden character written as its code point, `notes` say why it is asked, where it runs, what in the text can mislead and whether only its start is here, `rtl` says it holds letters written right to left, and `hold` says why Allow needs the text shown whole first (long, cut, marked, risk, where). An empty `hold` means one line shows all of it. The app sends `seen: \"whole\"` with an allow once all of `text` was on its screen. An allow of a held card without `seen` is answered 409 with the sentence to show in `error`, and the card stays open: an app from before these fields shows that sentence. `grants` are the rules a standing answer would store: the session action's label names them, and the app's button does (\"Allow echo * for this session\"). The action is offered only where there is a rule. `line` is what a notification says of the request (the tool, where it runs when not here, the text), and `glance` says that a collapsed notification shows all of that line: only then may a notification carry Allow once. A push says the same: its `body` is that line, its `opts` hold `once` only for such a request, and `hold` gives the reasons a request is held (comma separated; empty when none). An answer given from a notification says `via: \"notification\"`: it never counts as having shown the text, it allows once only what `glance` covers, and it gives no standing answer (409 with the sentence). A closed card says where it was answered in `from`. An answer to a card that was already answered is a 409 whose `error` says how it ended, who answered and how long ago (\"this approval is already allowed (once) from the page, 3 s ago\"), with the closed card in `approval`.",
   "A plan the model presents in plan mode is a card of kind `plan`: `command` is its title, `text` the whole plan, `hold` [\"plan\"] (approved only once all of it was on the screen, with `seen: \"whole\"` and the approval key). Its actions: `session` approves it with the work going on in auto edits, `once` in ask (each change asks; what a phone with no screen lock may start), `deny` sends it back to planning, with `feedback` in the answer when the owner wrote what to change. A closed plan card says `approved` with the choice it was approved with, or `denied`, or `expired` when the turn ended under it.",
-  "changes (GET /v1/chats/:id/changes) is what a session changed in its folder, read-only: `turns` newest first, each with its files (file_change: git's status letter, lines added and removed, `outside` for a write made outside the session's turns), and `session`, the files changed since its first turn. `n` is the turn's place among the session's turns, as the page numbers it; `turn` is what /changes/diff takes. file_diff (GET /v1/chats/:id/changes/diff?path=<path>[&turn=<turn>]) is one file's unified diff, of one turn or since the first; `truncated` says it was cut where the page cuts a diff. `unavailable` says why there is nothing to show (the session's files are on another machine, no checkpoints are kept)."
+  "changes (GET /v1/chats/:id/changes) is what a session changed in its folder, read-only: `turns` newest first, each with its files (file_change: git's status letter, lines added and removed, `outside` for a write made outside the session's turns), and `session`, the files changed since its first turn. `n` is the turn's place among the session's turns, as the page numbers it; `turn` is what /changes/diff takes. file_diff (GET /v1/chats/:id/changes/diff?path=<path>[&turn=<turn>]) is one file's unified diff, of one turn or since the first; `truncated` says it was cut where the page cuts a diff. `unavailable` says why there is nothing to show (the session's files are on another machine, no checkpoints are kept).",
+  "A session an agent works in has its starter's id in `parent_id`; an agent's agents have that agent's session there, so the rows make the tree. `agents` counts the agents at work below a session, at any depth; `state_word` is the state in the workbench's own words; `created` orders an agent among its siblings."
  ],
  "signing": {
   "request": [
@@ -82,7 +83,10 @@
    "preview": "string",
    "last_role": "string",
    "parent_id": "string|null",
-   "failure": "string?"
+   "failure": "string?",
+   "created": "number?",
+   "agents": "number?",
+   "state_word": "string?"
   },
   "message": {
    "id": "string",
@@ -391,7 +395,8 @@
     "agents": 1,
     "preview": "",
     "last_role": "",
-    "preview_id": null
+    "preview_id": null,
+    "state_word": "Working: waiting for 1 agent"
    }
   ],
   "message": [

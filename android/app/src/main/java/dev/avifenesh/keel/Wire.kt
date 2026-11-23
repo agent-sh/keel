@@ -197,6 +197,12 @@ data class Chat(
     val id: String, val title: String, val status: String, val updated: Double, val unread: Int,
     val pinned: Boolean, val archived: Boolean, val preview: String, val lastRole: String, val parentId: String?,
     val failure: String = "",
+    /** When it was made: an agent's place among its siblings. */
+    val created: Double = 0.0,
+    /** The agents at work below it, at any depth. */
+    val agents: Int = 0,
+    /** Its state in the workbench's own words ("Waiting for a timer"), when the daemon says it. */
+    val stateWord: String = "",
 ) {
     companion object {
         fun of(o: JSONObject) = Chat(
@@ -204,8 +210,45 @@ data class Chat(
             updated = o.optDouble("updated", 0.0), unread = o.optInt("unread", 0), pinned = o.optInt("pinned", 0) != 0,
             archived = o.optInt("archived", 0) != 0, preview = o.str("preview"), lastRole = o.str("last_role"),
             parentId = o.str("parent_id").takeIf { it.isNotBlank() }, failure = o.str("failure"),
+            created = o.optDouble("created", 0.0), agents = o.optInt("agents", 0), stateWord = o.str("state_word"),
         )
     }
+}
+
+/** One agent in the tree under a session: how deep (1 for the session's own agents) and how many agents are below it. */
+data class AgentRow(val chat: Chat, val depth: Int, val below: Int)
+
+/**
+ * The agents under `root`, each followed by its own agents, oldest first at every level: the order the
+ * workbench lists them in (src/core/agent-tree.ts, treeRows). A loop in damaged data is not followed.
+ */
+fun agentTree(chats: Collection<Chat>, root: String): List<AgentRow> {
+    val kids = chats.filter { it.parentId != null && it.parentId != it.id }.groupBy { it.parentId!! }
+        .mapValues { (_, l) -> l.sortedWith(compareBy<Chat>({ it.created }, { it.id })) }
+    val out = ArrayList<AgentRow>()
+    val seen = hashSetOf(root)
+    fun walk(parent: String, depth: Int): Int {
+        var total = 0
+        for (c in kids[parent].orEmpty()) {
+            if (!seen.add(c.id) || depth > 32) continue
+            val at = out.size
+            out += AgentRow(c, depth, 0)
+            val below = walk(c.id, depth + 1)
+            out[at] = out[at].copy(below = below)
+            total += 1 + below
+        }
+        return total
+    }
+    walk(root, 1)
+    return out
+}
+
+/** The session at the top of the tree a session is in (itself when nobody started it). */
+fun rootOf(chats: Map<String, Chat>, id: String): String {
+    var at = id
+    var n = 0
+    while (n++ < 32) at = chats[at]?.parentId?.takeIf { it in chats } ?: return at
+    return at
 }
 
 /**
