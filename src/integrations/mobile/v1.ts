@@ -119,7 +119,28 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   if (x.failure) c.failure = x.failure;
   if (x.agents) c.agents = x.agents;
   if (x.preview !== undefined) Object.assign(c, { preview: x.preview?.text ?? "", last_role: x.preview?.role ?? "", preview_id: x.preview?.id ?? null });
+  // The row's own mark: the same row, the same mark. A phone that says the marks it holds is sent
+  // only the rows that changed (syncBody's `have`).
+  c.h = rowMark(c);
   return c;
+}
+
+// Eight hex digits of the row's content (its `h` left out): a phone's copy is level when the marks match.
+export const rowMark = (row: Record<string, unknown>) => {
+  const { h: _, ...rest } = row;
+  return (Bun.hash(JSON.stringify(rest)) & 0xffffffffn).toString(16).padStart(8, "0");
+};
+
+// The marks a phone holds, as it sends them: `<chat id>:<mark>` pairs joined by commas. Null for none
+// given (an app that does not send them is sent every row, as before).
+export function parseHave(v: string | null): Map<string, string> | null {
+  if (v === null) return null;
+  const out = new Map<string, string>();
+  for (const pair of v.split(",")) {
+    const at = pair.lastIndexOf(":");
+    if (at > 0) out.set(pair.slice(0, at), pair.slice(at + 1));
+  }
+  return out;
 }
 
 // How a turn that did not finish ended, as the workbench says it.
@@ -678,8 +699,12 @@ export function mobileApi(ctx: MobileCtx) {
           let sent = mobile.globalSeq(), base = sent;
           const marks = new Map<string, number>();
           const put = (p: unknown) => c.enqueue(enc.encode(`data: ${JSON.stringify(p)}\n\n`));
+          // The marks of the rows the phone holds, said once with the stream: its first hello sends only
+          // the rows that differ. A hello after a lag sends them all (what the phone holds is not known then).
+          let have = parseHave(q.get("have"));
           const hello = (from: number) => {
-            const sync = syncBody(from);
+            const sync = syncBody(from, have);
+            have = null;
             sent = base = sync.seq;
             marks.clear();
             put({ type: "hello", seq: sync.seq, cursor: sync.seq, working: sync.working, sync });
@@ -867,7 +892,9 @@ export function mobileApi(ctx: MobileCtx) {
   // never gave that cursor (a restored backup, another machine). "behind":
   // more than a page of events were stored since, more than the newest page of
   // every chat costs.
-  function syncBody(since: number) {
+  // `have`: the rows the phone holds, by their marks. Then only the rows that differ go, `removed` names
+  // the ones that are gone, and the answer is not `complete`. A whole read (since 0, a reload) sends all.
+  function syncBody(since: number, have: Map<string, string> | null = null) {
     const seq = mobile.globalSeq();
     const page = since > 0 && since <= seq ? mobile.eventsAfter(since, SYNC_PAGE + 1, SHOWN_KINDS) : [];
     const reload = since > seq ? "ahead" : page.length > SYNC_PAGE ? "behind" : undefined;
@@ -879,14 +906,19 @@ export function mobileApi(ctx: MobileCtx) {
     const reset = new Set(moved.map((m) => m.id));
     // Cards that closed since the cursor's time, or within a push's lifetime.
     const from = Math.min(Date.now() - 15 * 60_000, whole ? Infinity : (mobile.tsOfGseq(since) ?? 0));
+    const rows = all.map((s) => chatFull(s, u));
+    // The phone said what it holds: only what differs goes, and what is gone is named.
+    const diff = have && !whole;
+    const ids = new Set(rows.map((r) => r.id as string));
     return {
       // `more` is always false now: an older app pages while it is true.
       seq, more: false,
       // `complete`: the chats are every chat there is, so the app drops the
       // ones it holds that are not among them (deleted on the desktop).
-      complete: true,
+      complete: !diff,
       ...(reload ? { reload } : {}),
-      chats: all.map((s) => chatFull(s, u)),
+      chats: diff ? rows.filter((r) => have.get(r.id as string) !== r.h) : rows,
+      ...(diff ? { removed: [...have.keys()].filter((id) => !ids.has(id)) } : {}),
       messages: whole ? store.sessions().sort((a, b) => b.updated - a.updated).slice(0, FIRST_CHATS).flatMap(recent) : [...page.filter((e) => !reset.has(e.session_id)).flatMap((e) => msgsOf(e, e.gseq)), ...moved.flatMap((m) => m.page.messages)],
       ...(moved.length ? { reset: moved.map((m) => ({ chat_id: m.id, older: m.page.older ?? null })) } : {}),
       approvals: [...pendingApprovals(), ...closedCards(from)],
@@ -952,10 +984,11 @@ export function mobileApi(ctx: MobileCtx) {
     // session never hides a newer event of a short one (syncBody).
     "/v1/sync": {
       GET: signed(async (req) => {
-        const since = Math.max(0, Number(new URL(req.url).searchParams.get("since")) || 0);
+        const q = new URL(req.url).searchParams;
+        const since = Math.max(0, Number(q.get("since")) || 0);
         // The chats whose shown branch changed since are read whole below: brought in off the loop first.
         if (since > 0) for (const id of mobile.branchesAfter(since)) await warmed(id);
-        return json(syncBody(since));
+        return json(syncBody(since, parseHave(q.get("have"))));
       }),
     },
     "/v1/events": { GET: signed((req, dev, _b, srv) => events(req, dev, srv)) },

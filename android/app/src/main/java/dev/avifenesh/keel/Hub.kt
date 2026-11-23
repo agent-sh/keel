@@ -117,7 +117,9 @@ object Hub {
     }
 
     private suspend fun stream(opened: () -> Unit) = suspendCancellableCoroutine<Unit> { k ->
-        val req = Api.request("/v1/events?since=${feed.cursor}").header("Accept", "text/event-stream").build()
+        // With the marks of the rows held: the catch-up sends only the rows that changed.
+        val have = feed.have()?.let { "&have=${Wire.enc(it)}" }.orEmpty()
+        val req = Api.request("/v1/events?since=${feed.cursor}$have").header("Accept", "text/event-stream").build()
         val src = EventSources.createFactory(Api.sse).newEventSource(req, object : EventSourceListener() {
             override fun onOpen(eventSource: EventSource, response: Response) { conn.value = Conn.LIVE; opened() }
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {

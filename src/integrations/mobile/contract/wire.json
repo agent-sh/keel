@@ -16,7 +16,8 @@
   "A session an agent works in has its starter's id in `parent_id`; an agent's agents have that agent's session there, so the rows make the tree. `agents` counts the agents at work below a session, at any depth; `state_word` is the state in the workbench's own words; `created` orders an agent among its siblings.",
   "start (GET /v1/start) is what a new session can start with: the default `model` and the `models` to pick from, the `folders` this machine's sessions worked in (newest first, the daemon's own folder marked `home`), and the `machines` of the fleet that take a session (`ready` while it answers; `root`, the folder granted there). new_chat is the body of POST /v1/chats: each field may be left out (the default model, the daemon's folder, this machine); `workspace` is an absolute folder here, or one inside `root` on another machine; `text` is the first message, sent at once.",
   "away (GET /v1/away) is the digest of the owner's last absence, the page's own, in words: `span` (when), `brief` (one line), `totals`, what the daemon went through (`daemon`), and the sessions in which something happened, the one that failed first, each with its facts and the part that went wrong (`bad`). Null when the owner was not away or nothing happened. DELETE /v1/away says it was seen: it is shown no more, here or on the page. POST /v1/presence with `idle_ms` says the owner touched the app that long ago: the phone in use ends an absence, as a page in use does.",
-  "A push of kind `live` is the lasting notification's news: `w` sessions working, `q` cards waiting on the owner, `title` and `body` to show as they are, `since` (epoch milliseconds) when the longest turn started. The push service keeps only the newest (one collapse key). `w` and `q` of 0 take the notification down."
+  "A push of kind `live` is the lasting notification's news: `w` sessions working, `q` cards waiting on the owner, `title` and `body` to show as they are, `since` (epoch milliseconds) when the longest turn started. The push service keeps only the newest (one collapse key). `w` and `q` of 0 take the notification down.",
+  "A chat row carries `h`, eight hex digits of its content. A phone that sends the marks it holds (`have=<chat id>:<h>,...` on GET /v1/events or /v1/sync) is sent in the catch-up only the rows whose mark differs, with `removed` naming the rows it holds that are gone, and `complete` false. A whole read (since 0, or a cursor that cannot be caught up from) sends every row."
  ],
  "signing": {
   "request": [
@@ -89,7 +90,8 @@
    "failure": "string?",
    "created": "number?",
    "agents": "number?",
-   "state_word": "string?"
+   "state_word": "string?",
+   "h": "string?"
   },
   "message": {
    "id": "string",
@@ -158,7 +160,8 @@
    "drafts": "array",
    "reload": "string?",
    "reset": "array?",
-   "more": "boolean"
+   "more": "boolean",
+   "removed": "array?"
   },
   "reset": {
    "chat_id": "string",
@@ -433,7 +436,8 @@
     "failure": "HTTP 402: no credit",
     "preview": "The build fails on main",
     "last_role": "agent",
-    "preview_id": "e-2"
+    "preview_id": "e-2",
+    "h": "0a1b2c3d"
    },
    {
     "id": "s-2",
@@ -451,7 +455,8 @@
     "preview": "",
     "last_role": "",
     "preview_id": null,
-    "state_word": "Working: waiting for 1 agent"
+    "state_word": "Working: waiting for 1 agent",
+    "h": "4e5f6a7b"
    }
   ],
   "message": [
@@ -1251,6 +1256,132 @@
      }
     ],
     "drafts": []
+   },
+   {
+    "seq": 47,
+    "more": false,
+    "complete": false,
+    "chats": [
+     {
+      "id": "s-1",
+      "title": "Fix the build",
+      "kind": "chat",
+      "created": 1795190000.0,
+      "updated": 1795195000.5,
+      "unread": 2,
+      "pinned": 1,
+      "archived": 1,
+      "seq": 41,
+      "parent_id": "s-parent",
+      "status": "failed",
+      "failure": "HTTP 402: no credit",
+      "preview": "The build fails on main",
+      "last_role": "agent",
+      "preview_id": "e-2"
+     },
+     {
+      "id": "s-2",
+      "title": "Review",
+      "kind": "chat",
+      "created": 1795190001.0,
+      "updated": 1795195001.0,
+      "unread": 0,
+      "pinned": 0,
+      "archived": 0,
+      "seq": 7,
+      "parent_id": null,
+      "status": "working",
+      "agents": 1,
+      "preview": "",
+      "last_role": "",
+      "preview_id": null
+     }
+    ],
+    "messages": [
+     {
+      "id": "e-1",
+      "chat_id": "s-1",
+      "role": "user",
+      "kind": "text",
+      "content": "Why does the build fail?",
+      "meta": {},
+      "ts": 1795194990.001,
+      "seq": 38
+     },
+     {
+      "id": "e-2",
+      "chat_id": "s-1",
+      "role": "agent",
+      "kind": "text",
+      "content": "The build fails on main.",
+      "meta": {
+       "model": "fx:saved"
+      },
+      "ts": 1795194995.002,
+      "seq": 39
+     },
+     {
+      "id": "e-9",
+      "chat_id": "s-1",
+      "role": "agent",
+      "kind": "deleted",
+      "content": "",
+      "meta": {
+       "branch": "not shown"
+      },
+      "ts": 1795194994.0,
+      "seq": 0
+     }
+    ],
+    "reset": [
+     {
+      "chat_id": "s-1",
+      "older": "e-0"
+     }
+    ],
+    "approvals": [
+     {
+      "id": "q-call_1",
+      "chat_id": "s-1",
+      "session_key": "s-1",
+      "kind": "question",
+      "command": "Build type?",
+      "description": "Debug / Release",
+      "options": [
+       "Debug",
+       "Release"
+      ],
+      "unavailable": false,
+      "questions": [
+       {
+        "id": "build",
+        "question": "Build type?",
+        "options": [
+         "Debug",
+         "Release"
+        ],
+        "multi": true
+       }
+      ],
+      "actions": [],
+      "state": "approved",
+      "choice": "once",
+      "ts": 1795194999.0,
+      "answers": {
+       "build": {
+        "picked": [
+         "Debug"
+        ],
+        "other": "with symbols"
+       }
+      }
+     }
+    ],
+    "working": [],
+    "drafts": [],
+    "removed": [
+     "gone"
+    ]
    }
   ],
   "reset": [

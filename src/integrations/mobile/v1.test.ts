@@ -407,6 +407,34 @@ async function changedSession() {
   return s;
 }
 
+describe("reconnect", () => {
+  test("a phone that says the rows it holds is sent only the ones that changed, and told which are gone", async () => {
+    const a = session("Kept A"), b = session("Kept B");
+    // A phone that has synced something (a cursor of 0 is a whole read).
+    store.append(b.id, "user", { text: "hello" });
+    const whole = (await call("GET", "/v1/sync?since=0")).body;
+    const have = whole.chats.map((c: any) => `${c.id}:${c.h}`).join(",");
+    const at = whole.seq;
+    // Nothing changed: no rows at all, where every row went before.
+    const before = (await call("GET", `/v1/sync?since=${at}`)).body, after = (await call("GET", `/v1/sync?since=${at}&have=${encodeURIComponent(have)}`)).body;
+    expect([before.complete, before.chats.length === whole.chats.length, after.complete, after.chats, after.removed]).toEqual([true, true, false, [], []]);
+    const rows = (x: any) => JSON.stringify(x.chats).length;
+    expect(rows(after)).toBeLessThan(rows(before) / 10);
+    // One renamed: that row alone; one the phone holds that is gone: named.
+    store.updateSession(a.id, { title: "Kept A, renamed" });
+    const changed = (await call("GET", `/v1/sync?since=${at}&have=${encodeURIComponent(have + ",s-gone:00000000")}`)).body;
+    expect([changed.chats.map((c: any) => c.title), changed.removed]).toEqual([["Kept A, renamed"], ["s-gone"]]);
+    // The stream's first hello does the same; a whole read sends every row whatever is said.
+    const st = await openStream(at, have);
+    try {
+      await st.read((f) => f.length > 0);
+      expect(st.frames[0].sync.chats.map((c: any) => c.id)).toEqual([a.id]);
+    } finally { await st.close(); }
+    expect((await call("GET", `/v1/sync?since=0&have=${encodeURIComponent(have)}`)).body.complete).toBe(true);
+    void b;
+  });
+});
+
 describe("away", () => {
   test("the digest of the owner's absence reaches the phone in its words, and seen there it is gone", async () => {
     awayDigest = DIGEST;
@@ -778,8 +806,8 @@ describe("run, usage and pulse", () => {
 });
 
 // The event stream as the app reads it: `read` pulls frames until `until` holds.
-async function openStream(since?: number) {
-  const path = since === undefined ? "/v1/events" : `/v1/events?since=${since}`;
+async function openStream(since?: number, have?: string) {
+  const path = (since === undefined ? "/v1/events" : `/v1/events?since=${since}`) + (have ? `${since === undefined ? "?" : "&"}have=${encodeURIComponent(have)}` : "");
   const ts = String(Math.floor(Date.now() / 1000));
   const sig = sign("sha256", Buffer.from(`GET\n${path}\n${ts}\n${sha256Hex("")}`), { key: privateKey, dsaEncoding: "der" }).toString("base64");
   const req: any = new Request(`http://x${path}`, { headers: { authorization: `Bearer ${dev.token}`, "x-hm-ts": ts, "x-hm-sig": sig } });
@@ -1087,6 +1115,8 @@ describe("the wire contract", () => {
     // Catch-ups that say more than events: a branch that changed, a cursor that cannot be caught up from.
     take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}`)).body);
     take("sync", (await call("GET", `/v1/sync?since=${mobile.globalSeq() + 9}`)).body);
+    // A catch-up for a phone that said the rows it holds: what changed, and what is gone.
+    take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}&have=${encodeURIComponent("s-gone:00000000")}`)).body);
     running.delete(parent.id);
     store.db.query("DELETE FROM approvals WHERE id IN ('apr-held', 'apr-done')").run();
 

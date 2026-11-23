@@ -86,6 +86,9 @@ class Feed {
         return true
     }
 
+    /** What a reconnect says it holds: the marks of its rows (null: ask for every row). */
+    @Synchronized fun have(): String? = if (cursor == 0L) null else haveOf(chats.value.values)
+
     /** A stream closed: what waited for its catch-up is dropped with it; the next stream starts from the cursor. */
     @Synchronized fun closed() { catching = false; held.clear(); streamSyncs = false; broken = null }
 
@@ -127,6 +130,11 @@ class Feed {
         o.optJSONArray("chats")?.let { a ->
             val list = objs(a).map(Chat::of).associateBy { it.id }
             chats.value = if (o.optBoolean("complete")) list else chats.value + list
+        }
+        // Rows the phone said it holds that are gone (an answer that sends only what changed).
+        o.optJSONArray("removed")?.let { a ->
+            val gone = (0 until a.length()).map { a.optString(it) }.toSet()
+            if (gone.isNotEmpty()) { chats.update { it - gone }; msgs.update { it - gone }; older.update { it - gone } }
         }
         if (reload) { msgs.value = emptyMap(); older.value = emptyMap(); epoch++ }
         // `reset`: chats whose shown branch changed since the cursor. The answer's

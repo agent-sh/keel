@@ -14,6 +14,19 @@ class CacheTest {
     private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
     private val file = File(ctx.filesDir, "last-sync.bin")
 
+    @Test fun aColdStartSaysTheRowsItKeptSoOnlyWhatChangedComes() {
+        Prefs.init(ctx); Cache.init(ctx)
+        val f = Feed()
+        f.sync(JSONObject().put("seq", 9).put("complete", true).put("chats", org.json.JSONArray()
+            .put(JSONObject().put("id", "s-1").put("title", "One").put("updated", 1.0).put("h", "aaaa0001"))
+            .put(JSONObject().put("id", "s-2").put("title", "Two").put("updated", 1.0).put("h", "bbbb0002"))))
+        Cache.save(f.snapshot()!!)
+        // The next run: what was kept says the same marks, so its first stream asks only for what changed.
+        val next = Feed().also { it.restore(Cache.load()!!) }
+        assertEquals(f.have()!!.split(",").sorted(), next.have()!!.split(",").sorted())
+        Cache.clear()
+    }
+
     @Test fun theLastSyncIsKeptSealedAndReadBackWhole() {
         Prefs.init(ctx); Cache.init(ctx)
         val snap = JSONObject().put("seq", 42).put("complete", true).put("chats", org.json.JSONArray().put(JSONObject().put("id", "s-1").put("title", "Rotate the signing key")))

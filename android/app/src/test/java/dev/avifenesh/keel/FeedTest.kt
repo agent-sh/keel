@@ -32,6 +32,20 @@ class FeedTest {
         assertEquals(10L, it.cursor)
     }
 
+    @Test fun aReconnectSaysTheRowsItHoldsAndTakesOnlyWhatChanged() {
+        val f = Feed()
+        // Level with two marked rows.
+        f.sync(JSONObject().put("seq", 10).put("complete", true).put("chats", JSONArray(listOf(chat(1.0).put("h", "aaaa0001"), JSONObject().put("id", "c2").put("title", "Two").put("updated", 1.0).put("h", "bbbb0002")))))
+        assertEquals("c1:aaaa0001,c2:bbbb0002", f.have()!!.split(",").sorted().joinToString(","))
+        // The catch-up of a daemon that was told: one row changed, the other is gone; nothing else is touched.
+        f.sync(JSONObject().put("seq", 12).put("complete", false).put("chats", JSONArray(listOf(chat(2.0).put("title", "One, renamed").put("h", "aaaa0003")))).put("removed", JSONArray(listOf("c2"))))
+        assertEquals(listOf("One, renamed"), f.chats.value.values.map { it.title })
+        // A row the daemon never marked (an older daemon): every row is asked for.
+        f.sync(JSONObject().put("seq", 13).put("complete", false).put("chats", JSONArray(listOf(JSONObject().put("id", "c3").put("title", "Old").put("updated", 3.0)))))
+        assertEquals(null, f.have())
+        assertEquals(null, Feed().have())
+    }
+
     @Test fun aCardClosedWithoutAnAnswerOpensAgainWhenItIsPutBack() {
         val f = level()
         // The daemon stopped under it (an older daemon said it expired), then put it back on its card.

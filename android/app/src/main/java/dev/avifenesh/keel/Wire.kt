@@ -203,6 +203,8 @@ data class Chat(
     val agents: Int = 0,
     /** Its state in the workbench's own words ("Waiting for a timer"), when the daemon says it. */
     val stateWord: String = "",
+    /** The daemon's mark of this row's content: sent back with a reconnect, only rows that changed come. */
+    val h: String = "",
 ) {
     companion object {
         fun of(o: JSONObject) = Chat(
@@ -210,7 +212,7 @@ data class Chat(
             updated = o.optDouble("updated", 0.0), unread = o.optInt("unread", 0), pinned = o.optInt("pinned", 0) != 0,
             archived = o.optInt("archived", 0) != 0, preview = o.str("preview"), lastRole = o.str("last_role"),
             parentId = o.str("parent_id").takeIf { it.isNotBlank() }, failure = o.str("failure"),
-            created = o.optDouble("created", 0.0), agents = o.optInt("agents", 0), stateWord = o.str("state_word"),
+            created = o.optDouble("created", 0.0), agents = o.optInt("agents", 0), stateWord = o.str("state_word"), h = o.str("h"),
         )
     }
 }
@@ -546,7 +548,14 @@ private fun JSONObject.opt(k: String, v: String) = apply { if (v.isNotEmpty()) p
 
 fun Chat.json(): JSONObject = JSONObject().put("id", id).put("title", title).put("status", status).put("updated", updated).put("unread", unread)
     .put("pinned", if (pinned) 1 else 0).put("archived", if (archived) 1 else 0).put("preview", preview).put("last_role", lastRole)
-    .put("parent_id", parentId ?: JSONObject.NULL).opt("failure", failure).put("created", created).put("agents", agents).opt("state_word", stateWord)
+    .put("parent_id", parentId ?: JSONObject.NULL).opt("failure", failure).put("created", created).put("agents", agents).opt("state_word", stateWord).opt("h", h)
+
+/**
+ * The rows the phone holds, by the daemon's marks, as a reconnect sends them (`have`): only rows the
+ * daemon marked (a daemon from before marks says none, and is asked for every row, as before).
+ */
+fun haveOf(chats: Collection<Chat>): String? = chats.filter { it.h.isNotBlank() }.takeIf { it.isNotEmpty() && it.size == chats.size && it.size <= 400 }
+    ?.joinToString(",") { "${it.id}:${it.h}" }
 
 fun Attachment.json(): JSONObject = JSONObject().put("kind", kind).put("media", media).put("mime", mime).opt("file_name", fileName).apply { if (size > 0) put("size", size) }
 
