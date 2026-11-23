@@ -624,6 +624,8 @@ sleep 0.5; launch
 check "the app spoke to the stranger, on the health path and past it" "wait_for 12 \"grep -q 'REQUEST GET /api/health' '$D/stranger.out' && grep -q 'REQUEST GET /api/shell' '$D/stranger.out'\""
 sleep 3
 check "and never sent it the token, though the lock names a live process of this account" "! grep -q 'authorization=yes' '$D/stranger.out'"
+# (It answers the health path and refuses the page: the window asks for the page again, less and less often.)
+check "it is asked for the page a few times in those seconds, not as fast as it can refuse it" "[ \"\$(grep -c 'REQUEST GET / ' '$D/stranger.out')\" -ge 1 ] && [ \"\$(grep -c 'REQUEST GET / ' '$D/stranger.out')\" -le 8 ]"
 
 # --- 12. an address that is not this machine's: the first page says so, and nothing is started there
 (eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'

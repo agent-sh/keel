@@ -433,6 +433,17 @@ pub fn place_of(url: &str, here: &str) -> Option<String> {
     links::page_path(links::place(url.strip_prefix(here)?))
 }
 
+/// How long a window waits before it asks for the daemon's page again after a load of it
+/// failed, by how many failed in a row: at once the first time, then longer each time, ten
+/// seconds at most. (A daemon that answers its health check and not its page, or something
+/// else on its port, was otherwise asked for the page as fast as it could refuse it.)
+pub fn retry_after(failed: u32) -> Duration {
+    match failed {
+        0 | 1 => Duration::ZERO,
+        n => Duration::from_millis((500u64 << (n - 2).min(5)).min(10_000)),
+    }
+}
+
 /// Whether a page that ended is loaded again: a few times in a minute, and no more. Each ending is noted.
 pub fn may_reload(stops: &mut Vec<Instant>, now: Instant) -> bool {
     stops.retain(|t| now.saturating_duration_since(*t) < Duration::from_secs(60));
@@ -585,6 +596,7 @@ impl Engine for Qt {
             stops: RefCell::new(Vec::new()),
             stopped: Cell::new(false),
             say_stopped: Cell::new(false),
+            failed: Cell::new(0),
             size: Cell::new((size.0, size.1, maximized)),
             visible: Cell::new(false),
             open: Cell::new(false),
@@ -636,6 +648,8 @@ struct Win {
     stops: RefCell<Vec<Instant>>,
     stopped: Cell<bool>,
     say_stopped: Cell<bool>,
+    /// Loads of the daemon's page that failed in a row (`retry_after`).
+    failed: Cell<u32>,
     /// Width, height, maximized, as the other program last said.
     size: Cell<(i32, i32, bool)>,
     visible: Cell<bool>,
@@ -696,6 +710,13 @@ impl Win {
                 self.tell(&json!({ "copied": { "id": id, "ok": ok } }));
             }
             Some(Asked1::Can { paste, saving }) => {
+                // The page itself speaks (not the app's own script before it): it listens now.
+                // One that was loaded again because its process had ended is told so, once.
+                // (Told when the load finished, the word could reach a document whose page
+                // was not listening yet, and was then never said.)
+                if paste && self.showing.get() == Showing::App && self.say_stopped.replace(false) {
+                    self.tell(&json!({ "reloaded": "stopped" }));
+                }
                 self.gate.borrow_mut().announces(saving);
                 self.inner.send(&json!({ "t": "can", "win": self.id, "paste": paste, "saving": saving }));
             }
@@ -725,11 +746,8 @@ impl Win {
                 self.inner.drew.set(true);
                 self.loading.set(false);
                 self.slow.set(false);
+                self.failed.set(0);
                 self.pill_now();
-                // The page was loaded again because its process had ended: it says so, once.
-                if self.showing.get() == Showing::App && self.say_stopped.replace(false) {
-                    self.tell(&json!({ "reloaded": "stopped" }));
-                }
                 // A state the away page was told before it had loaded is told again.
                 if self.showing.get() == Showing::Away && !self.away_js.borrow().is_empty() {
                     self.js(&self.away_js.borrow());
@@ -739,7 +757,18 @@ impl Win {
             // (A document the main frame was refused is no loss of the daemon: the page stays.)
             "ok" | "failed" if self.showing.get() == Showing::App && (how == "ok" || ours) => {
                 self.showing.set(Showing::Nothing);
-                (self.ask)(self, Ask::Lost);
+                self.failed.set(self.failed.get().saturating_add(1));
+                let wait = retry_after(self.failed.get());
+                if wait.is_zero() {
+                    return (self.ask)(self, Ask::Lost);
+                }
+                // The page keeps failing while the daemon says it is up: asked for again after a while.
+                let me = Rc::downgrade(self);
+                glib::timeout_add_local_once(wait, move || {
+                    if let Some(win) = me.upgrade().filter(|w| w.showing.get() == Showing::Nothing) {
+                        (win.ask)(&win, Ask::Lost);
+                    }
+                });
             }
             _ => {}
         }
@@ -886,6 +915,13 @@ mod tests {
     // The first review's case, for this engine: content opened windows and sent addresses to the
     // browser with no click. The engine tells of every window asked for; only the owner's press makes one.
     // The review's case: stopped twice within ten seconds after it drew, it was left stopped with no window.
+    #[test]
+    fn a_page_that_keeps_failing_is_asked_for_less_and_less_often() {
+        let waits: Vec<u64> = (0..10).map(|n| retry_after(n).as_millis() as u64).collect();
+        assert_eq!(waits, [0, 0, 500, 1000, 2000, 4000, 8000, 10_000, 10_000, 10_000]);
+        assert_eq!(retry_after(u32::MAX), Duration::from_secs(10));
+    }
+
     #[test]
     fn a_program_that_keeps_stopping_soon_is_given_up_on_and_never_left_stopped() {
         let (soon, late) = (Duration::from_secs(3), AGAIN + Duration::from_secs(1));
