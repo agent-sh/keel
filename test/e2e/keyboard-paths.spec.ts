@@ -150,10 +150,25 @@ test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ 
   await page.goto(`/s/${ids[1]}`);
   await expect(page.getByTestId("composer")).toBeFocused();
 
-  // The sheet is a reference: Esc stops a turn, listed also while none runs.
+  // The sheet is a reference: Esc stops a turn, listed also while none runs. Esc is one line,
+  // what it does and where under it, each once; so is Shift Esc.
   await page.keyboard.press("Control+/");
   const sheet = page.getByTestId("shortcuts");
-  await expect(sheet.locator("div").filter({ hasText: /^Stop the turnEsc$/ })).toBeVisible();
+  const esc = sheet.locator('[data-testid="shortcut-row"][data-keys="escape"]');
+  await expect(esc).toHaveCount(1);
+  await expect(esc.locator("kbd")).toHaveText(["Esc"]);
+  await expect(esc.getByTestId("shortcut-case")).toHaveText([
+    "Close the panel over the conversation, while one is open",
+    "Back to the session the pane holds, from a look or the start page",
+    "Stop the turn, while a turn works",
+    "Back to the session that started this agent, in an agent's session",
+    "Deny an approval with a reason, on its card",
+  ]);
+  const shiftEsc = sheet.locator('[data-testid="shortcut-row"][data-keys="shift+escape"]');
+  await expect(shiftEsc).toHaveCount(1);
+  await expect(shiftEsc.getByTestId("shortcut-case")).toHaveText(["Leave the look, from one of its cards", "Focus the message box, from the conversation"]);
+  await expect(sheet.getByText("Back to the session the pane holds")).toHaveCount(1);
+  await esc.scrollIntoViewIfNeeded();
   await expect(sheet.locator("div").filter({ hasText: /^Focus the session listAltL$/ })).toBeVisible();
   await shoot(page, "keyboard-paths-08-sheet-esc");
   await page.keyboard.press("Escape");

@@ -649,7 +649,9 @@ test("the shortcut sheet follows the Send with setting", async ({ page, request 
     await open();
     await expect(sheet.locator(ROW, { hasText: "Go to the end and follow" })).toHaveCount(1);
     const conversation = sheet.locator("section", { has: page.getByRole("heading", { name: "Conversation" }) });
-    await expect(conversation.locator(`${ROW} > span:first-child`)).toHaveText(["Go to the end and follow", "Previous prompt", "Next prompt", "Focus the message box"]);
+    await expect(conversation.locator(`${ROW} > span:first-child`)).toHaveText(["Go to the end and follow", "Previous prompt", "Next prompt"]);
+    // Shift Esc does two things: one line of its own, with both.
+    await expect(sheet.locator(`${ROW}[data-keys="shift+escape"]`)).toContainText("Focus the message box");
     await conversation.scrollIntoViewIfNeeded();
     await shoot(page, "wb-17b-shortcuts-conversation");
     await close();

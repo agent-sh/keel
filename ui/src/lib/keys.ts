@@ -8,6 +8,9 @@ export type Command = {
   label: string;
   group?: string; // heading in the palette and the shortcut sheet
   keys?: string; // "mod+k", "mod+shift+o", "alt+m", "escape"; mod is Ctrl, or Cmd on a Mac
+  // Where the key does this, for the shortcut sheet: a key that does several things
+  // (Esc) is one line there, each case with its place ("while a turn works").
+  where?: string;
   icon?: ReactNode;
   words?: string; // extra words the palette matches
   when?: () => boolean; // shown and bound only when true

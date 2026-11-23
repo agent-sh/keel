@@ -127,20 +127,20 @@ registerCommand(
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => void copyOrSay(() => lastReply(current()!.id)) },
   // A panel lying over the conversation takes Escape first: it closes, and the
   // turn working behind it is not stopped by the same press.
-  { id: "panel-leave", label: "Close the panel over the conversation", group: "View", keys: "escape", when: () => !!document.querySelector('.k-side[data-mode="sheet"]'), run: () => savePref("panel", null) },
+  { id: "panel-leave", label: "Close the panel over the conversation", group: "View", keys: "escape", where: "while one is open", when: () => !!document.querySelector('.k-side[data-mode="sheet"]'), run: () => savePref("panel", null) },
   // In an agent's session Escape goes back to the session that started it, as
   // leaving a view does; stopping the agent is its own labeled button.
   // What lies over a pane's session is left first (lib/looks.ts): a look, or the start page. The pane
   // shows the session it holds again. In a look Escape never stops a turn, and on a card of the look
   // it is the card's own key (the look's bar does not offer it there). The press after that, in the
   // pane that was uncovered, does not stop that pane's turn either: it says how to (stopHeld).
-  { id: "look-back", label: "Back to the session the pane holds", group: "Bridge", keys: "escape", words: "leave look return", when: () => !!lookNow() && !document.activeElement?.closest("[data-ask-card]"), run: () => { const l = lookNow(); if (l) leaveLook(l.id); } },
+  { id: "look-back", label: "Back to the session the pane holds", group: "Bridge", keys: "escape", where: "from a look or the start page", words: "leave look return", when: () => !!lookNow() && !document.activeElement?.closest("[data-ask-card]"), run: () => { const l = lookNow(); if (l) leaveLook(l.id); } },
   // From a card of the look (where Escape is the card's own key: an approval's denial) Shift Escape
   // leads back, in one press. The look's bar names that key while the keyboard is on a card.
-  { id: "look-back-card", label: "Back to the session the pane holds, from a card", group: "Bridge", keys: "shift+escape", inInput: true, words: "leave look return card", when: () => !!lookNow() && !!(document.activeElement?.closest("[data-ask-card]") || document.activeElement?.closest("[data-ask-part]")), run: () => { const l = lookNow(); if (l) leaveLook(l.id); } },
-  { id: "home-back", label: "Back to the session the pane holds", group: "Bridge", keys: "escape", when: () => !!underHome(), run: () => void leaveHome() },
-  { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working" && !current()?.parent_id && !lookNow(), run: () => { if (!stopHeld(current()!.id)) void stopHere(current()!); } },
-  { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", when: () => !!current()?.parent_id && !lookNow(), run: () => navigate({ name: "session", id: current()!.parent_id! }) },
+  { id: "look-back-card", label: "Leave the look", group: "Bridge", keys: "shift+escape", where: "from one of its cards", inInput: true, words: "leave look return card", when: () => !!lookNow() && !!(document.activeElement?.closest("[data-ask-card]") || document.activeElement?.closest("[data-ask-part]")), run: () => { const l = lookNow(); if (l) leaveLook(l.id); } },
+  { id: "home-back", label: "Back to the session the pane holds", group: "Bridge", keys: "escape", where: "from a look or the start page", when: () => !!underHome(), run: () => void leaveHome() },
+  { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", where: "while a turn works", when: () => current()?.phase === "working" && !current()?.parent_id && !lookNow(), run: () => { if (!stopHeld(current()!.id)) void stopHere(current()!); } },
+  { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", where: "in an agent's session", when: () => !!current()?.parent_id && !lookNow(), run: () => navigate({ name: "session", id: current()!.parent_id! }) },
   { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => void stopHere(current()!) },
   { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { archive(current()!).catch(reportError); navigate({ name: "new" }); } },
   { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => void copyOrSay(location.href) },
@@ -150,7 +150,7 @@ registerCommand(
   { id: "prev-prompt", label: "Previous prompt", group: "Conversation", keys: "alt+arrowup", inInput: () => !isMac, words: "message question earlier jump back", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: -1 } })) },
   { id: "next-prompt", label: "Next prompt", group: "Conversation", keys: "alt+arrowdown", inInput: () => !isMac, words: "message question later jump forward", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: 1 } })) },
   // Back to typing from anywhere in the pane worked in (Escape does it from a prompt reached by the two above).
-  { id: "focus-box", label: "Focus the message box", group: "Conversation", keys: "shift+escape", inInput: true, words: "composer input type reply write", when: () => !!current(), run: () => focusBox(current()!.id) },
+  { id: "focus-box", label: "Focus the message box", group: "Conversation", keys: "shift+escape", where: "from the conversation", inInput: true, words: "composer input type reply write", when: () => !!current(), run: () => focusBox(current()!.id) },
   { id: "settings", label: "Settings", group: "General", keys: "mod+,", inInput: true, words: "preferences options", run: () => navigate({ name: "settings", section: "general" }) },
   { id: "errors", label: "Show recorded errors", group: "General", keys: "alt+r", inInput: () => !isMac, over: () => getUI().errors, words: "failures bugs log", run: () => setUI({ errors: !getUI().errors }) },
   { id: "theme-light", label: "Theme: light", group: "View", words: "appearance", run: () => setTheme("light") },
