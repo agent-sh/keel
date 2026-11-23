@@ -69,7 +69,7 @@ const HOOK: Record<string, string> = {
 const PART = 20;
 const GIVEN_PART = 40;
 
-const selectClass = "h-8 max-w-full min-w-0 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg";
+const selectClass = "max-w-full min-w-0";
 // A fact's name is shown whole: it wraps, it is never cut.
 const nameButton = "min-w-0 rounded-sm text-left font-mono text-caption text-fg underline decoration-line-strong underline-offset-4 [overflow-wrap:anywhere] hover:decoration-accent focus-visible:outline-2 focus-visible:outline-accent";
 const pagerButton = "k-btn k-btn-lg";

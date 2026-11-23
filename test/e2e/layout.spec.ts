@@ -360,7 +360,7 @@ test("text size choices fit a small phone", async ({ page }) => {
 // Settings search under the keyboard: Tab reaches "Find a setting" and the
 // field shows it in the focus color of each theme, and it keeps its name once
 // something is typed in it.
-test("settings search shows keyboard focus", async ({ page }) => {
+test("settings search shows keyboard focus", async ({ page, request }) => {
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.goto("/settings/general");
   const field = page.getByPlaceholder("Find a setting");
@@ -392,7 +392,46 @@ test("settings search shows keyboard focus", async ({ page }) => {
   // (Storage answers to the word too: it keeps the usage records and says for how long.)
   // The row inside Storage that matched is named under it.
   await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage", "Storage", "Keep usage records"]);
+  // Each word is matched on its own, by the words a section answers to as well as its name.
+  const nav = page.getByRole("navigation", { name: "Settings sections" });
+  const sections = nav.locator("button[data-section]");
+  for (const [q, id] of [["mode dark", "general"], ["approvals", "safety"], ["budget", "usage"], ["api key", "providers"], ["effort", "models"], ["spend limits", "usage"]] as const) {
+    await field.fill(q);
+    await expect(sections.first(), q).toHaveAttribute("data-section", id);
+  }
+  // The keyboard reaches what it found: Down goes into the list and along it, Up from the top goes back,
+  // Escape clears what was typed, and Enter opens the first result.
+  await field.fill("model");
+  await page.keyboard.press("ArrowDown");
+  const results = nav.locator("button[data-section], [data-testid=settings-hit]");
+  await expect(results.first()).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(results.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(field).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(field).toHaveValue("");
+  await expect(page.getByTestId("settings-title")).toHaveText("General");
+  await field.fill("judge");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("settings-title")).toHaveText("Permissions");
+  // A row the page draws at run time is found by its name (an MCP server); one that is gone by the
+  // time it is opened says so, instead of leaving the owner on a page without it.
+  const name = `gone-${Date.now()}`;
+  expect((await request.post("/api/mcp/servers", { data: { name, command: "bun", args: [join(import.meta.dirname, "fixtures/echo-mcp.ts")] } })).ok()).toBe(true);
+  try {
+    await page.reload();
+    await field.fill(name);
+    await expect(nav.getByTestId("settings-hit").filter({ hasText: name })).toHaveAttribute("title", name);
+  } finally {
+    await request.delete(`/api/mcp/servers/${name}`);
+  }
+  await nav.getByTestId("settings-hit").filter({ hasText: name }).click();
+  await expect(page.getByTestId("settings-title")).toHaveText("MCP servers");
+  await expect(page.getByTestId("settings-missing")).toContainText(`${name} is not on this page now`);
   // Away from the field the mark goes.
+  await field.focus();
   await page.keyboard.press("Tab");
   expect((await mark()).shown).not.toContain((await mark()).ring);
 });

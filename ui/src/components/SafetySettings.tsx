@@ -36,7 +36,6 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
             data-testid="default-mode"
             value={perm?.default_mode ?? ""}
             onChange={(e) => putPerm({ default_mode: e.target.value })}
-           
           >
             {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </Select>

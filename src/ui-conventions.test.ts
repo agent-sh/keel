@@ -242,11 +242,15 @@ function handMade(list: Src[]): string[] {
   }
   // A quote's rule is .k-quote (styles.css): no left rule of its own.
   for (const s of list) for (const { c, line } of classes(s.text)) if (/^border-l-(2|\[2px\])$/.test(c.split(":").at(-1)!)) out.push(at(s, line, `a quote rule of its own: ${c}`));
-  // A Select is a field already (Select.tsx): its classes give it a width, not a look.
+  // A Select is a field already (Select.tsx): its classes give it a width, not a look. Its
+  // className is read whole: strings, and the module's constants it names (cn(SELECT, "w-80")).
   for (const s of list) {
     const src = code(s.text);
+    const consts = new Map([...s.text.matchAll(/^const (\w+) = "([^"]*)";/gm)].map((m) => [m[1]!, m[2]!]));
     for (const m of src.matchAll(/<Select\b/g)) {
-      const cls = tag(src, m.index! + 1).match(/className="([^"]*)"/)?.[1] ?? "";
+      const t = tag(src, m.index! + 1);
+      const attr = t.match(/className=("[^"]*"|\{(?:[^{}]|\{[^{}]*\})*\})/)?.[1] ?? "";
+      const cls = [...attr.matchAll(/"([^"]*)"|\b([A-Za-z_]\w*)\b/g)].map((x) => x[1] ?? consts.get(x[2]!) ?? "").join(" ");
       if (cls.split(/\s+/).some((c) => /^(h-[6-9]|border(-line(-strong)?)?|rounded(-\w+)?|bg-(raised|sunken|bg)|px-[\d.]+|k-field)$/.test(c))) out.push(at(s, lineOf(src, m.index!), `a select drawn on its own: ${cls.slice(0, 60)}`));
     }
   }
@@ -552,6 +556,7 @@ test("each check refuses what it is for", () => {
   expect(pageSizes(tsx('<p className="text-[1.1rem] font-semibold" />'))).toHaveLength(1);
   expect(pageMotion(tsx('<div className="transition-opacity duration-150 data-open:duration-[90ms]" />'))).toHaveLength(2);
   expect(handMade(tsx('<button className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover" /><input className="h-8 rounded-md border border-line bg-bg outline-none focus:border-accent" /><button className="k-btn k-btn-lg" /><button className="grid h-8 rounded-full border border-line hover:bg-hover" /><Select value={v} onChange={(e) => set(e.target.value)} className="h-8 w-40 rounded-md border" /><Select value={v} className="w-28" /><div className="border-l-2 border-line pl-3" />'))).toHaveLength(4);
+  expect(handMade(tsx('const SEL = "h-8 rounded-md border px-2";\nconst W = "w-40";\nexport const A = () => <><Select value={v} className={cn(SEL, "w-80")} /><Select value={v} className={cn(W, on && "max-w-full")} /></>;'))).toHaveLength(1);
   expect(pageCorners(tsx('<div className="rounded rounded-t-md rounded-3xl md:rounded-[0.4rem] rounded-[var(--radius-xl)]" />'))).toHaveLength(2);
   expect(twiceDrawn([...css(".k-dock { display: none; }"), ...css(".k-dock { display: flex; }\n.k-dock, .k-other { gap: 0; }\n@media (max-width: 767px) { .k-dock { gap: 0; } }", "styles.css")])).toEqual(["styles.css:1: .k-dock (also in bridge.css)"]);
   expect(pageMotion(tsx('<div className="fixed inset-0 bg-black/20 duration-(--dur-move) bg-white" />'))).toHaveLength(1);

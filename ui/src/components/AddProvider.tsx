@@ -315,7 +315,7 @@ function AddProvider({ edit }: { edit?: string }) {
                     </>
                   )}
                   {form.key !== "none" && (
-                    <Select className={field} data-testid="provider-auth" value={form.auth} onChange={(e) => set({ auth: e.target.value })} aria-label="Key header">
+                    <Select className="w-full" data-testid="provider-auth" value={form.auth} onChange={(e) => set({ auth: e.target.value })} aria-label="Key header">
                       <option value="">Key header: the wire's own</option>
                       <option value="bearer">Authorization: Bearer</option>
                       <option value="x-api-key">x-api-key</option>
@@ -357,7 +357,7 @@ function AddProvider({ edit }: { edit?: string }) {
                 </button>
                 {test?.models.length ? (
                   <div className="flex items-center" data-testid="provider-test-model-group">
-                    <Select className={cn(field, "w-56 rounded-r-none")} data-testid="provider-test-model" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model to ask">
+                    <Select className="w-56 rounded-r-none" data-testid="provider-test-model" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model to ask">
                       {test.models.slice(0, 500).map((m) => <option key={m.model} value={m.model}>{m.name ?? m.model}</option>)}
                     </Select>
                     <button type="button" data-testid="provider-test-model-run" onClick={testModel} disabled={!!busy || !model} title="Sends one short request to this model" className="k-btn k-btn-lg -ml-px shrink-0 rounded-r-md">

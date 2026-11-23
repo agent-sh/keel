@@ -117,7 +117,7 @@ export function SlowestRequests({ range }: { range: Range }) {
 const short = (t: TurnPick) => `Turn ${t.n.toLocaleString()}`;
 const facts = (t: TurnPick) => `${clock(t.ts, { date: true, seconds: true })}, ${t.cost == null ? (t.requests ? "no price" : "$0") : fmtUsd(t.cost)}, ${fmtMs(t.ms)}`;
 type Pair = { a: TurnFacts; b: TurnFacts; diff: { cost: string; time: string; also: string[] } };
-const SELECT = "h-8 min-w-0 max-w-full rounded-md border border-line-strong bg-raised px-2 text-ui text-fg";
+const SELECT = "min-w-0 max-w-full";
 const SHOWN = 60;
 
 // One turn of a session, picked from all of them: the list opens at the newest, and a number or
@@ -140,7 +140,7 @@ function TurnPicker({ label, turns, total, value, onPick }: { label: string; tur
   useEffect(() => { list.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" }); }, [at]);
   return (
     <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (o) { setQ(""); setAt(0); } }}>
-      <Popover.Trigger aria-label={label} data-testid={`compare-${label}`} data-value={value?.turn_event ?? ""} className={cn("k-select", SELECT, "w-[min(27rem,100%)]")}>
+      <Popover.Trigger aria-label={label} data-testid={`compare-${label}`} data-value={value?.turn_event ?? ""} className={cn("k-select k-field", SELECT, "w-[min(27rem,100%)]")}>
         <span className="min-w-0 flex-1 truncate">
           {value ? <><span className="font-medium tabular-nums">{short(value)}</span><span className="text-muted">, {facts(value)}</span></> : "No turn"}
         </span>

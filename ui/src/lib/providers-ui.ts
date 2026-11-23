@@ -8,7 +8,7 @@ import { navigate } from "./ui.ts";
 settingsSections.add({
   id: "providers",
   label: "Providers",
-  words: "provider plugin sign in key listing endpoint subscription plan price",
+  words: "provider plugin sign in key api key token listing endpoint subscription plan price",
   icon: createElement(Plug, { className: "size-4" }),
   order: 11,
   component: lazy(() => import("../components/ProvidersPanel.tsx").then((m) => ({ default: m.ProvidersSettings }))),

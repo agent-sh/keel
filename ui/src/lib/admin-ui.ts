@@ -9,7 +9,7 @@ import { navigate } from "./ui.ts";
 settingsSections.add({
   id: "usage",
   label: "Usage",
-  words: "usage cost spend tokens cache hit rate latency first token ttft errors telemetry stats tools",
+  words: "usage cost spend budget limit limits tokens cache hit rate latency first token ttft errors telemetry stats tools",
   icon: createElement(BarChart3, { className: "size-4" }),
   order: 30,
   component: lazy(() => import("../components/UsagePanel.tsx").then((m) => ({ default: m.UsagePanel }))),

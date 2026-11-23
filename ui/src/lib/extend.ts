@@ -47,7 +47,8 @@ export type SlashCtx = { session?: Session; setText: (t: string) => void; start?
 export const slash = registry<SlashItem>();
 
 // Sections of the settings page. `words` are what the settings search matches.
-export type SettingsSection = { id: string; label: string; words?: string; icon?: ReactNode; order?: number; component: ComponentType };
+// `find`: names of rows a section draws at run time (an MCP server, a hook), read when Find a setting is typed in.
+export type SettingsSection = { id: string; label: string; words?: string; icon?: ReactNode; order?: number; component: ComponentType; find?: () => string[] | Promise<string[]> };
 export const settingsSections = registry<SettingsSection>();
 
 // Buttons under a prompt or a reply (copy, retry and edit are built in).

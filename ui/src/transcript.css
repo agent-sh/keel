@@ -267,6 +267,11 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
   background: var(--k-new-bg); font-size: var(--text-micro); font-weight: 500; line-height: 0.875rem; color: var(--accent-ink); white-space: nowrap; pointer-events: none;
 }
 .k-step[data-new-since] { --k-new-top: -1px; }
+/* Inside a block of calls (or any quoted block) rows stand 0.375rem apart: the rule runs mid-gap,
+   and its words, taller than the gap, would lie over the row above, so there it is the line alone
+   (its separator still tells a screen reader, and the way to it at the foot says the time). */
+.k-quote [data-new-since] { --k-new-top: -0.1875rem; }
+.k-quote [data-new-since]::after { content: none; }
 /* The way to it while it is not in view, at the conversation's foot: with the way to the end when
    the reader is away from it; when they follow the end, over the room under the last line (the
    column's own padding: no line is there). */

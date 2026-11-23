@@ -39,7 +39,7 @@ panels.add(
 settingsSections.add({
   id: "safety",
   label: "Permissions",
-  words: "permissions mode reviewer review model secrets passkey trust hooks quarantine",
+  words: "permissions mode approvals approve allow ask auto full-auto reviewer review model secrets passkey trust hooks quarantine sandbox",
   icon: <ShieldCheck className="size-4" />,
   order: 20,
   component: lazy(() => import("../components/SafetySettings.tsx").then((m) => ({ default: () => <m.SafetySettings /> }))),

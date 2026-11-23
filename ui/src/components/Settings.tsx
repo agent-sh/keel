@@ -5,6 +5,8 @@ import { actions, reportError, useStore, useModels } from "../lib/store.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { settingsFind } from "../lib/settings-find.macro.ts" with { type: "macro" };
+import { findSettings } from "../lib/settings-match.ts";
+import { everyCommand } from "../lib/keys.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
 import { SmallModels } from "./SmallModels.tsx";
 import { Seg } from "./Seg.tsx";
@@ -148,9 +150,9 @@ function About() {
 }
 
 settingsSections.add(
-  { id: "general", label: "General", words: "theme dark light send enter", icon: <SlidersHorizontal className="size-4" />, order: 0, component: General },
-  { id: "models", label: "Models", words: "providers listing default model", icon: <Bot className="size-4" />, order: 10, component: Models },
-  { id: "keyboard", label: "Keyboard", words: "shortcuts keys hotkeys", icon: <Keyboard className="size-4" />, order: 80, component: ShortcutList },
+  { id: "general", label: "General", words: "theme dark light mode font text size zoom scale send enter", icon: <SlidersHorizontal className="size-4" />, order: 0, component: General },
+  { id: "models", label: "Models", words: "providers listing default model effort reasoning thinking small models", icon: <Bot className="size-4" />, order: 10, component: Models },
+  { id: "keyboard", label: "Keyboard", words: "shortcuts keys hotkeys", icon: <Keyboard className="size-4" />, order: 80, component: ShortcutList, find: () => everyCommand().filter((c) => c.keys).map((c) => c.label) },
   { id: "about", label: "About", words: "version daemon", icon: <Info className="size-4" />, order: 100, component: About },
 );
 
@@ -158,9 +160,9 @@ settingsSections.add(
 // settings, then what customizes the agent, what it reaches, this computer, and the
 // rest. A section another lane adds falls in by id, else under Advanced.
 const GROUPS: [string, string[]][] = [
-  ["Basics", ["general", "models", "providers", "safety", "alerts", "usage", "keyboard", "voice"]],
+  ["Basics", ["general", "models", "providers", "safety", "alerts", "usage", "keyboard"]],
   ["Customize", ["instructions", "skills", "commands", "agents", "plugins", "hooks", "mcp", "lsp", "port"]],
-  ["Connections", ["machines", "phone", "integrations", "pull-requests", "elsewhere", "acp-agents", "helper", "export"]],
+  ["Connections", ["machines", "phone", "integrations", "pull-requests", "elsewhere", "acp-agents", "helper"]],
   ["This computer", ["resources", "storage", "logs", "daemon"]],
   ["Advanced", ["observability", "experiments", "about"]],
 ];
@@ -175,19 +177,28 @@ const WIDE = new Set(["usage", "observability", "experiments", "resources", "sto
 
 // A row found by its name is brought into view and marked a moment, once its
 // section has drawn it (a section loads on its own: it is watched for, not waited).
-function reveal(name: string) {
-  const find = () => [...document.querySelectorAll<HTMLElement>('.k-settings-scroll :is(.k-setting > div > div:first-child, h2, h3, h4, .k-label)')].find((el) => el.textContent?.replace(/\s+/g, " ").trim() === name);
+// A row that is not drawn (a server since removed, a part shown only in some
+// states) is said to be missing, not given up on in silence.
+const NAMED_ON_PAGE = ".k-settings-scroll :is(.k-setting > div > div:first-child, h2, h3, h4, .k-label, [data-name], .k-entry-name, .k-surface-title, [data-testid=shortcut-row] > span:first-child)";
+function reveal(name: string, missed: (name: string) => void) {
+  const norm = (el: Element) => (el.getAttribute("data-name") ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+  const find = () => {
+    const els = [...document.querySelectorAll<HTMLElement>(NAMED_ON_PAGE)];
+    return els.find((el) => norm(el) === name) ?? els.find((el) => norm(el).toLowerCase().includes(name.toLowerCase()));
+  };
   const mark = (el: HTMLElement) => {
-    const row = el.closest<HTMLElement>(".k-setting") ?? el;
+    // A ledger entry opens; a row is brought into view.
+    if (el.matches("[data-name]") && el.tagName === "BUTTON") el.click();
+    const row = el.closest<HTMLElement>(".k-setting, [data-testid=shortcut-row], [data-name]") ?? el;
     row.scrollIntoView({ block: "center" });
     row.dataset.found = "";
     row.addEventListener("animationend", () => delete row.dataset.found, { once: true });
   };
   const now = find();
   if (now) return mark(now);
-  const watch = new MutationObserver(() => { const el = find(); if (el) { watch.disconnect(); mark(el); } });
+  const watch = new MutationObserver(() => { const el = find(); if (el) { watch.disconnect(); clearTimeout(gone); mark(el); } });
   watch.observe(document.body, { childList: true, subtree: true });
-  setTimeout(() => watch.disconnect(), 10_000);
+  const gone = setTimeout(() => { watch.disconnect(); missed(name); }, 4000);
 }
 
 // A wide page keeps the grouped rail beside the section. A narrow one (by the
@@ -200,22 +211,54 @@ export function Settings({ section }: { section: string }) {
   const [open, setOpen] = useState(false);
   const jump = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  const find = useRef<HTMLInputElement>(null);
   const sidebar = useUI((s) => s.sidebar);
   const all = settingsSections.all().sort((a, b) => ORDER.indexOf(groupOf(a.id)) - ORDER.indexOf(groupOf(b.id)) || (RANK[a.id] ?? 999) - (RANK[b.id] ?? 999) || (a.order ?? 50) - (b.order ?? 50));
-  // A word finds a section by its name and words, and by the rows it holds: those rows are named under it.
-  const needle = q.trim().toLowerCase();
-  const hits = (id: string, label: string) => (needle ? (FIND[id] ?? []).filter((n) => n.toLowerCase().includes(needle) && n.toLowerCase() !== label.toLowerCase()).slice(0, 3) : []);
-  const shown = needle ? all.filter((s) => `${s.label} ${s.words ?? ""}`.toLowerCase().includes(needle) || hits(s.id, s.label).length > 0) : all;
+  // What sections draw at run time (an MCP server, a shortcut's command), read once a word is typed.
+  const [live, setLive] = useState<Record<string, string[]>>({});
+  const asked = useRef(false);
+  useEffect(() => {
+    if (!q.trim() || asked.current) return;
+    asked.current = true;
+    for (const s of all) if (s.find) Promise.resolve().then(s.find).then((names) => setLive((l) => ({ ...l, [s.id]: names })), () => {});
+  }, [q]);
+  // Each word finds a section by its name and words, and by the rows it holds: those rows are named under it.
+  const found = findSettings(all, (id) => [...(FIND[id] ?? []), ...(live[id] ?? [])], q);
+  const shown = found.map((f) => f.section);
+  const hits = (id: string) => (q.trim() ? found.find((f) => f.section.id === id)?.rows ?? [] : []);
+  // A row the search named that the page does not draw now: said under the title.
+  const [missing, setMissing] = useState<string | null>(null);
+  useEffect(() => setMissing(null), [section]);
   const cur = all.find((s) => s.id === section) ?? all[0]!;
   const Body = cur.component;
   // The section shown has its row in view: on a direct link to a late one, and when the list opens.
   useEffect(() => { list.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: open ? "center" : "nearest" }); }, [cur.id, open]);
   const close = () => { setOpen(false); setQ(""); jump.current?.focus(); };
+  // The list's buttons in their order: a section, then the rows found in it.
+  const results = () => [...(list.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+  // From the field: Enter opens the first result (a row found, else its section), Down goes into the list, and on a wide page Escape
+  // clears what was typed (on a narrow one it closes the list, as before: the rail's own key).
+  const findKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // (The first section's first row when the words named one: it is the closer answer.)
+    if (e.key === "Enter" && q.trim()) { e.preventDefault(); const [a, b] = results(); (b?.matches(".k-settings-hit") ? b : a)?.click(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); results()[0]?.focus(); }
+    else if (e.key === "Escape" && q && !open) { e.preventDefault(); e.stopPropagation(); setQ(""); }
+  };
+  // In the list: Up and Down move along it, Up from the first goes back to the field.
+  const listKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const all = results(), at = all.indexOf(document.activeElement as HTMLButtonElement);
+    if (at < 0) return;
+    e.preventDefault();
+    if (e.key === "ArrowUp" && at === 0) find.current?.focus();
+    else all[Math.max(0, Math.min(all.length - 1, at + (e.key === "ArrowDown" ? 1 : -1)))]?.focus();
+  };
   // A section reached from elsewhere (the palette, a link, Back) while the list is open: the list gives way to it.
   useEffect(() => setOpen(false), [section]);
   const go = (id: string, row?: string) => {
     navigate({ name: "settings", section: id }, true);
-    if (row) reveal(row);
+    setMissing(null);
+    if (row) reveal(row, setMissing);
     // Only where the bar is on screen (a narrow page): a rail click on a wide page keeps the search as typed.
     if (open && jump.current?.offsetParent) close();
   };
@@ -247,9 +290,9 @@ export function Settings({ section }: { section: string }) {
           <div id="settings-sections" className="k-settings-sections">
             <label className="k-settings-find">
               <Search className="size-3.5 shrink-0 text-faint" />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a setting" aria-label="Find a setting" data-testid="settings-find" className="w-full min-w-0 bg-transparent outline-none placeholder:text-faint" />
+              <input ref={find} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={findKey} placeholder="Find a setting" aria-label="Find a setting" data-testid="settings-find" className="w-full min-w-0 bg-transparent outline-none placeholder:text-faint" />
             </label>
-            <div ref={list} className="k-settings-nav">
+            <div ref={list} className="k-settings-nav" onKeyDown={listKey}>
               {shown.map((s, i) => (
                 <Fragment key={s.id}>
                   {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && <h3 className="k-settings-group k-label">{groupOf(s.id)}</h3>}
@@ -266,8 +309,8 @@ export function Settings({ section }: { section: string }) {
                     <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>
                     {s.label}
                   </button>
-                  {hits(s.id, s.label).map((n) => (
-                    <button key={n} type="button" className="k-settings-hit" data-testid="settings-hit" onClick={() => go(s.id, n)}>{n}</button>
+                  {hits(s.id).map((n) => (
+                    <button key={n} type="button" className="k-settings-hit" data-testid="settings-hit" title={n} onClick={() => go(s.id, n)}>{n}</button>
                   ))}
                 </Fragment>
               ))}
@@ -278,6 +321,7 @@ export function Settings({ section }: { section: string }) {
         <div className="k-settings-scroll" data-testid="settings-scroll">
           <div className="k-settings-body" data-wide={WIDE.has(cur.id) || undefined}>
             <h2 className="mb-5 text-title font-semibold tracking-[-0.015em]" data-testid="settings-title">{cur.label}</h2>
+            {missing && <p className="k-notice mb-4 text-caption text-muted" role="status" data-testid="settings-missing"><span><span className="text-fg">{missing}</span> is not on this page now: it shows when there is one to show.</span></p>}
             <Body />
           </div>
         </div>

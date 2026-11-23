@@ -3,10 +3,11 @@
 import { BookOpenText, Puzzle, ScrollText, Server, SpellCheck, SquareSlash } from "lucide-react";
 import { createElement, lazy } from "react";
 import { settingsSections } from "./extend.ts";
+import { api } from "./store.ts";
 
 const icon = (c: typeof Server) => createElement(c, { className: "size-4" });
 settingsSections.add(
-  { id: "mcp", label: "MCP servers", words: "mcp servers tools connect oauth sign in reads import", icon: icon(Server), order: 10, component: lazy(() => import("../components/surfaces/Mcp.tsx")) },
+  { id: "mcp", label: "MCP servers", words: "mcp servers tools connect oauth sign in reads import", icon: icon(Server), order: 10, component: lazy(() => import("../components/surfaces/Mcp.tsx")), find: () => api<{ servers: { name: string }[] }>("/api/mcp/servers").then((r) => r.servers.map((x) => x.name)) },
   { id: "skills", label: "Skills", words: "skills skill.md agent skills tokens", icon: icon(BookOpenText), order: 11, component: lazy(() => import("../components/surfaces/Skills.tsx")) },
   { id: "commands", label: "Commands", words: "slash commands command files prompts", icon: icon(SquareSlash), order: 12, component: lazy(() => import("../components/surfaces/Commands.tsx")) },
   { id: "plugins", label: "Plugins", words: "plugins provider plugins plugins.toml protocol check bundled", icon: icon(Puzzle), order: 14, component: lazy(() => import("../components/surfaces/Plugins.tsx")) },

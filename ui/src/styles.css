@@ -664,9 +664,9 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason) { opacity: 0; }
 .k-turn-foot > *, .k-turn-end > * { transition: opacity var(--dur-quick) var(--ease-out); }
 @media (hover: none) { .k-turn-foot > *, .k-turn-end > * { opacity: 1 !important; } }
-/* With no pointer to show it, an earlier reply keeps its actions and lets its figures go: the
+/* On a phone, with no pointer to show it, an earlier reply keeps its actions and lets its figures go: the
    last reply says its time, tokens and cost, and every turn's are in the Usage panel. One row a reply. */
-@media (hover: none) { .k-turn-foot[data-quiet] .k-turn-end > :not(.k-turn-reason) { display: none; } }
+@media (hover: none) and (max-width: 767px) { .k-turn-foot[data-quiet] .k-turn-end > :not(.k-turn-reason) { display: none; } }
 
 /* The cards above the message box (Composer's Tray): an edge fades where more is scrolled out of view. */
 .k-tray[data-more="up"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
