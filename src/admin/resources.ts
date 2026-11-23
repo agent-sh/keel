@@ -7,6 +7,20 @@ import { readdirSync, readFileSync, statfsSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
 import { liveJobs, type Job } from "../tools/jobs.ts";
 import { timed } from "./stall.ts";
+import { vault } from "../safety/secrets.ts";
+
+// A process's command line as shown, known values hidden: read once a command
+// line (a sample reads every process, and most stay the same).
+const shownOf = new Map<string, string>();
+export function shown(raw: string): string {
+  let out = shownOf.get(raw);
+  if (out === undefined) {
+    out = raw.split("\0").map((a) => (a ? vault.redact(a, null, "command") : a)).join("\0");
+    if (shownOf.size > 2048) shownOf.clear();
+    shownOf.set(raw, out);
+  }
+  return out;
+}
 
 const TICK_MS = 10; // USER_HZ is 100 on Linux (getconf CLK_TCK)
 const ACTIVE_MS = 5_000;
@@ -230,7 +244,9 @@ export class Resources {
       const st = stat(pid);
       if (!st) continue;
       const s = status(pid);
-      const args = read(`/proc/${pid}/cmdline`).split("\0").filter(Boolean);
+      // A process's arguments can hold a value it was given (a plugin server's
+      // sensitive setting in its argv): known values are hidden in what is shown.
+      const args = shown(read(`/proc/${pid}/cmdline`)).split("\0").filter(Boolean);
       const command = args.join(" ").slice(0, 1000) || st.name;
       const known = this.seen.get(pid); // its environment was read at its first sample
       const session_id = this.seen.get(pid)?.session_id ?? sessionOf(pid) ?? jobOf.get(pid)?.sessionId;

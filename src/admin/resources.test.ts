@@ -42,3 +42,15 @@ test("the daemon's memory is split into the kernel's and the runtime's parts", (
     anon_bytes: 622084 * 1024, file_bytes: 45096 * 1024, heap_used_bytes: 200, heap_total_bytes: 300, external_bytes: 40, array_buffers_bytes: 30,
   });
 });
+
+test("a process's command line is shown with the values the vault knows hidden", async () => {
+  const { vault } = await import("../safety/secrets.ts");
+  const { shown } = await import("./resources.ts");
+  const secret = "plgv-" + "q8Zr2Lx7Wm4Tn6Yd";
+  const e = vault.add(secret, "a setting of the plugin test", "card", null);
+  try {
+    const out = shown(["node", "server.js", `--key=${secret}`].join("\0"));
+    expect(out).not.toContain(secret);
+    expect(out.split("\0").slice(0, 2)).toEqual(["node", "server.js"]);
+  } finally { vault.forget((e as { id: string }).id); }
+});

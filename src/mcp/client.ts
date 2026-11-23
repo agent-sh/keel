@@ -9,6 +9,7 @@
 // section says. Most servers in use today are legacy.
 import { chunks, pumpLines, pumpText } from "../core/proc.ts";
 import { CHANNEL_CAP, CHANNEL_METHOD } from "./channel.ts";
+import { vault } from "../safety/secrets.ts";
 
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
@@ -215,7 +216,8 @@ export class McpClient {
   private withStderr(e: unknown): Error {
     const err = e instanceof Error ? e : new Error(String(e));
     const tail = this.stderrTail.trim().split("\n").slice(-6).join("\n");
-    if (tail && !(err instanceof AuthRequired)) err.message += `\nstderr: ${tail}`;
+    // (A server can echo a value it was given, such as a plugin's sensitive setting: known values are hidden.)
+    if (tail && !(err instanceof AuthRequired)) err.message += `\nstderr: ${vault.redact(tail, null, "output")}`;
     return err;
   }
 
