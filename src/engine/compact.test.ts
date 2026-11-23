@@ -6,7 +6,7 @@
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../core/types.ts";
-import { FILE_STATEMENTS_BYTES, BYTES_PER_TOKEN, countPaced, contextBytes, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
+import { FILE_STATEMENTS_BYTES, BYTES_PER_TOKEN, countPaced, contextBytes, openingBytes, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -641,4 +641,23 @@ test("a statement is merged only with the same speaker's words; the same words a
   expect(settle(line, ["## Statements", `- file: "/w/x/README.md": "${file.text}"`, "## Story", "x"].join("\n"), [owner]).statements).toEqual([owner, file]);
   // The same words said by the work and by the owner are the owner's, whichever came first.
   expect(settle(line, ["## Statements", '- work: "Keep MAX_ROWS at 500."', "## Story", "x"].join("\n"), [{ by: "work", text: "Keep MAX_ROWS at 500.", kind: "standing" }, owner]).statements).toEqual([owner]);
+});
+
+// A context the provider counted is that count plus the bytes added since, at
+// the model's bytes a token, however long the history before the count is: a
+// small prompt after a measured 533K context is never counted above 533K and
+// its own bytes. Only a harness note that rides along adds more, and a refusal
+// names it apart from the prompt.
+test("a measured context grows by what was added since, and the opening says what it holds", () => {
+  const old = Array.from({ length: 200 }, (_, i) => ev(i % 2 ? "assistant" : "user", i % 2 ? { blocks: [{ type: "text", text: "y".repeat(20_000) }], usage: { input: 1, output: 0, cache_read: 0, cache_write: 0 }, stop: "end_turn" } : { text: "x".repeat(20_000) }));
+  const counted = ev("assistant", { blocks: [{ type: "text", text: "done" }], usage: { input: 6, output: 1_703, cache_read: 531_303, cache_write: 0 }, stop: "end_turn" });
+  const prompt = ev("user", { text: "p".repeat(373) });
+  const line = [...old, counted, prompt];
+  const t = contextTokens(line, "lab:m61");
+  expect(t.measured).toBe(533_012);
+  expect(t.used).toBeLessThanOrEqual(533_012 + Math.ceil(373 / bytesPerToken("lab:m61")));
+  // A five-megabyte note for the model is counted, and named as the harness's.
+  const note = ev("note", { kind: "overlap", text: "n".repeat(5_000_000), model: true });
+  expect(contextTokens([...line, note], "lab:m61").used).toBe(533_012 + Math.round((373 + 5_000_000) / bytesPerToken("lab:m61")));
+  expect(openingBytes([prompt, note], "lab:m61")).toEqual({ prompt: 373, notes: 5_000_000, other: 0 });
 });

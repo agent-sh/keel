@@ -792,6 +792,22 @@ export function contextBytes(lineage: readonly StoredEvent[], model?: string): n
   return bytes;
 }
 
+// What a turn's opening (the prompts and notes after the last reply) holds,
+// in the estimate's own measure, for a refusal that names what it counted: the
+// owner's or a sender's words and images, and the notes the harness added for
+// the model (a restart's, an overlap forecast's) apart.
+export function openingBytes(opening: readonly StoredEvent[], model?: string): { prompt: number; notes: number; other: number } {
+  const per = bytesPerToken(model);
+  const out = { prompt: 0, notes: 0, other: 0 };
+  for (const e of opening) {
+    const n = tailBytes(e, per);
+    if (e.kind === "user") out.prompt += n;
+    else if (e.kind === "note") out.notes += n;
+    else out.other += n;
+  }
+  return out;
+}
+
 // The bytes of built messages in the same measure as the context estimate: a
 // reply's words, thinking and calls, a tool result as JSON, an image at its
 // token cost, an attached file as it resolves (see tailBytes). What a request

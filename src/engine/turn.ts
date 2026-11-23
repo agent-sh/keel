@@ -34,7 +34,7 @@ import { READER_OUTPUT, READER_SYSTEM, readerChoices, type Material } from "./re
 import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { cleanTitle, firstReply, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, openingBytes, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
@@ -3197,7 +3197,12 @@ export class Engine {
       const opening = events.slice(upto.length);
       const tokens = contextTokens(opening, st.info.id).used;
       // Not compacted with the rest and with no count of its own: over the window only if it is at any bytes a token.
-      if (Math.ceil(contextBytes(opening, st.info.id) / RATIO_MAX) >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or switch to a model with a larger window.`), { status: 409, code: "context_over_window" });
+      if (Math.ceil(contextBytes(opening, st.info.id) / RATIO_MAX) >= st.info.context) {
+        // What was counted, by what added it: the prompt's own bytes are not the whole of it when a note of the harness came with it.
+        const b = openingBytes(opening, st.info.id);
+        const parts = [`its prompt of ${b.prompt} bytes`, ...(b.notes ? [`${b.notes} bytes of notes the harness added for the model`] : []), ...(b.other ? [`${b.other} bytes of other input`] : [])];
+        throw Object.assign(new Error(`The input this turn answers is about ${tokens} tokens (${parts.join(", ")}), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: ${b.notes > b.prompt ? "the harness notes are the larger part, which is a fault of the harness" : "shorten the prompt"}, or switch to a model with a larger window.`), { status: 409, code: "context_over_window" });
+      }
     }
     const before = this.used(events, st);
     // Not asked again by itself for a context whose summary could not be written whole; the owner's own request is.
