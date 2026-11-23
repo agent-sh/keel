@@ -1,21 +1,27 @@
 // A search inside other harnesses' transcripts: which files hold every word
 // of a query, anywhere in what was said (a reply, a command, its output), not
 // only in the title, folder and prompts the index keeps. The files are read by
-// ripgrep (or grep where it is missing) in a process of its own, a few batches
-// at a time, so the daemon's loop never reads them. Each word is a fixed
+// ripgrep (or grep where it is missing) in a process of its own, two batches
+// at a time, one thread each and at a lower priority, so the daemon's loop
+// never reads them and the machine's other work goes first. Each word is a fixed
 // string matched without case; every later word reads only the files that
 // held the words before it.
+import { setPriority } from "node:os";
 import { readText } from "../../core/proc.ts";
 
-// How many files one search process is given, and how many run at once.
+// How many files one search process is given, and how many run at once: a
+// search may read every transcript of every other harness (gigabytes), so it
+// takes two of the machine's processors at most, at a nice of 10.
 const BATCH = 400;
-const AT_ONCE = 4;
+const AT_ONCE = 2;
+const NICE = 10;
 
 type Tool = "rg" | "grep";
 let tool: Tool | null | undefined;
 
 async function run(cmd: string[], signal?: AbortSignal): Promise<{ out: string; code: number }> {
   const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore", stdin: "ignore", signal });
+  try { setPriority(p.pid, NICE); } catch {} // (a process that ended already)
   const [out, code] = await Promise.all([readText(p.stdout, "import search"), p.exited]);
   return { out, code };
 }
@@ -30,7 +36,7 @@ async function which(): Promise<Tool | null> {
 }
 
 const argsOf = (t: Tool, word: string) => t === "rg"
-  ? ["rg", "-l", "-F", "-i", "--no-ignore", "--hidden", "--no-messages", "--no-config", "-e", word, "--"]
+  ? ["rg", "-l", "-F", "-i", "-j", "1", "--no-ignore", "--hidden", "--no-messages", "--no-config", "-e", word, "--"]
   : ["grep", "-l", "-F", "-i", "-s", "-e", word, "--"];
 
 // Of `files`, those that hold `word`.

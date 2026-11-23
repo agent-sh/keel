@@ -6,6 +6,7 @@ import { headerActions, settingsSections, slash } from "./extend.ts";
 import { registerCommand } from "./keys.ts";
 import { reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
+import type { ImportAt } from "../components/ImportSheet.tsx";
 
 settingsSections.add({
   id: "integrations",
@@ -66,7 +67,7 @@ slash.add({
 
 // Import and export of sessions. The sheets load on first use, in a root of
 // their own beside the shell (the shell is not edited for them).
-let host: Promise<{ setImportOpen(o: boolean): void; openExport(s: any): void }> | null = null;
+let host: Promise<{ setImportOpen(o: boolean, at?: ImportAt): void; openExport(s: any): void }> | null = null;
 function sheets() {
   return (host ??= Promise.all([import("../components/ImportSheet.tsx"), import("../components/ExportDialog.tsx"), import("react-dom/client")]).then(([imp, exp, dom]) => {
     const el = document.body.appendChild(document.createElement("div"));
@@ -75,10 +76,11 @@ function sheets() {
     return { setImportOpen: imp.setImportOpen, openExport: exp.openExport };
   }));
 }
-export const openImport = () => sheets().then((m) => m.setImportOpen(true)).catch(reportError);
+// `at`: a session of another harness to show, with the search that found it.
+export const openImport = (at?: ImportAt) => sheets().then((m) => m.setImportOpen(true, at)).catch(reportError);
 const openExport = (s: any) => sheets().then((m) => m.openExport(s)).catch(reportError);
 
-registerCommand({ id: "import-sessions", label: "Import sessions", group: "General", words: "claude code codex rust keel history import resume", run: openImport });
+registerCommand({ id: "import-sessions", label: "Import sessions", group: "General", words: "claude code codex rust keel history import resume", run: () => void openImport() });
 slash.add({ id: "import", label: "Import sessions from Claude Code, Codex or the Rust Keel", run: () => void openImport() });
 slash.add({ id: "export", label: "Export this session or take it to another tool", when: ({ session }) => !!session, run: (_a, { session }) => void openExport(session) });
 headerActions.add({ id: "export", label: "Export or take it elsewhere", icon: createElement(Share, { className: "size-4" }), run: (s) => void openExport(s) });

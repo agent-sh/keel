@@ -1,5 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Archive, Bot, CornerDownLeft, Search, SquareTerminal, TextSearch, Zap } from "lucide-react";
+import { Archive, Bot, CornerDownLeft, History, Search, SquareTerminal, TextSearch, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { allCommands, commandsVersion, composing, fuzzy, onCommands } from "../lib/keys.ts";
 import { actions, reportError, useStore, useModels } from "../lib/store.ts";
@@ -20,11 +20,15 @@ function openSession(id: string) {
 import { ago, clock, cn, folderNames } from "../lib/utils.ts";
 import { useStateLabel, useWatches } from "../lib/watch.ts";
 import { machineName } from "../lib/fleet.ts";
+import { openImport } from "../lib/integrations-ui.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
 
 type Hit = { session_id: string; session_title: string; event_id?: string; kind: string; snippet: string; cwd: string; archived: boolean; ts: number; ref?: string; partial?: boolean };
-type Entry = { key: string; group: string; label: ReactNode; detail?: string; keys?: string; icon: ReactNode; score: number; run: () => void };
+// A session of another harness on this machine (Claude Code, Codex...) that the search found, not imported yet.
+type Elsewhere = { harness: string; id: string; path: string; title: string; cwd?: string; updated_ms: number; in_text?: true; imported?: unknown };
+// `stay`: picking it keeps the palette open (it adds rows to it).
+type Entry = { key: string; group: string; label: ReactNode; detail?: string; keys?: string; icon: ReactNode; score: number; run: () => void; stay?: true };
 
 // A search snippet: \u0001 and \u0002 mark the matched words.
 function Snippet({ text }: { text: string }) {
@@ -98,7 +102,8 @@ export function Palette() {
   const searchRefused = wantsSearch && search.q === q ? search.refused : undefined;
   const limits = wantsSearch && search.q === q ? search.limits : undefined;
 
-  const entries = useMemo(() => {
+  // This daemon's own rows: its sessions, what was said in them, its actions and models.
+  const local = useMemo(() => {
     const out: Entry[] = [];
     const recent = Object.values(sessions).filter((s) => !s.archived).sort((a, b) => b.updated - a.updated);
     const w = watches;
@@ -160,13 +165,66 @@ export function Palette() {
         run: () => { setUI({ focusEvent: h.event_id!, focusCall: tool ? h.ref ?? null : null, preview: { session: h.session_id, event: h.event_id! } }); navigate({ name: "session", id: h.session_id }); },
       });
     }
-    const order = ["Sessions", "Actions", "In conversations", "Models"];
+    return out;
+  }, [q, sessions, models, current, hits, watches]);
+
+  // The same words in other harnesses' sessions on this machine, in what they say too (a read of their
+  // transcripts, once the typing pauses). `not`: the harnesses whose conversations could not be read.
+  const [elsewhere, setElsewhere] = useState<{ q: string; rows: Elsewhere[]; labels: Record<string, string>; not: string[]; failed?: string }>({ q: "", rows: [], labels: {}, not: [] });
+  // That read goes through every transcript of every other harness here (gigabytes, in a process of
+  // its own): it is made when the owner asks for it (`asked`: the query of the row that offers it), or
+  // when nothing of this daemon matches once its own search has answered; never for every query typed.
+  const [asked, setAsked] = useState<string | null>(null);
+  useEffect(() => { if (open) setAsked(null); }, [open]);
+  const mayElsewhere = q.trim().length >= 3 && !/\b\w+:\S/.test(q);
+  const localHit = local.some((e) => e.group.startsWith("Sessions") || e.group === "In conversations");
+  const wantsElsewhere = mayElsewhere && (asked === q || (!searching && !searchFailed && !localHit));
+  useEffect(() => {
+    if (!wantsElsewhere) return;
+    const ctl = new AbortController();
+    const t = setTimeout(() => {
+      fetch(`/api/import/sessions?q=${encodeURIComponent(q.trim())}&inside=1&limit=6`, { signal: ctl.signal })
+        .then(async (r) => {
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+          const stores = (body.harnesses ?? []) as { harness: string; label: string; installed: boolean }[];
+          const labels = Object.fromEntries(stores.map((h) => [h.harness, h.label]));
+          // (Only a store this machine has: a harness never installed here holds nothing to miss.)
+          const not = ((body.inside?.not ?? []) as string[]).filter((h) => stores.find((x) => x.harness === h)?.installed);
+          setElsewhere({ q, rows: ((body.sessions ?? []) as Elsewhere[]).filter((x) => !x.imported), labels, not });
+        })
+        .catch((e) => { if (e.name !== "AbortError") setElsewhere({ q, rows: [], labels: {}, not: [], failed: e.message }); });
+    }, 400);
+    return () => { clearTimeout(t); ctl.abort(); };
+  }, [q, wantsElsewhere]);
+  const others = wantsElsewhere && elsewhere.q === q ? elsewhere.rows : [];
+  const seekingElsewhere = wantsElsewhere && elsewhere.q !== q;
+  const elsewhereFailed = wantsElsewhere && elsewhere.q === q ? elsewhere.failed : undefined;
+
+  const entries = useMemo(() => {
+    const out = [...local];
+    // Sessions of other harnesses: opened in the import sheet, picked, with the words that found them.
+    for (const [i, x] of others.entries()) {
+      out.push({
+        key: `x:${x.harness}:${x.path}`, group: "Other harnesses", label: x.title || "Session",
+        detail: `${elsewhere.labels[x.harness] ?? x.harness} · ${x.in_text ? "in the conversation · " : ""}${folderNames([x.cwd ?? ""]).get(x.cwd ?? "") || ""}  ${ago(x.updated_ms)}`,
+        icon: <History className="size-4" />, score: 30 - i,
+        run: () => void openImport({ q: q.trim(), harness: x.harness as never, id: x.id, path: x.path }),
+      });
+    }
+    const order = ["Sessions", "Actions", "In conversations", "Other harnesses", "Models"];
     if (q) out.sort((a, b) => b.score - a.score);
     // Keep groups together, ordered by their best hit.
     const best = new Map<string, number>();
     out.forEach((e, i) => best.has(e.group) || best.set(e.group, i));
-    return out.sort((a, b) => (q ? best.get(a.group)! - best.get(b.group)! : order.indexOf(a.group) - order.indexOf(b.group))).slice(0, 60);
-  }, [q, sessions, models, current, hits, watches]);
+    const rows = out.sort((a, b) => (q ? best.get(a.group)! - best.get(b.group)! : order.indexOf(a.group) - order.indexOf(b.group))).slice(0, 60);
+    // Not searched there yet: the last row asks for it (it keeps the palette open, and the rows come in its place).
+    if (mayElsewhere && !wantsElsewhere) rows.push({
+      key: "x:ask", group: "Other harnesses", label: "Search other harnesses' sessions", detail: "Claude Code, Codex and others here",
+      icon: <History className="size-4" />, score: 0, stay: true, run: () => setAsked(q),
+    });
+    return rows;
+  }, [q, local, others, mayElsewhere, wantsElsewhere]);
 
   useEffect(() => setSelKey(null), [q]);
   // The highlight stays on its row while it is listed, else it is the first row.
@@ -184,6 +242,7 @@ export function Palette() {
 
   const pick = (e?: Entry) => {
     if (!e) return;
+    if (e.stay) return e.run();
     picked.current = true;
     setUI({ palette: false });
     e.run();
@@ -236,7 +295,11 @@ export function Palette() {
           </div>
           <div ref={list} id="palette-list" className="flex-1 overflow-y-auto overscroll-contain p-1.5" role="listbox" aria-label="Results" aria-busy={searching || undefined}>
             {searchRefused && <p className="px-3 py-3 text-ui text-muted" role="status" data-testid="palette-refused">{searchRefused}</p>}
-            {entries.length === 0 && !searching && !searchFailed && !searchRefused && <p className="k-empty px-3 py-4">Nothing matches "{q}"{limits?.length ? ` (${limits.join(", ")})` : ""}.</p>}
+            {entries.length === 0 && !searching && !seekingElsewhere && !searchFailed && !searchRefused && (
+              <p className="k-empty px-3 py-4" data-testid="palette-empty">
+                Nothing matches "{q}"{limits?.length ? ` (${limits.join(", ")})` : ""}{wantsElsewhere && !elsewhereFailed ? ", here or in other harnesses' sessions" : ""}.
+              </p>
+            )}
             {entries.map((e, i) => (
               <div key={e.key}>
                 {(i === 0 || entries[i - 1]!.group !== e.group) && (
@@ -261,9 +324,15 @@ export function Palette() {
                 </div>
               </div>
             ))}
-            {searching && (
+            {(searching || seekingElsewhere) && (
               <p className="flex items-center gap-2 px-2.5 py-2.5 text-caption text-faint" data-testid="palette-searching">
-                <TextSearch className="size-3.5 animate-pulse-dot" /> Searching conversations
+                <TextSearch className="size-3.5 animate-pulse-dot" /> {searching ? "Searching conversations" : "Searching other harnesses' sessions"}
+              </p>
+            )}
+            {/* Other harnesses' sessions that could not be searched are named: no answer is not "nothing there". */}
+            {wantsElsewhere && !seekingElsewhere && (elsewhereFailed || (entries.length === 0 && !searching && elsewhere.not.length > 0)) && (
+              <p className="px-2.5 py-1.5 text-micro text-faint" role="status" data-testid="palette-elsewhere-note">
+                {elsewhereFailed ? `Other harnesses' sessions were not searched: ${elsewhereFailed}` : `Titles and prompts only for ${elsewhere.not.map((h) => elsewhere.labels[h] ?? h).join(", ")}: their conversations are not searched`}
               </p>
             )}
             {searchFailed && (

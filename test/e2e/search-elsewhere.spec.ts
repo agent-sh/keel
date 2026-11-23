@@ -5,7 +5,8 @@ import { shoot } from "./shots.ts";
 
 // Feature: a session of another harness is found by what was said in it. The import sheet's
 // search reads what the transcripts say too (a reply, a command), not only their titles, folders
-// and prompts, and marks a row found that way.
+// and prompts, and marks a row found that way. Search and commands looks there as well: such a
+// session is a row of its own that opens the import sheet on it.
 // Run the daemon with KEEL_IMPORT_* at scratch stores (scripts/dev.sh does): this test writes there.
 
 // A Claude Code and a Codex session whose titles and prompts say nothing of what was decided in
@@ -66,4 +67,62 @@ test("the import sheet finds a session by what its replies say", async ({ page, 
   await shoot(page, "search-elsewhere-01-import-sheet");
   await page.keyboard.press("Escape");
   done();
+});
+
+// Search and commands: the Codex session's reply is found, in a group of its own, and opens in the sheet.
+test("search and commands finds other harnesses' sessions by what their replies say", async ({ page, request }) => {
+  const { tag, done } = await stores(request);
+  await page.goto("/");
+  const sheet = page.getByTestId("import-sheet");
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill(`zstd ${tag}`);
+  const other = page.getByRole("option").filter({ hasText: "Pick a compression for the archive" });
+  await expect(other).toHaveCount(1, { timeout: 15_000 });
+  await expect(other).toContainText("Codex · in the conversation");
+  await expect(page.getByTestId("palette-empty")).toHaveCount(0);
+  await shoot(page, "search-elsewhere-02-palette");
+  await other.click();
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByTestId("import-tab-codex")).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByTestId("import-search")).toHaveValue(`zstd ${tag}`);
+  await expect(sheet.getByTestId("import-row")).toHaveCount(1, { timeout: 15_000 });
+  await expect(sheet.getByText(`zstd ${tag} it is: level 19.`)).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press("Escape");
+
+  // Words said nowhere: nothing matches, and the palette says other harnesses' sessions were searched too.
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill(`nowhere${tag}`);
+  await expect(page.getByTestId("palette-empty")).toHaveText(`Nothing matches "nowhere${tag}", here or in other harnesses' sessions.`, { timeout: 15_000 });
+  await page.keyboard.press("Escape");
+  done();
+});
+
+// A query that sessions here match reads no other harness's transcripts (gigabytes, a process of its
+// own) until the owner asks: the last row offers it, keeps the palette open, and the rows come in its place.
+test("search and commands reads other harnesses' transcripts only when asked or when nothing here matches", async ({ page, request }) => {
+  const { tag, done } = await stores(request);
+  const { session } = await (await request.post("/api/sessions", { data: { title: `zstd ${tag} notes` } })).json();
+  try {
+    const inside: string[] = [];
+    page.on("request", (r) => { if (r.url().includes("/api/import/sessions") && r.url().includes("inside=1")) inside.push(r.url()); });
+    await page.goto("/");
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill(`zstd ${tag}`);
+    await expect(page.getByRole("option").filter({ hasText: `zstd ${tag} notes` })).toHaveCount(1);
+    const ask = page.getByRole("option").filter({ hasText: "Search other harnesses' sessions" });
+    await expect(ask).toHaveCount(1, { timeout: 15_000 });
+    await expect(page.getByTestId("palette-searching")).toHaveCount(0);
+    expect(inside).toEqual([]);
+    await shoot(page, "search-elsewhere-03-ask");
+    await ask.click();
+    await expect(page.getByTestId("palette")).toBeVisible();
+    const other = page.getByRole("option").filter({ hasText: "Pick a compression for the archive" });
+    await expect(other).toHaveCount(1, { timeout: 15_000 });
+    await expect(ask).toHaveCount(0);
+    expect(inside).toHaveLength(1);
+    await page.keyboard.press("Escape");
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+    done();
+  }
 });

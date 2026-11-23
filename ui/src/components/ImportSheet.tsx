@@ -35,8 +35,11 @@ type Preview = {
 const ident = (row: Row) => (row.harness === "keel" ? { harness: row.harness, id: row.id } : { harness: row.harness, id: row.id, path: row.path });
 
 let open = false;
+// What the sheet opens on, when another view sends the owner to a session of another harness (the palette's search).
+export type ImportAt = { q: string; harness: Harness; id: string; path: string };
+let openAt: ImportAt | null = null;
 const subs = new Set<() => void>();
-export function setImportOpen(o: boolean) { open = o; subs.forEach((f) => f()); }
+export function setImportOpen(o: boolean, at?: ImportAt) { open = o; if (at) openAt = at; subs.forEach((f) => f()); }
 export function ImportOverlay() {
   const o = useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => open);
   return <ImportSheet open={o} onOpenChange={setImportOpen} />;
@@ -240,6 +243,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [inside, setInside] = useState<{ q: string; running: boolean; not: Harness[] }>({ q: "", running: false, not: [] });
   const insideShown = useRef(-1); // the listing (seq) whose search inside is on show: a quick answer for it comes too late
   const shownInside = useRef(false); // the list on show came from a search inside (its next pages are read the same way)
+  const picking = useRef<Row | null>(null); // the session to pick once the harness it was sent for is on show
   const [next, setNext] = useState<string | undefined>();
   const [sel, setSel] = useState<Row | null>(null);
   const [building, setBuilding] = useState(false);
@@ -365,13 +369,24 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     const deep = q.trim().length >= 3 && !from ? setTimeout(() => load(undefined, false, 60, true), 450) : undefined;
     return () => { clearTimeout(t); clearTimeout(deep); };
   }, [open, load, q]);
+  // Sent here for one session (the palette's search): its harness, the query that found it, and the session picked.
+  useEffect(() => {
+    if (!open || !openAt) return;
+    const at = openAt;
+    openAt = null;
+    const row = { harness: at.harness, id: at.id, path: at.path, title: "" } as Row;
+    setQ(at.q);
+    // (A change of harness or machine drops the pick: it is made once that change is on show.)
+    if (at.harness === harness && !from) setSel(row);
+    else { picking.current = row; setFrom(""); setHarness(at.harness); }
+  }, [open]);
   // The first listing of a large store goes on in the background: look again until it is whole.
   useEffect(() => {
     if (!open || !building) return;
     const t = setTimeout(() => load(), 1500);
     return () => clearTimeout(t);
   }, [open, building, load]);
-  useEffect(() => { setSel(null); setRows(null); setConfirm(null); setFails([]); setBulk(""); setIntent(null); }, [harness, from]);
+  useEffect(() => { setSel(picking.current); picking.current = null; setRows(null); setConfirm(null); setFails([]); setBulk(""); setIntent(null); }, [harness, from]);
   // What runs the shown conversations there is looked at again every few
   // seconds while the sheet is open: a harness starts, works and ends meanwhile.
   const watched = !!ssh && !!rows?.length;
