@@ -179,7 +179,7 @@ export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
   const grants = useSafety((s) => s.grants);
   const [undo, setUndo] = useState<{ id: string; pattern: string } | null>(null);
   const byScope = Object.entries(
-    grants.reduce<Record<string, typeof grants>>((acc, g) => ((acc[g.lifetime === "session" ? "For one session" : g.scope] ??= []).push(g), acc), {}),
+    grants.reduce<Record<string, typeof grants>>((acc, g) => ((acc[g.lifetime === "session" ? "For one session and its agents" : g.scope] ??= []).push(g), acc), {}),
   );
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>

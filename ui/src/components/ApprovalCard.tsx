@@ -1525,7 +1525,7 @@ function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }
                 onClick={() => { setOpen(false); onGrant(rules, true); }}
                 className="k-btn k-btn-lg"
               >
-                This session only
+                This session and its agents
               </button>
             </div>
           </Popover.Popup>
