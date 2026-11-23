@@ -270,6 +270,13 @@ export function keepIndexed(store: Pick<Store, "db" | "side"> & { stored?: Store
   return { oldGone: () => { old = false; } };
 }
 
+// The events of the next step: the newest below `?1`, at most `?2` of them, whose bodies come to `?3` bytes.
+const STEP_RANGE = `SELECT MIN(rowid) AS lo, count(*) AS n FROM (
+  SELECT rowid, row_number() OVER w AS k, sum(len) OVER w AS upto
+  FROM (SELECT rowid, octet_length(data) AS len FROM events WHERE rowid < ?1 ORDER BY rowid DESC LIMIT ?2)
+  WINDOW w AS (ORDER BY rowid DESC ROWS UNBOUNDED PRECEDING))
+ WHERE k = 1 OR upto <= ?3`;
+
 // One step of the fill: the events below `fill_below`, newest first, whose
 // bodies come to about `bytes` (at least one event, at most `most`), get their
 // rows, and `fill_below` moves down. What a step costs is the reading of those
@@ -286,12 +293,10 @@ export function fillStep(db: Database, bytes: number, most = 5_000): { events: n
     if (!m || m.fill_below === null) return { events: 0, left: 0 };
     const below = m.fill_below;
     // (The bytes of the events up to each one, newest first: the step ends before the first that would pass `bytes`.)
-    const range = db.query<{ lo: number | null; n: number }, [number, number, number]>(
-      `SELECT MIN(rowid) AS lo, count(*) AS n FROM (
-         SELECT rowid, row_number() OVER w AS k, sum(octet_length(data)) OVER w AS upto
-         FROM (SELECT rowid, data FROM events WHERE rowid < ?1 ORDER BY rowid DESC LIMIT ?2)
-         WINDOW w AS (ORDER BY rowid DESC ROWS UNBOUNDED PRECEDING))
-       WHERE k = 1 OR upto <= ?3`).get(below, most, bytes)!;
+    // (Only the bodies' lengths are read, from the rows' headers, and of as many events as a step of `bytes`
+    // can hold: reading the bodies of `most` events to take a few made every step cost the same, so the
+    // sizing below kept steps at their least.)
+    const range = db.query<{ lo: number | null; n: number }, [number, number, number]>(STEP_RANGE).get(below, Math.min(most, Math.max(64, Math.ceil(bytes / 64))), bytes)!;
     if (range.lo === null) {
       finishFill(db);
       return { events: 0, left: 0 };

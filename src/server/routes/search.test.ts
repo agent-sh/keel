@@ -155,6 +155,18 @@ test("a step of the fill takes the events' bodies up to its bytes, and one at le
   intact(store);
 });
 
+// A step reads the lengths of as many events as its bytes can hold, not of five thousand: on a store
+// of large tool outputs that read made every step cost the same, and steps of a few events each.
+test("a step of the fill looks at no more events than its bytes can hold", () => {
+  const { store } = open();
+  const s = store.createSession({ model: "m", workspace: "/" });
+  for (let i = 0; i < 300; i++) store.append(s.id, "user", { text: `p${i}` });
+  initSearchIndex(store.db);
+  expect(fillStep(store.db, 4096).events).toBe(64);
+  expect(fillStep(store.db, 1_000_000).events).toBe(236);
+  intact(store);
+});
+
 // The layout before (version 4): every row's text in the index, mapped to its event by search_docs.
 const V4 = `
 DROP TABLE IF EXISTS search_meta;
