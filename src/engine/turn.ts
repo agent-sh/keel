@@ -2278,7 +2278,8 @@ export class Engine {
       return this.runTool(session, tools, { type: "tool_use", id, name, input }, { ...ctx, nestedIn: top })
         .finally(() => { mine.delete(id); if (!mine.size && this.nested.get(key) === mine) this.nested.delete(key); });
     };
-    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id, callTool } };
+    const offers = (name: string) => tools.some((t) => t.name === name);
+    const call: ToolCall = { id: u.id, tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id, callTool, offers } };
     // An interrupt answers at once, whether or not a gate or the tool honors the signal.
     // The listener goes when the call settles: the turn's signal is shared by all its calls.
     let onStop = () => {};

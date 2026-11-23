@@ -45,7 +45,10 @@ export function buildId(): string {
 // A mark can be removed once the builds before it are no longer pinned anywhere.
 export const URGENT: { tools: Record<string, string>; blocks: Record<string, string> } = {
   // An agent may start agents of its own, and message the other agents of its tree.
-  tools: { Agent: "nested-agents", spawn_agent: "nested-agents", SendMessage: "agent-tree-messages", send_input: "agent-tree-messages", ...testBuild?.urgent?.tools },
+  tools: { Agent: "nested-agents", spawn_agent: "nested-agents", SendMessage: "agent-tree-messages", send_input: "agent-tree-messages",
+    // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts).
+    Bash: "wait-poll", run_shell_command: "wait-poll", exec_command: "wait-poll", write_stdin: "wait-poll",
+    ...testBuild?.urgent?.tools },
   blocks: { ...testBuild?.urgent?.blocks },
 };
 

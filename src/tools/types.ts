@@ -52,6 +52,8 @@ export type ToolContext = {
   // Set by the engine: runs another tool of the session as a call of its own
   // (gate, hooks, dispatch, under the id given), for a tool that calls tools (run_code).
   callTool?: (name: string, input: any, id: string) => Promise<ToolResultBlock>;
+  // Set by the engine: whether the session's tool set offers this tool (a hint names only what the model has).
+  offers?: (name: string) => boolean;
   // Set by the engine: long content read by the session's reader model with a
   // request; resolves to the reader's answer (src/engine/reader.ts).
   // `compiled` false: the text is every part's findings, not one answer.
