@@ -110,15 +110,22 @@ object Wire {
      * which tells the owner and the model nothing: such a photo is named by when it was taken, on the
      * phone's clock (Photo 2026-11-20 at 14.32.05.jpg). A real name (receipt.png) stays as it is.
      */
-    fun pickedName(name: String, mime: String, takenMs: Long?, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
-        if (!byMediaId(name, mime) || takenMs == null || takenMs <= 0) return name
+    fun pickedName(name: String, mime: String, id: String?, takenMs: Long?, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
+        if (!byMediaId(name, mime, id) || takenMs == null || takenMs <= 0) return name
         val ext = name.substringAfterLast('.', "").ifBlank { MIME_EXT[mime] ?: mime.substringAfter('/') }
         val at = java.time.Instant.ofEpochMilli(takenMs).atZone(zone)
         return String.format(java.util.Locale.ROOT, "Photo %04d-%02d-%02d at %02d.%02d.%02d.%s", at.year, at.monthValue, at.dayOfMonth, at.hour, at.minute, at.second, ext)
     }
-    /** Whether a picked image is named by nothing but a number (or not at all). */
-    fun byMediaId(name: String, mime: String): Boolean =
-        mime.startsWith("image/") && name.substringBeforeLast('.', name).all { it.isDigit() }
+    /**
+     * Whether a picked image is named by its media id: named not at all, or by the number its URI ends
+     * with (content://media/picker/.../media/1000000044 named 1000000044.jpg). A real name of digits
+     * only (20261120143205.jpg from a camera, 0001.png from a scan) is not the URI's id, and stays.
+     */
+    fun byMediaId(name: String, mime: String, id: String?): Boolean {
+        if (!mime.startsWith("image/")) return false
+        val base = name.substringBeforeLast('.', name)
+        return base.isEmpty() || (!id.isNullOrEmpty() && id.all { it.isDigit() } && base == id)
+    }
     private val MIME_EXT = mapOf("image/jpeg" to "jpg", "image/png" to "png", "image/webp" to "webp", "image/heic" to "heic", "image/heif" to "heif", "image/gif" to "gif", "image/avif" to "avif")
 
     /** A file's name with the extension its new type has (a HEIC photo written as JPEG is IMG_1.jpg). */

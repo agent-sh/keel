@@ -77,7 +77,8 @@ object Attach {
                 ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(given.substringAfterLast('.', "").lowercase())
                 ?: "application/octet-stream"
             // A photo the picker names by its media id is named by when it was taken.
-            val name = if (Wire.byMediaId(given, mime)) Wire.pickedName(given, mime, taken(app, uri)) else given
+            val id = uri.lastPathSegment
+            val name = if (Wire.byMediaId(given, mime, id)) Wire.pickedName(given, mime, id, taken(app, uri)) else given
             val key = UUID.randomUUID().toString()
             put(chat, Picked(key, name, mime, size ?: 0, Up.READING, uri = uri, pickedSize = size))
             Hub.scope.launch { take(app, chat, key, uri, name, mime, size) }

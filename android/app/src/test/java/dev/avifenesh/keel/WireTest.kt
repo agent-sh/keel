@@ -73,12 +73,15 @@ class WireTest {
         val zone = java.time.ZoneId.of("Asia/Jerusalem")
         // 2026-11-20 12:32:05 UTC, 14:32:05 on the phone's clock.
         val taken = java.time.Instant.parse("2026-11-20T12:32:05Z").toEpochMilli()
-        assertEquals("Photo 2026-11-20 at 14.32.05.jpg", Wire.pickedName("1000000044.jpg", "image/jpeg", taken, zone))
-        assertEquals("Photo 2026-11-20 at 14.32.05.png", Wire.pickedName("1000000045", "image/png", taken, zone))
+        assertEquals("Photo 2026-11-20 at 14.32.05.jpg", Wire.pickedName("1000000044.jpg", "image/jpeg", "1000000044", taken, zone))
+        assertEquals("Photo 2026-11-20 at 14.32.05.png", Wire.pickedName("", "image/png", "1000000045", taken, zone))
         // A real name, a file that is not a photo, or a date nobody knows: the name stays.
-        assertEquals("receipt.png", Wire.pickedName("receipt.png", "image/png", taken, zone))
-        assertEquals("1000000046.pdf", Wire.pickedName("1000000046.pdf", "application/pdf", taken, zone))
-        assertEquals("1000000044.jpg", Wire.pickedName("1000000044.jpg", "image/jpeg", null, zone))
+        assertEquals("receipt.png", Wire.pickedName("receipt.png", "image/png", "1000000045", taken, zone))
+        assertEquals("1000000046.pdf", Wire.pickedName("1000000046.pdf", "application/pdf", "1000000046", taken, zone))
+        assertEquals("1000000044.jpg", Wire.pickedName("1000000044.jpg", "image/jpeg", "1000000044", null, zone))
+        // A real name of digits only (a camera's 20261120143205.jpg, a scan's 0001.png) is not the media id: it stays.
+        assertEquals("20261120143205.jpg", Wire.pickedName("20261120143205.jpg", "image/jpeg", "1000000047", taken, zone))
+        assertEquals("0001.png", Wire.pickedName("0001.png", "image/png", null, taken, zone))
     }
 
     @Test fun aFileTooLargeIsRefusedBeforeItGoesUp() {
