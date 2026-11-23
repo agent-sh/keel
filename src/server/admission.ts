@@ -359,6 +359,9 @@ export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined):
     const who = peerUid({ address: ip.address, port: ip.port }, { address: boundAddress(srv.hostname), port: srv.port });
     return who instanceof Promise ? who.then(owner) : owner(who);
   };
+  // The kernel gave Bun no address: the client closed or reset the connection after sending its request, so
+  // who made it cannot be told (a session's command can do this on purpose, and the request is still carried out).
+  if (srv?.port && !ip && !OWN_AUTH.test(path)) return refuse("the connection was closed before it was answered, so who made it cannot be told");
   if (!ip || !loopback || !srv?.port) return account();
   // A session's command first, whatever it carries: the token does not make it the owner (it can read the token's file).
   const scope = peerScope({ address: ip.address, port: ip.port }, { hostname: srv.hostname, port: srv.port });

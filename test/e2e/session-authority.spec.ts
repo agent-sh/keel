@@ -53,6 +53,8 @@ function probe(api: string, tokenFile: string, list: Route[], own: string): stri
     `if systemd-run --user --scope --quiet true 2>/dev/null; then echo "via-scope $(systemd-run --user --scope --quiet -- curl -s -m 5 --noproxy '*' -o /dev/null -w '%{http_code}' ${q(api + "/api/remote-access")})"; else echo "via-scope none"; fi`,
     // A child that outlives the command and asks once the command has ended.
     `setsid bash -c ${q(`sleep 1; curl -s -m 5 --noproxy '*' -o /dev/null -w 'late %{http_code}' ${api}/api/remote-access > late.out`)} < /dev/null > /dev/null 2>&1 &`,
+    // A request sent and the connection reset before the daemon reads who made it: carried out for no one.
+    `python3 - <<'PY'\nimport socket, struct\nbody = '{"mode":"full-auto"}'\nfor _ in range(10):\n    s = socket.create_connection(("127.0.0.1", ${new URL(api).port}))\n    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))\n    s.sendall(("PUT /api/sessions/${list.find((r) => r.name === "change-other-mode")!.path.split("/")[3]}/permissions HTTP/1.1\\r\\nHost: 127.0.0.1:${new URL(api).port}\\r\\nContent-Type: application/json\\r\\nContent-Length: %d\\r\\n\\r\\n%s" % (len(body), body)).encode())\n    s.close()\nPY`,
     `echo probed`,
   ].join("\n") + "\n";
 }
