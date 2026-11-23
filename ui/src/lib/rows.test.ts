@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 import { lineage } from "../../../src/core/tree.ts";
 import type { StoredEvent } from "../../../src/core/types.ts";
-import { buildRows, nextLineage, nextSiblings, type Built, type LineageOf, type Row, type SiblingsOf } from "./rows.ts";
+import { BLOCK_BITS, buildRows, nextLineage, nextSiblings, type Built, type LineageOf, type Row, type SiblingsOf } from "./rows.ts";
 
 let seq = 0;
 const all: StoredEvent[] = [];
@@ -182,8 +182,8 @@ test("a run of calls keeps its name, its place and its unchanged steps when olde
   expect(grown[0]!.id).toBe(run.id);
   expect(grown[0]!.e).toBe(run.e);
   expect(more.blocks[more.at.get(run.id)!]!.includes(grown[0]!)).toBe(true);
-  expect(more.blocks.every((rows) => rows.length > 0 && rows.every((r) => (r.e.seq >> 5) === (rows[0]!.e.seq >> 5)))).toBe(true);
-  expect(new Set(more.blocks.map((rows) => rows[0]!.e.seq >> 5)).size).toBe(more.blocks.length);
+  expect(more.blocks.every((rows) => rows.length > 0 && rows.every((r) => (r.e.seq >> BLOCK_BITS) === (rows[0]!.e.seq >> BLOCK_BITS)))).toBe(true);
+  expect(new Set(more.blocks.map((rows) => rows[0]!.e.seq >> BLOCK_BITS)).size).toBe(more.blocks.length);
   // It begins earlier now, and the steps it had are the objects they were (but the one the older events joined).
   expect(grown[0]!.steps!.length).toBe(70);
   const had = new Set(run.steps);

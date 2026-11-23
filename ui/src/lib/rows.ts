@@ -34,7 +34,9 @@ export type Row = {
 // Rows in order, in blocks of the events' seq (BLOCK to a block): a block's
 // place does not depend on where the loaded history starts or ends, so
 // loading older events or appending new ones leaves the other blocks as they are.
-const BLOCK_BITS = 5;
+// A block is also what the transcript draws or holds as one (lib/window.ts): eight events, a turn
+// or two, so what is drawn near the view is about what the view shows.
+export const BLOCK_BITS = 3;
 export const blockKey = (rows: Row[]) => rows[0]!.e.seq >> BLOCK_BITS;
 
 export type Built = {

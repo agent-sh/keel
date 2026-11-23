@@ -1,7 +1,7 @@
 import { announce } from "../lib/announce.ts";
 import { COPY_FAILED, copyText } from "../lib/copy.ts";
 import { Marked, type Token } from "marked";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { mathExtensions, mathHtml } from "../lib/mdmath.ts";
 import { finishedLength, mend } from "../lib/mdstream.ts";
 import { pathRef } from "../lib/paths.ts";
@@ -164,6 +164,9 @@ function openLinked(el: HTMLElement, sessionId: string) {
 // long session opens without coloring (and holding the spans of) every block
 // it ever showed.
 // Math and file links wait for the view the same way.
+// In the transcript a reply is drawn only near the view (lib/window.ts), so it is colored once it
+// is drawn, in idle time, and nothing watches it: `NearView` says so. Elsewhere one observer
+// watches every reply that waits.
 let seen: IntersectionObserver | null = null;
 const sessionOf = new WeakMap<Element, string | undefined>();
 const watch = (el: Element, sessionId?: string) => {
@@ -262,15 +265,19 @@ export const Markdown = memo(function Markdown({ text, live, sessionId }: { text
   return <StoredMarkdown text={text} sessionId={sessionId} />;
 });
 
+export const NearView = createContext(false);
+
 function StoredMarkdown({ text, sessionId }: { text: string; sessionId?: string }) {
   const html = useMemo(() => md.parse(text, { async: false }) as string, [text]);
   const ref = useRef<HTMLDivElement>(null);
+  const near = useContext(NearView);
   useEffect(() => { if (ref.current) localImages(ref.current, sessionId); }, [html, sessionId]);
   useEffect(() => {
     const el = ref.current;
     if (!el || !el.querySelector("code[data-lang]:not([data-hl]), .math:not([data-done]), code.k-fileref:not([data-checked])")) return;
-    return watch(el, sessionId);
-  }, [html, sessionId]);
+    if (!near) return watch(el, sessionId);
+    whenIdle(() => { if (el.isConnected) enhance(el, sessionId); }, 400);
+  }, [html, sessionId, near]);
   const click = onClick(sessionId);
   return <div ref={ref} className="prose-keel" dangerouslySetInnerHTML={{ __html: html }} onClick={click} onKeyDown={click} />;
 }

@@ -1,6 +1,7 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
 import { Brain, Check, Circle, CircleDot, Link2, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { useKept } from "../lib/kept.ts";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
@@ -212,7 +213,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // open while it does, so its output shows as it arrives.
   // When it ends it stays as it stood, with the tail of its output, until it has left the view
   // (lib/held.ts): folding it then would drop every line under it. The owner's own fold lets it go.
-  const [picked, pick] = useState<boolean | null>(null);
+  const [picked, pick] = useKept(live ? null : `call:${use.id}`);
   useHeld();
   const held = !!auto && callHeld(use.id, state === "running" && !!sessionId);
   const setPicked = (to: boolean) => { pick(to); if (!to) letGo(callKey(use.id)); };

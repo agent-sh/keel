@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { CopyButton } from "./CopyButton.tsx";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
-import { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolUseBlock } from "../../../src/core/types.ts";
 import { shownAsPrompt } from "../../../src/core/owner.ts";
@@ -23,12 +23,14 @@ import { auto, autoState, presentAt } from "../lib/automation.ts";
 import { STOPPERS } from "../../../src/core/stoppers.ts";
 import type { PaneSwap } from "../lib/looks.ts";
 import { TurnFailure } from "./TurnFailure.tsx";
-import { Markdown } from "./Markdown.tsx";
+import { Markdown, NearView } from "./Markdown.tsx";
+import { estimate, sameKeys, shares, windowOf, wordsOf, type Span } from "../lib/window.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { ToolCall } from "./ToolCall.tsx";
 import { InputNotice, SYSTEM_INPUT } from "./automation/TranscriptExtras.tsx";
 import { LiveWork, Thinking, Work } from "./Work.tsx";
+import { useKept } from "../lib/kept.ts";
 import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
@@ -158,7 +160,8 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
 function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEvent[] }) {
   const text: string = e.data.text ?? "";
   const long = text.length > 1400 || text.split("\n").length > 18;
-  const [full, setFull] = useState(false);
+  const [shownAll, setFull] = useKept(`full:${e.id}`);
+  const full = !!shownAll;
   // `keys`: opened by Up in the message box, where the keyboard goes back when the edit ends.
   const [editing, setEditing] = useState<false | "click" | "keys">(false);
   // Up in an empty message box asked for this prompt's edit box (lib/edit-last.ts).
@@ -172,12 +175,12 @@ function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEv
   // Only a prompt with versions shows the turn's state (its arrows wait for the turn).
   const working = useTail((t) => vs.length > 1 && isWorking(t));
   const origin: string | undefined = e.data.origin;
-  // The other version's branch may end far from its prompt: when the part the
-  // page holds of it does not reach the prompt, the transcript opens there.
-  const store = useContext(TailContext);
-  const pick = (i: number) => actions.setHead(sid, vs[i]!.id).then((r) => {
+  // The other version's branch may end far from its prompt: the transcript opens at the prompt,
+  // read first when the part the page holds of it does not reach it. (Its rows are new to the
+  // page and stand at an estimate until they are drawn: the view goes to the prompt itself.)
+  const pick = (i: number) => actions.setHead(sid, vs[i]!.id).then(() => {
     const to = vs[i]!.id;
-    if (store.get().reading || !lineage(getState().events[sid] ?? [], r.head).some((x) => x.id === to)) setUI({ focusEvent: to, focusStay: to });
+    setUI({ focusEvent: to, focusStay: to });
   }).catch(reportError);
   if (editing) return <EditPrompt e={e} sid={sid} back={editing === "keys"} onDone={() => setEditing(false)} />;
   return (
@@ -244,7 +247,8 @@ function EditPrompt({ e, sid, back, onDone }: { e: StoredEvent; sid: string; bac
   };
   const send = () => ok && actions.edit(sid, e.id, text.trim()).then(done, reportError);
   return (
-    <div ref={root} className="flex justify-end animate-in" data-event-id={e.id}>
+    // (`data-keep`: its block stays drawn while it is open, with what is typed in it.)
+    <div ref={root} className="flex justify-end animate-in" data-event-id={e.id} data-keep="">
       <div className="w-[min(85%,40rem)] rounded-xl border border-line-strong bg-raised p-2 shadow-2">
         {n > 0 && (
           <div className="mb-1.5 flex flex-col gap-1.5 px-1 pt-1" data-testid="edit-attachments">
@@ -746,7 +750,25 @@ const RowBlock = memo(function RowBlock({ rows, sid }: { rows: Row[]; sid: strin
   return <>{rows.map((r) => <TranscriptRow key={r.id} row={r} sid={sid} />)}</>;
 });
 
-const TAIL_BLOCKS = 6; // blocks of rows rendered first when a long session opens
+// A block that is not drawn (lib/window.ts): one box as tall as the block stood, `span` with the
+// gap under it, holding its rows' words (Find and a screen reader reach them; they are not seen)
+// and their event ids (a jump, a place and the rule of what is new find where they stand).
+const Hold = memo(function Hold({ rows, span, gap, rem, width }: { rows: Row[]; span: number; gap: number; rem: number; width: number }) {
+  const at = shares(rows, span - gap, width, rem, gap);
+  return (
+    <div className="k-hold" style={{ height: Math.max(0, span - gap) }}>
+      {rows.map((r, i) => {
+        const h = { height: at[i] };
+        if (r.kind === "end") return h.height ? <div key={r.id} style={h} /> : null;
+        const words = wordsOf(r);
+        if (r.kind === "work") return <div key={r.id} style={h} role="group" aria-label="What the model did" data-kind="work" data-events={r.events!.join(" ")}>{words}</div>;
+        return <p key={r.id} style={h} id={r.id === r.e.id ? `e-${r.e.id}` : undefined} data-kind={r.kind} data-event-id={r.e.id}>{words}</p>;
+      })}
+    </div>
+  );
+});
+
+const TAIL_BLOCKS = 3; // blocks of rows drawn first when a session opens, before the view says which
 const NONE: StoredEvent[] = [];
 
 export function Transcript({ sessionId }: { sessionId: string }) {
@@ -824,8 +846,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     }
   };
   useEffect(() => () => unseen.current?.disconnect(), []);
-  // (The rows at the conversation's end are drawn at their own height from their first layout, by
-  // the style sheet: see .row-cv in styles.css.) `lastRow`: the last row of the conversation.
+  // `lastRow`: the last row of the conversation (a row of its own, `.row-cv`).
   const lastRow = useRef<Element | null>(null);
   const findLast = () => {
     let el = content.current?.lastElementChild ?? null;
@@ -845,7 +866,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  const settling = useRef(false);
+  // Where this transcript put the scroll to hold the reader's line: the scroll event that reports
+  // that place is not the reader's. (One that finds the scroll elsewhere is: the reader moved too.)
+  const settling = useRef<number | null>(null);
   // Where the scroll was last put, by the reader or by this transcript. A
   // scroll event that finds it lower is the reader going up (a wheel, a key,
   // the scroll bar, the browser's find): following the end stops. One that
@@ -891,7 +914,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     anchor.current = null;
     if (!el || !c || stick.current) return;
     const top = el.getBoundingClientRect().top;
-    const row = c.children.item(rowAt(c, top));
+    let row = c.children.item(rowAt(c, top));
+    // (Not a block's mark: rows read in above a row of the same block come in after it.)
+    while (row?.classList.contains("k-block-mark")) row = row.nextElementSibling;
     if (!row) return;
     let part: Element = row;
     // Down to the deepest block crossing the top (a paragraph of a tall reply):
@@ -982,20 +1007,17 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId, !!events]);
   // The view is put where it stood: the event's row at the same distance from the view's top. False
-  // when the row is not on the page (its part is not loaded). The row is drawn at its own height
-  // first (off the screen it stands at an estimate), and from then on the reading anchor holds the
+  // when the row is not on the page (its part is not loaded). From then on the reading anchor holds the
   // line under the view's top there while the rows around it take their heights and the pane its width.
   const place = (p: Place): boolean => {
     const el = scroller.current, holder = p.ev ? holderOf(p.ev) : null;
     if (!el || !holder) return false;
-    const row = holder.closest<HTMLElement>(".row-cv");
-    if (row) { row.style.contentVisibility = "visible"; requestAnimationFrame(() => requestAnimationFrame(() => { row.style.contentVisibility = ""; })); }
     const off = offsetAt(p, holder.getBoundingClientRect().height);
     stick.current = false;
     const was = el.scrollTop;
     el.scrollTop += yOf(holder) - el.getBoundingClientRect().top - off;
     // (The scroll event that follows reports this, not the reader.)
-    if (el.scrollTop !== was) settling.current = true;
+    if (el.scrollTop !== was) settling.current = el.scrollTop;
     lastTop.current = el.scrollTop;
     remember();
     if (!anchor.current) anchor.current = { el: holder, top: off, ev: p.ev, evTop: off };
@@ -1304,6 +1326,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   };
   const onTail = useRef(() => tailChanged.current()).current;
   const viewSize = useRef(0);
+  const holdView = useRef<(el: HTMLDivElement) => void>(() => {});
   useEffect(() => {
     const c = content.current;
     if (!c) return;
@@ -1324,6 +1347,15 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) { cancelAnimationFrame(late); late = requestAnimationFrame(() => box.style.setProperty("--sbw", sbw)); }
       standing(c);
+      hold(el);
+      // Then which blocks to draw, with the view where it now stands. (Here the layout is done:
+      // where the blocks stand is read for nothing.)
+      measures.current();
+    });
+    // The view is kept where the reader has it: at the end, or on the line they read. (Also after
+    // other blocks are drawn: a block held and drawn again in one frame changes no size the
+    // observer is told of, and the scroll the browser cut short meanwhile would stay so.)
+    const hold = (el: HTMLDivElement) => {
       if (stick.current && !short.current) pin(el);
       else if (anchor.current && !anchor.current.el.isConnected && anchor.current.ev && holderOf(anchor.current.ev)) {
         // The element read was made again: its event's row or step is put back where it stood.
@@ -1332,7 +1364,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         if (Math.abs(moved) >= 0.5) {
           const was = el.scrollTop;
           el.scrollTop += moved;
-          settling.current = el.scrollTop !== was;
+          settling.current = el.scrollTop !== was ? el.scrollTop : null;
           lastTop.current = el.scrollTop;
         }
       } else if (anchor.current?.el.isConnected) {
@@ -1344,13 +1376,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         if (Math.abs(moved) >= 0.5) {
           const was = el.scrollTop;
           el.scrollTop += moved;
-          settling.current = el.scrollTop !== was; // a scroll event follows only when it moved
+          settling.current = el.scrollTop !== was ? el.scrollTop : null; // a scroll event follows only when it moved
           lastTop.current = el.scrollTop;
         }
         return;
       }
       remember();
-    });
+    };
+    holdView.current = hold;
     ro.observe(c);
     // The view's own height too: the message box under it grows with a draft, and a transcript
     // that follows its end keeps the end in view (its last lines would go under the box).
@@ -1421,8 +1454,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   };
   // A page that does not fill the view asks for the one before it. Measured by
   // the height the rows have once they are drawn, not by how many there are:
-  // until its first frame a row stands at an estimate (content-visibility), and
-  // a page of a few tall rows (one long run of work) read as a short one.
+  // a block not drawn stands at an estimate (lib/window.ts), and a page of a
+  // few tall rows (one long run of work) read as a short one.
   useEffect(() => {
     if (!more) return;
     let second = 0;
@@ -1544,30 +1577,130 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => cancelAnimationFrame(raf);
   }, [focus, events]);
 
-  // A session opens at its end: the newest rows of the part held render
-  // first, and the rest of that part join in a transition right after (input
-  // and streaming keep the main thread meanwhile). What the page holds ends
-  // up mounted, so the browser's find reaches it; the parts not held are read
-  // on scroll, on a jump, or by the app's own search.
-  const [whole, setWhole] = useState(false);
-  useEffect(() => setWhole(false), [sessionId]);
+  // ---------- Blocks drawn near the view (lib/window.ts) ----------
+  // A block of rows near the view is drawn; every other block stands as one light box as tall as
+  // it was when it was last drawn (an estimate before that), with its rows' words and event ids in
+  // it: Find, a screen reader and a selection reach them, a jump or a place finds where they are.
+  // Each block is led by a mark of no height, which says where the block begins on screen.
+  // `win`: the blocks the view asked for, of this session. A block also stays drawn while
+  // something needs it (`pins`, below): a jump or a place put back, the keyboard, a selection.
   const blocks = built?.blocks ?? [];
-  const cut = Math.max(0, blocks.length - TAIL_BLOCKS);
-  // A jump above the first rows mounts everything at once, and it stays so:
-  // the rows above must not leave again when the jump is done.
-  const jumped = useRef(false);
-  if (focus && (built?.at.get(focus) ?? 0) < cut) jumped.current = true;
-  // So does a place that is put back: its row may be above the first rows, and it is looked for in
-  // the frame its events are drawn in (a row that joined a moment later was taken for no row at all,
-  // and the owner was left at the end of that part).
-  const back = placed.current ? placing.current : placeOf(sessionId);
-  if (back && !back.end && back.ev) jumped.current = true;
-  const from = whole || jumped.current ? 0 : cut;
+  const heights = useRef(new Map<number, number>());
+  // (`seen`: the blocks there were when it was asked: one that came since is drawn until it is measured.)
+  const [win, setWin] = useState<{ sid: string; keys: Set<number>; seen: Set<number> } | null>(null);
+  const drawnKeys = useRef<Set<number>>(new Set());
+  const pinsRef = useRef<Set<number>>(new Set());
+  const [hands, setHands] = useState<{ sel: string; focus: number | null }>({ sel: "", focus: null });
+  const heightsOf = useRef(sessionId);
+  if (heightsOf.current !== sessionId) { heightsOf.current = sessionId; heights.current = new Map(); }
+  // The block a node of the transcript is in: its row's mark, the nearest one before it.
+  const blockOfNode = (n: Node | null): number | undefined => {
+    const c = content.current;
+    let el: Element | null = !n ? null : n instanceof Element ? n : n.parentElement;
+    while (el && el.parentElement !== c) el = el.parentElement;
+    for (let x = el; x; x = x.previousElementSibling) if ((x as HTMLElement).dataset.block !== undefined) return Number((x as HTMLElement).dataset.block);
+    return undefined;
+  };
+  // Where each block stands, and which ones to draw: after an event, a scroll and a change of size.
+  const measuring = useRef(0);
+  const again_ = useRef(0);
+  const sizes = useRef({ rem: 16, gap: 14, width: 768 }); // the text size, the rows' gap and the column's width, for estimates
+  const measureWindow = () => {
+    cancelAnimationFrame(measuring.current);
+    measuring.current = 0;
+    const c = content.current, el = scroller.current;
+    if (!c || !el) return;
+    const marks = c.querySelectorAll<HTMLElement>(":scope > [data-block]");
+    const spans: Span[] = [];
+    for (const m of marks) {
+      const top = m.getBoundingClientRect().top;
+      if (spans.length) spans.at(-1)!.bottom = top;
+      spans.push({ key: Number(m.dataset.block), top, bottom: top });
+    }
+    if (!spans.length) return;
+    spans.at(-1)!.bottom = c.getBoundingClientRect().bottom;
+    sizes.current = { rem: parseFloat(getComputedStyle(document.documentElement).fontSize) || 16, gap: parseFloat(getComputedStyle(c).rowGap) || 0, width: c.clientWidth };
+    // What an open edit or the like asks to keep.
+    const pins = new Set(pinsRef.current);
+    for (const k of c.querySelectorAll("[data-keep]")) { const b = blockOfNode(k); if (b !== undefined) pins.add(b); }
+    const drawn = drawnKeys.current;
+    // A view that follows the end is where the end will be once it is put there (a commit can be
+    // measured before the size observer puts it back at the end).
+    const box = el.getBoundingClientRect();
+    const behind = stick.current && !short.current ? Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop) : 0;
+    const next = windowOf(spans, { top: box.top + behind, bottom: box.bottom + behind }, drawn, pins);
+    if (sameKeys(drawn, next)) return;
+    // A block that leaves is kept at the height it stands at now.
+    for (const s of spans) if (drawn.has(s.key) && !next.has(s.key)) heights.current.set(s.key, s.bottom - s.top);
+    again_.current = 1;
+    setWin({ sid: sessionId, keys: next, seen: new Set(spans.map((x) => x.key)) });
+  };
+  const measures = useRef(measureWindow);
+  measures.current = measureWindow;
+  const measureLater = useRef(() => { measuring.current ||= requestAnimationFrame(() => measures.current()); }).current;
+  // After a commit that drew other blocks, they are measured again before the frame is painted:
+  // a block drawn at its real height can bring the next one into the view.
+  // Whenever other blocks were drawn (asked by the view or by a pin), the view is held where the
+  // reader has it before the frame is painted.
+  const drawnSig = useRef("");
+  useLayoutEffect(() => {
+    const sig = [...drawnKeys.current].join(" ");
+    if (sig !== drawnSig.current) { drawnSig.current = sig; if (scroller.current) holdView.current(scroller.current); }
+    if (!again_.current) return;
+    again_.current = 0;
+    measureWindow();
+  });
+  // A session's first frame: the view says which blocks before it is painted. (After that, what
+  // changes size is measured by the size observer, when the layout is done.)
+  useLayoutEffect(() => { if (events && win?.sid !== sessionId) measureWindow(); }, [events]);
+  // The blocks under the keyboard and a selection stay drawn: the row that holds the focus, and every
+  // drawn block a selection spans (what is copied is what is drawn; a selection made by dragging
+  // has drawn every block it passed).
   useEffect(() => {
-    if (from === 0) return;
-    const t = setTimeout(() => startTransition(() => setWhole(true)), 0);
-    return () => clearTimeout(t);
-  }, [from > 0]);
+    const c = content.current;
+    if (!c) return;
+    const onSel = () => {
+      const s = document.getSelection();
+      let sel = "";
+      if (s && !s.isCollapsed && s.rangeCount) {
+        const r = s.getRangeAt(0);
+        if (r.intersectsNode(c)) {
+          const keys = [...c.querySelectorAll<HTMLElement>(":scope > [data-block]")].map((m) => Number(m.dataset.block));
+          // (A point on the column itself, between its rows, is the row beside it.)
+          const at = (n: Node, off: number, end: boolean) => (n === c ? blockOfNode(c.childNodes[end ? off - 1 : off] ?? null) : blockOfNode(n));
+          const a = c.contains(r.startContainer) ? at(r.startContainer, r.startOffset, false) : keys[0];
+          const b = c.contains(r.endContainer) ? at(r.endContainer, r.endOffset, true) : keys.at(-1);
+          const i = a === undefined ? -1 : keys.indexOf(a), j = b === undefined ? -1 : keys.indexOf(b);
+          // (Only the blocks that are drawn: one that is held keeps its words in the selection as they
+          // are. Drawing it would take the selected words away, and a Find that selects what it found
+          // would lose it.)
+          if (i >= 0 && j >= i) sel = keys.slice(i, j + 1).filter((k) => drawnKeys.current.has(k)).join(" ");
+        }
+      }
+      setHands((h) => (h.sel === sel ? h : { ...h, sel }));
+    };
+    const onFocus = (e: FocusEvent) => { const k = blockOfNode(e.target as Node) ?? null; setHands((h) => (h.focus === k ? h : { ...h, focus: k })); };
+    const onBlur = (e: FocusEvent) => { if (!c.contains(e.relatedTarget as Node | null)) setHands((h) => (h.focus === null ? h : { ...h, focus: null })); };
+    document.addEventListener("selectionchange", onSel);
+    c.addEventListener("focusin", onFocus);
+    c.addEventListener("focusout", onBlur);
+    return () => { document.removeEventListener("selectionchange", onSel); c.removeEventListener("focusin", onFocus); c.removeEventListener("focusout", onBlur); };
+  }, [!!events, sessionId]);
+  // What a pin kept drawn goes once nothing needs it, the next time the view is measured: now.
+  const pinned = useRef("");
+  useEffect(() => {
+    const now = [...pinsRef.current].sort((a, b) => a - b).join(" ");
+    if (now !== pinned.current) { pinned.current = now; measureLater(); }
+  });
+  // The block of an event (a row's, or one step of a run of work).
+  const keyOf = (id: string | null | undefined): number | undefined => {
+    if (!id || !built) return undefined;
+    let j = built.at.get(id) ?? built.at.get(`w:${id}`);
+    if (j === undefined) j = blocks.findIndex((rows) => rows.some((r) => r.events?.includes(id)));
+    return j === undefined || j < 0 ? undefined : blockKey(blocks[j]!);
+  };
+  // A place that is put back: its row is looked for in the frame its events are drawn in.
+  const back = placed.current ? placing.current : placeOf(sessionId);
 
   // Previous and Next prompt (the commands of builtins.ts, for the pane with
   // the keys): the keyboard moves through the owner's prompts on the branch
@@ -1606,7 +1739,6 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const text = edge || `Prompt ${out.before + to + 1} of ${total}`;
       // Leaving the message box for the conversation: the way back is said with the place.
       announce(`${edge ? `${edge} Prompt ${out.before + to + 1} of ${total}.` : text}${on ? "" : `${edge ? "" : "."} Escape returns to the message box.`}`);
-      setWhole(true); // a prompt before the rows rendered first is rendered now
       setAt((cur) => ({ id: prompts[to]!.id, n: (cur?.n ?? 0) + 1, text }));
     };
     addEventListener("keel:prompt", onPrompt);
@@ -1654,6 +1786,25 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // session where it stands (Answer again, Continue, a failure's Try again,
   // sending the images again) is not offered there.
   const short_ = !!reading?.end;
+  // What needs its block drawn now: a jump and a place put back (looked for in the frame their
+  // events are drawn in), the prompt the keyboard moves to, where what is new starts, the keyboard
+  // and a selection.
+  const pins = new Set<number>();
+  for (const id of [want, at?.id, back && !back.end ? back.ev : undefined, fresh?.ev]) { const k = keyOf(id); if (k !== undefined) pins.add(k); }
+  for (const k of hands.sel ? hands.sel.split(" ") : []) pins.add(Number(k));
+  if (hands.focus !== null) pins.add(hands.focus);
+  pinsRef.current = pins;
+  const asked = win?.sid === sessionId ? win.keys : null;
+  const shown = new Set<number>();
+  const before = drawnKeys.current;
+  blocks.forEach((rows, i) => {
+    const k = blockKey(rows);
+    if (!asked ? i >= blocks.length - TAIL_BLOCKS : asked.has(k) || i >= blocks.length - 2 || (!win!.seen.has(k) && (before.has(k) || i >= blocks.length - TAIL_BLOCKS))) shown.add(k);
+  });
+  for (const k of pins) shown.add(k);
+  drawnKeys.current = shown;
+  // (What the last measure read: a render reads no layout.)
+  const { rem, gap, width } = sizes.current;
   tail.setImages(short_ ? undefined : events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id);
   tail.put(session, short_ ? undefined : events.findLast((e) => e.kind === "turn_end")?.id, short_ ? undefined : events.at(-1)?.id, !!reading, reading?.other ? reading.head ?? undefined : undefined);
 
@@ -1689,15 +1840,18 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           lastTop.current = el.scrollTop;
           if (away === stick.current) setAway(!stick.current);
           // The scroll this transcript made itself to hold the anchor in place is not the reader's.
-          if (settling.current) settling.current = false;
-          else { again.current = null; remember(); saveSoon(); lookSoon(); }
+          if (settling.current !== null && Math.abs(el.scrollTop - settling.current) < 1) settling.current = null;
+          else { settling.current = null; again.current = null; remember(); saveSoon(); lookSoon(); }
+          // Which blocks to draw where the view went. (A scroll that only reports where this
+          // transcript put the view, as it follows the end, is measured by the size observer.)
+          if (up || down) measureLater();
           // The reader moving toward an edge reads the part beyond it (not a
           // scroll that only followed the content changing size).
           if (!stick.current && up && el.scrollTop < el.clientHeight) older(true);
           if (near && down) later(true);
         }}
       >
-        <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript" data-working={session.phase === "working" || undefined}>
+        <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-[var(--k-row-gap,1rem)] px-4 py-8 md:px-6" data-testid="transcript" data-working={session.phase === "working" || undefined}>
           {previewing && (
             <div className="sticky top-2 z-10 flex items-center gap-2 rounded-lg border border-brass/50 bg-raised px-3.5 py-2 text-ui shadow-2" data-testid="branch-preview" data-pinned="1">
               <GitBranch className="size-4 shrink-0 text-brass" />
@@ -1718,7 +1872,17 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             </div>
           )}
           <TailContext.Provider value={tail}>
-            {(from ? blocks.slice(from) : blocks).map((rows) => <RowBlock key={blockKey(rows)} rows={rows} sid={sessionId} />)}
+            <NearView.Provider value={true}>
+              {blocks.map((rows) => {
+                const k = blockKey(rows);
+                return (
+                  <Fragment key={k}>
+                    <div data-block={k} className="k-block-mark" aria-hidden="true" />
+                    {shown.has(k) ? <RowBlock rows={rows} sid={sessionId} /> : <Hold rows={rows} span={heights.current.get(k) ?? estimate(rows, width, rem, gap)} gap={gap} rem={rem} width={width} />}
+                  </Fragment>
+                );
+              })}
+            </NearView.Provider>
           </TailContext.Provider>
           {built.pending.length > 0 && <div className="flex" data-testid="pending-notes"><TurnNotes notes={built.pending} working={session.phase === "working"} /></div>}
           {reading?.end && (

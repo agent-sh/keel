@@ -6,6 +6,7 @@
 // a line of its own, so nothing that matters is behind "+N".
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Brain, ChevronDown } from "lucide-react";
+import { useKept } from "../lib/kept.ts";
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { Row } from "../lib/rows.ts";
 import { useBlocked } from "../lib/blocked.ts";
@@ -153,7 +154,8 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
     }
     return (id: string) => by.get(id) ?? "";
   }, [marked, step, sid]);
-  const [open, setOpen] = useState(false);
+  const [kept, setOpen] = useKept(`step:${sid}:${step.key}`);
+  const open = kept ?? false;
   useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
   // What ran on this page and is held as it stood (lib/held.ts).
   useHeld();
@@ -242,7 +244,8 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
 // change with each of them.
 function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step; sid: string; cwd?: string; remote: boolean; events: string; live: Live; all: All }) {
   const calls = callsOf(step);
-  const [open, setOpen] = useState(false);
+  const [kept, setOpen] = useKept(`step:${sid}:${step.key}`);
+  const open = kept ?? false;
   useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
   const hit = useUI((u) => !!u.focusCall && calls.some((c) => c.id === u.focusCall));
   useEffect(() => { if (hit) setOpen(true); }, [hit]);

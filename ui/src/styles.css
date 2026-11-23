@@ -687,8 +687,11 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    pointed at, or the keyboard is in it (Tab reaches every action, as before): every reply carried
    it, and two panes held a hundred controls nobody was reaching for. What a turn ended on (stopped,
    failed, waits) and Resume stay. The row keeps its height, so nothing moves when it shows. */
+/* (A block's mark may stand between a reply and its footer: lib/window.ts.) */
 .row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
-.row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason) { opacity: 0; }
+.row-cv:not(:hover) + .k-block-mark + .k-turn-foot:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
+.row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason),
+.row-cv:not(:hover) + .k-block-mark + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason) { opacity: 0; }
 .k-turn-foot > *, .k-turn-end > * { transition: opacity var(--dur-quick) var(--ease-out); }
 @media (hover: none) { .k-turn-foot > *, .k-turn-end > * { opacity: 1 !important; } }
 /* On a phone, with no pointer to show it, an earlier reply keeps its actions and lets its figures go: the
@@ -709,15 +712,16 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .flash { animation: flash 1.6s var(--ease-out); }
 @keyframes flash { 0%, 30% { box-shadow: 0 0 0 6px var(--accent-soft); background: var(--accent-soft); } 100% { box-shadow: 0 0 0 6px transparent; } }
 
-/* Long transcripts: rows off screen skip layout and paint. A row paints a
-   little past its box, so the focus ring of a control on its edge is whole. */
-.row-cv { content-visibility: auto; contain-intrinsic-size: auto 7.5rem; overflow-clip-margin: 0.375rem; }
-/* The rows at the conversation's end are always drawn at their own height: the row that takes a
-   streamed reply's place stands as tall as the reply did from its first layout, whoever reads the
-   layout first. At an estimated height it would pull the view up to the end (a reader further up
-   would lose their place), or stay off the screen for good. (Its size is remembered from then on,
-   so further up and off the screen it skips layout as every other row does.) */
-.k-transcript > .row-cv:nth-last-child(-n+8) { content-visibility: visible; }
+/* Long transcripts: the rows far from the view are not drawn (lib/window.ts), so the rows that are
+   drawn lay out at their own height, with no estimate that could change under the reader when a
+   row comes on screen. */
+/* A block of rows that is not drawn (lib/window.ts): one box as tall as the block stood. Its rows'
+   words are in it for Find, a screen reader and a selection, and are not seen. Off the screen it
+   is not laid out at all. The mark before each block takes no room: its height is nothing, and the
+   column's gap after it (--k-row-gap, Transcript.tsx) is taken back, so it stands at its block's top. */
+.k-block-mark { height: 0; margin-bottom: calc(-1 * var(--k-row-gap, 1rem)); }
+.k-hold { content-visibility: auto; overflow: clip; color: transparent; font-size: var(--text-micro); line-height: 1.2; }
+.k-hold > * { margin: 0; overflow: clip; white-space: pre-line; }
 
 /* Each row of a transcript lays out by itself: what a streamed reply changes
    stays in its row instead of the whole pane being laid out again. Layout

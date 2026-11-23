@@ -42,15 +42,14 @@ test("a reply under a long transcript renders only its own rows", async ({ page,
     const prompts = before.filter((e) => e.kind === "user").length;
     await page.goto(`${d.url}/s/${id}`);
     await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 30_000 });
-    // The page opened with the newest part: its prompts and turn ends are on it, not the session's.
+    // The page opened with the newest part: its prompts are on it, not the session's.
     const part = ((await (await fetch(`${d.url}/api/sessions/${id}?page=200`)).json()) as any).events as { kind: string; data: any }[];
-    const shown = () => page.getByTestId("user-message").count();
+    // (A prompt far from the view is held, not drawn: lib/window.ts. It is on the page all the same.)
+    const shown = () => page.locator('[data-testid="transcript"] :is([data-testid="user-message"], .k-hold [data-kind="user"])').count();
     const opened = part.filter((e) => e.kind === "user" && !e.data.origin).length;
-    const ends = part.filter((e) => e.kind === "turn_end").length;
     expect(opened).toBeGreaterThan(20);
     expect(opened).toBeLessThan(prompts - 3);
-    await expect(page.getByTestId("user-message")).toHaveCount(opened);
-    await expect(page.getByTestId("turn-end")).toHaveCount(ends);
+    await expect.poll(shown).toBe(opened);
 
     // From here on: every row model made and every row rendered, by event id.
     const count = () => page.evaluate(() => {
@@ -67,8 +66,8 @@ test("a reply under a long transcript renders only its own rows", async ({ page,
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("draft")).toBeVisible({ timeout: 15_000 });
     await shoot(page, "long-transcript-01-streaming");
-    await expect(page.getByTestId("turn-end")).toHaveCount(ends + 1, { timeout: 60_000 });
-    await expect(page.getByTestId("working")).toHaveCount(0);
+    await expect.poll(async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).running, { timeout: 60_000 }).toBe(false);
+    await expect(page.getByTestId("working")).toHaveCount(0, { timeout: 30_000 });
 
     let after = await stored();
     const fresh = new Set(after.slice(before.length).map((e) => e.id));
@@ -86,7 +85,8 @@ test("a reply under a long transcript renders only its own rows", async ({ page,
 
     // An earlier part is read in above (the rows already there are not rendered
     // for it), and a finished turn's footer copies its reply.
-    const onPage = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="transcript"] [data-event-id]')].map((x) => x.dataset.eventId!));
+    // (The rows drawn: a held block's rows are drawn when the view comes to them.)
+    const onPage = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="transcript"] [data-event-id]')].filter((x) => !x.closest(".k-hold")).map((x) => x.dataset.eventId!));
     const there = new Set(await onPage());
     await count();
     await page.getByTestId("load-earlier").click();
@@ -439,6 +439,8 @@ test("the reader's place is found by halving and holds under the branch banner",
     await page.route(`**/api/sessions/${id}/page?*`, async (route) => { await gate; await route.fallback(); });
     await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
     await expect(page.getByTestId("load-earlier")).toHaveText("Loading earlier messages");
+    // (The rows the view came to are drawn first: a block held there takes its height when it is.)
+    await expect.poll(() => scroller.evaluate((el) => { const v = el.getBoundingClientRect(); return [...el.querySelectorAll(".k-hold")].some((h) => { const r = h.getBoundingClientRect(); return r.bottom > v.top && r.top < v.bottom; }); })).toBe(false);
     const top = page.locator(`#${await page.getByTestId("user-message").first().getAttribute("id")}`);
     const before = (await top.boundingBox())!.y;
     const n = await mounted();
@@ -519,5 +521,96 @@ test("reading up through a run of calls longer than a part keeps the reader at t
   } finally {
     d.proc.kill();
     await exited(d.proc);
+  }
+});
+
+// Rows far from the view are not drawn: each block of them stands as one light box as tall as it
+// was, holding its rows' words and event ids (lib/window.ts). Find reaches the words and brings
+// the rows back, a selection keeps the rows it spans drawn, a jump draws its row, a step the
+// owner opened is open again when its row comes back, and a phone holds rows the same way.
+test("rows far from the view are held as light boxes that Find, a selection and a jump still reach", async ({ page }) => {
+  const { state, ids: [id] } = seeded("held", 180, "turns", "Held rows");
+  const d = await daemon(state);
+  try {
+    const all = ((await (await fetch(`${d.url}/api/sessions/${id}/events`)).json()) as any).events as { id: string; kind: string; data: any }[];
+    const prompt = (n: number) => all.find((e) => e.kind === "user" && String(e.data.text).startsWith(`Prompt ${n}:`))!;
+    await page.goto(`${d.url}/s/${id}`);
+    await expect(page.getByTestId("turn-end").last()).toBeInViewport({ timeout: 30_000 });
+    const transcript = page.getByTestId("transcript");
+    const scroller = transcript.locator("xpath=..");
+    const prompts = all.filter((e) => e.kind === "user" && !e.data.origin).length;
+    // (Prompts 4 to 6 are on the other branch: the one shown goes from 3 to 7, edited.)
+    const shownIds = all.filter((e) => e.kind === "user" && /^Prompt (\d+)/.exec(e.data.text) && Number(/^Prompt (\d+)/.exec(e.data.text)![1]) > 7).map((e) => e.id);
+    // The whole session is on the page (one part), and most of it is held.
+    await expect(page.getByTestId("load-earlier")).toHaveCount(0);
+    await expect.poll(() => transcript.locator(":scope > .k-hold").count()).toBeGreaterThan(5);
+    expect(await page.getByTestId("user-message").count()).toBeLessThan(prompts / 3);
+    expect(await transcript.locator("[data-event-id]").evaluateAll((els, ids) => ids.every((x) => els.some((el) => (el as HTMLElement).dataset.eventId === x)), shownIds)).toBe(true);
+    await shoot(page, "long-transcript-10-held-rows");
+
+    // Find reaches a held prompt's words and its rows are drawn where Find took the view.
+    const third = prompt(8);
+    expect(await transcript.locator(`#e-${third.id}`).getAttribute("data-testid")).toBeNull(); // held
+    // (Searching on from the end round to the top, as the find bar does.)
+    expect(await page.evaluate((w) => (window as any).find(w, false, false, true), String(third.data.text).slice(0, 24))).toBe(true);
+    expect(await page.evaluate(() => getSelection()!.getRangeAt(0).startContainer.parentElement!.closest(".k-hold") !== null)).toBe(true);
+    // The find bar takes the view to what it found (window.find selects it and leaves the view):
+    // the rows there are drawn, the found one in view.
+    await page.evaluate(() => getSelection()!.getRangeAt(0).startContainer.parentElement!.scrollIntoView({ block: "center" }));
+    await expect(page.locator(`[data-testid="user-message"]#e-${third.id}`)).toBeInViewport({ timeout: 10_000 });
+
+    // A selection from that prompt to one two blocks on, made as a drag makes it (the view goes down
+    // to its end), keeps every row it spans drawn, also when the view goes on to the end, and copies
+    // their words as they are shown.
+    const sixth = prompt(11);
+    await scroller.evaluate((el, at) => { const t = document.getElementById(at)!; el.scrollTop += t.getBoundingClientRect().top - el.getBoundingClientRect().top - 100; }, `e-${sixth.id}`);
+    await expect(page.locator(`[data-testid="user-message"]#e-${sixth.id}`)).toBeInViewport();
+    await page.evaluate(([a, b]) => {
+      const r = document.createRange();
+      r.setStartBefore(document.getElementById(`e-${a}`)!);
+      r.setEndAfter(document.getElementById(`e-${b}`)!);
+      getSelection()!.removeAllRanges();
+      getSelection()!.addRange(r);
+    }, [third.id, sixth.id]);
+    await scroller.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+    await expect(page.getByTestId("turn-end").last()).toBeInViewport();
+    await page.waitForTimeout(400);
+    await expect(page.locator(`[data-testid="user-message"]#e-${third.id}`)).toHaveCount(1);
+    const copied = await page.evaluate(() => getSelection()!.toString());
+    for (const n of [8, 9, 10, 11]) expect(copied).toContain(`Prompt ${n}:`);
+    expect(copied).toContain("Reply 9 ends here.");
+    expect(copied).not.toContain("**");
+    // Let go, the rows far from the view are held again.
+    await page.evaluate(() => getSelection()!.removeAllRanges());
+    await expect(page.locator(`[data-testid="user-message"]#e-${third.id}`)).toHaveCount(0);
+
+    // A run of work the owner opened is open again when its row comes back.
+    const ninth = prompt(14);
+    await page.goto(`${d.url}/s/${id}?e=${ninth.id}`);
+    const jumped = page.locator(`[data-testid="user-message"]#e-${ninth.id}`);
+    await expect(jumped).toBeInViewport({ timeout: 30_000 });
+    const line = page.locator(`[data-events~="${all[all.indexOf(ninth) + 2]!.id}"] .k-line`).first();
+    await line.click();
+    await expect(line).toHaveAttribute("aria-expanded", "true");
+    await scroller.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+    await expect(jumped).toHaveCount(0);
+    await scroller.evaluate((el, at) => { const t = document.getElementById(at)!; el.scrollTop += t.getBoundingClientRect().top - el.getBoundingClientRect().top - 100; }, `e-${ninth.id}`);
+    await expect(jumped).toBeInViewport();
+    await expect(page.locator(`[data-events~="${all[all.indexOf(ninth) + 2]!.id}"] .k-line`).first()).toHaveAttribute("aria-expanded", "true");
+
+    // A screen reader reaches a held run of work by the name it has drawn.
+    await expect(transcript.locator('.k-hold [role="group"][aria-label="What the model did"]').first()).toBeAttached();
+
+    // A phone holds the rows the same way.
+    await page.setViewportSize({ width: 390, height: 844 });
+    // (It opens where the owner was: the prompt jumped to.)
+    await page.goto(`${d.url}/s/${id}`);
+    await expect(jumped).toBeInViewport({ timeout: 30_000 });
+    await expect.poll(() => transcript.locator(":scope > .k-hold").count()).toBeGreaterThan(5);
+    await shoot(page, "long-transcript-11-held-rows-phone");
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
   }
 });

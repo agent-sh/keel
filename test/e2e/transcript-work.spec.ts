@@ -21,6 +21,16 @@ function seed(name: string) {
   return { state, ...(out as { main: string; others: string[]; risk: string }) };
 }
 
+// The owner's prompts on the page, drawn or held.
+const PROMPTS = '[data-testid="transcript"] :is([data-testid="user-message"], .k-hold [data-kind="user"])';
+
+// The view brought to the owner's nth prompt, drawn there.
+async function toPrompt(page: Page, n: number) {
+  await bring(page, PROMPTS, n);
+  await expect(page.locator(PROMPTS).nth(n)).toHaveAttribute("data-testid", "user-message");
+  await bring(page, PROMPTS, n);
+}
+
 // The pane's scroller brought to an element, a little under its top.
 const bring = (page: Page, selector: string, nth = 0, offset = 24) => page.evaluate(([sel, n, off]) => {
   const el = document.querySelectorAll(sel as string)[n as number] as HTMLElement;
@@ -34,13 +44,14 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
   try {
     await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
     await page.goto(`${d.url}/s/${s.main}`);
-    await expect(page.getByTestId("user-message").nth(1)).toBeVisible({ timeout: 30_000 });
+    // (The day's prompts far from the view are held, not drawn: lib/window.ts. The second one is reached by its place.)
+    await expect(page.locator(PROMPTS).nth(1)).toBeAttached({ timeout: 30_000 });
     const stored = ((await (await fetch(`${d.url}/api/sessions/${s.main}/events`)).json()) as any).events as { kind: string; data: any }[];
     const calls = stored.filter((e) => e.kind === "assistant").flatMap((e) => (e.data.blocks as any[]).filter((b) => b.type === "tool_use")).length;
     expect(calls).toBe(40);
 
     // Forty calls are a handful of lines: steps of one family, plan updates, and no card.
-    await bring(page, '[data-testid="user-message"]', 1);
+    await toPrompt(page, 1);
     await shoot(page, "work-01-forty-calls-folded");
     const lines = await page.locator(".k-work .k-line").count();
     expect(lines).toBeLessThanOrEqual(22);
@@ -156,7 +167,7 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
     await expect(big.getByTestId("output-more")).toBeVisible();
 
     // The owner's message is one block: their words, then what they attached, inside it.
-    await bring(page, '[data-testid="user-message"]', 0);
+    await toPrompt(page, 0);
     const first = page.getByTestId("user-message").first();
     await expect(first.locator(".k-owner-words").getByTestId("message-image")).toHaveCount(2);
     const tint = await first.locator(".k-owner-words").evaluate((el) => { document.documentElement.classList.add("dark"); const c = getComputedStyle(el).backgroundColor; document.documentElement.classList.remove("dark"); return c; });
@@ -311,8 +322,8 @@ test("a closed step shows what must be seen: marked calls whole, a cut call, eac
     page.on("request", (r) => { if (r.url().includes("/terminal/call/")) logs.push(r.url()); });
     await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
     await page.goto(`${d.url}/s/${s.risk}`);
-    await expect(page.getByTestId("user-message").first()).toBeVisible({ timeout: 30_000 });
-    await bring(page, '[data-testid="user-message"]', 0);
+    await expect(page.locator(PROMPTS).first()).toBeAttached({ timeout: 30_000 });
+    await toPrompt(page, 0);
     const warn = await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--warn-ink)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; });
 
     // Eleven commands of one reply: a force push, a delete outside the folder and a download piped into a shell among them.
