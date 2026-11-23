@@ -8,6 +8,7 @@ import { installPhone } from "../../integrations/phone.ts";
 import { installTacitServer } from "../../integrations/tacit-mcp.ts";
 import { memoryOn } from "../../integrations/tacit.ts";
 import { ProjectServers } from "../../mcp/project.ts";
+import { readsOf } from "../reads.ts";
 import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
 import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
@@ -56,6 +57,9 @@ export const mcpRoutes: RouteModule = (deps) => {
   m.start();
   // A project's .mcp.json: its servers the owner approved go to the sessions working in it, from each turn's start.
   const projects = new ProjectServers(deps.store, m);
+  // The owner's approvals in Claude Code are read off the loop (its ~/.claude.json is large).
+  const reads = readsOf(deps.store);
+  projects.read = (files, roots) => reads.run("claude.mcpChoices", { files, roots });
   projects.onPending = (sid, root, names) => {
     const ev = deps.store.append(sid, "note", { kind: "mcp-project", text: `This project's .mcp.json (${root}) names ${names.length === 1 ? "a server" : "servers"} waiting for your approval: ${names.join(", ")}. ${names.length === 1 ? "It is" : "They are"} not started until you approve ${names.length === 1 ? "it" : "them"} in Settings > MCP servers.`, servers: names, root });
     deps.bus.emit({ t: "event", event: ev });

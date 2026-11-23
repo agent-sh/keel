@@ -75,6 +75,9 @@ function ProjectReader({ p, x, decide }: { p: ProjectState; x: ProjectServer; de
           ...(x.by === "claude" ? [["Decided", "in Claude Code"] as [string, React.ReactNode]] : []),
         ]}
       >
+        {/* The whole entry as the file holds it, unexpanded: what an approval holds. */}
+        <div className="k-sub k-label mt-3">The entry in .mcp.json</div>
+        <pre className="mt-1 max-h-[24rem] overflow-auto rounded-lg bg-code px-2.5 py-1.5 font-mono text-micro whitespace-pre-wrap break-all" data-testid="mcp-project-entry-text">{JSON.stringify(x.entry, null, 2)}</pre>
         <div className="mt-3.5 flex flex-wrap items-center gap-2">
           {x.state !== "approved" && <button type="button" className="k-btn" data-ink data-testid="mcp-project-approve" onClick={() => decide("approved")}>Approve</button>}
           {x.state !== "rejected" && <button type="button" className="k-btn" data-quiet data-testid="mcp-project-reject" onClick={() => decide("rejected")}>Reject</button>}

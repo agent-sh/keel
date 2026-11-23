@@ -349,7 +349,7 @@ test("a project's .mcp.json servers run once the owner approves them", async ({ 
   const tag = Date.now().toString(36);
   const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `proj-mcp-${tag}`);
   mkdirSync(join(root, ".git"), { recursive: true });
-  const entry = (extra: string[] = []) => ({ command: "bun", args: [FIXTURE, ...extra] });
+  const entry = (extra: string[] = []) => ({ command: "bun", args: [FIXTURE, ...extra], env: { MARK: "${HOME}/mark" } });
   writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { [`pe${tag}`]: entry(), [`cc${tag}`]: entry(["claude"]) } }));
   // The owner approved one of them in Claude Code, in their own file.
   const claudeJson = join(imp.home, ".claude.json");
@@ -380,6 +380,9 @@ test("a project's .mcp.json servers run once the owner approves them", async ({ 
     await expect(panel.getByTestId("mcp-project-state")).toHaveText("Approved");
     await panel.locator('[data-testid="mcp-project-entry"]').filter({ hasText: `pe${tag}` }).first().click();
     await expect(panel.getByTestId("mcp-project-state")).toHaveText("Needs you");
+    // The owner is shown the whole entry as the file holds it, unexpanded.
+    await expect(panel.getByTestId("mcp-project-entry-text")).toContainText('"MARK": "${HOME}/mark"');
+    await expect(panel.getByTestId("mcp-project-entry-text")).toContainText(FIXTURE);
     await shoot(page, "mcp-11-project-pending");
     await panel.getByTestId("mcp-project-approve").click();
     await expect(panel.getByTestId("mcp-project-state")).toHaveText("Approved");

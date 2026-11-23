@@ -10,6 +10,7 @@ import { searchContent, type ContentQuery } from "./routes/search-content.ts";
 import { callAnswered, callsNamed, type AnsweredAsk, type NamedAsk } from "./routes/calls-read.ts";
 import { sessionWhole, type WholeAsk } from "./routes/session-read.ts";
 import { settleStored } from "../engine/settle-read.ts";
+import { claudeMcpChoices } from "../mcp/claude-choices.ts";
 import type { SettleAsk } from "../engine/compact.ts";
 
 export const tasks = {
@@ -30,6 +31,9 @@ export const tasks = {
   "calls.answered": (db: Database, a: AnsweredAsk) => callAnswered(db, a),
   // A whole session as the bytes of its answer (GET /api/sessions/:id with no page).
   "session.whole": (db: Database, a: WholeAsk) => sessionWhole(db, a),
+  // The owner's approvals in Claude Code of project MCP servers (src/mcp/project.ts):
+  // ~/.claude.json is large, so it is parsed here and only what is asked comes back.
+  "claude.mcpChoices": (_db: Database, a: { files: string[]; roots: string[] }) => claudeMcpChoices(a.files, a.roots),
   // A summary checked against every message of its branch (a compaction).
   "compact.settle": (db: Database, a: SettleAsk) => settleStored(db, a),
 };
