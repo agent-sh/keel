@@ -331,15 +331,20 @@ export class BuildPins {
   // definition at the reference and a changed one rewrites the cache from
   // there. One that takes another input now gets the new definition; one the
   // history no longer references (a compaction took it) is forgotten.
+  // A loaded tool whose server is not connected (still connecting after a
+  // start, or gone) is a stand-in in the catalog: it is declared with the
+  // definition it was loaded with, so the request is the same bytes while the
+  // server comes back, and a call of it still gets the stand-in's reason.
   loaded(id: string, tools: Tool[], names: Set<string>): Tool[] {
     const rows = this.store.db.query<{ name: string; def: string }, [string]>("SELECT name, def FROM session_loaded WHERE session_id = ?").all(id);
     if (!names.size && !rows.length) return tools;
     const kept = new Map(rows.map((r) => [r.name, JSON.parse(r.def) as PinnedTool]));
     for (const n of kept.keys()) if (!names.has(n)) this.store.db.query("DELETE FROM session_loaded WHERE session_id = ? AND name = ?").run(id, n);
     return tools.map((t) => {
-      // A built-in the list defers is pinned with the list; a stand-in for a tool that left has nothing to keep.
-      if (!t.defer || !names.has(t.name) || !(t as { catalog?: string }).catalog || (t as { left?: boolean }).left) return t;
+      // A built-in the list defers is pinned with the list.
+      if (!t.defer || !names.has(t.name) || !(t as { catalog?: string }).catalog) return t;
       const was = kept.get(t.name);
+      if ((t as { left?: boolean }).left) return was ? { ...t, description: was.description, input_schema: was.input_schema } : t;
       if (was && servable(was, t)) return { ...t, description: was.description, input_schema: was.input_schema, built: t.input_schema };
       this.store.db.query("INSERT INTO session_loaded (session_id, name, def) VALUES (?, ?, ?) ON CONFLICT(session_id, name) DO UPDATE SET def = excluded.def").run(id, t.name, JSON.stringify(pinOf(t)));
       return t;

@@ -227,6 +227,23 @@ test("a deferred tool the conversation loaded keeps its definition until it take
   expect(pins.loaded(s.id, v2, names)[1]!.description).toBe("Echo, reworded.");
 }));
 
+test("a loaded tool whose server is not connected is declared as it was loaded, not as a stand-in", () => withPins((pins, _store, s) => {
+  const schema = { type: "object", properties: { text: { type: "string" } } };
+  const names = new Set(["mcp__echo__echo"]);
+  const live = { ...tool("mcp__echo__echo", "Echo."), input_schema: schema, defer: true, catalog: "echo__echo" } as Tool;
+  pins.loaded(s.id, [live], names);
+  // After a start the server is still connecting: the catalog has no tool, and a stand-in is declared for the reference.
+  const standIn = { ...tool("mcp__echo__echo", "No longer available."), defer: true, catalog: "mcp__echo__echo", left: true } as Tool;
+  const sent = pins.loaded(s.id, [standIn], names)[0]!;
+  expect([sent.description, sent.input_schema]).toEqual(["Echo.", schema]);
+  // Its run is still the stand-in's: a call gets the plain reason.
+  expect(sent.run).toBe(standIn.run);
+  // Connected again: the same definition, so the request's bytes never changed.
+  expect(pins.loaded(s.id, [live], names)[0]!.description).toBe("Echo.");
+  // A stand-in for a tool this session never loaded stays as it is.
+  expect(pins.loaded(s.id, [{ ...standIn, name: "mcp__echo__add" } as Tool], new Set(["mcp__echo__add"]))[0]!.description).toBe("No longer available.");
+}));
+
 test("the open sessions behind are listed, and all can be asked at once", () => withPins((pins, store, s) => {
   const v1 = [tool("Read", "Reads.")], v2 = [tool("Read", "Reads, in parts.")];
   const other = store.createSession({ model: "p:m", workspace: "/" });
