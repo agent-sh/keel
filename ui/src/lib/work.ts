@@ -143,7 +143,20 @@ export const callState = (result?: ToolResultBlock): CallState =>
 export type Look = "running" | "waiting" | "unfinished" | "ok" | "error" | "denied" | "refused" | "stopped" | "cut" | "unrun";
 // `own`: the calls shown on lines of their own under the step, which the step's line does not name again.
 // `cwd`: the session's folder, for naming a changed file under a hidden folder with that folder.
-export type Live = { working: boolean; waiting?: ReadonlySet<string>; refused?: ReadonlySet<string>; own?: ReadonlySet<string>; cwd?: string };
+// `agents`: how each agent a step asked for stands, by its call's id (agentStands); a call it lacks started.
+export type Live = { working: boolean; waiting?: ReadonlySet<string>; refused?: ReadonlySet<string>; own?: ReadonlySet<string>; cwd?: string; agents?: ReadonlyMap<string, AgentStand> };
+
+// How an agent a step asked for stands: it started (it works or worked), it waits in line for a slot
+// of the session, or none was made (its call failed, was refused, denied or stopped).
+export type AgentStand = "started" | "line" | "unstarted";
+export function agentStands(calls: readonly { id: string; result?: ToolResultBlock }[], agentOf: (callId: string) => { status: string; slot_wait?: boolean } | undefined, live: Live): Map<string, AgentStand> {
+  return new Map(calls.map((c) => {
+    const a = agentOf(c.id);
+    if (a) return [c.id, a.status === "waiting" && a.slot_wait ? "line" : "started"] as const;
+    const look = lookOf(c, live);
+    return [c.id, look === "running" || look === "waiting" || look === "ok" ? "started" : "unstarted"] as const;
+  }));
+}
 export const lookOf = (c: { id: string; result?: ToolResultBlock }, live: Live): Look =>
   c.result ? (live.refused?.has(c.id) ? "refused" : callState(c.result)) : live.waiting?.has(c.id) ? "waiting" : live.working ? "running" : "unfinished";
 // A call to a tool the session does not have: it did not run.
@@ -345,11 +358,14 @@ export function summarize(step: Step, live: Live = { working: true }): StepSumma
     name(named.filter((c) => toolKind(c.use.name) === "shell").map((c) => { const more = moreLines(c.use); return more ? `${targetOf(c.use)} (+${more} ${more === 1 ? "line" : "lines"})` : targetOf(c.use); }));
     if (commands.length === 1 && work.length === 1 && looks.error) s.exit = shellStatus(resultText(commands[0]!.result)).exit;
   } else if (step.family === "agents") {
-    // Named by their tasks' titles: what each was started for.
-    s.label = "Started";
+    // Named by their tasks' titles: what each was started for. Only the ones that started are counted
+    // and named: the ones that wait for a slot and the ones refused are said beside it, each on a line.
+    const stand = (c: { id: string }) => live.agents?.get(c.id) ?? "started";
+    const started = work.filter((c) => stand(c) === "started");
+    s.label = started.length || !work.length ? "Started" : "Asked for";
     s.code = false;
-    s.counts = plural(work.length, "agent", "agents");
-    name(named.map((c) => agentTask(c.use)));
+    s.counts = plural(started.length || work.length, "agent", "agents");
+    name(named.filter((c) => !started.length || stand(c) === "started").map((c) => agentTask(c.use)));
   } else {
     s.label = "Used";
     s.code = false;
@@ -384,6 +400,25 @@ export function stateWords(s: StepSummary): Word[] {
   // A step none of whose calls ran says so in its verb (NOT_RUN): the word is why.
   if (unrun) out.push({ text: unrun === s.calls ? s.unrun ?? "not run" : `${unrun} not run${s.unrun ? `: ${s.unrun}` : ""}`, tone: "idle" });
   return out;
+}
+
+// Beside an agents step's verb: how many of the agents it asked for wait for a slot, and how many were
+// not made, each by why in the word its own line says (failed, refused, denied by you), so the line
+// never counts an agent that did not start.
+export function agentWords(calls: readonly { id: string; result?: ToolResultBlock }[], stands: ReadonlyMap<string, AgentStand>, live: Live): Word[] {
+  const line = calls.filter((c) => stands.get(c.id) === "line").length;
+  const by = new Map<Look, number>();
+  for (const c of calls) if (stands.get(c.id) === "unstarted") by.set(lookOf(c, live), (by.get(lookOf(c, live)) ?? 0) + 1);
+  const word = (look: Look, text: string, tone: Word["tone"]): Word[] => (by.get(look) ? [{ text: `${by.get(look)} ${text}`, tone }] : []);
+  return [
+    ...(line ? [{ text: `${line} ${line === 1 ? "waits" : "wait"} for a slot`, tone: "idle" as const }] : []),
+    ...word("error", "failed to start", "fail"),
+    ...word("refused", "refused", "warn"),
+    ...word("denied", "denied by you", "own"),
+    ...word("cut", "cut by a restart", "warn"),
+    ...word("stopped", CALL_STOPPED, "idle"),
+    ...word("unrun", "not run", "idle"),
+  ];
 }
 
 // What waits on the owner, in the words of the one state vocabulary (src/core/state-words.ts:

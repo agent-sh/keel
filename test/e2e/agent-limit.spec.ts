@@ -60,9 +60,18 @@ test("agents that wait hold no slot, and one asked for or woken over the limit w
     await expect.poll(async () => (await byTitle("Woken"))?.status, { timeout: 30_000 }).toBe("waiting");
     await run([agent("Busy 1", [{ name: "Bash", input: { command: "sleep 35" } }]), agent("Busy 2", [{ name: "Bash", input: { command: "sleep 50" } }])]);
     await expect.poll(async () => (await byTitle("Woken"))?.slot_wait, { timeout: 40_000 }).toBe(true);
-    const [later] = await run([agent("Later", [])]);
-    expect(String(later.content)).toContain("waits_for_slot");
-    expect(String(later.content)).toContain("1 agent is before it in line");
+    // Asked for with one the daemon cannot make: the step's line counts neither as started, and names each under it.
+    // (The results come in the order the calls ended.)
+    const asked = await run([agent("Later", []), { name: "spawn_agent", input: { message: "Wrong type", agent_type: "no-such-type" } }]);
+    const later = asked.find((r: any) => !r.is_error), wrong = asked.find((r: any) => r.is_error);
+    expect(String(wrong?.content)).toContain('no agent type "no-such-type"');
+    const step = page.locator('[data-testid="work-step"][data-family="agents"]').last();
+    await expect(step.locator(".k-line").first()).toHaveAttribute("aria-label", /^Asked for 2 agents, 1 waits for a slot, 1 failed to start$/);
+    await expect(step.getByTestId("step-peek").getByTestId("agent-call-title")).toHaveText([/Later/, /Wrong type/]);
+    await step.scrollIntoViewIfNeeded();
+    await shoot(page, "agents-step-line-refused");
+    expect(String(later?.content)).toContain("waits_for_slot");
+    expect(String(later?.content)).toContain("1 agent is before it in line");
     expect(await byTitle("Later")).toMatchObject({ status: "waiting", slot_wait: true });
     // A finished agent asked to go on takes a slot too: refused, with what works and what waits.
     const quick = (await byTitle("Quick"))!;

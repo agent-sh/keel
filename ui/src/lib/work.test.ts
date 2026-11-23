@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { APPROVAL_CUT, CUT_CALL, denialReason, ownerDenial, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, turnedAway } from "../../../src/core/stops.ts";
-import { addCall, addMeta, besideOf, callState, callsOf, carriedOut, changedName, changeOf, commandText, edgeOf, failureLine, isAside, isTable, moreLines, noSuchTool, ranOf, refusalOf, sentence, setResult, smallChange, stateWords, summarize, targetOf, type Step } from "./work.ts";
+import { addCall, addMeta, agentStands, agentWords, besideOf, callState, callsOf, carriedOut, changedName, changeOf, commandText, edgeOf, failureLine, isAside, isTable, moreLines, noSuchTool, ranOf, refusalOf, sentence, setResult, smallChange, stateWords, summarize, targetOf, type Step } from "./work.ts";
 
 let n = 0;
 const use = (name: string, input: Record<string, unknown> = {}): ToolUseBlock => ({ type: "tool_use", id: `c${++n}`, name, input });
@@ -34,6 +34,26 @@ test("agents started one a reply, with a few words between them, are one step na
   steps = addMeta(steps, { t: "note", id: "n14", text: "## Second wave\n\nThese need the new schema.", event: "e14" });
   steps = addCall(steps, use("spawn_agent", { message: "Lane 13" }), "e14");
   expect(steps.map((x) => x.family)).toEqual(["agents", "run", "agents"]);
+});
+
+test("an agents step counts and names the agents that started; the ones in line and the ones refused are said beside it", () => {
+  let steps: Step[] = [];
+  const calls = Array.from({ length: 12 }, (_, k) => use("spawn_agent", { message: `Lane ${k + 1}` }));
+  for (const c of calls) steps = addCall(steps, c, "e1");
+  // Lanes 1 to 6 started, 7 and 8 wait in line for a slot, 9 to 11 failed to start and 12 was refused (no agent was made).
+  for (const [k, c] of calls.entries()) steps = setResult(steps, c.id, done(c.id, k < 8 ? `Started agent a${k}` : k < 11 ? "AGENT_DEPTH: no deeper" : "Refused: not in this folder.", k >= 8))!;
+  const agent = (id: string) => { const k = calls.findIndex((c) => c.id === id); return k < 8 ? { status: k < 6 ? "running" : "waiting", ...(k >= 6 ? { slot_wait: true } : {}) } : undefined; };
+  const live = { working: true };
+  const stands = agentStands(callsOf(steps[0]!), agent, live);
+  expect([...stands.values()]).toEqual([...Array(6).fill("started"), "line", "line", ...Array(4).fill("unstarted")]);
+  const s = summarize(steps[0]!, { ...live, agents: stands, own: new Set(calls.slice(6).map((c) => c.id)) });
+  expect([s.label, s.counts, s.targets, s.more]).toEqual(["Started", "6 agents", ["Lane 1", "Lane 2", "Lane 3", "Lane 4"], 2]);
+  const words = agentWords(callsOf(steps[0]!), stands, live);
+  expect(words).toEqual([{ text: "2 wait for a slot", tone: "idle" }, { text: "3 failed to start", tone: "fail" }, { text: "1 refused", tone: "warn" }]);
+  expect(sentence(s, words)).toBe("Started 6 agents Lane 1, Lane 2, Lane 3, Lane 4 and 2 more, 2 wait for a slot, 3 failed to start, 1 refused");
+  // None started: the line says what was asked for.
+  const none = new Map(callsOf(steps[0]!).map((c) => [c.id, "unstarted" as const]));
+  expect([summarize(steps[0]!, { ...live, agents: none }).label, summarize(steps[0]!, { ...live, agents: none }).counts]).toEqual(["Asked for", "12 agents"]);
 });
 
 test("what the model says in passing starts a step; what it thought goes to the step it led to", () => {

@@ -14,7 +14,7 @@ import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
 import { callHeld, callKey, drop, letGo, thoughtHeld, thoughtKey, thoughtLive, useHeld, useLetGoUnseen } from "../lib/held.ts";
 import { resultText, splitDiagnostics, toolKind } from "../lib/tools.ts";
-import { besideOf, callsOf, carriedOut, edgeOf, isTable, lookOf, sentence, stateWords, summarize, type Live, type Step, type StepSummary, type WorkItem } from "../lib/work.ts";
+import { agentStands, agentWords, besideOf, callsOf, carriedOut, edgeOf, isTable, lookOf, sentence, stateWords, summarize, type Live, type Step, type StepSummary, type WorkItem } from "../lib/work.ts";
 import { useUI } from "../lib/ui.ts";
 import { Markdown } from "./Markdown.tsx";
 import { Delta, hookOf, ToolCall } from "./ToolCall.tsx";
@@ -253,13 +253,19 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
   const told = useToldStates();
   // Each call's agent: the one recorded with the call's id (never a guess by title).
   const byCall = useMemo(() => new Map(Object.values(agents).filter((a) => a.parent_id === sid && a.call_id).map((a) => [a.call_id!, a])), [agents, sid]);
-  const calling = calls.filter((c) => { const a = byCall.get(c.id); const w = a ? agentSaid(a, told[a.session_id]).watch : undefined; return w === "need" || w === "fail" || w === "declined"; });
+  // Which of the agents asked for started, wait in line for a slot, or were refused: the line counts and
+  // names the ones that started; the others stand under it, each on its own line.
+  const stands = agentStands(calls, (id) => byCall.get(id), live);
+  const apart = calls.filter((c) => stands.get(c.id) !== "started");
+  const calling = calls.filter((c) => { const a = byCall.get(c.id); const w = a && stands.get(c.id) === "started" ? agentSaid(a, told[a.session_id]).watch : undefined; return w === "need" || w === "fail" || w === "declined"; });
   const asking = calling.filter((c) => { const a = byCall.get(c.id)!; return agentSaid(a, told[a.session_id]).watch === "need"; }).length;
   const failed = calling.length - asking;
-  const s = summarize(step, live);
+  const own = new Set([...(live.own ?? []), ...apart.map((c) => c.id)]);
+  const s = summarize(step, { ...live, agents: stands, own });
   const running = calls.some((c) => { const a = byCall.get(c.id); return a ? isLive(a) : !c.result; });
-  const words: ReturnType<typeof stateWords> = [...(asking ? [{ text: countWord("need", asking), tone: "need" as const }] : []), ...(failed ? [{ text: countWord("fail", failed), tone: "fail" as const }] : [])];
-  const edge = asking ? "need" : failed ? "error" : running ? "running" : "ok";
+  const words: ReturnType<typeof stateWords> = [...(asking ? [{ text: countWord("need", asking), tone: "need" as const }] : []), ...(failed ? [{ text: countWord("fail", failed), tone: "fail" as const }] : []), ...agentWords(calls, stands, live)];
+  const under = [...calling, ...apart];
+  const edge = asking ? "need" : failed ? "error" : running ? "running" : words.some((w) => w.tone === "fail") ? "error" : words.some((w) => w.tone === "warn") ? "warn" : "ok";
   return (
     <div className="k-step" data-events={events} data-state={edge}>
       <div className="k-did">
@@ -268,9 +274,9 @@ function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step;
             <StepLine s={s} words={words} />
             <span className="k-line-end">{running && <span className="k-line-run" aria-hidden="true" />}</span>
           </Collapsible.Trigger>
-          {!open && calling.length > 0 && (
+          {!open && under.length > 0 && (
             <div className="k-step-calls" data-testid="step-peek">
-              {calling.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
+              {under.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
             </div>
           )}
           <Collapsible.Panel className="k-tool-panel overflow-hidden">
