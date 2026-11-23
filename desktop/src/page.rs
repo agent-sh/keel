@@ -54,6 +54,9 @@ pub fn words(a: &Away) -> (&'static str, &'static str, bool, bool) {
     if a.refused {
         return ("This Keel is on another machine", "The app opens the Keel of this machine. Open that address in a browser, or start the app without it.", false, false);
     }
+    if a.failing {
+        return ("Keel's page does not open", "Keel answers, but its page fails to load. The app keeps trying.", false, true);
+    }
     match (&a.link, a.starting) {
         (Link::Restarting, _) => ("Keel is restarting", "Your sessions carry on where they were. This window comes back by itself.", false, true),
         (_, true) => ("Starting Keel", "The daemon is coming up. This takes a moment.", false, true),
@@ -130,7 +133,7 @@ mod tests {
     use super::*;
 
     fn state(link: Link, starting: bool, refused: bool) -> Away {
-        Away { link, starting, url: "http://127.0.0.1:1/<b>".into(), note: "could not start: <script>alert(1)</script>".into(), refused }
+        Away { link, starting, url: "http://127.0.0.1:1/<b>".into(), note: "could not start: <script>alert(1)</script>".into(), refused, failing: false }
     }
 
     #[test]
@@ -138,6 +141,9 @@ mod tests {
         assert_eq!(words(&state(Link::Down, false, false)), ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true, false));
         assert_eq!((words(&state(Link::Restarting, false, false)).2, words(&state(Link::Restarting, false, false)).3), (false, true));
         assert!(!words(&state(Link::Restarting, true, false)).2);
+        // The daemon answers and its page keeps failing: said, with no button (there is nothing to start).
+        let failing = words(&Away { failing: true, ..state(Link::Up, false, false) });
+        assert_eq!((failing.0, failing.2, failing.3), ("Keel's page does not open", false, true));
         assert_eq!(words(&state(Link::Down, true, false)).0, "Starting Keel");
     }
 

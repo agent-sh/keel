@@ -68,6 +68,14 @@ pub enum Asked1 {
     Saving(u64, String),
 }
 
+/// Whether the app acts on what the page asks. The desktop's dialog for the app's shortcuts is
+/// the owner's to ask for: a page's word for it counts only a moment after the owner's own key
+/// or press in that window, as a link does. (A script that asked by itself could bring the
+/// dialog back after every no.)
+pub fn may_act(ask: &Ask, pressed: bool) -> bool {
+    !matches!(ask, Ask::Shortcuts) || pressed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +105,10 @@ mod tests {
         assert!(matches!(m(r#"{"t":"window","path":"/s/abc","key":"k-123"}"#), Some(Asked1::Ask(Ask::Window(p))) if p == "/s/abc"));
         assert!(matches!(m(r#"{"t":"start","key":"k-123"}"#), Some(Asked1::Ask(Ask::Start))));
         assert!(matches!(m(r#"{"t":"shortcuts","key":"k-123"}"#), Some(Asked1::Ask(Ask::Shortcuts))));
+        // The shortcuts' dialog only at the owner's press; what the page asks otherwise, always.
+        assert!(!may_act(&Ask::Shortcuts, false));
+        assert!(may_act(&Ask::Shortcuts, true));
+        assert!(may_act(&Ask::Start, false) && may_act(&Ask::Window("/s/a".into()), false));
         assert!(matches!(m(r#"{"t":"paste","id":7,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
         assert!(matches!(m(r#"{"t":"can","paste":true,"key":"k-123"}"#), Some(Asked1::Can { paste: true, saving: false })));
         assert!(matches!(m(r#"{"t":"paste-through","key":"k-123"}"#), Some(Asked1::PasteThrough)));

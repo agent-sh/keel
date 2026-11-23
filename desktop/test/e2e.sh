@@ -157,6 +157,18 @@ case "${DBUS_SESSION_BUS_ADDRESS:-}" in *agent-workspace-linux/"$WS"/*) ;; *) ec
 if [ "$BACKEND" = x11 ]; then [ -n "${DISPLAY:-}" ] && [ "${DISPLAY:-}" != "$HOST_X" ] || { echo "the workspace gave no display of its own: stopping"; exit 2; }
 else [ -n "${WAYLAND_DISPLAY:-}" ] && { [ "${WAYLAND_DISPLAY:-}" != "$HOST_WAYLAND" ] || [ "${XDG_RUNTIME_DIR:-}" != "$HOST_RUNTIME" ]; } || { echo "the workspace gave no display of its own: stopping"; exit 2; }; fi
 [ "$BACKEND" = x11 ] && export GDK_BACKEND=x11
+# What the check starts draws in software, off any graphics card: a check must not take a card
+# other work is using (and its pictures are then the same on every machine). Set after the
+# workspace is up, so its own compositor starts as it always does. KEEL_E2E_GPU=1 leaves the
+# drawing to the machine (to look at the app on a card).
+if [ -z "${KEEL_E2E_GPU:-}" ]; then
+  export LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa __NV_PRIME_RENDER_OFFLOAD=0
+  export GSK_RENDERER=cairo GDK_DISABLE=gl,vulkan WEBKIT_DISABLE_DMABUF_RENDERER=1
+  if [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ]; then export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json; fi
+  # Vulkan through the software driver where there is one, else through none.
+  lvp=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2> /dev/null | head -1)
+  export VK_DRIVER_FILES="${lvp:-/nonexistent}" VK_ICD_FILENAMES="${lvp:-/nonexistent}"
+fi
 ( gjs -m "$HERE/tray-host.js" > "$D/tray-host.out" 2>&1 & echo $! > "$D/host-tray.pid" )
 ( gjs -m "$HERE/notify-host.js" > "$D/notify-host.out" 2>&1 & echo $! > "$D/host-notify.pid" )
 # (And one for the desktop's word on a screen reader, where the workspace's bus has none of its own.)
@@ -207,6 +219,10 @@ check "the app's window opens" "wait_for 30 '[ \"\$(windows)\" = 1 ]'"
 # What draws the page in this run (KEEL_DESKTOP_ENGINE=qt|webkit chooses; else Qt where its program and libraries are there).
 ENGINE=$(last engine | sed 's/.*"name":"\([a-z]*\)".*/\1/')
 echo "# engine: $ENGINE $(last qt | sed 's/.*"v":\({[^}]*}\).*/\1/')"
+# every process under the app, and whether any of them holds a device of a graphics card's own driver
+kin() { local p; for p in $(pgrep -P "$1" 2> /dev/null); do echo "$p"; kin "$p"; done; }
+on_card() { local p; for p in $(app_pid) $(kin "$(app_pid)"); do ls -l "/proc/$p/fd" 2> /dev/null; done | grep -c '/dev/nvidia' || true; }
+if [ -z "${KEEL_E2E_GPU:-}" ]; then check "the app the check started holds no device of a graphics card" "sleep 2; [ \"\$(on_card)\" = 0 ]"; fi
 check "the shell found the daemon and attached to it" "wait_for 20 'last link | grep -q Up' && api /api/shell | grep -q '\"attached\":true'"
 # (The Qt engine holds what its script heap has not collected for minutes: its page is let to ask for a collection.)
 if [ "$ENGINE" = qt ]; then check "the page may ask the engine for a collection, to do when the owner turns away" "wait_for 20 \"said 'AT ' | grep -q ' gc=function'\""; fi
@@ -627,6 +643,7 @@ check "the app spoke to the stranger, on the health path and past it" "wait_for 
 sleep 3
 check "and never sent it the token, though the lock names a live process of this account" "! grep -q 'authorization=yes' '$D/stranger.out'"
 # (It answers the health path and refuses the page: the window asks for the page again, less and less often.)
+if [ "$ENGINE" = qt ]; then check "the window says Keel's page does not open, between its tries" "wait_for 12 \"last away | grep -q '\\\"failing\\\":true'\""; fi
 check "it is asked for the page a few times in those seconds, not as fast as it can refuse it" "[ \"\$(grep -c 'REQUEST GET / ' '$D/stranger.out')\" -ge 1 ] && [ \"\$(grep -c 'REQUEST GET / ' '$D/stranger.out')\" -le 8 ]"
 
 # --- 12. an address that is not this machine's: the first page says so, and nothing is started there

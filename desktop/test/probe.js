@@ -12,6 +12,9 @@
     say(`ERR ${t && t !== window ? `${t.tagName} ${t.src || t.href || ""}` : `${e.message} ${e.filename}:${e.lineno}`}`.slice(0, 300));
   }, true);
   addEventListener("unhandledrejection", (e) => say(`ERR rejection ${String((e.reason && e.reason.message) || e.reason).slice(0, 200)}`));
+  // A page that asks for the desktop's dialog of the app's shortcuts by itself, with no press of
+  // the owner's, a moment after every load: the app must not act on it.
+  setTimeout(() => { try { if (window.keelShell) { window.keelShell.post({ t: "shortcuts" }); say("ASKED-KEYS"); } } catch (e) {} }, 1500);
   let shown = false;
   let raw = "";
   let went = false;

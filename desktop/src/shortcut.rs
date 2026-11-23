@@ -43,6 +43,43 @@ pub fn keys(version: u32, held: bool) -> Keys {
     }
 }
 
+/// The desktop's answer to the app's asking for its shortcuts.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    /// Held: each shortcut's id and its keys as the desktop words them.
+    Held(Vec<(String, String)>),
+    /// The owner said no in the desktop's dialog.
+    No,
+    /// The desktop could not do it (its answer said so, or no session was made): not the owner's word.
+    Failed,
+}
+
+/// The answer to a request, from its code (0: done, 1: the owner said no, anything else: it could not be done).
+pub fn answer(code: u32, results: &glib::Variant) -> Answer {
+    match code {
+        0 => Answer::Held(bound(results)),
+        1 => Answer::No,
+        _ => Answer::Failed,
+    }
+}
+
+/// Whether the app asks again at its next start: after a yes, not after a no, and as it was
+/// when the desktop only failed.
+pub fn remembered(before: bool, a: &Answer) -> bool {
+    match a {
+        Answer::Held(_) => true,
+        Answer::No => false,
+        Answer::Failed => before,
+    }
+}
+
+/// Whether the page offers its command for the shortcuts: where the desktop can also show
+/// them to be changed (the interface's second version), so the command always does something.
+/// On an older portal the tray's item asks, once.
+pub fn page_may_ask(version: u32) -> bool {
+    version >= 2
+}
+
 fn options(pairs: &[(&str, glib::Variant)]) -> HashMap<String, glib::Variant> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
 }
@@ -91,11 +128,20 @@ impl Shortcuts {
     /// portal that is not running, and waits a fifth of a second at most: the first window
     /// tells its page what this app can do.
     pub fn new(conn: &gio::DBusConnection, app_id: &str, on_press: impl Fn(&str, Option<String>) + 'static) -> Rc<Self> {
-        // The app says who it is before it asks for anything: the desktop keeps shortcuts per
-        // app, and knows a program started outside its launcher (a terminal, a script) by no
-        // name. Where the toolkit said so already the portal refuses the second word, which
-        // changes nothing.
-        conn.call(Some(PORTAL), PATH, "org.freedesktop.host.portal.Registry", "Register", Some(&(app_id, options(&[])).to_variant()), None, gio::DBusCallFlags::NO_AUTO_START, 2000, gio::Cancellable::NONE, |_| {});
+        // A connection of the app's own for the portal. The desktop keeps shortcuts per app, and
+        // an app says who it is in its first word to the portal on a connection (a program
+        // started outside the desktop's launcher has no name otherwise); on the connection the
+        // toolkit shares, the toolkit may have spoken to the portal already, and the name
+        // would be refused. (Without a connection of its own the shared one is used.)
+        let own = gio::dbus_address_get_for_bus_sync(gio::BusType::Session, gio::Cancellable::NONE).ok().and_then(|address| {
+            let flags = gio::DBusConnectionFlags::AUTHENTICATION_CLIENT | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION;
+            gio::DBusConnection::for_address_sync(&address, flags, None, gio::Cancellable::NONE).ok()
+        });
+        if let Some(c) = &own {
+            c.set_exit_on_close(false);
+        }
+        let conn = &own.unwrap_or_else(|| conn.clone());
+        let _ = conn.call_sync(Some(PORTAL), PATH, "org.freedesktop.host.portal.Registry", "Register", Some(&(app_id, options(&[])).to_variant()), None, gio::DBusCallFlags::NO_AUTO_START, 200, gio::Cancellable::NONE);
         let version = conn
             .call_sync(Some(PORTAL), PATH, "org.freedesktop.DBus.Properties", "Get", Some(&(IFACE, "version").to_variant()), None, gio::DBusCallFlags::NO_AUTO_START, 200, gio::Cancellable::NONE)
             .ok()
@@ -115,6 +161,10 @@ impl Shortcuts {
 
     pub fn keys(&self) -> Keys {
         keys(self.version, self.session.borrow().is_some())
+    }
+
+    pub fn page_may_ask(&self) -> bool {
+        page_may_ask(self.version)
     }
 
     fn token(&self, what: &str) -> String {
@@ -152,7 +202,7 @@ impl Shortcuts {
     /// Asks the desktop for the app's shortcuts: a session, then the bind, which the desktop
     /// answers at once when the owner agreed to them before and with a dialog of its own when
     /// not. `done` hears whether they are held now, and the keys.
-    pub fn bind(self: &Rc<Self>, done: impl Fn(bool, Vec<(String, String)>) + 'static) {
+    pub fn bind(self: &Rc<Self>, done: impl Fn(Answer) + 'static) {
         if self.version == 0 || self.session.borrow().is_some() || self.asking.replace(true) {
             return;
         }
@@ -163,7 +213,8 @@ impl Shortcuts {
             let handle = glib::VariantDict::new(Some(&results)).lookup_value("session_handle", None).and_then(|v| v.get::<String>());
             let Some(path) = handle.as_deref().filter(|_| code == 0).and_then(|h| glib::variant::ObjectPath::try_from(h.to_string()).ok()) else {
                 me.asking.set(false);
-                return done(false, Vec::new());
+                // No session: the owner was asked nothing.
+                return done(Answer::Failed);
             };
             let wanted: Vec<(&str, HashMap<String, glib::Variant>)> = WANTED.iter().map(|(id, says, keys)| (*id, options(&[("description", says.to_variant()), ("preferred_trigger", keys.to_variant())]))).collect();
             let token = me.token("bind");
@@ -174,7 +225,7 @@ impl Shortcuts {
                 if code == 0 {
                     me2.session.replace(Some(handle.clone()));
                 }
-                done2(code == 0, bound(&results));
+                done2(answer(code, &results));
             });
         });
     }
@@ -209,6 +260,25 @@ mod tests {
         assert_eq!((handle, "", options(&[])).to_variant().type_().as_str(), "(osa{sv})");
         assert_eq!(request_path(":1.42", "keel_bind3"), "/org/freedesktop/portal/desktop/request/1_42/keel_bind3");
         assert_eq!(("io.github.agent_sh.Keel", options(&[])).to_variant().type_().as_str(), "(sa{sv})");
+    }
+
+    #[test]
+    fn only_the_owners_word_changes_what_is_remembered() {
+        let none = options(&[]).to_variant();
+        assert_eq!(answer(0, &none), Answer::Held(Vec::new()));
+        assert_eq!(answer(1, &none), Answer::No);
+        assert_eq!(answer(2, &none), Answer::Failed);
+        assert!(remembered(false, &Answer::Held(Vec::new())));
+        assert!(!remembered(true, &Answer::No));
+        // The desktop failed: what the owner said before stands.
+        assert!(remembered(true, &Answer::Failed));
+        assert!(!remembered(false, &Answer::Failed));
+    }
+
+    #[test]
+    fn the_page_offers_its_command_where_it_always_does_something() {
+        assert!(!page_may_ask(0) && !page_may_ask(1));
+        assert!(page_may_ask(2) && page_may_ask(3));
     }
 
     #[test]

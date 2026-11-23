@@ -2,8 +2,9 @@
 // portal's name on the workspace's own session bus and speaks the interface as its
 // specification has it (a session, a bind that answers on a request, the Activated signal). The
 // owner's part is played by two files in the folder it is given: `answer` ("no" refuses the
-// next dialog) and `granted` (written at a yes: the next bind is answered with no dialog, as a
-// desktop that remembers does). The check presses a shortcut through `Press`.
+// next dialog; "fail" is a desktop that could not do it) and `granted` (written at a yes: the
+// next bind is answered with no dialog, as a desktop that remembers does). The check presses a
+// shortcut through `Press`. It says which connection named itself and which one asked.
 // It proves the app's side of the conversation, not a desktop's own portal.
 // Run: gjs -m portal-host.js FOLDER
 import Gio from "gi://Gio";
@@ -31,7 +32,7 @@ const shortcuts = {
     const sender = invocation.get_sender();
     const path = requestPath(sender, str(options.handle_token));
     const session = `${PATH}/session/${sender.slice(1).replaceAll(".", "_")}/${str(options.session_handle_token)}`;
-    print(`CREATE ${session}`);
+    print(`CREATE ${session} ${sender}`);
     invocation.return_value(new GLib.Variant("(o)", [path]));
     answer(sender, path, 0, { session_handle: new GLib.Variant("s", session) });
   },
@@ -40,11 +41,12 @@ const shortcuts = {
     const path = requestPath(sender, str(options.handle_token));
     invocation.return_value(new GLib.Variant("(o)", [path]));
     const silent = text("granted") === "yes";
-    const yes = silent || text("answer") !== "no";
+    const failed = !silent && text("answer") === "fail";
+    const yes = !failed && (silent || text("answer") !== "no");
     const bound = wanted.map(([id, o]) => [id, { description: new GLib.Variant("s", str(o.description) ?? ""), trigger_description: new GLib.Variant("s", worded(str(o.preferred_trigger) ?? "")) }]);
-    print(`BIND ${silent ? "silent" : "dialog"} ${yes ? "yes" : "no"} ${wanted.map(([id, o]) => `${id}=${worded(str(o.preferred_trigger) ?? "")}`).join(" ")}`);
+    print(`BIND ${silent ? "silent" : "dialog"} ${failed ? "fail" : yes ? "yes" : "no"} ${wanted.map(([id, o]) => `${id}=${worded(str(o.preferred_trigger) ?? "")}`).join(" ")}`);
     if (yes) { held = session; GLib.file_set_contents(`${dir}/granted`, "yes"); }
-    answer(sender, path, yes ? 0 : 1, yes ? { shortcuts: new GLib.Variant("a(sa{sv})", bound) } : {});
+    answer(sender, path, failed ? 2 : yes ? 0 : 1, yes ? { shortcuts: new GLib.Variant("a(sa{sv})", bound) } : {});
   },
   ConfigureShortcutsAsync([session], invocation) {
     print(`CONFIGURE ${session === held ? "held" : "unknown"}`);
@@ -52,7 +54,7 @@ const shortcuts = {
   },
 };
 const registry = {
-  RegisterAsync([app], invocation) { print(`REGISTER ${app}`); invocation.return_value(null); },
+  RegisterAsync([app], invocation) { print(`REGISTER ${app} ${invocation.get_sender()}`); invocation.return_value(null); },
 };
 const check = {
   // The owner presses a shortcut somewhere on the desktop.

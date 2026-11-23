@@ -49,7 +49,8 @@ use crate::links::{self, origin};
 use crate::page;
 use crate::prefs::Look;
 use crate::said::{asked, Asked1};
-use crate::view::{Ask, Asked, Away, Can, Engine, Opening, Showing, View};
+use crate::said::may_act;
+use crate::view::{retry_after, Ask, Asked, Away, Can, Engine, Opening, Showing, View, FAILS_SAID};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use serde_json::{json, Value};
@@ -404,6 +405,7 @@ fn heard(start: u64, line: &str) {
             // The same button, in a window whose page kept ending: it loads the page again.
             if win.stopped.replace(false) {
                 win.stops.borrow_mut().clear();
+                win.renews.set(0);
                 win.renew();
                 win.pill_now();
             } else {
@@ -438,15 +440,9 @@ pub fn place_of(url: &str, here: &str) -> Option<String> {
     links::page_path(links::place(url.strip_prefix(here)?))
 }
 
-/// How long a window waits before it asks for the daemon's page again after a load of it
-/// failed, by how many failed in a row: at once the first time, then longer each time, ten
-/// seconds at most. (A daemon that answers its health check and not its page, or something
-/// else on its port, was otherwise asked for the page as fast as it could refuse it.)
-pub fn retry_after(failed: u32) -> Duration {
-    match failed {
-        0 | 1 => Duration::ZERO,
-        n => Duration::from_millis((500u64 << (n - 2).min(5)).min(10_000)),
-    }
+/// Whether a reloaded page that said nothing is made anew once more, by how many times it was.
+pub fn silent_again(renews: u32) -> bool {
+    renews < RENEWS
 }
 
 /// Whether a page that ended is loaded again: a few times in a minute, and no more. Each ending is noted.
@@ -703,11 +699,21 @@ impl Win {
         let me = Rc::downgrade(self);
         glib::timeout_add_local_once(SPEAKS_WITHIN, move || {
             let Some(win) = me.upgrade() else { return };
-            if win.say_stopped.get() && win.showing.get() == Showing::App && win.renews.get() < RENEWS {
+            if !win.say_stopped.get() || win.showing.get() != Showing::App {
+                return;
+            }
+            if silent_again(win.renews.get()) {
                 win.renews.set(win.renews.get() + 1);
                 (win.inner.note)("page-silent", json!({ "window": win.id, "again": win.renews.get() }));
                 win.renew();
                 win.expect_word();
+            } else {
+                // Made anew twice and still silent: left as a page that keeps stopping is, with
+                // the bar's line and the button that loads it again.
+                win.say_stopped.set(false);
+                win.stopped.set(true);
+                (win.inner.note)("page-silent", json!({ "window": win.id, "left": true }));
+                win.pill_now();
             }
         });
     }
@@ -716,7 +722,11 @@ impl Win {
     fn said(self: &Rc<Self>, raw: &str) {
         let Ok(m) = serde_json::from_str::<Value>(raw) else { return };
         match asked(&m, &self.key) {
-            Some(Asked1::Ask(what)) => (self.ask)(self, what),
+            Some(Asked1::Ask(what)) => {
+                if may_act(&what, self.gate.borrow().pressed(Instant::now())) {
+                    (self.ask)(self, what)
+                }
+            }
             Some(Asked1::Paste(id, edge)) => {
                 if self.gate.borrow().may_read(Instant::now()) {
                     self.inner.send(&json!({ "t": "clip-read", "win": self.id, "id": id, "edge": edge.unwrap_or(0) }));
@@ -784,15 +794,20 @@ impl Win {
             // (A document the main frame was refused is no loss of the daemon: the page stays.)
             "ok" | "failed" if self.showing.get() == Showing::App && (how == "ok" || ours) => {
                 self.showing.set(Showing::Nothing);
-                self.failed.set(self.failed.get().saturating_add(1));
-                let wait = retry_after(self.failed.get());
+                let n = self.failed.get().saturating_add(1);
+                self.failed.set(n);
+                let wait = retry_after(n);
                 if wait.is_zero() {
                     return (self.ask)(self, Ask::Lost);
                 }
-                // The page keeps failing while the daemon says it is up: asked for again after a while.
+                // The page keeps failing while the daemon says it is up: the window says so, and
+                // the page is asked for again after a while.
+                if n >= FAILS_SAID {
+                    (self.ask)(self, Ask::Failing);
+                }
                 let me = Rc::downgrade(self);
                 glib::timeout_add_local_once(wait, move || {
-                    if let Some(win) = me.upgrade().filter(|w| w.showing.get() == Showing::Nothing) {
+                    if let Some(win) = me.upgrade().filter(|w| w.failed.get() == n && w.showing.get() != Showing::App) {
                         (win.ask)(&win, Ask::Lost);
                     }
                 });
@@ -943,10 +958,9 @@ mod tests {
     // browser with no click. The engine tells of every window asked for; only the owner's press makes one.
     // The review's case: stopped twice within ten seconds after it drew, it was left stopped with no window.
     #[test]
-    fn a_page_that_keeps_failing_is_asked_for_less_and_less_often() {
-        let waits: Vec<u64> = (0..10).map(|n| retry_after(n).as_millis() as u64).collect();
-        assert_eq!(waits, [0, 0, 500, 1000, 2000, 4000, 8000, 10_000, 10_000, 10_000]);
-        assert_eq!(retry_after(u32::MAX), Duration::from_secs(10));
+    fn a_silent_page_is_made_anew_twice_and_then_left() {
+        assert!(silent_again(0) && silent_again(1));
+        assert!(!silent_again(RENEWS) && !silent_again(RENEWS + 1));
     }
 
     #[test]

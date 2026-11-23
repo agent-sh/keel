@@ -16,7 +16,8 @@ use crate::links::{self, origin};
 use crate::page;
 use crate::prefs::Look;
 use crate::said::{asked, Asked1};
-use crate::view::{Ask, Asked, Away, Can, Engine, Opening, Showing, View};
+use crate::said::may_act;
+use crate::view::{retry_after, Ask, Asked, Away, Can, Engine, Opening, Showing, View, FAILS_SAID};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use serde_json::Value;
@@ -210,6 +211,8 @@ struct Win {
     me: RefCell<Weak<Win>>,
     /// When the app reads or writes the clipboard for the page (clip.rs).
     gate: RefCell<Gate>,
+    /// Loads of the daemon's page that failed in a row (`retry_after`).
+    failed: Cell<u32>,
     /// The away page's last state, said again once that page has loaded.
     away_js: RefCell<String>,
     title: gtk::Label,
@@ -298,6 +301,7 @@ impl Win {
             slow: Cell::new(false),
             me: RefCell::new(Weak::new()),
             gate: RefCell::new(Gate::default()),
+            failed: Cell::new(0),
             away_js: RefCell::new(String::new()),
             title,
             pill,
@@ -322,7 +326,11 @@ impl Win {
             let Some(win) = weak.upgrade() else { return };
             let Ok(m) = serde_json::from_str::<Value>(&value.to_str()) else { return };
             match asked(&m, &win.key) {
-                Some(Asked1::Ask(what)) => a(&win, what),
+                Some(Asked1::Ask(what)) => {
+                    if may_act(&what, win.gate.borrow().pressed(Instant::now())) {
+                        a(&win, what)
+                    }
+                }
                 Some(Asked1::Paste(id, edge)) => {
                     if win.gate.borrow().may_read(Instant::now()) {
                         win.paste(id, edge);
@@ -416,6 +424,9 @@ impl Win {
             if event == webkit::LoadEvent::Finished {
                 win.loading.set(false);
                 win.slow.set(false);
+                if win.showing.get() == Showing::App {
+                    win.failed.set(0);
+                }
                 win.pill_now();
                 // A state the away page was told before it had loaded is told again.
                 if win.showing.get() == Showing::Away {
@@ -464,7 +475,23 @@ impl Win {
                 }
                 if win.showing.get() == Showing::App {
                     win.showing.set(Showing::Nothing);
-                    a(&win, Ask::Lost);
+                    // At once the first time, then less and less often; said in the window from the third (view.rs).
+                    let n = win.failed.get().saturating_add(1);
+                    win.failed.set(n);
+                    let wait = retry_after(n);
+                    if wait.is_zero() {
+                        a(&win, Ask::Lost);
+                        return true;
+                    }
+                    if n >= FAILS_SAID {
+                        a(&win, Ask::Failing);
+                    }
+                    let (weak, a) = (weak.clone(), a.clone());
+                    glib::timeout_add_local_once(wait, move || {
+                        if let Some(win) = weak.upgrade().filter(|w| w.failed.get() == n && w.showing.get() != Showing::App) {
+                            a(&win, Ask::Lost);
+                        }
+                    });
                 }
             }
             true

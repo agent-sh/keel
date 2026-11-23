@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tray::{Pick, Shown, Tray};
-use shortcut::{Keys, Shortcuts};
+use shortcut::{Answer, Keys, Shortcuts};
 use view::{Ask, Away, Can, Engine, Opening, Showing, View};
 
 /// The application's id: its name on the session bus, its window's app id and the name of its desktop file.
@@ -139,18 +139,24 @@ impl Shell {
     fn shortcuts(self: &Rc<Self>, asked: bool) {
         let Some(keys) = self.keys.borrow().clone() else { return };
         match keys.keys() {
-            Keys::Offer => keys.bind(|held, bound| with_shell(|s| s.bound(held, &bound))),
+            Keys::Offer => keys.bind(|answer| with_shell(|s| s.bound(&answer))),
             Keys::Change if asked => keys.change(),
             _ => {}
         }
     }
 
-    /// The desktop's answer: remembered either way, so a start asks again only after a yes.
-    fn bound(&self, held: bool, bound: &[(String, String)]) {
-        self.note_done("shortcuts", serde_json::json!({ "held": held, "keys": bound.iter().map(|(id, keys)| format!("{id}={keys}")).collect::<Vec<_>>() }));
-        if self.prefs.borrow().shortcuts != held {
+    /// The desktop's answer. The owner's yes or no is remembered, so a start asks again only
+    /// after a yes; a desktop that could not do it changes nothing of what is remembered.
+    fn bound(&self, answer: &Answer) {
+        let keys: Vec<String> = match answer {
+            Answer::Held(bound) => bound.iter().map(|(id, keys)| format!("{id}={keys}")).collect(),
+            _ => Vec::new(),
+        };
+        self.note_done("shortcuts", serde_json::json!({ "held": matches!(answer, Answer::Held(_)), "failed": *answer == Answer::Failed, "keys": keys }));
+        let keep = shortcut::remembered(self.prefs.borrow().shortcuts, answer);
+        if self.prefs.borrow().shortcuts != keep {
             let mut p = self.prefs.borrow_mut();
-            p.shortcuts = held;
+            p.shortcuts = keep;
             p.save();
         }
         self.show_tray();
@@ -183,7 +189,7 @@ impl Shell {
     fn new_window(self: &Rc<Self>, main: bool) -> Rc<dyn View> {
         let p = self.prefs.borrow().clone();
         let size = if main { (p.width, p.height) } else { ((p.width * 2 / 3).max(720), (p.height * 9 / 10).max(560)) };
-        let opening = Opening { main, size, maximized: main && p.maximized, look: p.look, can: Can { tray: self.tray_available(), shortcuts: self.keys() != Keys::None }, devtools: self.devtools };
+        let opening = Opening { main, size, maximized: main && p.maximized, look: p.look, can: Can { tray: self.tray_available(), shortcuts: self.keys.borrow().as_ref().is_some_and(|k| k.page_may_ask()) }, devtools: self.devtools };
         self.engine.borrow().open(opening, Rc::new(|win, ask| with_shell(|s| s.asked(win, ask))))
     }
 
@@ -224,7 +230,7 @@ impl Shell {
                 self.note_done("load", serde_json::json!({ "window": if win.is_main() { "main" } else { "session" }, "path": win.wanted() }));
             }
         } else if win.showing() != Showing::App {
-            let state = Away { link: link.clone(), starting: self.starting.get(), url, note: self.note.borrow().clone(), refused: self.refused.get() };
+            let state = Away { link: link.clone(), starting: self.starting.get(), url, note: self.note.borrow().clone(), refused: self.refused.get(), failing: false };
             if win.showing() != Showing::Away {
                 self.note_done("away", serde_json::json!({ "refused": state.refused, "note": state.note }));
             }
@@ -365,6 +371,12 @@ impl Shell {
             Ask::External(url) => self.external(&url),
             Ask::Window(path) => self.open_window(&path),
             Ask::Shortcuts => self.shortcuts(true),
+            // The daemon answers and its page keeps failing: the calm page says so, between the tries.
+            Ask::Failing => {
+                let (link, url) = (self.link.borrow().clone(), self.url.borrow().clone());
+                self.note_done("away", serde_json::json!({ "failing": true, "refused": false, "note": "" }));
+                win.away(&self.prefs.borrow().look, &Away { link, starting: false, url, note: String::new(), refused: false, failing: true });
+            }
             Ask::Look(look) => {
                 if self.prefs.borrow().look != look {
                     let mut p = self.prefs.borrow_mut();
