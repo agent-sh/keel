@@ -102,6 +102,18 @@ test("an ended agent's branch is not forecast", async () => {
   expect(ov.noteFor(lead.id)).toBeUndefined();
 });
 
+// A branch landed by cherry-pick has commits of its own by id, none by patch:
+// it is not forecast against the others (it would conflict with each of them
+// the way the base does).
+test("a branch whose commits the base holds as patches is not forecast", async () => {
+  const { repo, ov, b } = setup();
+  g(repo, "checkout", "-q", "main");
+  g(repo, "cherry-pick", "keel/a");
+  await ov.scan(repo);
+  const pairs = ov.view(b).pairs;
+  expect(pairs.map((p) => [p.a, p.b, p.base])).toEqual([["keel/b", "main", true]]);
+});
+
 // Attributes a session can write name a driver of the owner's config, or a
 // union merge that hides the conflict: the merge reads none of them.
 const plain = (repo: string) => { try { g(repo, "merge-tree", "--write-tree", "keel/a", "keel/b"); return 0; } catch (e: any) { return e.status as number; } };

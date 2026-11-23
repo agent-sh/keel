@@ -265,7 +265,9 @@ export class Overlaps {
     const key = `${tip} ${baseTip}`;
     const known = this.aheadOf.get(key);
     if (known !== undefined) return known;
-    const r = await git(repo, ["rev-list", "--count", `${baseTip}..${tip}`], { read: true });
+    // Commits the base holds as patches count as landed: a branch landed by
+    // cherry-pick or rebase has nothing of its own left, though its commits differ.
+    const r = await git(repo, ["rev-list", "--count", "--cherry-pick", "--right-only", "--no-merges", `${baseTip}...${tip}`], { read: true });
     const n = r.code === 0 ? Number(r.out.trim()) || 0 : 1;
     if (this.aheadOf.size > 4096) this.aheadOf.clear();
     this.aheadOf.set(key, n);
