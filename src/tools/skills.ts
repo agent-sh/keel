@@ -155,7 +155,17 @@ offerToSandbox(() => [
 ]);
 
 // A feature may hold back a repository's skill (one changed since it was trusted).
-export const skillFilter: { allow?: (dir: string) => boolean } = {};
+// `ownerTrusted`: the owner pinned that repository skill himself (not on first sight).
+export const skillFilter: { allow?: (dir: string) => boolean; ownerTrusted?: (dir: string) => boolean } = {};
+
+// Whether a skill's allowed-tools may run without asking: the owner's own
+// skills and his plugins' do; a repository's only once the owner trusted that
+// skill himself, as it is now. A repository's skill is the repository's
+// words: a clone must not grant itself the shell by being loaded.
+export function mayGrant(skill: Skill): boolean {
+  if (skill.scope !== "project") return true;
+  return !!skillFilter.ownerTrusted?.(skill.kind === "command" ? skill.file : skill.dir);
+}
 
 // Other harnesses install their built-in skills into the shared personal
 // folders (~/.agents/skills): skills that drive that harness's own product,
@@ -335,17 +345,31 @@ export function skillRules(skill: Skill, vars: Record<string, string>): { rules:
 // grant of its allowed-tools (the permission gate), and an agent of its own
 // for one with context: fork (the agents). Unset, a skill loads as text alone.
 export const skillRun: {
-  grant?: (sessionId: string, rules: { kind: RuleKind; pattern: string }[], from: string, next: boolean) => void;
+  grant?: (sessionId: string, rules: { kind: RuleKind; pattern: string }[], from: string, next: boolean, cmd?: string) => void;
+  drop?: (sessionId: string) => void;
   fork?: (ctx: ToolContext, skill: Skill, prompt: string) => Promise<ToolOutput>;
 } = {};
 
-// What a skill's frontmatter did besides its text, said with it (to the model or the owner).
-function said(skill: Skill, left: string[], granted: boolean): string {
+// What a skill's frontmatter did besides its text, said with it (to the model
+// or the owner): which of its allowed-tools run without asking, and which ask.
+function said(skill: Skill, granted: string[], left: string[], held?: string): string {
   const out: string[] = [];
-  if (granted) out.push(`For this turn these run without asking, as the skill's allowed-tools say: ${(skill.allowedTools ?? []).join(", ")}.`);
+  if (granted.length) out.push(`For this turn these run without asking, as the skill's allowed-tools say: ${granted.join(", ")}.`);
+  if (held && skill.allowedTools?.length) out.push(`Its allowed-tools (${skill.allowedTools.join(", ")}) ask as usual: ${held}.`);
   if (left.length) out.push(`Its allowed-tools Keel cannot hold the same way, so they ask as usual: ${left.join("; ")}.`);
   if (skill.model && !skill.fork) out.push(`It names the model ${skill.model}; an inline skill runs on the session's model in Keel (with context: fork, its agent runs on it).`);
   return out.length ? `\n\n[keel] ${out.join(" ")}` : "";
+}
+
+// The grant a skill makes, or why it makes none.
+const NOT_TRUSTED = "it is this repository's own skill, and its tools run without asking only once the owner trusts it himself (the session's Trust panel)";
+function grantOf(skill: Skill, vars: Record<string, string>): { rules: { kind: RuleKind; pattern: string }[]; granted: string[]; left: string[]; held?: string } {
+  if (!skill.allowedTools?.length) return { rules: [], granted: [], left: [] };
+  if (!mayGrant(skill)) return { rules: [], granted: [], left: [], held: NOT_TRUSTED };
+  if (!skillRun.grant) return { rules: [], granted: [], left: [], held: "nothing here grants them" };
+  const { rules, left } = skillRules(skill, vars);
+  const leftNames = new Set(left.map((l) => l.slice(0, l.indexOf(" (")).trim()));
+  return { rules, granted: skill.allowedTools.filter((t) => !leftNames.has(t)), left };
 }
 
 export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
@@ -365,17 +389,20 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   }
   // Sent again unless the model can still see it: after a clear, a rewind or
   // another branch it is gone from the context even though it was loaded.
-  if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.`);
+  // (Loading it again grants its tools again, for this turn: Claude Code re-applies them.)
+  const g = grantOf(skill, vars);
+  if (g.rules.length) skillRun.grant!(ctx.sessionId, g.rules, skill.name, false);
+  const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held);
+  if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.${extra}`);
   usage?.record(skill.name);
-  const { rules, left } = skillRules(skill, vars);
-  if (rules.length) skillRun.grant?.(ctx.sessionId, rules, skill.name, false);
-  return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${said(skill, left, rules.length > 0 && !!skillRun.grant)}`);
+  return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}`);
 }
 
 // The owner invoking a skill from the message box: same rendering, and skills
 // hidden from the model are allowed; ones marked not user-invocable are not.
 // Its allowed-tools hold for the turn the owner's command starts (`grant`).
-export function renderForOwner(name: string, args: string, cwd: string, sessionId: string, opts: { grant?: boolean; count?: boolean } = {}): { skill: Skill; text: string } | { error: string } {
+// `grant`: "next" when the command starts a turn, "now" when it is steered into the running one; `cmd` its text.
+export function renderForOwner(name: string, args: string, cwd: string, sessionId: string, opts: { grant?: "next" | "now"; cmd?: string; count?: boolean } = {}): { skill: Skill; text: string } | { error: string } {
   const skill = discoverSkills(cwd).find((s) => s.name === name);
   if (!skill) return { error: `no skill named ${name}` };
   if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
@@ -386,9 +413,9 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
   if (opts.count !== false) usage?.record(skill.name);
   let extra = "";
   if (opts.grant && !skill.fork) {
-    const { rules, left } = skillRules(skill, vars);
-    if (rules.length) skillRun.grant?.(sessionId, rules, skill.name, true);
-    extra = said(skill, left, rules.length > 0 && !!skillRun.grant);
+    const g = grantOf(skill, vars);
+    if (g.rules.length) skillRun.grant!(sessionId, g.rules, skill.name, opts.grant === "next", opts.cmd);
+    extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held);
   }
   return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}` };
 }

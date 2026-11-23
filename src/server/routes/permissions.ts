@@ -89,7 +89,17 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     turnEnd: (s) => g.turnEnded(s.id),
   });
   // A skill's allowed-tools hold for the turn that invoked it (src/tools/skills.ts).
-  skillRun.grant = (sid, rules, from, next) => { const s = store.session(sid); if (s) g.grantTurn(s, rules, from, next); };
+  skillRun.grant = (sid, rules, from, next, cmd) => { const s = store.session(sid); if (s) g.grantTurn(s, rules, from, next, cmd); };
+  skillRun.drop = (sid) => g.dropTurnGrant(sid);
+  // The owner's next message ends a skill's grant (Claude Code: "the grant clears when you send your next message").
+  const gOff = (globalThis as { __keelGrantOff?: () => void });
+  gOff.__keelGrantOff?.();
+  gOff.__keelGrantOff = deps.bus.on((f) => {
+    if (f.t !== "event" || f.event.kind !== "user") return;
+    const d = f.event.data ?? {};
+    if (d.kind || (d.origin && d.origin !== "steer")) return; // a report, a wake, a notice: not the owner's words
+    g.ownerSaid(f.event.session_id, String(d.text ?? ""));
+  });
 
   const presenceCall = async (f: () => Promise<Response>) => {
     try { return await f(); } catch (e) {

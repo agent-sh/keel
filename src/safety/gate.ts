@@ -558,26 +558,37 @@ export class Gate {
   }
 
   // A skill's allowed-tools (Claude Code's skills frontmatter): rules that
-  // hold for the one turn that invoked the skill and for no other. Kept in
-  // memory only (a restart ends them with the turn). `next`: the owner ran
-  // the skill and its turn has not started yet; it holds from that turn's
-  // start. Every rule still goes through the gate as a rule does: the mode,
-  // the sandbox and the high-risk checks ask whatever a rule says.
-  private turnGrants = new Map<string, { rules: Rule[]; next: boolean; from: string }>();
-  grantTurn(session: Session, rules: { kind: RuleKind; pattern: string }[], from: string, next: boolean) {
+  // hold for the one turn that invoked the skill, and only until the owner's
+  // next message. Kept in memory only (a restart ends them with the turn).
+  // `next`: the owner's /command that starts a turn now: it holds from that
+  // turn's start, which follows at once (Engine.send starts it before it
+  // returns); one the turn never took is dropped (dropTurnGrant). `cmd`: the
+  // command's own text, the message that is not the owner's next one. Every
+  // rule still goes through the gate as a rule does: the mode, the sandbox
+  // and the high-risk checks ask whatever a rule says.
+  private turnGrants = new Map<string, { rules: Rule[]; next: boolean; from: string; cmd?: string }>();
+  grantTurn(session: Session, rules: { kind: RuleKind; pattern: string }[], from: string, next: boolean, cmd?: string) {
     const had = this.turnGrants.get(session.id);
     const made: Rule[] = rules.map((r) => ({ id: `turn:${crypto.randomUUID()}`, kind: r.kind, pattern: r.pattern.trim(), scope: this.scopeOf(session.workspace), lifetime: "session", session_id: session.id, created: Date.now(), bind: null }));
-    // Two skills in one turn: both grants hold (the newer one's `next` follows the newer invocation).
-    this.turnGrants.set(session.id, { rules: [...(had && had.next === next ? had.rules : []), ...made], next, from });
+    // Two skills in one turn: both grants hold.
+    this.turnGrants.set(session.id, { rules: [...(had && had.next === next ? had.rules : []), ...made], next, from, ...(cmd ? { cmd } : {}) });
   }
   turnGrant(sessionId: string) { return this.turnGrants.get(sessionId); }
+  dropTurnGrant(sessionId: string) { this.turnGrants.delete(sessionId); }
+  // The owner's message reached the session: a grant ends with it, unless it is the command that made the grant.
+  ownerSaid(sessionId: string, text: string) {
+    const g = this.turnGrants.get(sessionId);
+    if (!g) return;
+    if (g.cmd !== undefined && g.cmd === text.trim()) { g.cmd = undefined; return; }
+    this.turnGrants.delete(sessionId);
+  }
   private turnBegan(sessionId: string) {
     const g = this.turnGrants.get(sessionId);
     if (g?.next) g.next = false;
   }
+  // The turn is over: its grant ends, and so does one no turn took.
   turnEnded(sessionId: string) {
-    const g = this.turnGrants.get(sessionId);
-    if (g && !g.next) this.turnGrants.delete(sessionId);
+    this.turnGrants.delete(sessionId);
   }
 
   addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session", bind?: string): Rule {

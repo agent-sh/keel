@@ -156,11 +156,17 @@ export const toolRoutes: RouteModule = (deps) => {
           if (out.is_error) return json({ error: String(out.content) }, 400);
           return json({ event: note, agent: String(out.content) }, 201);
         }
-        const granted = renderForOwner(r.skill.name, String(b.args ?? ""), s.workspace, s.id, { grant: true });
+        // Its allowed-tools hold for the turn the command reaches: the one it
+        // starts, or the one running now that it is steered into. A command
+        // that waits in a queue no turn takes yet grants nothing.
+        const cmd = `/${r.skill.name}${b.args?.trim() ? ` ${b.args.trim()}` : ""}`;
+        const running = deps.engine.isRunning(s.id);
+        const granted = renderForOwner(r.skill.name, String(b.args ?? ""), s.workspace, s.id, { grant: running ? "now" : "next", cmd });
         if ("error" in granted) return json({ error: granted.error }, 400);
         const note = deps.store.append(s.id, "note", { text: `<skill name="${r.skill.name}">\n${granted.text}\n</skill>${more}`, model: true, skill: r.skill.name });
         deps.bus.emit({ t: "event", event: note });
-        const ev = deps.engine.send(s.id, `/${r.skill.name}${b.args?.trim() ? ` ${b.args.trim()}` : ""}`);
+        const ev = deps.engine.send(s.id, cmd);
+        if (!running && !deps.engine.isRunning(s.id)) skillRun.drop?.(s.id);
         return json({ event: ev }, 201);
       },
     },

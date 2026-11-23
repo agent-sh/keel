@@ -197,6 +197,16 @@ export class Trust {
     return this.check(dir, "skill", scan.digest, null) === "trusted";
   }
 
+  // Whether the owner pinned a project skill himself, as it is now: what a
+  // skill may grant beyond its text (its allowed-tools) needs that. A pin made
+  // on first sight (auto) lets a skill load, never grant itself tools.
+  skillOwnerTrusted(dir: string): boolean {
+    const digest = dir.endsWith(".md") ? commandDigest(dir) : skillScan(dir)?.digest;
+    if (!digest) return false;
+    const p = this.pin(dir);
+    return !!p && !p.auto && p.sha === digest;
+  }
+
   // The owner trusts a file of `cwd` at the content shown to them (the digest they saw).
   trust(cwd: string, path: string, digest: string): ProjectFile {
     const f = this.files(cwd).find((x) => x.path === path);

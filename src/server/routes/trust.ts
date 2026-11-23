@@ -45,6 +45,7 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   const quarantine = new Quarantine(store, join(store.stateDir, "quarantine"));
   instructionFilter.file = (path, text) => trust.instructionText(path, text);
   skillFilter.allow = (dir) => trust.skillAllowed(dir);
+  skillFilter.ownerTrusted = (dir) => trust.skillOwnerTrusted(dir);
 
   const notify = (sessionId: string, text: string, kind: string) =>
     bus.emit({ t: "event", event: store.append(sessionId, "note", { kind, text }) });

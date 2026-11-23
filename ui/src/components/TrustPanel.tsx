@@ -69,6 +69,12 @@ export function TrustPanel({ session }: { session: Session }) {
                     <Icon className="size-3.5 shrink-0 text-faint" />
                     <span className="min-w-0 flex-1 truncate font-mono">{f.rel}</span>
                     <span className="text-faint">{f.auto ? "pinned on first sight" : "trusted"}</span>
+                    {/* A skill pinned on first sight loads; its allowed-tools run without asking only once you trust it yourself. */}
+                    {f.auto && f.kind === "skill" && (
+                      <button type="button" data-testid="trust-own" className="k-btn" data-quiet title="Its allowed-tools then run without asking in the turn that loads it" onClick={async () => {
+                        try { await api("/api/trust", { method: "POST", body: JSON.stringify({ cwd: session.workspace, files: [{ path: f.path, sha256: f.sha256 }] }) }); load(); } catch (e) { setErr(failed(e, { at: "TrustPanel" })); }
+                      }}>Trust it yourself</button>
+                    )}
                   </li>
                 );
               })}
