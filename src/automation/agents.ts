@@ -564,16 +564,24 @@ async function pickModel(parent: Session, want?: string): Promise<string> {
 // A child never runs in a mode that asks less than its parent's (plan and
 // reviewer ranked with the rest); a read-only definition runs in the
 // read-only mode. Sandbox and network are the parent's.
+const wantOf = (def: AgentDef) => (def.readOnly ? "read-only" : def.permissionMode);
 function modeOfChild(parentId: string, def: AgentDef): Mode | null {
   const g = perm.gate;
   if (!g) return null;
-  return childMode(g.perm(parentId).mode, def.readOnly ? "read-only" : def.permissionMode);
+  return childMode(g.perm(parentId).mode, wantOf(def));
 }
-function inheritPermissions(parentId: string, childId: string, mode: Mode | null) {
+// The child follows its parent's later changes (Gate.setPerm): a tighter one
+// caps it; a looser one reaches it, but never past the mode its definition
+// asks for (a spawn now would give it the same). One
+// started in a mode that writes nothing keeps such a mode: it was started
+// without a worktree or a write scope of its own, so a looser parent does
+// not make it write in the parent's checkout.
+function inheritPermissions(parentId: string, childId: string, mode: Mode | null, def: AgentDef) {
   const g = perm.gate;
   if (!g || !mode) return;
   const p = g.perm(parentId);
-  g.setPerm(childId, { mode, sandbox: p.sandbox, network: p.network });
+  const want = writesNothing(mode) ? mode : wantOf(def);
+  g.setPerm(childId, { mode, sandbox: p.sandbox, network: p.network }, { follows: true, ...(want ? { want } : {}) });
 }
 
 // --- spawn, settle, report ---------------------------------------------------
@@ -887,7 +895,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title, settings: Object.keys(settings).length ? settings : undefined });
   store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
   if (iso) wts().adopt(child.id, iso.wt);
-  inheritPermissions(parentId, child.id, mode);
+  inheritPermissions(parentId, child.id, mode, def);
   bus.emit({ t: "session", session: store.session(child.id)! });
 
   if (input.fork) {
@@ -2017,7 +2025,7 @@ async function succeed(a: AgentRecord, loss: LossKind, got: { error: string; eve
   // ends the agent as stopped, not as a second end of a report being written.
   settling.delete(a.id);
   const g = perm.gate;
-  if (g) g.setPerm(child.id, g.perm(old.id));
+  if (g) g.setPerm(child.id, g.perm(old.id), g.tieOf(old.id));
   bus.emit({ t: "session", session: store.session(child.id)! });
   const line = parentLine({ title: attr(a.title), id: a.id, loss, category, n: plan.n, model, moved: plan.switchFamily });
   activity.record("agent", "successor", a.parent_id, `Agent "${a.title}" lost its context (${LOSS_WORDS[loss]}); successor ${plan.n} started on ${model}`, { agent_id: a.id, child_session: child.id, lost_session: a.session_id, loss, ...(category ? { category } : {}), model });

@@ -541,3 +541,61 @@ test("what a session's Read would get without asking: a file of its folder here,
   // (Its tools run on another machine: a file at that path here is not its file.)
   expect(g.readable({ ...session, machine: "box-b" } as Session, file)).toBe(false);
 });
+
+// A session tree over a scratch store, as agents.ts makes one: each agent's session names its parent.
+const treeGate = () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-gate-tree-")));
+  store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+  const g = new Gate(store, new Bus());
+  g.setSandboxCheck(() => false);
+  const ws = mkdtempSync(join(tmpdir(), "keel-ws-"));
+  const make = (title: string, parent?: Session) => {
+    const s = store.createSession({ workspace: ws, model: "fixture:m", title });
+    if (parent) store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent.id, s.id);
+    return s;
+  };
+  const call = (s: Session, command: string): ToolCall =>
+    ({ id: crypto.randomUUID(), tool: bash, input: { command }, ctx: { sessionId: s.id, cwd: ws, signal: new AbortController().signal, spillDir: ws, seen: new Map() } });
+  const opened = async (s: Session) => {
+    for (let n = 0; n < 200 && !g.approvals({ session: s.id, pending: true }).length; n++) await Bun.sleep(5);
+    return g.approvals({ session: s.id, pending: true })[0]!;
+  };
+  return { store, g, ws, make, call, opened };
+};
+
+// RSH-M20: a parent's permission change reaches its agent tree. A tighter one caps every agent below it at once,
+// live or ended, and judges their open cards again; a looser one reaches the agents that follow their parent,
+// never past the mode a definition asks for, and never one whose settings were set on it.
+test("a parent's tighter change caps its whole agent tree, and a looser one reaches only the agents that follow it", async () => {
+  const { g, make, call, opened } = treeGate();
+  const root = make("root"), child = make("child", root), grand = make("grand", child), planner = make("planner", root), own = make("own", root);
+  g.setPerm(root.id, { mode: "ask", sandbox: "off", network: true });
+  const inherit = (s: Session, parent: Session, mode: Mode, want?: string) => g.setPerm(s.id, { mode, sandbox: g.perm(parent.id).sandbox, network: g.perm(parent.id).network }, { follows: true, ...(want ? { want } : {}) });
+  inherit(child, root, "ask");
+  inherit(grand, child, "ask");
+  inherit(planner, root, "plan", "plan");
+  g.setPerm(own.id, { mode: "ask", sandbox: "read-only", network: true }); // a session set on its own, as a review's
+  const mode = (s: Session) => g.perm(s.id).mode;
+  // The grandchild asks; the root moves to read-only: the card is judged again and refused, and every agent below is capped.
+  const asking = g.check(grand, call(grand, "touch made.txt"));
+  const card = await opened(grand);
+  g.setPerm(root.id, { mode: "read-only" });
+  expect(await asking).toHaveProperty("deny");
+  expect(g.approval(card.id)!.state).toBe("denied");
+  expect([mode(child), mode(grand), mode(planner), mode(own)]).toEqual(["read-only", "read-only", "plan", "read-only"]);
+  // The sandbox on and the network off reach every agent too; a tighter sandbox of an agent's own stays.
+  g.setPerm(root.id, { sandbox: "workspace-write", network: false });
+  expect([child, grand, planner, own].map((s) => [g.perm(s.id).sandbox, g.perm(s.id).network])).toEqual([["workspace-write", false], ["workspace-write", false], ["workspace-write", false], ["read-only", false]]);
+  // Looser: the agents that follow take it, the planner keeps its definition's plan, the one set on its own stays capped.
+  g.setPerm(root.id, { mode: "auto", sandbox: "off", network: true });
+  expect([mode(child), mode(grand), mode(planner), mode(own)]).toEqual(["auto", "auto", "plan", "read-only"]);
+  expect([child, grand].map((s) => [g.perm(s.id).sandbox, g.perm(s.id).network])).toEqual([["off", true], ["off", true]]);
+  expect([g.perm(own.id).sandbox, g.perm(own.id).network]).toEqual(["read-only", false]);
+  // The owner sets the child itself: from then on its settings are its own, and the grandchild follows the child.
+  g.setPerm(child.id, { mode: "ask" });
+  expect(mode(grand)).toBe("ask");
+  g.setPerm(root.id, { mode: "full-auto" });
+  expect([mode(child), mode(grand)]).toEqual(["ask", "ask"]);
+  // Its tie is carried as written (a successor takes its predecessor's).
+  expect([g.tieOf(planner.id), g.tieOf(child.id), g.tieOf(grand.id)]).toEqual([{ follows: true, want: "plan" }, { follows: false }, { follows: true }]);
+});

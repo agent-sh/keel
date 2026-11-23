@@ -32,7 +32,7 @@ import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
-import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { childMode, classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
 // What a card a hook asked for says before the hook's reason.
@@ -110,6 +110,20 @@ export const classifyCall = (call: ToolCall): CallClass => classify(call.tool, c
 
 export type SandboxProfile = "off" | "workspace-write" | "read-only";
 export type SessionPerm = { session_id: string; mode: Mode; sandbox: SandboxProfile; network: boolean };
+export type PermTie = { follows: boolean; want?: string };
+const PERM_FIELDS = ["mode", "sandbox", "network"] as const;
+// How much a sandbox profile confines: the tighter of two is the one kept.
+const CONFINES: Record<SandboxProfile, number> = { off: 0, "workspace-write": 1, "read-only": 2 };
+// What a change of a parent's `fields` makes of an agent's settings below it. One that follows its parent takes
+// them (its mode the one a spawn would give it now); any other is only capped: never a mode that asks less, a
+// sandbox that confines less or a network the parent has not.
+export function reached(parent: SessionPerm, cur: SessionPerm, tie: PermTie, fields: readonly (typeof PERM_FIELDS)[number][]): Partial<SessionPerm> {
+  const out: Partial<SessionPerm> = {};
+  if (fields.includes("mode")) out.mode = childMode(parent.mode, tie.follows ? tie.want : cur.mode);
+  if (fields.includes("sandbox")) out.sandbox = tie.follows || CONFINES[parent.sandbox] > CONFINES[cur.sandbox] ? parent.sandbox : cur.sandbox;
+  if (fields.includes("network")) out.network = tie.follows ? parent.network : cur.network && parent.network;
+  return out;
+}
 
 export type Approval = {
   id: string;
@@ -406,6 +420,8 @@ export class Gate {
     // (Pinned when the session is made; one made before this was here, at its first sight.)
     store.onCreated((s) => void this.rootMoved(s));
     if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
+    // How an agent's settings stand to its parent's (setPerm). A row from before this follows nothing: it is capped only.
+    if (!store.columnExists("perm_sessions", "follows")) store.migrate("ALTER TABLE perm_sessions ADD COLUMN follows INTEGER NOT NULL DEFAULT 0; ALTER TABLE perm_sessions ADD COLUMN want TEXT");
     const db = store.db;
     // Restart: an open card waits for its call to come back (callOutcome "waiting").
     for (const r of db.query<{ data: string }, []>("SELECT data FROM approvals WHERE state = 'pending'").all()) {
@@ -848,17 +864,52 @@ export class Gate {
     return p.network ? "public" : undefined;
   }
 
-  setPerm(sessionId: string, patch: Partial<Omit<SessionPerm, "session_id">>): SessionPerm {
+  // A session's settings, and what reaches the agents below it. `tie`: how an
+  // agent's settings stand to its parent's, given where an agent is started
+  // (or carried to its successor). `follows`: it took its parent's settings,
+  // so a looser change above reaches it too; `want`: the mode its definition
+  // asks for, which it keeps under a parent that asks less. Without `tie` the
+  // settings are the session's own once a value changes. Every agent below
+  // the session, live or ended (a message can resume it), is capped by a
+  // tighter mode, a sandbox on or the network off at once, and its open cards
+  // are judged again; a looser change reaches only the agents that follow.
+  setPerm(sessionId: string, patch: Partial<Omit<SessionPerm, "session_id">>, tie?: PermTie): SessionPerm {
     const prev = this.perm(sessionId);
     const next = { ...prev, ...patch };
-    if (prev.mode !== next.mode) this.streak.delete(sessionId);
-    if (prev.mode !== next.mode || prev.sandbox !== next.sandbox || prev.network !== next.network) this.invalidateReview();
-    this.store.db
-      .query("INSERT INTO perm_sessions (session_id, mode, sandbox, network) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET mode = excluded.mode, sandbox = excluded.sandbox, network = excluded.network")
-      .run(sessionId, next.mode, next.sandbox, next.network ? 1 : 0);
+    const fields = PERM_FIELDS.filter((k) => prev[k] !== next[k]);
+    const changed = new Set<string>();
+    this.store.db.transaction(() => {
+      this.writePerm(next, tie ?? (fields.length ? { follows: false } : undefined));
+      if (fields.length) changed.add(sessionId);
+      if (fields.length) this.reachBelow(next, fields, changed);
+    })();
+    if (changed.size) this.invalidateReview();
+    for (const id of changed) if (id !== sessionId) this.bus.emit({ t: "feature", name: "perm", session_id: id, data: this.perm(id) });
     this.bus.emit({ t: "feature", name: "perm", session_id: sessionId, data: next });
-    this.recheck((w) => w.session.id === sessionId);
+    this.recheck((w) => w.session.id === sessionId || changed.has(w.session.id));
     return next;
+  }
+  tieOf(sessionId: string): PermTie {
+    const r = this.store.db.query<{ follows: number; want: string | null }, [string]>("SELECT follows, want FROM perm_sessions WHERE session_id = ?").get(sessionId);
+    return r ? { follows: !!r.follows, ...(r.want ? { want: r.want } : {}) } : { follows: false };
+  }
+  // `tie` undefined: the row's tie stays as it is.
+  private writePerm(p: SessionPerm, tie?: PermTie) {
+    if (p.mode !== this.perm(p.session_id).mode) this.streak.delete(p.session_id);
+    const t = tie ?? this.tieOf(p.session_id);
+    this.store.db
+      .query("INSERT INTO perm_sessions (session_id, mode, sandbox, network, follows, want) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET mode = excluded.mode, sandbox = excluded.sandbox, network = excluded.network, follows = excluded.follows, want = excluded.want")
+      .run(p.session_id, p.mode, p.sandbox, p.network ? 1 : 0, t.follows ? 1 : 0, t.want ?? null);
+  }
+  // The changed `fields` of a parent's settings, carried to the sessions below it, each level from the one above.
+  private reachBelow(parent: SessionPerm, fields: (typeof PERM_FIELDS)[number][], changed: Set<string>, depth = 0) {
+    if (depth > 64 || !this.store.columnExists("sessions", "parent_id")) return;
+    for (const { id } of this.store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE parent_id = ?").all(parent.session_id)) {
+      const cur = this.perm(id);
+      const next = { ...cur, ...reached(parent, cur, this.tieOf(id), fields) };
+      if (PERM_FIELDS.some((k) => cur[k] !== next[k])) { this.writePerm(next); changed.add(id); }
+      this.reachBelow(next, fields, changed, depth + 1);
+    }
   }
 
   // Standing answers are kept for the repository (a worktree's answers are
