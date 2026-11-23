@@ -10,6 +10,18 @@ test("keep awake while a loop is due, with the hold in the activity list", async
   test.skip(!aw.available, "this machine has no logind lock to hold");
   const loop = await (await request.post("/api/loops", { data: { name: "Awake check", schedule: "10m", prompt: "Reply with only the word ok." } })).json();
 
+  // The lock is asked for once a loop is due: logind may refuse it (a server whose user has no
+  // seat, polkit says no). Then there is nothing to hold here, and the daemon says so.
+  let refused: string | undefined;
+  await expect.poll(async () => {
+    const st = await (await request.get("/api/awake")).json();
+    refused = st.refused;
+    // `locked`: logind handed the lock out (a lock asked for is held before logind answers).
+    return st.locked || !!refused;
+  }, { timeout: 45_000 }).toBe(true);
+  if (refused) await request.delete(`/api/loops/${loop.id}`);
+  test.skip(!!refused, `logind refused the lock here (${refused}): nothing to hold`);
+
   await page.goto("/settings/daemon");
   await expect(page.getByTestId("awake-state")).toHaveText(/Held/, { timeout: 45_000 });
   await expect(page.getByText("loop due within 15 minutes")).toBeVisible();
