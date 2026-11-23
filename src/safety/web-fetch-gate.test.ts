@@ -83,7 +83,8 @@ test("mcp_call takes a server's tool by its own name: WebFetch through it is not
   expect(webUse("WebFetch", true)).toBeUndefined();
   expect(webUse("WebSearch", true)).toBeUndefined();
   expect(webUse("web__webfetch", true)).toBeDefined();
-  expect(webUse("web__webfetch")).toBeUndefined();
+  expect(webUse("web__webfetch")).toBeDefined();
+  expect(webUse("web__websearch")).toBeDefined();
   expect(webUse("WebFetch")).toBeDefined();
   const { session, say, callTool, judged } = rig();
   const s = session();
@@ -94,4 +95,9 @@ test("mcp_call takes a server's tool by its own name: WebFetch through it is not
   say(t, "x");
   callTool(t, "mcp_call", { tool: "web__webfetch", arguments: { url: "https://pages.example/a" } }, priv);
   expect(await judged(t, copy)).toBe("read");
+  // The catalog's tool called directly under its full name, as a family without the built-in pair does, is the same tool.
+  const u = session();
+  say(u, "x");
+  callTool(u, "web__webfetch", { url: "https://pages.example/a" }, priv);
+  expect(await judged(u, copy)).toBe("read");
 });
