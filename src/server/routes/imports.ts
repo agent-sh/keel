@@ -222,10 +222,10 @@ export const importRoutes: RouteModule = (deps) => {
         const sort = u.get("sort") || undefined;
         if (sort && !["updated", "size", "title"].includes(sort)) return bad(`unknown sort ${sort}`);
         if (u.has("refresh")) imports.invalidate();
-        // Opening the list walks the stores again; a search typed key by key or
-        // the next page reads the index the opening built.
+        // Opening the list walks the stores again (`opened`: the sheet's first listing, which may
+        // already search); a search typed key by key or the next page reads the index the opening built.
         const cursor = cursorGiven(u.get("cursor"));
-        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || (!u.get("q") && !cursor));
+        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || u.has("opened") || (!u.get("q") && !cursor));
         const limit = u.get("limit") ? Number(u.get("limit")) : undefined;
         if (limit !== undefined && !(limit > 0)) return bad("limit must be a number above 0");
         // `inside`: the words are looked for in what the transcripts say too, not only in their titles,

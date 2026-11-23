@@ -69,10 +69,17 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
   const [busy, setBusy] = useState(false);
   // Only the answer for the row shown now counts: a slower answer for the row
   // picked before is dropped, and Import waits for this row's own preview.
+  // The same row from a fresher listing keeps its preview, and Import stays
+  // on, while it is read again: a click there is not lost to a blank pane.
+  const readFor = useRef("");
   useEffect(() => {
     let live = true;
-    setP(null);
-    setErr("");
+    const key = JSON.stringify([from, row.harness, row.id, row.path]);
+    if (readFor.current !== key) {
+      readFor.current = key;
+      setP(null);
+      setErr("");
+    }
     const u = new URLSearchParams(Object.entries(from ? { harness: row.harness, id: row.id } : ident(row)) as [string, string][]);
     api<Preview>(`${paths(from).preview}?${u}`).then((r) => { if (live) setP(r); }, (e) => { if (live) setErr(e.message); });
     return () => { live = false; };
@@ -248,6 +255,10 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [building, setBuilding] = useState(false);
   const seq = useRef(0);
   const shown = useRef(0); // how many rows the list holds
+  // The sheet's first listing since it opened walks the stores again, whatever it searches for:
+  // words typed before that listing went out must not leave it reading the index of before.
+  const opening = useRef(false);
+  useEffect(() => { opening.current = open; }, [open]);
   const [bulk, setBulk] = useState("");
   // A Keel file (a session exported from another Keel) picked from disk: sent
   // as it is. It opens at once; what the import had to change (another model,
@@ -330,6 +341,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     if (q.trim()) u.set("q", q.trim());
     if (all) u.set("show", "all");
     if (refresh) u.set("refresh", "1");
+    if (!cursor && !deep && opening.current) { u.set("opened", "1"); opening.current = false; }
     if (inText) u.set("inside", "1");
     if (deep) setInside({ q: q.trim(), running: true, not: [] });
     try {
