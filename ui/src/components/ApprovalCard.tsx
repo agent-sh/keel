@@ -1437,7 +1437,8 @@ function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, li
 // is always there on a keyboard's screen: a control that grew as the numbers came would move under a
 // pointer pressing it (and a control that moved waits again before a press counts).
 function Digit({ n, on }: { n: number; on: boolean }) {
-  return <kbd aria-hidden="true" className="k-digit" data-on={on || undefined} data-testid={on ? "approval-digit" : undefined}>{n}</kbd>;
+  // (The number is drawn by the style sheet from data-n, so it is no part of the answer's text or name: Allow once reads "Allow once".)
+  return <kbd aria-hidden="true" className="k-digit k-cap-n" data-n={n} data-on={on || undefined} data-testid={on ? "approval-digit" : undefined} />;
 }
 // The answers a number names on an approval card, in their order on it.
 const ANSWER_KEYS = ["allow-once", "allow-always", "deny"] as const;

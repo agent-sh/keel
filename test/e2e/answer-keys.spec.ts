@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./isolate.ts";
+import { expect, test, type Locator, type Page } from "./isolate.ts";
 import {
   answersOf, answersSent, approvals, arrives, ask, asksToRun, calls, cardIn, colors, create, drop, folder, idle, KINDS, mark, messagesSent, open, pane,
   pending, presses, rearm, reset, row, said, scripted, secondEnter, secretsAsked, SETTLE, settle, since, waits, watchKeys, type Kind,
@@ -13,6 +13,8 @@ import { shoot } from "./shots.ts";
 // Every pane on screen: no focus mode (the config's default for the other specs).
 test.use({ storageState: { cookies: [], origins: [] } });
 
+// The numbers drawn on key caps (from data-n, the style sheet's: no part of the text they label).
+const numbers = (caps: Locator) => caps.evaluateAll((els) => els.map((el) => el.getAttribute("data-n")));
 const keysOn = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.testid ?? document.activeElement?.tagName ?? "");
 const LONG = `${Array.from({ length: 40 }, (_, i) => `echo step ${i + 1}`).join("\n")}\necho last > last.txt`;
 
@@ -328,7 +330,7 @@ test("a question docks above the message box and is answered from the keyboard",
   await expect(card.getByRole("radio", { name: "Teal" })).toBeFocused();
   // The keyboard is the owner's on the card now: the numbers are drawn (nothing moved for them), and the hint names them.
   await expect(card).toHaveAttribute("data-own", "true");
-  await expect(card.getByTestId("question-digit")).toHaveText(["1", "2", "3"]);
+  await expect.poll(() => numbers(card.getByTestId("question-digit"))).toEqual(["1", "2", "3"]);
   expect(await card.getByRole("radio", { name: "Teal" }).boundingBox()).toEqual(at);
   await expect(card.getByTestId("question-hint")).toHaveText("Press 1 to 3 to answer, or Up and Down then Enter");
   await shoot(page, "answer-keys-03-question-numbers");
@@ -1304,7 +1306,10 @@ test("an approval card's answers have numbers: 1 allows once, 2 opens Always all
   await expect(card.getByTestId("approval-digit")).toHaveCount(0);
   await page.keyboard.press("Alt+a");
   // Drawn on the three answers, once they answer.
-  await expect(card.getByTestId("approval-digit")).toHaveText(["1", "2", "3"], { timeout: 5000 });
+  await expect.poll(() => numbers(card.getByTestId("approval-digit")), { timeout: 5000 }).toEqual(["1", "2", "3"]);
+  // (The numbers are no part of the answers' text or name.)
+  await expect(card.getByTestId("allow-once")).toHaveText("Allow once");
+  await expect(card.getByRole("button", { name: "Allow once", exact: true })).toHaveCount(1);
   await shoot(page, "answer-keys-21-approval-digits");
   // 3 opens the denial, with the keyboard in its reason field; Escape leaves it.
   await page.keyboard.press("3");
@@ -1312,7 +1317,7 @@ test("an approval card's answers have numbers: 1 allows once, 2 opens Always all
   await page.keyboard.press("Escape");
   await expect(card.getByTestId("allow-once")).toBeFocused();
   // 2 opens Always allow's choices; Escape closes them.
-  await expect(card.getByTestId("approval-digit")).toHaveText(["1", "2", "3"], { timeout: 5000 });
+  await expect.poll(() => numbers(card.getByTestId("approval-digit")), { timeout: 5000 }).toEqual(["1", "2", "3"]);
   await page.keyboard.press("2");
   await expect(card.getByTestId("allow-always")).toHaveAttribute("aria-expanded", "true");
   await page.keyboard.press("Escape");
@@ -1323,7 +1328,7 @@ test("an approval card's answers have numbers: 1 allows once, 2 opens Always all
   await expect(box).toHaveValue("");
   await expect(list).toBeFocused();
   // From the list, 1 allows its first card once (after a key's settle time from the 7).
-  await expect(card.getByTestId("approval-digit")).toHaveText(["1", "2", "3"], { timeout: 5000 });
+  await expect.poll(() => numbers(card.getByTestId("approval-digit")), { timeout: 5000 }).toEqual(["1", "2", "3"]);
   await page.keyboard.press("1");
   await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
   await expect(box).toHaveValue("");
@@ -1588,7 +1593,7 @@ test("a key that went down as the keyboard arrived answers nothing, however late
   }
   // Pressed once the card says it is ready, it allows.
   await page.keyboard.press("Alt+a");
-  await expect(list.getByTestId("approval-digit")).toHaveText(["1", "2", "3"], { timeout: 5000 });
+  await expect.poll(() => numbers(list.getByTestId("approval-digit")), { timeout: 5000 }).toEqual(["1", "2", "3"]);
   await page.keyboard.press("1");
   await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
   expect(await said(request, id)).toEqual([]);

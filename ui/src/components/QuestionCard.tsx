@@ -417,7 +417,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
                       {/* The key that picks it, drawn only while it does (the numbers are the card's). Else the
                           mark of a choice, in the same room: nothing moves when the numbers come. */}
                       {digitsOn && i < 9
-                        ? <kbd aria-hidden="true" data-testid="question-digit" className="mt-px grid size-[1.125rem] shrink-0 place-items-center rounded-xs border border-line-strong bg-raised text-micro font-medium text-fg pointer-coarse:hidden">{i + 1}</kbd>
+                        ? <kbd aria-hidden="true" data-testid="question-digit" data-n={i + 1} className="k-cap-n mt-px grid size-[1.125rem] shrink-0 place-items-center rounded-xs border border-line-strong bg-raised text-micro font-medium text-fg pointer-coarse:hidden" />
                         : <span aria-hidden="true" className="mt-px grid size-[1.125rem] shrink-0 place-items-center pointer-coarse:hidden"><span className={cn("size-2.5 border", q.multi ? "rounded-xs" : "rounded-full", on ? "border-accent bg-accent" : "border-line-strong")} /></span>}
                       <span className="flex min-w-0 flex-col gap-0.5">
                         <span className="text-ui font-medium">{o.label}</span>
