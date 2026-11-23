@@ -87,7 +87,7 @@ function UnitSettings({ u, folder, onChange }: { u: UnitView; folder: string; on
     } catch (e) { setErr(failed(e, { at: "plugin settings" })); } finally { setBusy(false); }
   };
   const changed = Object.keys(draft).filter((k) => !(settings.find((o) => o.key === k)?.sensitive && draft[k] === ""));
-  const field = "h-ctl-lg w-full rounded-[0.1875rem] border border-line-strong bg-bg px-2.5 text-ui";
+  const field = "h-ctl-lg w-full rounded-sm border border-line-strong bg-bg px-2.5 text-ui";
   return (
     <div data-testid="unit-settings">
       <div className="k-sub k-label">Settings</div>
