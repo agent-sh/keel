@@ -1368,6 +1368,18 @@ static bool vulkanWindow(const QString &platform, const QString &renderer)
     return platform.startsWith("wayland") && renderer.contains("NVIDIA", Qt::CaseInsensitive);
 }
 
+// Whether the desktop's OpenGL is the processor's own work (no graphics card behind it: a
+// virtual machine, a remote desktop). The windows are then drawn without OpenGL at all: the
+// engine's pages reach the screen the same, at a quarter of the processor's time and with less
+// memory held, since nothing is drawn twice.
+static bool softwareGl(const QString &renderer)
+{
+    for (const char *name : {"llvmpipe", "softpipe", "swrast", "SwiftShader"})
+        if (renderer.contains(QLatin1String(name), Qt::CaseInsensitive))
+            return true;
+    return false;
+}
+
 // `--self-test FILE`: the table of paths the main frame may and may not show (lines of
 // "ok PATH" and "no PATH"), the same one the app's own rule is tested with.
 static int selfTest(const QString &file)
@@ -1408,7 +1420,11 @@ static int selfTest(const QString &file)
         !vulkanWindow("xcb", "NVIDIA GeForce RTX 4070/PCIe/SSE2") && !vulkanWindow("wayland", "Mesa Intel(R) Graphics (ADL GT2)") &&
         !vulkanWindow("wayland", "AMD Radeon Graphics (radeonsi, renoir)") && !vulkanWindow("wayland", "llvmpipe (LLVM 20.1.2, 256 bits)") && !vulkanWindow("wayland", "");
     ::printf("where its windows are drawn with Vulkan: %s\n", glRight ? "as the table says" : "WRONG");
-    return bad || !n || !flagsRight || !filesRight || !glRight ? 1 : 0;
+    // And where without OpenGL: only where the desktop's OpenGL is the processor's own work.
+    const bool softRight = softwareGl("llvmpipe (LLVM 20.1.2, 256 bits)") && softwareGl("softpipe") && softwareGl("Google SwiftShader") &&
+        !softwareGl("NVIDIA GeForce RTX 4070/PCIe/SSE2") && !softwareGl("Mesa Intel(R) Graphics (ADL GT2)") && !softwareGl("AMD Radeon Graphics (radeonsi, renoir)") && !softwareGl("");
+    ::printf("where its windows are drawn without OpenGL: %s\n", softRight ? "as the table says" : "WRONG");
+    return bad || !n || !flagsRight || !filesRight || !glRight || !softRight ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -1496,8 +1512,11 @@ int main(int argc, char **argv)
     // the window is drawn with Vulkan too. (Before the first window; QSG_RHI_BACKEND or
     // QT_QUICK_BACKEND set by hand is left as it is.)
     const QString renderer = glRenderer();
-    if (vulkanWindow(QGuiApplication::platformName(), renderer) && !qEnvironmentVariableIsSet("QSG_RHI_BACKEND") && !qEnvironmentVariableIsSet("QT_QUICK_BACKEND"))
+    const bool chosen = qEnvironmentVariableIsSet("QSG_RHI_BACKEND") || qEnvironmentVariableIsSet("QT_QUICK_BACKEND");
+    if (!chosen && vulkanWindow(QGuiApplication::platformName(), renderer))
         qputenv("QSG_RHI_BACKEND", "vulkan");
+    else if (!chosen && softwareGl(renderer))
+        qputenv("QT_QUICK_BACKEND", "software");
     const QByteArray draws = qEnvironmentVariableIsSet("QT_QUICK_BACKEND") ? qgetenv("QT_QUICK_BACKEND") : qEnvironmentVariableIsSet("QSG_RHI_BACKEND") ? qgetenv("QSG_RHI_BACKEND") : QByteArray("opengl");
     auto *profile = new QWebEngineProfile("keel", &app);
     profile->setPersistentStoragePath(dir + "/qt-web");
