@@ -143,32 +143,39 @@ test("a here-document of 100,000 lines is decided in step with its length, whoev
 // a program word a variable holds, a command for another machine, a redirect, a path the disk is asked about.
 // Each read the line again for every part of it (5,000 parts of `cd dN && echo x > f` held the loop 8 seconds).
 // A line of more commands than the rules read (PARTS_MAX) is high risk at once; below it each is read once.
+// What is checked is growth, not a time: 5,000 parts may take at most what 2,000 take, times four (in step
+// with the length is two and a half, reading the line again for every part is over six), so a loaded machine
+// that slows both does not make it fail.
 test("a line of many commands that change folder, write, run elsewhere or delete is decided in step with its length", () => {
   const facts = (mode: "ask" | "full-auto") => ({ mode, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] });
   const many = (n: number, one: (k: number) => string, sep = "; ") => Array.from({ length: n }, (_, k) => one(k)).join(sep);
-  const shapes: [string, string, boolean][] = [
+  const shapes: [string, (n: number) => string, [number, boolean][]][] = [
     // (Under the count of commands that are read: the folder is followed until it is longer than a path can be, and a write where it is not known is a write like any other.)
-    ["2,000 x cd dN && echo x > f", many(2_000, (k) => `cd d${k} && echo x > f`), false],
-    ["5,000 x cd dN && echo x > f", many(5_000, (k) => `cd d${k} && echo x > f`), true],
-    ["50,000 x $X a after X=rm", `X=rm; ${"$X a;".repeat(50_000)}`, true],
-    ["4,000 x $X a after X=rm", `X=rm; ${"$X a;".repeat(4_000)}`, true],
-    ["50,000 x ssh h ls", "ssh h ls;".repeat(50_000), true],
-    ["4,000 x ssh h ls", "ssh h ls;".repeat(4_000), false],
-    ["5,000 redirects on one command", `echo x ${many(5_000, (k) => `> f${k}`, " ")}`, true],
-    ["5,000 x echo x > fN", many(5_000, (k) => `echo x > f${k}`), true],
-    ["5,000 x rm -rf dN", many(5_000, (k) => `rm -rf d${k}`), true],
-    ["4,000 x rm -rf dN", many(4_000, (k) => `rm -rf d${k}`), true],
-    ["rm -rf with 5,000 paths", `rm -rf ${many(5_000, (k) => `d${k}`, " ")}`, true],
-    ["4,000 x mv dN dN+1, then rm", `${many(4_000, (k) => `mv d${k} d${k + 1}`)}; rm -rf d4000`, true],
+    ["cd dN && echo x > f", (n) => many(n, (k) => `cd d${k} && echo x > f`), [[2_000, false], [5_000, true]]],
+    ["$X a after X=rm", (n) => `X=rm; ${"$X a;".repeat(n)}`, [[4_000, true], [50_000, true]]],
+    ["ssh h ls", (n) => "ssh h ls;".repeat(n), [[4_000, false], [50_000, true]]],
+    ["redirects on one command", (n) => `echo x ${many(n, (k) => `> f${k}`, " ")}`, [[5_000, true]]],
+    ["echo x > fN", (n) => many(n, (k) => `echo x > f${k}`), [[5_000, true]]],
+    ["rm -rf dN", (n) => many(n, (k) => `rm -rf d${k}`), [[4_000, true], [5_000, true]]],
+    ["rm -rf with N paths", (n) => `rm -rf ${many(n, (k) => `d${k}`, " ")}`, [[5_000, true]]],
+    ["mv dN dN+1, then rm", (n) => `${many(n, (k) => `mv d${k} d${k + 1}`)}; rm -rf d${n}`, [[4_000, true]]],
   ];
-  const slow: string[] = [];
-  for (const [label, command, high] of shapes) for (const mode of ["ask", "full-auto"] as const) {
-    let best = Infinity, d: ReturnType<typeof decide> | undefined;
-    for (let k = 0; k < 6 && best > 5 * LIMIT; k++) { const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); best = Math.min(best, performance.now() - t); }
-    if (best > 5 * LIMIT) slow.push(`${mode}: ${label}: ${best.toFixed(0)} ms`);
-    if ((!!d && "ask" in d && d.ask.risk === "high") !== high) slow.push(`${mode}: ${label}: ${high ? "not high risk" : "high risk"}`);
+  const best = (command: string, mode: "ask" | "full-auto") => {
+    let b = Infinity, d: ReturnType<typeof decide> | undefined;
+    for (let k = 0; k < 5; k++) { const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); b = Math.min(b, performance.now() - t); }
+    return { ms: b, d: d! };
+  };
+  const wrong: string[] = [];
+  for (const [label, line, risks] of shapes) for (const mode of ["ask", "full-auto"] as const) {
+    for (const [n, high] of risks) {
+      const d = decide({ kind: "shell", command: line(n), cwd: "/w" }, facts(mode));
+      if (("ask" in d && d.ask.risk === "high") !== high) wrong.push(`${mode}: ${n.toLocaleString("en-US")} x ${label}: ${high ? "not high risk" : "high risk"}`);
+    }
+    const small = best(line(2_000), mode).ms, big = best(line(5_000), mode).ms;
+    // (A few milliseconds of either are noise.)
+    if (big > 4 * small + 10) wrong.push(`${mode}: ${label}: 2,000 parts ${small.toFixed(0)} ms, 5,000 parts ${big.toFixed(0)} ms`);
   }
-  expect(slow).toEqual([]);
+  expect(wrong).toEqual([]);
 }, 120_000);
 
 // The disk's answers are asked off the loop, and what is read there is bounded too: a repository's own
