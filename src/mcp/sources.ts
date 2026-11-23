@@ -44,9 +44,9 @@ export function claudeShape(c: any): McpServerConfig {
     headers_helper: typeof c.headersHelper === "string" ? c.headersHelper : undefined,
     enabled: c.disabled === true || c.enabled === false ? false : undefined,
     oauth: c.oauth?.clientId ? { client_id: String(c.oauth.clientId) } : undefined,
-    // Claude Code's `timeout` (ms) is a call's wall-clock limit, and no less than its idle window.
-    tool_max_secs: secs(c.timeout),
-    tool_timeout_secs: secs(c.timeout),
+    // Claude Code's `timeout` (ms) is a call's wall-clock limit, and no less than its idle window; under 1000 it is ignored.
+    tool_max_secs: secs(c.timeout >= 1000 ? c.timeout : undefined),
+    tool_timeout_secs: secs(c.timeout >= 1000 ? c.timeout : undefined),
   });
 }
 

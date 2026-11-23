@@ -7,14 +7,14 @@
 //
 // Run as a script it prints its port on the first line. POST /control changes
 // what it does; GET /stats says what it saw.
-export type SseStats = { streams_opened: number; streams_closed: number; refused_posts: number; initializes: number; calls: string[]; pongs: unknown[] };
+export type SseStats = { streams_opened: number; streams_closed: number; refused_posts: number; initializes: number; calls: string[]; pongs: unknown[]; authorization: (string | null)[] };
 
 // `endpoint`: what the first event names ("elsewhere": an address of another
 // origin; "never": the stream opens and names nothing). `accepted`: the body
 // of an accepted POST (some servers say "Accepted" in text). `moved`: the
 // address named for messages answers every POST with a redirect to this one.
 export function startSseMcp(opt: { endpoint?: "path" | "elsewhere" | "never"; accepted?: string; moved?: string } = {}) {
-  const stats: SseStats = { streams_opened: 0, streams_closed: 0, refused_posts: 0, initializes: 0, calls: [], pongs: [] };
+  const stats: SseStats = { streams_opened: 0, streams_closed: 0, refused_posts: 0, initializes: 0, calls: [], pongs: [], authorization: [] };
   const enc = new TextEncoder();
   const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
   const send = (session: string, msg: unknown) => streams.get(session)?.enqueue(enc.encode(`event: message\ndata: ${JSON.stringify(msg)}\n\n`));
@@ -56,6 +56,7 @@ export function startSseMcp(opt: { endpoint?: "path" | "elsewhere" | "never"; ac
         if (req.method !== "GET") { stats.refused_posts++; return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } }); }
         const session = crypto.randomUUID();
         stats.streams_opened++;
+        stats.authorization.push(req.headers.get("authorization"));
         const named = opt.endpoint === "elsewhere" ? `http://127.0.0.1:9/messages?session=${session}` : `/messages?session=${session}`;
         return new Response(new ReadableStream<Uint8Array>({
           start(c) { streams.set(session, c); if (opt.endpoint !== "never") c.enqueue(enc.encode(`event: endpoint\ndata: ${named}\n\n`)); },

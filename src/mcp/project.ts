@@ -20,7 +20,11 @@
 //   environment `${VAR}` and `${VAR:-default}` are expanded from the owner's
 //   environment as Claude Code does; in a remote server's address and
 //   headers no variable of the owner's is read (only a written default), so
-//   a repository cannot send the owner's keys to a host it names.
+//   a repository cannot send the owner's keys to a host it names. Its
+//   headers helper (part of what the owner approved) runs at each connect in
+//   the project's folder, in the session's sandbox, with none of the owner's
+//   credentials (manager.ts projectHelper); its `timeout` holds its calls;
+//   an SSE entry is spoken to over that transport.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";

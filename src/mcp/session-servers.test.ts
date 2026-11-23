@@ -6,6 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalogSources } from "../tools/catalog.ts";
 import { McpManager, sessionEnv } from "./manager.ts";
+import { runnable } from "./project.ts";
+import { startSseMcp } from "../../test/e2e/fixtures/legacy-sse-mcp.ts";
+import { ownEnv } from "../../test/env.ts";
+
+ownEnv({ PROBE_HELPER_TOKEN: "daemon-credential" });
 
 const errors = { capture() {} } as any;
 const at = (path: string) => ({ url: `http://127.0.0.1:9/${path}` }); // nothing listens there: no server starts
@@ -184,5 +189,38 @@ test("what a session's own server does is told as it happens: its start with wha
     m.dispose();
     here.stop(true);
     there.stop(true);
+  }
+}, 30_000);
+
+// INT-S23: a project's .mcp.json entry runs as Claude Code runs it once the owner approved it: its older SSE
+// transport, its headers helper (in the project's folder, told the server's name and address, with no credential
+// of the daemon's, in the session's sandbox) and its call time limit. An editor's server gets none of that.
+test("an approved project server keeps its SSE transport, headers helper and time limit; an editor's server does not", async () => {
+  const d = mkdtempSync(join(tmpdir(), "keel-mcp-project-"));
+  writeFileSync(join(d, "token.txt"), "from-the-project");
+  const s = startSseMcp();
+  const m = new McpManager(errors, join(d, "state"), "/");
+  const wrapped: string[][] = [];
+  m.sessionSandbox = (_s, argv) => (wrapped.push(argv), { argv: ["sh", "-c", 'exec "$@"', "wrapped", ...argv], as: "read-only" });
+  const helper = `printf '{"Authorization":"Bearer %s|%s|%s|%s"}' "$(cat token.txt)" "$CLAUDE_CODE_MCP_SERVER_NAME" "$CLAUDE_CODE_MCP_SERVER_URL" "$PROBE_HELPER_TOKEN"`;
+  const entry = { type: "sse", url: s.url, headersHelper: helper, timeout: 120_000 };
+  try {
+    expect(m.setSessionServers("s1", [{ name: "events", config: runnable(entry) }], { cwd: d, project: d })).toEqual([{ name: "events", label: "events" }]);
+    const until = async (ok: () => boolean) => { for (let i = 0; i < 100 && !ok(); i++) await Bun.sleep(50); return ok(); };
+    expect(await until(() => m.list("s1").find((x) => x.session)?.state === "ready")).toBe(true);
+    expect((await s.stats()).authorization).toEqual([`Bearer from-the-project|events|${s.url}|`]);
+    expect(wrapped).toEqual([["sh", "-c", helper]]);
+    const e = [...(m as any).entries.values()].find((x: any) => x.session === "s1");
+    expect([e.config.tool_max_secs, e.config.tool_timeout_secs]).toEqual([120, 120]);
+    // A time limit under a second is ignored, as Claude Code ignores it.
+    expect(runnable({ ...entry, timeout: 500 }).tool_max_secs).toBeUndefined();
+    // The same entry from an editor: its SSE is refused by name, and no helper or time limit is taken.
+    expect(m.setSessionServers("s2", [{ name: "events", config: runnable(entry) }], { cwd: d })).toEqual([{ name: "events", error: expect.stringContaining("SSE") }]);
+    m.setSessionServers("s3", [{ name: "plain", config: runnable({ ...entry, type: "http" }) }], { cwd: d });
+    const plain = [...(m as any).entries.values()].find((x: any) => x.session === "s3");
+    expect([plain.config.headers_helper, plain.config.tool_max_secs]).toEqual([undefined, undefined]);
+  } finally {
+    m.dispose();
+    s.stop();
   }
 }, 30_000);

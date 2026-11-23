@@ -258,8 +258,10 @@ function serverEnv(c: McpServerConfig): Record<string, string> {
 // A headers helper prints a JSON object of header names and values (Claude
 // Code's headersHelper, Codex's http_headers_helper). Run at each connect;
 // the values never reach a log.
-async function helperHeaders(cmd: string, timeoutMs = 10_000): Promise<Record<string, string>> {
-  const p = Bun.spawn(["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+// `run`: where and how a project's helper runs (its folder, an environment of
+// its own, the session's sandbox); the owner's own helpers run as the daemon.
+async function helperHeaders(cmd: string, timeoutMs = 10_000, run: { argv?: string[]; cwd?: string; env?: Record<string, string> } = {}): Promise<Record<string, string>> {
+  const p = Bun.spawn(run.argv ?? ["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore", ...(run.cwd ? { cwd: run.cwd } : {}), ...(run.env ? { env: run.env } : {}) });
   const timer = setTimeout(() => p.kill(), timeoutMs);
   const [out, err, code] = await Promise.all([readText(p.stdout, "mcp headers helper"), readText(p.stderr, "mcp headers helper"), p.exited]).finally(() => clearTimeout(timer));
   if (code !== 0) throw new Error(`the headers helper exited with ${code}${err.trim() ? `: ${err.trim().slice(0, 200)}` : ""}`);
@@ -401,15 +403,21 @@ export class McpManager {
       // Only what an editor may give: nothing that reads the daemon's environment, keyring or sign-ins.
       const c = s.config;
       if (!!c.command === !!c.url) { out.push({ name: s.name, error: "give either command or url" }); continue; }
+      // A project's entry also keeps its call time limit and its headers helper
+      // (the owner approved the entry whole, the helper with it: Claude Code runs a
+      // project's helper once its folder is trusted). An editor gives neither.
+      const project = opts.project ? { ...(c.tool_timeout_secs ? { tool_timeout_secs: c.tool_timeout_secs } : {}), ...(c.tool_max_secs ? { tool_max_secs: c.tool_max_secs } : {}) } : {};
       const config: McpServerConfig = c.command
-        ? { command: String(c.command), ...(c.args ? { args: c.args.map(String) } : {}), ...(c.env ? { env: c.env } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}) }
-        : { ...(c.url ? { url: String(c.url) } : {}), ...(c.headers ? { headers: c.headers } : {}), ...(c.transport ? { transport: c.transport } : {}) };
+        ? { command: String(c.command), ...(c.args ? { args: c.args.map(String) } : {}), ...(c.env ? { env: c.env } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}), ...project }
+        : { ...(c.url ? { url: String(c.url) } : {}), ...(c.headers ? { headers: c.headers } : {}), ...(c.transport ? { transport: c.transport } : {}), ...project,
+          ...(opts.project && c.headers_helper ? { headers_helper: String(c.headers_helper), ...(opts.cwd ? { cwd: opts.cwd } : {}) } : {}) };
       const had = mine().find((e) => e.given === s.name && !keep.has(e.name) && same(e.config, config));
       if (had) { keep.add(had.name); had.holder = opts.holder; out.push({ name: s.name, label: had.label }); continue; }
       const label = sessionLabel(s.name, (n) => [...this.entries.values()].some((e) => (e.label ?? e.name) === n && (!e.session || e.session === session)));
-      const bad = config.transport === "sse" ? "it uses the older SSE transport, which Keel does not speak: give its Streamable HTTP address"
+      // An editor is told Keel takes its servers over Streamable HTTP (ACP's mcpCapabilities); a project's SSE server is spoken to.
+      const bad = config.transport === "sse" && !opts.project ? "it uses the older SSE transport, which Keel does not take from an editor (its ACP capabilities say so): give its Streamable HTTP address"
         // The session's tools run on another machine: the command would start on this one, outside what the session reaches.
-        : config.command && opts.remote ? `the session's tools run on another machine (${opts.remote}), and this command would start on this one`
+        : (config.command || config.headers_helper) && opts.remote ? `the session's tools run on another machine (${opts.remote}), and this command would start on this one`
         // A session whose folder was deleted: a command has nowhere to start.
         : config.command && config.cwd && !existsSync(config.cwd) ? `the session's folder ${config.cwd} is not on this machine, so the command cannot start there`
         : validate(label, config);
@@ -692,6 +700,21 @@ export class McpManager {
     };
   }
 
+  // How a project server's headers helper runs (Claude Code's rules for a
+  // helper a repository supplies): in the project's folder, told the server's
+  // name and address (CLAUDE_CODE_MCP_SERVER_NAME, _URL), with no credential
+  // of the daemon's environment (what a session's command inherits, and no
+  // more), inside the session's sandbox as its command would be. Nothing in
+  // its text is expanded here: its shell reads the variables it was given.
+  private projectHelper(e: Entry, url: string): { argv?: string[]; cwd?: string; env: Record<string, string> } {
+    const cmd = e.config.headers_helper!;
+    const held = this.sessionSandbox?.(e.session!, ["sh", "-c", cmd]);
+    if (held && "refuse" in held) throw new Error(held.refuse);
+    const confined = !!held && held.as !== "off";
+    const env = { ...sessionEnv({}, confined), CLAUDE_CODE_MCP_SERVER_NAME: e.given ?? e.label ?? e.name, CLAUDE_CODE_MCP_SERVER_URL: url };
+    return { ...(confined ? { argv: held!.argv } : {}), ...(e.config.cwd ? { cwd: e.config.cwd } : {}), env };
+  }
+
   private transport(e: Entry): Transport {
     const c = e.config;
     // A session's own server: every value as the editor gave it. Nothing is
@@ -699,7 +722,7 @@ export class McpManager {
     // no sign-in of the owner's is sent along.
     if (e.session) {
       if (c.command) return { kind: "stdio", command: c.command, args: c.args ?? [], env: sessionEnv(c, false), cwd: c.cwd ?? this.workspace, started: (p) => track(this.stateDir, p, e.label ?? e.name) };
-      return { kind: "http", url: c.url!, headers: Object.fromEntries(Object.entries(c.headers ?? {}).map(([k, v]) => [k, String(v)])) };
+      return { kind: "http", url: c.url!, headers: Object.fromEntries(Object.entries(c.headers ?? {}).map(([k, v]) => [k, String(v)])), ...(c.transport === "sse" || e.sse ? { sse: true } : {}) };
     }
     if (c.command) {
       return { kind: "stdio", command: expand(c.command), args: (c.args ?? []).map((a) => expand(a)), env: serverEnv(c), cwd: c.cwd ? expand(c.cwd) : this.workspace, started: (p) => track(this.stateDir, p, e.name) };
@@ -747,7 +770,7 @@ export class McpManager {
           }
         }
         if (t.kind === "http" && e.config.headers_helper) {
-          const h = await helperHeaders(expand(e.config.headers_helper));
+          const h = await helperHeaders(e.session ? e.config.headers_helper : expand(e.config.headers_helper), undefined, e.session ? this.projectHelper(e, t.url) : {});
           Object.assign(t.headers, h);
           // The helper's own Authorization wins over a stored sign-in.
           if (Object.keys(h).some((k) => k.toLowerCase() === "authorization")) t.token = undefined;
