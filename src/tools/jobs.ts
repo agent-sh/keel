@@ -181,7 +181,7 @@ export type StartOpts = {
 
 // A command that runs without having asked for a slot (one a restart left running) takes one
 // while it runs, if it is heavy (set by src/tools/heavy.ts).
-export const jobSlots: { count?: (sessionId: string, command: string) => { release(): void } | undefined } = {};
+export const jobSlots: { count?: (job: Job) => { release(): void } | undefined } = {};
 
 export function startJob(o: StartOpts): Job {
   // Bun reports a working directory that is not there as ENOENT of the
@@ -529,6 +529,22 @@ async function sample(j: Job, tables: Map<string, Promise<Set<string>>>): Promis
   }));
   return { listens, cpu };
 }
+// The processor time a job's processes used, in ms (the cgroup's count, else each process's own and
+// its reaped children's), read with the asynchronous calls.
+export async function cpuMs(j: Job): Promise<number> {
+  if (j.cgroup) {
+    const t = await fsp.readFile(`${j.cgroup}/cpu.stat`, "utf8");
+    return Number(t.match(/^usage_usec (\d+)/m)?.[1] ?? 0) / 1000;
+  }
+  let cpu = 0;
+  await Promise.all((await pidsOf(j)).map(async (pid) => {
+    try {
+      const f = (await fsp.readFile(`/proc/${pid}/stat`, "utf8")).split(") ").pop()!.split(" ");
+      cpu += (Number(f[11]) + Number(f[12]) + Number(f[13]) + Number(f[14])) * 10;
+    } catch {}
+  }));
+  return cpu;
+}
 // A job's processes, read with the asynchronous calls: its cgroup's, else those of its group and session.
 async function pidsOf(j: Job): Promise<number[]> {
   if (j.cgroup) {
@@ -671,7 +687,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
     const job: Job = { ...base, pty: false, wake: m.wake, front: !m.background || undefined, stopping: !!m.stopping, stopReason: m.stopping ? m.stop_reason : undefined, background: m.background || !m.stopping, exited: new Promise<void>((r) => (resolve = r)) };
     jobs.set(job.id, job);
     adopted.set(job.id, { job, meta: m, resolve });
-    try { job.slot = jobSlots.count?.(job.sessionId, job.command); } catch {}
+    try { job.slot = jobSlots.count?.(job); } catch {}
     finishStop(job);
     n++;
   }

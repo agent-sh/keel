@@ -251,8 +251,10 @@ export function progressOf(s: Session, l: Lens, f: WatchFacts): Progress | null 
   }
   if (st.kind !== "tool") return null;
   if ((f.agents ?? 0) > 0 || st.names.every((n) => WAITING_TOOLS.has(n))) return null;
-  // A call that waits in the heavy-command line waits for the machine: it is not stuck.
-  if (pool.waits(s.id)) return null;
+  // A call that waits in the heavy-command line waits for the machine; a wait past the tool's limit
+  // is flagged as a long step, since what holds the slots (named in its line) may never end.
+  const inLine = pool.waitingSince(s.id);
+  if (inLine !== undefined) return { what: "step", text: pool.lineOf(s.id) ?? "Waiting for a heavy-command slot", since: inLine };
   const text = f.step || `Running ${st.names.slice(0, 3).join(", ")}`;
   // A command says it is alive by writing: its log's last change is its last progress.
   const jobs = jobsOf(s.id).filter((j) => !j.background && running(j) && j.started >= st.since - 1000);

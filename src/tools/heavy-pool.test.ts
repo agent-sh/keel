@@ -1,22 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { splitCommand } from "../safety/shell.ts";
-import { admit, before, checkConfig, compile, cpuList, heavyPattern, loadBetween, placeLine, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
+import { before, checkConfig, compile, cpuList, heavyPattern, loadBetween, nextQuiet, order, placeLine, quiet, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
 import { DEFAULTS } from "./heavy.ts";
 
-const pats = compile(DEFAULTS.patterns);
+const pats = compile(DEFAULTS.patterns, DEFAULTS.cost);
 const heavy = (c: string) => heavyPattern(splitCommand(c), pats, splitCommand);
 
 describe("which commands are heavy", () => {
   test("a suite, a build or a browser, under wrappers and after other commands", () => {
-    expect(heavy("cd x && FOO=1 bun test ./src")).toBe("^(?:(bun|deno) test)(?![\\w.-])");
-    expect(heavy("timeout 600 nice -n 10 cargo build --release 2>&1 | tail -5")).toContain("cargo");
-    expect(heavy("waitfor --capacity 20,8 --timeout 10m && bunx playwright test a.spec.ts")).toContain("playwright");
-    expect(heavy("bash -c 'go test ./...'")).toContain("go");
-    expect(heavy("systemd-run --user --scope -p CPUWeight=20 -- npm run build")).toContain("npm");
+    expect(heavy("cd x && FOO=1 bun test ./src")?.pattern).toBe("(bun|deno) test");
+    expect(heavy("timeout 600 nice -n 10 cargo build --release 2>&1 | tail -5")?.pattern).toContain("cargo");
+    expect(heavy("waitfor --capacity 20,8 --timeout 10m && bunx playwright test a.spec.ts")?.pattern).toContain("playwright");
+    expect(heavy("bash -c 'go test ./...'")?.pattern).toContain("go");
+    expect(heavy("systemd-run --user --scope -p CPUWeight=20 -- npm run build")?.pattern).toContain("npm");
     expect(heavy("echo $(bun test)")).toBeDefined();
-    expect(heavy("scripts/smoke.sh test/e2e/chat.spec.ts")).toContain("smoke");
-    expect(heavy("bash -x scripts/smoke.sh a.spec.ts")).toContain("smoke");
+    expect(heavy("scripts/smoke.sh test/e2e/chat.spec.ts")?.pattern).toContain("smoke");
+    expect(heavy("bash -x scripts/smoke.sh a.spec.ts")?.line).toBe("smoke.sh a.spec.ts");
     expect(heavy("bash scripts/lint.sh")).toBeUndefined();
+    expect(heavy("make -j8 all")).toBeDefined();
   });
   test("not what runs elsewhere, mentions a suite, or only looks like one", () => {
     expect(heavy("ssh devbox 'cd y && bun test'")).toBeUndefined();
@@ -26,12 +27,31 @@ describe("which commands are heavy", () => {
     expect(heavy("maker --help")).toBeUndefined();
     expect(heavyPattern(splitCommand("bun test"), [], splitCommand)).toBeUndefined();
   });
+  test("not a watcher or a server left up for later: it would hold its slot for as long as it lives", () => {
+    for (const c of ["tsc --watch", "bunx tsc -w -p .", "bun run build --watch", "bun test --watch", "vitest --watch=true", "jest --watchAll", "playwright test --ui", "npm run dev", "bun run serve", "make serve", "make dev"]) expect([c, heavy(c)]).toEqual([c, undefined]);
+    // A watcher beside a real suite: the suite still is.
+    expect(heavy("tsc --watch & bun test")?.pattern).toBe("(bun|deno) test");
+  });
+  test("not one that says something and ends", () => {
+    for (const c of ["tsc --version", "bun test --help", "cargo build -h", "go help test", "make -n", "make -j4 --dry-run all", "make clean", "make distclean", "ninja -t clean", "make -q all"]) expect([c, heavy(c)]).toEqual([c, undefined]);
+    expect(heavy("make clean all")).toBeDefined();
+  });
+  test("each kind is counted at its own measured cost", () => {
+    expect(heavy("bun test ./src/tools")?.cost).toEqual({ cores: 1.5, memory_mb: 2048 });
+    expect(heavy("bunx playwright test")?.cost).toEqual({ cores: 3, memory_mb: 1024 });
+    expect(heavy("go test ./...")?.cost).toEqual({ cores: 3, memory_mb: 1536 });
+    // A pattern given as text costs the default.
+    const own = compile(["my-suite"], { cores: 2, memory_mb: 512 });
+    expect(heavyPattern(splitCommand("my-suite --all"), own, splitCommand)?.cost).toEqual({ cores: 2, memory_mb: 512 });
+  });
 });
 
 const cfg: PoolConfig = { ...DEFAULTS, load_share: 0.8, free_mb: 8192, cost: { cores: 4, memory_mb: 1536, ramp_s: 10 }, slots: null };
 const at = 1_000_000;
-const r = (runnable: number, mem = 40_000) => ({ cores: 24, load1: runnable, runnable, mem_available_mb: mem, at });
-const held = (n: number, ago = 60_000) => Array.from({ length: n }, (_, i) => ({ key: `k${i}`, who: "agent" as const, since: at - ago }));
+const r = (runnable: number, mem = 40_000, cores = 24) => ({ cores, load1: runnable, runnable, mem_available_mb: mem, at });
+const C4 = { cores: 4, memory_mb: 1536 };
+const held = (n: number, ago = 60_000, cost = C4) => Array.from({ length: n }, (_, i) => ({ key: `k${i}`, who: "agent" as const, since: at - ago, cost }));
+const gone = (ago: number, cost = C4) => ({ at: at - ago, cost });
 
 describe("the room the machine has", () => {
   test("starts as many as the busy cores leave room for, up to the cap", () => {
@@ -40,6 +60,16 @@ describe("the room the machine has", () => {
     expect(room(r(12), held(2), cfg)).toMatchObject({ slots: 3, free: 1 });
     expect(room(r(18), held(4), cfg)).toMatchObject({ slots: 4, free: 0, cause: "slots" });
   });
+  test("each command counts at its own cost: suites fit twice as many as browsers", () => {
+    const suite = { cores: 1.5, memory_mb: 2048 };
+    // 8 cores at 0.83: a limit of 6.6. Browsers at 3 cores: two; suites at 1.5: four.
+    const c = { ...cfg, load_share: 0.83 };
+    expect(room(r(0.5, 40_000, 8), [], c, [], 0, { cores: 3, memory_mb: 1024 }).slots).toBe(2);
+    expect(room(r(0.5, 40_000, 8), [], c, [], 0, suite).slots).toBe(4);
+    // Two browsers that just started hold 6 cores: no suite fits beside them; two suites leave room for two more.
+    expect(room(r(0.5, 40_000, 8), held(2, 1000, { cores: 3, memory_mb: 1024 }), c, [], 0, suite).free).toBe(0);
+    expect(room(r(0.5, 40_000, 8), held(2, 1000, suite), c, [], 0, suite).free).toBe(2);
+  });
   test("a command that just started counts before its load shows", () => {
     // Two given a second ago: the machine still reads idle, and they count as 8 cores.
     expect(room(r(2), held(2, 1000), cfg)).toMatchObject({ slots: 4, free: 2 });
@@ -47,8 +77,8 @@ describe("the room the machine has", () => {
   });
   test("a command that just ended is taken off a busy count that still shows it", () => {
     expect(room(r(16), held(3), cfg).free).toBe(0);
-    expect(room(r(16), held(2), cfg, [at - 1000], 5000).free).toBe(1);
-    expect(room(r(16), held(2), cfg, [at - 9000], 5000).free).toBe(0);
+    expect(room(r(16), held(2), cfg, [gone(1000)], 5000).free).toBe(1);
+    expect(room(r(16), held(2), cfg, [gone(9000)], 5000).free).toBe(0);
   });
   test("other work on the machine holds the line; one may start when none runs", () => {
     expect(room(r(30), held(1), cfg)).toMatchObject({ free: 0, cause: "load" });
@@ -72,16 +102,33 @@ describe("the line", () => {
     { key: "a3", who: "agent" as const, at: 4 },
   ];
   test("a session's own command goes before the agents', each kind in its order", () => {
-    expect(admit(line, 2).map((x) => x.key)).toEqual(["s1", "a1"]);
-    expect(admit(line, 0)).toEqual([]);
+    expect(order(line).map((x) => x.key)).toEqual(["s1", "a1", "a2", "a3"]);
     expect(before(line, "session")).toBe(1);
     expect(before(line, "agent")).toBe(4);
     expect(before(line, "owner")).toBe(0);
   });
-  test("the place is said with no live number, so it changes only with the place", () => {
-    expect(placeLine(0, 4, "slots")).toBe("Waiting for a heavy-command slot: next in line, 4 running, every slot is taken");
-    expect(placeLine(2, 3, "load")).toBe("Waiting for a heavy-command slot: 2 ahead, 3 running, the machine is busy");
+  test("the place says who holds the slots, with no live number, so it changes only with the place or the holders", () => {
+    expect(placeLine(0, ["tsc (this session)"], "slots")).toBe("Waiting for a heavy-command slot: next in line, held by tsc (this session); every slot is taken");
+    expect(placeLine(2, ["bun test (agent \"a\")", "go test (session)", "make (agent)", "cargo build (agent)", "tsc (agent)"], "load"))
+      .toBe("Waiting for a heavy-command slot: 2 ahead, held by bun test (agent \"a\"), go test (session), make (agent) and 2 more; the machine is busy");
+    expect(placeLine(0, [], "load")).toContain("none held");
   });
+});
+
+test("a holder gives its slot back when it has gone quiet: under a tenth of its cores for 15 s straight", () => {
+  // 3 cores: quiet is under 0.3 of a core, 300 ms of processor time a second.
+  let q = nextQuiet(undefined, { at: 0, cpu: 0 }, 3);
+  q = nextQuiet(q, { at: 10_000, cpu: 2_000 }, 3);
+  expect(quiet(q)).toBe(false);
+  q = nextQuiet(q, { at: 15_000, cpu: 3_000 }, 3);
+  expect(quiet(q)).toBe(true);
+  // A burst starts the count again.
+  const busy = nextQuiet(nextQuiet(undefined, { at: 0, cpu: 0 }, 3), { at: 15_000, cpu: 30_000 }, 3);
+  expect(quiet(busy)).toBe(false);
+  expect(busy.from).toBe(15_000);
+  // A long gap between samples (no one waited) starts it again too.
+  const gap = nextQuiet(nextQuiet(undefined, { at: 0, cpu: 0 }, 3), { at: 60_000, cpu: 0 }, 3);
+  expect(quiet(gap)).toBe(false);
 });
 
 test("the load on the processors it may use, from the scheduler's times", () => {
@@ -101,4 +148,6 @@ test("the settings check", () => {
   expect(checkConfig({ ...DEFAULTS, patterns: ["bun (test"] })).toContain("not a regular expression");
   expect(checkConfig({ ...DEFAULTS, slots: 0 })).toContain("slots");
   expect(checkConfig({ ...DEFAULTS, load_share: 0 })).toContain("load_share");
+  expect(checkConfig({ ...DEFAULTS, patterns: ["x", { pattern: "y", cores: 1, memory_mb: 0 }] })).toBeUndefined();
+  expect(checkConfig({ ...DEFAULTS, patterns: [{ pattern: "y", cores: 0, memory_mb: 0 }] })).toContain("cores");
 });

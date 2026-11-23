@@ -33,7 +33,7 @@ test("a heavy command waits for a slot, and the owner's does not", async ({ page
     await expect.poll(async () => (await heavy()).line.map((l) => l.session_id), { timeout: 30_000 }).toEqual([second]);
     // Its state says its place in one line.
     const state = async (id: string) => (await (await request.get("/api/state")).json()).states[id] as { text?: string };
-    await expect.poll(async () => (await state(second))?.text, { timeout: 10_000 }).toBe("Waiting for a heavy-command slot: next in line, 1 running, every slot is taken");
+    await expect.poll(async () => (await state(second))?.text, { timeout: 10_000 }).toBe('Waiting for a heavy-command slot: next in line, held by sleep (session "First suite"); every slot is taken');
 
     // The owner's own command starts at once, over the pool.
     const own = await request.post(`/api/sessions/${first}/terminal/run`, { data: { command: `${cmd}; echo owner-ran` } });
@@ -63,13 +63,23 @@ test("a heavy command waits for a slot, and the owner's does not", async ({ page
     expect(await result(first)).not.toContain("Waited");
     await expect(pool.getByTestId("heavy-waiting")).toHaveCount(0, { timeout: 15_000 });
 
-    // The owner's patterns are edited in the panel.
-    const box = pool.getByTestId("heavy-patterns");
-    await expect(box).toHaveValue(`sleep ${secs.replace(".", "\\.")}`);
-    await box.fill(`sleep ${secs.replace(".", "\\.")}\nmy-build`);
+    // The owner's patterns are edited in the panel, each with its cost.
+    const pat = `sleep ${secs.replace(".", "\\.")}`;
+    const rows = pool.getByTestId("heavy-pattern");
+    await expect(rows).toHaveCount(1);
+    await expect(pool.getByLabel("Pattern 1", { exact: true })).toHaveValue(pat);
+    await expect(pool.getByLabel("Cores of pattern 1", { exact: true })).toHaveValue(String(before.cost.cores));
+    await pool.getByTestId("heavy-add").click();
+    await pool.getByLabel("Pattern 2", { exact: true }).fill("my-build");
+    await pool.getByLabel("Cores of pattern 2", { exact: true }).fill("1.5");
+    await pool.getByLabel("Memory of pattern 2", { exact: true }).fill("0.5");
     await pool.getByTestId("heavy-save").click();
     await expect(pool.getByTestId("heavy-msg")).toHaveText("Saved. It applies to the next command.");
-    expect((await (await request.get("/api/settings")).json()).settings.heavy.patterns).toEqual([`sleep ${secs.replace(".", "\\.")}`, "my-build"]);
+    expect((await (await request.get("/api/settings")).json()).settings.heavy.patterns).toEqual([
+      { pattern: pat, cores: before.cost.cores, memory_mb: before.cost.memory_mb },
+      { pattern: "my-build", cores: 1.5, memory_mb: 512 },
+    ]);
+    await expect(pool).toContainText("Commands you type in a terminal pane never wait");
     await shoot(page, "heavy-02-patterns");
   } finally {
     await request.patch("/api/settings", { data: { heavy: { patterns: before.patterns, slots: before.slots } } });
