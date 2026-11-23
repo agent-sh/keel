@@ -1,5 +1,6 @@
 // What the agent writes, rendered: paragraphs, headings, lists, quotes, code
-// blocks and tables, with bold, italic, inline code and links inline.
+// blocks, tables and display math, with bold, italic, inline code, links and
+// math inline (Math.kt).
 package dev.avifenesh.keel.ui
 
 import androidx.compose.foundation.background
@@ -27,11 +28,15 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.em
 
 sealed class Block {
@@ -41,6 +46,27 @@ sealed class Block {
     data class Quote(val text: String) : Block()
     data class Code(val lang: String, val text: String) : Block()
     data class Table(val rows: List<List<String>>) : Block()
+    data class Math(val tex: String) : Block()
+}
+
+// Display math that starts a line: $$...$$ or \[...\], on one line or over several. The lines it
+// covers and its TeX, or null when it is not closed (a reply still streaming shows it as written).
+private fun displayMath(lines: List<String>, from: Int): Pair<Int, String>? {
+    val t = lines[from].trimStart()
+    val (open, close) = when { t.startsWith("$$") -> "$$" to "$$"; t.startsWith("\\[") -> "\\[" to "\\]"; else -> return null }
+    val first = t.removePrefix(open)
+    first.indexOf(close).takeIf { it >= 0 }?.let { e -> return if (first.substring(e + close.length).isBlank() && first.substring(0, e).isNotBlank()) 1 to first.substring(0, e).trim() else null }
+    val body = StringBuilder(first)
+    for (j in from + 1 until lines.size) {
+        val e = lines[j].indexOf(close)
+        if (e >= 0) {
+            if (lines[j].substring(e + close.length).isNotBlank()) return null
+            body.append('\n').append(lines[j].substring(0, e))
+            return (j - from + 1) to body.toString().trim()
+        }
+        body.append('\n').append(lines[j])
+    }
+    return null
 }
 
 /** Splits markdown into blocks. An unclosed fence (a reply still streaming) runs to the end. */
@@ -66,6 +92,11 @@ fun blocks(md: String): List<Block> {
                     body.append(line.substring(minOf(indent, lead))).append('\n'); i++
                 }
                 out += Block.Code(lang, body.toString().trimEnd('\n'))
+            }
+            displayMath(lines, i) != null -> {
+                flush()
+                val (n, tex) = displayMath(lines, i)!!
+                out += Block.Math(tex); i += n; continue
             }
             Regex("^#{1,6} ").containsMatchIn(t) -> { flush(); out += Block.Heading(t.takeWhile { it == '#' }.length, t.dropWhile { it == '#' }.trim()) }
             Regex("^([-*+]|\\d+[.)]) ").containsMatchIn(t) -> {
@@ -94,12 +125,15 @@ fun blocks(md: String): List<Block> {
     return out
 }
 
-/** Inline marks: **bold**, *italic* or _italic_, `code`, [text](url). */
+/** Inline marks: **bold**, *italic* or _italic_, `code`, [text](url), math ($...$, \\(...\\)), and \\ before a mark to write it as is. */
 fun inline(s: String, code: SpanStyle, link: SpanStyle): AnnotatedString = buildAnnotatedString {
     var i = 0
     while (i < s.length) {
         val c = s[i]
+        val math = if (c == '$' || s.startsWith("\\(", i)) inlineMath(s, i) else null
         when {
+            math != null -> { math(mathRuns(math.second)); i += math.first }
+            c == '\\' && i + 1 < s.length && s[i + 1] in ESCAPABLE -> { append(s[i + 1]); i += 2 }
             c == '`' -> { val e = s.indexOf('`', i + 1); if (e > i) { withStyle(code) { append(s.substring(i + 1, e)) }; i = e + 1 } else { append(c); i++ } }
             s.startsWith("**", i) -> { val e = s.indexOf("**", i + 2); if (e > i) { withStyle(SpanStyle(fontWeight = FontWeight(600))) { append(inline(s.substring(i + 2, e), code, link)) }; i = e + 2 } else { append(c); i++ } }
             (c == '*' || c == '_') && i + 1 < s.length && s[i + 1] != ' ' && (i == 0 || !s[i - 1].isLetterOrDigit()) -> {
@@ -114,6 +148,27 @@ fun inline(s: String, code: SpanStyle, link: SpanStyle): AnnotatedString = build
         }
     }
 }
+
+// What CommonMark lets a backslash write as it is.
+private const val ESCAPABLE = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+
+// A line of prose breaks around math, never inside it: its spaces do not break.
+private val NO_BREAK = mapOf(' ' to '\u00A0', '\u2009' to '\u202F', '\u2004' to '\u00A0', '\u2005' to '\u00A0', '\u2003' to '\u00A0', '\u2002' to '\u00A0')
+
+// Math in its own face (a serif, as TeX sets it): scripts smaller and raised or lowered by their level.
+private fun AnnotatedString.Builder.math(runs: List<MathRun>) {
+    for (r in runs) {
+        val size = Math.pow(0.75, kotlin.math.abs(r.level).toDouble())
+        // How far the run sits from the line, in the base size: each level a little less than the last.
+        var off = 0.0; for (k in 0 until kotlin.math.abs(r.level)) off += (if (r.level > 0) 0.36 else 0.2) * Math.pow(0.75, k.toDouble())
+        val shift = if (r.level == 0) null else BaselineShift((off / (0.93 * size) * (if (r.level > 0) 1 else -1)).toFloat())
+        withStyle(SpanStyle(fontFamily = FontFamily.Serif, fontStyle = if (r.italic) FontStyle.Italic else FontStyle.Normal,
+            fontWeight = if (r.bold) FontWeight(700) else null, fontSize = if (r.level == 0) TextUnit.Unspecified else size.em, baselineShift = shift)) { append(r.text.map { NO_BREAK[it] ?: it }.joinToString("")) }
+    }
+}
+
+/** Math as an AnnotatedString of its own: a display block, or a test. */
+fun mathString(tex: String): AnnotatedString = buildAnnotatedString { math(mathRuns(tex)) }
 
 @Composable
 fun Markdown(md: String, style: TextStyle = T.body, modifier: Modifier = Modifier) {
@@ -142,6 +197,11 @@ fun Markdown(md: String, style: TextStyle = T.body, modifier: Modifier = Modifie
                 }
                 BasicText(b.text, style = T.code.copy(color = k.fg), softWrap = false,
                     modifier = Modifier.horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 10.dp))
+            }
+            // Display math: centered on its own lines, scrolled sideways when it is wider than the screen.
+            is Block.Math -> Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = Alignment.Center) {
+                BasicText(mathString(b.tex), style = base.copy(fontSize = base.fontSize * 1.1f, lineHeight = base.lineHeight * 1.15f), softWrap = false,
+                    modifier = Modifier.horizontalScroll(rememberScrollState()).testTag("math"))
             }
             is Block.Table -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).border(1.dp, k.line, RoundedCornerShape(S.r)).horizontalScroll(rememberScrollState())) {
                 val widths = (0 until (b.rows.maxOfOrNull { it.size } ?: 0)).map { c -> (b.rows.maxOfOrNull { it.getOrNull(c)?.length ?: 0 } ?: 0).coerceIn(4, 28) }

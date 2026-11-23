@@ -2,6 +2,10 @@ package dev.avifenesh.keel
 
 import dev.avifenesh.keel.ui.Block
 import dev.avifenesh.keel.ui.blocks
+import dev.avifenesh.keel.ui.MathRun
+import dev.avifenesh.keel.ui.inlineMath
+import dev.avifenesh.keel.ui.mathRuns
+import dev.avifenesh.keel.ui.mathText
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -271,6 +275,31 @@ class WireTest {
         val nested = blocks("1. Run this:\n\n   ```sh\n   git push origin main\n     --force-with-lease\n   ```")
         assertEquals(Block.Code("sh", "git push origin main\n  --force-with-lease"), nested.last())
         assertEquals(Block.Table(listOf(listOf("a", "b"), listOf("1", "2"))), b[5])
+    }
+
+    @Test fun mathIsSetAsTheWorkbenchFindsIt() {
+        // Display math on its own lines, once it is closed; a reply still streaming shows it as written.
+        val b = blocks("The recurrence:\n\n$$ T(n) = 2T\\left(\\frac{n}{2}\\right) + O(n) $$\n\nand\n\\[\na^2 + b^2\n\\]\n\n$$ x = 1")
+        assertEquals(Block.Math("T(n) = 2T\\left(\\frac{n}{2}\\right) + O(n)"), b[1])
+        assertEquals(Block.Math("a^2 + b^2"), b[3])
+        assertEquals(Block.Para("$$ x = 1"), b[4])
+        // Inline by Pandoc's rule: $O(n)$ and \(x\) are math; prices and shell variables are not.
+        assertEquals(Triple(6, "O(n)", false), inlineMath("\$O(n)\$ time", 0))
+        assertEquals(Triple(5, "x", false), inlineMath("\\(x\\)", 0))
+        assertNull(inlineMath("\$5 and \$10", 0))
+        assertNull(inlineMath("\$HOME and \$PATH ", 0))
+        // Set as text: math italic letters, spaced operators, a fraction as a/b, symbols as characters.
+        assertEquals("T(n) = 2T(n/2) + O(n)", mathText("T(n) = 2T\\left(\\frac{n}{2}\\right) + O(n)"))
+        assertEquals("(a + b)/2", mathText("\\frac{a+b}{2}"))
+        assertEquals("O(n\u2009log\u2009n)", mathText("O(n \\log n)"))
+        assertEquals("α ≤ √(x + 1) → ∞", mathText("\\alpha \\le \\sqrt{x+1} \\to \\infty"))
+        assertEquals("−1, ℝ", mathText("-1, \\mathbb{R}"))
+        val runs = mathRuns("x^2 + y_i")
+        assertEquals(listOf(MathRun("x", italic = true), MathRun("2", level = 1), MathRun(" + "), MathRun("y", italic = true), MathRun("i", italic = true, level = -1)), runs)
+        // An environment's rows are lines; a cases brace opens the first.
+        assertEquals("{1\u2003n = 0\n\u2007n!\u2003otherwise", mathText("\\begin{cases} 1 & n = 0 \\\\ n! & \\text{otherwise} \\end{cases}"))
+        // What it does not know is shown as written.
+        assertEquals("\\foo\u2009x", mathText("\\foo x"))
     }
 
     @Test fun times() {
