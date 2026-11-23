@@ -3,7 +3,7 @@ import { freePort } from "./ports.ts";
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { sessionsFolder } from "./own-daemon.ts";
+import { ownEnv, sessionsFolder } from "./own-daemon.ts";
 
 // Feature: one daemon per port. A second daemon on a port another one serves
 // (another state folder) refuses to start and names the holder, instead of
@@ -16,7 +16,10 @@ test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: 
 function start(state: string, port: number) {
   mkdirSync(state, { recursive: true });
   made.push(state);
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], { stdio: ["ignore", "pipe", "pipe"] });
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
+    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off", ...ownEnv(state) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let out = "";
   proc.stdout!.on("data", (d) => (out += d));
   proc.stderr!.on("data", (d) => (out += d));

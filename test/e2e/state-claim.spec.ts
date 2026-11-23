@@ -3,7 +3,7 @@ import { freePort } from "./ports.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { sessionsFolder } from "./own-daemon.ts";
+import { sessionsFolder, ownEnv } from "./own-daemon.ts";
 
 // Feature: one daemon per state folder. Of two daemons started on one folder
 // (other ports) one owns it; the other stops before it opens the database. A
@@ -24,7 +24,7 @@ function start(state: string, port: number): Started {
   if (!made.includes(state)) made.push(state);
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off" },
+    env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off", ...ownEnv(state) },
   });
   let out = "";
   proc.stdout!.on("data", (d) => (out += d));

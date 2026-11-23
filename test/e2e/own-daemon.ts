@@ -21,12 +21,24 @@ export function sessionsFolder(state: string): string {
   return ws;
 }
 
+// What a daemon of a spec gets in place of the shell's: no memory tool (a
+// TACIT_BIN that names no file: Keel looks nowhere else then; a spec that
+// reads memory passes the stand-in, fixtures/tacit-standin.sh, itself), a
+// stand-in store under its state, and the other harnesses' setups read from
+// a home under its state. Whatever the shell that ran the specs holds, a
+// spec's daemon never runs the owner's tacit or reads his home's setups.
+export const ownEnv = (state: string): Record<string, string> => ({
+  TACIT_BIN: join(state, "no-tacit"),
+  TACIT_STANDIN_STORE: join(state, "tacit-store"),
+  KEEL_IMPORT_HOME: join(state, "import-home"),
+});
+
 // `dev`: the page as a development build (it has the counters a spec reads).
 // `env`: what the daemon gets besides (a stand-in program it is to run).
 export function daemon(state: string, port = 0, dev = false, env: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
   mkdirSync(state, { recursive: true });
   const proc = spawn("bun", ["src/main.ts", "serve", ...(dev ? ["--dev"] : []), "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
-    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off", ...env },
+    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off", ...ownEnv(state), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {

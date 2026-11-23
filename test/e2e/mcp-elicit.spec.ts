@@ -3,7 +3,7 @@ import type { Page } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { sessionsFolder } from "./own-daemon.ts";
+import { sessionsFolder, ownEnv } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: an MCP server that asks the owner a question while it works on a
@@ -19,7 +19,7 @@ const FIXTURE = join(import.meta.dirname, "fixtures/ask-mcp.ts");
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)], {
-    env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "20000", KEEL_DEFAULT_MODEL: "scripted:stand-in" },
+    env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "20000", KEEL_DEFAULT_MODEL: "scripted:stand-in", ...ownEnv(state) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {

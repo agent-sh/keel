@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { ownEnv } from "./own-daemon.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -133,7 +134,7 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 function ownDaemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
-    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off" },
+    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off", ...ownEnv(state) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((done, reject) => {
