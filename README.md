@@ -981,8 +981,16 @@ why the event never runs:
 
 Also not done: `SessionStart` with `resume` or `fork` (a session lives in the
 daemon and a fork copies its history, so neither is a new start),
-`defer`, `updatedToolOutput`, `updatedMCPToolOutput`, `suppressOutput`, and
-`async` (such a hook runs like any other and is waited for).
+`updatedToolOutput` and `updatedMCPToolOutput`.
+
+Read and not acted on: `suppressOutput` (the reference says it has no
+effect), and a `PreToolUse` answer of `permissionDecision: "defer"`. Claude
+Code honors `defer` only in a `claude -p` run, and ignores the hook's answer in
+an interactive session. A Keel session is always interactive: it lives in the
+daemon and stays open to the page, also when `keel run -p` started it. So Keel
+ignores the whole answer, its `updatedInput` and `additionalContext` too, and
+the call goes through the usual permission check. It is never an allow. The
+file's list in Settings names each hook that answered it.
 
 The event list and fields are from the
 [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) (33
@@ -1021,10 +1029,27 @@ names.
 
 | `type` | Fields | What runs |
 | --- | --- | --- |
-| `command` | `command`, `timeout`, `onFailure` | The command in bash, with the event on stdin |
+| `command` | `command`, `timeout`, `onFailure`, `async`, `asyncRewake` | The command in bash, with the event on stdin |
 | `command` with `args` | `command`, `args` | The program itself with those arguments, no shell. `${KEEL_PROJECT_DIR}` and `${CLAUDE_PROJECT_DIR}` are filled in |
 | `http` | `url`, `headers`, `allowedEnvVars`, `timeout`, `onFailure` | A POST of the event as JSON. A header takes an environment variable (`$NAME`, `${NAME}`) only when `allowedEnvVars` lists it |
 | `mcp_tool` | `server`, `tool`, `input`, `timeout`, `onFailure` | A tool of an MCP server Keel is connected to. `${tool_input.file_path}` in `input` is filled from the event: alone it keeps its type, inside a text it is written into it |
+
+A command hook with `async: true` runs in the background. The event does
+not wait for it, no `timeout` holds, and nothing it answers has effect
+(`decision`, `permissionDecision`, `continue`, `updatedInput`): what it would
+have controlled has already gone on. When it ends, its `additionalContext`
+and `systemMessage` reach the model with the session's next turn, not
+before, as a note of that turn. Its JSON answer is all of its stdout or one
+line of it; with no answer, plain stdout is read where the event reads it.
+An idle session is not woken: the words wait for its next turn, stored, so a
+daemon restart keeps them. A later run of the same hook replaces words not
+delivered yet. `asyncRewake: true` runs the same way within its `timeout`,
+and an exit code 2 wakes the session with the hook's stderr (or its stdout
+when stderr is empty), stored as a message to the session like any other. A
+session you stopped is not started by it: the message waits behind your
+stop. `onFailure` does nothing on a background hook. Settings lists each
+background hook in its file's notes. Both fields are read on command hooks
+only.
 
 An `http` hook answers with a 2xx status. No body is a hook with nothing to
 say. A JSON object is its answer, read like a command's stdout. Any other

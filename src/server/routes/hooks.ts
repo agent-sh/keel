@@ -56,6 +56,14 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
   const { store, bus, engine, errors } = deps;
   // A hook that failed is one row in Errors, folded with its repeats: what failed, on which event, in which session.
   const hooks = new Hooks(store, (f) => errors.capture("tool", new Error(hookFailureText(f)), { hook: f.hook, event: f.event, session: f.session, ...(f.limit_s !== undefined ? { why: f.why } : {}) }));
+  // An asyncRewake hook exited with code 2: the session is woken with its words, as a message stored before
+  // anything else happens. A session the owner stopped is not started by it: it waits behind the hold.
+  hooks.rewake = (s, text, event) => void (async () => {
+    await store.warm(s.id, false).catch(() => {});
+    const cur = store.session(s.id);
+    if (!cur || cur.archived) return void errors.capture("tool", new Error(`A background ${event} hook exited with code 2 for a session that is ${cur ? "archived" : "gone"}`), { event, session: s.id });
+    engine.message(s.id, `${HOOK_PREFIX} A background ${event} hook exited with code 2:\n${text}`, { kind: "hook", event });
+  })().catch((e) => errors.capture("server", e, { at: "hook rewake", session: s.id }));
   const answered = new Set<string>(); // user events already given to UserPromptSubmit
   // The calls in flight that a hook follows: what the hooks see of it, and what PreToolUse left for later.
   // Kept by session and call id: a call id is its session's (two sessions can each have a call-1).
@@ -144,9 +152,17 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
         sayAt({ session: s.id }, hookLine({ event: "UserPromptSubmit", did: "refused the prompt", reason: prompt.block, title: s.title }), "warn");
         throw Object.assign(new Error(`A hook refused this prompt: ${prompt.block}`), { expected: true });
       }
-      const lines = [...(start?.context ?? []), ...prompt.context];
+      // What background hooks said since the last turn goes with this one, in the write that stores it.
+      const owed = hooks.owed(s.id);
+      const lines = [...(start?.context ?? []), ...prompt.context, ...owed.map((o) => `A background ${o.event} hook finished:\n${o.text}`)];
       if (!lines.length) return req;
-      note(s.id, start?.context.length ? `${startEvent}, UserPromptSubmit` : "UserPromptSubmit", lines);
+      const label = [...new Set([...(start?.context.length ? [startEvent!] : []), ...(prompt.context.length ? ["UserPromptSubmit"] : []), ...owed.map((o) => o.event)])].join(", ");
+      const ev = store.atomic(s.id, () => {
+        const ev = store.append(s.id, "note", { text: hookContext(label, lines), model: true, hook: label });
+        hooks.settle(owed.map((o) => o.id));
+        return ev;
+      });
+      bus.emit({ t: "event", event: ev });
       return { ...req, messages: toMessages(events(s.id)) };
     },
     // PreToolUse runs before every gate: a call a hook changed is judged as changed.
@@ -322,7 +338,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
   // A file as the page shows it: whole (or said not to be), with what loads and never runs, and where its hooks send things.
   // (`unheld`: the scripts a repository's commands run from outside .keel/ and .claude/, which its pin does not hold.)
   const shown = (cwd: string) => hooks.sources(cwd).map(({ groups, ...rest }) => ({
-    ...rest, text: rest.text.slice(0, SHOWN_MAX), whole: rest.text.length <= SHOWN_MAX, notes: rest.text ? parseHooks(rest.text).notes : [], reaches: reaches(groups),
+    ...rest, text: rest.text.slice(0, SHOWN_MAX), whole: rest.text.length <= SHOWN_MAX, notes: [...(rest.text ? parseHooks(rest.text).notes : []), ...hooks.said(rest.path)], reaches: reaches(groups),
     unheld: rest.scope !== "project" ? [] : scriptsOf(rest.root, groups).filter((f) => ![".keel", ".claude"].some((d) => contains(join(rest.root, d), f)) && existsSync(f)).map((f) => (contains(rest.root, f) ? relative(rest.root, f) : f)),
   }));
 

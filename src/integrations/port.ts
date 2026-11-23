@@ -22,7 +22,7 @@ import { configDir, inConfigDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { expandImports } from "../engine/turn.ts";
 import { carriedPlugins, discoverSkills, frontmatter, pluginDir, skillsConfig, writeSkillsConfig, type SkillRoot } from "../tools/skills.ts";
-import { EVENTS, ownerHooksPath, parseHooks, projectRoot } from "./hooks.ts";
+import { EVENTS, ownerHooksPath, parseHooks, portable, projectRoot } from "./hooks.ts";
 import { configPath, importable, readConfig, writeConfig, type McpServerConfig } from "../mcp/config.ts";
 import { identity, importHome } from "../mcp/sources.ts";
 import { findBin } from "./tacit.ts";
@@ -518,9 +518,8 @@ function planHooks(items: Planned[], fromPlugins: HookCandidate[]) {
         file.hooks ??= {};
         const groups: any[] = (file.hooks[c.event] ??= []);
         if (!groups.some((g) => (g.matcher ?? "") === (c.matcher ?? "") && (g.hooks ?? []).some((h: any) => h.command === command))) {
-          const h: any = { type: "command", command };
-          if (typeof c.hook.timeout === "number") h.timeout = c.hook.timeout;
-          groups.push({ ...(c.matcher ? { matcher: c.matcher } : {}), hooks: [h] });
+          // (With what else of it Keel reads: its args, timeout, if, onFailure, async and asyncRewake.)
+          groups.push({ ...(c.matcher ? { matcher: c.matcher } : {}), hooks: [portable(c.hook)] });
           writeAtomic(ownPath, JSON.stringify(file, null, 2) + "\n", true);
         }
         return `added to ${tilde(ownPath)}`;
@@ -566,9 +565,7 @@ function planProjectHooks(items: Planned[], deps: PortDeps) {
           file.hooks ??= {};
           const list: any[] = (file.hooks[event] ??= []);
           if (!list.some((x) => (x.matcher ?? "") === (g.matcher ?? "") && (x.hooks ?? []).some((y: any) => y.command === command))) {
-            const nh: any = { type: "command", command };
-            if (typeof h.timeout === "number") nh.timeout = h.timeout;
-            list.push({ ...(g.matcher ? { matcher: g.matcher } : {}), hooks: [nh] });
+            list.push({ ...(g.matcher ? { matcher: g.matcher } : {}), hooks: [portable(h)] });
             writeAtomic(target, JSON.stringify(file, null, 2) + "\n");
           }
           return `added to ${tilde(join(root, ".keel", "hooks.json"))}: it runs once you pin it in Settings > Hooks`;

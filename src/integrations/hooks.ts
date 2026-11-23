@@ -13,7 +13,9 @@
 // is judged, and allow a call:
 // that answers the call's low-risk ask in the owner's place and nothing more
 // (src/safety/gate.ts: no high-risk card, no never-allowed command, nothing in
-// Read only or Plan).
+// Read only or Plan). A command hook marked `async` or `asyncRewake` runs in
+// the background: its words wait for the session's next turn, and an
+// asyncRewake one that exits with code 2 wakes the session.
 import { configRefused, sessionFoldersOf } from "../core/named-config.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -87,8 +89,10 @@ const TIMEOUTS: Partial<Record<HookEvent, [number, number]>> = { UserPromptSubmi
 // without a shell), a POST of the event to a URL, or a tool of a connected
 // MCP server. A `prompt` or `agent` handler is read and not run: see parseHooks.
 type Common = { timeout?: number; onFailure?: "block" | "continue"; if?: string };
+// `async`: the command runs in the background (see background below);
+// `asyncRewake`: the same, with its time limit, and exit code 2 wakes the session.
 type Handler =
-  | (Common & { type: "command"; command: string; args?: string[] })
+  | (Common & { type: "command"; command: string; args?: string[]; async?: boolean; asyncRewake?: boolean })
   | (Common & { type: "http"; url: string; headers?: Record<string, string>; allowedEnvVars?: string[] })
   | (Common & { type: "mcp_tool"; server: string; tool: string; input?: Record<string, unknown> });
 // Why a handler cannot run, or nothing.
@@ -97,6 +101,7 @@ function handlerProblem(h: any): string | null {
   switch (h?.type) {
     case "command":
       if (!text(h.command)) return "a command hook needs a command";
+      for (const k of ["async", "asyncRewake"]) if (h[k] !== undefined && typeof h[k] !== "boolean") return `a command hook's ${k} must be true or false`;
       return h.args === undefined || (Array.isArray(h.args) && h.args.every((a: unknown) => typeof a === "string")) ? null : "a command hook's args must be a list of strings";
     case "http":
       if (!text(h.url) || !/^https?:\/\//.test(h.url)) return "an http hook needs an http or https url";
@@ -254,8 +259,23 @@ export function pinKey(root: string): string {
   return key;
 }
 
+// What the file's list says of a hook that runs in the background.
+const BACKGROUND = "runs in the background: the event does not wait for it and nothing it decides has effect; its additionalContext and systemMessage (or plain stdout, where the event reads it) reach the model with the session's next turn";
+const ASYNC_NOTE = `${BACKGROUND}, with no time limit`;
+const REWAKE_NOTE = `${BACKGROUND}, within its time limit, and exit code 2 wakes the session with its stderr (or stdout)`;
+
+// The fields of a command hook Keel reads, for a hook brought from another
+// harness's file: the rest (statusMessage, shell, once) changes nothing here.
+export function portable(h: any): Record<string, unknown> {
+  const out: Record<string, unknown> = { type: "command", command: h.command };
+  for (const k of ["args", "if", "onFailure", "async", "asyncRewake"]) if (h[k] !== undefined) out[k] = h[k];
+  if (typeof h.timeout === "number") out.timeout = h.timeout;
+  return out;
+}
+
 // `problems`: what is wrong with the file. `notes`: what loads and never runs
-// here (an event Keel has no moment for, a prompt or agent handler): said in
+// here (an event Keel has no moment for, a prompt or agent handler), and what
+// runs otherwise than a hook the event waits for (a background hook): said in
 // the file's list, and no fault of the file.
 export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Group[]>>; problems: string[]; notes: string[] } {
   const problems: string[] = [], notes: string[] = [];
@@ -274,6 +294,8 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
       const hooks = (Array.isArray(g?.hooks) ? g.hooks : []).filter((h: any) => {
         const why = handlerProblem(h);
         if (why) (h?.type === "prompt" || h?.type === "agent" ? notes : problems).push(`${event}: ${why}`);
+        else if (h.type !== "command" && (h.async !== undefined || h.asyncRewake !== undefined)) notes.push(`${event}: async is read on command hooks only: this ${h.type} hook runs as one the event waits for`);
+        else if (h.type === "command" && (h.async || h.asyncRewake)) notes.push(`${event}: ${String(h.command).slice(0, 80)} ${h.asyncRewake ? REWAKE_NOTE : ASYNC_NOTE}`);
         return !why;
       });
       if (hooks.length) out.push({ matcher: g.matcher, hooks });
@@ -399,6 +421,41 @@ export class Hooks {
   // `failed`: told of each hook that failed (exit 1, a command that is not there, a timeout, an http port nobody listens on).
   constructor(private store: Store, private failed?: (f: HookFailure) => void) {
     store.migrate("CREATE TABLE IF NOT EXISTS hook_pins (root TEXT NOT NULL, sha256 TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (root));");
+    // What background hooks said that the session's next turn reads: stored when the hook ends, deleted in the
+    // write that stores the note carrying it. One row per hook: a later run of it replaces words not delivered yet.
+    store.migrate(`CREATE TABLE IF NOT EXISTS hook_owed (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      event TEXT NOT NULL, hook TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS hook_owed_session ON hook_owed(session_id);`);
+  }
+
+  // An asyncRewake hook exited with code 2: wake the session with these words (set by the daemon's hook routes).
+  rewake?: (s: Session, text: string, event: HookEvent) => void;
+
+  // What a background hook said, for the session's next turn.
+  private owe(sessionId: string, event: HookEvent, hook: string, text: string) {
+    this.store.db.transaction(() => {
+      this.store.db.query("DELETE FROM hook_owed WHERE session_id = ? AND event = ? AND hook = ?").run(sessionId, event, hook);
+      // (A session deleted while its hook ran owes nothing.)
+      this.store.db.query("INSERT INTO hook_owed (session_id, event, hook, text, ts) SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?1)").run(sessionId, event, hook, text, Date.now());
+    })();
+  }
+
+  // What the session's next turn is owed, oldest first. `settle` takes it back: call it in the write that stores it.
+  owed(sessionId: string): { id: number; event: HookEvent; text: string }[] {
+    return this.store.db.query<{ id: number; event: HookEvent; text: string }, [string]>("SELECT id, event, text FROM hook_owed WHERE session_id = ? ORDER BY id").all(sessionId);
+  }
+  settle(ids: number[]) {
+    for (const id of ids) this.store.db.query("DELETE FROM hook_owed WHERE id = ?").run(id);
+  }
+
+  // What a file's hooks answered that Keel read and did not act on (a "defer"), by the file's path: its list says so.
+  private answered = new Map<string, Set<string>>();
+  said(path: string): string[] {
+    return [...(this.answered.get(path) ?? [])];
+  }
+  private tell(path: string, line: string) {
+    const set = this.answered.get(path) ?? this.answered.set(path, new Set()).get(path)!;
+    set.add(line);
   }
 
   private pinned(root: string) {
@@ -569,18 +626,25 @@ export class Hooks {
     // An event no file names reads no covered script: the events of every model request would otherwise read them all each time.
     if (!srcs && !this.names(s.workspace, event)) return res;
     srcs ??= this.sources(s.workspace, true);
-    const groups: Group[] = [];
-    for (const src of srcs) if (src.active) for (const g of src.groups[event] ?? []) if (matches(g.matcher, match)) groups.push(g);
-    if (!groups.length) return res;
+    // Each matching handler with the file it is in.
+    const found: { h: Handler; path: string }[] = [];
+    for (const src of srcs) if (src.active) for (const g of src.groups[event] ?? []) if (matches(g.matcher, match)) for (const h of g.hooks) found.push({ h, path: src.path });
+    if (!found.length) return res;
     const data = { session_id: s.id, transcript_path: null, cwd: s.workspace, hook_event_name: event, model: s.model, ...(typeof payload === "function" ? payload() : payload) } as Record<string, any>;
-    const handlers = groups.flatMap((g) => g.hooks).filter((h) => h.if === undefined || (TOOL_EVENTS.has(event) && ifHolds(h.if, match, data.tool_input, s.workspace)));
-    if (!handlers.length) return res;
-    res.ran = handlers.length;
+    const kept = found.filter(({ h }) => h.if === undefined || (TOOL_EVENTS.has(event) && ifHolds(h.if, match, data.tool_input, s.workspace)));
+    if (!kept.length) return res;
+    res.ran = kept.length;
     const can = CAN[event];
     const input = JSON.stringify(data);
     const [normal, most] = TIMEOUTS[event] ?? [600, 3600];
+    const limit = (h: Handler) => Math.min(h.timeout ?? normal, most);
+    // A background hook is started and not waited for (onFailure has no effect on it, as documented).
+    const bg = (h: Handler) => h.type === "command" && !!(h.async || h.asyncRewake);
+    for (const { h } of kept) if (h.type === "command" && bg(h)) void this.background(h, event, s, input, h.asyncRewake ? limit(h) : Infinity);
+    const fg = kept.filter(({ h }) => !bg(h));
+    const handlers = fg.map((x) => x.h);
     const outs = await Promise.all(handlers.map((h) => {
-      const ms = Math.min(h.timeout ?? normal, most) * 1000;
+      const ms = limit(h) * 1000;
       return h.type === "http" ? runHttp(h, input, ms) : h.type === "mcp_tool" ? runMcp(h, data, ms) : runHook(h, input, s.workspace, ms);
     }));
     let stop: string | undefined;
@@ -591,13 +655,11 @@ export class Hooks {
       const refuse = (why: string) => { if (can.block) res.block ??= why; };
       // A hook that failed is said once in Errors, with what it is: a mistyped policy hook otherwise never runs and nobody is told.
       const fails = (why: string, limit_s?: number) => {
-        const what = h.type === "http" ? h.url : h.type === "mcp_tool" ? `${h.server}__${h.tool}` : [h.command, ...(h.args ?? [])].join(" ");
-        const f: HookFailure = { hook: what.slice(0, 500), event, session: s.id, why: `${why}${o.stderr.trim() ? `: ${o.stderr.trim().slice(0, 300)}` : ""}`, ...(limit_s !== undefined ? { limit_s } : {}) };
-        this.failed?.(f);
+        const f = this.failure(h, event, s, o, why, limit_s);
         (res.failed ??= []).push(hookFailureText(f));
         if (h.onFailure === "block") refuse(`a hook failed (${why})`);
       };
-      if (o.code === null) { fails("it did not finish in time", Math.min(h.timeout ?? normal, most)); continue; }
+      if (o.code === null) { fails("it did not finish in time", limit(h)); continue; }
       if (o.code === 2) {
         // (Not honoured on PermissionRequest, as documented: a hook denies there with its decision.)
         if (can.goOn) res.continueWith ??= hookSaid(o.stderr.trim() || "a hook asked to go on");
@@ -615,6 +677,16 @@ export class Hooks {
       }
       if (!j || typeof j !== "object") continue;
       const hso = j.hookSpecificOutput ?? {};
+      // "defer" pauses a `claude -p` run at the call for the program that started it, and Claude Code honors it
+      // there only; in an interactive session it ignores the hook's answer. A Keel session is always interactive:
+      // it lives in the daemon, open to the page, also when `keel run -p` started it, and a turn that ended on a
+      // call with no result would leave the call unanswered in the history. So the answer is ignored, whole (its
+      // updatedInput and additionalContext too, as documented for "defer"), and the call goes the usual way.
+      if (event === "PreToolUse" && hso.permissionDecision === "defer") {
+        this.tell(fg[i]!.path, `PreToolUse: ${hookName(h).slice(0, 80)} answered permissionDecision "defer", which Keel ignores (it is for a claude -p run, and a Keel session stays open to you): the call went through the usual permission check`);
+        continue;
+      }
+      // (`suppressOutput` is read and does nothing: the reference says it has no effect.)
       if (j.decision === "block") {
         if (can.goOn) res.continueWith ??= hookSaid(j.reason ?? "a hook asked to go on");
         else refuse(hookSaid(j.reason ?? "a hook blocked this"));
@@ -661,6 +733,56 @@ export class Hooks {
     if (stop !== undefined) delete res.continueWith;
     return res;
   }
+
+  // A failed hook, told to whoever keeps Errors.
+  private failure(h: Handler, event: HookEvent, s: Session, o: Out, why: string, limit_s?: number): HookFailure {
+    const f: HookFailure = { hook: hookName(h).slice(0, 500), event, session: s.id, why: `${why}${o.stderr.trim() ? `: ${o.stderr.trim().slice(0, 300)}` : ""}`, ...(limit_s !== undefined ? { limit_s } : {}) };
+    this.failed?.(f);
+    return f;
+  }
+
+  // A hook that runs in the background (code.claude.com/docs/en/hooks, "Run hooks in the background"): nothing
+  // waits for it, `async` runs with no time limit (`limit_s` Infinity), and what it decides has no effect: the
+  // action it would have controlled has gone on. What it says the event reads as context is owed to the session's
+  // next turn, which an idle session waits for. An `asyncRewake` hook that exits with code 2 wakes the session.
+  private async background(h: Extract<Handler, { type: "command" }>, event: HookEvent, s: Session, input: string, limit_s: number) {
+    try {
+      const o = await runHook(h, input, s.workspace, limit_s * 1000);
+      if (o.code === null) return void this.failure(h, event, s, o, "it did not finish in time", limit_s);
+      if (o.code === 2) {
+        if (h.asyncRewake) this.rewake?.(s, hookSaid(o.stderr.trim() || o.stdout.trim() || "a background hook exited with code 2"), event);
+        return;
+      }
+      if (o.code !== 0) return void this.failure(h, event, s, o, o.code === -1 ? "it could not be started" : `exit ${o.code}`);
+      const lines = backgroundSaid(event, o.stdout);
+      if (lines.length) this.owe(s.id, event, hookName(h), lines.join("\n\n"));
+    } catch (e) {
+      this.failed?.({ hook: hookName(h).slice(0, 500), event, session: s.id, why: (e as Error).message });
+    }
+  }
+}
+
+// What a hook runs, in one line: its command, URL or tool.
+const hookName = (h: Handler) => (h.type === "http" ? h.url : h.type === "mcp_tool" ? `${h.server}__${h.tool}` : [h.command, ...(h.args ?? [])].join(" "));
+
+// The words of a background hook the event reads: its JSON answer's
+// additionalContext and systemMessage (a field of the wrong type is dropped),
+// the answer being all of stdout or one line of it, with other text around it;
+// with no answer, plain stdout on an event that reads it.
+export function backgroundSaid(event: HookEvent, stdout: string): string[] {
+  const can = CAN[event];
+  const text = stdout.trim();
+  if (!can.context || !text) return [];
+  const parse = (t: string) => { try { return JSON.parse(t); } catch { return undefined; } };
+  let j = text.startsWith("{") ? parse(text) : undefined;
+  if (j === undefined) for (const line of text.split("\n").reverse()) if (line.trim().startsWith("{") && (j = parse(line.trim())) !== undefined) break;
+  if (j === undefined) return can.text && !text.startsWith("{") ? [hookSaid(text)] : [];
+  if (!j || typeof j !== "object" || Array.isArray(j)) return [];
+  const out: string[] = [];
+  const ctx = j.hookSpecificOutput?.additionalContext;
+  if (typeof ctx === "string" && ctx.trim()) out.push(hookSaid(ctx.trim()));
+  if (typeof j.systemMessage === "string" && j.systemMessage.trim()) out.push(hookSaid(j.systemMessage.trim()));
+  return out;
 }
 
 // What is kept of a hook's stdout, of its stderr and of an http hook's answer: a hook that says more has failed or is cut there.
@@ -685,7 +807,8 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }
   let timedOut = false;
-  const t = setTimeout(() => { timedOut = true; try { process.kill(-p.pid, "SIGKILL"); } catch {} }, ms);
+  // (No limit for a hook with none: a background `async` one.)
+  const t = Number.isFinite(ms) ? setTimeout(() => { timedOut = true; try { process.kill(-p.pid, "SIGKILL"); } catch {} }, ms) : undefined;
   // Read to the end, kept to a bound: a hook that prints without end fills no memory.
   const read = async (s: ReadableStream<Uint8Array> | number | undefined) => {
     let out = "";
