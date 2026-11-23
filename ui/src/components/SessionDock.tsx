@@ -8,7 +8,6 @@ import { splitId } from "../lib/fleet-ids.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { PLAN_TOOLS, planItems, toolKind } from "../lib/tools.ts";
-import { cn } from "../lib/utils.ts";
 import { useUI } from "../lib/ui.ts";
 import { PlanCard } from "./ToolCall.tsx";
 
@@ -97,31 +96,30 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
   const done = plan?.filter((p) => p.status === "completed").length ?? 0;
   const now = plan?.find((p) => p.status === "in_progress");
   return (
-    <div className="mb-2 flex flex-col gap-1.5 max-md:mb-1" data-testid="session-dock">
+    // A quiet ledger over the box: a line a thing, set on the page, its words lined up with the box's.
+    // Only the plan, opened, is a surface of its own (styles.css, .k-docket).
+    <div className="k-docket" data-testid="session-dock">
       {active && plan && (
-        // On a phone the plan is one slim line over the box, not a card of its own.
-        <Collapsible.Root className="group/plan rounded-lg border border-line bg-raised shadow-1 max-md:rounded-none max-md:border-x-0 max-md:border-b-0 max-md:bg-transparent max-md:shadow-none max-md:data-[open]:border-b">
-          <Collapsible.Trigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-caption outline-none max-md:px-1 max-md:py-1" data-testid="dock-plan">
-            <ListChecks className="size-3.5 text-muted" />
-            <span className="font-medium">{done}/{plan.length}</span>
-            <span className="min-w-0 truncate text-muted">{now ? (now.active ?? now.text) : "Plan"}</span>
-            <div className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-line">
-              <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${(100 * done) / plan.length}%` }} />
-            </div>
-            <ChevronRight className="size-3.5 text-faint transition-transform group-data-[open]/plan:rotate-90" />
+        <Collapsible.Root className="k-docket-plan group/plan">
+          <Collapsible.Trigger className="k-docket-line" data-testid="dock-plan">
+            <ListChecks className="k-docket-glyph" />
+            <span className="k-face-figure k-docket-n">{done}/{plan.length}</span>
+            <span className="min-w-0 truncate">{now ? (now.active ?? now.text) : "Plan"}</span>
+            <span className="k-docket-track" aria-hidden="true"><span style={{ width: `${(100 * done) / plan.length}%` }} /></span>
+            <ChevronRight className="k-docket-more transition-transform group-data-[open]/plan:rotate-90" />
           </Collapsible.Trigger>
-          <Collapsible.Panel className="border-t border-line">
+          <Collapsible.Panel className="k-docket-panel">
             <PlanCard items={plan} live />
           </Collapsible.Panel>
         </Collapsible.Root>
       )}
       {jobs.map((j) => (
-        <div key={j.id} className="flex items-center gap-2 rounded-lg border border-line bg-raised shadow-1 px-3 py-1.5 text-caption" data-testid="dock-job">
-          <SquareTerminal className={cn("size-3.5", j.running ? "text-accent" : "text-faint")} />
-          <span className="font-mono text-micro text-faint">{j.id}</span>
-          <span className="min-w-0 max-w-[40%] shrink-0 truncate">{j.description ?? j.command}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-micro text-muted" title={j.last} data-testid="dock-job-last">{j.last}</span>
-          <span className="shrink-0 text-micro tabular-nums text-faint">
+        <div key={j.id} className="k-docket-line" data-testid="dock-job" data-running={j.running || undefined}>
+          {/* A command at work is drawn in work's color; one that ended steps back. */}
+          <SquareTerminal className="k-docket-glyph" />
+          <span className="min-w-0 max-w-[40%] shrink-0 truncate text-fg" title={j.id}>{j.description ?? j.command}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-micro text-faint" title={j.last} data-testid="dock-job-last">{j.last}</span>
+          <span className="k-face-figure shrink-0 text-micro text-faint">
             {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
               // Its call was cut by a restart and the command went on without it: said as that, not as a bare exit code beside "cut".
               : j.call_id && cut.has(j.call_id) ? (j.exit_code == null ? "went on after the restart, then ended" : j.exit_code === 0 ? "went on after the restart and finished" : `went on after the restart and failed (exit ${j.exit_code})`)
@@ -133,7 +131,7 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
               title="Stop"
               data-testid="dock-job-stop"
               onClick={() => actions.stopJob(sessionId, j.id).catch(reportError)}
-              className="grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
+              className="-mr-1 grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
             >
               <Square className="size-3" />
             </button>
