@@ -1391,11 +1391,6 @@ export function releaseOwed(parentId: string) {
   const rows = owedOf(parentId);
   for (const o of rows) if (rode.has(o.report_id)) sendOwed(o, parentId);
   sendAllOwed(rows);
-  // A park on a command that rode only for the hold wakes the parent now, once a task; any other goes on riding.
-  for (const m of takeRiding(parentId, (m) => m.kind === "harness" && m.status === "waiting")) {
-    const a = get(String(m.agent_id));
-    if (a) tellPark(a, true);
-  }
 }
 
 // A deleted session's agents went with it: nothing rides to it or waits for
@@ -1462,28 +1457,48 @@ function parkNow(a: AgentRecord): { text: string; meta: Record<string, unknown> 
   };
 }
 
-// A park on waits alone is one line of the parent's next input, as it stands then: a wait has its
-// deadline, so the agent goes on by itself and its report wakes the parent, and a parent woken for
-// such a park could do nothing with it (of 79 turns a coordinator was woken for parks alone, 75
-// ended with no tool call). A park on a command has no deadline: the command may never end (a run
-// that hangs, a server the agent left up that listens on no TCP port), and nothing but the parent can
-// end that wait, so the first such park of a task wakes the parent; a later one of the task rides.
-// `wake`: it may start a turn; not in a parent held after the owner's Stop, where it rides too (and
-// wakes the parent when the hold ends, releaseOwed).
-function tellPark(a: AgentRecord, wake: boolean) {
+// A park is one line of the parent's next input, as it stands then, and starts no turn of its own:
+// the agent goes on by itself (a wait's deadline, a command's end) and its report wakes the parent,
+// and a parent woken for a park could do nothing with it (of 79 turns a coordinator was woken for
+// parks on waits alone, 75 ended with no tool call; of 24 woken for parks on a command, none acted).
+// A park on a command has no deadline, though: the command may never end (a run that hangs), and
+// nothing but the parent can end that wait. So a park on a command that lasts past `longPark` wakes
+// the parent once in the task, when nothing else would: it is idle, nothing holds it, and no input,
+// report or working agent of its own is on its way (wakeLongParks, from the tick).
+function tellPark(a: AgentRecord) {
   if (isPending(a.parent_id, isParkOf(a))) return; // on its way: it is read again when it is sent
   const first = parkNow(a);
   if (!first) return;
-  const wakes = wake && !!first.meta.on_command && !toldOfPark(a) && !D().engine.isHeld(a.parent_id);
-  deliver(a.parent_id, first.text, first.meta, {
-    ride: !wakes,
-    refresh: () => {
+  // A park read after it was long tells the parent as a wake for it would: none comes later in the task.
+  deliver(a.parent_id, first.text, first.meta, { ride: true, refresh: () => parkNow(a), onSent: () => { if (isLong(a)) parkTold(a); } });
+}
+
+// How long a park on a command lasts before it wakes the parent. Of 36 parks on a command in three
+// hours of a busy coordinator's tree, every one ended by itself (the command's end woke the agent)
+// within 21 min: median 4 min, 95th percentile 18 min. Past half again the longest of those, the
+// command is more likely stuck than slow. (A test sets it shorter, and puts it back.)
+export const longPark = { ms: 30 * 60_000 };
+const isLong = (a: AgentRecord, now = Date.now()) => now - parkedAt(a) >= longPark.ms;
+
+// Each tick: an agent parked on a command for longer than `longPark` wakes its parent once in the
+// task, when the parent is idle and nothing else is owed to it; else its park goes on riding.
+function wakeLongParks(rows: AgentRecord[], now: number) {
+  const { engine, store } = D();
+  for (const a of rows) {
+    if (a.status !== "waiting" || !a.background || isSilent(a.id) || !isLong(a, now) || toldOfPark(a)) continue;
+    const p = a.parent_id;
+    if (engine.isRunning(p) || engine.isHeld(p) || engine.isClosing?.(p) || engine.startsNext?.(p) || hasPending(p)) continue;
+    if (store.db.query("SELECT 1 FROM queue WHERE session_id = ? LIMIT 1").get(p) || owedOf(p).length) continue;
+    if (list(p).some((k) => k.status === "running" && !isSilent(k.id))) continue;
+    const park = parkNow(a);
+    if (!park?.meta.on_command) continue;
+    withdrawParked(a); // the copy that rides: this one goes now
+    deliver(p, park.text, park.meta, {
       // The owner stopped the parent since: the notice rides instead of starting a turn.
-      if (wakes && D().engine.isHeld(a.parent_id)) return void tellPark(a, false);
-      return parkNow(a);
-    },
-    onSent: wakes ? () => parkTold(a) : undefined,
-  });
+      refresh: () => (engine.isHeld(p) ? void tellPark(a) : parkNow(a)),
+      onSent: () => parkTold(a),
+    });
+  }
 }
 
 // Agents parked on a background command of their own: the reason their turn ended, and whether
@@ -1521,7 +1536,7 @@ async function lookAtParks(ids = [...onCommand.keys()]) {
       if (!own.length) onCommand.delete(a.id); // its waits are left, each with a deadline
       if (!at.told && !own.some(listens)) {
         at.told = true;
-        if (a.background) tellPark(a, true);
+        if (a.background) tellPark(a);
       }
     }
   } catch (e) {
@@ -1648,7 +1663,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
     // other silent agents stay quiet. Recovery does not replay this notice.
     // A park on a command of its own is looked at first (lookAtParks): one that serves ends the wait.
     if (reason !== "interrupted" && !isSilent(a.id) && unfinished(sessionId, taskStart(a)).length) parkOnCommand(a, reason);
-    else if (a.background && !isSilent(a.id)) tellPark(a, true);
+    else if (a.background && !isSilent(a.id)) tellPark(a);
     return;
   }
   // A turn of the child stopped from its own page is the owner's stop; one stopped by anything else
@@ -2423,14 +2438,17 @@ function sendAllOwed(rows: Owed[], boot = false) {
   }
 }
 
-// Time limits from definitions, and agents whose sessions are gone.
+// Time limits from definitions, agents whose sessions are gone, and parks on a command that last.
 export function tick() {
   const liveRows = D().store.db.query<Row, []>("SELECT * FROM agents WHERE status IN ('running', 'waiting')").all().map(toRec);
+  const kept: AgentRecord[] = [];
   for (const a of liveRows) {
     if (!D().store.session(a.session_id)) { update(a.id, { status: "stopped", ended: Date.now(), result: "Its session was deleted." }); leftovers.forget(D().store, a.id); continue; }
     const def = defOf(a.id);
-    if (def?.timeoutMins && Date.now() - a.created > def.timeoutMins * 60_000) stop(a.id, "time_limit");
+    if (def?.timeoutMins && Date.now() - a.created > def.timeoutMins * 60_000) { stop(a.id, "time_limit"); continue; }
+    kept.push(a);
   }
+  wakeLongParks(kept, Date.now());
 }
 
 // A restored parent gets the reports its agents finished while it was archived

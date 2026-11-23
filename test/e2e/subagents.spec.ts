@@ -192,8 +192,8 @@ test("a parked subagent notifies its busy parent before the final report", async
 // Feature: an agent that ends its turn while its own background command runs is
 // waiting on that command, not done. The command's end starts its next turn with
 // what became of it, and the answer it writes then is its report: the parent gets
-// no report before that. A park on a command has no deadline, so the parent is
-// woken for it once in the task, and the report after it says nothing of the park.
+// no report before that. The park starts no turn of the parent (only one that lasts
+// past the long park wakes an idle parent), and the report after it says nothing of the park.
 test("an agent waits on its own background command, and reports after its end", async ({ page, request }) => {
   const STAND_IN = "scripted:stand-in";
   const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
@@ -214,12 +214,9 @@ test("an agent waits on its own background command, and reports after its end", 
     const a = (await agent())!;
     const job = ((await (await request.get(`/api/sessions/${a.session_id}/jobs`)).json()).jobs as { id: string; running: boolean }[])[0]!;
     expect(job.running).toBe(true);
-    // The parent is woken once for the park, with the command named, and gets no report.
-    await expect.poll(async () => (await events(session.id)).filter((e) => e.kind === "user").length, { timeout: 30_000 }).toBe(2);
-    const park = (await events(session.id)).filter((e) => e.kind === "user")[1]!.data.text as string;
-    expect(park).toContain(`(${a.id}) is waiting for background command ${job.id} (Slow check run)`);
-    expect(park).not.toContain("<subagent_result");
+    // The parent's turn ends and the park starts no other: its prompt is its one input.
     await expect.poll(async () => (await events(session.id)).at(-1)?.kind, { timeout: 30_000 }).toBe("turn_end");
+    expect((await events(session.id)).filter((e) => e.kind === "user")).toHaveLength(1);
     const card = page.getByTestId("agent-call").last();
     await expect(card.getByTestId("agent-call-state")).toHaveText("Working: command in background");
     await shoot(page, "agents-own-command-01-waiting");
@@ -233,13 +230,13 @@ test("an agent waits on its own background command, and reports after its end", 
     expect(child.filter((e) => e.kind === "turn_start")).toHaveLength(2);
     const report = (await agent())!.result ?? "";
     expect(report).toContain(`(ID ${job.id}) exited with code 0`);
-    // The parent: its prompt, the park, then the one report, with no park line riding it.
+    // The parent: its prompt, then the one report, with no park line riding it.
     await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 30_000 });
     const inputs = (await events(session.id)).filter((e) => e.kind === "user");
-    expect(inputs).toHaveLength(3);
-    expect(inputs[2]!.data.text).toContain("<subagent_result");
-    expect(inputs[2]!.data.text).toContain("exited with code 0");
-    expect(inputs[2]!.data.text).not.toContain(" is waiting for ");
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]!.data.text).toContain("<subagent_result");
+    expect(inputs[1]!.data.text).toContain("exited with code 0");
+    expect(inputs[1]!.data.text).not.toContain(" is waiting for ");
     await expect.poll(async () => (await events(session.id)).at(-1)?.kind, { timeout: 30_000 }).toBe("turn_end");
     await page.getByTestId("agent-report").first().click();
     await shoot(page, "agents-own-command-02-reported");

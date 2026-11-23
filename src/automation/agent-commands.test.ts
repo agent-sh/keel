@@ -80,7 +80,7 @@ const until = async (f: () => boolean, ms = 10_000) => { for (const end = Date.n
 // A server that says its port once it listens.
 const SERVER = `${process.execPath} -e 'console.log("port", Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("up") }).port); setInterval(() => {}, 1000)'`;
 
-test("an agent that leaves a server listening reports; one with a run to come waits on it and its parent is woken once", async () => {
+test("an agent that leaves a server listening reports; one with a run to come waits on it, and a long park wakes an idle parent once", async () => {
   const p = parentOf("server");
   const a = await spawn(p.id);
   const srv = bg(a.session_id, SERVER, "dev server");
@@ -91,19 +91,38 @@ test("an agent that leaves a server listening reports; one with a run to come wa
   // Seen as a server, it was never a park: the parent was told nothing else.
   expect(to(p.id).filter((t) => t.includes("is waiting for"))).toEqual([]);
 
-  // A run with a result to come: the agent waits on it, and its parent is woken for that once in the task.
+  // A run with a result to come: the agent waits on it, and the park starts no turn of the parent.
   const q = parentOf("run");
   const b = await spawn(q.id);
   const run = bg(b.session_id, "sleep 30", "slow tests");
   end(b, "end_turn", "Started the tests.");
   expect(agents.get(b.id)!.status).toBe("waiting");
-  expect(await until(() => to(q.id).length === 1)).toBe(true);
-  expect(to(q.id)[0]).toContain(`(${b.id}) is waiting for background command ${run.id} (slow tests)`);
-  // It goes on and parks again on the same command: that park rides the parent's next input.
-  agents.onTurnStart(b.session_id);
-  end(b, "end_turn", "Still running.");
   await Bun.sleep(400);
-  expect(to(q.id)).toHaveLength(1);
+  agents.tick();
+  expect(to(q.id)).toHaveLength(0);
+  const was = agents.longPark.ms;
+  agents.longPark.ms = 200;
+  try {
+    // Past the long park, a parent at work is not woken: the park goes on riding.
+    busy.add(q.id);
+    agents.tick();
+    await Bun.sleep(300);
+    expect(to(q.id)).toHaveLength(0);
+    busy.delete(q.id);
+    // Idle, with nothing else owed: woken once in the task, with the command named.
+    agents.tick();
+    expect(await until(() => to(q.id).length === 1, 3000)).toBe(true);
+    expect(to(q.id)[0]).toContain(`(${b.id}) is waiting for background command ${run.id} (slow tests)`);
+    // It goes on and parks again on the same command: that park rides the parent's next input, long or not.
+    agents.onTurnStart(b.session_id);
+    end(b, "end_turn", "Still running.");
+    await Bun.sleep(400);
+    agents.tick();
+    await Bun.sleep(200);
+    expect(to(q.id)).toHaveLength(1);
+  } finally {
+    agents.longPark.ms = was;
+  }
   await jobs.stopJob(run, "was stopped by the test");
 });
 
