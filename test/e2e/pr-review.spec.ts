@@ -98,7 +98,10 @@ test("pull requests are reviewed from GitHub's events, once a head, drafts poste
 
     // The draft in its session, and the one button that posts it.
     await page.goto(`${d.url}/s/${r2.session_id}`);
-    await page.getByTestId("header-action-pr-review").click();
+    // The header keeps three tools in its row; the rest are under "More" (a stowed action is opened from there).
+    const prAction = page.getByTestId("header-action-pr-review");
+    if (!(await prAction.isVisible())) await page.getByTestId("header-more-button").first().click();
+    await prAction.click();
     const panel = page.getByTestId("pr-review-panel");
     await expect(panel).toHaveAttribute("data-state", "draft");
     await expect(panel.getByTestId("pr-review-finding")).toHaveCount(1);
