@@ -1244,3 +1244,30 @@ test("an approval card's answers have numbers: 1 allows once, 2 opens Always all
   expect(await said(request, two)).toEqual([]);
   await drop(request, id, two);
 });
+
+// After the sequence moves from an approval to a question, numbers pressed at a steady pace are the
+// question's: the first ones, too soon after it showed, do nothing (they never go to the message box),
+// and the next one answers it. No "1" is ever typed or sent.
+test("numbers pressed as the sequence moves from an approval to a question answer it, and none is typed", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("to-question");
+  const quiet = await create(request, "Nothing waits here", ws);
+  const a = await asksToRun(request, "First: an approval", ws, "first");
+  const q = await create(request, "Then: a question", ws);
+  await ask(request, q, "question");
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await page.keyboard.press("Alt+a");
+  await expect(cardIn(page, a, "approval").getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 8000 });
+  await page.keyboard.press("Enter");
+  // Numbers every 400 ms from the answer on, ten of them at most. (Faster, each is refused: a press
+  // sooner than a key's settle time after one refused is part of the same run, lib/asks.ts.)
+  for (let i = 0; i < 10 && (await waits(request, q, "question")); i++) { await page.keyboard.press("1"); await page.waitForTimeout(400); }
+  await expect.poll(() => waits(request, q, "question")).toBe(false);
+  expect(await answersOf(request, q)).toEqual({ "0": { picked: ["Teal"] } });
+  for (const box of await page.getByTestId("composer").all()) await expect(box).toHaveValue("");
+  for (const id of [quiet, a, q]) expect(await said(request, id)).toEqual([]);
+  for (const id of [quiet, a, q]) expect((await (await request.get(`/api/sessions/${id}/queue`)).json()).queue, `queued in ${id}`).toEqual([]);
+  await drop(request, quiet, a, q);
+});

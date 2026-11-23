@@ -322,6 +322,12 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
     }
     if (field || !q) return;
     // A number is the card's own once the owner put the keyboard on it and it has settled: it picks, in the part the keyboard is in.
+    // Brought here by the owner and pressed too soon after it showed (lib/asks.ts): the number is the
+    // card's all the same, and it does nothing: never typed into the message box, never a message.
+    if (/^[1-9]$/.test(e.key) && !e.shiftKey && owned(t) && !keysSettled(t) && q.options[Number(e.key) - 1]) {
+      e.preventDefault();
+      return setNudge(keyRefused(t, e.repeat) || "Not yet: the keyboard has only just arrived");
+    }
     if (/^[1-9]$/.test(e.key) && !e.shiftKey && owned(t) && keysSettled(t)) {
       const o = q.options[Number(e.key) - 1];
       if (!o) return;
