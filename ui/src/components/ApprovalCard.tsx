@@ -1304,12 +1304,15 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             // Why the answers wait, beside them, before anything was pressed: the text is to be opened
             // (the list's Enter does that while the list has the keyboard), or so many of its lines have
             // not been in view. (In the answers' own row, so the card keeps its height when it goes.)
-            // A row (a dense card) whose text its box cuts keeps the room of the longest of these two lines
-            // whether one shows or not: a line that came and went would move the answers under the text
-            // and back, the text would wrap another way, and that would decide the line again.
-            : shut || left > 0 || (dense && cut) ? (
+            // The room of these lines is held, so the answers beside them never wrap anew under the text as
+            // one line gives way to another (the text would then fit, the line go, and the text be cut again:
+            // a card drawn one way, then the other, and no Allow on the list ever standing still). A card that
+            // must be opened holds the room of all its opening words; a row (a dense card) once cut, or once
+            // to be opened, holds that and the room of its longest count of lines not seen (with the key
+            // that reads on, whether it is named now or not), whether a line shows or not. (That it stays cut while it waits is the other half: useReadings.)
+            : shut || left > 0 || (dense && (cut || slot.current)) ? (
               <span className="ml-auto grid justify-items-end text-micro text-warn">
-                {dense && cut && <span className="invisible col-start-1 row-start-1" aria-hidden="true">{`${touch ? tapSays : enterOpens ? enterSays : openFirst}.`.length >= `${count(unseen?.total ?? 0)} not seen yet`.length ? `${touch ? tapSays : enterOpens ? enterSays : openFirst}.` : `${count(unseen?.total ?? 0)} not seen yet`}</span>}
+                {(shut || dense) && [`${tapSays}.`, `${enterSays}.`, `${openFirst}.`, ...(dense ? [`${count(unseen?.total ?? 0)} not seen yet. End reads on`] : [])].map((w) => <span key={w} className="invisible col-start-1 row-start-1" aria-hidden="true">{w}</span>)}
                 {shut ? <span className="col-start-1 row-start-1" role="status" data-testid="approval-open-first">{touch ? tapSays : enterOpens ? enterSays : openFirst}.</span>
                   : left > 0 ? <span className="col-start-1 row-start-1 tabular-nums" role="status" data-testid="approval-left">{leftText}{readKey && <span className="text-faint max-sm:hidden" data-testid="approval-read-key">. End reads on</span>}</span> : null}
               </span>
