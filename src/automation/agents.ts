@@ -720,6 +720,7 @@ export type SpawnInput = {
   budget?: unknown; // steps, minutes or dollars for its task (parseBudget); over its definition's
   branch?: string; // Keel's own: an existing branch its worktree has out (it takes over a gone agent's work); never from a tool's input
   writes?: unknown; // the folders, files or globs it may write (src/automation/write-asks.ts); a reviewer gets its own folders
+  effort?: string; // over its definition's (a skill's with context: fork); not in any tool's schema
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -843,7 +844,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const { info } = await D().providers.resolve(model);
   if (signal?.aborted) throw new Error("cancelled");
   await checkUsd(mergeBudget(def.budget, parseBudget(input.budget)), model, info);
-  const effort = def.effort && info.efforts?.includes(def.effort) ? def.effort : undefined;
+  const wantEffort = input.effort ?? def.effort;
+  const effort = wantEffort && info.efforts?.includes(wantEffort) ? wantEffort : undefined;
   const title = agentTitle(input);
   const id = Bun.randomUUIDv7().slice(-12);
   const mode = modeOfChild(parentId, def);
@@ -914,7 +916,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   }
   const have = catalogSources(child.id).map((x) => x.name.split("@")[0]!);
   for (const name of def.mcpServers ?? []) if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
-  if (def.effort && !effort && def.format !== "codex") left.push(`the effort ${def.effort}: ${model} does not list it`);
+  if (wantEffort && !effort && (input.effort || def.format !== "codex")) left.push(`the effort ${wantEffort}: ${model} does not list it`);
   if (left.length) leftOut.set(id, left);
   if (scope.json && scope.why) scopeOut.set(id, writeAsks.spawnLine(store.session(child.id) ?? child, scope.json, scope.why));
   const task = [

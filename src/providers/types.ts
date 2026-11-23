@@ -20,6 +20,8 @@ export type ToolSpec = {
 };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+// Effort levels from least to most, as the providers name them.
+export const EFFORT_LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export type ProviderRequest = {
   model: string;

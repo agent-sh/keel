@@ -14,6 +14,7 @@ import { readGate } from "../../automation/waits.ts";
 import { stopKind } from "../../core/stops.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { skillRun } from "../../tools/skills.ts";
+import { choiceOwnerSaid } from "../../tools/skill-turn.ts";
 import { toolFacts, webUse } from "../../tools/registry.ts";
 import { catalogReady } from "../../tools/catalog.ts";
 import { RUN_CODE } from "../../tools/codemode.ts";
@@ -107,6 +108,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     const d = f.event.data ?? {};
     if (d.kind || (d.origin && d.origin !== "steer")) return; // a report, a wake, a notice: not the owner's words
     g.ownerSaid(f.event.session_id, String(d.text ?? ""));
+    choiceOwnerSaid(f.event.session_id, String(d.text ?? ""));
   });
 
   const presenceCall = async (f: () => Promise<Response>) => {

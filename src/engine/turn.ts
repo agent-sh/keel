@@ -22,7 +22,7 @@ import type { AssistantBlock, ErrorRecord, Message, QueueItem, Session, StoredEv
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
-import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
+import { EFFORT_LADDER, type ModelInfo, type Price, type Provider, type ProviderRequest, type ProviderResult } from "../providers/types.ts";
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, sharedTool, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { AGENT_BUDGET_SPENT, APPROVAL_CUT, BUDGET_SPENT, CUT_CALL, QUESTION_CUT, RESTART_CUT, stopKind, stoppedBefore, stoppedWhile } from "../core/stops.ts";
@@ -1442,7 +1442,8 @@ export class Engine {
     this.running.set(id, { abort, done });
   }
 
-  private async step(session: Session, model: string): Promise<Step> {
+  // `effort`: the effort wanted (the session's unless the turn chose another: turnWant).
+  private async step(session: Session, model: string, effort = session.settings.effort): Promise<Step> {
     const { provider, info } = await this.providers.resolve(model);
     // A model known to take no tool definitions (the owner, a probe, its listing
     // or catalog said so) is sent none: it would refuse them or answer garbled.
@@ -1465,8 +1466,7 @@ export class Engine {
     this.pins.begin(session.id, why);
     try {
       const system = await this.systemOf(session, info);
-      const effort = effectiveEffort(info, session.settings.effort);
-      return { provider, info, tools: own ? this.pins.tools(session, to, built) : built, system: system.text, systemSplit: system.split, systemOwn: system.own, effort, native };
+      return { provider, info, tools: own ? this.pins.tools(session, to, built) : built, system: system.text, systemSplit: system.split, systemOwn: system.own, effort: effectiveEffort(info, effort), native };
     } finally {
       this.pins.end(session.id);
     }
@@ -1762,6 +1762,53 @@ export class Engine {
       return true;
     }
     return false;
+  }
+
+  // The model and effort a step of the turn runs at: the session's, or what an
+  // inline skill named for the rest of the turn (Claude Code's skills
+  // frontmatter: src/tools/skill-turn.ts). Its model is a listed one, by id or
+  // by a word of its name on the session's provider; one on another provider
+  // only when the choice may go wider (a repository's skill the owner has not
+  // trusted does not send the conversation elsewhere). An effort the model
+  // does not list keeps the session's. What was taken or left is said once a
+  // turn in a note for the owner. A turn that fell back stays on the fallback.
+  private async turnWant(id: string, session: Session, fellBack: boolean, told: Set<string>): Promise<{ model: string; effort?: string }> {
+    const own = { model: session.model, effort: session.settings.effort };
+    let c: ReturnType<NonNullable<ReturnType<typeof allHooks>[number]["turnChoice"]>>;
+    for (const h of allHooks()) { c = h.turnChoice?.(session); if (c) break; }
+    if (!c) return own;
+    const say = (key: string, text: string) => {
+      if (told.has(key)) return;
+      told.add(key);
+      this.append(id, "note", { kind: "skill_model", text });
+    };
+    const models = await this.providers.models();
+    const cur = models.find((m) => m.id === session.model);
+    const curName = cur?.name ?? session.model;
+    let model = session.model;
+    let info = cur;
+    if (c.model && !fellBack) {
+      const w = c.model.toLowerCase();
+      const provider = cur?.provider ?? session.model.slice(0, session.model.indexOf(":"));
+      const hit = models.find((m) => m.id === c.model || m.model === c.model)
+        ?? models.find((m) => m.provider === provider && (m.model.toLowerCase().includes(w) || m.name.toLowerCase().includes(w)));
+      if (!hit) say(`model:${c.model}`, `The skill ${c.from} names the model ${c.model}, which no listed model matches: the turn stays on ${curName}.`);
+      else if (hit.provider !== provider && !c.wider) say(`model:${c.model}`, `The skill ${c.from} names ${hit.name}, on another provider than the session's. A repository's skill moves the conversation to another provider only once the owner trusts it: the turn stays on ${curName}.`);
+      else if (!c.wider && hit.id !== session.model && !noDearer(hit.price, cur?.price)) say(`model:${c.model}`, `The skill ${c.from} names ${hit.name}, which costs more than ${curName} or has no known price. A repository's skill the owner has not trusted moves the turn only to a model no dearer than the session's: the turn stays on ${curName}.`);
+      else { model = hit.id; info = hit; }
+    }
+    let effort = own.effort;
+    if (c.effort) {
+      const rank = (e?: string) => (e ? EFFORT_LADDER.indexOf(e) : -1);
+      if (!info?.efforts.includes(c.effort)) say(`effort:${c.effort}:${model}`, `The skill ${c.from} names the effort ${c.effort}, which ${info?.name ?? model} does not list: the turn keeps the session's effort.`);
+      // (No effort set: the provider's default, which Keel cannot rank.)
+      else if (!c.wider && c.effort !== own.effort && (rank(c.effort) < 0 || rank(own.effort) < 0 || rank(c.effort) > rank(own.effort))) say(`effort:${c.effort}:${model}`, `The skill ${c.from} names the effort ${c.effort}, above the session's${own.effort ? ` (${own.effort})` : " (the model's default)"}. A repository's skill the owner has not trusted only lowers the effort: the turn keeps the session's.`);
+      else effort = c.effort;
+    }
+    if (model !== session.model || effort !== own.effort) {
+      say(`took:${model}:${effort}`, `The skill ${c.from} runs the rest of this turn on ${info?.name ?? model}${effort && effort !== own.effort ? ` at effort ${effort}` : ""}. ${curName} comes back with the next message.`);
+    }
+    return { model, effort };
   }
 
   // Measuring hooks never stop a call.
@@ -2265,6 +2312,9 @@ export class Engine {
     // the session had when the turn began or the owner last chose one.
     let movedOn = false;
     let ownModel = session.model;
+    // What this step runs on, and the notes about an inline skill's choice already said this turn.
+    let want: { model: string; effort?: string } = { model: session.model, effort: session.settings.effort };
+    const told = new Set<string>();
     let compactedForFit = false;
     let summaryFailed = false;
     // The code of the error that ended the turn (context_over_window, summary_truncated), kept on its turn_end.
@@ -2368,11 +2418,13 @@ export class Engine {
         // or a loop started in a session the owner had stopped.
         for (const q of this.liveSteers(id)) if (this.deliver(q.id, "steer", { release: !q.meta })) this.emitQueue(id);
         session = this.store.session(id)!;
-        // A model or effort chosen while the turn runs takes effect at its next request. (A turn
-        // that went on on the fallback stays there unless the owner chose another model meanwhile.)
+        // A model or effort chosen while the turn runs takes effect at its next request: the
+        // owner's, or an inline skill's for the rest of the turn (turnWant). A turn that went on on
+        // the fallback stays there unless the owner chose another model meanwhile.
         const chosen = session.model !== ownModel && session.model !== st.info.id;
         if (chosen) { ownModel = session.model; movedOn = false; }
-        if ((session.model !== st.info.id && (chosen || !movedOn)) || effectiveEffort(st.info, session.settings.effort) !== st.effort) st = await this.step(session, movedOn ? st.info.id : session.model);
+        want = await this.turnWant(id, session, fellBack || movedOn, told);
+        if ((want.model !== st.info.id && (chosen || !movedOn)) || effectiveEffort(st.info, want.effort) !== st.effort) st = await this.step(session, movedOn ? st.info.id : want.model, want.effort);
         // The owner's step budget for one turn (none by default).
         const budget = session.settings.max_steps ?? 0;
         if (budget > 0 && steps >= budget) {
@@ -3987,4 +4039,16 @@ export function firstLineTitle(text: string, max = 80): string {
   const cut = line.slice(0, max - 1);
   const at = cut.lastIndexOf(" ");
   return (at > max / 2 ? cut.slice(0, at) : cut).replace(/[\s,.;:]+$/, "") + "\u2026";
+}
+
+// Whether a model's price is at most another's: input and output, and the cache rates the second states,
+// at the base rate and at the dearest of its context tiers. A price unknown on either side is not.
+export function noDearer(p: Price | undefined, than: Price | undefined): boolean {
+  if (!p || !than || p.estimated || than.estimated) return false;
+  const top = (x: Price, k: "input" | "output" | "cache_read" | "cache_write") => Math.max(x[k] ?? -1, ...(x.tiers ?? []).map((t) => t[k] ?? -1));
+  for (const k of ["input", "output", "cache_read", "cache_write"] as const) {
+    if (than[k] === undefined && !(than.tiers ?? []).some((t) => t[k] !== undefined)) continue;
+    if (p[k] === undefined || p[k]! > (than[k] ?? Infinity) || top(p, k) > top(than, k)) return false;
+  }
+  return true;
 }

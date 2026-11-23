@@ -2,7 +2,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { Message, StoredEvent } from "../core/types.ts";
-import { cutOf, RESTART_CUT, stalledContinuations, toMessages, unanswered, withPending } from "./turn.ts";
+import { cutOf, noDearer, RESTART_CUT, stalledContinuations, toMessages, unanswered, withPending } from "./turn.ts";
 import { checkpointAt, keptMessages } from "./compact.ts";
 import { allHooks } from "./hooks.ts";
 
@@ -1083,4 +1083,16 @@ test("a tool step's cache plan starts from the attempt that answered", async () 
   // Sent after the first attempt failed, at most when the second one reached the provider.
   expect(sent[0]!).toBeGreaterThan(tried[0]!);
   expect(sent[0]!).toBeLessThanOrEqual(tried[1]!);
+});
+
+test("a model is no dearer than another only when every rate the other states is known and not higher", () => {
+  const base = { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 };
+  expect(noDearer(base, base)).toBe(true);
+  expect(noDearer({ ...base, input: 1, output: 5 }, base)).toBe(true);
+  expect(noDearer({ ...base, output: 20 }, base)).toBe(false);
+  expect(noDearer({ input: 3, output: 15 }, base)).toBe(false); // its cache rates unknown
+  expect(noDearer(undefined, base)).toBe(false);
+  expect(noDearer(base, undefined)).toBe(false);
+  // A context tier dearer than any of the session's.
+  expect(noDearer({ ...base, tiers: [{ above: 200_000, input: 6, output: 22.5 }] }, base)).toBe(false);
 });

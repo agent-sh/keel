@@ -137,6 +137,10 @@ export type TurnHooks = {
   // one, a report, a continuation after a restart).
   turnStart?: (s: Session) => void;
   turnEnd?: (s: Session, reason: string) => void | Promise<void>;
+  // The model and effort the rest of the turn runs at in place of the session's
+  // (an inline skill's frontmatter: src/tools/skill-turn.ts). `from`: what chose
+  // them, said in the note. `wider`: the model may be on another provider.
+  turnChoice?: (s: Session) => { model?: string; effort?: string; from: string; wider: boolean } | undefined;
   // At startup, a turn a daemon restart cut is about to continue by itself.
   // `stalled`: how many continuations in a row were cut before they finished a
   // step. A session's owner (an agent's record) answers "continue", or `hold`

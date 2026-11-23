@@ -15,6 +15,7 @@ import { claudeAllow } from "../integrations/port-permissions.ts";
 import type { RuleKind } from "../safety/policy.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { offerToSandbox } from "../safety/sandbox-view.ts";
+import { holdChoice } from "./skill-turn.ts";
 
 export type Skill = {
   name: string;
@@ -33,7 +34,8 @@ export type Skill = {
   plugin?: string; // the installed plugin it came with
   // Claude Code's frontmatter for how it runs (code.claude.com/docs/en/skills):
   allowedTools?: string[]; // run without asking in the turn that invoked it
-  model?: string;          // the model it runs on (with context: fork, the agent's)
+  model?: string;          // the model the rest of the turn runs on (with context: fork, the agent's)
+  effort?: string;         // the effort the rest of the turn runs at (with context: fork, the agent's)
   fork?: { agent?: string; background: boolean }; // context: fork: it runs as an agent of its own
 };
 
@@ -228,6 +230,7 @@ export function discoverSkills(cwd: string): Skill[] {
       ...(unit ? { data: unit.data, plugin: unit.id } : {}),
       ...(listField(data["allowed-tools"]).length ? { allowedTools: listField(data["allowed-tools"]) } : {}),
       ...(typeof data.model === "string" && data.model.trim() && data.model.trim() !== "inherit" ? { model: data.model.trim() } : {}),
+      ...(typeof data.effort === "string" && data.effort.trim() ? { effort: data.effort.trim().toLowerCase() } : {}),
       ...(data.context === "fork" ? { fork: { ...(typeof data.agent === "string" && data.agent.trim() ? { agent: data.agent.trim() } : {}), background: data.background !== false } } : {}),
     });
   };
@@ -370,9 +373,12 @@ function said(skill: Skill, granted: string[], left: string[], held?: string): s
   if (granted.length) out.push(`For this turn these run without asking, as the skill's allowed-tools say: ${granted.join(", ")}.`);
   if (held && skill.allowedTools?.length) out.push(`Its allowed-tools (${skill.allowedTools.join(", ")}) ask as usual: ${held}.`);
   if (left.length) out.push(`Its allowed-tools Keel cannot hold the same way, so they ask as usual: ${left.join("; ")}.`);
-  if (skill.model && !skill.fork) out.push(`It names the model ${skill.model}; an inline skill runs on the session's model in Keel (with context: fork, its agent runs on it).`);
+  if (!skill.fork && (skill.model || skill.effort)) out.push(`The rest of this turn runs ${[skill.model && `on the model it names (${skill.model})`, skill.effort && `at effort ${skill.effort}`].filter(Boolean).join(" ")}, as far as that model is listed and lists that effort; the session's own come back with the owner's next message.`);
   return out.length ? `\n\n[keel] ${out.join(" ")}` : "";
 }
+
+// The model and effort an inline skill names for the rest of its turn (src/tools/skill-turn.ts).
+const choiceOf = (skill: Skill) => ({ ...(skill.model ? { model: skill.model } : {}), ...(skill.effort ? { effort: skill.effort } : {}) });
 
 // The grant a skill makes, or why it makes none.
 const NOT_TRUSTED = "it is this repository's own skill, and its tools run without asking only once the owner trusts it himself (the session's Trust panel)";
@@ -405,6 +411,7 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   // (Loading it again grants its tools again, for this turn: Claude Code re-applies them.)
   const g = grantOf(skill, vars);
   if (g.rules.length) skillRun.grant!(ctx.sessionId, g.rules, skill.name, false);
+  holdChoice(ctx.sessionId, choiceOf(skill), skill.name, mayGrant(skill), false);
   const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held);
   if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.${extra}`);
   usage?.record(skill.name);
@@ -442,6 +449,7 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
   if (opts.grant && !skill.fork) {
     const g = grantOf(skill, vars);
     if (g.rules.length) skillRun.grant!(sessionId, g.rules, skill.name, opts.grant === "next", opts.cmd);
+    holdChoice(sessionId, choiceOf(skill), skill.name, mayGrant(skill), opts.grant === "next", opts.cmd);
     extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held);
   }
   return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}` };

@@ -2,11 +2,11 @@
 // and its question) and the page (the model picker shows on each row the
 // effort a pick of it runs at and what it re-reads). Pure: the page imports it.
 import { priceOf } from "../providers/pricing.ts";
-import type { Price } from "../providers/types.ts";
+import { EFFORT_LADDER, type Price } from "../providers/types.ts";
 
 // Effort levels from least to most: a level the new model does not list goes
 // to the nearest one it does (xhigh on a model that stops at high runs high).
-const LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const LADDER = EFFORT_LADDER;
 export function nearestEffort(want: string, offered: readonly string[]): string | undefined {
   if (offered.includes(want)) return want;
   const w = LADDER.indexOf(want);

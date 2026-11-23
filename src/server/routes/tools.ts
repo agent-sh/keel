@@ -8,6 +8,7 @@ import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../
 import { conceal } from "../../core/conceal.ts";
 import { ackNotices, adoptJobs, cutCommand, drainNotices, jobEnded, findJob, hasNotice, jobsChanged, jobsOf, jobView, running, stopJob, type Job } from "../../tools/jobs.ts";
 import { renderForOwner, skillRun } from "../../tools/skills.ts";
+import { dropChoice } from "../../tools/skill-turn.ts";
 import { hookContext } from "../../integrations/hooks.ts";
 import { promptExpansion } from "./hooks.ts";
 import type { RouteModule } from "../app.ts";
@@ -203,7 +204,7 @@ export const toolRoutes: RouteModule = (deps) => {
         const note = deps.store.append(s.id, "note", { text: `<skill name="${r.skill.name}">\n${granted.text}\n</skill>${more}`, model: true, skill: r.skill.name });
         deps.bus.emit({ t: "event", event: note });
         const ev = deps.engine.send(s.id, cmd);
-        if (!running && !deps.engine.isRunning(s.id)) skillRun.drop?.(s.id);
+        if (!running && !deps.engine.isRunning(s.id)) { skillRun.drop?.(s.id); dropChoice(s.id); }
         return json({ event: ev }, 201);
       },
     },

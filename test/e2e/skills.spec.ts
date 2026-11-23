@@ -170,3 +170,84 @@ test("skills: allowed-tools for one turn, only the owner's, context: fork as an 
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+// Feature: an inline skill's model and effort (Claude Code's skills reference:
+// they hold for the rest of the turn that loaded it, and the session's own come
+// back with the next message). The request after the skill loads runs on the
+// skill's model at its effort, the owner is told so in a note, the session
+// keeps its own model, and the next turn runs on it again.
+test("skills: an inline skill's model and effort hold for the rest of its turn", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "drives the calls with the scripted model, and its backup model answers the skill's part");
+  const tag = Date.now().toString(36);
+  const home = process.env.HOME!;
+  const ws = join(process.env.KEEL_DEV_DIR ?? `${home}/.cache/keel-work/bun/dev-tools`, `skills-model-${tag}`);
+  mkdirSync(ws, { recursive: true });
+  const mine = join(home, ".claude/skills");
+  const name = `pick-${tag}`;
+  mkdirSync(join(mine, name), { recursive: true });
+  writeFileSync(join(mine, name, "SKILL.md"), `---\nname: ${name}\ndescription: Test skill ${name}\nmodel: stand-in-backup\neffort: low\n---\nGo on with the task.\n`);
+  try {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+    const id = session.id as string;
+    const events = async () => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
+    const ends = async () => (await events()).filter((e) => e.kind === "turn_end").length;
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Skill", input: { skill: name } }])}` } });
+    await expect.poll(ends, { timeout: 60_000 }).toBe(1);
+    const evs = await events();
+    const replies = evs.filter((e) => e.kind === "assistant").map((e) => e.data.model);
+    expect(replies[0]).toBe(HAIKU);
+    expect(replies.at(-1)).toBe("scripted:stand-in-backup");
+    const note = evs.find((e) => e.kind === "note" && e.data.kind === "skill_model");
+    expect(note?.data.text).toContain(`The skill ${name} runs the rest of this turn on Scripted backup at effort low.`);
+    // The request itself went at the skill's effort.
+    const traces = (await (await request.get(`/api/debug/traces?session_id=${id}`)).json()).traces as any[];
+    const spans = (await Promise.all(traces.map(async (t) => (await (await request.get(`/api/debug/traces/${t.trace_id}`)).json()).spans as any[]))).flat();
+    const chats = spans.filter((s) => s.attrs?.model === "stand-in-backup" && s.attrs?.shape);
+    expect(chats.length).toBeGreaterThan(0);
+    expect(chats.every((s) => s.attrs.shape.effort === "low")).toBe(true);
+    // The session keeps its own model, and the next turn runs on it.
+    expect((await (await request.get(`/api/sessions/${id}`)).json()).session.model).toBe(HAIKU);
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say back on the session's model" } });
+    await expect.poll(ends, { timeout: 60_000 }).toBe(2);
+    expect((await events()).filter((e) => e.kind === "assistant").at(-1).data.model).toBe(HAIKU);
+    await page.goto(`/s/${id}`);
+    await expect(page.getByTestId("note").filter({ hasText: "runs the rest of this turn on Scripted backup" })).toBeVisible();
+    await shoot(page, "skills-05-turn-model");
+  } finally {
+    rmSync(join(mine, name), { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+// A repository's skill the owner has not trusted himself moves the turn only to a model no dearer
+// than the session's (the scripted models share one price), and only lowers the effort.
+test("skills: an untrusted repository skill never raises the turn's effort", async ({ request }) => {
+  test.skip(!SCRIPTED, "drives the calls with the scripted model, and its backup model answers the skill's part");
+  const tag = Date.now().toString(36);
+  const home = process.env.HOME!;
+  const ws = join(process.env.KEEL_DEV_DIR ?? `${home}/.cache/keel-work/bun/dev-tools`, `skills-repo-model-${tag}`);
+  const name = `raise-${tag}`;
+  mkdirSync(join(ws, ".git"), { recursive: true });
+  mkdirSync(join(ws, ".claude/skills", name), { recursive: true });
+  writeFileSync(join(ws, ".claude/skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: Test skill ${name}\nmodel: stand-in-backup\neffort: high\n---\nGo on with the task.\n`);
+  try {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+    const id = session.id as string;
+    expect((await request.patch(`/api/sessions/${id}`, { data: { settings: { effort: "low" } } })).ok()).toBe(true);
+    const events = async () => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Skill", input: { skill: name } }])}` } });
+    await expect.poll(async () => (await events()).filter((e) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(1);
+    const evs = await events();
+    expect(evs.filter((e) => e.kind === "assistant").at(-1).data.model).toBe("scripted:stand-in-backup");
+    const notes = evs.filter((e) => e.kind === "note" && e.data.kind === "skill_model").map((e) => e.data.text as string);
+    expect(notes.some((t) => t.includes("only lowers the effort"))).toBe(true);
+    const traces = (await (await request.get(`/api/debug/traces?session_id=${id}`)).json()).traces as any[];
+    const spans = (await Promise.all(traces.map(async (t) => (await (await request.get(`/api/debug/traces/${t.trace_id}`)).json()).spans as any[]))).flat();
+    const chats = spans.filter((s) => s.attrs?.model === "stand-in-backup" && s.attrs?.shape);
+    expect(chats.length).toBeGreaterThan(0);
+    expect(chats.every((s) => s.attrs.shape.effort === "low")).toBe(true);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
