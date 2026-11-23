@@ -348,7 +348,7 @@ export function RemoteFolderPicker({ machine, value, onChange }: { machine: stri
   const pick = (p: string) => { onChange(p); setOpen(false); close(); };
   return (
     <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (o && !recent.length) go(shown); if (!o) close(); }}>
-      <Popover.Trigger data-testid="remote-folder-picker" title={`${shown} on ${m?.name ?? machine}`} className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 text-ui text-muted shadow-1 hover:text-fg data-popup-open:text-fg">
+      <Popover.Trigger data-testid="remote-folder-picker" title={`${shown} on ${m?.name ?? machine}`} className="k-field inline-flex max-w-full items-center gap-1.5 text-muted hover:text-fg data-popup-open:text-fg">
         <Folder className="size-3.5 shrink-0 text-accent" />
         <span className="truncate font-medium text-fg">{shown.split("/").pop() || "Folder"}</span>
         <span className="hidden truncate font-mono text-micro text-faint sm:inline">{shown.slice(0, shown.lastIndexOf("/"))}</span>

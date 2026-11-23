@@ -36,7 +36,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
             data-testid="default-mode"
             value={perm?.default_mode ?? ""}
             onChange={(e) => putPerm({ default_mode: e.target.value })}
-            className="k-field"
+           
           >
             {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </Select>
@@ -144,7 +144,7 @@ function SandboxReadsCard() {
           <div className="mt-0.5 text-ui text-muted">For the sessions that work in one repository or folder.</div>
           {v.scopes.length === 0 ? <p className="k-empty mt-3">Nothing yet: open a session in a folder first.</p> : (
             <>
-              <Select data-testid="sandbox-scope" value={scope} onChange={(e) => setScope(e.target.value)} className="k-field mt-3 max-w-full font-mono text-caption">
+              <Select data-testid="sandbox-scope" value={scope} onChange={(e) => setScope(e.target.value)} className="mt-3 max-w-full font-mono text-caption">
                 {v.scopes.map((s) => <option key={s} value={s}>{s}</option>)}
               </Select>
               <PathList testid="sandbox-read-one" paths={own.read ?? []} onChange={(read) => put({ workspace: { scope, read } })} />
@@ -259,7 +259,7 @@ function TrustCard() {
       <h3 className="px-1 text-ui font-medium text-muted">Repository files</h3>
       <Card>
         <SettingRow label="A repository's new instruction files and skills" hint="A changed one always waits for you, and a repository's hook file always does. The Trust panel of a session shows what is held.">
-          <Select data-testid="trust-new-files" value={v ?? ""} onChange={(e) => put(e.target.value as "auto" | "ask")} className="k-field">
+          <Select data-testid="trust-new-files" value={v ?? ""} onChange={(e) => put(e.target.value as "auto" | "ask")}>
             <option value="auto">Load on first sight</option>
             <option value="ask">Wait for me</option>
           </Select>

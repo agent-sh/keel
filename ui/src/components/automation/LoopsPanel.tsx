@@ -210,7 +210,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
       <p className="-mt-2 text-caption text-muted">Runs in a session of its own on the default model. Use /loop in a session's composer to loop there.</p>
       <div className="flex flex-wrap items-center gap-2" data-testid="new-loop-where">
         <WorkspacePicker value={cwd} onChange={setCwd} />
-        <Select data-testid="new-loop-mode" aria-label="Permission mode" value={mode} onChange={(e) => setMode(e.target.value)} className="h-8 w-40 rounded-lg border border-line bg-bg px-2.5 text-caption text-fg outline-none focus:border-line-strong">
+        <Select data-testid="new-loop-mode" aria-label="Permission mode" value={mode} onChange={(e) => setMode(e.target.value)} className="w-40 text-caption">
           {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </Select>
       </div>

@@ -406,7 +406,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             {linked.length > 0 && (
               <label className="flex items-center gap-1.5 text-caption text-faint">
                 On
-                <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="k-field k-field-sm">
+                <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="k-field-sm">
                   <option value="">this machine</option>
                   {linked.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </Select>

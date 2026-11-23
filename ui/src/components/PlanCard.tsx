@@ -226,7 +226,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
           <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-lg border border-line bg-sunken p-1" role="group" aria-label="Approve the plan" data-testid="plan-approval">
             <span className="flex min-w-0 flex-[1_1_auto] flex-wrap items-center gap-x-2 gap-y-1">
               <span className="k-plan-label shrink-0 pl-1.5 text-caption text-muted" aria-hidden>Work goes on in</span>
-              <Select value={mode} onChange={(e) => setMode(e.target.value)} aria-label="Work goes on in" data-testid="plan-mode" className="h-7 w-[7.5rem] grow rounded-md border border-line bg-raised px-2 text-ui outline-none">
+              <Select value={mode} onChange={(e) => setMode(e.target.value)} aria-label="Work goes on in" data-testid="plan-mode" className="k-field-sm w-[7.5rem] grow">
                 {MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
               </Select>
             </span>

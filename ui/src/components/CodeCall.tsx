@@ -79,7 +79,7 @@ export function CodeCall({ use, result, live, sessionId, cwd, event }: Props) {
       <Collapsible.Panel className="k-tool-panel overflow-hidden">
         <pre className="m-2.5 max-h-72 overflow-auto rounded-md border border-line bg-code p-2.5 font-mono text-caption leading-[1.55] whitespace-pre-wrap break-all text-fg" data-testid="code-source">{code}</pre>
         {calls.length > 0 && (
-          <div className="mx-2.5 flex flex-col gap-1.5 border-l-2 border-line pl-2.5" data-testid="code-calls">
+          <div className="k-quote mx-2.5 flex flex-col gap-1.5" data-testid="code-calls">
             {calls.map((c) => inner(c, false))}
           </div>
         )}

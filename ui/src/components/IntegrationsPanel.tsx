@@ -62,7 +62,7 @@ function Writer({ info, onSaved }: { info: Info["tacit"]; onSaved: (w: string) =
   return (
     <span className="flex flex-col gap-1 sm:items-end">
       {known ? (
-        <Select aria-label="Writer of corrections" data-testid="memory-writer" value={info.writer} disabled={fixed} onChange={(e) => save(e.target.value)} className="h-8 w-40 rounded-md border border-line-strong bg-raised px-2 font-mono text-caption text-fg">
+        <Select aria-label="Writer of corrections" data-testid="memory-writer" value={info.writer} disabled={fixed} onChange={(e) => save(e.target.value)} className="w-40 font-mono text-caption">
           {lacks && <option value={info.writer}>{info.writer}</option>}
           {known.map((w) => <option key={w} value={w}>{w}</option>)}
         </Select>

@@ -369,7 +369,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
       <div className="flex flex-col gap-4 px-3.5 pt-3">
         {asked && (
           // The server's own words: plain text set apart from the card's, never markup or a link.
-          <div className="flex flex-col gap-1 border-l-2 border-line-strong pl-3" data-testid="question-message">
+          <div className="k-quote flex flex-col gap-1" data-testid="question-message">
             <span className="k-label" data-testid="question-label">{asked.label || "From the server"}</span>
             <p className="whitespace-pre-wrap break-words text-read leading-snug">{asked.message || "The server gave no message."}</p>
           </div>

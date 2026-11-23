@@ -89,7 +89,7 @@ function AddItem() {
       <div className="flex gap-1.5">
         <input className={cn(field, "h-7 flex-1 font-mono text-micro")} placeholder="key, such as person.dana (optional)" value={key} data-testid="memory-new-key" aria-label="Key"
           onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) add(); }} />
-        <Select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind" className="h-7 w-28">
+        <Select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind" className="k-field-sm w-28">
           {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
         </Select>
       </div>

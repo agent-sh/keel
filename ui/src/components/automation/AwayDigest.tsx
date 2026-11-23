@@ -88,7 +88,7 @@ export function AwayDigest({ onClose }: { onClose: () => void }) {
       {open && (
         <div className="border-t border-line pt-1.5">
           {d.daemon.length > 0 && (
-            <ul className="mx-3 mb-1.5 flex flex-col gap-1 border-l-2 border-warn pl-2.5" data-testid="away-daemon" aria-label="What the daemon went through">
+            <ul className="k-quote mx-3 mb-1.5 flex flex-col gap-1" data-tone="warn" data-testid="away-daemon" aria-label="What the daemon went through">
               {d.daemon.map((line, i) => <li key={i} className="text-caption leading-snug text-fg">{line}</li>)}
             </ul>
           )}

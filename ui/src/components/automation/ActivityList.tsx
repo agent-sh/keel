@@ -143,7 +143,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
             <Search className="size-3.5 shrink-0 text-faint" />
             <input data-testid="activity-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search activity" className="min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
           </label>
-          <Select data-testid="activity-since" aria-label="Time range" value={since} onChange={(e) => setSince(e.target.value)} className="k-field w-28 text-caption text-muted max-sm:w-auto max-sm:flex-1">
+          <Select data-testid="activity-since" aria-label="Time range" value={since} onChange={(e) => setSince(e.target.value)} className="w-28 text-caption text-muted max-sm:w-auto max-sm:flex-1">
             {SINCE.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </Select>
           <Select
@@ -151,7 +151,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
             aria-label="Session"
             value={sid}
             onChange={(e) => setSid(e.target.value)}
-            className="k-field w-44 text-caption text-muted max-sm:w-auto max-sm:flex-1"
+            className="w-44 text-caption text-muted max-sm:w-auto max-sm:flex-1"
           >
             <option value="">All sessions</option>
             {options.map((p) => <option key={p.session_id} value={p.session_id}>{(sessions[p.session_id]?.title || `Session ${p.session_id.slice(-6)}`).slice(0, 40)}</option>)}

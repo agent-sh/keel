@@ -6,7 +6,8 @@ import { itemClass, popupClass } from "./ui.tsx";
 
 // A select written like the native one (`value`, `onChange`, <option> and
 // <optgroup> children) and drawn by us: the native popup is the browser's or
-// the toolkit's, and follows neither theme.
+// the toolkit's, and follows neither theme. Its trigger is a field (.k-field), as tall
+// as the fields beside it; a page gives it only its width (k-field-sm in a dense row).
 type Opt = { value: string; label: string; disabled?: boolean; group?: string };
 type Props = {
   value: string;
@@ -38,7 +39,7 @@ export function Select({ value, onChange, children, className, disabled, ...rest
   let group: string | undefined;
   return (
     <Base.Root value={value} onValueChange={(v) => onChange({ target: { value: String(v ?? "") } })} disabled={disabled}>
-      <Base.Trigger {...rest} data-value={value} className={cn("k-select", className)}>
+      <Base.Trigger {...rest} data-value={value} className={cn("k-select k-field", className)}>
         <span className="min-w-0 flex-1 truncate">{label}</span>
         <Base.Icon className="flex-none text-faint"><ChevronsUpDown className="size-3.5" /></Base.Icon>
       </Base.Trigger>

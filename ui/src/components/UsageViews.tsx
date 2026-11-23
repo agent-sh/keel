@@ -95,7 +95,7 @@ export function TokensView({ range }: { range: Range }) {
     <div className="flex flex-col gap-4" data-testid="usage-tokens">
       <label className="flex items-center gap-2 text-ui text-muted">
         Sessions
-        <Select data-testid="zones-session" value={session} onChange={(e) => setSession(e.target.value)} className="h-8 max-w-96 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+        <Select data-testid="zones-session" value={session} onChange={(e) => setSession(e.target.value)} className="max-w-96">
           <option value="">All sessions</option>
           {recent.map((s) => <option key={s.id} value={s.id}>{s.title || "(untitled)"}</option>)}
         </Select>
@@ -380,7 +380,7 @@ export function CompareView() {
   // A name two used models share gets its provider, in the options and the heads.
   const name = (id: string) => (used.some((o) => o !== id && short(o) === short(id)) || (ma !== mb && short(ma) === short(mb) && (id === ma || id === mb)) ? `${short(id)} (${provider(id)})` : short(id));
   const select = (v: string, set: (v: string) => void, label: string) => (
-    <Select aria-label={label} data-testid={`compare-${label}`} value={v} onChange={(e) => set(e.target.value)} className="h-8 max-w-[min(26rem,100%)] min-w-0 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+    <Select aria-label={label} data-testid={`compare-${label}`} value={v} onChange={(e) => set(e.target.value)} className="max-w-[min(26rem,100%)] min-w-0">
       {used.map((id) => <option key={id} value={id}>{name(id)}</option>)}
     </Select>
   );
@@ -426,7 +426,7 @@ export function CompareView() {
       <div className="flex flex-wrap items-center gap-3">
         <Segmented<Mode> label="Compare" value={mode} onChange={setMode} options={[{ value: "ranges", label: "Two ranges" }, { value: "models", label: "Two models" }, { value: "turns", label: "Two turns" }]} />
         {mode === "turns" ? null : mode === "ranges" ? (
-          <Select aria-label="ranges" data-testid="compare-preset" value={preset} onChange={(e) => setPreset(e.target.value)} className="h-8 max-w-full min-w-0 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
+          <Select aria-label="ranges" data-testid="compare-preset" value={preset} onChange={(e) => setPreset(e.target.value)} className="max-w-full min-w-0">
             {Object.entries(PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </Select>
         ) : (

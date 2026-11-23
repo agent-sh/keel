@@ -587,7 +587,13 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel a { color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 45%, transparent); text-underline-offset: 0.1875rem; }
 .prose-keel a:hover { text-decoration-color: var(--accent); }
 .prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: var(--text-base); background: var(--sunken); border: 1px solid var(--line); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
-.prose-keel blockquote { border-left: 2px solid var(--line-strong); padding-left: 1em; color: var(--muted); }
+/* A quote, or words held inside another (a server's message, an agent's work, a block of calls):
+   one rule, one inset, everywhere. A tone colours the rule only. */
+.prose-keel blockquote { border-left: 2px solid var(--line-strong); padding-left: 0.75rem; color: var(--muted); }
+@layer components {
+  .k-quote { border-left: 2px solid var(--line-strong); padding-left: 0.75rem; }
+  .k-quote[data-tone="warn"] { border-left-color: var(--warn); }
+}
 /* In a heading the code is the heading's size. */
 .prose-keel :is(h1, h2, h3, h4) > code { font-size: inherit; }
 .prose-keel table { border-collapse: collapse; font-size: var(--text-base); display: block; overflow-x: auto; max-width: 100%; }
@@ -658,6 +664,9 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason) { opacity: 0; }
 .k-turn-foot > *, .k-turn-end > * { transition: opacity var(--dur-quick) var(--ease-out); }
 @media (hover: none) { .k-turn-foot > *, .k-turn-end > * { opacity: 1 !important; } }
+/* With no pointer to show it, an earlier reply keeps its actions and lets its figures go: the
+   last reply says its time, tokens and cost, and every turn's are in the Usage panel. One row a reply. */
+@media (hover: none) { .k-turn-foot[data-quiet] .k-turn-end > :not(.k-turn-reason) { display: none; } }
 
 /* The cards above the message box (Composer's Tray): an edge fades where more is scrolled out of view. */
 .k-tray[data-more="up"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }

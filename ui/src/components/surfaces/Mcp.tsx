@@ -179,7 +179,7 @@ function ChannelSection({ s, base, act }: { s: McpServerState; base: string; act
             </span>
           ))}
           {open.length > 0 && (
-            <Select value="" onChange={(e) => e.target.value && post({ on: true, session: e.target.value })} aria-label="Add a session that takes its events" data-testid="mcp-channel-add" className="h-7 text-caption">
+            <Select value="" onChange={(e) => e.target.value && post({ on: true, session: e.target.value })} aria-label="Add a session that takes its events" data-testid="mcp-channel-add" className="k-field-sm text-caption">
               <option value="">Add a session…</option>
               {open.map((x) => <option key={x.id} value={x.id}>{x.title || `session ${x.id.slice(-8)}`}</option>)}
             </Select>

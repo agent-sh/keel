@@ -294,7 +294,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
         ) : intent === "now" ? null : intent === "wait" ? (
           <div className="flex flex-wrap items-center gap-2" data-testid="resume-wait-form">
             <span className="text-ui">Wait for at most</span>
-            <Select data-testid="resume-wait-for" value={String(waitMs)} onChange={(e) => setWaitMs(Number(e.target.value))} className="k-field">
+            <Select data-testid="resume-wait-for" value={String(waitMs)} onChange={(e) => setWaitMs(Number(e.target.value))}>
               {DEADLINES.map((d) => <option key={d.ms} value={d.ms}>{d.label}</option>)}
             </Select>
             <span className="min-w-0 flex-1 text-caption text-muted" data-testid="resume-until">until {clock(now + waitMs)}</span>
