@@ -60,3 +60,20 @@ test("the list's top rows say their shortcut only where the pointer or the keybo
   await settles(key("open-helper"), 1);
   await shoot(page, "quiet-03-rail-keys");
 });
+
+test("an agent's line names its type only when the call picked one", async ({ page, request }) => {
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:claude-stand-in", title: "Agent lines" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  const agent = (description: string, subagent_type?: string) => ({ name: "Agent", input: { description, prompt: "script:say Looked.", ...(subagent_type ? { subagent_type } : {}) } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([agent("Plain look"), agent("Default look", "general-purpose"), agent("Search look", "Explore")])}` } });
+  await page.goto(`/s/${session.id}`);
+  const line = (t: string) => page.getByTestId("agent-call").filter({ hasText: t });
+  // A finished turn's agents fold into one line: opened, it lists each.
+  await page.getByRole("button", { name: /^Started 3 agents/ }).click({ timeout: 60_000 });
+  await expect(line("Search look").getByTestId("agent-call-status")).toBeAttached();
+  await expect(line("Search look").getByTestId("agent-call-type")).toHaveText("Explore");
+  await expect(line("Plain look").getByTestId("agent-call-type")).toHaveCount(0);
+  await expect(line("Default look").getByTestId("agent-call-type")).toHaveCount(0);
+  await expect(page.getByTestId("agent-call").filter({ hasText: "general-purpose" })).toHaveCount(0);
+  await shoot(page, "quiet-04-agent-lines");
+});

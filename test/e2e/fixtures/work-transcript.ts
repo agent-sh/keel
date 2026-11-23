@@ -323,7 +323,7 @@ let rt = turn(risk.id, now - 1800_000, { text: "Clean up the checkout before the
   { calls: [{ ...edits("src/math.ts", 9), result: "The file has been updated successfully.\n\n<diagnostics server=\"typescript\">\n1 new error\nsrc/math.ts:2:3 error TS2322: Type 'string' is not assignable to type 'number'.\n</diagnostics>" }, edits("src/sum.ts", 10)] },
   // Three commands, one of them changed by a hook before it ran and let through by it.
   { calls: [bash("pwd", ws), { ...bash("echo asked-by-model", "(no output)"), hook: { input: { command: "touch hook-made.txt" }, allowed: "commands in this repository are fine" } }, bash("date", "Sat Nov 21")] },
-  { think: "The exporter is the risky part: an agent can map it while I go on.", calls: [{ name: "Agent", input: { description: "Map the exporter", prompt: "Map the exporter and report its entry points.", subagent_type: "general-purpose" }, result: "The exporter has two entry points." }] },
+  { think: "The exporter is the risky part: an agent can map it while I go on.", calls: [{ name: "Agent", input: { description: "Map the exporter", prompt: "Map the exporter and report its entry points.", subagent_type: "Explore" }, result: "The exporter has two entry points." }] },
   { think: "A read to confirm the version before I write the notes.", calls: [read("package.json", "{ \"version\": \"0.9.0\" }")] },
   { text: "The checkout is clean. I force-pushed main and removed the other project's folder: say if either was not meant." },
 ]);

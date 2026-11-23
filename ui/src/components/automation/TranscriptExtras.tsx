@@ -312,6 +312,9 @@ export function InputNotice({ e }: { e: StoredEvent }) {
 // The card of an Agent / spawn_agent call: the child's live state, open, stop.
 const ENDED_WORD: Partial<Record<CallState, string>> = { error: CALL_FAILED, denied: "denied by you", refused: "refused", stopped: CALL_STOPPED, cut: "cut by a restart" };
 
+// The words the agent tools take for their default type (src/automation/tools.ts), and none.
+const DEFAULT_TYPES = new Set(["", "general-purpose", "default", "worker"]);
+
 export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean }) {
   const input: any = use.input ?? {};
   const out = resultText(result);
@@ -324,7 +327,9 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
     if (id) return agents[id[1] ?? id[2]!];
     return Object.values(agents).find((a) => a.call_id === use.id);
   }, [agents, out, use.id]);
-  const type = input.subagent_type ?? input.agent_type ?? "general-purpose";
+  // Its type is said when the call picked one: the default type on every line said nothing a line needs.
+  const named = String(input.subagent_type ?? input.agent_type ?? "");
+  const type = DEFAULT_TYPES.has(named.toLowerCase()) ? "" : named;
   // Its state in the word its tree row and the background list use (src/core/state-words.ts).
   const st = useAgentSaid(agent);
   const asking = st?.watch === "need";
@@ -383,8 +388,8 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
                 <RotateCcw className="size-3 shrink-0" />{agent.lost.length === 1 ? "fresh context" : `${agent.lost.length} fresh contexts`}
               </span>
             )}
-            <span className="k-line-chip">{type}</span>
-            {agent?.branch && <span className="k-line-chip" data-code="" data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
+            {type && <span className="k-line-chip" data-testid="agent-call-type">{type}</span>}
+            {agent?.branch && <span className="k-line-chip k-line-branch" data-code="" data-testid="agent-call-branch" title={`${agent.branch}, in its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
             {(agent?.machine || input.machine) && <span className="k-line-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
             {agent?.structured && <span className="k-line-chip" data-code="" data-testid="agent-call-structured">json</span>}
             {(agent ? isLive(agent) && !asking : live) && <span className="k-line-run" aria-hidden="true" />}

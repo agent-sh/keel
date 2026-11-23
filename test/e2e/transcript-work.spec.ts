@@ -420,8 +420,8 @@ test("a closed step shows what must be seen: marked calls whole, a cut call, eac
 
     // What the model thought before a card of its own is on the rail above it, one press away; the agent is a line of the rail.
     const agent = page.getByTestId("agent-call");
-    // What stands at a line's end is apart from its words in a copied selection: the agent's name, then its kind.
-    expect((await agent.first().locator(".k-line").evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection()!; s.removeAllRanges(); s.addRange(r); const t = s.toString(); s.removeAllRanges(); return t; })).replace(/\s+/g, " ")).toContain("Map the exporter general-purpose");
+    // What stands at a line's end is apart from its words in a copied selection: the agent's name, then the kind its call picked.
+    expect((await agent.first().locator(".k-line").evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection()!; s.removeAllRanges(); s.addRange(r); const t = s.toString(); s.removeAllRanges(); return t; })).replace(/\s+/g, " ")).toContain("Map the exporter Explore");
     await expect(agent.locator(".k-line-verb")).toHaveText("Agent");
     const before = page.locator(".k-step", { has: agent }).getByTestId("thinking");
     await expect(before).toBeVisible();
