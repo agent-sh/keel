@@ -77,7 +77,10 @@ class MainActivity : FragmentActivity() {
         Ui.theme.intValue = Prefs.theme
         // What the phone last held, at once: the stream catches up from there.
         Hub.scope.launch { Hub.restore() }
-        handle(intent)
+        // The link or notification that opened the app is taken once. A screen made again (the text size,
+        // the theme or the turn of the phone changed) is handed the same intent: taken again, it asked to
+        // pair once more after a cancel, and opened again a session the owner had left.
+        if (savedInstanceState == null) handle(intent)
         setContent { KeelTheme(Ui.theme.intValue) { Root(this) } }
     }
 
