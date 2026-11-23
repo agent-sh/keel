@@ -1309,6 +1309,11 @@ test("an agent file's memory folder starts its task with MEMORY.md, within its b
   const stored = JSON.parse(store.db.query<{ def: string }, [string]>("SELECT def FROM agents WHERE id = ?").get(a.id)!.def);
   expect(stored.tools).toEqual(["Grep", "Read", "Write", "Edit"]);
   expect(agents.gate(a.session_id, "Write", { file_path: join(mem, "MEMORY.md") })).toBeUndefined();
+  // RSH-S25: a write that leaves MEMORY.md past that bound is told with the call's result; another file's is not.
+  const edit = { name: "Write", kind: "edit" as const };
+  expect(agents.memoryWrite(a.session_id, edit, { file_path: join(mem, "MEMORY.md") })).toContain("MEMORY.md is now 250 lines and 3 KB: past the 200 lines or 25 KB you are given at each start, so from line 201 on it is not read again.");
+  expect(agents.memoryWrite(a.session_id, edit, { file_path: join(mem, "detail.md") })).toBeUndefined();
+  expect(agents.memoryWrite(parent.id, edit, { file_path: join(mem, "MEMORY.md") })).toBeUndefined();
   end(a, "end_turn");
   await settled();
 });

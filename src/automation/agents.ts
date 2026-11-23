@@ -37,7 +37,9 @@ import { isWay, WAY_WORDS, type Way } from "../engine/follow-up.ts";
 import { capsuleBrief, decideSuccessor, givenUpNote, lossOf, otherFamily, parentLine, taskWithSteers, LOSS_WORDS, type Lost, type LossKind } from "./successor.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
-import { agentMemory, memoryOff, SCOPES, type MemoryScope } from "./agent-memory.ts";
+import { agentMemory, memoryDir, memoryOff, memoryOver, SCOPES, type MemoryScope } from "./agent-memory.ts";
+import { targetsOf } from "../engine/nested.ts";
+import type { Tool } from "../tools/types.ts";
 import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
 import type { NowLine } from "./now-line.ts";
 import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
@@ -368,6 +370,20 @@ export const agentServers: {
 } = {};
 // The definition an agent's session was started from.
 export const defOfSession = (sessionId: string): AgentDef | undefined => { const a = byChild(sessionId); return a ? defOf(a.id) : undefined; };
+
+// A call of an edit tool in an agent's session that wrote its own MEMORY.md: what to tell it when
+// the file is now past what its next start reads (memoryOver), else nothing. (A shell command that
+// writes the file is not followed: the agent is told at its next start, as before.)
+export function memoryWrite(sessionId: string, tool: Pick<Tool, "name" | "kind">, input: unknown): string | undefined {
+  const def = defOfSession(sessionId);
+  const s = def?.memory ? D().store.session(sessionId) : undefined;
+  if (!def?.memory || !s || s.machine) return undefined;
+  const dir = memoryDir(def.memory, def.name, s.workspace);
+  if (!dir) return undefined;
+  const index = join(dir, "MEMORY.md");
+  if (!targetsOf(tool, input, s.workspace).paths.some((p) => resolve(p) === index)) return undefined;
+  try { return memoryOver(readFileSync(index, "utf8")); } catch { return undefined; }
+}
 
 // A frontmatter list: a YAML list or one comma-separated line. A comma inside
 // an entry's parentheses is part of the entry (`Agent(worker, researcher)` is

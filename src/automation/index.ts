@@ -131,6 +131,14 @@ function init(deps: Deps) {
       return undefined;
     },
     afterTool: (s, call, result) => {
+      // A write that leaves the agent's own MEMORY.md past what its next start reads is told with the call's result.
+      if (call.tool.kind === "edit" && !result.is_error) {
+        const over = agents.memoryWrite(s.id, call.tool, call.input);
+        if (over) {
+          if (typeof result.content === "string") result.content = result.content ? `${result.content}\n\n${over}` : over;
+          else result.content = [...result.content, { type: "text", text: over }];
+        }
+      }
       // A plan the tool refused is not the plan: the saved list stays as it was.
       if (goals.isPlanTool(call.tool.name) && !result.is_error) taskRenames.fromPlan(s.id, call.tool.name, call.input);
       if (QUESTION_TOOLS.has(call.tool.name)) {
