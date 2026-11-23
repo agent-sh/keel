@@ -162,7 +162,7 @@ function PluginCheck({ id }: { id: string }) {
     <div className="mt-2" data-testid="plugin-check">
       <div className="flex items-center gap-2">
         <button type="button" onClick={run} disabled={busy} data-testid="plugin-check-run"
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-2.5 text-ui font-medium hover:bg-hover disabled:opacity-50">
+          className="k-btn">
           <ShieldCheck className={cn("size-3.5", busy && "animate-pulse")} /> {busy ? "Checking" : "Run the conformance check"}
         </button>
         {r && (

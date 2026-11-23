@@ -80,7 +80,7 @@ export function AddProviderHost() {
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="add-provider"
-          className="fixed inset-x-4 top-[5vh] bottom-[5vh] z-50 mx-auto flex max-w-5xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-200 data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
+ className="fixed inset-x-4 top-[5vh] bottom-[5vh] z-50 mx-auto flex max-w-5xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
           {s && <AddProvider key={s.edit ?? ""} edit={s.edit} />}
         </Dialog.Popup>
@@ -185,7 +185,7 @@ function Steps({ r, onUse }: { r: TestResult; onUse: (url: string) => void }) {
       {r.suggest && (
         <div className="flex items-center gap-2 border-t border-line px-3 py-2 text-ui">
           <span className="text-muted">It answered at <code className="rounded-xs bg-code px-1 font-mono">{r.suggest.base_url}</code>.</span>
-          <button type="button" data-testid="provider-use-suggest" onClick={() => onUse(r.suggest!.base_url)} className="ml-auto h-7 rounded-md border border-line-strong px-2.5 text-ui font-medium hover:bg-hover">Use it</button>
+          <button type="button" data-testid="provider-use-suggest" onClick={() => onUse(r.suggest!.base_url)} className="k-btn ml-auto">Use it</button>
         </div>
       )}
     </div>
@@ -352,7 +352,7 @@ function AddProvider({ edit }: { edit?: string }) {
               {test && <Steps r={test} onUse={(u) => set({ base_url: u })} />}
               {error && <p className="text-ui text-danger" data-testid="provider-error">{error}</p>}
               <div className="sticky bottom-0 -mx-6 flex items-center gap-2 border-t border-line bg-bg px-6 py-3">
-                <button type="submit" data-testid="provider-test-run" disabled={!!busy || !form.base_url} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50">
+                <button type="submit" data-testid="provider-test-run" disabled={!!busy || !form.base_url} className="k-btn k-btn-lg">
                   {busy === "test" && <Loader2 className="size-3.5 animate-spin" />} Test connection
                 </button>
                 {test?.models.length ? (

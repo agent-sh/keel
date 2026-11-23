@@ -33,7 +33,7 @@ function AgentFolders({ agent, busy, save }: { agent: Agent; busy: boolean; save
         ))}
       </span>
       <form className="mt-1.5 flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (add.trim()) { save([...list, add.trim()]); setAdd(""); } }}>
-        <input aria-label={`A folder ${agent.name} may write`} placeholder="~/.agent-data or /full/path" value={add} onChange={(e) => setAdd(e.target.value)} className="h-7 w-72 rounded-md border border-line bg-sunken px-2 font-mono text-caption" data-testid="acp-folder-add-path" />
+        <input aria-label={`A folder ${agent.name} may write`} placeholder="~/.agent-data or /full/path" value={add} onChange={(e) => setAdd(e.target.value)} className="k-field k-field-sm w-72 font-mono" data-testid="acp-folder-add-path" />
         <button type="submit" className={btn} disabled={busy || !add.trim()} data-testid="acp-folder-add">Add folder</button>
         {agent.folders!.own && <button type="button" className={btn} disabled={busy} onClick={() => save(null)} data-testid="acp-folder-reset">Use the guess</button>}
       </form>
@@ -86,9 +86,9 @@ export function AcpAgentsSettings() {
             className="mt-3 flex flex-wrap items-center gap-2"
             onSubmit={(e) => { e.preventDefault(); act(() => api<Listing>("/api/acp/agents", { method: "POST", body: JSON.stringify({ id: form.id.trim(), command: form.command.trim(), args: form.args.trim() ? form.args.trim().split(/\s+/) : [] }) })); setForm({ id: "", command: "", args: "" }); }}
           >
-            <input aria-label="Agent id" placeholder="id" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} className="h-7 w-32 rounded-md border border-line bg-sunken px-2 text-caption" data-testid="acp-add-id" />
-            <input aria-label="Command" placeholder="command" value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })} className="h-7 w-48 rounded-md border border-line bg-sunken px-2 font-mono text-caption" data-testid="acp-add-command" />
-            <input aria-label="Arguments" placeholder="arguments" value={form.args} onChange={(e) => setForm({ ...form, args: e.target.value })} className="h-7 min-w-64 flex-1 rounded-md border border-line bg-sunken px-2 font-mono text-caption" data-testid="acp-add-args" />
+            <input aria-label="Agent id" placeholder="id" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} className="k-field k-field-sm w-32" data-testid="acp-add-id" />
+            <input aria-label="Command" placeholder="command" value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })} className="k-field k-field-sm w-48 font-mono" data-testid="acp-add-command" />
+            <input aria-label="Arguments" placeholder="arguments" value={form.args} onChange={(e) => setForm({ ...form, args: e.target.value })} className="k-field k-field-sm min-w-64 flex-1 font-mono" data-testid="acp-add-args" />
             <button type="submit" className={btn} disabled={busy || !form.id.trim() || !form.command.trim()} data-testid="acp-add">Add</button>
           </form>
         </div>

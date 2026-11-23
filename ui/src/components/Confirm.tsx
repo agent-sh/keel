@@ -80,7 +80,7 @@ export function ConfirmHost() {
   return (
     <AlertDialog.Root open={!!ask} onOpenChange={(o) => !o && close(false)}>
       <AlertDialog.Portal>
-        <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-overlay transition-opacity duration-150 data-starting-style:opacity-0 data-ending-style:opacity-0" />
+        <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <AlertDialog.Popup
           data-testid="confirm"
           data-guarded={guarded || undefined}
@@ -88,7 +88,7 @@ export function ConfirmHost() {
           onKeyDownCapture={(e) => { repeating.current = e.repeat; }}
           onKeyUpCapture={() => { repeating.current = false; }}
           style={{ "--k-dialog-w": ask?.code ? "34rem" : "26rem" } as React.CSSProperties}
-          className="k-dialog rounded-xl border border-line bg-raised shadow-3 transition-[opacity,scale] duration-150 data-starting-style:scale-[0.97] data-starting-style:opacity-0 data-ending-style:opacity-0"
+ className="k-dialog rounded-xl border border-line bg-raised shadow-3 transition-[opacity,scale] data-starting-style:scale-[0.97] data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
           <AlertDialog.Title className="k-dialog-title px-[var(--k-dialog-pad)] pt-[var(--k-dialog-pad)] text-read font-semibold">{ask?.title}</AlertDialog.Title>
           {ask?.code ? (
@@ -105,7 +105,7 @@ export function ConfirmHost() {
             {/* A held key cancels nothing either: the dialog stays until the key was let go and pressed again. */}
             <AlertDialog.Close ref={cancel} onClick={(e) => { if (key(e) && repeating.current) e.preventBaseUIHandler(); }} className="h-8 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover">Cancel</AlertDialog.Close>
             {ask?.alt && (
-              <button type="button" data-testid="confirm-alt" data-nudge={refused === "alt" || undefined} style={marked(refused === "alt")} onClick={(e) => { if (answers(e, "alt")) close("alt"); }} className="h-8 rounded-md border border-line-strong px-3 text-ui font-medium hover:bg-hover">
+              <button type="button" data-testid="confirm-alt" data-nudge={refused === "alt" || undefined} style={marked(refused === "alt")} onClick={(e) => { if (answers(e, "alt")) close("alt"); }} className="k-btn k-btn-lg">
                 {ask.alt}
               </button>
             )}

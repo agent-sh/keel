@@ -89,7 +89,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Positioner align="end" sideOffset={6} className="z-50">
-            <Popover.Popup ref={popup} className="max-h-[var(--available-height)] w-[min(22rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] overflow-y-auto rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+            <Popover.Popup ref={popup} className="max-h-[var(--available-height)] w-[min(22rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] overflow-y-auto rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
               <Popover.Title className="px-2 pt-1 pb-1.5 k-label">Permissions</Popover.Title>
               {/* Grouped by who decides; within a group, from asking most to asking least. Each row says
                   what runs and what asks; the whole description shows for the mode in use.
@@ -184,10 +184,10 @@ export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[2px] transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
+        <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="grants-panel"
-          className="fixed right-4 top-4 bottom-4 z-50 flex w-[min(36rem,calc(100vw-2rem))] flex-col rounded-2xl border border-line bg-raised shadow-2 transition-[transform,opacity] duration-200 data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0"
+ className="fixed right-4 top-4 bottom-4 z-50 flex w-[min(36rem,calc(100vw-2rem))] flex-col rounded-2xl border border-line bg-raised shadow-2 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0"
         >
           <div className="flex items-center border-b border-line px-4 py-3">
             <Dialog.Title className="font-semibold">Grants</Dialog.Title>

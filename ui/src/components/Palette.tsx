@@ -192,7 +192,7 @@ export function Palette() {
   return (
     <Dialog.Root open={open} onOpenChange={(o) => setUI({ palette: o })}>
       <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity duration-150 data-starting-style:opacity-0 data-ending-style:opacity-0" />
+        <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="palette"
           finalFocus={() => {
@@ -209,7 +209,7 @@ export function Palette() {
           className={cn(
             "fixed left-1/2 top-[12vh] z-50 flex max-h-[min(34rem,76vh)] w-[min(40rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-col overflow-hidden",
             "rounded-xl border border-line bg-raised shadow-3 outline-none",
-            "transition-[opacity,scale] duration-150 data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:opacity-0",
+            "transition-[opacity,scale] data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:opacity-0",
           )}
         >
           <div className="flex items-center gap-2.5 border-b border-line px-4">

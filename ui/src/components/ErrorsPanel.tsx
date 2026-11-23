@@ -159,7 +159,7 @@ function Row({ e }: { e: ErrorRecord }) {
     <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
       <summary className="flex cursor-default list-none items-baseline gap-2 text-ui [&::-webkit-details-marker]:hidden">
         {/* The row opens: a marker of its own says so, and turns when it has. */}
-        <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform duration-150 group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
+        <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
         {/* The message leads; where it came from is a quiet word after it, not a red tag on every row (the drawer is all failures). */}
         <span className={cn("min-w-0 flex-1 truncate", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
         <span className="shrink-0 text-micro text-faint" data-testid="error-source">{e.source}</span>
@@ -241,7 +241,7 @@ function Row({ e }: { e: ErrorRecord }) {
           <button
             type="button"
             onClick={() => actions.resolveError(e.id, !e.resolved_ts).catch(reportError)}
-            className="ml-auto flex h-7 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-2.5 text-caption font-medium hover:bg-hover"
+            className="k-btn ml-auto"
             data-testid="error-resolve"
           >
             {e.resolved_ts ? <><RotateCcw className="size-3.5" /> Open again</> : <><Check className="size-3.5 text-ok" /> Resolve</>}
@@ -276,7 +276,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
           data-float
           className={cn(
             "k-surface fixed right-3 top-3 bottom-3 z-50 w-[min(40rem,calc(100vw-1.5rem))]",
-            "transition-[transform,opacity] duration-200 data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0",
+            "transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0",
           )}
         >
           <div className="k-surface-head">

@@ -56,7 +56,7 @@ function Host() {
   return (
     <Dialog.Root open={!!ask} onOpenChange={(o) => !o && close()}>
       <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 z-50 bg-overlay transition-opacity duration-150 data-starting-style:opacity-0 data-ending-style:opacity-0" />
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup data-testid="summarize-dialog" className="k-dialog rounded-xl border border-line bg-raised shadow-3">
           <Dialog.Title className="k-dialog-title px-[var(--k-dialog-pad)] pt-[var(--k-dialog-pad)] text-read font-semibold">{t.title}</Dialog.Title>
           <div className="k-dialog-body mt-1.5 px-[var(--k-dialog-pad)] pb-1">

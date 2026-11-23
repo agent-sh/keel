@@ -452,11 +452,11 @@ function PromptForm({ p, base, onShown }: { p: Prompt; base: string; onShown: (m
               title={a.description}
               value={vals[a.name] ?? ""}
               onChange={(e) => setVals((x) => ({ ...x, [a.name]: e.target.value }))}
-              className="h-7 w-56 rounded-md border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
+              className="k-field k-field-sm w-56"
             />
           </label>
         ))}
-        <button type="submit" data-testid="mcp-prompt-get" className="h-7 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg">Show</button>
+        <button type="submit" data-testid="mcp-prompt-get" className="k-btn">Show</button>
         {err && <span className="basis-full text-micro text-danger" role="alert" data-testid="mcp-prompt-error">{err}</span>}
       </form>
     </li>

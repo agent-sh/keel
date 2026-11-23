@@ -170,7 +170,7 @@ export function PortSettings() {
               </div>
             )}
           </div>
-          <button type="button" disabled={!!busy} onClick={read} className="h-8 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50">
+          <button type="button" disabled={!!busy} onClick={read} className="k-btn k-btn-lg">
             {busy === "reading" ? "Reading" : "Read again"}
           </button>
           <button type="button" disabled={busy === "bringing" || !picked.size} onClick={bring} className="h-8 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">

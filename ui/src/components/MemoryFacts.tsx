@@ -472,7 +472,7 @@ export function FactReader({ name, session, onClose, onOpen, onRead }: { name: s
                 <p className="mt-0.5 text-caption text-muted">{r.correct.note}</p>
                 <form ref={form} className="mt-1.5 flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); void send(); }}>
                   <input data-testid="memory-correct-text" aria-label="What is right instead" value={text} maxLength={200} onChange={(e) => setText(e.target.value)} placeholder="What is right instead, in one line"
-                    className="h-8 min-w-40 flex-1 rounded-md border border-line-strong bg-raised px-2.5 text-ui outline-none placeholder:text-faint focus-visible:border-accent" />
+                    className="k-field min-w-40 flex-1" />
                   <button type="submit" disabled={!text.trim()} aria-busy={busy || undefined} data-testid="memory-correct-send" className={cn("h-8 rounded-md border border-line-strong px-3 text-ui font-medium text-fg hover:bg-hover disabled:opacity-50", busy && "opacity-60")}>{busy ? "Asking the store" : "Send correction"}</button>
                 </form>
                 {sent && <p className={cn("mt-1.5 text-caption [overflow-wrap:anywhere]", sent.ok ? "text-ok" : sent.ok === null ? "text-muted" : "text-danger")} role="status" data-testid="memory-correct-result"><Shown text={sent.line} /></p>}

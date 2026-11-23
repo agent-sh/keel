@@ -790,7 +790,7 @@ const SessionComposer = memo(function SessionComposer({
     </Tray>
     <div
       className={cn(
-        "k-composer-box k-box relative flex min-h-0 flex-col rounded-xl border bg-raised shadow-2 transition-[border-color,box-shadow] duration-150",
+        "k-composer-box k-box relative flex min-h-0 flex-col rounded-xl border bg-raised shadow-2 transition-[border-color,box-shadow]",
         "border-line-strong/70 focus-within:border-line-strong focus-within:shadow-[var(--shadow-2),0_0_0_3px_var(--accent-soft)]",
         dragging && "border-accent shadow-[var(--shadow-2),0_0_0_3px_var(--accent-soft)]",
       )}
@@ -1024,7 +1024,7 @@ const SessionComposer = memo(function SessionComposer({
             title={busy ? "Steer into the running turn" : `Send (${keyLabel(SEND_KEYS(enterSends).send).join(" ")})`}
             aria-label="Send"
             className={cn(
-              "k-send grid size-8 place-items-center rounded-full bg-accent text-accent-fg transition-[background-color,opacity,transform] duration-150",
+              "k-send grid size-8 place-items-center rounded-full bg-accent text-accent-fg transition-[background-color,opacity,transform]",
               "hover:bg-accent-hover active:scale-95 disabled:bg-line-strong disabled:text-raised disabled:opacity-70",
             )}
           >

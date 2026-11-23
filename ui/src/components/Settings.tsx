@@ -109,7 +109,7 @@ function Models() {
             type="button"
             disabled={busy}
             onClick={() => { setBusy(true); actions.loadModels(true).catch(reportError).finally(() => setBusy(false)); }}
-            className="h-8 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50"
+            className="k-btn k-btn-lg"
           >
             {busy ? "Reading" : "Read again"}
           </button>

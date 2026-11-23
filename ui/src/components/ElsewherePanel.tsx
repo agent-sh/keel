@@ -265,7 +265,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
           <span className="text-caption text-muted">Sends</span>
           <code className="font-mono text-caption text-faint">/model</code>
           <input autoFocus value={model} onChange={(e) => setModel(e.target.value)} placeholder={s.model || "model name"} data-testid="elsewhere-model"
-            className="h-7 min-w-0 flex-1 rounded-md border border-line bg-bg px-2 font-mono text-caption outline-none focus:border-line-strong" />
+            className="k-field k-field-sm min-w-0 flex-1 font-mono" />
           <button disabled={!model.trim() || held || sending} className="h-7 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg disabled:opacity-40">Switch</button>
         </form>
       )}

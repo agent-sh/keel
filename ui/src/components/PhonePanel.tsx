@@ -72,7 +72,7 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
             onChange={(e) => setUrl(e.target.value)}
             placeholder="https://keel.example.com"
             spellCheck={false}
-            className="h-8 min-w-0 flex-1 rounded-md border border-line bg-sunken px-2.5 font-mono text-caption outline-none placeholder:text-faint focus:border-accent"
+            className="k-field text-caption min-w-0 flex-1 font-mono"
           />
           <button type="button" data-testid="pair-show" onClick={show} disabled={!url.trim() || busy} aria-busy={busy} className={cn(button, "border-accent bg-accent text-accent-fg hover:bg-accent-hover")}>
             <QrCode className="size-3.5" /> {busy ? "Making a code" : bundle ? "New code" : "Show pairing code"}

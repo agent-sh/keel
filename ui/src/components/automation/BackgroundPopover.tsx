@@ -93,7 +93,7 @@ export function BackgroundButton({ sessionId }: { sessionId: string }) {
             data-testid="background-popup"
             className={cn(
               "w-[min(26rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-lg border border-line bg-raised pb-2 shadow-3 outline-none",
-              "origin-[var(--transform-origin)] transition-[scale,opacity] duration-150 data-starting-style:scale-[0.97] data-starting-style:opacity-0 data-ending-style:scale-[0.97] data-ending-style:opacity-0",
+              "origin-[var(--transform-origin)] transition-[scale,opacity] data-starting-style:scale-[0.97] data-starting-style:opacity-0 data-ending-style:scale-[0.97] data-ending-style:opacity-0",
             )}
           >
             <SectionTitle>Agents</SectionTitle>

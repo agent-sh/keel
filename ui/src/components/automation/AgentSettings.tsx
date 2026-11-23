@@ -63,7 +63,7 @@ export default function AgentSettings() {
           <div className="flex items-center gap-2" data-testid="advisor-setting">
             <ModelPicker value={model ?? ""} onChange={(id) => save(id)} />
             {model && (
-              <button type="button" data-testid="advisor-off" onClick={() => save(null)} className="h-8 rounded-md border border-line-strong bg-raised px-3 text-ui hover:bg-hover">
+              <button type="button" data-testid="advisor-off" onClick={() => save(null)} className="k-btn k-btn-lg">
                 None
               </button>
             )}

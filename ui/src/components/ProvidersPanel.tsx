@@ -63,7 +63,7 @@ function GrokSignIn() {
           setBusy(true);
           try { setS(await actions.grokSignIn()); } catch (e) { setS({ state: "failed", error: failed(e, { at: "ProvidersPanel" }) }); } finally { setBusy(false); }
         }}
-        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-2.5 text-ui font-medium hover:bg-hover disabled:opacity-50"
+        className="k-btn"
       >
         <LogIn className="size-3.5" /> Sign in
       </button>
@@ -192,7 +192,7 @@ export function ProvidersSettings() {
             data-testid="providers-refresh"
             onClick={refresh}
             disabled={busy}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50"
+            className="k-btn k-btn-lg"
           >
             <RefreshCw className={cn("size-3.5", busy && "animate-spin")} /> {busy ? "Reading" : "Read again"}
           </button>

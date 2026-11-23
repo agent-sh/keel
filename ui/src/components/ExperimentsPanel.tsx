@@ -38,7 +38,7 @@ type List = { experiments: Experiment[]; templates: Template[]; metrics: Record<
 const btn = "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-ui font-medium disabled:opacity-50";
 const primaryBtn = cn(btn, "bg-accent text-accent-fg hover:bg-accent-hover");
 const quietBtn = cn(btn, "border border-line bg-raised text-fg hover:bg-hover");
-const field = "h-8 min-w-0 rounded-md border border-line bg-sunken px-2 text-ui outline-none placeholder:text-faint focus:border-accent";
+const field = "k-field";
 
 // A metric value in its own unit.
 export function fmtMetric(unit: string, v: number | null | undefined, signed = false) {

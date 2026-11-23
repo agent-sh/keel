@@ -48,7 +48,7 @@ export function SetupProviders() {
         >
           Set up a provider
         </button>
-        <button type="button" disabled={busy} onClick={again} className="h-8 rounded-md border border-line px-3 text-ui hover:bg-hover disabled:opacity-50" data-testid="setup-read-again">
+        <button type="button" disabled={busy} onClick={again} className="k-btn k-btn-lg" data-testid="setup-read-again">
           {busy ? "Reading the listings" : "I added a key, read again"}
         </button>
       </div>

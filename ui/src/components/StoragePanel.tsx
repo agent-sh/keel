@@ -373,7 +373,7 @@ export function StoragePanel() {
                     {s.subagent && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">subagent</span>}
                     <span className="text-caption tabular-nums text-faint">{s.checkpoints} checkpoints, about {fmtBytes(s.checkpoint_bytes)}</span>
                     <span className="w-16 text-right text-caption tabular-nums text-faint" title={when(s.updated_ms)}>{ago(s.updated_ms)}</span>
-                    <button type="button" data-testid="checkpoint-drop" className="h-7 rounded-md border border-line-strong bg-raised px-2 text-caption font-medium hover:bg-hover" onClick={() => dropCheckpoints({ sessions: [s.id] }, `of ${s.title || "this session"}`).catch(reportError)}>
+                    <button type="button" data-testid="checkpoint-drop" className="k-btn" onClick={() => dropCheckpoints({ sessions: [s.id] }, `of ${s.title || "this session"}`).catch(reportError)}>
                       Drop
                     </button>
                   </div>

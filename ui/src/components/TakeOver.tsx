@@ -71,7 +71,7 @@ export function LiveSourceBanner({ sessionId }: { sessionId: string }) {
             setBusy(false);
           }
         }}
-        className="h-7 shrink-0 rounded-md border border-line-strong px-2.5 text-caption font-medium hover:bg-hover disabled:opacity-50"
+        className="k-btn shrink-0"
       >
         Take over now
       </button>

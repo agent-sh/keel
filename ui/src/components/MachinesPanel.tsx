@@ -12,8 +12,8 @@ import { Card } from "./Settings.tsx";
 import { Select } from "./Select.tsx";
 import { Seg } from "./Seg.tsx";
 
-const field = "h-8 w-full rounded-lg border border-line bg-bg px-2.5 text-ui outline-none placeholder:text-faint focus:border-accent focus:ring-2 focus:ring-accent/20";
-const btn = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50 [&>svg]:size-3.5 [&>svg]:text-faint";
+const field = "k-field w-full";
+const btn = "k-btn k-btn-lg [&>svg]:text-faint";
 const ghost = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50 [&>svg]:size-3.5";
 const heading = (t: string, extra?: ReactNode) => (
   <h3 className="k-after-card mt-7 mb-2 flex items-center gap-2 k-label">{t}{extra}</h3>

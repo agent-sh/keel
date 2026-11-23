@@ -47,7 +47,7 @@ export default function AlertSettings() {
         <SettingRow label="Test" hint="An alert of the kind From the agent, through its routes.">
           <div className="flex items-center gap-3">
             {tested && <span role="status" data-testid="alert-test-result" className="text-caption text-muted">{tested}</span>}
-            <button type="button" data-testid="alert-test" onClick={() => void test()} className="h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover">
+            <button type="button" data-testid="alert-test" onClick={() => void test()} className="k-btn k-btn-lg shrink-0">
               Send a test alert
             </button>
           </div>

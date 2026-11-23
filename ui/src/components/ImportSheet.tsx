@@ -218,7 +218,7 @@ function Running({ onDone }: { onDone: () => void }) {
           <button type="button" disabled={!r.transcript_path} title={r.transcript_path ? "Import a copy; the original keeps running" : "The agent view names no transcript of it on this machine, so there is nothing to copy"} onClick={() => go(api("/api/import", { method: "POST", body: JSON.stringify({ outside: r.id, mode: r.imported ? "open" : undefined }) }))}
             className="h-6 shrink-0 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent">{r.imported ? "Open copy" : "Copy"}</button>
           <button type="button" data-testid="import-takeover" disabled={!r.transcript_path} onClick={() => go(takeOver(r.id, r.name || r.id, TOOL[r.kind] ?? r.kind))}
-            className="h-6 shrink-0 rounded-md border border-line-strong px-2 text-caption font-medium hover:bg-hover disabled:opacity-40">Take over</button>
+            className="k-btn shrink-0">Take over</button>
         </div>
       ))}
       {err && <p className="mx-3 mb-2 rounded-md bg-danger-soft px-2 py-1 text-caption text-danger" data-testid="import-running-error">{err}</p>}
@@ -377,7 +377,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
         <Dialog.Popup
           data-testid="import-sheet"
-          className="fixed inset-x-4 top-[6vh] bottom-[6vh] z-50 mx-auto flex max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-200 data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
+ className="fixed inset-x-4 top-[6vh] bottom-[6vh] z-50 mx-auto flex max-w-6xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-3 transition-[transform,opacity] duration-(--dur-move) data-starting-style:translate-y-2 data-starting-style:opacity-0 data-ending-style:opacity-0"
         >
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
             <History className="size-4 text-muted" />
@@ -463,7 +463,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                 </div>
               )}
               {fails.length > 0 && (
-                <div className="mx-3 mb-2 rounded-md border border-line border-l-[3px] border-l-st-fail bg-raised text-caption" data-testid="import-fails">
+                <div className="mx-3 mb-2 rounded-md border border-line bg-raised text-caption" data-testid="import-fails">
                   <ul className="max-h-40 divide-y divide-line overflow-y-auto">
                     {fails.map((f) => (
                       <li key={f.item.harness + f.item.id + (f.item.path ?? "")} className="px-3 py-1.5" data-testid="import-fail">

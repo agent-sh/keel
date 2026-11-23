@@ -191,7 +191,7 @@ function PathList({ paths, onChange, testid, placeholder = "~/folder or /path", 
         <input
           value={add} onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) commit(); }}
           placeholder={placeholder} aria-label={label} data-testid="sandbox-read-add"
-          className="h-8 min-w-0 flex-1 rounded-md border border-line bg-bg px-2.5 font-mono text-caption outline-none placeholder:text-faint focus:border-line-strong"
+          className="k-field text-caption min-w-0 flex-1 font-mono"
         />
         <button disabled={!add.trim()} onClick={commit} data-testid="sandbox-read-add-button" className="h-8 shrink-0 rounded-lg border border-line px-3 text-ui hover:bg-hover disabled:opacity-40">Add</button>
       </div>
@@ -328,8 +328,8 @@ function PasskeysCard() {
             </>
           ) : (
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {!info.local && <input data-testid="passkey-code" value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} placeholder="Code shown at the desk" className="h-8 w-52 rounded-md border border-line bg-raised px-2 font-mono text-ui outline-none placeholder:font-sans focus:border-line-strong" />}
-              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={info.local ? "This computer" : "This device"} className="h-8 w-44 rounded-md border border-line bg-raised px-2 text-ui outline-none focus:border-line-strong" />
+              {!info.local && <input data-testid="passkey-code" value={typed} onChange={(e) => setTyped(e.target.value.toUpperCase())} placeholder="Code shown at the desk" className="k-field w-52 font-mono placeholder:font-sans" />}
+              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={info.local ? "This computer" : "This device"} className="k-field w-44" />
               <button data-testid="passkey-enroll" disabled={!info.local && !typed.trim()} onClick={doEnroll} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
                 {here.length ? "Enroll another passkey here" : "Enroll this device"}
               </button>

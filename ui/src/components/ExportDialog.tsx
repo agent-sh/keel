@@ -139,7 +139,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
     <Dialog.Root open onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-40 bg-overlay transition-opacity data-starting-style:opacity-0 data-ending-style:opacity-0" />
-        <Dialog.Popup data-testid="export-dialog" data-anchor="top" style={{ "--k-dialog-w": "34rem", "--k-dialog-bg": "var(--bg)" } as React.CSSProperties} className="k-dialog rounded-xl border border-line bg-bg shadow-3 transition-[scale,opacity] duration-150 data-starting-style:scale-[0.98] data-starting-style:opacity-0">
+        <Dialog.Popup data-testid="export-dialog" data-anchor="top" style={{ "--k-dialog-w": "34rem", "--k-dialog-bg": "var(--bg)" } as React.CSSProperties} className="k-dialog rounded-xl border border-line bg-bg shadow-3 transition-[scale,opacity] data-starting-style:scale-[0.98] data-starting-style:opacity-0">
           <div className="flex items-center gap-2 border-b border-line px-4 py-3">
             <Dialog.Title className="min-w-0 flex-1 truncate font-semibold">Export “{session.title || "Session"}”</Dialog.Title>
             <Dialog.Close aria-label="Close" className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>

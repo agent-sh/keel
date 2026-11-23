@@ -1279,7 +1279,7 @@ function AlwaysButton({ a, busy, live, armed, refusal, unread, onGrant }: { a: A
       <Popover.Portal>
         <Popover.Positioner side="top" align="start" sideOffset={8} className="z-50">
           {/* (Marked as a part of the card: a press in it is a press on the card, for the answering sequence and for the hand-back.) */}
-          <Popover.Popup data-ask-part="" className="w-[min(26rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
+          <Popover.Popup data-ask-part="" className="w-[min(26rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] rounded-lg border border-line bg-raised p-3 shadow-2 transition-[scale,opacity] data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
             <Popover.Title className="text-ui font-medium">Grant</Popover.Title>
             <Popover.Description className="mt-0.5 text-caption text-muted">
               {a.kind === "shell" ? "A trailing * covers any arguments. Edit the rule to narrow it." : "Calls this rule covers run without asking."}

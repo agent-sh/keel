@@ -68,7 +68,7 @@ function Writer({ info, onSaved }: { info: Info["tacit"]; onSaved: (w: string) =
         </Select>
       ) : (
         <input aria-label="Writer of corrections" data-testid="memory-writer" value={text} disabled={fixed} maxLength={32} onChange={(e) => setText(e.target.value)} onBlur={() => save(text.trim())} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) e.currentTarget.blur(); }}
-          className="h-8 w-40 rounded-md border border-line-strong bg-raised px-2.5 font-mono text-caption text-fg outline-none focus-visible:border-accent disabled:opacity-60" />
+          className="k-field text-caption w-40 font-mono" />
       )}
       {fixed && <span className="text-caption text-faint">set by TACIT_HARNESS</span>}
       {lacks && <span className="max-w-[20rem] text-caption text-danger sm:text-right" role="status" data-testid="memory-writer-lacks">The store has no writer named {info.writer}: a correction would be refused. Pick one of its own.</span>}

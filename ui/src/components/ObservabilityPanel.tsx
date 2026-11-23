@@ -71,7 +71,7 @@ export function ObservabilityPanel() {
       </Stats>
 
       <Panel title="Regressions" hint="the last 24 hours against the 14 days before, on a control chart of daily values" testid="obs-regressions"
-        aside={<button type="button" onClick={check} disabled={checking} className="h-7 rounded-md border border-line px-2.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50" data-testid="obs-check">Check now</button>}>
+        aside={<button type="button" onClick={check} disabled={checking} className="k-btn" data-testid="obs-check">Check now</button>}>
         <Table head={["Metric", "Last 24 h", "Normal range", "Baseline", "State"]} rows={r.regressions.map((g) => [
           g.label, regValue(g.metric, g.value),
           g.limits ? `${regValue(g.metric, Math.max(0, g.limits.lower))} to ${regValue(g.metric, g.limits.upper)}` : "none yet",

@@ -16,7 +16,7 @@ type Sent = { endpoint: string | null; from: "setting" | "env" | null; headers: 
 type Export = Sent & { metrics: Sent; events: Sent };
 const LEVELS = ["debug", "info", "warn", "error"] as const;
 const KEEP = 1000;
-const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
+const btn = "k-btn k-btn-lg";
 
 function Exporter() {
   const [settings, patch] = useSettings();
@@ -43,7 +43,7 @@ function Exporter() {
             placeholder="http://localhost:6006/v1/traces"
             aria-label="OTLP traces endpoint"
             data-testid="otlp-endpoint"
-            className="h-8 min-w-0 max-w-xl flex-1 rounded-md border border-line bg-sunken px-2.5 font-mono text-caption outline-none focus:border-ring"
+            className="k-field text-caption min-w-0 max-w-xl flex-1 font-mono"
           />
           <button type="submit" className={btn} disabled={draft === null || draft.trim() === saved} data-testid="otlp-save">Save</button>
         </form>
@@ -113,7 +113,7 @@ function AuthHeaders({ saved, shown, patch, onSaved }: { saved: HeaderRef | null
           spellCheck={false}
           autoComplete="off"
           data-testid="otlp-headers-name"
-          className="h-8 min-w-0 max-w-xs flex-1 rounded-md border border-line bg-sunken px-2.5 font-mono text-caption outline-none focus:border-ring"
+          className="k-field text-caption min-w-0 max-w-xs flex-1 font-mono"
         />
         <button type="submit" className={btn} disabled={!dirty} data-testid="otlp-headers-save">Save</button>
         {saved && <button type="button" className={btn} onClick={() => save(null).catch(reportError)} data-testid="otlp-headers-clear">Clear</button>}
@@ -177,7 +177,7 @@ function LiveLog() {
           <span className="text-caption text-faint">live; files per day in <span className="font-mono">{dir || "the state folder"}</span></span>
           <span className="ml-auto" />
           <Segmented label="Level" value={level} onChange={setLevel} options={LEVELS.map((l) => ({ value: l, label: l[0]!.toUpperCase() + l.slice(1) }))} />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter" aria-label="Filter the log" data-testid="log-filter" className="h-8 w-44 rounded-md border border-line bg-sunken px-2.5 text-caption outline-none focus:border-ring" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter" aria-label="Filter the log" data-testid="log-filter" className="k-field text-caption w-44" />
           <button type="button" className={cn(btn, "grid w-8 place-items-center px-0")} onClick={() => setPaused((p) => !p)} aria-label={paused ? "Follow the log" : "Pause the log"}>
             {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
           </button>

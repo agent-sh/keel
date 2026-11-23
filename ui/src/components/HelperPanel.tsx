@@ -163,7 +163,7 @@ export function HelperPanel(_: { session: Session }) {
           {view?.mail.available && view.mail_every_min ? `, checked every ${view.mail_every_min} min` : ""}
         </p>
         {view?.mail.available && (
-          <button type="button" className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-line px-2.5 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="helper-check"
+          <button type="button" className="k-btn mt-2" data-testid="helper-check"
             onClick={() => checkMail().then((r) => setChecked(r.new ? `${r.new} new, ${r.important} for you` : "Nothing new"), (e) => setChecked(failed(e)))}>
             <MailCheck className="size-3.5" />Check now
           </button>

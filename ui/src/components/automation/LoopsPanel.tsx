@@ -287,7 +287,7 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
           data-float
           className={cn(
             "k-surface fixed left-1/2 top-1/2 z-50 h-[min(44rem,calc(100vh-4rem))] w-[min(60rem,calc(100vw-4rem))] -translate-x-1/2 -translate-y-1/2",
-            "transition-[scale,opacity] duration-200 data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:scale-[0.98] data-ending-style:opacity-0",
+            "transition-[scale,opacity] duration-(--dur-move) data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-ending-style:scale-[0.98] data-ending-style:opacity-0",
           )}
         >
           <div className="k-surface-head">

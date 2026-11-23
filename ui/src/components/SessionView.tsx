@@ -82,8 +82,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
           {!missingHeader && <p className="text-ui text-fg">This session is not on this daemon.</p>}
           <p className="mt-1 text-caption text-muted">It was deleted, or the link comes from another machine.</p>
           {typeof gone === "string"
-            ? <button type="button" data-testid="missing-parent" onClick={() => navigate({ name: "session", id: gone })} className="mt-3 h-8 rounded-md border border-line px-3 text-ui hover:bg-hover">Back to the parent session</button>
-            : <button type="button" onClick={() => navigate({ name: "new" })} className="mt-3 h-8 rounded-md border border-line px-3 text-ui hover:bg-hover">Start a new session</button>}
+            ? <button type="button" data-testid="missing-parent" onClick={() => navigate({ name: "session", id: gone })} className="k-btn k-btn-lg mt-3">Back to the parent session</button>
+            : <button type="button" onClick={() => navigate({ name: "new" })} className="k-btn k-btn-lg mt-3">Start a new session</button>}
         </div>
       </div>
     );
@@ -178,7 +178,7 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
 // fetched: said, not shown as an empty conversation.
 function Unreached() {
   return (
-    <div className="mb-2 flex items-center gap-3 rounded-md border border-line border-l-[3px] border-l-warn bg-raised px-3 py-2 text-ui" data-testid="session-unreached" role="status">
+    <div className="k-notice mb-2" data-testid="session-unreached" role="status">
       <WifiOff className="size-4 shrink-0 text-warn" aria-hidden="true" />
       <p className="min-w-0 flex-1">
         <span className="text-fg">Keel is not reachable.</span>{" "}
@@ -190,13 +190,13 @@ function Unreached() {
 
 function FolderGone({ path }: { path: string }) {
   return (
-    <div className="mb-2 flex items-center gap-3 rounded-md border border-line border-l-[3px] border-l-st-fail bg-raised px-3 py-2 text-ui" data-testid="folder-gone" role="status">
+    <div className="k-notice mb-2" data-testid="folder-gone" role="status">
       <FolderX className="size-4 shrink-0 text-st-fail" aria-hidden="true" />
       <p className="min-w-0 flex-1">
         <span className="text-fg">The folder is gone.</span>{" "}
         <span className="text-muted">Tools that read or change files cannot run in <code className="font-mono text-caption">{path.replace(/^\/home\/[^/]+/, "~")}</code>.</span>
       </p>
-      <button type="button" onClick={() => openPanel("session")} className="h-7 shrink-0 rounded-md border border-line px-2.5 text-caption text-fg hover:bg-hover" data-testid="folder-gone-move">Move the session</button>
+      <button type="button" onClick={() => openPanel("session")} className="k-btn shrink-0" data-testid="folder-gone-move">Move the session</button>
     </div>
   );
 }

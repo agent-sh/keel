@@ -141,7 +141,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
             className={cn(
               "@container/picker flex max-h-[min(33rem,var(--available-height))] w-[min(30rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg border border-line bg-raised shadow-3",
               SHEET.popup,
-              "origin-[var(--transform-origin)] transition-[scale,opacity] duration-150",
+              "origin-[var(--transform-origin)] transition-[scale,opacity]",
               "data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0",
             )}
           >

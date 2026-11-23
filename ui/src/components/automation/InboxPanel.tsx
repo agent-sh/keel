@@ -293,7 +293,7 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
           data-float
           className={cn(
             "k-surface fixed left-3 top-3 bottom-3 z-50 w-[min(40rem,calc(100vw-1.5rem))]",
-            "transition-[transform,opacity] duration-200 data-starting-style:-translate-x-4 data-starting-style:opacity-0 data-ending-style:-translate-x-4 data-ending-style:opacity-0",
+            "transition-[transform,opacity] duration-(--dur-move) data-starting-style:-translate-x-4 data-starting-style:opacity-0 data-ending-style:-translate-x-4 data-ending-style:opacity-0",
           )}
         >
           <div className="flex min-h-0 flex-1 flex-col">

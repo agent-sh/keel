@@ -34,7 +34,7 @@ function LabelInput({ sid, eventId, value, onKeys, onAway }: { sid: string; even
         if (e.key === "Escape") { onKeys?.(); tree.edit(null); }
       }}
       onBlur={() => { onAway?.(); tree.edit(null); }}
-      className="h-7 min-w-0 flex-1 rounded-md border border-line-strong bg-raised px-2 text-caption outline-none"
+      className="k-field k-field-sm min-w-0 flex-1"
     />
   );
 }

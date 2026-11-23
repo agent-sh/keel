@@ -29,7 +29,7 @@ export function SecretCards({ sessionId }: { sessionId: string }) {
 }
 
 const shell = "animate-in overflow-hidden rounded-2xl border border-line bg-raised shadow-2";
-const input = "h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 font-mono text-ui outline-none placeholder:font-sans placeholder:text-faint focus:border-line-strong";
+const input = "k-field flex-1 font-mono placeholder:font-sans";
 const primary = "h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50";
 const quiet = "h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
 

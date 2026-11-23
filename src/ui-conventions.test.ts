@@ -181,6 +181,37 @@ function sheetCorners(list: Src[]): string[] {
   return out;
 }
 
+// A component's motion and its backdrop come from the tokens as well: no length of
+// Tailwind's own (duration-150; a length is duration-(--dur-move), or none for quick)
+// and no backdrop of black or white (bg-overlay is the theme's own).
+function pageMotion(list: Src[]): string[] {
+  const out: string[] = [];
+  for (const s of list) for (const { c, line } of classes(s.text)) {
+    const name = c.split(":").at(-1)!;
+    if (/^duration-(\d+|\[)/.test(name)) out.push(at(s, line, c));
+    if (/^bg-(black|white)\/\d+$/.test(name)) out.push(at(s, line, c));
+  }
+  return out;
+}
+
+// A class is drawn by one stylesheet: two that each write a rule of that name alone
+// (outside a media query) set one element in two looks, and the later file wins
+// wherever both load. (A list of classes that share a role, as the faces in
+// styles.css, is not a class's own rule.)
+function twiceDrawn(list: Src[]): string[] {
+  const seen = new Map<string, string>();
+  const out: string[] = [];
+  for (const s of list) for (const r of rules(s.text)) {
+    if (r.within.some((w) => w.startsWith("@media") || w.startsWith("@container"))) continue;
+    const name = r.selector.trim();
+    if (!/^\.k-[\w-]+$/.test(name)) continue;
+    const first = seen.get(name);
+    if (first === undefined) seen.set(name, s.file);
+    else if (first !== s.file) out.push(at(s, r.line, `${name} (also in ${first})`));
+  }
+  return out;
+}
+
 // A component takes its text size from the scale: none of Tailwind's own
 // sizes, no arbitrary size by any spelling, no inline size but a token (the
 // text-size setting's samples show each size).
@@ -446,6 +477,8 @@ test("the type scale has eight sizes, written once", () => {
 test("no stylesheet writes a text size of its own", () => expect(sheetSizes(sheets)).toEqual([]));
 test("no component writes a text size of its own", () => expect(pageSizes(page)).toEqual([]));
 test("no stylesheet writes a corner or a motion length of its own", () => expect(sheetCorners(sheets)).toEqual([]));
+test("no component writes a motion length or a backdrop of its own", () => expect(pageMotion(page)).toEqual([]));
+test("a class is drawn by one stylesheet", () => expect(twiceDrawn(sheets)).toEqual([]));
 test("the instrument face is named by its five roles and nowhere else", () => expect(face(sheets, page)).toEqual({ roles: 5, strays: [] }));
 test("a choice of a few is the one segmented control", () => expect(segmented(page, sheets)).toEqual([]));
 test("steel is the frame and nothing else", () => expect(steel(page, sheets)).toEqual([]));
@@ -471,6 +504,9 @@ test("each check refuses what it is for", () => {
   expect(sheetCorners(css(".k-thing { border-radius: 0.25rem; }\n.k-other { border-radius: 0 0 0.3125rem var(--radius-md); }"))).toHaveLength(2);
   expect(sheetCorners(css(".k-thing { transition: opacity 120ms var(--ease-out), transform 160ms; }"))).toHaveLength(2);
   expect(pageSizes(tsx('<p className="text-[1.1rem] font-semibold" />'))).toHaveLength(1);
+  expect(pageMotion(tsx('<div className="transition-opacity duration-150 data-open:duration-[90ms]" />'))).toHaveLength(2);
+  expect(twiceDrawn([...css(".k-dock { display: none; }"), ...css(".k-dock { display: flex; }\n.k-dock, .k-other { gap: 0; }\n@media (max-width: 767px) { .k-dock { gap: 0; } }", "styles.css")])).toEqual(["styles.css:1: .k-dock (also in bridge.css)"]);
+  expect(pageMotion(tsx('<div className="fixed inset-0 bg-black/20 duration-(--dur-move) bg-white" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="[font-size:1.1rem] font-semibold" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="text-[length:1.1rem]" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className={cn("md:text-sm", on && "hover:text-lg")} />'))).toHaveLength(2);

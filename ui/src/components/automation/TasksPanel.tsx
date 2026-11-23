@@ -17,7 +17,7 @@ const GOAL_TONE: Record<Goal["status"], string> = {
   pursuing: "bg-accent-soft text-accent", paused: "bg-sunken text-muted", achieved: "bg-sunken text-ok", impossible: "bg-danger-soft text-danger", budget: "bg-sunken text-warn", stalled: "bg-sunken text-warn",
 };
 const field = "w-full rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none focus:border-line-strong placeholder:text-faint";
-const button = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2.5 text-caption hover:bg-hover hover:text-fg";
+const button = "k-btn";
 
 function NewGoal({ sid, replace }: { sid: string; replace: boolean }) {
   const [objective, setObjective] = useState("");

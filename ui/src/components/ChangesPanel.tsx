@@ -149,7 +149,7 @@ export function ChangesPanel({ session }: { session: Session }) {
         )}
         {tab === "session" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="min-h-0 flex-1 overflow-y-auto p-4">
           {all && all.files.length > 0 && gone && (
-            <p className="mb-3 flex items-start gap-2 rounded-md border border-line border-l-[3px] border-l-st-fail bg-raised px-3 py-2 text-caption text-muted" data-testid="revert-gone" role="note">
+            <p className="k-notice mb-3 items-start text-caption text-muted" data-testid="revert-gone" role="note">
               <FolderX className="mt-px size-3.5 shrink-0 text-st-fail" aria-hidden="true" />
               <span><span className="text-fg">Revert is off: the folder is gone.</span> These diffs still read; move the session to a folder that exists to put files back.</span>
             </p>
@@ -224,7 +224,7 @@ export function ChangesPanel({ session }: { session: Session }) {
       </div>
       <AlertDialog.Root open={!!pending} onOpenChange={(o) => !o && setPending(null)}>
         <AlertDialog.Portal>
-          <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-black/20" />
+          <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-overlay" />
           <AlertDialog.Popup data-testid="rewind-confirm" className="fixed left-1/2 top-1/2 z-50 w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-line bg-raised p-5 shadow-2">
             <AlertDialog.Title className="font-semibold">{pending?.title}</AlertDialog.Title>
             <AlertDialog.Description className="mt-1 text-ui text-muted">
