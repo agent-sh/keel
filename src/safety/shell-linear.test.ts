@@ -241,3 +241,19 @@ test("a read that is stopped at its deadline ends there, whoever still holds the
     try { process.kill(-proc.pid, "SIGKILL"); } catch { /* gone already */ }
   }
 }, 60_000);
+
+// Each file a line fetches is looked for in the next parts, and a `bash -c` script among them was split
+// again for every fetch before it: 100 fetches each followed by a 4 KB script took twelve times the
+// same line with no fetch. A script is split once per line now.
+test("a line of fetches and scripts reads each script once", () => {
+  const facts = (mode: "ask" | "full-auto") => ({ mode, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] });
+  const script = Array.from({ length: 120 }, (_, k) => `echo step ${k} > /dev/null`).join("; ");
+  const run = (fetch: boolean) => Array.from({ length: 100 }, (_, k) => `${fetch ? `curl -so f${k} https://example.com/f${k}; ` : ""}bash -c '${script}'`).join("; ");
+  const best = (command: string) => {
+    let b = Infinity;
+    for (let k = 0; k < 3; k++) { const t = performance.now(); decide({ kind: "shell", command, cwd: "/w" }, facts("full-auto")); b = Math.min(b, performance.now() - t); }
+    return b;
+  };
+  const plain = best(run(false)), fetched = best(run(true));
+  expect(fetched).toBeLessThan(4 * plain + 50);
+}, 120_000);

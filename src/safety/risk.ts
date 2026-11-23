@@ -417,7 +417,15 @@ export function codeGiven(run: Run): string | null {
 // interpreter is given, or so in a script given to a shell with -c), "code" when code given to an interpreter on
 // its command line names it in a string. Code that names a file is not read for what it does with it: json.load
 // and exec look alike to the rules, and a read taken for a run costs less than a run taken for a read.
-function takes(words: string[], hit: (path: string) => boolean, depth = 0): { how: "runs" | "code"; by: string } | null {
+// A script's parts by its text, kept for one line's rules: every fetch on the line looks at the same
+// scripts after it, and each is split once.
+type Scripts = Map<string, string[][] | null>;
+const partsOf = (given: string, scripts: Scripts): string[][] | null => {
+  let got = scripts.get(given);
+  if (got === undefined) { got = splitCommand(given)?.map((s) => unwrap(s.words).words) ?? null; scripts.set(given, got); }
+  return got;
+};
+function takes(words: string[], hit: (path: string) => boolean, scripts: Scripts, depth = 0): { how: "runs" | "code"; by: string } | null {
   const q = name(words[0]);
   if (words[0] !== undefined && hit(words[0])) return { how: "runs", by: q };
   if (!(SHELLS.test(q) || INTERPRETERS.test(q) || q === "source" || q === ".") || (SHELLS.test(q) && words.includes("-n"))) return null;
@@ -428,7 +436,7 @@ function takes(words: string[], hit: (path: string) => boolean, depth = 0): { ho
     const given = k >= 0 ? args[k + 1] : undefined;
     if (given === undefined || depth >= DEPTH || given.length > SCRIPT_MAX) return null;
     // (A script the rules cannot split is high risk on its own.)
-    for (const s of splitCommand(given) ?? []) { const t = takes(unwrap(s.words).words, hit, depth + 1); if (t) return t; }
+    for (const w of partsOf(given, scripts) ?? []) { const t = takes(w, hit, scripts, depth + 1); if (t) return t; }
     return null;
   }
   const code = INTERPRETERS.test(q) ? inline(q, args) : null;
@@ -611,6 +619,7 @@ export function laid(parts: Simple[], cwd: string | null, home: string, start = 
 // The risks of one script: each part's at its index, and the line's own.
 export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per: Map<number, Risk[]>; line: Risk[] } {
   const n = parts.length;
+  const scripts: Scripts = new Map();
   const { runs, dirs, firm } = pre && !w.lost && !w.away ? pre : laid(parts, w.lost || w.away ? null : w.cwd, w.home, !w.shaky);
   // A line that gives HOME or PWD a value of its own names paths the rules do not follow: nothing is taken as
   // outside the session's folder for it, so nothing is left to the sandbox.
@@ -933,7 +942,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
           if (!/^(cat|tee)$/.test(fed.get(k)?.by ?? "") && namesFile(parts[k]!.text, file)) { line.push({ rule: "hidden", why: `hands ${file}, a file the same line downloads, to ${fed.get(k)?.by || "a program"} in a here-document: it may run it` }); break; }
           continue;
         }
-        const t = takes(runs[k]!.words, (a) => name(a) === file);
+        const t = takes(runs[k]!.words, (a) => name(a) === file, scripts);
         if (t) { line.push({ rule: "hidden", why: t.how === "runs" ? `runs ${file}, a script the same line downloads` : `hands ${file}, a file the same line downloads, to code given to ${t.by}: whether the code runs it is not read` }); break; }
       }
     }
@@ -946,7 +955,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
         const at = dirs[k], q = name(runs[k]!.words[0]);
         if (at && under(into, at) && q !== "cd" && q !== "git" && !isReadOnly(parts[k]!)) { line.push({ rule: "hidden", why: `runs ${q} in ${name(into)}, a repository the same line clones from ${url!.slice(0, 80)}` }); break; }
         // From outside it: a program, a script or code of the clone named by its path (python3 r/setup.py, ./r/install.sh).
-        const t = at ? takes(runs[k]!.words, (a) => a.includes("/") || a === name(into) ? !/[$`*?]/.test(a) && under(into, resolve(at, a)) : false) : null;
+        const t = at ? takes(runs[k]!.words, (a) => a.includes("/") || a === name(into) ? !/[$`*?]/.test(a) && under(into, resolve(at, a)) : false, scripts) : null;
         if (t) { line.push({ rule: "hidden", why: `${t.how === "runs" ? "runs" : `gives ${t.by} code that reads`} files of ${name(into)}, a repository the same line clones from ${url!.slice(0, 80)}` }); break; }
       }
     }
