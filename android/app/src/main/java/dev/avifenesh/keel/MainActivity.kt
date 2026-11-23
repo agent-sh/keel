@@ -38,6 +38,8 @@ sealed class Route {
     data class Changes(val id: String) : Route()
     /** One file's diff, of one turn (`turn`) or since the session's first (null); `label` names which. */
     data class Diff(val id: String, val path: String, val turn: Long?, val label: String) : Route()
+    /** The helper's memory. */
+    object Memory : Route()
 }
 
 object BuildConfigLike {

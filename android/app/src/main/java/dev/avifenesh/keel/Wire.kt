@@ -227,6 +227,8 @@ data class Chat(
     val nowSince: Double = 0.0,
     val nowUsd: Double = 0.0,
     val nowNeed: Boolean = false,
+    /** The owner's helper: listed above the sessions. */
+    val helper: Boolean = false,
 ) {
     companion object {
         fun of(o: JSONObject) = Chat(
@@ -237,6 +239,7 @@ data class Chat(
             created = o.optDouble("created", 0.0), agents = o.optInt("agents", 0), stateWord = o.str("state_word"), h = o.str("h"),
             now = o.str("now"), nowSteps = o.optInt("now_steps", 0), nowSince = o.optDouble("now_since", 0.0),
             nowUsd = o.optDouble("now_usd", 0.0), nowNeed = o.optInt("now_need", 0) != 0,
+            helper = o.optInt("helper", 0) != 0,
         )
     }
 }
@@ -509,6 +512,34 @@ data class Away(
     }
 }
 
+/** One thing the helper was told: about a session (`chatId`), or mail (no session). */
+data class HelperEvent(val id: String, val ts: Double, val chatId: String?, val title: String, val body: String)
+
+/** GET /v1/helper: whether the owner's helper is on, its conversation, how much it remembers, what it was told lately (newest first). */
+data class HelperView(val on: Boolean, val chatId: String?, val memory: Int, val events: List<HelperEvent>) {
+    companion object {
+        fun of(o: JSONObject) = HelperView(
+            o.optBoolean("on"), o.str("chat_id").ifBlank { null }, o.optInt("memory"),
+            o.optJSONArray("events")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+                .map { HelperEvent(it.str("id"), it.optDouble("ts", 0.0), it.str("chat_id").ifBlank { null }, it.str("title"), it.str("body")) },
+        )
+    }
+}
+
+/** One record of the helper's memory: a short fact under a key, with its topics. */
+data class MemoryRecord(val key: String, val value: String, val topics: List<String>, val updated: Double)
+
+/** GET /v1/helper/memory: the records (all, or those found), and how many were found. */
+data class MemoryList(val items: List<MemoryRecord>, val total: Int) {
+    companion object {
+        fun of(o: JSONObject) = MemoryList(
+            o.optJSONArray("items")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+                .map { MemoryRecord(it.str("key"), it.str("value"), strings(it.optJSONArray("topics")), it.optDouble("updated", 0.0)) },
+            o.optInt("total"),
+        )
+    }
+}
+
 /** GET /v1/start: what a new session can start with. */
 data class StartModel(val id: String, val name: String)
 data class StartFolder(val path: String, val name: String, val last: Double = 0.0, val home: Boolean = false)
@@ -611,6 +642,7 @@ fun Chat.json(): JSONObject = JSONObject().put("id", id).put("title", title).put
     .put("pinned", if (pinned) 1 else 0).put("archived", if (archived) 1 else 0).put("preview", preview).put("last_role", lastRole)
     .put("parent_id", parentId ?: JSONObject.NULL).opt("failure", failure).put("created", created).put("agents", agents).opt("state_word", stateWord).opt("h", h)
     .apply { if (now.isNotEmpty()) put("now", now).put("now_steps", nowSteps).put("now_since", nowSince).put("now_usd", nowUsd).put("now_need", if (nowNeed) 1 else 0) }
+    .apply { if (helper) put("helper", 1) }
 
 /** FNV-1a, 32 bits, over the UTF-8 bytes: the daemon's number for the same text (v1.ts fnv). */
 fun fnv(s: String): Long {

@@ -218,6 +218,7 @@ fun SettingsScreen(act: MainActivity) {
                         if (note.isNotBlank()) Notice(note)
                     }
                 }
+                HelperPanel()
                 Panel {
                     Column(Modifier.padding(S.lg), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Txt("LOOK", T.label, k.muted)

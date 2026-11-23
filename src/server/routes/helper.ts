@@ -12,9 +12,13 @@ import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
+// The helper of this daemon, for the phone's API (/v1/helper, src/integrations/mobile/v1.ts).
+export let helperNow: (() => Helper) | undefined;
+
 export const helperRoutes: RouteModule = (deps) => {
   const h = new Helper(deps);
   h.install();
+  helperNow = () => h;
   bindHelperTools(h);
   return {
     "/api/helper": {

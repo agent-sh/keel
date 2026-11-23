@@ -18,7 +18,8 @@
   "away (GET /v1/away) is the digest of the owner's last absence, the page's own, in words: `span` (when), `brief` (one line), `totals`, what the daemon went through (`daemon`), and the sessions in which something happened, the one that failed first, each with its facts and the part that went wrong (`bad`). Null when the owner was not away or nothing happened. DELETE /v1/away says it was seen: it is shown no more, here or on the page. POST /v1/presence with `idle_ms` says the owner touched the app that long ago: the phone in use ends an absence, as a page in use does.",
   "A push of kind `live` is the lasting notification's news: `w` sessions working, `q` cards waiting on the owner, `title` and `body` to show as they are, `since` (epoch milliseconds) when the longest turn started. The push service keeps only the newest (one collapse key). `w` and `q` of 0 take the notification down. The background check reads the same status from `live` in GET /v1/pulse, with the same fields.",
   "A chat row carries `h`, eight hex digits of its content. A reconnecting phone says what it holds in a bounded number of bytes (`held` on GET /v1/events or /v1/sync): its rows go into `n` buckets by `fnv(id) % n`, and each bucket is said by eight hex digits, the sum mod 2^32 of `fnv(\"<id>:<h>\")` over its rows (FNV-1a, 32 bits, over UTF-8; an empty bucket is 00000000), joined by dots in bucket order, `n` of them (at most 256). The catch-up then sends only the rows of the buckets whose digest differs, with `buckets` naming them (`n`, and `of`, their indices) and `complete` false: the phone drops each row it holds in those buckets that was not sent. `held` at the top of this file is a worked example. A whole read (since 0, or a cursor that cannot be caught up from), and a `held` not of this form, send every row.",
-  "search (GET /v1/search?q=<words>) is the page's search across sessions: titles first, then what was said and done, one hit a session at most. A hit's `snippet` holds the words found between \u0001 and \u0002; `kind` says where (title, user, assistant, tool_use, tool_result, summary). `limits` says in words what the query limited the search to (state:failed, since:yesterday)."
+  "search (GET /v1/search?q=<words>) is the page's search across sessions: titles first, then what was said and done, one hit a session at most. A hit's `snippet` holds the words found between \u0001 and \u0002; `kind` says where (title, user, assistant, tool_use, tool_result, summary). `limits` says in words what the query limited the search to (state:failed, since:yesterday).",
+  "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409."
  ],
  "signing": {
   "request": [
@@ -97,7 +98,8 @@
    "now_steps": "number?",
    "now_since": "number?",
    "now_usd": "number?",
-   "now_need": "number?"
+   "now_need": "number?",
+   "helper": "number?"
   },
   "message": {
    "id": "string",
@@ -438,6 +440,29 @@
    "snippet": "string",
    "ts": "number",
    "event_id": "string?"
+  },
+  "helper": {
+   "on": "boolean",
+   "chat_id": "string|null",
+   "memory": "number",
+   "events": "array"
+  },
+  "helper_event": {
+   "id": "string",
+   "ts": "number",
+   "chat_id": "string|null",
+   "title": "string",
+   "body": "string"
+  },
+  "memory": {
+   "items": "array",
+   "total": "number"
+  },
+  "memory_record": {
+   "key": "string",
+   "value": "string",
+   "topics": "array",
+   "updated": "number"
   }
  },
  "examples": {
@@ -500,6 +525,24 @@
     "now_since": 1795194762.0,
     "now_usd": 0.3121,
     "now_need": 1
+   },
+   {
+    "id": "s-helper",
+    "title": "Helper",
+    "kind": "chat",
+    "created": 1795180000.0,
+    "updated": 1795195100.0,
+    "unread": 0,
+    "pinned": 1,
+    "archived": 0,
+    "seq": 12,
+    "parent_id": null,
+    "status": "done",
+    "preview": "Nothing needs you.",
+    "last_role": "agent",
+    "preview_id": "e-9",
+    "helper": 1,
+    "h": "5e6f7a8b"
    }
   ],
   "message": [
@@ -2701,6 +2744,88 @@
    {
     "query": "",
     "hits": []
+   }
+  ],
+  "helper": [
+   {
+    "on": true,
+    "chat_id": "s-helper",
+    "memory": 2,
+    "events": [
+     {
+      "id": "he-2",
+      "ts": 1795195000.0,
+      "chat_id": "s-1",
+      "title": "Fix the build failed",
+      "body": "HTTP 402: no credit"
+     },
+     {
+      "id": "he-1",
+      "ts": 1795194000.0,
+      "chat_id": null,
+      "title": "Mail from Dana Levi",
+      "body": "The contract is signed; she asks for the invoice by Friday."
+     }
+    ]
+   },
+   {
+    "on": false,
+    "chat_id": null,
+    "memory": 0,
+    "events": []
+   }
+  ],
+  "helper_event": [
+   {
+    "id": "he-2",
+    "ts": 1795195000.0,
+    "chat_id": "s-1",
+    "title": "Fix the build failed",
+    "body": "HTTP 402: no credit"
+   },
+   {
+    "id": "he-1",
+    "ts": 1795194000.0,
+    "chat_id": null,
+    "title": "Mail from Dana Levi",
+    "body": "The contract is signed; she asks for the invoice by Friday."
+   }
+  ],
+  "memory": [
+   {
+    "items": [
+     {
+      "key": "person.dana-levi",
+      "value": "Dana Levi, the client at the shipping firm; prefers mail to calls.",
+      "topics": [
+       "clients"
+      ],
+      "updated": 1795190000.0
+     },
+     {
+      "key": "pref.notifications",
+      "value": "Notify only for failures and mail that needs an answer.",
+      "topics": [],
+      "updated": 1795180000.0
+     }
+    ],
+    "total": 2
+   }
+  ],
+  "memory_record": [
+   {
+    "key": "person.dana-levi",
+    "value": "Dana Levi, the client at the shipping firm; prefers mail to calls.",
+    "topics": [
+     "clients"
+    ],
+    "updated": 1795190000.0
+   },
+   {
+    "key": "pref.notifications",
+    "value": "Notify only for failures and mail that needs an answer.",
+    "topics": [],
+    "updated": 1795180000.0
    }
   ]
  },

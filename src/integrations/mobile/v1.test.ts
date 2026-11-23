@@ -26,6 +26,9 @@ import { planRoutes, plansWaiting } from "../../server/routes/plan.ts";
 import { Checkpoints } from "../../safety/checkpoints.ts";
 import { searchRoutes } from "../../server/routes/search.ts";
 import { toolsFor } from "../../tools/registry.ts";
+import { Helper } from "../../helper/helper.ts";
+import { allHooks } from "../../engine/hooks.ts";
+import type { MailSource } from "../../helper/mail.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
 // The daemon's config folder is this run's own: what a route reads there (the push files) is what a test put there.
@@ -82,11 +85,23 @@ const DIGEST = {
   ],
   quiet: 4, totals: { turns: 3, failed: 1, agents: { done: 2 }, approvals: 1, questions: 0, parked: 0, cost: 0.15 }, daemon: ["The daemon went down at 12:40 and came back after 29 s."], daemon_brief: "the daemon went down and came back after 29 s",
 };
+// The owner's helper, made by the first test that needs it: a mail source that has no account, no mail checks.
+// (Its memory meter registers a turn hook, taken off at the end.)
+let helper: Helper | null = null;
+const hooksAtStart = allHooks().length;
+afterAll(() => { helper?.stop(); allHooks().length = hooksAtStart; });
+const noMail = { id: "none", label: "No mail", available: () => false, account: () => undefined, can: { modify: false, send: false, calendar: false } } as unknown as MailSource;
+const helperOn = async () => {
+  helper ??= new Helper({ store, bus, providers, workspace: dir, errors: { capture() {} } } as any, noMail);
+  helper.configure({ mail_every_min: 0 });
+  await helper.setOn(true);
+  return helper;
+};
 let fleetStart: (b: any) => Response = () => Response.json({ error: "no fleet in this test" }, { status: 409 });
 const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
   fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b),
   away: () => awayDigest, awaySeen: () => { awayDigest = null; }, ownerSeen: (ms: number) => void seenAt.push(ms),
-  search: (r: Request) => searchGet()(r), live: () => liveStatus([{ title: "Review", running: true, since: 1795195000500, needs: 0 }]) } as any);
+  search: (r: Request) => searchGet()(r), helper: () => helper, live: () => liveStatus([{ title: "Review", running: true, since: 1795195000500, needs: 0 }]) } as any);
 afterAll(() => setSystemTime());
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -532,6 +547,44 @@ describe("away", () => {
     expect((await call("POST", "/v1/presence", { idle_ms: 4000 })).status).toBe(200);
     expect(seenAt.at(-1)).toBe(4000);
     expect((await call("POST", "/v1/presence", {})).status).toBe(400);
+  });
+});
+
+describe("helper", () => {
+  test("the phone turns the helper on, finds its conversation in the list, reads what it was told and prunes its memory", async () => {
+    const was = helper;
+    helper = null;
+    try {
+      // A daemon that runs no helper says so.
+      expect((await call("GET", "/v1/helper")).status).toBe(409);
+      helper = new Helper({ store, bus, providers, workspace: dir, errors: { capture() {} } } as any, noMail);
+      helper.configure({ mail_every_min: 0 });
+      expect((await call("GET", "/v1/helper")).body).toMatchObject({ on: false, chat_id: null, events: [] });
+      expect((await call("PATCH", "/v1/helper", { on: "yes" })).status).toBe(400);
+      // Turned on from the phone: its conversation is made, and the list marks it.
+      const on = (await call("PATCH", "/v1/helper", { on: true })).body;
+      expect(on.on).toBe(true);
+      const row = (await call("GET", "/v1/chats")).body.chats.find((c: any) => c.id === on.chat_id);
+      expect(row).toMatchObject({ title: "Helper", helper: 1, pinned: 1 });
+      expect((await call("GET", "/v1/chats")).body.chats.filter((c: any) => c.helper).length).toBe(1);
+      // What it was told, newest first.
+      helper.record("failed", null, "Docs failed", "the provider refused", "feed");
+      helper.record("mail", null, "Mail from Dana", "asks for the invoice", "feed");
+      expect((await call("GET", "/v1/helper")).body.events.map((e: any) => e.title)).toEqual(["Mail from Dana", "Docs failed"]);
+      // Its memory: all of it, found by words, one record forgotten.
+      helper.records.put([{ key: "person.dana-levi", value: "Dana Levi, the client", aliases: ["Dana"], topics: ["clients"] }, { key: "pref.notify", value: "Failures only" }], "owner");
+      expect((await call("GET", "/v1/helper")).body.memory).toBe(2);
+      expect((await call("GET", "/v1/helper/memory")).body.items.map((m: any) => m.key).sort()).toEqual(["person.dana-levi", "pref.notify"]);
+      expect((await call("GET", "/v1/helper/memory?q=Dana")).body.items.map((m: any) => m.key)).toEqual(["person.dana-levi"]);
+      expect((await call("DELETE", "/v1/helper/memory/person.dana-levi")).body).toEqual({ ok: true });
+      expect((await call("DELETE", "/v1/helper/memory/person.dana-levi")).status).toBe(404);
+      expect((await call("GET", "/v1/helper/memory")).body.items.map((m: any) => m.key)).toEqual(["pref.notify"]);
+      // Off: the conversation stays where it was.
+      expect((await call("PATCH", "/v1/helper", { on: false })).body).toMatchObject({ on: false, chat_id: on.chat_id });
+      helper.stop();
+    } finally {
+      helper = was;
+    }
   });
 });
 
@@ -1036,7 +1089,7 @@ describe("the wire contract", () => {
     sync: [["chats", "chat"], ["messages", "message"], ["approvals", "card"], ["working", "working_row"], ["drafts", "draft"], ["reset", "reset"]],
     message: [["meta.steps", "step"], ["meta.attachments", "attachment"]], send: [["attachments", "upload_ref"]], card: [["questions", "question"], ["answers", "picked"]],
     page: [["messages", "message"]], receipt: [["message", "message"]], resolved: [["approval", "card"]],
-    pulse: [["approvals", "card"], ["live_sessions", "pulse_session"]], usage: [["session", "usage_session"]], created: [["chat", "chat"]],
+    pulse: [["approvals", "card"], ["live_sessions", "pulse_session"]], helper: [["events", "helper_event"]], memory: [["items", "memory_record"]], usage: [["session", "usage_session"]], created: [["chat", "chat"]],
     hello: [["sync", "sync"]], message_frame: [["message", "message"], ["chat", "chat"]], chat_frame: [["chat", "chat"]],
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
     changes: [["turns", "change_turn"], ["session", "file_change"]], change_turn: [["files", "file_change"]],
@@ -1114,8 +1167,14 @@ describe("the wire contract", () => {
     // The parent's agent at work: its row counts it.
     store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run("ag-contract", parent.id, s.id, "Fix the build", "general-purpose", "fx:saved", 1, "running", Date.now());
+    // The owner's helper, its conversation a chat of the list, told of a failure, with a record kept.
+    const h = await helperOn();
+    h.record("failed", s.id, "Fix the build failed", "HTTP 402: no credit", "feed");
+    h.records.put([{ key: "person.dana-levi", value: "Dana Levi, the client", topics: ["clients"] }], "owner");
     // Answers to requests.
     take("sync", (await call("GET", "/v1/sync?since=0")).body);
+    take("helper", (await call("GET", "/v1/helper")).body);
+    take("memory", (await call("GET", "/v1/helper/memory")).body);
     store.db.query("DELETE FROM agents WHERE id = 'ag-contract'").run();
     take("page", (await call("GET", `/v1/chats/${s.id}/messages?paged=1&limit=3`)).body);
     take("receipt", (await call("POST", `/v1/chats/${parent.id}/messages`, { ...wire.examples.send[0], client_id: "contract-receipt" })).body);

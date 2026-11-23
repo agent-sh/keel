@@ -16,6 +16,7 @@ import { gate } from "./permissions.ts";
 import { checkpoints } from "./checkpoints.ts";
 import { fleetMachines, startFleetSession } from "./fleet.ts";
 import { awayNow, awaySeen } from "./overview.ts";
+import { helperNow } from "./helper.ts";
 import { searchSessions } from "./search.ts";
 import { ownerSeen } from "../../admin/away.ts";
 
@@ -151,7 +152,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
 
   return {
     ...mobileApi({ ...deps, mobile, gate: () => gate, changed, checkpoints: () => checkpoints, fleetMachines: () => fleetMachines?.() ?? Promise.resolve([]), startFleetSession: (b) => (startFleetSession ? startFleetSession(b) : Promise.resolve(Response.json({ error: "this daemon has no machines to start a session on" }, { status: 409 }))),
-      live: nowLive, away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms),
+      live: nowLive, helper: () => helperNow?.() ?? null, away: () => awayNow?.() ?? null, awaySeen: () => awaySeen?.(), ownerSeen: (ms) => void ownerSeen(ms),
       search: (r) => (searchSessions ? searchSessions(r) : Promise.resolve(Response.json({ error: "the search is not loaded" }, { status: 409 }))) }),
 
     "/api/mobile/settings": {

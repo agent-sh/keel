@@ -39,6 +39,8 @@ import { dur } from "../../admin/timeline-rows.ts";
 import { newestMark } from "../../admin/marks.ts";
 import { liveData, type LiveStatus } from "./live.ts";
 import { zoneLabel } from "../../core/clock.ts";
+import type { Helper } from "../../helper/helper.ts";
+import type { MemoryRecord } from "../../helper/records.ts";
 import { decidePlan, plansEnded, plansWaiting, type PlanCard, type PlanEnd } from "../../server/routes/plan.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -75,7 +77,23 @@ export type MobileCtx = Deps & {
   search?: (req: Request) => Promise<Response>;
   // The lasting notification's status (src/integrations/mobile/live.ts): the background check reads it in the pulse.
   live?: () => LiveStatus;
+  // The owner's helper (src/helper/), on a daemon that runs one.
+  helper?: () => Helper | null;
 };
+
+// How many of what the helper was told the phone is sent, the newest first: a screen of them.
+const HELPER_EVENTS = 20;
+
+// The helper as the phone shows it: whether it is on, its conversation, what it was told lately
+// and how many records its memory holds.
+export function helperOf(h: Helper) {
+  const v = h.view();
+  return {
+    on: v.on, chat_id: v.session_id, memory: h.memory().length,
+    events: v.events.slice(-HELPER_EVENTS).reverse().map((e) => ({ id: e.id, ts: secs(e.ts), chat_id: e.session_id, title: e.title, body: e.body })),
+  };
+}
+const recordOf = (m: MemoryRecord) => ({ key: m.key, value: m.value, topics: m.topics, updated: secs(m.updated) });
 
 // How many hits the phone is sent: a screen and a half of them; the words narrow it from there.
 const SEARCH_HITS = 30;
@@ -122,6 +140,8 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
     id: s.id, title: s.title || "New chat", kind: "chat", created: secs(s.created), updated: secs(s.updated), unread: x.unread ?? 0,
     pinned: s.settings.pinned_ms ? 1 : 0, archived: s.archived ? 1 : 0, seq: lastSeq, parent_id: s.parent_id ?? null,
   };
+  // The owner's helper: the phone lists it above the sessions.
+  if (s.settings.helper) c.helper = 1;
   if (x.status) c.status = x.status;
   // The state in the workbench's own words ("Waiting for a timer", "Declined", "Working: command in
   // background"), beside the six statuses above, which stay as they are: an app that knows the field shows it.
@@ -1360,6 +1380,35 @@ export function mobileApi(ctx: MobileCtx) {
     "/v1/pulse": {
       GET: signed(() => {
         return json({ ...pulse(), working: working(), live_sessions: store.sessions(), approvals: pendingApprovals(), ...(ctx.live ? { live: liveData(ctx.live()) } : {}) });
+      }),
+    },
+    // The owner's helper: turned on and off, what it was told lately, and its memory, seen and pruned
+    // (src/helper/). Its conversation is a chat of the list (`helper: 1`), talked to as any other.
+    "/v1/helper": {
+      GET: signed(() => { const h = ctx.helper?.(); return h ? json(helperOf(h)) : err("this daemon runs no helper", 409); }),
+      PATCH: signed(withBody(async (_r, _d, b) => {
+        const h = ctx.helper?.();
+        if (!h) return err("this daemon runs no helper", 409);
+        if (typeof b.on !== "boolean") return err("give on: true or false", 400);
+        await h.setOn(b.on);
+        return json(helperOf(h));
+      })),
+    },
+    "/v1/helper/memory": {
+      GET: signed((req) => {
+        const h = ctx.helper?.();
+        if (!h) return err("this daemon runs no helper", 409);
+        const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
+        if (!q) { const all = h.memory(); return json({ items: all.map(recordOf), total: all.length }); }
+        const f = h.records.index.find(q, 200);
+        return json({ items: f.hits.map((x) => h.records.index.byKey.get(x.key)).filter((m): m is MemoryRecord => !!m).map(recordOf), total: f.total });
+      }),
+    },
+    "/v1/helper/memory/:key": {
+      DELETE: signed((req) => {
+        const h = ctx.helper?.();
+        if (!h) return err("this daemon runs no helper", 409);
+        return h.records.drop([decodeURIComponent(req.params.key!)]).length ? json({ ok: true }) : err("no such record", 404);
       }),
     },
     "/v1/sessions": { GET: signed(() => json({ sessions: store.sessions() })) },

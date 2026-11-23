@@ -137,20 +137,24 @@ fun sessionRows(chats: Map<String, Chat>, cards: Map<String, dev.avifenesh.keel.
 @Composable
 fun SessionList(rows: List<Row3>, now: Double, away: dev.avifenesh.keel.Away? = null, onSeen: () -> Unit = {}) {
     val k = k()
-    val needs = rows.filter { it.state == State.NEEDS }.sortedByDescending { it.chat.updated }
-    val work = rows.filter { it.state == State.WORKING }.sortedBy { it.since ?: it.chat.updated }
-    val rest = rows.filter { it.state != State.NEEDS && it.state != State.WORKING }.sortedWith(compareByDescending<Row3> { it.chat.pinned }.thenByDescending { it.chat.updated })
+    // The owner's helper is one conversation that never ends: first, above the sessions, whatever its state.
+    val helper = rows.filter { it.chat.helper }
+    val others = rows.filter { !it.chat.helper }
+    val needs = others.filter { it.state == State.NEEDS }.sortedByDescending { it.chat.updated }
+    val work = others.filter { it.state == State.WORKING }.sortedBy { it.since ?: it.chat.updated }
+    val rest = others.filter { it.state != State.NEEDS && it.state != State.WORKING }.sortedWith(compareByDescending<Row3> { it.chat.pinned }.thenByDescending { it.chat.updated })
     // The digest arrives after the list: a list keeps its place by the row it shows, which would leave the
     // digest above the screen. At the top, it comes into view.
     val state = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(away?.span) { if (away != null && state.firstVisibleItemIndex <= 1) state.scrollToItem(0) }
     LazyColumn(Modifier.fillMaxSize(), state = state) {
         if (away != null) item(key = "away") { AwayCard(away, onOpen = { Ui.open(it) }, onSeen = onSeen) }
-        fun section(label: String, list: List<Row3>, color: androidx.compose.ui.graphics.Color) {
+        fun section(label: String, list: List<Row3>, color: androidx.compose.ui.graphics.Color, counted: Boolean = true) {
             if (list.isEmpty()) return
-            item(key = "h-$label") { SectionLabel(label, list.size, color, Modifier.padding(top = S.sm)) }
+            item(key = "h-$label") { SectionLabel(label, if (counted) list.size else null, color, Modifier.padding(top = S.sm)) }
             items(list, key = { it.chat.id }) { r -> SessionRow(r, now) }
         }
+        section("Helper", helper, k.muted, counted = false)
         section("Needs you", needs, k.need)
         section("Working", work, k.work)
         section("Recent", rest, k.muted)

@@ -205,5 +205,10 @@ object Hub {
     suspend fun fileDiff(chat: String, path: String, turn: Long?): FileDiff =
         FileDiff.of(Api.get("/v1/chats/${Uri.encode(chat)}/changes/diff?path=${Wire.enc(path)}${turn?.let { "&turn=$it" }.orEmpty()}"))
     suspend fun pulse(): Pulse = Pulse.of(Api.get("/v1/pulse"))
+    /** The owner's helper: its state, turned on or off, its memory (all, or found by words), one record forgotten. */
+    suspend fun helper(): HelperView = HelperView.of(Api.get("/v1/helper"))
+    suspend fun setHelper(on: Boolean): HelperView = HelperView.of(Api.patch("/v1/helper", JSONObject().put("on", on)))
+    suspend fun memory(q: String = ""): MemoryList = MemoryList.of(Api.get("/v1/helper/memory${if (q.isBlank()) "" else "?q=${Wire.enc(q)}"}"))
+    suspend fun forget(key: String) { Api.delete("/v1/helper/memory/${Uri.encode(key)}") }
     suspend fun usage(chat: String): String = usageLine(Api.get("/v1/chats/${Uri.encode(chat)}/usage"))
 }
