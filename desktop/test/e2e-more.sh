@@ -2,8 +2,6 @@
 # a session's own): the cases the review of the Qt engine asked for. The first is for both
 # engines; the rest are the Qt engine's and are skipped with the system web view.
 
-since() { tail -n +"$(($1 + 1))" "$D/shell.out"; }
-lines() { wc -l < "$D/shell.out"; }
 # every process under one (the engine starts its pages' processes from a helper of its own)
 under() { local p; for p in $(pgrep -P "$1" 2> /dev/null); do echo "$p"; under "$p"; done; }
 # the pages' own processes
@@ -23,10 +21,15 @@ elif [ "$ENGINE" = qt ]; then
   fail "the session's own window is not there for the case of two pages"
 fi
 
-# The session's own window of the section before is closed: what follows is typed into the main one.
-for id in $($A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
+# The session's own window of the section before is closed, as the owner closes one: a press on
+# its close button. What follows is typed into the main one.
+$A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
 ws=sorted(json.load(sys.stdin).get("windows", []), key=lambda w: -w["geometry"]["width"]*w["geometry"]["height"])
-print(" ".join(str(w["id"]) for w in ws[1:]))'); do $A close-window --id "$WS" "$id" > /dev/null 2>&1; done
+for w in ws[1:]: print(w["id"], w["geometry"]["x"], w["geometry"]["y"], w["geometry"]["width"])' > "$D/others.txt"
+while read -r oid ox oy ow; do
+  $A focus-window --id "$WS" "$oid" > /dev/null 2>&1; sleep 0.5
+  shut "$ox" "$oy" "$ow"; sleep 1
+done < "$D/others.txt"
 wait_for 10 '[ "$(windows)" = 1 ]' || echo "# note: the session's own window did not close; the cases below run with $(windows) windows"
 
 # --- a. a content frame asks for the keyboard as fast as it can while the owner types: every

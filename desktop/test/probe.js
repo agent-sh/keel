@@ -33,6 +33,23 @@
     say("FRAME shown");
     setTimeout(() => f.remove(), 45000);
   }, 1000);
+  // Where the attach button is, for the check's pointer: its middle and the page's size, said
+  // when they change. (The page reaches the window's left, right and bottom edges, so the
+  // check finds the button from those.)
+  let attachAt = "";
+  setInterval(() => {
+    const b = document.querySelector("[data-testid=attach]");
+    if (!b) return;
+    const r = b.getBoundingClientRect();
+    const at = `${Math.round(r.left + r.width / 2)} ${Math.round(r.top + r.height / 2)} ${innerWidth} ${innerHeight}`;
+    if (at !== attachAt && r.width > 0) { attachAt = at; say(`ATTACH ${at}`); }
+  }, 1000);
+  // The files the message box holds (pictures and others), said when their number changes: for the file dialog's case.
+  let filesHeld = -1;
+  setInterval(() => {
+    const n = document.querySelectorAll("[data-testid=attachments] > *").length;
+    if (n !== filesHeld) { filesHeld = n; say(`FILES ${n}`); }
+  }, 1000);
   // The paste keys as the app hands them to the page (the Qt engine's window).
   addEventListener("keel-shell", (e) => { if (e.detail && e.detail.paste) say("PASTE-KEY handed to the page"); });
   // F4: the artifact's frame is shown anew (each run of the paste race has a frame of its own).

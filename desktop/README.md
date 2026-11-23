@@ -268,7 +268,13 @@ not drawn fails the check. A signal it sends goes only to a
 process it started itself. It proves the window, a daemon restart under it, the tray count, a
 notification's click, a second launch, a link, the text size keys, the
 remembered size and the start button, and leaves screenshots in the folder
-it prints. It also plays what must not work: HTML in a sandboxed frame that
+it prints. It drives what an owner does at the desktop's own edges: the
+notification that stands for many sessions is clicked and the Inbox panel
+opens (a `keel://inbox` link opens it too); the attach button is pressed
+with the pointer, a file is picked in the toolkit's own file dialog and is
+attached; the window is closed by its close button while the tray holds the
+app's mark, which hides it, and a click on the mark brings it back with what
+was typed and the page not loaded again. It also plays what must not work: HTML in a sandboxed frame that
 posts to the app and reads the clipboard, a page that leaves the daemon's
 origin, a stranger on the daemon's port, an alert while the app is stopped
 or has no notification service, a Return after a link to a session with a
@@ -350,12 +356,15 @@ names the Qt engine's program when it is not beside the app.
   as it comes.)
 - Each engine keeps the page's own storage in a folder of its own, so the
   theme, the text size and the panes are set once per engine.
-- Not proven by the check, which has no real pointer or input method: a file
-  dropped on the window, and typing through an input method. A real desktop
-  session is also what proves the tray with a shell's own tray host, a
-  notification's click through the desktop's own service (the check proves
-  the token of a launch, and that a click's token reaches the same call),
-  and a second window on a real Wayland session.
+- Not proven by the check: a file dropped on the window, and typing through
+  an input method. The tray and the notifications are checked against
+  stand-ins that speak the desktop's protocols on the hidden desktop's bus
+  (what a panel asks of the mark, what a notification service is sent and
+  what its click sends back), and the file dialog is the toolkit's real one.
+  A real desktop session is still what proves the mark as a shell's own tray
+  host draws it, a notification as the desktop's own service shows it, the
+  file dialog a desktop's portal puts in the toolkit's place, and a second
+  window on a real Wayland session.
 - On NVIDIA drivers WebKitGTK can show a blank window; start the app with
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` there.
 - macOS and Windows are not built. The parts that are Linux's are the tray

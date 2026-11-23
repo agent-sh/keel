@@ -169,6 +169,18 @@ echo '{"width":1920,"height":1040,"maximized":false}' > "$D/shell/shell.json"
 mkdir -p "$D/apphome"
 launch() { (HOME="$D/apphome" setsid nohup "$SHELL_BIN" "$@" >> "$D/shell.out" 2>&1 < /dev/null &); }
 said() { grep -a "^PROBE $1" "$D/shell.out" 2> /dev/null | tail -1; }
+# what the app and its pages said since a mark (a count of lines)
+lines() { wc -l < "$D/shell.out"; }
+since() { tail -n +"$(($1 + 1))" "$D/shell.out"; }
+# The owner closes a window: a press on its own close button, at its top right corner (under
+# either engine the button lies there). usage: shut X Y WIDTH
+shut() { $A click --id "$WS" $(($1 + $3 - 22)) $(($2 + 18)) > /dev/null 2>&1; }
+# a small picture, as a file
+png() { py 'import struct,sys,zlib
+def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+w, h = 40, 30
+rows = b"".join(b"\x00" + bytes([18, 128, 153]) * w for _ in range(h))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))' "$1"; }
 delivery() { api "/api/alerts?limit=20" | py 'import json,sys
 d=json.load(sys.stdin); d=d.get("alerts", d)
 print(next((a.get("delivery", {}).get("desktop", {}).get("state", "") for a in d if a["id"] == sys.argv[1]), ""))' "$1"; }
@@ -275,6 +287,26 @@ notes=$(grep -c '^NOTIFY ' "$D/notify-host.out" || true)
 again=$(api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$quiet\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["alert"]["id"])')
 check "the next alert is the app's again: shown once and recorded as sent" "wait_for 10 '[ \"\$(delivery $again)\" = sent ]' && [ \"\$(grep -c '^NOTIFY ' '$D/notify-host.out')\" = $((notes + 1)) ]"
 
+# --- 4c. more sessions alert together than are told one by one: one notification stands for them, and its click opens the Inbox panel
+for i in 1 2 3 4; do
+  many=$(api /api/sessions "{\"model\":\"scripted:stand-in\",\"title\":\"Desktop: one of many $i\",\"text\":\"One line.\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
+  sleep 1
+  api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$many\"}" POST > /dev/null
+done
+check "sessions that alert together are told as one notification" "wait_for 20 \"grep '^NOTIFY ' '$D/notify-host.out' | tail -1 | grep -q 'sessions need you'\""
+nid=$(grep '^NOTIFY ' "$D/notify-host.out" | grep 'sessions need you' | tail -1 | py 'import json,sys; print(json.loads(sys.stdin.read()[7:])["id"])')
+mark=$(lines)
+gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method test.Notifications.Click "$nid" > /dev/null
+check "its click opens the Inbox panel in the window" "wait_for 15 \"since $mark | grep -a '^PROBE AT ' | grep -q ' inbox=true'\" && last click | grep -q '\"alert\":\"\"'"
+sleep 1; shot 04b-inbox-panel-light
+$A key --id "$WS" Escape > /dev/null 2>&1
+check "Escape closes the panel" "wait_for 10 \"said 'AT ' | grep -q ' inbox=false'\""
+mark=$(lines)
+"$SHELL_BIN" keel://inbox
+check "a keel://inbox link opens it too" "wait_for 15 \"since $mark | grep -a '^PROBE AT ' | grep -q ' inbox=true'\""
+$A key --id "$WS" Escape > /dev/null 2>&1
+wait_for 10 "said 'AT ' | grep -q ' inbox=false'" || true
+
 # --- 5. a second launch and a keel:// link
 "$SHELL_BIN" "keel://session/$ask"; code=$?
 check "a second launch ends at once and hands its link to the first" "[ $code = 0 ] && wait_for 10 \"last present | grep -q '/s/$ask'\" && [ \"\$(app_pids | wc -l)\" = 1 ]"
@@ -306,11 +338,7 @@ check "it read nothing from the clipboard" "grep -aq '^PROBE ARTIFACT CLIP exec=
 # --- 5b2. the review's race: the owner clicks once inside the artifact, then pastes a copied picture into the message box
 read -r X Y W H _ <<< "$(geometry)"
 if [ -n "$SECRET" ]; then
-  py 'import struct,sys,zlib
-def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
-w, h = 40, 30
-rows = b"".join(b"\x00" + bytes([18, 128, 153]) * w for _ in range(h))
-open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))' "$D/paste.png"
+  png "$D/paste.png"
   (wl-copy -t image/png < "$D/paste.png" > /dev/null 2>&1 &); sleep 1
   # inside the frame (it sits in the lower right corner of the page), then the message box, then the paste key.
   # KEEL_E2E_5B2_TIMES: how often (the race is one of timing). Each time the frame is shown
@@ -376,20 +404,20 @@ read -r X Y W H _ <<< "$(geometry)"
 $A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
 $A key --id "$WS" F8 > /dev/null 2>&1
 # The page's own script still reports after the attempt: the page that was there is the page that is there.
-check "a page that tries to leave the daemon's origin stays where it was, not loaded again" "wait_for 10 \"said LEAVING | grep -q LEAVING\" && sleep 5 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ] && ! geometry | grep -qi foreign"
+check "a page that tries to leave the daemon's origin stays where it was, not loaded again" "wait_for 10 \"said LEAVING | grep -q LEAVING\" && sleep 5 && grep -a '^PROBE AT ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ] && ! geometry | grep -qi foreign"
 
 # --- 5c2. the main frame shows places of the page only: not an artifact's own address, which is a sandboxed document
 $A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
 $A key --id "$WS" F9 > /dev/null 2>&1
-check "the main frame does not show an artifact's own address, and the artifact gets no app object" "wait_for 10 \"said GOING-RAW | grep -q GOING\" && sleep 5 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && ! grep -aq '^PROBE ARTIFACT handler=true keelShell=object' '$D/shell.out' && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ]"
+check "the main frame does not show an artifact's own address, and the artifact gets no app object" "wait_for 10 \"said GOING-RAW | grep -q GOING\" && sleep 5 && grep -a '^PROBE AT ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && ! grep -aq '^PROBE ARTIFACT handler=true keelShell=object' '$D/shell.out' && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ]"
 # The same address as a file to keep is saved, and the page is not loaded again.
 $A key --id "$WS" F10 > /dev/null 2>&1
 # (Nothing announced it: a file is kept when the page offered it at a link the owner pressed, and this is no such thing.)
-check "a navigation to a file of the daemon's keeps no file, and the page stays" "wait_for 10 \"said GOING-DOWNLOAD | grep -q GOING\" && sleep 3 && [ ! -e '$D/apphome/Downloads/shell-probe.html' ] && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
+check "a navigation to a file of the daemon's keeps no file, and the page stays" "wait_for 10 \"said GOING-DOWNLOAD | grep -q GOING\" && sleep 3 && [ ! -e '$D/apphome/Downloads/shell-probe.html' ] && grep -a '^PROBE AT ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
 # The file offered as the page offers one (a link to keep it): saved under a free name in the downloads folder, never over a file.
 kept=$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l); notes=$(logged download)
 $A key --id "$WS" F10 > /dev/null 2>&1
-check "a file the page offers is saved to the downloads folder under a free name, and the page stays" "wait_for 10 \"[ \\\"\\\$(ls '$D/apphome/Downloads' | wc -l)\\\" = $((kept + 1)) ] && [ \\\"\\\$(logged download)\\\" = $((notes + 1)) ]\" && sleep 2 && ls '$D/apphome/Downloads' | grep -q '^shell-probe' && [ -z \"\$(ls -A '$D/apphome' | grep -v '^Downloads\$' | grep -i probe)\" ] && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
+check "a file the page offers is saved to the downloads folder under a free name, and the page stays" "wait_for 10 \"[ \\\"\\\$(ls '$D/apphome/Downloads' | wc -l)\\\" = $((kept + 1)) ] && [ \\\"\\\$(logged download)\\\" = $((notes + 1)) ]\" && sleep 2 && ls '$D/apphome/Downloads' | grep -q '^shell-probe' && [ -z \"\$(ls -A '$D/apphome' | grep -v '^Downloads\$' | grep -i probe)\" ] && grep -a '^PROBE AT ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
 # The same file offered by a script alone, twelve seconds after the owner's last press: nothing is kept.
 # (No key and no click in between: the probe offers it by itself.)
 before=$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l)
@@ -433,12 +461,49 @@ else
   echo "# note: focus on a launch with the desktop's activation token is checked under the native Wayland backend"
 fi
 
+# --- 5e. the file dialog: the attach button opens the desktop's own dialog, and the file picked there is attached
+read -r X Y W H _ <<< "$(geometry)"
+read -r CX CY IW IH <<< "$(said 'ATTACH ' | cut -d' ' -f3-)"
+files=$(said 'FILES ' | cut -d' ' -f3)
+png "$D/attach.png"
+if [ -n "${IH:-}" ]; then
+  # (The page reaches the window's left, right and bottom edges: the button is found from those.)
+  $A click --id "$WS" $((X + CX + (W - IW) / 2)) $((Y + H - (IH - CY))) > /dev/null 2>&1; sleep 3
+  # The dialog is the toolkit's: its own window. The path goes into its location field whole
+  # (typed a key at a time, the field's own completion mixes into it).
+  $A focus-window --id "$WS" --title "Select Files" > /dev/null 2>&1 || true
+  $A key --id "$WS" ctrl+l > /dev/null 2>&1; sleep 1
+  $A paste --id "$WS" "$D/attach.png" > /dev/null 2>&1; sleep 1
+  $A key --id "$WS" Return > /dev/null 2>&1
+  check "a file picked in the desktop's file dialog is attached to the message" "wait_for 15 \"[ \\\"\\\$(said 'FILES ' | cut -d' ' -f3)\\\" = $((${files:-0} + 1)) ]\""
+  # (Should the dialog still be there, it is closed: the next cases press keys in the page.)
+  if $A windows --id "$WS" 2> /dev/null | grep -q 'Select Files'; then $A focus-window --id "$WS" --title "Select Files" > /dev/null 2>&1; $A key --id "$WS" Escape > /dev/null 2>&1; fi
+else
+  fail "the page did not say where its attach button is"
+fi
+
 # --- 6. the tray menu: pause and resume
 check "the menu offers open, new session, pause and quit" "menu | grep -q 'Open Keel' && menu | grep -q 'New Session' && menu | grep -q 'Pause Notifications' && menu | grep -q \"'Quit'\""
 pick 7
 check "pause holds the daemon's alerts" "wait_for 10 \"api /api/snooze | grep -q '\\\"until_ms\\\":[0-9]'\" && wait_for 10 \"menu | grep -q 'Resume Notifications'\""
 pick 6
 check "resume lets them through again" "wait_for 10 \"api /api/snooze | grep -q '\\\"snooze\\\":null'\" && wait_for 10 \"menu | grep -q 'Pause Notifications'\""
+
+# --- 6b. the window closed while a tray host is there is hidden, not ended; a click on the mark brings it back as it was
+read -r X Y W H _ <<< "$(geometry)"
+$A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 1
+$A type --id "$WS" "kept while hidden" > /dev/null 2>&1; sleep 2
+draft=$(said 'AT ' | sed -n 's/.* draft=\([0-9]*\) .*/\1/p')
+hid=$(logged hidden); loads=$(logged load)
+shut "$X" "$Y" "$W"
+check "closing the window while the tray holds the app's mark hides it: the app runs on" "wait_for 10 \"[ \\\"\\\$(logged hidden)\\\" -gt $hid ]\" && [ \"\$(app_pids | wc -l)\" = 1 ] && wait_for 5 '[ \"\$(windows)\" = 0 ]'"
+mark=$(lines)
+# (As a panel does at a click on the mark.)
+gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem --method org.kde.StatusNotifierItem.Activate 0 0 > /dev/null 2>&1
+check "a click on the mark brings the window back as it was: what was typed is there, and the page was not loaded again" "wait_for 10 '[ \"\$(windows)\" = 1 ]' && [ \"${draft:-0}\" -ge 17 ] && wait_for 10 \"since $mark | grep -a '^PROBE AT ' | tail -1 | grep -q ' draft=$draft '\" && [ \"\$(logged load)\" = \"$loads\" ]"
+read -r X Y W H _ <<< "$(geometry)"
+$A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + H - 90)) > /dev/null 2>&1; sleep 0.5
+$A key --id "$WS" ctrl+a > /dev/null 2>&1; $A key --id "$WS" BackSpace > /dev/null 2>&1; sleep 1
 
 # --- 7. the dark theme: the title bar follows the page
 read -r X Y W H _ <<< "$(geometry)"
