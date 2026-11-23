@@ -6,7 +6,7 @@ import { gunzipSync } from "node:zlib";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { KEEP_REQUEST_BYTES, OWED_AT_START, SPAN_DAYS, packRequest, parseTraceparent, requestShape, type Span, spawnContext, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
+import { KEEP_REQUEST_BYTES, OWED_AT_START, SPAN_DAYS, TURN_FAILURE_SQL, packRequest, parseTraceparent, requestShape, type Span, spawnContext, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
 
 // A tracer over a store of its own, with the hooks it registered. Closing takes
 // the hooks away with the store: a turn of a later test file would call them.
@@ -336,6 +336,17 @@ test("a start reads the owed spans without reading every span", () => {
     const plan = store.db.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${OWED_AT_START}`).all().map((r) => r.detail);
     expect(plan[0]).toMatch(/^SCAN o\b/);
     expect(plan.join("; ")).not.toMatch(/SCAN s\b/);
+  } finally {
+    close();
+  }
+});
+
+test("a failed turn's end finds its failed step by an index, not by a pass over every span", () => {
+  const { store, close } = tracer();
+  try {
+    const args = TURN_FAILURE_SQL.split("?").slice(1).map(() => "x");
+    const plan = store.db.query<{ detail: string }, string[]>(`EXPLAIN QUERY PLAN ${TURN_FAILURE_SQL}`).all(...args).map((r) => r.detail).join("; ");
+    expect(plan).toMatch(/^SEARCH spans USING INDEX spans_trace/);
   } finally {
     close();
   }

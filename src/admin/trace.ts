@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS trace_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL
 // The scrub the stored failure texts were last passed through (conceal.ts): raised when its rules change.
 const SCRUB_VERSION = "2";
 
+// What a failed turn failed of: its newest failed step, among the spans of its
+// trace (a turn's steps are in its trace). By its parent alone this was a pass
+// over every span, newest first, on the loop: seconds for a turn whose failure
+// left no failed step (a request refused before it was sent).
+export const TURN_FAILURE_SQL = "SELECT error, error_type FROM spans WHERE trace_id = ? AND parent_id = ? AND status = 'error' ORDER BY start_ms DESC LIMIT 1";
+
 export const SPAN_DAYS = 14;
 // The spans owed at a start, oldest first. Without CROSS JOIN, SQLite reads every span in the
 // order of its start (spans_start) to look each one up among the few owed, and skips the sort:
@@ -569,7 +575,7 @@ export class Tracer {
   private turnEnd(s: Session, reason: string) {
     const turn = this.lastTurn(s.id);
     if (!turn) return;
-    const { span } = this.ensureTurn(s, turn);
+    const { trace, span } = this.ensureTurn(s, turn);
     // What the turn still waited on when it ended was cut with it (a card left open, a retry stopped).
     this.endWait(`step:${s.id}`, undefined, "interrupted");
     for (const [key, id] of this.waits) {
@@ -578,7 +584,7 @@ export class Tracer {
     // A turn the model declined did not do its work: failed, as its declined request is.
     const declined = reason === "refusal";
     const status: SpanStatus = reason === "error" || declined ? "error" : reason === "interrupted" || reason === "restart" ? "interrupted" : "ok";
-    const fail = status === "error" ? this.store.db.query<{ error: string; error_type: string }, [string]>("SELECT error, error_type FROM spans WHERE parent_id = ? AND status = 'error' ORDER BY start_ms DESC LIMIT 1").get(span) : null;
+    const fail = status === "error" ? this.store.db.query<{ error: string; error_type: string }, [string, string]>(TURN_FAILURE_SQL).get(trace, span) : null;
     this.finish(span, { status, error: fail?.error ?? (declined ? "refusal" : null), error_type: fail?.error_type ?? (declined ? "refusal" : status === "error" ? "error" : null), attrs: { reason } });
   }
 
