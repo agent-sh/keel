@@ -424,6 +424,35 @@ class Seen {
     companion object { const val SLACK = 1f }
 }
 
+/** GET /v1/start: what a new session can start with. */
+data class StartModel(val id: String, val name: String)
+data class StartFolder(val path: String, val name: String, val last: Double = 0.0, val home: Boolean = false)
+data class StartMachine(val id: String, val name: String, val ready: Boolean, val root: String = "")
+data class Start(val model: String, val models: List<StartModel>, val folders: List<StartFolder>, val machines: List<StartMachine>) {
+    companion object {
+        private fun objs(o: JSONObject, k: String) = o.optJSONArray(k)?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+        fun of(o: JSONObject) = Start(
+            o.str("model"),
+            objs(o, "models").map { StartModel(it.str("id"), it.str("name").ifBlank { it.str("id") }) },
+            objs(o, "folders").map { StartFolder(it.str("path"), it.str("name"), it.optDouble("last", 0.0), it.optBoolean("home")) },
+            objs(o, "machines").map { StartMachine(it.str("id"), it.str("name"), it.optBoolean("ready"), it.str("root")) },
+        )
+    }
+}
+
+/** A new session as the start sheet chose it (POST /v1/chats): what is left blank is the daemon's default. */
+data class NewChat(val model: String = "", val workspace: String = "", val machine: String = "", val text: String = "") {
+    fun body(): JSONObject = JSONObject().apply {
+        if (model.isNotBlank()) put("model", model)
+        if (workspace.isNotBlank()) put("workspace", workspace)
+        if (machine.isNotBlank() && machine != "local") put("machine", machine)
+        if (text.isNotBlank()) put("text", text.trim())
+    }
+}
+
+/** A model's name as a picker shows it: its listing's name, else the id after its provider. */
+fun modelName(m: StartModel) = if (m.name.isNotBlank() && m.name != m.id) m.name else m.id.substringAfter(':')
+
 /** A file a session changed: its path, git's letter for how (A added, M changed, D deleted, T its type), the lines added and removed, written outside the session's work. */
 data class FileChange(val path: String, val status: String, val added: Int, val removed: Int, val outside: Boolean = false) {
     val name get() = path.substringAfterLast('/')

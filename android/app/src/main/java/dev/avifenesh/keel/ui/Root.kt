@@ -91,6 +91,7 @@ fun Root(act: MainActivity) {
                 }
             }
         }
+        if (Ui.paired.value && Ui.starting.value) StartHost()
         // A pairing link that arrived while paired asks before it replaces the pairing.
         Ui.link.value?.let { l -> if (Ui.paired.value) PairOver(act, l) }
     }

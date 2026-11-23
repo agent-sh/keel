@@ -63,7 +63,11 @@ const card = (a: Partial<Approval> & Pick<Approval, "id" | "session_id" | "summa
 };
 // What each turn changed: a checkpoint store of the test's own, made by the changes tests.
 let ckpts: Checkpoints | undefined;
-const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts } as any);
+// The fleet as the phone sees it: its machines, and what starting a session on one answers.
+let fleetRows: any[] = [];
+let fleetStart: (b: any) => Response = () => Response.json({ error: "no fleet in this test" }, { status: 409 });
+const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {}, checkpoints: () => ckpts,
+  fleetMachines: async () => fleetRows, startFleetSession: async (b: any) => fleetStart(b) } as any);
 afterAll(() => setSystemTime());
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -388,6 +392,43 @@ async function changedSession() {
   await turn("Add b", () => writeFileSync(join(ws, "b.txt"), "new file\n"), gap(() => writeFileSync(join(ws, "c.txt"), "the owner's\n")), () => {});
   return s;
 }
+
+describe("start", () => {
+  test("a new session starts as the sheet chose: model, folder, machine and its first message", async () => {
+    const before = sent.length;
+    const ws = mkdtempSync(join(dir, "start-"));
+    const old = session("Old");
+    store.updateSession(old.id, { workspace: ws } as any);
+    const offer = (await call("GET", "/v1/start")).body;
+    expect(offer.model).toBe("fx:default");
+    expect(offer.folders[0]).toMatchObject({ path: ws });
+    expect(offer.folders.find((f: any) => f.home)?.path).toBe(dir);
+    // A folder and a first message: the session is made there and the message sent.
+    const made = (await call("POST", "/v1/chats", { workspace: ws, text: "Find why the build fails" })).body.chat;
+    expect(store.session(made.id)!.workspace).toBe(ws);
+    expect(sent.slice(before).map((x) => [x.id, x.text])).toEqual([[made.id, "Find why the build fails"]]);
+    // A folder that is not one here, a relative one, and a model nobody has are refused before a session exists.
+    const n = store.sessions().length;
+    expect((await call("POST", "/v1/chats", { workspace: join(dir, "nope") })).status).toBe(400);
+    expect((await call("POST", "/v1/chats", { workspace: "rel/dir" })).status).toBe(400);
+    const was = providers.resolve;
+    providers.resolve = async () => { throw new Error("no such model"); };
+    try { expect((await call("POST", "/v1/chats", { model: "x:gone" })).body.error).toBe("no such model: pick another model"); } finally { providers.resolve = was; }
+    expect(store.sessions().length).toBe(n);
+    // On a machine of the fleet: the fleet's own start, and its refusal said as it came.
+    fleetStart = (b) => {
+      if (b.machine !== "m_7") return Response.json({ error: "no such machine" }, { status: 400 });
+      const s = store.createSession({ model: b.model, workspace: b.workspace ?? "/srv/work", title: b.title });
+      return Response.json({ session: s }, { status: 201 });
+    };
+    try {
+      const far = (await call("POST", "/v1/chats", { machine: "m_7", workspace: "/srv/work/app", text: "Run the tests there" })).body.chat;
+      expect(store.session(far.id)!.workspace).toBe("/srv/work/app");
+      expect(sent.at(-1)).toMatchObject({ id: far.id, text: "Run the tests there" });
+      expect((await call("POST", "/v1/chats", { machine: "m_9" })).body.error).toBe("no such machine");
+    } finally { fleetStart = () => Response.json({ error: "no fleet in this test" }, { status: 409 }); }
+  });
+});
 
 describe("changes", () => {
   test("a session's changes: each turn's files with their counts, newest first, and one file's diff", async () => {
@@ -857,6 +898,7 @@ describe("the wire contract", () => {
     hello: [["sync", "sync"]], message_frame: [["message", "message"], ["chat", "chat"]], chat_frame: [["chat", "chat"]],
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
     changes: [["turns", "change_turn"], ["session", "file_change"]], change_turn: [["files", "file_change"]],
+    start: [["models", "start_model"], ["folders", "start_folder"], ["machines", "start_machine"]],
   };
   // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
   function broken(shape: string, v: any, seen = new Set<string>(), out: string[] = []) {
@@ -944,6 +986,13 @@ describe("the wire contract", () => {
     take("usage", (await call("GET", `/v1/chats/${s.id}/usage`)).body);
     take("me", (await call("GET", "/v1/me")).body);
     take("created", (await call("POST", "/v1/chats", {})).body);
+    // What a new session can start with, the fleet's machines among it.
+    fleetRows = [{ id: "local", name: "desk", enabled: true, state: "ready" }, { id: "m_7", name: "build box", enabled: true, state: "offline", workspace_root: "/srv/work", daemon: { state: "offline" } }];
+    const listing = providers.models;
+    (providers as any).models = async () => [{ id: "fx:default", name: "Default model" }, { id: "fx:other" }];
+    take("start", (await call("GET", "/v1/start")).body);
+    (providers as any).models = listing;
+    fleetRows = [];
     take("error", (await call("POST", `/v1/chats/${s.id}/messages`, { text: "" })).body);
     // What a session changed, and one file's diff; a session with nothing to show says why.
     const edits = await changedSession();
@@ -1007,7 +1056,7 @@ describe("the wire contract", () => {
 
     expect(bad).toEqual([]);
     // Every field the app reads was sent at least once here, so a renamed optional field fails too.
-    const sent = Object.entries(fields).filter(([shape]) => !["send", "answer", "upload_ref"].includes(shape)).flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));
+    const sent = Object.entries(fields).filter(([shape]) => !["send", "answer", "upload_ref", "new_chat"].includes(shape)).flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));
     expect(sent.filter((k) => !seen.has(k))).toEqual([]);
     expect(q.answer()).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Unit"], other: "by hand" } });
   });

@@ -180,9 +180,10 @@ object Hub {
 
     suspend fun stopTurn(chat: String) { Api.post("/v1/chats/${Uri.encode(chat)}/stop") }
 
-    suspend fun newChat(): String {
-        return feed.created(Api.post("/v1/chats", JSONObject())).id
+    suspend fun newChat(n: NewChat = NewChat()): String {
+        return feed.created(Api.post("/v1/chats", n.body())).id
     }
+    suspend fun startOffer(): Start = Start.of(Api.get("/v1/start"))
 
     suspend fun resolve(aid: String, body: JSONObject, headers: Map<String, String>): Card? {
         return feed.resolved(Api.post("/v1/approvals/${Uri.encode(aid)}", body, headers))

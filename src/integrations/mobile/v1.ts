@@ -2,7 +2,8 @@
 // and pair needs the device's bearer token and a request signature; approvals
 // and revoking another device also need the approval key's signature.
 import { holdStream } from "../../server/streams.ts";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename as baseName, isAbsolute, resolve as resolvePath } from "node:path";
 import { hostname } from "node:os";
 import { basename } from "node:path";
 import { ATTACHMENT_MAX, attachmentPath, saveAttachment } from "../../engine/attachments.ts";
@@ -53,7 +54,15 @@ const UNASKED = new Set(["auto-edits", "auto", "full-auto"]);
 
 // `checkpoints`: what each turn changed in the session's folder (src/safety/checkpoints.ts), for the
 // phone's Changes; absent where no checkpoints are kept.
-export type MobileCtx = Deps & { mobile: MobileStore; gate: () => Gate | undefined; changed: () => void; checkpoints?: () => Checkpoints | undefined };
+// What the phone's start sheet offers: the folders this machine's sessions worked in, newest first,
+// at most this many (the daemon's own folder always among them).
+const START_FOLDERS = 12;
+
+export type MobileCtx = Deps & {
+  mobile: MobileStore; gate: () => Gate | undefined; changed: () => void; checkpoints?: () => Checkpoints | undefined;
+  // The fleet, where the daemon has one: its machines, and a session started on one of them.
+  fleetMachines?: () => Promise<any[]>; startFleetSession?: (b: any) => Promise<Response>;
+};
 
 const urlOrigin = (u: string) => { try { return new URL(u).origin; } catch { return null; } };
 
@@ -928,20 +937,66 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     "/v1/events": { GET: signed((req, dev, _b, srv) => events(req, dev, srv)) },
+    // What a new session can start with: the models (the default first named), the folders this
+    // machine's sessions worked in, newest first, and the machines of the fleet that can take one.
+    "/v1/start": {
+      GET: signed(async () => {
+        const listed = providers.marked(await providers.models().catch(() => [])).filter((m) => !m.hidden);
+        const model = (await providers.defaultModel().catch(() => "")) || "";
+        const seen = new Map<string, number>();
+        for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
+          if (s.machine || s.parent_id) continue;
+          seen.set(s.workspace, Math.max(seen.get(s.workspace) ?? 0, s.updated));
+        }
+        if (!seen.has(ctx.workspace)) seen.set(ctx.workspace, 0);
+        const folders = [...seen].filter(([p]) => { try { return statSync(p).isDirectory(); } catch { return false; } })
+          .sort((a, b) => b[1] - a[1]).slice(0, START_FOLDERS)
+          .map(([path, last]) => ({ path, name: baseName(path) || path, ...(last ? { last: secs(last) } : {}), ...(path === ctx.workspace ? { home: true } : {}) }));
+        const all = (await ctx.fleetMachines?.().catch(() => [])) ?? [];
+        const machines = all.filter((m: any) => m.id === "local" || (m.enabled && m.workspace_root))
+          .map((m: any) => ({ id: m.id, name: m.name, ready: m.id === "local" || (m.state === "ready" && (m.daemon?.state === "linked" || m.transport === "ssh")), ...(m.workspace_root ? { root: m.workspace_root } : {}) }));
+        return json({ model, models: listed.map((m) => ({ id: m.id, name: m.name || m.id })), folders, machines });
+      }),
+    },
     "/v1/chats": {
       GET: signed(() => { const u = unread(); return json({ chats: store.sessions().map((s) => chatFull(s, u)), working: working() }); }),
-      POST: signed(withBody(async (_r, _d, b) => {
+      // A new session: on the default model in the daemon's folder, or as the start sheet chose (`model`,
+      // `workspace`, `machine`), and with its first message (`text`) when one is given.
+      POST: signed(withBody(async (_r, dev, b) => {
         // Profiles are not a Keel notion; the one profile is "default". A
         // remembered profile this daemon does not have is refused before a chat
         // exists, so the app can show the choice it has.
         if (b.profile !== undefined && b.profile !== null && b.profile !== "" && b.profile !== "default")
           return json({ error: `this machine has no profile "${String(b.profile).slice(0, 80)}"; the profiles are: default`, profiles: ["default"] }, 409);
-        const model = await providers.defaultModel().catch(() => "");
+        const title = typeof b.title === "string" && b.title !== "New chat" ? b.title.slice(0, 200) : "";
+        const text = typeof b.text === "string" ? b.text.trim().slice(0, 100_000) : "";
+        const model = (typeof b.model === "string" && b.model) || (await providers.defaultModel().catch(() => ""));
         if (!model) return err("No model provider is set up.", 409);
-        await providers.resolve(model);
-        const s = store.createSession({ model, workspace: ctx.workspace, title: typeof b.title === "string" && b.title !== "New chat" ? b.title.slice(0, 200) : "" });
-        bus.emit({ t: "session", session: s });
-        return json({ chat: chatFull(s) });
+        try { await providers.resolve(model); } catch (e) { return err(`${(e as Error).message}: pick another model`, 409); }
+        const machine = typeof b.machine === "string" && b.machine && b.machine !== "local" ? b.machine : "";
+        let s: Session;
+        if (machine) {
+          // Placed on a machine of the fleet: the page's own way, checks included.
+          const start = ctx.startFleetSession;
+          if (!start) return err("this daemon has no machines to start a session on", 409);
+          const r = await start({ machine, model, title, ...(typeof b.workspace === "string" && b.workspace ? { workspace: b.workspace } : {}) });
+          const out: any = await r.json();
+          if (!r.ok) return err(String(out.error ?? "the session was not started there"), r.status);
+          s = store.session(out.session.id)!;
+        } else {
+          const ws = typeof b.workspace === "string" && b.workspace ? b.workspace : ctx.workspace;
+          if (!isAbsolute(ws)) return err("give the folder as an absolute path on this machine", 400);
+          const folder = resolvePath(ws);
+          if (!existsSync(folder) || !statSync(folder).isDirectory()) return err(`not a folder on this machine: ${folder}`, 400);
+          s = store.createSession({ model, workspace: folder, title });
+          bus.emit({ t: "session", session: s });
+        }
+        if (text) {
+          if (dev.nolock && UNASKED.has(ctx.gate()?.perm(s.id).mode ?? "ask"))
+            return json({ chat: chatFull(s), error: "This phone has no screen lock, so it can only prompt chats where every tool call asks" }, 403);
+          engine.send(s.id, text, { mode: "send" });
+        }
+        return json({ chat: chatFull(store.session(s.id)!) });
       })),
     },
     "/v1/chats/:cid": {

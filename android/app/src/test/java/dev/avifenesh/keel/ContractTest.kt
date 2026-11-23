@@ -51,6 +51,8 @@ class ContractTest {
                 .map { Upload(it.getString("id"), "", it.getString("mime"), it.getString("file_name"), 0) }
             assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"), files)))
         }
+        // A new session as the start sheet sends it, and with nothing chosen.
+        for (n in examples("new_chat")) assertEquals(canon(n), canon(NewChat(n.optString("model"), n.optString("workspace"), n.optString("machine"), n.optString("text")).body()))
         // The upload the example names is the answer the daemon gave for it.
         val up = Upload.of(examples("upload").first())
         val ref = examples("upload_ref").first()
@@ -106,6 +108,10 @@ class ContractTest {
         "usage_session" to { o -> usageLine(JSONObject().put("session", o)) },
         "me" to { o -> Me.of(o).toString() },
         "upload" to { o -> Upload.of(o).toString() },
+        "start" to { o -> Start.of(o).toString() },
+        "start_model" to { o -> Start.of(JSONObject().put("models", JSONArray().put(o))).models.toString() },
+        "start_folder" to { o -> Start.of(JSONObject().put("folders", JSONArray().put(o))).folders.toString() },
+        "start_machine" to { o -> Start.of(JSONObject().put("machines", JSONArray().put(o))).machines.toString() },
         "changes" to { o -> Changes.of(o).toString() },
         "change_turn" to { o -> ChangeTurn.of(o).toString() },
         "file_change" to { o -> FileChange.of(o).toString() },
@@ -136,7 +142,7 @@ class ContractTest {
     @Test fun theAppReadsEveryFieldOfTheContractUnderItsName() {
         // Every shape the daemon sends has a reader here; `send` and `answer` are what the app sends.
         // `send`, `answer` and `upload_ref` (the uploads a send names) are what the app sends.
-        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload_ref"), reads.keys)
+        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload_ref", "new_chat"), reads.keys)
         for ((shape, read) in reads) for (path in fields.getJSONObject(shape).keys()) {
             // Without the field, the app must make something else of at least one example that has it.
             val read1 = examples(shape).any { ex -> has(ex, path) && read(copy(ex)) != read(without(ex, path)) }

@@ -90,14 +90,8 @@ fun SessionsScreen() {
     var error by remember { mutableStateOf("") }
     // Both "New session" buttons start one here: a second tap while the first is on its way starts nothing,
     // and a refusal shows under the header and gives both buttons back.
-    fun create() {
-        if (creating) return
-        creating = true; error = ""
-        scope.launch {
-            runCatching { Hub.newChat() }.onSuccess { Ui.open(it) }.onFailure { error = it.message ?: "Could not start a session" }
-            creating = false
-        }
-    }
+    // Both "New session" buttons open the start sheet: what to do, where, on which model.
+    fun create() { error = ""; Ui.starting.value = true }
     val now = nowTick()
     val rows = sessionRows(chats, cards, working)
 

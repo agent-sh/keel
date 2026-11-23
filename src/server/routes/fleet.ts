@@ -52,6 +52,9 @@ const daemonPort = (v: unknown): number | null | undefined => {
 };
 
 export let fleet: Fleet | undefined;
+// Set when the routes load: a session started on a machine of the fleet, and the machines (the phone's start sheet).
+export let startFleetSession: ((b: any) => Promise<Response>) | undefined;
+export let fleetMachines: (() => Promise<any[]>) | undefined;
 
 export const fleetRoutes: RouteModule = (deps: Deps) => {
   const { store, bus, engine, errors } = deps;
@@ -295,6 +298,68 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   // The hands, for paired daemons only.
   const handsLinked = Object.fromEntries(Object.entries(handsRoutes({ spillRoot, capture: (e, c) => errors.capture("tool", e, c), instructions: instructionFiles })).map(([path, h]) => [path, Object.fromEntries(Object.entries(h).map(([m, fn]) => [m, linked(fn as any)]))]));
 
+  // A new session whose tools run on a machine of the fleet (`machine`: its id, or "auto"), from the page
+  // or the phone: the same checks and the same answer either way.
+  const startOnMachine = async (b: any): Promise<Response> => {
+    // The model runs here wherever the tools go: it is checked first, the
+    // same way for every placement, before any session exists.
+    const model = b.model || (await deps.providers.defaultModel());
+    if (!model) return bad("no model is available: no provider has credentials", 409);
+    try {
+      await deps.providers.resolve(model);
+    } catch (e) {
+      return bad(`${(e as Error).message}: pick another model`, 409);
+    }
+    let placed: any;
+    if (b.machine === "auto") {
+      placed = await f.placeWork({ kind: "session", heavy: !!b.heavy, needs_gpu: !!b.needs_gpu });
+      if (typeof placed === "string") return bad(placed);
+      // The start box shows where Auto places the session before it is
+      // sent (expect_machine); a different answer now is said, not taken.
+      if (typeof b.expect_machine === "string" && b.expect_machine !== placed.machine_id)
+        return json({ error: `Auto now places this on ${placed.machine} (${placed.reason}), not where the start box showed. Look at the new place and send again.`, placed }, 409);
+      // A folder of this machine is not a folder there: Auto never trades
+      // the project for another one in the other machine's directory.
+      if (placed.machine_id !== "local" && b.local_workspace) {
+        const there = f.row(placed.machine_id)?.workspace_root;
+        return json({ error: `Auto places this on ${placed.machine}, where it would start in ${there ?? "its granted directory"}, not in ${b.local_workspace} on this machine. Pick this machine to work there, or ${placed.machine} to start in its directory.`, placed }, 409);
+      }
+      if (placed.machine_id === "local") {
+        const ws = resolve(b.local_workspace || deps.workspace);
+        const s = store.createSession({ model, workspace: ws, title: b.title });
+        store.append(s.id, "note", { text: `Kept on ${f.name}: ${placed.reason}.` });
+        bus.emit({ t: "session", session: store.session(s.id)! });
+        if (b.text || b.images?.length) await fitted(s.id, b.images, (images) => engine.send(s.id, String(b.text ?? "").trim(), { images }));
+        return json({ session: store.session(s.id), placed }, 201);
+      }
+      b.machine = placed.machine_id;
+    }
+    const m = f.row(String(b.machine ?? ""));
+    if (!m) return bad("no such machine", 400);
+    if (!m.workspace_root) return bad(`${m.name} has no granted directory: set one before starting sessions there`);
+    const ws = b.workspace ? (isAbsolute(b.workspace) ? b.workspace : resolve(m.workspace_root, b.workspace)) : m.workspace_root;
+    if (!contains(m.workspace_root, ws)) return bad(`${ws} is outside the directory granted on ${m.name}`);
+    let st: any;
+    try {
+      // An ssh machine's first session puts its helper there: minutes at most (an upload).
+      const r = await f.hands(m.id, "/api/fleet/hands/stat", { method: "POST", body: JSON.stringify({ path: ws, root: m.workspace_root }), idempotent: true });
+      st = await r.json();
+    } catch (e) {
+      if (!(e instanceof LinkError)) throw e;
+      return bad(`${m.name} does not answer: ${(e as Error).message}`, 409);
+    }
+    if (!st.dir) return bad(`not a directory on ${m.name}: ${ws}`);
+    const s = store.createSession({ model, workspace: ws, title: b.title });
+    store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(m.id, s.id);
+    const next = store.session(s.id)!;
+    bus.emit({ t: "session", session: next });
+    if (placed) store.append(s.id, "note", { text: `Placed on ${m.name} by ${placed.reason}.` });
+    if (b.text || b.images?.length) await fitted(s.id, b.images, (images) => engine.send(s.id, String(b.text ?? "").trim(), { images }));
+    return json({ session: store.session(s.id), placed }, 201);
+  };
+  startFleetSession = startOnMachine;
+  fleetMachines = machinesList;
+
   return {
     // Only the browser's fleet view needs third-party question snapshots. A
     // paired daemon gets this daemon's questions from its own relay stream.
@@ -500,64 +565,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
 
     // A new session whose tools run on a machine of the fleet.
     "/api/fleet/sessions": {
-      POST: async (req: Request) => {
-        const b = await body(req);
-        // The model runs here wherever the tools go: it is checked first, the
-        // same way for every placement, before any session exists.
-        const model = b.model || (await deps.providers.defaultModel());
-        if (!model) return bad("no model is available: no provider has credentials", 409);
-        try {
-          await deps.providers.resolve(model);
-        } catch (e) {
-          return bad(`${(e as Error).message}: pick another model`, 409);
-        }
-        let placed: any;
-        if (b.machine === "auto") {
-          placed = await f.placeWork({ kind: "session", heavy: !!b.heavy, needs_gpu: !!b.needs_gpu });
-          if (typeof placed === "string") return bad(placed);
-          // The start box shows where Auto places the session before it is
-          // sent (expect_machine); a different answer now is said, not taken.
-          if (typeof b.expect_machine === "string" && b.expect_machine !== placed.machine_id)
-            return json({ error: `Auto now places this on ${placed.machine} (${placed.reason}), not where the start box showed. Look at the new place and send again.`, placed }, 409);
-          // A folder of this machine is not a folder there: Auto never trades
-          // the project for another one in the other machine's directory.
-          if (placed.machine_id !== "local" && b.local_workspace) {
-            const there = f.row(placed.machine_id)?.workspace_root;
-            return json({ error: `Auto places this on ${placed.machine}, where it would start in ${there ?? "its granted directory"}, not in ${b.local_workspace} on this machine. Pick this machine to work there, or ${placed.machine} to start in its directory.`, placed }, 409);
-          }
-          if (placed.machine_id === "local") {
-            const ws = resolve(b.local_workspace || deps.workspace);
-            const s = store.createSession({ model, workspace: ws, title: b.title });
-            store.append(s.id, "note", { text: `Kept on ${f.name}: ${placed.reason}.` });
-            bus.emit({ t: "session", session: store.session(s.id)! });
-            if (b.text || b.images?.length) await fitted(s.id, b.images, (images) => engine.send(s.id, String(b.text ?? "").trim(), { images }));
-            return json({ session: store.session(s.id), placed }, 201);
-          }
-          b.machine = placed.machine_id;
-        }
-        const m = f.row(String(b.machine ?? ""));
-        if (!m) return bad("no such machine", 400);
-        if (!m.workspace_root) return bad(`${m.name} has no granted directory: set one before starting sessions there`);
-        const ws = b.workspace ? (isAbsolute(b.workspace) ? b.workspace : resolve(m.workspace_root, b.workspace)) : m.workspace_root;
-        if (!contains(m.workspace_root, ws)) return bad(`${ws} is outside the directory granted on ${m.name}`);
-        let st: any;
-        try {
-          // An ssh machine's first session puts its helper there: minutes at most (an upload).
-          const r = await f.hands(m.id, "/api/fleet/hands/stat", { method: "POST", body: JSON.stringify({ path: ws, root: m.workspace_root }), idempotent: true });
-          st = await r.json();
-        } catch (e) {
-          if (!(e instanceof LinkError)) throw e;
-          return bad(`${m.name} does not answer: ${(e as Error).message}`, 409);
-        }
-        if (!st.dir) return bad(`not a directory on ${m.name}: ${ws}`);
-        const s = store.createSession({ model, workspace: ws, title: b.title });
-        store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(m.id, s.id);
-        const next = store.session(s.id)!;
-        bus.emit({ t: "session", session: next });
-        if (placed) store.append(s.id, "note", { text: `Placed on ${m.name} by ${placed.reason}.` });
-        if (b.text || b.images?.length) await fitted(s.id, b.images, (images) => engine.send(s.id, String(b.text ?? "").trim(), { images }));
-        return json({ session: store.session(s.id), placed }, 201);
-      },
+      POST: async (req: Request) => startOnMachine(await body(req)),
     },
 
     // What a session sent to other sessions and received from them, newest first, each with its state

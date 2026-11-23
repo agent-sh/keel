@@ -11,6 +11,7 @@ import { addAllowedHosts } from "../admission.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
 import { gate } from "./permissions.ts";
 import { checkpoints } from "./checkpoints.ts";
+import { fleetMachines, startFleetSession } from "./fleet.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -120,7 +121,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
   });
 
   return {
-    ...mobileApi({ ...deps, mobile, gate: () => gate, changed, checkpoints: () => checkpoints }),
+    ...mobileApi({ ...deps, mobile, gate: () => gate, changed, checkpoints: () => checkpoints, fleetMachines: () => fleetMachines?.() ?? Promise.resolve([]), startFleetSession: (b) => (startFleetSession ? startFleetSession(b) : Promise.resolve(Response.json({ error: "this daemon has no machines to start a session on" }, { status: 409 }))) }),
 
     "/api/mobile/settings": {
       GET: () => json({ public_url: mobile.setting("public_url") ?? process.env.MOBILE_PUBLIC_URL ?? "", push: { configured: push.configured(), path: push.accountPath() } }),

@@ -51,6 +51,8 @@ object Ui {
     /** How the last unpairing ended, said on the pairing screen until a new pairing starts. */
     val unpaired = mutableStateOf<Unpaired?>(null)
     val theme = mutableIntStateOf(0)
+    /** The start sheet is open. */
+    val starting = mutableStateOf(false)
     fun open(chat: String) { route.value = Route.Session(chat) }
     /** An agent's session (or its starter's) opened from a session: Back returns there. */
     fun openFrom(chat: String, from: Route.Session) { route.value = Route.Session(chat, back = from) }

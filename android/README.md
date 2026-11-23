@@ -70,6 +70,14 @@ Approve: each change asks starts it in ask (the one a phone with no screen
 lock offers). Keep planning opens a box for what to change and sends the plan
 back with it. A plan's notification opens the session; it allows nothing.
 
+## Starting a task
+
+The plus on the session list opens the start sheet: what the session should
+do, where (the folders this machine's sessions worked in, newest first, or
+another machine of the fleet, in the folder granted there), and on which
+model. Each starts on what the daemon would pick by itself, so a task can be
+typed and started at once. The first message is sent with it.
+
 ## Agents
 
 A session that started agents shows them under its header as one line: how
@@ -189,6 +197,7 @@ so it proves nothing about who built it.
 | `Wire.kt` | the daemon's shapes and the signed messages, as pure functions |
 | `Feed.kt` | what the app holds of the daemon and how sync answers and stream frames change it, as plain state |
 | `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
+| `ui/Start.kt` | the start sheet: a new session's task, folder, machine and model |
 | `ui/Agents.kt` | a session's agents, as a tree |
 | `ui/Changes.kt` | a session's changes and one file's diff |
 | `Cache.kt` | the last sync kept on the phone, sealed |
