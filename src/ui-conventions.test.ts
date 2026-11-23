@@ -572,12 +572,17 @@ function shoutedStates(list: Src[]): string[] {
 // What the page does on a beat runs on its one clock (lib/clock.ts), which
 // stops while the page is hidden. The files that still keep a timer of their
 // own are named here, to be moved to the clock; a file not named keeps none.
-const OWN_TIMERS = new Set(["lib/clock.ts", "lib/drafts.ts", "lib/hotui.ts", "lib/store.ts",
+const OWN_TIMERS = new Set(["lib/clock.ts", "lib/drafts.ts", "lib/hotui.ts",
   ...["ApprovalCard", "Attention", "DaemonPanel", "ElsewherePanel", "ExperimentsPanel", "HomeWatch", "ImportSheet", "LogsSettings", "ObservabilityPanel", "PhonePanel", "PlanCard",
     "PreviewPanel", "ProvidersPanel", "ResourcesPanel", "ResumeFrom", "surfaces/Mcp", "surfaces/Plugins", "TimelinePanel", "TracesPanel", "UsagePanel", "UsagePast", "UsageViews"].map((n) => `components/${n}.tsx`)]);
+// (window.setInterval is the same timer. A file named here that no longer keeps one is said too, so the
+// list only shrinks.)
+const TIMER = /(?<![\w$])(?:(?:window|globalThis|self)\.)?setInterval/;
 function ownTimers(list: Src[]): string[] {
-  return list.filter((s) => !/\.test\.tsx?$/.test(s.file) && !OWN_TIMERS.has(s.file))
-    .flatMap((s) => calls(s.text, /(?<![\w.])setInterval/).map((c) => at(s, c.line, "a timer of its own: use every() of lib/clock.ts")));
+  const app = list.filter((s) => !/\.test\.tsx?$/.test(s.file));
+  const kept = app.filter((s) => !OWN_TIMERS.has(s.file)).flatMap((s) => calls(s.text, TIMER).map((c) => at(s, c.line, "a timer of its own: use every() of lib/clock.ts")));
+  const gone = [...OWN_TIMERS].filter((f) => f !== "lib/clock.ts" && !app.some((s) => s.file === f && calls(s.text, TIMER).length)).map((f) => `${f}: keeps no timer now: take it off OWN_TIMERS`);
+  return [...kept, ...gone];
 }
 
 test("the type scale has eight sizes, written once", () => {
