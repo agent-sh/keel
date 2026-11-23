@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { intervalCpu, swapFrom } from "./resources.ts";
+import { intervalCpu, memorySplit, swapFrom } from "./resources.ts";
 
 // Daemon 1,000 ms and a child 2,000 ms; a second later the daemon is at
 // 1,100 and the child is gone: the interval used 100 ms (10%), not 0.
@@ -31,4 +31,14 @@ test("swap is read for the process and for its unit, with the unit's limit", () 
 test("the service unit sets no swap for the daemon", async () => {
   const { unitFor } = await import("./unit.ts");
   expect(unitFor({ command: ["/usr/local/bin/keel"], bind: "127.0.0.1:4680" })).toMatch(/^\[Service\][^[]*^MemorySwapMax=0$/ms);
+});
+
+// Where the daemon's memory is: the kernel's split of what is resident (its
+// own memory, and mapped files such as its binary) and the runtime's
+// (JavaScript objects, the heap's reserve, memory held outside it by buffers).
+test("the daemon's memory is split into the kernel's and the runtime's parts", () => {
+  const text = "VmRSS:\t  667180 kB\nRssAnon:\t  622084 kB\nRssFile:\t   45096 kB\nRssShmem:\t       0 kB\n";
+  expect(memorySplit(text, { heapUsed: 200, heapTotal: 300, external: 40, arrayBuffers: 30 })).toEqual({
+    anon_bytes: 622084 * 1024, file_bytes: 45096 * 1024, heap_used_bytes: 200, heap_total_bytes: 300, external_bytes: 40, array_buffers_bytes: 30,
+  });
 });

@@ -34,6 +34,16 @@ function stat(pid: number) {
   return { name: s.slice(s.indexOf("(") + 1, close), ppid: Number(f[1]), utime: Number(f[11]) * TICK_MS, stime: Number(f[12]) * TICK_MS, start: BOOT_MS + Number(f[19]) * TICK_MS };
 }
 
+// Where the daemon's resident memory is. The kernel's split: its own memory
+// (anon) and mapped files such as its binary (file). The runtime's: live
+// JavaScript objects, what the heap holds in all, and memory held outside it
+// for buffers. What the anon part holds beyond the heap is native: SQLite's
+// page caches, the allocator's free memory, threads' stacks.
+export function memorySplit(statusText: string, u: { heapUsed: number; heapTotal: number; external: number; arrayBuffers: number }) {
+  const kb = (k: string) => Number(new RegExp(`^${k}:\\s+(\\d+)`, "m").exec(statusText)?.[1] ?? 0) * 1024;
+  return { anon_bytes: kb("RssAnon"), file_bytes: kb("RssFile"), heap_used_bytes: u.heapUsed, heap_total_bytes: u.heapTotal, external_bytes: u.external, array_buffers_bytes: u.arrayBuffers };
+}
+
 function status(pid: number) {
   const s = read(`/proc/${pid}/status`);
   const kb = (k: string) => Number(new RegExp(`^${k}:\\s+(\\d+)`, "m").exec(s)?.[1] ?? 0) * 1024;
@@ -280,10 +290,11 @@ export class Resources {
   private daemon(now: number) {
     const st = stat(process.pid)!;
     const s = status(process.pid);
+    const usage = process.memoryUsage();
     return {
       pid: process.pid, started_ms: this.started, rss_bytes: s.rss, peak_rss_bytes: s.hwm,
       cpu_user_ms: st.utime, cpu_system_ms: st.stime, cpu_percent: this.percent(process.pid, st.utime + st.stime, now),
-      threads: s.threads, open_files: fds(process.pid), heap_bytes: process.memoryUsage().heapUsed, swap: swap(),
+      threads: s.threads, open_files: fds(process.pid), heap_bytes: usage.heapUsed, memory: memorySplit(read(`/proc/${process.pid}/status`), usage), swap: swap(),
       growth: { start_rss_bytes: this.startRss, per_hour_bytes: now - this.started > 600_000 ? ((s.rss - this.startRss) / (now - this.started)) * 3600_000 : null },
     };
   }
