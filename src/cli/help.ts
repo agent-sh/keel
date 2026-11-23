@@ -35,6 +35,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["restart", "drain, then start again (also: upgrade)"],
     ["ui", "serve a new UI bundle without a restart; rollback"],
     ["storage", "what the state folder holds"],
+    ["leftovers", "commands still running, worktrees and branches no live session holds"],
     ["cleanup", "delete old archived sessions"],
     ["backup", "a checked copy of the database, the settings and the config folder"],
     ["backups", "list the backups"],

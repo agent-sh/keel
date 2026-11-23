@@ -43,8 +43,9 @@ export type WorktreeStatus = Worktree & { exists: boolean; dirty: number; commit
 // - `unpushed`: all of `inner` is submodules that are clean and hold only
 //   commits none of their remotes has (what to do about it differs);
 // - `unknown`: the ones that cannot be read, never read as clean.
+// (Untracked files are counted whatever status.showUntrackedFiles says: with it off they would go unseen.)
 async function workIn(dir: string): Promise<{ dirty: number; inner: string[]; held: string[]; nested: string[]; unknown: string[]; unpushed: boolean }> {
-  const [st, others, work] = await Promise.all([git(dir, ["status", "--porcelain", "-z"]), git(dir, ["ls-files", "-o", "--exclude-standard", "-z"]), innerWork(dir)]);
+  const [st, others, work] = await Promise.all([git(dir, ["status", "--porcelain", "-z", "--untracked-files=normal"]), git(dir, ["ls-files", "-o", "--exclude-standard", "-z"]), innerWork(dir)]);
   const listed = new Set<string>();
   const recs = st.split("\0").filter(Boolean);
   for (let i = 0; i < recs.length; i++) {
@@ -396,6 +397,26 @@ export class Worktrees {
     }
     this.put({ ...w, state: "removed", snapshot_ref: ref });
     return { removed: true, snapshot_ref: ref, branch_deleted: branchDeleted };
+  }
+
+  // The worktree a caller found clean (leftovers.ts ownWorktree) goes, and its branch with it when it still
+  // points at `sha`, the commit that was checked. git refuses a folder that changed since (a modified or
+  // untracked file); only one whose submodules stop a plain remove is removed by force (the caller has checked
+  // what is inside them).
+  async removeClean(w: Worktree, sha: string | null): Promise<{ removed: boolean; reason?: string; branch_deleted: boolean }> {
+    if (existsSync(w.path)) {
+      try {
+        await git(w.repo_root, ["worktree", "remove", w.path]);
+      } catch (e) {
+        if (!(e instanceof GitError)) throw e;
+        if (!/submodule/i.test(e.message)) return { removed: false, reason: `git would not remove it: ${e.message}`, branch_deleted: false };
+        try { await git(w.repo_root, ["worktree", "remove", "--force", w.path]); } catch (f) { return { removed: false, reason: `git would not remove it: ${(f as Error).message}`, branch_deleted: false }; }
+      }
+    }
+    let branchDeleted = false;
+    if (sha) try { await git(w.repo_root, ["update-ref", "-d", `refs/heads/${w.branch}`, sha]); branchDeleted = true; } catch {} // moved since: kept, and said (branch_deleted false)
+    this.put({ ...w, state: "removed", snapshot_ref: null });
+    return { removed: true, branch_deleted: branchDeleted };
   }
 
   // The base a branch is compared with: the managed worktree's, else what

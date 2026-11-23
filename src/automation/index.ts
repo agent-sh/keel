@@ -2,6 +2,7 @@ import { zoned } from "../core/clock.ts";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { asksLess, isMode } from "../safety/policy.ts";
+import * as leftovers from "./leftovers.ts";
 import { parseSince } from "../admin/timeline.ts";
 import { sessionRef } from "../admin/session-ref.ts";
 import { readsOf } from "../server/reads.ts";
@@ -73,6 +74,7 @@ function init(deps: Deps) {
   // What a parked session waits on, for its cache plan.
   deps.engine.waitShape = (id) => waits.shapeOf(id);
   agents.migrate();
+  leftovers.migrate(deps.store);
   waits.migrate();
   loops.migrate();
   alerts.migrate();
@@ -376,6 +378,10 @@ export const automationRoutes: RouteModule = (deps) => {
   init(deps);
   const { store, providers } = deps;
   const session = (id: string) => store.session(id);
+  const leftCtx = () => ({ store, isRunning: (sid: string) => deps.engine.isRunning(sid), workspace: deps.workspace });
+  const opt = (v: unknown) => (typeof v === "string" ? v : undefined);
+  const treeSeen = (b: any): leftovers.TreeSeen => ({ repo: String(b?.repo ?? ""), path: String(b?.path ?? ""), head: opt(b?.head), ignored: Number(b?.ignored) || 0 });
+  const branchSeen = (b: any): leftovers.BranchSeen => ({ repo: String(b?.repo ?? ""), branch: String(b?.branch ?? ""), sha: opt(b?.sha) });
 
   return {
     "/api/automation": {
@@ -473,6 +479,29 @@ export const automationRoutes: RouteModule = (deps) => {
     },
     "/api/sessions/:id/background": {
       GET: (req: any) => (session(req.params.id) ? json(background(req.params.id)) : bad("no such session", 404)),
+    },
+
+    // --- what is left behind across sessions (leftovers.ts): commands still running, worktrees and branches no
+    // live session holds. Each act is the owner's, one item at a time, checked again before it is made.
+    "/api/leftovers": {
+      GET: () => attempt(async () => json(await leftovers.survey(leftCtx()))),
+    },
+    "/api/leftovers/stop": {
+      POST: (req: any) => attempt(async () => { const b = await body(req); return json(await leftovers.stopLeft(String(b.session_id ?? ""), String(b.job_id ?? ""))); }),
+    },
+    // Each names the item as it was listed (a worktree's HEAD and ignored count, a branch's tip): one that changed since is refused.
+    "/api/leftovers/worktree/remove": {
+      POST: (req: any) => attempt(async () => { const b = await body(req); await leftovers.removeTree(leftCtx(), treeSeen(b)); return json({ removed: true }); }),
+    },
+    "/api/leftovers/branch/delete": {
+      POST: (req: any) => attempt(async () => { const b = await body(req); await leftovers.deleteBranch(leftCtx(), branchSeen(b)); return json({ deleted: true }); }),
+    },
+    "/api/leftovers/remove-all": {
+      POST: (req: any) => attempt(async () => {
+        const b = await body(req);
+        const list = (x: unknown) => (Array.isArray(x) ? x.slice(0, 500) : []);
+        return json(await leftovers.removeAll(leftCtx(), { worktrees: list(b.worktrees).map(treeSeen), branches: list(b.branches).map(branchSeen) }));
+      }),
     },
 
     // --- composer commands: /loop

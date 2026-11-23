@@ -163,7 +163,7 @@ const GROUPS: [string, string[]][] = [
   ["Basics", ["general", "models", "providers", "safety", "alerts", "usage", "keyboard"]],
   ["Customize", ["instructions", "skills", "commands", "agents", "plugins", "hooks", "mcp", "lsp", "port"]],
   ["Connections", ["machines", "phone", "integrations", "pull-requests", "elsewhere", "acp-agents", "helper"]],
-  ["This computer", ["resources", "storage", "logs", "daemon"]],
+  ["This computer", ["resources", "storage", "leftovers", "logs", "daemon"]],
   ["Advanced", ["observability", "experiments", "about"]],
 ];
 const GROUP: Record<string, string> = Object.fromEntries(GROUPS.flatMap(([g, ids]) => ids.map((id) => [id, g])));
@@ -173,7 +173,7 @@ const ORDER = GROUPS.map(([g]) => g);
 const FIND: Record<string, string[]> = settingsFind();
 const groupOf = (id?: string) => (id ? GROUP[id] ?? "Advanced" : "");
 // Sections of figures and lists use the width; forms keep a reading measure.
-const WIDE = new Set(["usage", "observability", "experiments", "resources", "storage", "machines", "models", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
+const WIDE = new Set(["usage", "observability", "experiments", "resources", "storage", "leftovers", "machines", "models", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
 
 // A row found by its name is brought into view and marked a moment, once its
 // section has drawn it (a section loads on its own: it is watched for, not waited).

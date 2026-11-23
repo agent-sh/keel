@@ -171,6 +171,25 @@ const storage = wrap("keel storage [--refresh] [--url URL] [--json]", { refresh:
   return 0;
 });
 
+// What sessions left behind: commands still running, worktrees and branches no live session holds.
+const leftoversCmd = wrap("keel leftovers [--url URL] [--json]\n  Commands of sessions that still run, worktrees no live session works in, and branches no worktree has out,\n  with what each holds and who it is known by. Settings, Leftovers stops or removes them, one at a time or all at once.", {}, async (v) => {
+  const s = await call(urlOf(v.url), "/api/leftovers");
+  const ago = (ms?: number) => (ms ? `${dur(Date.now() - ms)} ago` : "");
+  // Keel made it for that session, or it was new when that agent ended (who made it is not known).
+  const byWord = (by: { how?: string }) => (by.how === "keel" ? "made for" : "found by");
+  out(s, !!v.json, () => {
+    const lines: string[] = [];
+    lines.push(`left running (${s.processes.length})`);
+    for (const p of s.processes) lines.push(`  ${p.job_id}  ${p.command.replace(/\s+/g, " ").slice(0, 70)}  pid ${p.pids.join(",")}${p.ports.length ? `  port ${p.ports.join(",")}` : ""}  ${p.agent ? `agent ${p.agent.status}` : "session"} "${p.title}"  ${ago(p.started)}`);
+    lines.push(`worktrees (${s.worktrees.length})`);
+    for (const w of s.worktrees) lines.push(`  ${w.path}  ${w.branch ?? "detached"}  ${w.dirty === undefined ? "status unknown" : `${w.dirty} uncommitted`}${w.ahead !== undefined ? `, ${w.ahead} not on ${w.base}` : ""}${w.by ? `  ${byWord(w.by)} "${w.by.title}"` : ""}${w.made ? `  ${ago(w.made)}` : ""}${w.removable ? "" : `  (kept: ${w.why})`}`);
+    lines.push(`branches (${s.branches.length})`);
+    for (const b of s.branches) lines.push(`  ${b.name}  ${b.ahead === undefined ? "not compared" : b.merged ? `merged into ${b.base}` : `${b.ahead} not on ${b.base}`}  ${ago(b.at)}${b.by ? `  ${byWord(b.by)} "${b.by.title}"` : ""}  ${b.top}`);
+    return lines.join("\n");
+  });
+  return 0;
+});
+
 const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--retention] [--url URL]\n  Lists archived sessions archived at least DAYS ago; --yes deletes them. --leftovers removes what deleted sessions left behind.\n  --retention lists the spilled output and usage records past the retention set in Settings, Storage; with --yes it removes them now.",
   { "older-than": { type: "string" }, yes: { type: "boolean" }, leftovers: { type: "boolean" }, retention: { type: "boolean" } },
   async (v) => {
@@ -453,6 +472,7 @@ export const adminCommands = {
   restart: drainCmd(true),
   upgrade: drainCmd(true, true),
   storage,
+  leftovers: leftoversCmd,
   cleanup,
   backup,
   backups,

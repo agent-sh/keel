@@ -18,6 +18,7 @@ import * as failures from "./failures.ts";
 import { classOf } from "./failure-groups.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { Worktrees } from "../worktree/manager.ts";
+import * as leftovers from "./leftovers.ts";
 import { contains } from "../core/paths.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
@@ -854,6 +855,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
     JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null);
   release(); // the persisted running row now occupies the slot
+  // The repositories it may change, as they are before its first step: what it makes there is told at its end.
+  if (!placed) await leftovers.before(store, id, [child.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: id }));
   if (queued !== undefined) {
     activity.record("agent", "queued", parentId, `Agent "${title}" (${def.name} on ${model}) waits for a slot: every agent slot of this session works${leftLine(id)}`, { agent_id: id, child_session: child.id });
     lineUp(get(id)!);
@@ -1434,7 +1437,11 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // What the check ledger saw of its checks (src/checks/proof.ts), read before an empty worktree goes.
   const folder = a.worktree ?? D().store.session(a.session_id)?.workspace;
   const proof = row.output_schema && status === "completed" || a.machine || !folder ? "" : await proofFor(a.session_id, folder, got.events).catch(() => "");
-  const lines = [did, proof].filter(Boolean).join("\n");
+  // What it left running is stopped, and what is new in its repositories is named (leftovers.ts), before its
+  // worktree is looked at: a process of it could still write there.
+  const left = a.machine ? "" : await leftovers.settle({ store: D().store, isRunning: (sid) => D().engine.isRunning(sid) }, { ...a, report: reportId(a) })
+    .catch((e) => { capture(e, { at: "agent leftovers", agent: a.id }); return ""; });
+  const lines = [did, proof, row.output_schema && status === "completed" ? "" : left].filter(Boolean).join("\n");
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
   // The report is checked against its parent's history and sent into it: a
@@ -1465,20 +1472,12 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   if (!blocked) handback(rec, grouped);
 }
 
-// A worktree with nothing in it goes (its branch too); one with work stays,
-// and the report says where the work is.
-async function worktreeNote(a: AgentRecord): Promise<string> {
-  const w = wts().get(a.session_id);
-  if (!w || w.state !== "active") return "";
-  const st = await wts().status(w);
-  if (st.unknown) return `\n\nWorktree ${w.path} (branch ${w.branch}): git could not read it: ${st.unknown}`;
-  if (!st.dirty && !st.commits_ahead) {
-    // (Kept when a repository inside it holds commits of its own that are nowhere else: the answer says why.)
-    const r = await wts().remove(w, false);
-    return r.removed ? "\n\n(The agent changed no files; its worktree was removed.)" : `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${r.reason}.`;
-  }
-  return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${st.commits_ahead} commit${st.commits_ahead === 1 ? "" : "s"} over ${w.base}, ${st.dirty} uncommitted file${st.dirty === 1 ? "" : "s"}. Review and merge it from there (git merge ${w.branch}).`;
-}
+// A session someone may still work in: there, not archived, and not an agent that ended.
+const liveSession = (sid: string) => { const s = D().store.session(sid); if (!s || s.archived) return false; const x = byChild(sid); return !x || !isEnded(x); };
+
+// The worktree Keel made for it goes with its branch when nothing of it would be lost; one with work stays,
+// and the report says where the work is (leftovers.ts ownWorktree).
+const worktreeNote = (a: AgentRecord): Promise<string> => leftovers.ownWorktree({ store: D().store, wts: wts() }, a.session_id, liveSession);
 
 // The first stop names who stopped it; a stop after that changes nothing.
 // What decides is what runs: a record that says ended while a turn runs in
@@ -1836,7 +1835,7 @@ export function recover() {
     }
     if (a.status !== "running" && a.status !== "waiting") continue;
     const parent = D().store.session(a.parent_id);
-    if (!parent || parent.archived) { update(a.id, { status: "stopped", ended: Date.now(), result: collectResult(a) }); continue; }
+    if (!parent || parent.archived) { update(a.id, { status: "stopped", ended: Date.now(), result: collectResult(a) }); leftovers.forget(D().store, a.id); continue; }
     // Made and never started: it goes back in line, at the time it was asked for.
     if (queuedForSlot(a)) { lineUp(a); continue; }
     if (waits.activeFor(a.session_id) > 0) { update(a.id, { status: "waiting", background: true }); continue; }
@@ -1875,7 +1874,7 @@ function sendAllOwed(rows: Owed[], boot = false) {
 export function tick() {
   const liveRows = D().store.db.query<Row, []>("SELECT * FROM agents WHERE status IN ('running', 'waiting')").all().map(toRec);
   for (const a of liveRows) {
-    if (!D().store.session(a.session_id)) { update(a.id, { status: "stopped", ended: Date.now(), result: "Its session was deleted." }); continue; }
+    if (!D().store.session(a.session_id)) { update(a.id, { status: "stopped", ended: Date.now(), result: "Its session was deleted." }); leftovers.forget(D().store, a.id); continue; }
     const def = defOf(a.id);
     if (def?.timeoutMins && Date.now() - a.created > def.timeoutMins * 60_000) stop(a.id, "time_limit");
   }

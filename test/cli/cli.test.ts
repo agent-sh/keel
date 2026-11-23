@@ -1474,6 +1474,23 @@ describe("client commands against a running daemon", () => {
     expect(await state0()).toMatchObject({ state: "allowed", by: { client: "cli", seen: "whole" } });
   }, 120_000);
 
+  // What sessions left behind, from a terminal: a command still running, listed with its session.
+  test("leftovers: a command a session left running is listed with its session, and stops from the list's route", async () => {
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const { session } = await (await fetch(`${url}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Left running", workspace: WS }) })).json() as any;
+    const calls = [{ name: "Bash", input: { command: "sleep 120", run_in_background: true, description: "a sleep left running" } }];
+    expect((await k(["run", "--wait", "--json", "--permission-mode", "full-auto", "-r", session.id, `script:calls ${JSON.stringify(calls)}`])).code).toBe(0);
+    const l = await k(["leftovers"]);
+    expect(l.code).toBe(0);
+    expect(l.out).toMatch(/^left running \(\d+\)$/m);
+    expect(l.out).toMatch(/a sleep left running {2}pid [\d,]+ {2}session "Left running"/);
+    const p = (json((await k(["leftovers", "--json"])).out).processes as any[]).find((x) => x.session_id === session.id);
+    expect(p).toMatchObject({ command: "a sleep left running", running: true, ports: [] });
+    const r = await (await fetch(`${url}/api/leftovers/stop`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: session.id, job_id: p.job_id }) })).json() as any;
+    expect(r).toEqual({ stopped: true, left: [] });
+    expect((json((await k(["leftovers", "--json"])).out).processes as any[]).some((x) => x.session_id === session.id)).toBe(false);
+  });
+
   // The questions the page answers about one session, from a terminal: its messages with their
   // states, its failures per tool, what it cost and what a turn changed.
   test("messages, failures per tool by session, one session's cost, what a turn changed", async () => {

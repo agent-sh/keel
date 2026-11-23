@@ -9,6 +9,7 @@ import { allHooks, registerHooks } from "../engine/hooks.ts";
 import { Engine, toMessages } from "../engine/turn.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
+import * as leftovers from "./leftovers.ts";
 import { deliver, dropPending, flush, isPending, setDeps } from "./core.ts";
 import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
@@ -1186,4 +1187,26 @@ test("an agent file's memory folder starts its task with MEMORY.md, within its b
   expect(agents.gate(a.session_id, "Write", { file_path: join(mem, "MEMORY.md") })).toBeUndefined();
   end(a, "end_turn");
   await settled();
+});
+
+// An agent that ends without its end being settled (its parent archived while a daemon was down, its session
+// deleted) keeps no reading of its repositories from its start.
+test("an agent closed by a restart or a deleted session leaves no reading of its repositories", async () => {
+  leftovers.migrate(store);
+  const reading = (id: string) => store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_git_before WHERE agent_id = ?").get(id)!.n;
+  const put = (id: string) => store.db.query("INSERT INTO agent_git_before (agent_id, repo, snap, at) VALUES (?, '/r/.git', '{}', 0)").run(id);
+  const p = parentOf("archived while down");
+  const a = await p.start();
+  put(a.id);
+  store.db.query("UPDATE sessions SET archived = 1 WHERE id = ?").run(p.id);
+  agents.recover();
+  expect(agents.get(a.id)!.status).toBe("stopped");
+  expect(reading(a.id)).toBe(0);
+  const q = parentOf("child deleted");
+  const b = await q.start();
+  put(b.id);
+  store.deleteSession(b.session_id);
+  agents.tick();
+  expect(agents.get(b.id)!.status).toBe("stopped");
+  expect(reading(b.id)).toBe(0);
 });

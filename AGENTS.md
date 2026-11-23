@@ -227,6 +227,16 @@ under `~/.cache/keel-work/bun/research/`.
   first (`REPORT_SETTLE` in `src/automation/agents.ts`); a report that comes
   when no other agent works ends the wait, and a parent whose turn runs (a
   `wait_agent` included) is never held by it.
+- What an agent leaves behind is settled when it ends (`src/automation/leftovers.ts`, the decisions in
+  `leftover-rules.ts`). Its commands' processes are stopped by what the daemon holds them by (the job's
+  cgroup, else its process group, session and mark), never anything it did not start, unless a process
+  that is not the agent's own is connected to their port. Keel removes by itself only what Keel made and
+  recorded when it made it: the managed worktree of the agent's session and its branch, when nothing of
+  them would be lost (no uncommitted or untracked file, no commit on no other branch, nothing inside or
+  working in it). Nothing the agent can write (a command line, a file, a trace, a reflog) decides a
+  removal: what else is new in its repositories since it started is only listed, with what is in it, in
+  its report and on Settings > Leftovers (and `keel leftovers`). There the owner removes an item, or all
+  that lose nothing at once; each act names the item as it was listed and is refused when it changed since.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving
