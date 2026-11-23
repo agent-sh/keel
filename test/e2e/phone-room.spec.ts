@@ -632,6 +632,39 @@ test.describe("on a phone, what waits", () => {
       await expect.poll(left, { timeout: 15_000 }).toBe(0);
     } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
   });
+
+  // A question with three choices and a long text, and another session waiting: every choice and the
+  // field for an answer of the owner's own show above the Answer row with no scroll. The box rests as
+  // its one line meanwhile, and a tap on it brings its tools back, Stop among them.
+  test("a waiting question shows every choice without a scroll, and the box gives it the room", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const long = `script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Scope", question: "Fix only cart.js or the whole checkout module? The module has four other callers of the retry helper.", options: [{ label: "Only cart.js", description: "Smallest change, ships today" }, { label: "Whole module", description: "Every caller of the helper gets the bound" }, { label: "Ask the team first" }], multiSelect: false }] } }])}`;
+    const made = await waiting(request, tag, [{ title: "Other request", mode: "ask", text: bash("touch other.txt") }, { title: "Choose the fix scope again", mode: "full-auto", text: long }]);
+    try {
+      await page.goto(`/s/${made[1]}`);
+      const pane = page.locator(".k-station[data-helm]");
+      await expect(pane.getByTestId("question-option")).toHaveCount(3);
+      await expect(pane.getByTestId("waiting-elsewhere")).toBeVisible();
+      // What shows of the card in the region, above its Answer row, as the page laid it out.
+      const shown = () => pane.evaluate((el) => {
+        const t = el.querySelector('[data-testid="composer-tray"]')!.getBoundingClientRect();
+        const foot = el.querySelector('[data-testid="question-foot"]')!.getBoundingClientRect();
+        const bottom = Math.min(t.bottom, foot.top);
+        const whole = (e: Element) => { const r = e.getBoundingClientRect(); return r.top >= t.top - 1 && r.bottom <= bottom + 1; };
+        return { options: [...el.querySelectorAll('[data-testid="question-option"]')].filter(whole).length, other: whole(el.querySelector('[data-testid="question-other"]')!) };
+      });
+      await expect.poll(shown, { timeout: 5000 }).toEqual({ options: 3, other: true });
+      await expect(pane.getByTestId("composer-tools")).toBeHidden();
+      await shoot(page, "phone-12-question-room");
+      // A tap on the box: its tools, and the running turn's Stop.
+      await pane.getByTestId("composer").tap();
+      await expect(pane.getByTestId("stop")).toBeVisible();
+      await expect(pane.getByTestId("composer-tools")).toBeVisible();
+      await shoot(page, "phone-12b-question-box-open");
+    } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  });
 });
 
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over

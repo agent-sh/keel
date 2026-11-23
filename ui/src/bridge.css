@@ -1065,6 +1065,11 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* ---------- Phone: the stations are pages, the dock their marks ---------- */
 .k-dock { display: none; }
 @media (max-width: 767px) {
+  /* A card that waits on the owner gets the room a phone has: the strip of the conversation above it keeps
+     a finger's height, and the message box rests as its one line until it is tapped or holds something
+     (its tools, Stop among them, come back with the tap). */
+  .k-session:has(.k-tray[data-asking]) > .k-reading-room { min-height: clamp(0px, calc((100% - 24rem) / 2), var(--spacing-tap)); }
+  .k-tray[data-asking] + .k-box[data-calm]:not(:focus-within) > .k-compose-tools { display: none; }
   .k-rail-wrap { position: fixed; inset: 0 auto 0 0; transform: translateX(-100%); visibility: hidden; transition: transform var(--dur-move) var(--ease-out), visibility var(--dur-move); box-shadow: var(--shadow-3); }
   .k-rail-wrap[data-drawer] { transform: none; visibility: visible; }
   .k-rail-wrap .k-rail { width: min(86vw, 20rem); }

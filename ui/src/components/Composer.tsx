@@ -386,6 +386,9 @@ const SessionComposer = memo(function SessionComposer({
   const busy = !!working && (runShown || keysHere);
   // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
   const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
+  // Untouched and holding nothing, whatever runs: while a card waits above it on a phone, the box rests as its
+  // one line then, Stop included, until a tap brings its tools (bridge.css).
+  const calm = narrow && !!session && !tapped && !text && !images.length && !notice;
   // Whether the window is low changes with the window and the text size, never with what is
   // typed: it is not asked at every key (the question makes the browser style the whole page
   // on the spot, a reply that streams above included).
@@ -862,6 +865,7 @@ const SessionComposer = memo(function SessionComposer({
       )}
       data-testid="composer-box"
       data-rest={rest || undefined}
+      data-calm={calm || undefined}
       ref={boxEl}
       onFocus={() => { setTapped(true); setKeysHere(true); }}
       onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeysHere(false); }}

@@ -1659,8 +1659,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
 
   return (
     // A strip of the conversation stays above a tall stack of cards and a long
-    // draft, in a pane with room for one (none in a pane under 24rem high).
-    <div className="relative min-h-[clamp(0px,calc((100%-24rem)/2),6rem)] flex-1">
+    // draft, in a pane with room for one (none in a pane under 24rem high; on a
+    // phone, a finger's height while a card waits: bridge.css).
+    <div className="k-reading-room relative min-h-[clamp(0px,calc((100%-24rem)/2),6rem)] flex-1">
       <div
         ref={scroller}
         className="k-reading relative h-full overflow-y-auto [scrollbar-gutter:stable] [overflow-anchor:none]"
