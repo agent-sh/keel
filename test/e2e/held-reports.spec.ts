@@ -62,3 +62,32 @@ test("a paused session shows its waiting reports; a loop run brings one, Resume 
     await request.delete(`/api/sessions/${session.id}`);
   }
 });
+
+// The owner's Stop of a coordinator ends its turn, not its agents: the Stop says they go on as it
+// is pressed, the turn's end line counts them, and one button there stops them too.
+test("a coordinator's Stop says its agents go on, and stops them too on asking", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Stopped coordinator" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const helper = (title: string) => ({ name: "spawn_agent", input: { message: `${title}\nscript:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 120" } }])}`, isolation: "none" } });
+  const calls = [helper("Long helper 1"), helper("Long helper 2"), { name: "Bash", input: { command: "sleep 60" } }];
+  const agents = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { id: string; status: string }[];
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify(calls)}`);
+  await page.getByTestId("composer").press("Enter");
+  await expect.poll(async () => (await agents()).filter((a) => a.status === "running").length, { timeout: 30_000 }).toBe(2);
+  const stop = page.getByTestId("stop");
+  await expect(stop).toHaveAttribute("data-leaves", "its 2 agents go on");
+  await stop.click();
+  await expect(page.getByTestId("composer-notice")).toContainText("its 2 agents go on");
+  const end = page.getByTestId("turn-end").last();
+  await expect(end.getByTestId("turn-reason")).toHaveText("Stopped by you");
+  await expect(end.getByTestId("agents-go-on")).toHaveText("its 2 agents go on");
+  await shoot(page, "held-reports-04-stop-leaves-agents");
+  await page.getByTestId("stop-agents").click();
+  await expect.poll(async () => (await agents()).filter((a) => a.status === "running" || a.status === "waiting").length, { timeout: 30_000 }).toBe(0);
+  await expect(page.getByTestId("agents-go-on")).toHaveCount(0);
+  await expect(page.getByTestId("stop-agents")).toHaveCount(0);
+});

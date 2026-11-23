@@ -1,5 +1,5 @@
 import { CopyButton } from "./CopyButton.tsx";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage } from "../../../src/core/tree.ts";
@@ -12,13 +12,14 @@ import { actions, api, dropSession, failed, forgetEvents, getState, keepEvents, 
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
-import { useToldState } from "../lib/watch.ts";
+import { useAgentCount, useToldState } from "../lib/watch.ts";
 import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { every } from "../lib/clock.ts";
 import { flushPlaces, isLater, newAfter, offsetAt, placeOf, putPlace, WRITE_MS, type Place } from "../lib/place.ts";
-import { presentAt } from "../lib/automation.ts";
+import { auto, autoState, presentAt } from "../lib/automation.ts";
+import { STOPPERS } from "../../../src/core/stoppers.ts";
 import type { PaneSwap } from "../lib/looks.ts";
 import { TurnFailure } from "./TurnFailure.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -31,7 +32,7 @@ import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
 import { CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
-import { hhmm } from "../../../src/core/watch.ts";
+import { agentLive, hhmm } from "../../../src/core/watch.ts";
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
@@ -511,6 +512,9 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   // that Keel goes on with by itself (the provider asked for a wait, a restart cut it) waits.
   const told = useToldState(last ? sid : undefined);
   const waits = !last || e.data.reason === "interrupted" || e.data.reason === "refusal" ? "" : told?.watch === "resume" || (told?.watch === "wait" && told.why === "resume") ? stateWords(told).phrase : "";
+  // The owner's Stop ends the turn, not the agents it started: they go on, and the line says so with a way to stop them too.
+  const ownStop = last && e.data.reason === "interrupted" && STOPPERS[e.data.stopped_by]?.owner;
+  const goOn = useAgentCount(ownStop ? sid : undefined);
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
       {(reply.length > 0 || partial) && <CopyButton text={() => (partial ? actions.reply(sid, { before: e.seq, head: tailOf.get().other }) : reply.join("\n\n"))} label="Copy the reply" testid="copy-reply" className="size-7" />}
@@ -525,11 +529,17 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
         {REASONS[e.data.reason] && (waits
           ? <span className="k-turn-reason text-muted" data-testid="turn-reason">{waits}</span>
           : <span className={cn("k-turn-reason", e.data.reason === "error" || e.data.reason === "max_tokens" ? "text-st-fail" : "text-warn")} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>)}
+        {goOn > 0 && <span className="text-muted" data-testid="agents-go-on">{goOn === 1 ? "its agent goes on" : `its ${goOn} agents go on`}</span>}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
         {u && <span>{fmtTokens(u.output)} out</span>}
         {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">{fmtCost(u.cost)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
       </span>
+      {goOn > 0 && (
+        <button type="button" data-testid="stop-agents" onClick={() => stopAgentsOf(sid)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-warn hover:bg-hover">
+          <Square className="size-2.5 fill-current" /> {goOn === 1 ? "Stop it too" : "Stop them too"}
+        </button>
+      )}
       {last && !working && REASONS[e.data.reason] && !boxed && (
         <button type="button" data-testid="resume" onClick={() => actions.resume(sid).catch(reportError)} className="k-turn-resume ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
           <Play className="size-3" /> Resume
@@ -537,6 +547,11 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
       )}
     </div>
   );
+}
+
+// Stops every agent of the session that still works, as each card's Stop does (by the owner).
+function stopAgentsOf(sid: string) {
+  for (const a of Object.values(autoState().agents)) if (a.parent_id === sid && agentLive(a)) auto.stopAgent(a).catch(reportError);
 }
 
 // What a screen reader hears about the turn: why it waits, once per change.

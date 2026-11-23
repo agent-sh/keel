@@ -15,6 +15,7 @@ import { TranscriptLoading } from "./TranscriptLoading.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { actions, reportError, scope, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
+import { useAgentCount } from "../lib/watch.ts";
 import { whenIdle } from "../lib/utils.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 
@@ -124,6 +125,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
 // `panel`: this pane has the side panel (the plan's strip gives way while its Tasks tab is open).
 const SessionCompose = memo(function SessionCompose({ id, parentId, working, model, workspace, folderGone, unreached, focus, back, panel }: { id: string; parentId: string | null; working: boolean; model: string; workspace: string; folderGone: boolean; unreached: boolean; focus: boolean; back?: () => void; panel?: boolean }) {
   const session = useMemo(() => ({ id }), [id]);
+  // A coordinator's Stop ends its turn; its agents go on (the turn's end line offers to stop them too).
+  const agents = useAgentCount(parentId ? undefined : id);
   const does = useMemo(() => ({
     model: (m: string) => switchSession(id, { model: m }).catch(reportError),
     send: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { images, client_id }),
@@ -158,6 +161,7 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
       onSend={does.send}
       onQueue={does.queue}
       onStop={does.stop}
+      stopLeaves={agents ? (agents === 1 ? "its agent goes on" : `its ${agents} agents go on`) : undefined}
       {...(does.escape ? { onEscape: does.escape, ...(parentId ? { stopLabel: "Stop this agent" } : {}) } : {})}
       focus={focus}
       // (Not in a pane the answering sequence opened to bring the keyboard to its card: lib/asks.ts.)

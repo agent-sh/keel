@@ -15,6 +15,7 @@ import { openFocus } from "../lib/self-focus.ts";
 import { stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
+import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { pastedFiles, shell, shellPaste } from "../lib/shell.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
@@ -89,6 +90,8 @@ type ComposerProps = {
   // What Stop stops when that is not the turn of the session shown (an agent's own work):
   // the button then says it in words. A turn's Stop is the same mark in every pane.
   stopLabel?: string;
+  // What a Stop leaves going, said on the button ("its 3 agents go on"): the owner's Stop ends the turn only.
+  stopLeaves?: string;
   working?: boolean;
   model: string;
   // A switch that asks first (the cache warning) returns its promise: until it
@@ -114,7 +117,7 @@ export function Composer(props: ComposerProps) {
 }
 
 const SessionComposer = memo(function SessionComposer({
-  session, onSend, onQueue, onStart, onStop, onEscape, stopLabel, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
+  session, onSend, onQueue, onStart, onStop, onEscape, stopLabel, stopLeaves, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -969,9 +972,12 @@ const SessionComposer = memo(function SessionComposer({
               data-testid="stop"
               // The button goes away with the turn: the focus goes to the box, not to nowhere
               // (not on a phone, where that would raise the keyboard).
-              onClick={() => { onStop?.(); if (DESK.matches) ref.current?.focus(); }}
-              title={onEscape ? stopLabel ?? "Stop the turn" : `${stopLabel ?? "Stop the turn"} (Esc)`}
+              // What it leaves going is said beside it as it is pressed, with where to stop that too.
+              onClick={() => { onStop?.(); if (stopLeaves) setNotice(`${STATE_WORD.stop}; ${stopLeaves}. The turn's last line stops ${stopLeaves.startsWith("its agent ") ? "it" : "them"} too.`); if (DESK.matches) ref.current?.focus(); }}
+              title={`${stopLabel ?? "Stop the turn"}${stopLeaves ? `: ${stopLeaves}` : ""}${onEscape ? "" : " (Esc)"}`}
               aria-label={stopLabel ?? "Stop the turn"}
+              aria-description={stopLeaves}
+              data-leaves={stopLeaves || undefined}
               className={cn("grid h-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover", stopLabel ? "flex gap-1.5 px-3 text-caption font-medium" : "size-8")}
             >
               <Square className="size-3 fill-current" />
