@@ -68,6 +68,8 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
     await expect(row.getByTestId("leftover-by")).toContainText("found by");
     await expect(row).toContainText("Leftover maker");
     await expect(page.locator(`[data-testid="leftover-process"]`).filter({ hasText: `http.server ${port}` })).toHaveCount(0);
+    // The one act for the whole list says what goes, the ignored path included.
+    await expect(page.getByTestId("leftovers-remove-all")).toContainText("1 ignored path with them");
     await shoot(page, "leftovers-01-page");
 
     // Remove asks first; the folder goes, its branch stays with the commit and cannot be deleted.

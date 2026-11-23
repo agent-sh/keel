@@ -203,8 +203,8 @@ async function keelMade(name: string) {
 test("the worktree Keel made for the agent goes with its branch when clean, and when every commit of it is on another branch", async () => {
   const k = await keelMade("own-clean");
   mkdirSync(join(k.wt.path, "out"));
-  writeFileSync(join(k.wt.path, "out", "build.log"), "x\n"); // ignored output goes with it, as it always has
-  expect(await k.own()).toBe("\n\n(The agent changed no files; its worktree was removed.)");
+  writeFileSync(join(k.wt.path, "out", "build.log"), "x\n"); // ignored output goes with it, as it always has, and is named
+  expect(await k.own()).toBe("\n\n(The agent changed no files; its worktree was removed, and 1 ignored path with it: out/.)");
   expect(existsSync(k.wt.path)).toBe(false);
   expect(branchesOf(k.r)).not.toContain(k.wt.branch);
   expect(k.wts.get(k.s.id)!.state).toBe("removed");
@@ -252,6 +252,93 @@ test("the worktree Keel made is kept and listed with uncommitted work, an untrac
   } finally {
     hand.kill();
   }
+});
+
+test("the worktree Keel made keeps its branch, with the branch's only commit, when its HEAD was detached on main", async () => {
+  const d = await keelMade("own-detached");
+  git(d.wt.path, "commit", "-q", "--allow-empty", "-m", "only on the branch");
+  const tip = git(d.wt.path, "rev-parse", "HEAD").trim();
+  git(d.wt.path, "checkout", "-q", "--detach", "main");
+  expect(await d.own()).toBe(`\n\nWorktree ${d.wt.path} (branch ${d.wt.branch}) was kept: its HEAD is detached, not on ${d.wt.branch}.`);
+  expect(git(d.r, "rev-parse", `refs/heads/${d.wt.branch}`).trim()).toBe(tip);
+  expect(existsSync(d.wt.path)).toBe(true);
+});
+
+test("the worktree Keel made keeps its branch, with the branch's only commit, when its HEAD went to a new branch reset to main", async () => {
+  const n = await keelMade("own-switched");
+  git(n.wt.path, "commit", "-q", "--allow-empty", "-m", "only on the branch");
+  git(n.wt.path, "checkout", "-q", "-b", "other-branch");
+  git(n.wt.path, "reset", "-q", "--hard", "main");
+  expect(await n.own()).toBe(`\n\nWorktree ${n.wt.path} (branch ${n.wt.branch}) was kept: its HEAD is on other-branch, not on ${n.wt.branch}.`);
+  expect(branchesOf(n.r)).toContain(n.wt.branch);
+});
+
+test("two of Keel's worktrees ending together with a commit only their branches share both stay", async () => {
+  const r = repo("own-pair");
+  const store = storeAt("state-own-pair");
+  const wts = new Worktrees(store, join(root, "own-pair-wts"));
+  const made = async (title: string) => {
+    const s = store.createSession({ workspace: r, title, model: "scripted:stand-in" });
+    const { wt } = await wts.create(s.id, r, title);
+    wts.adopt(s.id, wt);
+    return { s, wt };
+  };
+  const a = await made("alpha");
+  git(a.wt.path, "commit", "-q", "--allow-empty", "-m", "shared");
+  const b = await made("beta");
+  git(b.wt.path, "reset", "-q", "--hard", a.wt.branch);
+  const sha = git(r, "rev-parse", a.wt.branch).trim();
+  const notes = await Promise.all([a, b].map((x) => leftovers.ownWorktree({ store, wts }, x.s.id, () => false)));
+  for (const note of notes) expect(note).toContain("1 commit over main, 0 uncommitted files");
+  expect(git(r, "branch", "--contains", sha)).toContain("keel/");
+  expect(branchesOf(r)).toEqual(expect.arrayContaining([a.wt.branch, b.wt.branch]));
+});
+
+test("a worktrees row that names a worktree outside Keel's folder, or a branch not of Keel's naming, is never removed", async () => {
+  const k = await keelMade("own-forged");
+  const owners = join(root, "own-forged-owner");
+  git(k.r, "worktree", "add", "-q", owners, "-b", "owner-b");
+  const s = k.store.createSession({ workspace: k.r, title: "forged", model: "scripted:stand-in" });
+  const base = git(k.r, "rev-parse", "HEAD").trim();
+  const row = (path: string, branch: string, sid: string) => k.store.db.query("INSERT INTO worktrees (session_id, repo_root, path, branch, base, base_commit, state, snapshot_ref, created, updated) VALUES (?, ?, ?, ?, 'main', ?, 'active', NULL, 0, 0)").run(sid, k.r, path, branch, base);
+  row(owners, "owner-b", s.id);
+  expect(await leftovers.ownWorktree({ store: k.store, wts: k.wts }, s.id, () => false)).toBe(`\n\nWorktree ${owners} (branch owner-b) was kept: it is not in Keel's worktree folder on a branch of Keel's naming.`);
+  expect(existsSync(owners)).toBe(true);
+  expect(branchesOf(k.r)).toContain("owner-b");
+  // Inside Keel's folder, but on the owner's branch.
+  const t = k.store.createSession({ workspace: k.r, title: "forged2", model: "scripted:stand-in" });
+  const underKeel = join(root, "own-forged-wts", "owners");
+  git(k.r, "worktree", "add", "-q", underKeel, "-b", "owner-c");
+  row(underKeel, "owner-c", t.id);
+  expect(await leftovers.ownWorktree({ store: k.store, wts: k.wts }, t.id, () => false)).toContain("was kept: it is not in Keel's worktree folder");
+  expect(branchesOf(k.r)).toContain("owner-c");
+});
+
+test("the worktree Keel made stays when an ignored folder in it holds a repository with a commit of its own", async () => {
+  const i = await keelMade("own-nested");
+  mkdirSync(join(i.wt.path, "out", "inner"), { recursive: true });
+  git(join(i.wt.path, "out", "inner"), "init", "-q", "-b", "main");
+  writeFileSync(join(i.wt.path, "out", "inner", "w"), "w\n");
+  git(join(i.wt.path, "out", "inner"), "add", "-A");
+  git(join(i.wt.path, "out", "inner"), "commit", "-qm", "inner work");
+  expect(await i.own()).toBe(`\n\nWorktree ${i.wt.path} (branch ${i.wt.branch}) was kept: an ignored folder holds a repository (out/inner).`);
+  expect(existsSync(join(i.wt.path, "out", "inner", "w"))).toBe(true);
+});
+
+test("the worktree Keel made stays with an edit git is told not to see (assume-unchanged)", async () => {
+  const a = await keelMade("own-assumed");
+  git(a.wt.path, "update-index", "--assume-unchanged", ".gitignore");
+  writeFileSync(join(a.wt.path, ".gitignore"), "edited\n");
+  expect(await a.own()).toContain("0 commits over main, 1 uncommitted file");
+  expect(readFileSync(join(a.wt.path, ".gitignore"), "utf8")).toBe("edited\n");
+});
+
+test("the worktree Keel made stays when a stash entry was made on its branch", async () => {
+  const t = await keelMade("own-stash");
+  writeFileSync(join(t.wt.path, ".gitignore"), "stashed\n");
+  git(t.wt.path, "stash", "-q");
+  expect(await t.own()).toBe(`\n\nWorktree ${t.wt.path} (branch ${t.wt.branch}) was kept: a stash entry was made on its branch (stash@{0}).`);
+  expect(existsSync(t.wt.path)).toBe(true);
 });
 
 test("the owner's Remove of a listed item works, and refuses one that changed since it was listed; Remove all does each", async () => {

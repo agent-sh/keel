@@ -14,13 +14,14 @@
 // hands to another manager (`systemd-run --user`, a container engine, ssh to another machine), and commands older
 // than the jobs the daemon keeps.
 import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Store } from "../core/store.ts";
 import { git, locate } from "../core/git.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { clientsOf, portsOf } from "../fleet/portal.ts";
 import { allJobs, findJob, jobsIn, jobsOf, processesOf, stopJob, type Job } from "../tools/jobs.ts";
-import type { Worktrees } from "../worktree/manager.ts";
+import type { Worktree, Worktrees } from "../worktree/manager.ts";
 import { readsOf } from "../server/reads.ts";
 import * as rules from "./leftover-rules.ts";
 
@@ -135,9 +136,9 @@ const statusOf = async (path: string): Promise<Status | undefined> => {
   }
   return st;
 };
-// Commits of `ref` that no other branch, remote branch or tag holds (`self`: the branch to leave out).
-const uniqueOf = async (dir: string, ref: string, self?: string): Promise<number | undefined> => {
-  const out = await run(dir, ["rev-list", "--count", ref, "--not", ...(self ? [`--exclude=${self}`] : []), "--branches", "--remotes", "--tags"]);
+// Commits of `ref` that no other branch, remote branch or tag holds (`self`: the branches to leave out).
+const uniqueOf = async (dir: string, ref: string, self?: string | string[]): Promise<number | undefined> => {
+  const out = await run(dir, ["rev-list", "--count", ref, "--not", ...[self ?? []].flat().map((b) => `--exclude=${b}`), "--branches", "--remotes", "--tags"]);
   return out === undefined ? undefined : Number(out.trim()) || 0;
 };
 
@@ -248,30 +249,114 @@ export async function settle(c: Ctx, a: AgentEnd): Promise<string> {
 
 // The worktree Keel made for an agent (the managed worktree of its session): removed with its branch when
 // nothing of it would be lost and nothing else works in it, kept and named otherwise. Returns the note its
-// report carries ("" when it has none). `live`: whether a session may still work in a folder.
+// report carries ("" when it has none). `live`: whether a session may still work in a folder. A row that does
+// not name a worktree of Keel's own folder and branch naming is never acted on.
 export async function ownWorktree(c: { store: Store; wts: Worktrees }, sessionId: string, live: (sessionId: string) => boolean): Promise<string> {
   const w = c.wts.get(sessionId);
   if (!w || w.state !== "active") return "";
+  if (!c.wts.owns(w)) return `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: it is not in Keel's worktree folder on a branch of Keel's naming.`;
+  return oneAtATime(realOf(w.repo_root), () => settleOwn(c, w, sessionId, live));
+}
+
+// One check and removal at a time in a repository: two agents ending together would each count the other's
+// branch as holding a commit they share, and both would go.
+const repoTurns = new Map<string, Promise<unknown>>();
+function oneAtATime<T>(key: string, f: () => Promise<T>): Promise<T> {
+  const run = (repoTurns.get(key) ?? Promise.resolve()).then(f, f);
+  const tail = run.catch(() => {});
+  repoTurns.set(key, tail);
+  void tail.then(() => { if (repoTurns.get(key) === tail) repoTurns.delete(key); });
+  return run;
+}
+
+// Folders under the ignored paths of a worktree that hold a repository of their own (`git worktree remove`
+// deletes ignored files without a word). Links are not followed. Past `cap` entries the answer is unknown.
+async function reposUnder(top: string, ignored: string[], cap = 200_000): Promise<string[] | undefined> {
+  const found: string[] = [];
+  const todo = ignored.filter((p) => p.endsWith("/")).map((p) => p.replace(/\/$/, ""));
+  let seen = 0;
+  while (todo.length) {
+    const rel = todo.pop()!;
+    let list;
+    try { list = await readdir(join(top, rel), { withFileTypes: true }); } catch { continue; }
+    if ((seen += list.length) > cap) return undefined;
+    for (const e of list) {
+      if (e.name === ".git") { found.push(rel); break; }
+      if (e.isDirectory()) todo.push(`${rel}/${e.name}`);
+    }
+  }
+  return found;
+}
+
+// Files git is told not to look at (assume-unchanged, skip-worktree) that differ from what the index holds:
+// `git status` and `git worktree remove` do not see such an edit. A skip-worktree file that is not on disk is
+// what a sparse checkout leaves out. Past 2,000 of them the answer is unknown.
+async function hiddenEdits(dir: string): Promise<number | undefined> {
+  const out = await run(dir, ["ls-files", "-v", "-z"]);
+  if (out === undefined) return undefined;
+  const flagged = out.split("\0").filter((r) => r.length > 2 && (/^[a-z]/.test(r) || r[0] === "S")).map((r) => ({ skip: /^[sS]/.test(r), path: r.slice(2) }));
+  if (!flagged.length) return 0;
+  if (flagged.length > 2000) return undefined;
+  const staged = await run(dir, ["ls-files", "-s", "-z", "--", ...flagged.map((f) => `:(literal)${f.path}`)]);
+  if (staged === undefined) return undefined;
+  const want = new Map(staged.split("\0").filter(Boolean).map((r) => { const tab = r.indexOf("\t"); return [r.slice(tab + 1), r.split(" ")[1]!] as const; }));
+  const present = flagged.filter((f) => existsSync(join(dir, f.path)));
+  let n = flagged.filter((f) => !f.skip && !existsSync(join(dir, f.path))).length;
+  if (present.length) {
+    const r = await git(dir, ["hash-object", "--stdin-paths"], { read: true, input: present.map((f) => f.path).join("\n") + "\n", timeout: 60_000 });
+    if (r.code !== 0) return undefined;
+    const got = r.out.split("\n").filter(Boolean);
+    present.forEach((f, i) => { if (got[i] !== want.get(f.path)) n++; });
+  }
+  return n;
+}
+
+// A stash entry made on the branch: its work is not on the branch, and the entry says the branch's name.
+async function stashOn(repo: string, branch: string): Promise<string | undefined> {
+  const out = await run(repo, ["stash", "list", "--format=%gd%x00%gs"]);
+  for (const l of (out ?? "").split("\n")) {
+    const [ref, subject] = l.split("\0");
+    const on = /^(?:WIP on|On) (.+?): /.exec(subject ?? "")?.[1];
+    if (on === branch) return `a stash entry was made on its branch (${ref})`;
+  }
+  return undefined;
+}
+
+async function settleOwn(c: { store: Store; wts: Worktrees }, w: Worktree, sessionId: string, live: (sessionId: string) => boolean): Promise<string> {
   const st = await c.wts.status(w);
   if (st.unknown) return `\n\nWorktree ${w.path} (branch ${w.branch}): git could not read it: ${st.unknown}`;
   if (st.branch_missing) { await c.wts.removeClean(w, null); return ""; }
   const at = st.exists ? w.path : w.repo_root;
   const sha = (await run(at, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`]))?.trim() || null;
-  const unique = await uniqueOf(at, st.exists ? "HEAD" : `refs/heads/${w.branch}`, w.branch);
-  const inner = st.inner?.length ? `${st.inner.length === 1 ? "a repository inside it holds" : `${st.inner.length} repositories inside it hold`} work of its own (${st.inner.slice(0, 3).join(", ")})` : undefined;
-  const busy = st.exists ? busyIn(await openSessions(c.store), cwds(), w.path, sessionId, live) : undefined;
-  const fate = rules.ownTreeFate({ dirty: st.dirty, unique: unique ?? 0, inner, busy, unknown: unique === undefined ? "its commits could not be counted" : undefined });
+  // Its branch's commits, on the commit that would be deleted. The branches of Keel's other worktrees here do
+  // not count as holding them: each goes at its own agent's end.
+  const others = c.wts.all().filter((x) => x.session_id !== sessionId && x.state === "active" && realOf(x.repo_root) === realOf(w.repo_root)).map((x) => x.branch);
+  const unique = sha ? await uniqueOf(at, sha, [w.branch, ...others]) : 0;
+  const head = st.exists ? (await run(w.path, ["symbolic-ref", "--quiet", "--short", "HEAD"]))?.trim() : w.branch;
+  const moved = head === w.branch ? undefined : `its HEAD is ${head ? `on ${head}` : "detached"}, not on ${w.branch}`;
+  const look = st.exists ? await statusOf(w.path) : { dirty: 0, ignored: [] };
+  const nested = look ? await reposUnder(w.path, look.ignored) : undefined;
+  const hidden = st.exists ? await hiddenEdits(w.path) : 0;
+  const inner = st.inner?.length ? `${st.inner.length === 1 ? "a repository inside it holds" : `${st.inner.length} repositories inside it hold`} work of its own (${st.inner.slice(0, 3).join(", ")})`
+    : nested?.length ? `${nested.length === 1 ? "an ignored folder holds a repository" : `ignored folders hold ${nested.length} repositories`} (${nested.slice(0, 3).join(", ")})` : undefined;
+  const busy = moved ?? await stashOn(w.repo_root, w.branch) ?? (st.exists ? busyIn(await openSessions(c.store), cwds(), w.path, sessionId, live) : undefined);
+  const unknown = unique === undefined ? "its commits could not be counted" : look === undefined || nested === undefined ? "its ignored files could not be looked through" : hidden === undefined ? "the files git is told not to look at could not be compared" : undefined;
+  const dirty = Math.max(st.dirty, look?.dirty ?? 0) + (hidden ?? 0);
+  const fate = rules.ownTreeFate({ dirty, unique: unique ?? 0, inner, busy, unknown });
   if (fate.act === "remove") {
     const r = await c.wts.removeClean(w, sha);
     if (r.removed) {
-      if (!st.commits_ahead) return "\n\n(The agent changed no files; its worktree was removed.)";
+      // Its ignored files went with it: said by count and the first names.
+      const names = look?.ignored ?? [];
+      const gone = names.length ? `, and ${rules.count(names.length, "ignored path")} with it: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ", ..." : ""}` : "";
+      if (!st.commits_ahead) return `\n\n(The agent changed no files; its worktree was removed${gone}.)`;
       const on = (await run(w.repo_root, ["for-each-ref", "--count=4", `--contains=${sha}`, "--format=%(refname:short)", "refs/heads", "refs/remotes", "refs/tags"]))?.split("\n").filter((x) => x && x !== w.branch) ?? [];
-      return `\n\nIts ${rules.count(st.commits_ahead, "commit")} over ${w.base} ${st.commits_ahead === 1 ? "is" : "are"} also on ${on.slice(0, 3).join(", ") || "other branches"}: its worktree ${w.path}${r.branch_deleted ? ` and branch ${w.branch} were` : " was"} removed.`;
+      return `\n\nIts ${rules.count(st.commits_ahead, "commit")} over ${w.base} ${st.commits_ahead === 1 ? "is" : "are"} also on ${on.slice(0, 3).join(", ") || "other branches"}: its worktree ${w.path}${r.branch_deleted ? ` and branch ${w.branch} were` : " was"} removed${gone}.`;
     }
     return `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${r.reason}.`;
   }
   const why = (fate as { why: string }).why;
-  if (st.dirty || unique) return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${rules.count(st.commits_ahead, "commit")} over ${w.base}, ${rules.count(st.dirty, "uncommitted file")}. Review and merge it from there (git merge ${w.branch}).`;
+  if (!unknown && !inner && !busy && (dirty || unique)) return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${rules.count(st.commits_ahead, "commit")} over ${w.base}, ${rules.count(dirty, "uncommitted file")}. Review and merge it from there (git merge ${w.branch}).`;
   return `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${why}.`;
 }
 

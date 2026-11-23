@@ -9,6 +9,7 @@ import type { Session } from "../core/types.ts";
 import { Shadow, type DiffResult } from "../safety/shadow.ts";
 import { addAll, git as gitCall, gitEnv, gitReach, innerWork, locate, nestedIn, type GitFetch } from "../core/git.ts";
 import { readText } from "../core/proc.ts";
+import { contains, realOf } from "../core/paths.ts";
 
 export type Worktree = {
   session_id: string;
@@ -140,9 +141,19 @@ export function summarizeChecks(rows: any[]) {
 // A branch name from the first words of the title.
 const slug = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 4).join("-").slice(0, 28).replace(/-$/, "") || "session";
 
+// The branches Keel makes for its worktrees start with this.
+export const BRANCH_PREFIX = "keel/";
+
 export class Worktrees {
   constructor(private store: Store, private root: string) {
     store.migrate(SCHEMA);
+  }
+
+  // Whether a row names a worktree of the kind Keel makes: a folder inside Keel's own worktree folder (where its
+  // links land) on a branch of Keel's naming. A row that names anything else is not Keel's to remove.
+  owns(w: Worktree): boolean {
+    const root = realOf(this.root), at = realOf(w.path);
+    return at !== root && contains(root, at) && w.branch.startsWith(BRANCH_PREFIX);
   }
 
   get(sessionId: string): Worktree | undefined {
@@ -179,7 +190,7 @@ export class Worktrees {
     if (!/^[\w./@^~-]+$/.test(ref)) throw new GitError(`not a ref name: ${ref}`, 400);
     const baseCommit = (await git(repo.top, ["rev-parse", "--verify", `${ref}^{commit}`])).trim();
     const short = sessionKey.replace(/-/g, "").slice(-6);
-    const branch = `keel/${slug(title)}-${short}`;
+    const branch = `${BRANCH_PREFIX}${slug(title)}-${short}`;
     const path = join(this.root, `${basename(repo.root)}-${short}`);
     mkdirSync(this.root, { recursive: true });
     await git(repo.root, ["worktree", "add", "-q", "-b", branch, path, baseCommit], { fetch: gitReach(madeFor) });

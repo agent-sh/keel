@@ -1449,7 +1449,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // the daemon restarted) is brought in first, off the loop.
   await D().store.warm(a.parent_id, false).catch(() => {});
   result += work;
-  if (work && !/\(The agent changed no files; its worktree[^)]* was removed\.\)\s*$/.test(work)) cause = "";
+  if (work && !/\(The agent changed no files; its worktree[^)]* was removed[^)]*\.\)\s*$/.test(work)) cause = "";
   const silent = !!defOf(a.id)?.silent;
   // A blocking agent's result is held by the call that started it: while that
   // call waits, and after a stop of the parent's turn cut it (cutCalls).

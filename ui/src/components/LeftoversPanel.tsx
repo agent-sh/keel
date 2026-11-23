@@ -77,9 +77,13 @@ export function LeftoversPanel() {
   // The whole list in one act: every worktree that can be removed and every branch that is all on its base, as shown.
   const trees = s.worktrees.filter((w) => w.removable), merged = s.branches.filter((b) => b.merged);
   const ignoredAll = trees.reduce((n, w) => n + (w.ignored?.length ?? 0), 0);
+  // What the button removes, said on it: how many of each, and the ignored files that go with the worktrees.
+  const allLabel = trees.length + merged.length
+    ? `Remove ${[trees.length ? `${trees.length} ${trees.length === 1 ? "worktree" : "worktrees"}` : "", merged.length ? `${merged.length} ${merged.length === 1 ? "branch" : "branches"}` : ""].filter(Boolean).join(" and ")}${ignoredAll ? `, ${ignoredAll} ignored ${ignoredAll === 1 ? "path" : "paths"} with them` : ""}`
+    : "Nothing to remove without losing work";
   const removeAll = async () => {
     const parts = [trees.length ? `${trees.length} ${trees.length === 1 ? "worktree" : "worktrees"} with nothing uncommitted (their branches and commits stay${ignoredAll ? `; ${ignoredAll} ignored ${ignoredAll === 1 ? "path goes" : "paths go"} with them` : ""})` : "", merged.length ? `${merged.length} ${merged.length === 1 ? "branch" : "branches"} whose commits are all on the base` : ""].filter(Boolean);
-    if (!(await confirmAction({ title: "Remove all that loses nothing?", body: `${parts.join(", and ")}.\n\nEach is checked again first: one that changed since it was listed stays. Nothing else is touched.`, action: "Remove all", danger: true }))) return;
+    if (!(await confirmAction({ title: `${allLabel}?`, body: `${parts.join(", and ")}.\n\nEach is checked again first: one that changed since it was listed stays. Nothing else is touched.`, action: "Remove all", danger: true }))) return;
     setBusy("all");
     try {
       const r = await api<{ removed: string[]; deleted: string[]; refused: { what: string; why: string }[] }>("/api/leftovers/remove-all", { method: "POST", body: JSON.stringify({
@@ -100,8 +104,8 @@ export function LeftoversPanel() {
       <div className="flex items-center gap-3">
         <p role="status" className="min-w-0 flex-1 text-ui text-muted" data-testid="leftovers-said">{said ?? "Keel removes by itself only the worktrees it made for agents, when nothing in them would be lost. The rest is yours to remove here."}</p>
         <button type="button" className={btn} data-testid="leftovers-remove-all" disabled={busy !== null || !(trees.length + merged.length)}
-          title={trees.length + merged.length ? undefined : "Nothing listed can go without losing work"} onClick={removeAll}>
-          Remove all that loses nothing{trees.length + merged.length ? ` (${trees.length + merged.length})` : ""}
+          title={trees.length + merged.length ? "Every worktree with nothing uncommitted and every branch whose commits are all on its base" : undefined} onClick={removeAll}>
+          {allLabel}
         </button>
       </div>
 
