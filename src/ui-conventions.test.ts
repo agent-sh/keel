@@ -229,7 +229,7 @@ function steel(pageList: Src[], sheetList: Src[]): string[] {
   const out: string[] = [];
   for (const s of pageList) for (const { c, line } of classes(s.text)) if (/(^|:)bg-panel(\/\d+)?$/.test(c)) out.push(at(s, line, c));
   for (const s of sheetList) for (const r of rules(s.text)) for (const d of r.decls) {
-    if (d.value.includes("var(--panel)") && !/\.k-rail\b|\.k-where-pip\b|\.k-dock\b/.test(r.selector) && d.prop !== "--color-panel") out.push(at(s, d.line, `${r.selector} { ${d.prop} }`));
+    if (d.value.includes("var(--panel)") && !/\.k-rail\b|\.k-where-pip\b|\.k-dock\b|\.k-pane-map\b/.test(r.selector) && d.prop !== "--color-panel") out.push(at(s, d.line, `${r.selector} { ${d.prop} }`));
   }
   return out;
 }
