@@ -131,7 +131,8 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
 
 // `input`: the call takes the server's own requests. `hold` stops the request's timer while the owner is asked,
 // and gives back what starts it again.
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; hold: () => () => void };
+// `progressed`: the server reported progress on it (its progressToken is the request's id).
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; hold: () => () => void; progressed?: () => void };
 
 export class McpClient {
   era: "modern" | "legacy" = "legacy";
@@ -306,6 +307,8 @@ export class McpClient {
     else if (msg.method === "notifications/resources/list_changed") this.onResources?.({ list: true });
     else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
     else if (msg.method === CHANNEL_METHOD && this.channel) this.onChannel?.(msg.params);
+    // Progress on a request that asked for it (basic/utilities/progress): its timeout starts again.
+    else if (msg.method === "notifications/progress" && msg.params?.progressToken !== undefined) this.pending.get(msg.params.progressToken)?.progressed?.();
   }
 
   // A legacy server's own request (2025-11-25: elicitation/create is sent
@@ -671,13 +674,18 @@ export class McpClient {
     };
   }
 
-  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; timeoutText?: string; modern?: boolean; authorize?: () => string | undefined; input?: CallInput } = {}): Promise<any> {
+  // `progress`: the request asks the server for progress (its id as the
+  // progressToken), and each report starts its timeout again: the timeout is
+  // the time the server goes without a word, and the owner's stop ends it
+  // at any time (lifecycle: Timeouts lets progress reset the clock).
+  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; timeoutText?: string; modern?: boolean; authorize?: () => string | undefined; input?: CallInput; progress?: () => void } = {}): Promise<any> {
     const deny = opt.authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
     if (this.closed) throw new Error("the connection is closed");
     if (opt.signal?.aborted) throw new Error("cancelled");
     const id = this.nextId++;
-    const p = opt.modern || this.era === "modern" ? { ...params, _meta: { ...params._meta, ...this.meta() } } : params;
+    const asked = opt.progress ? { ...params, _meta: { ...params._meta, progressToken: id } } : params;
+    const p = opt.modern || this.era === "modern" ? { ...asked, _meta: { ...asked._meta, ...this.meta() } } : asked;
     const msg = { jsonrpc: "2.0", id, method, params: p };
     const timeoutMs = opt.timeoutMs ?? this.timeoutMs;
     return new Promise((resolve, reject) => {
@@ -717,7 +725,9 @@ export class McpClient {
         if (held++ === 0) { clearTimeout(timer); left = Math.max(0, left - (Date.now() - since)); }
         return () => { if (--held === 0 && this.pending.has(id)) arm(); };
       };
-      this.pending.set(id, { resolve: done(resolve), reject: fail, input: opt.input, hold });
+      // (While the owner is asked the clock is held; a report then changes nothing.)
+      const progressed = opt.progress ? () => { if (held || !this.pending.has(id)) return; clearTimeout(timer); left = timeoutMs; arm(); opt.progress!(); } : undefined;
+      this.pending.set(id, { resolve: done(resolve), reject: fail, input: opt.input, hold, progressed });
       arm();
       opt.signal?.addEventListener("abort", onAbort, { once: true });
       if (this.t.kind === "stdio") this.write(msg);
@@ -775,7 +785,7 @@ export class McpClient {
   readResource(uri: string, signal?: AbortSignal) { return this.rounds("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rounds("prompts/get", { name, arguments: args }, { signal }); }
   callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, input?: CallInput): Promise<McpCallResult> {
-    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, input });
+    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, input, progress: () => {} });
   }
 
   // A modern server asks for input by answering the request with
@@ -793,9 +803,11 @@ export class McpClient {
     for (let quiet = 0, round = 1; ; round++) {
       if (left <= 0) throw new Error(`${method} timed out after ${Math.round(whole / 1000)}s, before round ${round} of the call`);
       if (round > ROUNDS_MAX) throw new Error(`the server asked to be called again ${ROUNDS_MAX} times in one call`);
-      const began = Date.now();
+      let began = Date.now();
       // (A later round has only what is left of the call's time: its timeout is said as the call's.)
-      const r = await this.rpc(method, next, { ...opt, timeoutMs: left, ...(round > 1 ? { timeoutText: `${method} timed out after ${Math.round(whole / 1000)}s, in round ${round} of the call` } : {}) });
+      // A progress report gives the call its whole time again, from the report on.
+      const progress = opt.progress && (() => { began = Date.now(); left = whole; opt.progress!(); });
+      const r = await this.rpc(method, next, { ...opt, progress, timeoutMs: left, ...(round > 1 ? { timeoutText: `${method} timed out after ${Math.round(whole / 1000)}s, in round ${round} of the call` } : {}) });
       left -= Date.now() - began;
       if (r?.resultType !== "input_required") return r;
       const asked = Object.entries((r.inputRequests ?? {}) as Record<string, InputRequest>);

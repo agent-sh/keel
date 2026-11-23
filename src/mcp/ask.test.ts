@@ -86,3 +86,14 @@ test("a server that keeps asking after its call ended loses its connection", asy
   for (let i = 0; i < 100 && !c.isClosed; i++) await Bun.sleep(50);
   expect([c.isClosed, why, asked]).toEqual([true, "the server made more than 120 requests of its own in a minute that no call was waiting for", 3]);
 }, 30_000);
+
+// A call that runs past its timeout while its server reports progress goes on (basic/utilities/progress).
+test("a tool call that reports progress is not ended by its timeout", async () => {
+  const c = await McpClient.connect({ kind: "stdio", command: "bun", args: [`${import.meta.dir}/../../test/e2e/fixtures/progress-mcp.ts`], env: process.env as Record<string, string> }, 10_000, "legacy");
+  try {
+    const r = await c.callTool("work", {}, undefined, 400);
+    expect(r.content).toEqual([{ type: "text", text: "worked" }]);
+  } finally {
+    c.close();
+  }
+});
