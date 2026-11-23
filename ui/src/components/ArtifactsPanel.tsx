@@ -110,7 +110,8 @@ export function ArtifactBrowser({ list, testid, withSession }: { list: Listed[] 
   return (
     <div ref={root} className="flex h-full min-h-0 flex-col" data-testid={testid} data-layout={layout}>
       {/* The filters belong to the list: with room for one, they leave with it. */}
-      <div className={cn("flex border-b border-line px-3 py-2", one && reading && "hidden")}>
+      {/* (With nothing made there is nothing to sort: the empty words stand alone.) */}
+      <div className={cn("flex border-b border-line px-3 py-2", ((one && reading) || (list && !list.length)) && "hidden")}>
         <Seg wrap label="Show" value={filter} onChange={setFilter} options={FILTERS.map(([f, label]) => ({ value: f, testid: `artifacts-filter-${f}`, label: <>{label} <span className="tabular-nums text-faint">{(list ?? []).filter((a) => pass(f, a)).length}</span></> }))} />
       </div>
       {list && !list.length && <p className="k-empty px-4 py-4" data-testid="artifacts-empty">Nothing made yet. Files this session writes, and what it puts in its artifacts folder, show up here as it works.</p>}

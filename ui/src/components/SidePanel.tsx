@@ -82,7 +82,9 @@ function registerPanelCommands() {
 panels.subscribe(registerPanelCommands);
 registerPanelCommands();
 
-function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; open: string | null; label?: boolean; testid?: string }) {
+// `title`: the chooser is the open panel's own name in its head (the head says what it is and
+// switches it in one place); else the header's Panels button.
+function Picker({ list, open, label, testid = "panel-menu", title }: { list: Panel[]; open: string | null; label?: boolean; testid?: string; title?: string }) {
   usePrefs();
   const [show, setShow] = useState(false);
   const [q, setQ] = useState("");
@@ -98,11 +100,17 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
   const pick = (id: string) => { openPanel(id); setShow(false); setQ(""); };
   return (
     <Popover.Root open={show} onOpenChange={(o) => { setShow(o); if (!o) setQ(""); }}>
-      <Popover.Trigger className="k-hand" data-words={label || undefined} aria-label="Panels" title="Every panel" data-testid={testid}>
-        <PanelRight /><span className="k-hand-word">Panels</span><ChevronDown className="k-hand-more" />
-      </Popover.Trigger>
+      {title ? (
+        <Popover.Trigger className="k-surface-switch" aria-label={`${title}: switch the panel`} title="Switch to another panel" data-testid={testid}>
+          {title}<ChevronDown className="k-surface-switch-more" />
+        </Popover.Trigger>
+      ) : (
+        <Popover.Trigger className="k-hand" data-words={label || undefined} aria-label="Panels" title="Every panel" data-testid={testid}>
+          <PanelRight /><span className="k-hand-word">Panels</span><ChevronDown className="k-hand-more" />
+        </Popover.Trigger>
+      )}
       <Popover.Portal>
-        <Popover.Positioner sideOffset={6} align="end" className="z-50 outline-none">
+        <Popover.Positioner sideOffset={6} align={title ? "start" : "end"} className="z-50 outline-none">
           <Popover.Popup className="k-picker" data-testid="panel-picker">
             <label className="k-picker-search">
               <Search className="size-4" />
@@ -227,9 +235,8 @@ export function SidePanel({ session }: { session: Session }) {
     <aside data-testid="side-panel" data-panel={cur.id} data-mode={beside ? "beside" : "sheet"} onKeyDown={leave} className="k-side k-surface animate-in">
       <div className="k-surface-head">
         <span className="k-surface-icon">{cur.icon}</span>
-        <h2 className="k-surface-title">{cur.label}</h2>
+        <h2 className="k-surface-title"><Picker list={list} open={open} testid="panel-switch" title={cur.label} /></h2>
         <span className="k-surface-end">
-          <Picker list={list} open={open} label testid="panel-switch" />
           <button type="button" aria-label="Close the panel" title="Close the panel (Ctrl \)" onClick={() => openPanel(null)} className="k-surface-close">
             <X />
           </button>
