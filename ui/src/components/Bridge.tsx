@@ -20,7 +20,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSPr
 import type { Session } from "../../../src/core/types.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
 import { offerUndo } from "../lib/undo.ts";
-import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
+import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, paneSay, paneUnsay, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
 import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
 import { usePanelBesideShown } from "./SidePanel.tsx";
@@ -46,7 +46,7 @@ import { elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, 
 import { SessionHeader } from "./SessionHeader.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { Kbd } from "./Kbd.tsx";
-import { WatchHeadline, WatchLists, useAttended } from "./HomeWatch.tsx";
+import { WatchHeadline, WatchLists, useAttended, useHome } from "./HomeWatch.tsx";
 import { StartBox } from "./StartBox.tsx";
 import { goNextWaiting } from "./AnswerQueue.tsx";
 
@@ -433,6 +433,8 @@ function EmptyPane({ slot, grow, next, listsIn }: { slot: number; grow: number; 
   const shown = useStations((x) => x.shown);
   const count = useStations((x) => x.count);
   const attended = useAttended();
+  // (Another empty pane points to the rows only while there are rows to point to.)
+  const waits = useHome().attention.length;
   const offer = useMemo(() => byAttention(list, watches).filter((s) => !shown.includes(s.id) && !attended.has(s.id)).slice(0, 7), [list, watches, shown, attended]);
   const drop = useDrop(slot);
   const aimed = !!useAim(slot);
@@ -447,7 +449,7 @@ function EmptyPane({ slot, grow, next, listsIn }: { slot: number; grow: number; 
           {count > 1 && <button type="button" className="k-pane-empty-close" data-testid="pane-close" title="Close this pane" aria-label={`Close pane ${slot + 1}`} onClick={(e) => { e.stopPropagation(); stations.closePane(slot); }}><X /></button>}
         </p>
         <div className="k-pane-empty-watch"><WatchHeadline /></div>
-        {listsIn === slot ? <WatchLists /> : <p className="k-pane-empty-hint" data-testid="pane-empty-listed">Listed in pane {listsIn + 1}.</p>}
+        {listsIn === slot ? <WatchLists /> : waits > 0 && <p className="k-pane-empty-hint" data-testid="pane-empty-listed">Listed in pane {listsIn + 1}.</p>}
         <p className="k-pane-empty-hint">Pick a session below or in the list, or drag one in.</p>
         {offer.length > 0 && (
           <div className="k-pane-empty-list">
@@ -465,6 +467,27 @@ function EmptyPane({ slot, grow, next, listsIn }: { slot: number; grow: number; 
       </div>
     </section>
   );
+}
+
+// The empty panes take what waits on the owner, a session each, in the order the start page
+// lists them (lib/panes.ts `filled`): a burst fills the panes without a click. Not a session
+// whose machine does not answer (what it waits on is the last it told). A part of its own, so
+// the states it reads draw nothing else again. `skip`: the pane the start page shows in.
+// `helm`: the session opened now, which goes first to the pane it is owed (an empty one too):
+// its pane is settled by the bridge's own effect, which runs after this one, and then this again.
+function FillWaiting({ skip, helm }: { skip: number; helm: string | null }) {
+  const home = useHome();
+  const waiting = home.attention.filter((r) => r.w === "need" && !home.states[r.id]?.offline).map((r) => r.id).join(" ");
+  const slots = useStations((x) => x.slots.join(" ") + "|" + x.over.join(" "));
+  // The line each filled pane says, until it no longer shows the session it was filled with.
+  const said = useRef(new Map<number, { id: string; n: number }>());
+  useEffect(() => {
+    const now = getStations();
+    for (const [i, x] of said.current) if (shownIn(now, i) !== x.id) { paneUnsay(i, x.n); said.current.delete(i); }
+    if (helm && !now.slots.includes(helm) && !now.over.includes(helm)) return;
+    for (const i of stations.fill(waiting ? waiting.split(" ") : [], skip)) said.current.set(i, { id: getStations().slots[i]!, n: paneSay(i, `${STATE_WORD.need}: opened in this empty pane`) });
+  }, [waiting, slots, skip, helm]);
+  return null;
 }
 
 // Phone: the marks of the stations along the bottom; tap one to go there.
@@ -809,6 +832,8 @@ export function Bridge() {
         {phone && (fresh || (!helm && pages.length === 0)) && <NewStation />}
       </main>
       {!phone && <PaneMap track={track} />}
+      {/* (Not on a phone, in a window of one session, or with the helm alone: no empty pane stands beside the one worked in.) */}
+      {!phone && !focus && !soloWindow && loaded && kept.seeded && <FillWaiting skip={startAt} helm={helm} />}
       {phone && <PhoneDock list={pages} helm={helm} />}
       {!phone && <AimSays track={track} />}
     </>

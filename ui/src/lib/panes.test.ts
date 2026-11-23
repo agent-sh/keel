@@ -1,6 +1,6 @@
 // Where an opened session goes, and what placing one does: the rule at the head of stations.ts.
 import { expect, test } from "bun:test";
-import { opened, placed, paneOf, restore, uncovered, type Panes } from "./panes.ts";
+import { filled, opened, placed, paneOf, restore, uncovered, type Panes } from "./panes.ts";
 
 const panes = (slots: (string | null)[], active = 0, over: (string | null)[] = slots.map(() => null)): Panes => ({ slots, over, active, keys: slots.map((_, i) => `k${i}`) });
 const view = (p: Panes) => ({ slots: p.slots, over: p.over, active: p.active });
@@ -60,4 +60,20 @@ test("a kept layout comes back with its looks and without its empty panes", () =
   // A layout kept before looks existed.
   expect(restore({ count: 2, slots: ["a", "b"], sizes: {}, active: 0 })).toEqual({ count: 2, slots: ["a", "b"], over: [null, null], sizes: {}, active: 0 });
   expect(restore(null)).toEqual({ count: 1, slots: [null], over: [null], sizes: {}, active: 0 });
+});
+
+test("empty panes each take a different session that waits, left to right, and nothing else moves", () => {
+  // Four panes, one held, three empty; five wait, one of them already on screen: each empty pane takes the next one.
+  const four = panes(["reader", null, null, null], 0);
+  expect(view(filled(four, ["reader", "a", "b", "c", "d"]))).toEqual({ slots: ["reader", "a", "b", "c"], over: [null, null, null, null], active: 0 });
+  // Fewer waiting than empty panes: the rest stay empty.
+  expect(view(filled(four, ["a"]))).toEqual({ slots: ["reader", "a", null, null], over: [null, null, null, null], active: 0 });
+  // A session a pane holds under a look, or shows as a look, is not shown twice; a pane with a look over it is not empty.
+  const looks = panes(["reader", null, null], 0, ["a", "b", null]);
+  expect(view(filled(looks, ["a", "b", "reader", "c"]))).toEqual({ slots: ["reader", null, "c"], over: ["a", "b", null], active: 0 });
+  // The pane the start page shows in is left to it; one pane is never filled; with nothing new, the same panes.
+  expect(view(filled(four, ["a", "b"], 1))).toEqual({ slots: ["reader", null, "a", "b"], over: [null, null, null, null], active: 0 });
+  expect(filled(panes([null]), ["a"]).slots).toEqual([null]);
+  const full = panes(["reader", "a"], 1);
+  expect(filled(full, ["a", "b"])).toBe(full);
 });

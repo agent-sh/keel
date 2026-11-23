@@ -1,7 +1,9 @@
 // The panes on the bridge: how many there are (the owner's number), which
 // session each holds, how wide each is, and whether the helm is focused to
 // the full width. Nothing here changes by itself: a pane is added, removed,
-// filled, moved or resized only by the owner.
+// moved or resized only by the owner, and filled by them, or by a session that
+// waits on them when the pane stands empty (`filled`): a pane they added and
+// left empty is one they asked to fill.
 //
 // A pane holds the session the owner put in it. Opening a session (a row of
 // the list, a link, the palette, a notification, the answering sequence)
@@ -20,7 +22,8 @@
 // only when asked for: the pane control, "open beside", or a drop on a
 // pane's edge. Closing the session in a pane closes the pane (the last one
 // stays), and an empty pane is not kept across a reload, so no empty pane
-// waits for a session they did not ask to place.
+// waits for a session they did not ask to place. A session that waits on the
+// owner fills an empty pane by itself (`filled`), one session a pane.
 export const MAX_PANES = 6;
 
 export type Kept = {
@@ -92,3 +95,23 @@ export function placed<T extends Panes>(s: T, id: string, slot: number): T {
 }
 // The panes without the look over pane `slot`: it shows the session it holds again.
 export const uncovered = <T extends Panes>(s: T, slot: number): T => (s.over[slot] ? { ...s, over: put(s.over, slot, null), active: slot } : s);
+
+// The empty panes the owner added, each with a session that waits on them: left to right, the
+// first waiting session no pane holds or shows, then the next, so a burst of requests fills the
+// panes without a click and no two panes show one session. `waiting`: in the order the start
+// page lists them. `skip`: a pane that is not empty for this (the start page shows in it).
+// A pane that holds or shows a session never changes here, and nothing moves the pane worked in.
+// One pane is the start page's, not a pane added for sessions: it is never filled.
+export function filled<T extends Panes>(s: T, waiting: readonly string[], skip = -1): T {
+  if (s.slots.length < 2) return s;
+  const taken = new Set([...s.slots, ...s.over].filter((x): x is string => !!x));
+  const queue = waiting.filter((id) => !taken.has(id));
+  if (!queue.length) return s;
+  let slots: (string | null)[] | null = null;
+  for (let i = 0; i < s.slots.length && queue.length; i++) {
+    if (i === skip || s.slots[i] != null || s.over[i]) continue;
+    slots ??= [...s.slots];
+    slots[i] = queue.shift()!;
+  }
+  return slots ? { ...s, slots } : s;
+}

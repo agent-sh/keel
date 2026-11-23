@@ -3,7 +3,7 @@
 // does); here is the state itself, kept across reloads, and the owner's acts on it.
 import { useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { MAX_PANES, opened, paneKey, paneOf, placed, put, restore, uncovered, type Kept, type Panes } from "./panes.ts";
+import { filled, MAX_PANES, opened, paneKey, paneOf, placed, put, restore, uncovered, type Kept, type Panes } from "./panes.ts";
 import { WATCH_RANK, type Watch } from "./watch.ts";
 import { soloWindow } from "./shell.ts";
 
@@ -78,6 +78,14 @@ export const stations = {
   place(id: string, slot: number) {
     const next = placed(state, id, slot);
     if (next !== state) set({ seeded: true, slots: next.slots, over: next.over, keys: next.keys, active: next.active });
+  },
+  // The empty panes take the sessions that wait on the owner (see `filled`); the panes it filled.
+  fill(waiting: readonly string[], skip = -1): number[] {
+    const next = filled(state, waiting, skip);
+    if (next === state) return [];
+    const at = next.slots.flatMap((id, i) => (id !== state.slots[i] ? [i] : []));
+    set({ seeded: true, slots: next.slots });
+    return at;
   },
   // The look over a pane is left: the pane shows the session it holds again.
   uncover(slot: number) {
@@ -178,7 +186,7 @@ const STALE_FAIL_MS = 24 * 3600_000;
 
 // Sessions in the order they ask for attention: what needs them, what works,
 // a fresh failure, then the newest. It orders the first layout, an empty
-// pane's suggestions and a phone's pages; it never fills a pane by itself.
+// pane's suggestions and a phone's pages. (What waits on the owner fills an empty pane: `stations.fill`.)
 export function byAttention(live: Session[], watches: Record<string, Watch>): Session[] {
   const now = Date.now();
   // A failure from days ago waits its turn with the finished work.

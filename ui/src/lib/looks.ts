@@ -173,7 +173,7 @@ type Note = { text: string; n: number };
 let notes: Record<number, Note> = {};
 const noteSubs = new Set<() => void>();
 let said = 0;
-export function paneSay(slot: number, text: string, ms = 4500) {
+export function paneSay(slot: number, text: string, ms = 4500): number {
   const n = ++said;
   notes = { ...notes, [slot]: { text, n } };
   noteSubs.forEach((f) => f());
@@ -184,6 +184,14 @@ export function paneSay(slot: number, text: string, ms = 4500) {
     notes = rest;
     noteSubs.forEach((f) => f());
   }, ms);
+  return n;
+}
+// The line goes before its time when it no longer says what the pane shows (`n`: what paneSay returned).
+export function paneUnsay(slot: number, n: number) {
+  if (notes[slot]?.n !== n) return;
+  const { [slot]: _, ...rest } = notes;
+  notes = rest;
+  noteSubs.forEach((f) => f());
 }
 export const usePaneNote = (slot: number | undefined): string | null =>
   useSyncExternalStore((f) => (noteSubs.add(f), () => void noteSubs.delete(f)), () => (slot === undefined ? null : notes[slot]?.text ?? null));

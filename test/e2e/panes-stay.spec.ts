@@ -391,22 +391,74 @@ test("the start page lists what needs the owner in a pane beside others, and a p
   await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
   expect(Math.abs((await look(page)).panes[0]!.top! - before.panes[0]!.top!)).toBeLessThan(4);
 
-  // An empty pane says the same: the headline and the rows, answered from there.
+  // A pane added beside them takes the session that waits and no pane shows (the coordinator has its pane).
   await page.setViewportSize({ width: 1920, height: 1040 });
   await page.getByTestId("panes-3").click();
+  await expect(slot(page, 2)).toHaveAttribute("data-station", run);
+  // One more finds nothing else waiting: it stays empty and says the same as the start page, the headline and the rows, answered from there.
+  await page.getByTestId("panes-4").click();
   const empty = page.getByTestId("pane-empty");
+  await expect(empty).toHaveCount(1);
   await expect(empty.getByTestId("home-count-need")).toContainText("2 need you");
   await expect(empty.getByTestId("home-session")).toHaveCount(2);
   await shoot(page, "panes-stay-06-empty-pane");
-  // Several empty panes: one lists the rows, the others say where they are.
-  await page.getByTestId("panes-4").click();
-  await expect(page.getByTestId("pane-empty")).toHaveCount(2);
-  await expect(page.getByTestId("pane-empty").getByTestId("home-session")).toHaveCount(2);
-  await expect(page.getByTestId("pane-empty-listed")).toHaveCount(1);
-  await expect(page.getByTestId("pane-empty-listed")).toHaveText(/^Listed in pane \d\.$/);
-  await expect(page.getByTestId("pane-empty").getByTestId("home-count-need")).toHaveCount(2);
   await page.getByTestId("panes-3").click();
   await drop(request, reader, coord, q, run);
+});
+
+// A burst of requests fills the empty panes by itself: each takes a different session that waits,
+// in the order the start page lists them, and none that a pane shows already. The pane worked
+// in stays the one worked in, a filled pane keeps its session once it is answered (nothing
+// waiting takes it), and what did not find a pane waits in the list. Empty panes with nothing
+// waiting point to no rows.
+test("empty panes each take a different session that waits, by themselves", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("panes-stay-burst");
+  const reader = await create(request, "Reader: the release notes", ws);
+  const burst: string[] = [];
+  for (const [i, title] of ["Burst: rotate the certificates", "Burst: bump the importer", "Burst: retry the flaky test", "Burst: port the parser"].entries()) {
+    const id = await create(request, title, ws);
+    await ask(request, id, "approval", `burst${i}`);
+    burst.push(id);
+  }
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await open(page, [reader]);
+  // Four panes: the three new ones are filled at once, each with its own session, in the start page's order.
+  await page.getByTestId("panes-4").click();
+  // (The start page lists what waits newest first.)
+  const all = (await (await request.get("/api/sessions")).json()).sessions as { id: string; updated: number }[];
+  const order = burst.map((id) => all.find((x) => x.id === id)!).sort((a, b) => b.updated - a.updated).map((x) => x.id);
+  await expect.poll(async () => (await look(page)).panes.map((p) => p.holds)).toEqual([reader, expect.any(String), expect.any(String), expect.any(String)]);
+  const after = await look(page);
+  const took = after.panes.slice(1).map((p) => p.holds!);
+  expect(new Set(took).size, "two panes took one session").toBe(3);
+  for (const id of took) expect(burst).toContain(id);
+  expect(took).toEqual(order.slice(0, 3));
+  expect(after.panes.map((p) => p.helm)).toEqual([true, false, false, false]);
+  await expect(page.getByTestId("pane-empty")).toHaveCount(0);
+  for (let i = 1; i < 4; i++) await expect(slot(page, i).getByTestId("pane-note")).toHaveText("Needs you: opened in this empty pane");
+  await shoot(page, "panes-stay-30-burst-fills-panes");
+  // The one left waits in the list, in no pane.
+  const left = burst.find((id) => !took.includes(id))!;
+  expect(after.panes.some((p) => p.holds === left || p.shows === left)).toBe(false);
+  // Answered, a filled pane keeps its session: the one still waiting does not take it.
+  await cardIn(page, took[0]!, "approval").getByTestId("allow-once").click();
+  await idle(request, took[0]!);
+  await page.waitForTimeout(500);
+  expect((await look(page)).panes.map((p) => p.holds)).toEqual(after.panes.map((p) => p.holds));
+  // Their sessions gone (the keyboard back in the reader's pane first), the three panes stand empty with nothing waiting, and none points to rows that are not there.
+  await row(page, reader).click();
+  await expect(slot(page, 0)).toHaveAttribute("data-helm", "true");
+  await drop(request, ...burst);
+  await expect(page.getByTestId("pane-empty")).toHaveCount(3);
+  await expect(page.getByTestId("pane-empty-listed")).toHaveCount(0);
+  // (The line a filled pane said goes with its session.)
+  await expect(page.getByTestId("pane-empty").getByTestId("pane-note")).toHaveCount(0);
+  await expect(page.getByTestId("pane-empty").first().getByTestId("home-count-need")).toHaveCount(0);
+  await shoot(page, "panes-stay-31-empty-panes-nothing-waits");
+  await page.getByTestId("panes-1").click();
+  await drop(request, reader);
 });
 
 test("four panes, a smaller window and a phone", async ({ page, request }) => {
