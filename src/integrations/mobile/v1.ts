@@ -128,8 +128,8 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   if (x.failure) c.failure = x.failure;
   if (x.agents) c.agents = x.agents;
   if (x.preview !== undefined) Object.assign(c, { preview: x.preview?.text ?? "", last_role: x.preview?.role ?? "", preview_id: x.preview?.id ?? null });
-  // The row's own mark: the same row, the same mark. A phone that says the marks it holds is sent
-  // only the rows that changed (syncBody's `have`).
+  // The row's own mark: the same row, the same mark. A phone that says what it holds by these marks
+  // is sent only the rows of the buckets that changed (syncBody's `held`).
   c.h = rowMark(c);
   return c;
 }
@@ -140,16 +140,32 @@ export const rowMark = (row: Record<string, unknown>) => {
   return (Bun.hash(JSON.stringify(rest)) & 0xffffffffn).toString(16).padStart(8, "0");
 };
 
-// The marks a phone holds, as it sends them: `<chat id>:<mark>` pairs joined by commas. Null for none
-// given (an app that does not send them is sent every row, as before).
-export function parseHave(v: string | null): Map<string, string> | null {
-  if (v === null) return null;
-  const out = new Map<string, string>();
-  for (const pair of v.split(",")) {
-    const at = pair.lastIndexOf(":");
-    if (at > 0) out.set(pair.slice(0, at), pair.slice(at + 1));
-  }
-  return out;
+// What a reconnecting phone holds, said in a bounded number of bytes: its rows are put in `n` buckets
+// by their ids, and each bucket is said by one digest of its rows' marks. The daemon sends the rows of
+// each bucket whose digest differs from its own, and names those buckets, so the phone drops what it
+// holds there that was not sent (a session deleted meanwhile). The phone picks `n`; the digests travel
+// as `held=<8 hex>.<8 hex>...` in the stream's query, nine bytes a bucket whatever the rows hold.
+export const MAX_BUCKETS = 256;
+// FNV-1a, 32 bits, over the UTF-8 bytes (Wire.kt makes the same number).
+export function fnv(s: string): number {
+  let h = 0x811c9dc5;
+  for (const b of Buffer.from(s, "utf8")) h = Math.imul(h ^ b, 0x01000193) >>> 0;
+  return h;
+}
+export const bucketOf = (id: string, n: number) => fnv(id) % n;
+// A bucket's digest is the sum of its rows' `<id>:<mark>` hashes (mod 2^32): the order of the rows does not count.
+export function digests(rows: { id: string; h: string }[], n: number): number[] {
+  const d = new Array<number>(n).fill(0);
+  for (const r of rows) { const b = bucketOf(r.id, n); d[b] = (d[b]! + fnv(`${r.id}:${r.h}`)) >>> 0; }
+  return d;
+}
+export const heldOf = (rows: { id: string; h: string }[], n: number) => digests(rows, n).map((x) => x.toString(16).padStart(8, "0")).join(".");
+// Null for none given or one that is not of the form (an app that does not send it is sent every row).
+export function parseHeld(v: string | null): number[] | null {
+  if (!v) return null;
+  const parts = v.split(".");
+  if (parts.length > MAX_BUCKETS || parts.some((p) => !/^[0-9a-f]{8}$/.test(p))) return null;
+  return parts.map((p) => parseInt(p, 16));
 }
 
 // How a turn that did not finish ended, as the workbench says it.
@@ -708,12 +724,13 @@ export function mobileApi(ctx: MobileCtx) {
           let sent = mobile.globalSeq(), base = sent;
           const marks = new Map<string, number>();
           const put = (p: unknown) => c.enqueue(enc.encode(`data: ${JSON.stringify(p)}\n\n`));
-          // The marks of the rows the phone holds, said once with the stream: its first hello sends only
-          // the rows that differ. A hello after a lag sends them all (what the phone holds is not known then).
-          let have = parseHave(q.get("have"));
+          // What the phone holds (`held`, its digests per bucket of rows), said once with the stream: its
+          // first hello sends only the buckets that differ. A hello after a lag sends every row (what the
+          // phone holds is not known then).
+          let held = parseHeld(q.get("held"));
           const hello = (from: number) => {
-            const sync = syncBody(from, have);
-            have = null;
+            const sync = syncBody(from, held);
+            held = null;
             sent = base = sync.seq;
             marks.clear();
             put({ type: "hello", seq: sync.seq, cursor: sync.seq, working: sync.working, sync });
@@ -901,9 +918,10 @@ export function mobileApi(ctx: MobileCtx) {
   // never gave that cursor (a restored backup, another machine). "behind":
   // more than a page of events were stored since, more than the newest page of
   // every chat costs.
-  // `have`: the rows the phone holds, by their marks. Then only the rows that differ go, `removed` names
-  // the ones that are gone, and the answer is not `complete`. A whole read (since 0, a reload) sends all.
-  function syncBody(since: number, have: Map<string, string> | null = null) {
+  // `held`: what the phone holds, a digest per bucket of rows (heldOf). Then only the rows of the buckets
+  // whose digest differs go, `buckets` names those buckets (the phone drops what it holds there that
+  // was not sent), and the answer is not `complete`. A whole read (since 0, a reload) sends every row.
+  function syncBody(since: number, held: number[] | null = null) {
     const seq = mobile.globalSeq();
     const page = since > 0 && since <= seq ? mobile.eventsAfter(since, SYNC_PAGE + 1, SHOWN_KINDS) : [];
     const reload = since > seq ? "ahead" : page.length > SYNC_PAGE ? "behind" : undefined;
@@ -916,9 +934,11 @@ export function mobileApi(ctx: MobileCtx) {
     // Cards that closed since the cursor's time, or within a push's lifetime.
     const from = Math.min(Date.now() - 15 * 60_000, whole ? Infinity : (mobile.tsOfGseq(since) ?? 0));
     const rows = all.map((s) => chatFull(s, u));
-    // The phone said what it holds: only what differs goes, and what is gone is named.
-    const diff = have && !whole;
-    const ids = new Set(rows.map((r) => r.id as string));
+    // The phone said what it holds: only the buckets that differ go, each whole.
+    const diff = held && !whole ? held : null;
+    const n = diff?.length ?? 0;
+    const mine = diff ? digests(rows.map((r) => ({ id: r.id as string, h: r.h as string })), n) : [];
+    const stale = new Set(mine.flatMap((d, i) => (d === diff![i] ? [] : [i])));
     return {
       // `more` is always false now: an older app pages while it is true.
       seq, more: false,
@@ -926,8 +946,8 @@ export function mobileApi(ctx: MobileCtx) {
       // ones it holds that are not among them (deleted on the desktop).
       complete: !diff,
       ...(reload ? { reload } : {}),
-      chats: diff ? rows.filter((r) => have.get(r.id as string) !== r.h) : rows,
-      ...(diff ? { removed: [...have.keys()].filter((id) => !ids.has(id)) } : {}),
+      chats: diff ? rows.filter((r) => stale.has(bucketOf(r.id as string, n))) : rows,
+      ...(diff ? { buckets: { n, of: [...stale] } } : {}),
       messages: whole ? store.sessions().sort((a, b) => b.updated - a.updated).slice(0, FIRST_CHATS).flatMap(recent) : [...page.filter((e) => !reset.has(e.session_id)).flatMap((e) => msgsOf(e, e.gseq)), ...moved.flatMap((m) => m.page.messages)],
       ...(moved.length ? { reset: moved.map((m) => ({ chat_id: m.id, older: m.page.older ?? null })) } : {}),
       approvals: [...pendingApprovals(), ...closedCards(from)],
@@ -997,7 +1017,7 @@ export function mobileApi(ctx: MobileCtx) {
         const since = Math.max(0, Number(q.get("since")) || 0);
         // The chats whose shown branch changed since are read whole below: brought in off the loop first.
         if (since > 0) for (const id of mobile.branchesAfter(since)) await warmed(id);
-        return json(syncBody(since, parseHave(q.get("have"))));
+        return json(syncBody(since, parseHeld(q.get("held"))));
       }),
     },
     "/v1/events": { GET: signed((req, dev, _b, srv) => events(req, dev, srv)) },

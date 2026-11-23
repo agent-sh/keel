@@ -86,8 +86,11 @@ class Feed {
         return true
     }
 
-    /** What a reconnect says it holds: the marks of its rows (null: ask for every row). */
-    @Synchronized fun have(): String? = if (cursor == 0L) null else haveOf(chats.value.values)
+    /** What a reconnect says it holds: a digest per bucket of its rows (null: ask for every row). */
+    @Synchronized fun held(): String? = if (cursor == 0L) null else heldOf(chats.value.values)
+
+    /** A chat read here: no unread left, and its mark no longer the daemon's, so the next reconnect brings its row. */
+    @Synchronized fun read(chat: String) { chats.update { m -> m[chat]?.let { m + (chat to it.copy(unread = 0, h = "-")) } ?: m } }
 
     /** A stream closed: what waited for its catch-up is dropped with it; the next stream starts from the cursor. */
     @Synchronized fun closed() { catching = false; held.clear(); streamSyncs = false; broken = null }
@@ -127,13 +130,15 @@ class Feed {
         // "ahead" or "behind": the cursor cannot be caught up from. The answer is the whole state.
         val reload = o.str("reload").isNotBlank()
         val first = cursor == 0L || reload
-        o.optJSONArray("chats")?.let { a ->
-            val list = objs(a).map(Chat::of).associateBy { it.id }
-            chats.value = if (o.optBoolean("complete")) list else chats.value + list
-        }
-        // Rows the phone said it holds that are gone (an answer that sends only what changed).
-        o.optJSONArray("removed")?.let { a ->
-            val gone = (0 until a.length()).map { a.optString(it) }.toSet()
+        val list = o.optJSONArray("chats")?.let { a -> objs(a).map(Chat::of).associateBy { it.id } }
+        if (list != null) chats.value = if (o.optBoolean("complete")) list else chats.value + list
+        // An answer to what the phone said it holds: the buckets named are sent whole, so a row held in
+        // one of them that did not come is gone (deleted meanwhile).
+        o.optJSONObject("buckets")?.let { b ->
+            val n = b.optInt("n")
+            val of = b.optJSONArray("of")?.let { a -> (0 until a.length()).map { a.optInt(it) }.toSet() }.orEmpty()
+            val sent = list?.keys.orEmpty()
+            val gone = if (n > 0) chats.value.keys.filter { it !in sent && bucketOf(it, n) in of }.toSet() else emptySet()
             if (gone.isNotEmpty()) { chats.update { it - gone }; msgs.update { it - gone }; older.update { it - gone } }
         }
         if (reload) { msgs.value = emptyMap(); older.value = emptyMap(); epoch++ }

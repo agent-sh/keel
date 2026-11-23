@@ -17,7 +17,7 @@ import { ask, answer, askFor } from "../../tools/interact.ts";
 import wire from "./contract/wire.json";
 import { answersText, approvalMessage, canonicalMessage, sha256Hex } from "./sig.ts";
 import { MobileStore } from "./store.ts";
-import { mobileApi } from "./v1.ts";
+import { bucketOf, heldOf, mobileApi } from "./v1.ts";
 import { pushData, testMessage } from "./push.ts";
 import { liveData, liveStatus } from "./live.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
@@ -463,30 +463,58 @@ describe("working", () => {
 });
 
 describe("reconnect", () => {
-  test("a phone that says the rows it holds is sent only the ones that changed, and told which are gone", async () => {
+  test("a phone that says what it holds, by a digest per bucket of rows, is sent only the buckets that changed", async () => {
     const a = session("Kept A"), b = session("Kept B");
     // A phone that has synced something (a cursor of 0 is a whole read).
     store.append(b.id, "user", { text: "hello" });
     const whole = (await call("GET", "/v1/sync?since=0")).body;
-    const have = whole.chats.map((c: any) => `${c.id}:${c.h}`).join(",");
+    const rows = whole.chats.map((c: any) => ({ id: c.id, h: c.h }));
+    const n = Math.min(rows.length, 128);
+    const held = heldOf(rows, n);
     const at = whole.seq;
     // Nothing changed: no rows at all, where every row went before.
-    const before = (await call("GET", `/v1/sync?since=${at}`)).body, after = (await call("GET", `/v1/sync?since=${at}&have=${encodeURIComponent(have)}`)).body;
-    expect([before.complete, before.chats.length === whole.chats.length, after.complete, after.chats, after.removed]).toEqual([true, true, false, [], []]);
-    const rows = (x: any) => JSON.stringify(x.chats).length;
-    expect(rows(after)).toBeLessThan(rows(before) / 10);
-    // One renamed: that row alone; one the phone holds that is gone: named.
+    const before = (await call("GET", `/v1/sync?since=${at}`)).body, after = (await call("GET", `/v1/sync?since=${at}&held=${held}`)).body;
+    expect([before.complete, before.chats.length === whole.chats.length, after.complete, after.chats, after.buckets]).toEqual([true, true, false, [], { n, of: [] }]);
+    const size = (x: any) => JSON.stringify(x.chats).length;
+    expect(size(after)).toBeLessThan(size(before) / 10);
+    // One renamed: the rows of its bucket alone, the renamed one among them.
     store.updateSession(a.id, { title: "Kept A, renamed" });
-    const changed = (await call("GET", `/v1/sync?since=${at}&have=${encodeURIComponent(have + ",s-gone:00000000")}`)).body;
-    expect([changed.chats.map((c: any) => c.title), changed.removed]).toEqual([["Kept A, renamed"], ["s-gone"]]);
+    const changed = (await call("GET", `/v1/sync?since=${at}&held=${held}`)).body;
+    expect(changed.buckets).toEqual({ n, of: [bucketOf(a.id, n)] });
+    expect(changed.chats.map((c: any) => c.title)).toContain("Kept A, renamed");
+    expect(changed.chats.every((c: any) => bucketOf(c.id, n) === bucketOf(a.id, n))).toBe(true);
+    // A row the phone holds that is gone: its bucket is sent whole, without it (the phone drops it).
+    const gone = heldOf([...rows, { id: "s-gone", h: "00000000" }], n);
+    const dropped = (await call("GET", `/v1/sync?since=${at}&held=${gone}`)).body;
+    expect(dropped.buckets.of).toContain(bucketOf("s-gone", n));
+    expect(dropped.chats.some((c: any) => c.id === "s-gone")).toBe(false);
     // The stream's first hello does the same; a whole read sends every row whatever is said.
-    const st = await openStream(at, have);
+    const st = await openStream(at, held);
     try {
       await st.read((f) => f.length > 0);
-      expect(st.frames[0].sync.chats.map((c: any) => c.id)).toEqual([a.id]);
+      expect([st.frames[0].sync.chats.map((c: any) => c.id).sort(), st.frames[0].sync.buckets]).toEqual([changed.chats.map((c: any) => c.id).sort(), changed.buckets]);
     } finally { await st.close(); }
-    expect((await call("GET", `/v1/sync?since=0&have=${encodeURIComponent(have)}`)).body.complete).toBe(true);
-    void b;
+    expect((await call("GET", `/v1/sync?since=0&held=${held}`)).body.complete).toBe(true);
+    // A malformed digest is no digest: every row.
+    expect((await call("GET", `/v1/sync?since=${at}&held=zz`)).body.complete).toBe(true);
+  });
+
+  test("what a phone holding many rows says fits any request header limit on the way", async () => {
+    const many = Array.from({ length: 5000 }, (_, i) => ({ id: `01a207a7-14cd-7521-82a1-${String(i).padStart(12, "0")}`, h: "f81933b8" }));
+    const held = heldOf(many, Math.min(many.length, 128));
+    // Proxies commonly take 8 KB of request line and headers; the stream's whole line stays far under it.
+    expect(`GET /v1/events?since=123456789&held=${held} HTTP/1.1`.length).toBeLessThan(2048);
+    const srv = Bun.serve({ port: 0, fetch: (r) => new Response(String(new URL(r.url).searchParams.get("held")?.split(".").length)) });
+    try {
+      const r = await fetch(`http://127.0.0.1:${srv.port}/v1/events?since=5&held=${held}`);
+      expect([r.status, await r.text()]).toEqual([200, "128"]);
+    } finally { srv.stop(true); }
+  });
+
+  test("both sides make the same digests (the contract's example)", () => {
+    const ex = (wire as any).held;
+    expect(heldOf(ex.rows, ex.n)).toBe(ex.held);
+    expect(ex.rows.map((r: any) => bucketOf(r.id, ex.n))).toEqual(ex.buckets);
   });
 });
 
@@ -861,8 +889,8 @@ describe("run, usage and pulse", () => {
 });
 
 // The event stream as the app reads it: `read` pulls frames until `until` holds.
-async function openStream(since?: number, have?: string) {
-  const path = (since === undefined ? "/v1/events" : `/v1/events?since=${since}`) + (have ? `${since === undefined ? "?" : "&"}have=${encodeURIComponent(have)}` : "");
+async function openStream(since?: number, held?: string) {
+  const path = (since === undefined ? "/v1/events" : `/v1/events?since=${since}`) + (held ? `${since === undefined ? "?" : "&"}held=${held}` : "");
   const ts = String(Math.floor(Date.now() / 1000));
   const sig = sign("sha256", Buffer.from(`GET\n${path}\n${ts}\n${sha256Hex("")}`), { key: privateKey, dsaEncoding: "der" }).toString("base64");
   const req: any = new Request(`http://x${path}`, { headers: { authorization: `Bearer ${dev.token}`, "x-hm-ts": ts, "x-hm-sig": sig } });
@@ -1175,8 +1203,8 @@ describe("the wire contract", () => {
     // Catch-ups that say more than events: a branch that changed, a cursor that cannot be caught up from.
     take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}`)).body);
     take("sync", (await call("GET", `/v1/sync?since=${mobile.globalSeq() + 9}`)).body);
-    // A catch-up for a phone that said the rows it holds: what changed, and what is gone.
-    take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}&have=${encodeURIComponent("s-gone:00000000")}`)).body);
+    // A catch-up for a phone that said what it holds: the buckets that changed, sent whole.
+    take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}&held=${heldOf([{ id: "s-gone", h: "00000000" }], 1)}`)).body);
     running.delete(parent.id);
     store.db.query("DELETE FROM approvals WHERE id IN ('apr-held', 'apr-done')").run();
 

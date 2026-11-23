@@ -37,6 +37,16 @@ class ContractTest {
         }
     }
 
+    @Test fun theAppMakesTheDigestsTheDaemonMakes() {
+        val held = wire.getJSONObject("held")
+        val rows = held.getJSONArray("rows").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+            .map { Chat(it.getString("id"), "", "idle", 0.0, 0, false, false, "", "", null, h = it.getString("h")) }
+        val n = held.getInt("n")
+        assertEquals(held.getString("held"), heldOf(rows, n))
+        val buckets = held.getJSONArray("buckets")
+        assertEquals((0 until buckets.length()).map { buckets.getInt(it) }, rows.map { bucketOf(it.id, n) })
+    }
+
     /** Answers by question id as the card screen holds them: one label, or a list of them. */
     private fun answersOf(o: JSONObject): Map<String, Any> = o.keys().asSequence().associateWith { k ->
         o.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: o.getString(k)

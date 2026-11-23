@@ -3,6 +3,7 @@ package dev.avifenesh.keel
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,18 +33,35 @@ class FeedTest {
         assertEquals(10L, it.cursor)
     }
 
-    @Test fun aReconnectSaysTheRowsItHoldsAndTakesOnlyWhatChanged() {
+    @Test fun aReconnectSaysWhatItHoldsAndTakesOnlyTheBucketsThatChanged() {
         val f = Feed()
         // Level with two marked rows.
         f.sync(JSONObject().put("seq", 10).put("complete", true).put("chats", JSONArray(listOf(chat(1.0).put("h", "aaaa0001"), JSONObject().put("id", "c2").put("title", "Two").put("updated", 1.0).put("h", "bbbb0002")))))
-        assertEquals("c1:aaaa0001,c2:bbbb0002", f.have()!!.split(",").sorted().joinToString(","))
-        // The catch-up of a daemon that was told: one row changed, the other is gone; nothing else is touched.
-        f.sync(JSONObject().put("seq", 12).put("complete", false).put("chats", JSONArray(listOf(chat(2.0).put("title", "One, renamed").put("h", "aaaa0003")))).put("removed", JSONArray(listOf("c2"))))
+        // Two rows, two buckets: the digest of each, as the daemon makes it.
+        assertEquals(heldOf(f.chats.value.values, 2), f.held())
+        assertEquals(2, f.held()!!.split(".").size)
+        // The catch-up of a daemon that was told: one bucket changed, sent whole, and a row held there that
+        // did not come is gone; the other bucket is not touched.
+        val n = 1
+        f.sync(JSONObject().put("seq", 12).put("complete", false).put("chats", JSONArray(listOf(chat(2.0).put("title", "One, renamed").put("h", "aaaa0003"))))
+            .put("buckets", JSONObject().put("n", n).put("of", JSONArray(listOf(0)))))
         assertEquals(listOf("One, renamed"), f.chats.value.values.map { it.title })
+        // A chat read here is no longer level with the daemon's row: its digest changes, so the row comes again.
+        val before = f.held()
+        f.read("c1")
+        assertEquals(0, f.chats.value["c1"]!!.unread)
+        assertNotEquals(before, f.held())
         // A row the daemon never marked (an older daemon): every row is asked for.
         f.sync(JSONObject().put("seq", 13).put("complete", false).put("chats", JSONArray(listOf(JSONObject().put("id", "c3").put("title", "Old").put("updated", 3.0)))))
-        assertEquals(null, f.have())
-        assertEquals(null, Feed().have())
+        assertEquals(null, f.held())
+        assertEquals(null, Feed().held())
+    }
+
+    @Test fun whatAPhoneHoldingManyRowsSaysStaysSmall() {
+        val many = (0 until 5000).map { Chat("01a207a7-14cd-7521-82a1-%012d".format(it), "Row $it", "idle", 1.0, 0, false, false, "", "", null, h = "f81933b8") }
+        val held = heldOf(many)!!
+        assertEquals(HELD_BUCKETS, held.split(".").size)
+        assertTrue("the stream's request line stays far under a proxy's 8 KB: ${held.length}", "GET /v1/events?since=123456789&held=$held HTTP/1.1".length < 2048)
     }
 
     @Test fun aCardClosedWithoutAnAnswerOpensAgainWhenItIsPutBack() {

@@ -203,7 +203,7 @@ data class Chat(
     val agents: Int = 0,
     /** Its state in the workbench's own words ("Waiting for a timer"), when the daemon says it. */
     val stateWord: String = "",
-    /** The daemon's mark of this row's content: sent back with a reconnect, only rows that changed come. */
+    /** The daemon's mark of this row's content: a reconnect says what it holds by these, and only what changed comes. */
     val h: String = "",
 ) {
     companion object {
@@ -587,12 +587,35 @@ fun Chat.json(): JSONObject = JSONObject().put("id", id).put("title", title).put
     .put("pinned", if (pinned) 1 else 0).put("archived", if (archived) 1 else 0).put("preview", preview).put("last_role", lastRole)
     .put("parent_id", parentId ?: JSONObject.NULL).opt("failure", failure).put("created", created).put("agents", agents).opt("state_word", stateWord).opt("h", h)
 
+/** FNV-1a, 32 bits, over the UTF-8 bytes: the daemon's number for the same text (v1.ts fnv). */
+fun fnv(s: String): Long {
+    var h = 0x811c9dc5L
+    for (b in s.toByteArray(Charsets.UTF_8)) h = ((h xor (b.toLong() and 0xff)) * 0x01000193L) and 0xffffffffL
+    return h
+}
+
+/** The bucket a row goes in when the phone says what it holds in `n` buckets. */
+fun bucketOf(id: String, n: Int): Int = (fnv(id) % n).toInt()
+
 /**
- * The rows the phone holds, by the daemon's marks, as a reconnect sends them (`have`): only rows the
- * daemon marked (a daemon from before marks says none, and is asked for every row, as before).
+ * At most this many buckets: nine bytes each in the stream's query, about 1.2 KB, far under the 8 KB of
+ * request line and headers a proxy commonly takes, however many rows the phone holds.
  */
-fun haveOf(chats: Collection<Chat>): String? = chats.filter { it.h.isNotBlank() }.takeIf { it.isNotEmpty() && it.size == chats.size && it.size <= 400 }
-    ?.joinToString(",") { "${it.id}:${it.h}" }
+const val HELD_BUCKETS = 128
+
+/** What the phone holds in `n` buckets: per bucket the sum (mod 2^32) of its rows' `<id>:<mark>` hashes, as 8 hex digits, dot separated. */
+fun heldOf(chats: Collection<Chat>, n: Int): String {
+    val sums = LongArray(n)
+    for (c in chats) { val b = bucketOf(c.id, n); sums[b] = (sums[b] + fnv("${c.id}:${c.h}")) and 0xffffffffL }
+    return sums.joinToString(".") { "%08x".format(it) }
+}
+
+/**
+ * What a reconnect says it holds (`held`): only rows the daemon marked (a daemon from before marks says
+ * none, and is asked for every row, as before), about one row a bucket.
+ */
+fun heldOf(chats: Collection<Chat>): String? = chats.takeIf { it.isNotEmpty() && it.all { c -> c.h.isNotBlank() } }
+    ?.let { heldOf(it, minOf(it.size, HELD_BUCKETS)) }
 
 fun Attachment.json(): JSONObject = JSONObject().put("kind", kind).put("media", media).put("mime", mime).opt("file_name", fileName).apply { if (size > 0) put("size", size) }
 
@@ -797,6 +820,7 @@ data class Live(val working: Int, val needs: Int, val title: String, val body: S
         }
         /** The background check's read (GET /v1/pulse): the daemon's own status, else made from the pulse (a daemon from before). */
         fun of(p: Pulse): Live {
+            p.live?.let { return it }
             val chats = p.sessions.associate { it.id to Chat(it.id, it.title, "working", 0.0, 0, false, false, "", "", null) }
             return of(p.working, p.cards, chats)
         }
@@ -812,6 +836,8 @@ data class Pulse(
     val week: List<Double>, val cards: List<Card>, val sessions: List<PulseSession>,
     /** The sessions whose turns run, and since when (seconds). */
     val working: Map<String, Double> = emptyMap(),
+    /** The lasting notification's status as the daemon reads it (its "live" push's fields). */
+    val live: Live? = null,
 ) {
     companion object {
         fun of(o: JSONObject): Pulse {
@@ -820,7 +846,6 @@ data class Pulse(
                 tz = o.str("tz"), spendToday = if (o.isNull("spend_today")) null else o.optDouble("spend_today"),
                 unpricedToday = o.optInt("spend_today_unpriced"), runsToday = o.optInt("runs_today"), failuresToday = o.optInt("failures_today"),
                 week = o.optJSONArray("spend_7d")?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } }.orEmpty(),
-            p.live?.let { return it }
                 cards = objs("approvals").map(Card::of),
                 sessions = objs("live_sessions").map { s ->
                     val u = s.optJSONObject("usage") ?: JSONObject()
@@ -830,14 +855,13 @@ data class Pulse(
                     )
                 },
                 working = objs("working").associate { it.str("chat_id") to it.optDouble("since", 0.0) },
+                live = o.optJSONObject("live")?.let { l -> Live.of(PushMsg.of(l.keys().asSequence().associateWith { l.optString(it) })) },
             )
         }
     }
 }
 
 /** GET /v1/chats/:id/usage in a line: the model, the tokens in and out, the cached ones, the spend. */
-    /** The lasting notification's status as the daemon reads it (its "live" push's fields). */
-    val live: Live? = null,
 fun usageLine(o: JSONObject): String {
     val s = o.optJSONObject("session") ?: return "No usage yet"
     fun n(v: Long) = if (v >= 1_000_000) "%.1fM".format(v / 1e6) else if (v >= 1000) "%.1fk".format(v / 1e3) else "$v"
@@ -854,4 +878,3 @@ fun newestTs(held: List<Msg>): Double = held.maxOfOrNull { it.ts } ?: 0.0
  * made. That send is done, and the same words sent again are a new prompt.
  */
 fun sendArrived(held: List<Msg>, text: String, after: Double): Boolean = held.any { it.mine && it.content == text && it.ts > after }
-                live = o.optJSONObject("live")?.let { l -> Live.of(PushMsg.of(l.keys().asSequence().associateWith { l.optString(it) })) },

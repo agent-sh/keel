@@ -117,9 +117,9 @@ object Hub {
     }
 
     private suspend fun stream(opened: () -> Unit) = suspendCancellableCoroutine<Unit> { k ->
-        // With the marks of the rows held: the catch-up sends only the rows that changed.
-        val have = feed.have()?.let { "&have=${Wire.enc(it)}" }.orEmpty()
-        val req = Api.request("/v1/events?since=${feed.cursor}$have").header("Accept", "text/event-stream").build()
+        // With what the phone holds (a digest per bucket of rows): the catch-up sends only the buckets that changed.
+        val held = feed.held()?.let { "&held=$it" }.orEmpty()
+        val req = Api.request("/v1/events?since=${feed.cursor}$held").header("Accept", "text/event-stream").build()
         val src = EventSources.createFactory(Api.sse).newEventSource(req, object : EventSourceListener() {
             override fun onOpen(eventSource: EventSource, response: Response) { conn.value = Conn.LIVE; opened() }
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
@@ -166,7 +166,7 @@ object Hub {
         val asked = feed.generation(chat)
         feed.page(chat, Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150"), asked)
         runCatching { Api.post("/v1/chats/${Uri.encode(chat)}/read") }
-        chats.update { m -> m[chat]?.let { m + (chat to it.copy(unread = 0)) } ?: m }
+        feed.read(chat)
     }
 
     suspend fun loadOlder(chat: String) {
