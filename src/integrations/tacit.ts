@@ -57,6 +57,7 @@ import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
 import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
+import { afterAnswer, afterAsk, callTopics, freshYield, QUIET_AFTER, SAMPLE_EVERY, toolAsk, toolKind, type KindYield, type ToolAsk } from "./memory-yield.ts";
 
 // A call is known by its session and its id: ids are unique within a session only.
 const preKey = (session: string, call: string) => `${session}\0${call}`;
@@ -128,6 +129,13 @@ export function tacitToolCall(tool: string, args: any): { tool_name: string; too
   if (lower.startsWith("mcp__")) return { tool_name: tool, tool_input: args ?? {} };
   return null;
 }
+
+// The topics a session keeps as asked (memory-yield.ts callTopics): in a replay of two busy days
+// half the sessions had 1,114 or fewer, 95 in 100 had 10,170 or fewer, the longest 47,104. A session
+// past this many forgets them and asks about its next ones again: an ask more, never one less, and
+// a session holds about 70 KB of them at most. Few repeat: of the quiet kind's calls 97 in 100
+// had a topic the session had not asked yet.
+const TOPICS_KEPT = 2000;
 
 // Claude Code caps a hook's context at 10,000 characters; so does Keel, per
 // block: what a block cannot hold is owed, never dropped.
@@ -333,7 +341,12 @@ export class Tacit {
   private start = new Map<string, Running>();
   private done = new Set<string>(); // user events already answered
   // A tool call's hook, and whether its result is held for the answer.
-  private preTool = new Map<string, { call: Running; holds: Promise<boolean> }>(); // by preKey(session, call id)
+  // `light`: a call of a quiet kind, asked and not waited for (memory-yield.ts).
+  private preTool = new Map<string, { call: Running; holds: Promise<boolean>; light: boolean }>(); // by preKey(session, call id)
+  // How each kind of tool call has answered (memory-yield.ts), kept in memory_tool_yield; and the
+  // topics each session has asked about, by kind (its first call of a command or a folder is asked).
+  private kinds = new Map<string, KindYield>();
+  private kindsAsked = new SessionMap<Set<string>>(256);
   // A kind of call that did not answer in time is out until one does: its
   // calls are made and not waited for. `failing`: its calls end in an error.
   private out: Record<Kind, boolean> = { ask: false, tool: false };
@@ -395,12 +408,13 @@ export class Tacit {
     // call), and results not held for an answer that had not come (the call
     // changed nothing). `request_waits`: requests that waited for a read's
     // answer still on its way, and how long in all.
-    tools: { never_answered: 0, not_held: 0, request_waits: 0, request_wait_ms: 0 },
+    tools: { never_answered: 0, not_held: 0, request_waits: 0, request_wait_ms: 0, quiet_skipped: 0, quiet_asked: 0 },
   };
 
   // `speed`: every wait and deadline is divided by it. 1 in use; the unit
   // tests run the same rules against a stand-in in a fraction of the time.
-  constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit"), private speed = 1) {
+  // `yieldRules`: the counts of memory-yield.ts, smaller in the unit tests.
+  constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit"), private speed = 1, private yieldRules = { quietAfter: QUIET_AFTER, sampleEvery: SAMPLE_EVERY }) {
     this.bin = bin;
     this.meter = memoryMeter(store);
     void this.files;
@@ -414,14 +428,17 @@ export class Tacit {
     store.migrate(`CREATE TABLE IF NOT EXISTS memory_flags (session_id TEXT PRIMARY KEY, use_memory INTEGER NOT NULL DEFAULT 1, feed_memory INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS memory_owed (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, hook TEXT NOT NULL, line TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS memory_owed_session ON memory_owed(session_id, id);
-CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, checkpoint TEXT);`);
+CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, checkpoint TEXT);
+CREATE TABLE IF NOT EXISTS memory_tool_yield (kind TEXT PRIMARY KEY, quiet INTEGER NOT NULL, updated INTEGER NOT NULL);`);
+    for (const r of store.db.query<{ kind: string; quiet: number }, []>("SELECT kind, quiet FROM memory_tool_yield").all()) this.kinds.set(r.kind, { quiet: r.quiet, passed: 0 });
     if (!store.db.query<{ name: string }, []>("PRAGMA table_info(memory_owed)").all().some((c) => c.name === "answer")) store.db.exec("ALTER TABLE memory_owed ADD COLUMN answer INTEGER");
   }
 
   // `out`: the kinds of call the store is not answering in time right now;
   // `degraded`: the kinds a quarter of whose last calls were late.
   stats() {
-    return { ...this.metrics, out: { ...this.out }, degraded: { ask: this.degraded("ask"), tool: this.degraded("tool") } };
+    const quiet = [...this.kinds].filter(([, y]) => y.quiet >= this.yieldRules.quietAfter).map(([kind, y]) => ({ kind, quiet: y.quiet }));
+    return { ...this.metrics, out: { ...this.out }, degraded: { ask: this.degraded("ask"), tool: this.degraded("tool") }, quiet };
   }
 
   // A session's own switches; an agent with none of its own has its parent's.
@@ -1112,6 +1129,33 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     for (const n of names) for (const end of [".jsonl", ".mark"]) if (n.endsWith(end) && !this.store.session(n.slice(0, -end.length))) this.removeTranscript(n.slice(0, -end.length));
   }
 
+  // Whether a tool call is asked about, by how its kind has answered (memory-yield.ts).
+  private toolAskFor(session: string, input: { tool_name: string; tool_input: any }): { kind: string; ask: ToolAsk } {
+    const kind = toolKind(input);
+    const y = this.kinds.get(kind) ?? freshYield();
+    let asked = this.kindsAsked.get(session);
+    if (!asked) this.kindsAsked.set(session, (asked = new Set()));
+    const topics = callTopics(input);
+    const keys = topics.length ? topics.map((t) => `${kind} ${t}`) : [kind];
+    // The asked topics of a session stay below a bound: a session past it is asked about its next ones as new.
+    if (asked.size > TOPICS_KEPT) asked.clear();
+    const ask = toolAsk(y, keys.some((k) => !asked!.has(k)), namesStore(input), this.yieldRules.quietAfter, this.yieldRules.sampleEvery);
+    if (ask !== "skip") for (const k of keys) asked.add(k);
+    this.kinds.set(kind, afterAsk(y, ask));
+    return { kind, ask };
+  }
+  // What an asked call answered. Kept on disk when the kind changes state, and every 25 answers
+  // between: a restart goes on from about where it was, at one write in 25 calls.
+  private toolAnswered(kind: string, r: HookResult) {
+    if (r.outcome !== "hit" && r.outcome !== "empty") return; // the store did not answer: nothing learned
+    const was = this.kinds.get(kind) ?? freshYield();
+    const y = afterAnswer(was, r.outcome === "hit");
+    this.kinds.set(kind, y);
+    const q = this.yieldRules.quietAfter;
+    if (y.quiet === 0 ? was.quiet !== 0 : y.quiet === q || y.quiet % 25 === 0)
+      this.store.db.query("INSERT INTO memory_tool_yield (kind, quiet, updated) VALUES (?, ?, ?) ON CONFLICT(kind) DO UPDATE SET quiet = excluded.quiet, updated = excluded.updated").run(kind, y.quiet, Date.now());
+  }
+
   install() {
     const t = this;
     this.sweepTranscripts();
@@ -1244,15 +1288,21 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
           t.metrics.tools.never_answered++;
           return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
         }
+        // A kind of call the store has long had nothing for is asked only now and then, and then
+        // not waited for (memory-yield.ts).
+        const { kind, ask } = t.toolAskFor(s.id, input);
+        if (ask === "skip") return void t.metrics.tools.quiet_skipped++;
+        if (ask === "light") t.metrics.tools.quiet_asked++;
         // Whether the call changes something, where that is known now (a
         // dispatched MCP tool's server says so a moment later).
         const direct = input.tool_name.startsWith("mcp__") && !call.tool.target;
         const changes = direct ? !call.tool.readOnly : changesSomething(input);
         // Runs beside the tool; its answer joins the result, or the next request.
         const p = t.call(s, "pre-tool", input);
-        // Whether the result is held for the answer: only for a call that changes something.
-        const holds = call.tool.target ? call.tool.target(call.input, s.id).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
-        t.preTool.set(preKey(s.id, call.id), { call: p, holds });
+        p.done.then((r) => t.toolAnswered(kind, r), () => {});
+        // Whether the result is held for the answer: only for a call that changes something, of a kind asked in full.
+        const holds = ask === "light" ? Promise.resolve(false) : call.tool.target ? call.tool.target(call.input, s.id).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
+        t.preTool.set(preKey(s.id, call.id), { call: p, holds, light: ask === "light" });
       },
       async afterTool(s, call, result) {
         const entry = t.preTool.get(preKey(s.id, call.id));
@@ -1276,6 +1326,8 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         if (!p.got) {
           t.meter.record(s.id, "store_tool", { outcome: waits ? "timeout" : "late", waitMs: performance.now() - began });
           const owed = t.oweLater(s.id, "pre-tool", p);
+          // A quiet kind's call: what it answers joins a later request, and nothing waits for it.
+          if (entry.light) return;
           if (waits) {
             t.miss("tool", "pre-tool", s.id);
             if (t.out.tool) t.tell(s.id, "tool", "timeout");
@@ -1293,7 +1345,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
           return;
         }
         const got = p.got;
-        if (slow(got)) t.miss("tool", "pre-tool", s.id);
+        if (slow(got) && !entry.light) t.miss("tool", "pre-tool", s.id);
         t.tell(s.id, "tool", got.outcome);
         const shown = got.text ? t.shownIn(s.id, t.lineage(s.id)) : new Set<string>();
         const block = t.admit(s.id, "pre-tool", got, shown, performance.now() - began, { call: call.tool.name, ref: call.id });

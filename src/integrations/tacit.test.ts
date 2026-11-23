@@ -341,7 +341,7 @@ exit 0
 // the calls a prompt lists: "tools=1,r2,w3,g4" runs `touch kw1` (a command that
 // changes something), `echo kw2` (a read), then writes out/kw3.txt (in no
 // checkout) and repo/kw4.txt (in one).
-function memoryWorld(dir: string, bin: string) {
+function memoryWorld(dir: string, bin: string, rules?: { quietAfter: number; sampleEvery: number }) {
   const store = new Store(dir);
   const bus = new Bus();
   const captured: string[] = [];
@@ -384,7 +384,7 @@ function memoryWorld(dir: string, bin: string) {
   const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] } as any;
   mkdirSync(join(dir, "repo", ".git"), { recursive: true });
   const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
-  const tacit = new Tacit(store, bus, errors, bin, SPEED);
+  const tacit = new Tacit(store, bus, errors, bin, SPEED, rules);
   tacit.install();
   const session = () => {
     return store.createSession({ title: "Fixture", model: "p:m", workspace: dir }).id;
@@ -410,12 +410,12 @@ function memoryWorld(dir: string, bin: string) {
 const memoryError = (m: string) => m.includes("memory store");
 const until = async (what: () => boolean, ms = 15_000) => { const t = Date.now(); while (!what() && Date.now() - t < ms) await Bun.sleep(25); expect(what()).toBe(true); };
 const seq = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
-async function inWorld(name: string, run: (w: ReturnType<typeof memoryWorld>, st: ReturnType<typeof standIn>, dir: string) => Promise<void>) {
+async function inWorld(name: string, run: (w: ReturnType<typeof memoryWorld>, st: ReturnType<typeof standIn>, dir: string) => Promise<void>, rules?: { quietAfter: number; sampleEvery: number }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", `memory-${name}-`));
   const installed = allHooks().length;
   try {
     const st = standIn(dir);
-    await run(memoryWorld(dir, st.bin), st, dir);
+    await run(memoryWorld(dir, st.bin, rules), st, dir);
   } finally {
     allHooks().length = installed;
     rmSync(dir, { recursive: true, force: true });
@@ -1078,3 +1078,54 @@ test("a memory block goes only to the call it was asked for, and never to a prog
   await h.afterTool!(a, nested as any, out);
   expect(out.content).toBe('{"a":1}');
 }), 60_000);
+
+test("a kind of tool call the store has nothing for is asked only now and then, unwaited; one fact and it is asked in full again", () => inWorld("quiet", async (w, st, dir) => {
+  const s = w.session();
+  const asked = (id: string) => st.calls("pre-tool").filter((l) => l.includes(id)).length;
+  // Three shell commands answered with nothing: the kind is quiet.
+  for (let i = 0; i < 3; i++) await w.run(s, "touch plain");
+  expect(asked(s)).toBe(3);
+  // Then one call in two is asked, and the result of a change is not held for it.
+  for (let i = 0; i < 4; i++) await w.run(s, "touch plain");
+  expect(asked(s)).toBe(5);
+  expect(w.tacit.stats().tools).toMatchObject({ quiet_skipped: 2, quiet_asked: 2 });
+  await until(() => w.tacit.stats().quiet[0]?.quiet === 5);
+  expect(w.tacit.stats().quiet).toEqual([{ kind: "shell", quiet: 5 }]);
+  // The session's first call of another command is asked (a rule tied to `git push` comes with
+  // the first one), whatever the count; the same command again is not.
+  await w.run(s, "git push origin");
+  expect(asked(s)).toBe(6);
+  await w.run(s, "git push origin");
+  expect(asked(s)).toBe(6);
+  // A command that goes on in other words is another topic (a rule tied to `git push origin x` is
+  // not one tied to `git push origin main`): the first of each is asked.
+  await w.run(s, "git push origin main"); // the one call in two the count asks
+  expect(asked(s)).toBe(7);
+  await w.run(s, "git push origin x");
+  expect(asked(s)).toBe(8);
+  // A new session's first call of the kind is asked; so is a call that names the store.
+  const t = w.session();
+  await w.run(t, "touch plain");
+  expect(asked(t)).toBe(1);
+  await w.run(t, "touch plain");
+  await w.run(t, "tacit fact some-name");
+  expect(asked(t)).toBe(2);
+  // Another kind is asked in full, its own count.
+  await w.say(t, "edit tools=g5");
+  expect(w.names(w.last(t))).toContain("rule-kw5");
+  // The store starts answering the quiet kind: the next asked call gets its rule, a step later
+  // (nothing waited for it), and the kind is asked in full again.
+  let got = false;
+  for (let i = 0; i < 3 && !got; i++) { await w.run(t, `touch kw9`); await w.say(t, "next"); got = w.names(w.last(t)).includes("rule-kw9"); }
+  expect(got).toBe(true);
+  await until(() => !w.tacit.stats().quiet.length);
+  const before = asked(t);
+  await w.run(t, "touch plain");
+  await w.run(t, "touch plain");
+  expect(asked(t)).toBe(before + 2);
+  // How each kind answered is kept: a daemon that starts again goes on from it.
+  await w.run(t, "touch plain");
+  const again = new Tacit(w.store, w.bus, { capture: () => ({}) } as any, st.bin, SPEED, { quietAfter: 3, sampleEvery: 2 });
+  expect(again.stats().quiet).toEqual([{ kind: "shell", quiet: 3 }]);
+  void dir;
+}, { quietAfter: 3, sampleEvery: 2 }), 120_000);

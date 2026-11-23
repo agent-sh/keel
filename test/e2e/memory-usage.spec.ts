@@ -128,7 +128,7 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   const after = await prompts();
   expect(after).toMatchObject({ asked: 6, timeouts: 2 });
   // The report also says how the store answers right now: not out any more, and not often late.
-  expect((await (await request.get("/api/telemetry/memory")).json()).store).toEqual({ out: { ask: false, tool: false }, degraded: { ask: false, tool: false } });
+  expect((await (await request.get("/api/telemetry/memory")).json()).store).toMatchObject({ out: { ask: false, tool: false }, degraded: { ask: false, tool: false } });
   expect(after.wait_ms - held.wait_ms).toBeLessThan(500);
 
   await page.goto(`/s/${session.id}`);
