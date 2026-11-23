@@ -276,11 +276,11 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
       <Popover.Trigger
         data-testid="context-meter"
         title={`${usedText} in context; ${windowText}`}
-        className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted tabular-nums hover:bg-hover hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="k-ctx-meter inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted tabular-nums hover:bg-hover hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <Ring share={fill} />
         {/* As wide for "<1%" as for "88%": the tools beside it do not move as it fills. */}
-        <span className="min-w-[1.75rem] text-left">{!window_ ? fmtTokens(used) : `${fill < 0.01 && used ? "<1" : Math.round(fill * 100)}%${model?.context_assumed ? "?" : ""}`}</span>
+        <span className="k-ctx-num min-w-[1.75rem] text-left">{!window_ ? fmtTokens(used) : `${fill < 0.01 && used ? "<1" : Math.round(fill * 100)}%${model?.context_assumed ? "?" : ""}`}</span>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="end" sideOffset={8} className="z-50">
@@ -426,9 +426,10 @@ export const EffortPicker = memo(function EffortPicker({ sessionId }: { sessionI
       <Menu.Trigger
         data-testid="effort-picker"
         title="Reasoning effort (applies from the next turn)"
-        className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-ui text-muted hover:bg-hover hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent/40 data-popup-open:bg-hover"
+        aria-label={`Effort: ${cur}`}
+        className="k-effort-pick inline-flex h-7 items-center gap-1 rounded-lg px-2 text-ui text-muted hover:bg-hover hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent/40 data-popup-open:bg-hover"
       >
-        <Gauge className="size-3.5" /> {cur} <ChevronDown className="size-3 opacity-60" />
+        <Gauge className="size-3.5" /> <span className="k-effort-name">{cur}</span> <ChevronDown className="k-effort-chev size-3 opacity-60" />
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="top" align="start" sideOffset={6} className="z-50 outline-none">

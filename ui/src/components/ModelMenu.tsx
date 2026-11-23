@@ -70,6 +70,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   );
   const count = useMemo(() => countLabel(query, all, groups), [query, all, groups]);
   const selected = byId.get(value) ?? null;
+  const shown = selected ? (all.some((o) => o.label === selected.label && o.value !== selected.value) ? `${selected.label} · ${selected.providerLabel}` : selected.label) : undefined;
 
   // Favorites and hidden models are this daemon's own choices: a peer's
   // listing offers no pin or hide (they would land here, not there).
@@ -130,8 +131,10 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
       isItemEqualToValue={(a: Item, b: Item) => a.value === b.value}
       itemToStringLabel={(i: Item) => i.label}
     >
-      <Combobox.Trigger data-testid="model-picker" className={triggerClass(compact)}>
-        <TriggerLabel label={selected ? (all.some((o) => o.label === selected.label && o.value !== selected.value) ? `${selected.label} · ${selected.providerLabel}` : selected.label) : undefined} any={all.length > 0} value={value} placeholder={placeholder} />
+      {/* (Named for a screen reader: a combobox is not named by what it shows, and a phone's row
+          shows only its mark while a turn runs.) */}
+      <Combobox.Trigger data-testid="model-picker" className={triggerClass(compact)} aria-label={`Model: ${shown ?? (value || placeholder || "none chosen")}`}>
+        <TriggerLabel label={shown} any={all.length > 0} value={value} placeholder={placeholder} />
       </Combobox.Trigger>
       <Combobox.Portal>
         <Combobox.Positioner align="start" sideOffset={6} className={cn("z-50 outline-none", SHEET.place)}>

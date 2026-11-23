@@ -1023,7 +1023,7 @@ const SessionComposer = memo(function SessionComposer({
       {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
       {short && status}
       <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && busy) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
-        <div className={short ? "-my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
+        <div className={short ? "k-compose-scroll -my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
           <span className={cn("k-compose-lead flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
             <button
               type="button"
@@ -1045,7 +1045,7 @@ const SessionComposer = memo(function SessionComposer({
           {short && !narrow && sid && <Pickers.Meter sessionId={sid} />}
           {!short && status}
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <div className="k-compose-send ml-auto flex shrink-0 items-center gap-1.5">
           {/* On a phone the ring stands with Send, out of what scrolls. */}
           {(!short || narrow) && sid && <Pickers.Meter sessionId={sid} />}
           {busy && onQueue && (

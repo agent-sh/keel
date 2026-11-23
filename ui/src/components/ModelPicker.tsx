@@ -1,4 +1,4 @@
-import { ChevronsUpDown } from "lucide-react";
+import { Cpu, ChevronsUpDown } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState, memo } from "react";
 import { useStore, ensureModels, reportError } from "../lib/store.ts";
 import { usePeerModels } from "../lib/peer-models.ts";
@@ -24,9 +24,11 @@ export function TriggerLabel({ label, any, value, placeholder }: { label?: strin
   const text = label ?? (value ? value : placeholder ?? (any ? "Choose a model" : loaded ? "No models" : "Loading models"));
   return (
     <>
+      {/* (The mark stands for the name where a phone's row has no room for it: bridge.css.) */}
+      <Cpu className="k-model-mark hidden size-3.5 shrink-0" aria-hidden />
       <span className="k-model-name max-w-40 truncate sm:max-w-56" title={missing ? `${value} is not in the current listing` : undefined}>{text}</span>
       {missing && <span className="shrink-0 text-micro text-warn" data-testid="model-unlisted">not in current listing</span>}
-      <ChevronsUpDown className="size-3.5 shrink-0 opacity-60" />
+      <ChevronsUpDown className="k-model-chev size-3.5 shrink-0 opacity-60" />
     </>
   );
 }
@@ -47,7 +49,7 @@ export const ModelPicker = memo(function ModelPicker(props: { value: string; onC
   return (
     <Suspense
       fallback={
-        <button type="button" data-testid="model-picker" className={triggerClass(props.compact)} onClick={() => setClicked((n) => n + 1)}>
+        <button type="button" data-testid="model-picker" className={triggerClass(props.compact)} aria-label={`Model: ${label ?? (props.value || props.placeholder || "none chosen")}`} onClick={() => setClicked((n) => n + 1)}>
           <TriggerLabel label={label} any={any} value={props.value} placeholder={props.placeholder} />
         </button>
       }

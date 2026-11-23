@@ -102,9 +102,18 @@ test.describe("on a phone", () => {
       expect(hint).toMatch(/Send steers/);
       // With Stop, the queue button and Send on the right, the effort and the context ring are still whole.
       for (const id of ["effort-picker", "context-meter", "stop", "queue-button", "send"]) await expect(pane.getByTestId(id)).toBeInViewport({ ratio: 1 });
-      // The model cannot change under a running turn: it stands last on the left, after the effort.
-      expect(await pane.getByTestId("effort-picker").evaluate((el) => el.getBoundingClientRect().left)).toBeLessThan(await pane.getByTestId("model-picker").evaluate((el) => el.getBoundingClientRect().left));
+      // A model change is taken by the running turn too, so the picker stays a tap away: its mark alone,
+      // whole in the row (its name showed as its first letters under the row's fade), named for a
+      // screen reader, and it opens the menu.
+      const pick = pane.getByTestId("model-picker");
+      await expect(pick).toBeInViewport({ ratio: 1 });
+      await expect(pick.locator(".k-model-name")).toHaveCSS("position", "absolute");
+      await expect(pick).toHaveAccessibleName(/^Model: .*stand-in/i);
       await shoot(page, "phone-03-working");
+      await pick.tap();
+      await expect(page.getByTestId("model-popup")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("model-popup")).toBeHidden();
       writeFileSync(gate, "");
       await expect.poll(turns, { timeout: 60_000 }).toBe(3);
     } finally { await request.delete(`/api/sessions/${session.id}`); }
