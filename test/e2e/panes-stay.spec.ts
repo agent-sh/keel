@@ -606,11 +606,17 @@ test("Escape goes back in a look and never stops the pane's own turn right after
   await expect(shiftKey).toBeVisible();
   await expect(shiftKey).toHaveText("ShiftEsc");
   await shoot(page, "panes-stay-18-bar-names-shift-esc");
+  // Once Allow once has the keyboard (the card's own key line says "Esc to deny with a reason"), Escape
+  // begins the denial and Escape again leaves it: the look stays through both, and the request waits.
+  const allow = card.getByTestId("allow-once");
+  await expect(allow).toBeFocused({ timeout: 5000 });
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 5000 });
   await page.keyboard.press("Escape");
   await expect(slot(page, 0)).toHaveAttribute("data-station", run);
-  await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
+  await expect(card.getByTestId("deny-reason")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(slot(page, 0)).toHaveAttribute("data-station", run);
+  await expect(allow).toBeFocused();
   expect(await waiting(request, run)).toBe(1);
   // From the look's message box Escape goes back, and the bar says so.
   await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").click();

@@ -703,18 +703,21 @@ test("an early Enter opens nothing, and Enter alone never both opens and allows 
         await request.post(`/api/sessions/${s.id}/messages`, { data: { text: `script:calls ${JSON.stringify([call])}` } });
         await schedule(s.id, `${name}, arriving`, ms);
       }
-      // Enter every 150 ms from the load. A text that is marked or shown in part stays pending however
-      // long that goes on (3.3 s here). A plain long command is opened by the first Enter after the
-      // settle time, and its Allow takes the keyboard only once its text has stood open for the
-      // settle time too: by the page's own clock nothing is allowed 1.6 s after the keyboard came.
+      // Enter every 150 ms from the load: each press comes sooner than a key's settle time after the
+      // one before was refused (lib/asks.ts), so a hand that hammers Enter as the card comes neither
+      // opens nor allows anything, however long that goes on (1.6 s for a plain long command, 3.3 s
+      // for a text that is marked or shown in part).
       const plain = name === "thirteen lines";
       await page.goto(`/s/${loaded.id}`);
       await expect(card).toBeVisible();
       const since = () => page.evaluate(() => { const r = (window as unknown as { __r: Clock }).__r; return r.came ? performance.now() - r.came : 0; });
       while ((await since()) < (plain ? 1600 : 3300)) { await page.keyboard.press("Enter"); await page.waitForTimeout(150); }
       expect(await states(request, loaded.id), `${name}, Enter every 150 ms`).toBe("pending");
+      await expect(card).toHaveAttribute("data-must-open", "true");
       if (plain) continue;
-      // What it takes: the text opened, then Down to the answer, then Enter. The card says so.
+      // What it takes: an Enter after a pause opens the text, then Down to the answer, then Enter. The card says so.
+      await expect(list).toHaveAttribute("data-keys", "ready");
+      await page.keyboard.press("Enter");
       await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
       await list.focus();
       await expect(card.getByTestId("approval-arming")).toHaveText(/: Down, then Enter allows once$/);
@@ -872,7 +875,7 @@ test("the region stays where a long text was read when the card's own words chan
 // underneath. The keyboard lands on the list of requests, never on an answer; a key pressed on
 // the way in answers nothing; once the keyboard has been there for the settle time the Allow
 // once of a request that is whole, read and asks for no second look takes it, and Enter allows.
-test("every way to a waiting session lands the keyboard on its list, then on Allow once after the settle time", async ({ page, request }) => {
+test("every way to a waiting session lands the keyboard on its list, then on Allow once after a key's settle time", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   test.setTimeout(240_000);
   // The page keeps what took the keyboard, and when: the list of requests, a card, an answer.
@@ -914,7 +917,8 @@ test("every way to a waiting session lands the keyboard on its list, then on All
     expect(log[0]!.on, way).toBe("approvals");
     if (view) expect(log[0]!.view, way).toBe(view);
     const answer = log.find((x) => x.on.startsWith("allow"))!;
-    expect(answer.at - log[0]!.at, `${way}: when its Allow took the keyboard`).toBeGreaterThanOrEqual(950);
+    // (A key's settle time from the paint of the arrival, lib/approvals.ts: KEY_MS, less the frame before that paint.)
+    expect(answer.at - log[0]!.at, `${way}: when its Allow took the keyboard`).toBeGreaterThanOrEqual(280);
     expect(await states(request, id), `${way}: an Enter on the way in`).toBe("pending");
     await expect(card).toHaveAttribute("data-live", "true", { timeout: 8000 });
     await page.keyboard.press("Enter");

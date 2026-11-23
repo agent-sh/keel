@@ -2,12 +2,12 @@ import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
-import { batches, batchName, coverName, hold, nextAction, paintedReader, pressable, readOnSteps, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
+import { batches, batchName, coverName, hold, keyPressable, KEY_MS, nextAction, paintedReader, pressable, readOnSteps, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
 import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
-import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, pageFocus, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, keyTried, keysArrived, keysSettled, mayTake, noteAnswer, pageFocus, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
@@ -44,8 +44,10 @@ const EMPTY: Approval[] = [];
 //   `tall`: the card is taller than the region (it cannot be seen whole, so it is scrolled through).
 // - `acts`: each "allow all" action, by tool: what it covers and whether it can be pressed.
 type Unseen = { n: number; out: number; begun: boolean; total: number; long: boolean; tall: boolean };
-type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; key: string };
-const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), key: "" };
+// - `keyLive`, `keyUnseen`: the same for a key press (lib/approvals.ts, KEY_MS): its Allow once stood
+//   whole and still that long, and the lines of its text not yet in view for that long.
+type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; keyLive: Set<string>; keyUnseen: Map<string, number>; key: string };
+const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), keyLive: new Set(), keyUnseen: new Map(), key: "" };
 // The text a card shows of a request (its summary and, for an edit, what the edit writes:
 // `body`), and what in it a reader could miss, read once for each request:
 // - `hidden`: characters that do not show as written (they are spelled out and marked);
@@ -161,7 +163,7 @@ function rowsInView(pre: HTMLElement, c: Clip): { total: number; line: number; v
 function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) {
   const [view, setView] = useState(NO_VIEW);
   const st = useRef({
-    cards, seen: new Map<string, Reading>(), lines: new Map<string, Lines>(), tall: new Set<string>(), acts: new Map<string, Action>(), hot: new Set<string>(), spent: new Set<string>(), view: NO_VIEW,
+    cards, seen: new Map<string, Reading>(), lines: new Map<string, Lines>(), quick: new Map<string, Lines>(), tall: new Set<string>(), acts: new Map<string, Action>(), hot: new Set<string>(), spent: new Set<string>(), view: NO_VIEW,
     reader: null as PaintedReader | null, // takes the readings after a paint (lib/approvals.ts)
     sig: "",          // the region's frame at the last reading
     top: 0,           // how far it was scrolled then, and at the last timed reading
@@ -213,7 +215,11 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
         el.toggleAttribute("data-foot", tall && (el.hasAttribute("data-foot") || (!!words && words.bottom > f.shown.bottom + 1 && words.top < f.shown.bottom)));
         const text = sum ? clipUnder(sum, foot, f.text) : f.text;
         // The view moved by the owner's own scroll when their hand came first and nothing in the list changed.
-        if (sum) s.lines.set(id, sawLines(s.lines.get(id), { ...rowsInView(sum, text), painted }, s.input && !listChanged, now));
+        if (sum) {
+          const rows = { ...rowsInView(sum, text), painted }, own = s.input && !listChanged;
+          s.lines.set(id, sawLines(s.lines.get(id), rows, own, now));
+          s.quick.set(id, sawLines(s.quick.get(id), rows, own, now, KEY_MS));
+        }
         seen.set(id, {
           born: was?.born ?? now,
           sum: sum ? stand(was?.sum, seenAt(sum, text, true).at, now) : undefined,
@@ -231,10 +237,12 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     s.seen = seen;
     // What was read of a text is kept while its request waits, also over a time the page was hidden
     // (where nothing shows and nothing more is read).
-    for (const [id, l] of s.lines) {
-      if (!s.cards.some((c) => c.id === id)) s.lines.delete(id);
-      else if (!f) s.lines.set(id, { ...l, view: null, since: now });
+    for (const kept of [s.lines, s.quick]) for (const [id, l] of kept) {
+      if (!s.cards.some((c) => c.id === id)) kept.delete(id);
+      else if (!f) kept.set(id, { ...l, view: null, since: now });
     }
+    const keyLive = new Set<string>(), keyUnseen = new Map<string, number>();
+    for (const [id, l] of s.quick) keyUnseen.set(id, unseenLines(l).n);
     const read = new Set<string>(), live = new Set<string>(), grant = new Set<string>(), ripe = new Set<string>(), cut = new Set<string>(), unseen = new Map<string, Unseen>();
     const room = f ? f.shown.bottom - f.shown.top : 0;
     for (const [id, l] of s.lines) unseen.set(id, { ...unseenLines(l), total: l.total, long: room > 0 && l.total * l.line > 3 * room, tall: s.tall.has(id) });
@@ -242,6 +250,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
       const old = now - r.born >= SETTLE_MS;
       if (settled(r.sum, now)) read.add(id);
       if (pressable(r.once, old, s.scrolling, now)) live.add(id);
+      if (now - r.born >= KEY_MS && keyPressable(r.once, s.scrolling, now)) keyLive.add(id);
       if (pressable(r.always, old, s.scrolling, now)) grant.add(id);
       if (old) ripe.add(id);
       if (r.cut) cut.add(id);
@@ -253,8 +262,8 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     const alone = new Set([...cut, ...s.cards.filter((c) => shownOf(c).flagged).map((c) => c.id)]);
     for (const g of batches(s.cards, read, alone)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
     s.acts = acts;
-    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun, u.total, u.long, u.tall]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
-    if (key !== s.view.key) setView((s.view = { read, live, grant, ripe, cut, unseen, acts, key }));
+    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...keyLive], [...keyUnseen], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun, u.total, u.long, u.tall]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
+    if (key !== s.view.key) setView((s.view = { read, live, grant, ripe, cut, unseen, acts, keyLive, keyUnseen, key }));
     return s.view;
   }, [list]);
   const any = cards.length > 0;
@@ -435,6 +444,8 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
       // (The owner's own move on the list: the settle time runs anew, and the card's Allow may take
       // the keyboard after it once the text is read, where the card lets it.)
       if (!e.repeat && !e.shiftKey && shut[0] && !keyRefused(e.currentTarget)) { e.preventDefault(); setWhole(shut[0].id, true); takeKeys(e.currentTarget, true); }
+      // (An Enter the list has nothing to do with was meant for an answer: a key refused, lib/asks.ts.)
+      else if (!e.repeat && !shut[0]) keyTried(e.currentTarget);
       return;
     }
     // Reading on through a long text by keys, while some of it was never in view: End reads to the
@@ -597,6 +608,10 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               grant={view.grant.has(a.id)}
               // Read again as it is pressed: it acts where it has stood, for a text whose every line has been in view.
               armed={(which) => { const v = tick(); return v[which].has(a.id) && v.unseen.get(a.id)?.n === 0; }}
+              keyLive={view.keyLive.has(a.id)}
+              keyUnseen={view.keyUnseen.get(a.id)}
+              // The same for a key press: the Allow stood still for KEY_MS, and every line stood in view that long.
+              armedKey={() => { const v = tick(); return v.keyLive.has(a.id) && v.keyUnseen.get(a.id) === 0; }}
               read={tick}
               cut={view.cut.has(a.id)}
               unseen={view.unseen.get(a.id)}
@@ -779,9 +794,10 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card now.
 // `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
 // itself, or on the list. `touch`: the pointer is a finger.
-function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, whole, onWhole, enterOpens, keysOn, touch }: {
+function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, keyLive, keyUnseen, armedKey, whole, onWhole, enterOpens, keysOn, touch }: {
   a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
   hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; read: () => unknown; cut: boolean; unseen?: Unseen;
+  keyLive: boolean; keyUnseen?: number; armedKey: () => boolean;
   whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list"; touch: boolean;
 }) {
   const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
@@ -838,6 +854,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const tapSays = onlyMarks ? `Tap to show the marked character${marks === 1 ? "" : "s"}` : `Tap to open the whole ${thing}`;
   const unread = useRef(mustOpen);
   unread.current = mustOpen;
+  // The same for what a key may do (KEY_MS, lib/approvals.ts): every line stood in view that long.
+  const mustOpenKey = keyUnseen === undefined || keyUnseen > 0 || shut;
+  const unreadKey = useRef(mustOpenKey);
+  unreadKey.current = mustOpenKey;
+  const heldDown = useRef(false); // the last press on Allow once went down where it held the keyboard, ready
   const toList = () => list.current?.focus({ preventScroll: true });
   // Whether the card is in the window: a page of a phone's track that is not the one shown takes no keyboard.
   const inView = () => { const r = root.current?.getBoundingClientRect(); return !!r && r.width > 0 && r.right > 0 && r.left < innerWidth; };
@@ -854,13 +875,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   //   settle time: `stood`), then the keyboard's for a press made by a key (lib/asks.ts: not
   //   within the settle time of the keyboard arriving by code, not under a dialog).
   const heldWhy = a.risk === "high" ? "High risk" : part ? "Shown in part" : marked ? "Marked characters" : shown.alike.length ? "Not plain ASCII" : shown.rtl ? "Right-to-left letters" : "";
-  const mayHold = () => !unread.current && inView() && !heldWhy;
+  const mayHold = () => !unreadKey.current && inView() && !heldWhy;
   const refusalOf = (stood: boolean, key: Element | null): string => {
     // Not read: the text is to be opened first, or so many of its lines have not been in view.
     // (Said on the card from then on, where its text is all out of view and it said nothing by itself.)
+    // A key is judged by its own times (KEY_MS): what stood in view that long, a control that stood that long.
+    if (key) {
+      if (unreadKey.current) { refused(); keyTried(key); return shut ? openFirst : notYet; }
+      if (!armedKey()) { keyTried(key); return notYet; }
+      return keyRefused(key);
+    }
     if (unread.current) { refused(); return shut ? openFirst : notYet; }
     if (!stood) return notYet;
-    return key ? keyRefused(key) : "";
+    return "";
   };
   // Where the keyboard goes (lib/asks.ts): code brings it to the list of requests or to the
   // card, never to an answer, and the card's Allow once takes it after the settle time,
@@ -939,11 +966,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     // A card that is not read keeps the keyboard on the list and is asked again once it is (this
     // runs again as that changes): its text opened and its lines seen, its Allow takes the keyboard.
     if (!mayHold()) { if (!unread.current) moved.current = hold.at; return; }
-    if (!live && onceInRegion()) return;
+    if (!keyLive && onceInRegion()) return;
     moved.current = hold.at;
-    // (An arrival of its own: Enter allows only after the settle time from now, lib/asks.ts.)
+    // (An arrival of its own: Enter allows only after a key's settle time from its paint, lib/asks.ts.)
     pageFocus(once.current);
-  }, [hold.keys, hold.take, hold.at, live, mustOpen]);
+  }, [hold.keys, hold.take, hold.at, keyLive, mustOpenKey]);
   // The marked characters of a text opened for them are brought into view.
   useEffect(() => {
     if (whole && marked) root.current?.querySelector('[data-testid="hidden-char"]')?.scrollIntoView({ block: "nearest" });
@@ -969,11 +996,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     const at = document.activeElement as HTMLElement | null;
     if (!at || !root.current?.contains(at)) return;
     const onAnswer = at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always";
-    if (!((shut && at === root.current) || (mustOpen && onAnswer))) return;
+    if (!((shut && at === root.current) || (mustOpenKey && onAnswer))) return;
     moved.current = 0;
     if (shut || first) toList();
     else root.current.focus({ preventScroll: true });
-  }, [mustOpen, shut]);
+  }, [mustOpenKey, shut]);
   const held = useHandBack(root, list);
   // Leaving the reason (Esc, Back) puts the keyboard where the card's own rule would: on
   // Allow once for a card that is whole and read, so Enter answers again, and on the list
@@ -1004,7 +1031,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const longLine = !unseen?.long ? "" : mustOpen ? `Long ${thing}: ${count(unseen.total)}. Deny, or scroll through to allow.` : `Long ${thing}: ${count(unseen.total)}, all seen.`;
   // What the hint line may say (see where it is drawn): `ready` exactly when Enter on its Allow
   // would answer; `arming` while the page is about to make that so, or how to get there.
-  const ready = keysOn === "once" && live && !mustOpen && hold.keys === "ready";
+  const ready = keysOn === "once" && keyLive && !mustOpenKey && hold.keys === "ready";
   const coming = keysOn === "card" || (keysOn === "list" && first);
   const heldLine = heldWhy ? `${heldWhy}: Down, then Enter allows once` : "";
   const arming = ready || shut || left > 0 ? ""
@@ -1024,8 +1051,9 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const armingNow = arming === ARMING;
   const armFrom = useRef<{ at: number; from: number } | null>(null);
   if (!armingNow) armFrom.current = null;
-  else if (!armFrom.current || armFrom.current.at !== hold.at) armFrom.current = { at: hold.at, from: performance.now() };
-  const armFor = armingNow ? Math.round(Math.max(200, Math.min(SETTLE_MS, (hold.at || armFrom.current!.from) + SETTLE_MS - armFrom.current!.from))) : 0;
+  else if (!armFrom.current || armFrom.current.at !== hold.at + hold.key) armFrom.current = { at: hold.at + hold.key, from: performance.now() };
+  // (A key's settle time, KEY_MS, from the arrival's paint: about a frame after the arrival.)
+  const armFor = armingNow ? Math.round(Math.max(120, Math.min(KEY_MS + 34, (Math.max(hold.at, hold.key) || armFrom.current!.from) + KEY_MS + 34 - armFrom.current!.from))) : 0;
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);
     // (The grant's popup is the card's own, drawn outside it: an answer given there held the keyboard too.)
@@ -1181,7 +1209,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         if (denying || closed || (e.target as HTMLElement).tagName === "INPUT") return;
         // (Not an Escape pressed as the keyboard arrived: it was meant for where the keyboard was.)
         // (Shift Escape is not the card's: in a look it leads back, lib/builtins.ts.)
-        if (e.key === "Escape" && !e.shiftKey && keysSettled(e.currentTarget)) { e.preventDefault(); setDenying(true); }
+        // (A key refused just before does not hold it: Escape opens the reason and answers nothing.)
+        if (e.key === "Escape" && !e.shiftKey && keysArrived(e.currentTarget)) { e.preventDefault(); setDenying(true); }
       }}
     >
       {dense ? (
@@ -1268,17 +1297,27 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           <button
             ref={once}
             disabled={busy}
-            aria-disabled={!live || mustOpen || undefined}
+            // (With the keyboard on it, a key's times decide; else a pointer's.)
+            aria-disabled={(keysOn === "once" ? !keyLive || mustOpenKey : !live || mustOpen) || undefined}
             data-nudge={nudge.mark}
             // The read-first latch is arming: Enter allows once in a moment (a line fills under the label meanwhile).
             data-arming={armingNow ? "" : undefined}
             data-ready={ready || undefined}
             data-testid="allow-once"
             data-stop={shut ? undefined : "card"}
-            onPointerDown={pressed.onPointerDown}
+            onPointerDown={(e) => {
+              // Pressed where it already held the keyboard, ready for a key (it says "Enter allows once"):
+              // the press is judged as a key's is (lib/approvals.ts, KEY_MS). It stood whole and still that
+              // long, and the card shows it is ready; the press began with it there. Anywhere else a
+              // pointer's press waits for the settle time of the control under it.
+              heldDown.current = e.currentTarget === document.activeElement && !unreadKey.current && armedKey() && keysSettled(e.currentTarget);
+              pressed.onPointerDown();
+            }}
             onMouseDown={pressed.onMouseDown}
             onClick={(e) => {
-              const why = refusalOf(pressed.said(e), e.detail === 0 ? e.currentTarget : null);
+              const key = e.detail === 0 || heldDown.current;
+              heldDown.current = false;
+              const why = refusalOf(key ? false : pressed.said(e), key ? e.currentTarget : null);
               if (why) nudge.refuse(why, e.currentTarget);
               else answer({ choice: "once" });
             }}
@@ -1290,7 +1329,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           >
             Allow once
             {/* (Drawn anew with each arrival of the keyboard, so it fills for that arrival's settle time.) */}
-            {armingNow && <span key={hold.at} className="k-arm" aria-hidden="true" data-testid="allow-arming" style={{ "--k-arm": `${armFor}ms` } as CSSProperties} />}
+            {armingNow && <span key={hold.at + hold.key} className="k-arm" aria-hidden="true" data-testid="allow-arming" style={{ "--k-arm": `${armFor}ms` } as CSSProperties} />}
           </button>
           {nudge.line}
           {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}

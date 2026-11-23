@@ -1,7 +1,7 @@
 import { ClipboardList, Pencil } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
-import { paintedReader, readOnSteps, sawLines, SETTLE_MS, unseenLines, type Lines, type PaintedReader } from "../lib/approvals.ts";
+import { KEY_MS, paintedReader, readOnSteps, sawLines, SETTLE_MS, unseenLines, type Lines, type PaintedReader } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, noteAnswer, pageFocus, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { setOpenPlans } from "../lib/plans.ts";
@@ -83,6 +83,9 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const hold = useHold(root);
   const [at, setAt] = useState<"" | "text" | "approve">(""); // where in the card the keyboard is
   const [read, setRead] = useState(false);
+  // The same for what a key may approve (KEY_MS, lib/approvals.ts): every line stood in view that long.
+  const [readKey, setReadKey] = useState(false);
+  const quick = useRef<Lines | undefined>(undefined);
   // The lines not seen yet (`n`), those of them out of view now (`out`), and whether the plan is longer than where it shows.
   const [left, setLeft] = useState({ n: 0, out: 0, total: 1, long: false });
   const lines = useRef<Lines | undefined>(undefined);
@@ -92,7 +95,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const queued = useRef(0); // presses made meanwhile, to make after it (Infinity: an End)
   const reader = useRef<PaintedReader | null>(null);
   const [fits, setFits] = useState(false); // the whole plan stands in view, none of it scrolled out or under the foot
-  // Since when it has stood so (null: not now): Approve takes the keyboard only once it stood whole for the settle time.
+  // Since when it has stood so (null: not now): Approve takes the keyboard only once it stood whole for a key's settle time (KEY_MS).
   const fitsAt = useRef<number | null>(null);
   if (!fits) fitsAt.current = null;
   else fitsAt.current ??= performance.now();
@@ -112,7 +115,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
       foot.current?.toggleAttribute("data-stuck", stuck);
       // Whole in view: its box holds all of it, and the box stands in the region, clear of the foot.
       setFits(el.scrollHeight - el.clientHeight <= 2 && r.height > 0 && !!box && r.top >= Math.max(0, box.top) - 0.5 && r.bottom <= Math.min(innerHeight, box.bottom) + 0.5 && !stuck);
-      if (editing) { setRead(true); return; }
+      if (editing) { setRead(true); setReadKey(true); return; }
       if (read) return;
       const cs = getComputedStyle(el);
       const line = parseFloat(cs.lineHeight) || 1.5 * parseFloat(cs.fontSize) || 24;
@@ -125,7 +128,10 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
       const shows = r.width > 0 && bottom > top && document.visibilityState === "visible" && !el.closest("[inert]");
       // A view that reaches the plan's first or last words covers its first or last line whole.
       const view: [number, number] | null = shows ? [y(top) <= 1 ? 0 : y(top), y(bottom) >= content - 1 ? total * line : y(bottom)] : null;
-      lines.current = sawLines(lines.current, { total, line, view, painted }, performance.now() - handAt.current < SETTLE_MS, performance.now());
+      const own = performance.now() - handAt.current < SETTLE_MS;
+      lines.current = sawLines(lines.current, { total, line, view, painted }, own, performance.now());
+      quick.current = sawLines(quick.current, { total, line, view, painted }, own, performance.now(), KEY_MS);
+      if (unseenLines(quick.current).n === 0) setReadKey(true);
       const u = unseenLines(lines.current);
       const long = content > bottom - top + 1;
       setLeft((was) => (was.n === u.n && was.out === u.out && was.total === total && was.long === long ? was : { n: u.n, out: u.out, total, long }));
@@ -181,17 +187,17 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   // and the plan stood whole in view, Approve takes it (once an arrival). Not for an owner
   // brought from outside the page (a link, the desktop app): there it stays where it is read.
   const moved = useRef(0);
-  const comes = hold.take && moved.current !== hold.at && at === "text" && read && fits && !editing && !wasBrought();
+  const comes = hold.take && moved.current !== hold.at && at === "text" && readKey && fits && !editing && !wasBrought();
   useEffect(() => {
-    if (hold.keys !== "ready" || !hold.take || moved.current === hold.at || !read) return;
+    if (hold.keys !== "ready" || !hold.take || moved.current === hold.at || !readKey) return;
     // Whole in view for the settle time first: asked again when that time is up (it may change meanwhile).
-    const wait = fits && fitsAt.current !== null ? fitsAt.current + SETTLE_MS - performance.now() : 0;
+    const wait = fits && fitsAt.current !== null ? fitsAt.current + KEY_MS - performance.now() : 0;
     if (wait > 0) { const t = window.setTimeout(() => wake((n) => n + 1), wait + 1); return () => window.clearTimeout(t); }
     moved.current = hold.at;
     if (document.activeElement !== text.current || !fits || editing || wasBrought() || !approve.current || approve.current.disabled) return;
     // (An arrival of its own: Enter approves only after the settle time from now, lib/asks.ts.)
     pageFocus(approve.current);
-  }, [hold.keys, hold.take, hold.at, read, fits, fitsAt.current, woke]);
+  }, [hold.keys, hold.take, hold.at, readKey, fits, fitsAt.current, woke]);
   const [nudge, setNudge] = useState("");
   useEffect(() => {
     if (!nudge) return;
@@ -201,9 +207,9 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const send = (b: object) => { noteAnswer(c.id); return api(`/api/sessions/${c.session_id}/plan/${c.id}`, { method: "POST", body: JSON.stringify(b) }).catch((e) => setErr(failed(e, { at: "PlanCard" }))); };
   const hint = nudge ? nudge
     : comes ? "Enter approves the plan in a moment"
-    : at === "text" ? (read ? "Tab goes to Approve" : "Read to the end, then Tab goes to Approve")
-    : at === "approve" && hold.keys === "ready" ? (read ? "Enter approves the plan" : "Read the plan to its end first")
-    : at === "approve" && hold.keys === "wait" && read ? "Enter approves the plan in a moment"
+    : at === "text" ? (readKey ? "Tab goes to Approve" : "Read to the end, then Tab goes to Approve")
+    : at === "approve" && hold.keys === "ready" ? (readKey ? "Enter approves the plan" : "Read the plan to its end first")
+    : at === "approve" && hold.keys === "wait" && readKey ? "Enter approves the plan in a moment"
     : "";
   return (
     <div
@@ -261,13 +267,13 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
             <button
               ref={approve}
               data-testid="plan-approve"
-              data-ready={(at === "approve" && hold.keys === "ready" && read) || undefined}
+              data-ready={(at === "approve" && hold.keys === "ready" && readKey) || undefined}
               disabled={!plan.trim()}
               title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"}
               onClick={(e) => {
                 // Only a plan that was read is approved, by any press (the card's own rule, first); a key not
-                // as the keyboard arrives, under a dialog or when held.
-                const unread = read ? "" : e.detail === 0 ? "Read the plan to its end first" : left.out > 0 ? `${share(left)} of the plan not seen yet: scroll through it` : STOOD;
+                // as the keyboard arrives, under a dialog or when held. (A key's reading is its own: KEY_MS.)
+                const unread = e.detail === 0 ? (readKey ? "" : "Read the plan to its end first") : read ? "" : left.out > 0 ? `${share(left)} of the plan not seen yet: scroll through it` : STOOD;
                 const no = unread || (e.detail === 0 ? keyRefused(e.currentTarget) : "");
                 if (no) return setNudge(no);
                 void send({ approve: true, mode, plan });

@@ -44,15 +44,18 @@ test("Esc twice on an approval gives the keyboard back to Allow once", async ({ 
     expect((await approvals(request, id))[0]).toMatchObject({ state: "pending" });
   };
   await early("Enter", () => page.keyboard.press("Enter"));
-  await shoot(page, "answer-keys-01-esc-back");
-  // The Back button does the same, and so does a press with the pointer: on a narrow screen
-  // "Send denial" stands where Allow once comes back, and a second tap meant for it must not allow.
+  // An Escape right behind that refused Enter still opens the reason: it answers nothing, so a key
+  // refused a moment before does not hold it (lib/asks.ts, keysArrived).
   await page.keyboard.press("Escape");
+  await expect(card.getByTestId("deny-reason")).toBeFocused();
+  // The Back button leads back as Escape does, and so does a press with the pointer: on a narrow
+  // screen "Send denial" stands where Allow once comes back, and a second tap meant for it must not allow.
   left = Date.now();
   await card.getByRole("button", { name: "Back" }).click();
   await expect(allow).toBeFocused();
   const at = (await allow.boundingBox())!;
   await early("a press", () => page.mouse.click(at.x + at.width / 2, at.y + at.height / 2));
+  await shoot(page, "answer-keys-01-esc-back");
   // And Enter still allows, once the button has stood for its second.
   await expect(card).toHaveAttribute("data-live", "true");
   await page.keyboard.press("Enter");
@@ -424,7 +427,6 @@ test("a plan is approved by a key on Approve only once it was read to its end", 
   await page.goto(`/s/${short}`);
   const one = cardIn(page, short, "plan");
   await expect(one.getByTestId("plan-text")).toBeFocused();
-  await expect(one.getByTestId("plan-hint")).toHaveText("Enter approves the plan in a moment");
   await expect(one.getByTestId("plan-approve")).toBeFocused();
   // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
   await expect(one.getByTestId("plan-approve")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
@@ -434,17 +436,16 @@ test("a plan is approved by a key on Approve only once it was read to its end", 
   await page.keyboard.press("Enter");
   await expect.poll(() => open1(short)).toBe(0);
   await drop(request, short);
-  // Approve taking the keyboard by itself is an arrival of its own: an Enter pressed the moment it
-  // does (meant for what was there before) approves nothing; after the settle time from then, it does.
-  const late = await create(request, "Plan the index, Enter as Approve takes the keys", folder("plan"));
+  // An Enter pressed as the plan arrives (meant for what was there before) approves nothing, nor does
+  // it once Approve took the keyboard by itself; after a key's settle time from the paint, one does.
+  const late = await create(request, "Plan the index, Enter as it arrives", folder("plan"));
   await ask(request, late, "plan");
   await page.goto(`/s/${late}`);
   const two = cardIn(page, late, "plan");
-  await expect(two.getByTestId("plan-text")).toBeFocused();
-  await page.waitForFunction(() => (document.activeElement as HTMLElement | null)?.dataset.testid === "plan-approve", null, { polling: "raf", timeout: 8000 });
+  await page.waitForFunction(() => !!document.activeElement?.closest('[data-testid="plan-card"]'), null, { polling: "raf", timeout: 8000 });
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(500);
-  expect(await open1(late), "Enter the moment Approve took the keyboard").toBe(1);
+  await page.waitForTimeout(400);
+  expect(await open1(late), "Enter the moment the plan arrived").toBe(1);
   await expect(two.getByTestId("plan-approve")).toHaveAttribute("data-ready", "true", { timeout: 4000 });
   await page.keyboard.press("Enter");
   await expect.poll(() => open1(late)).toBe(0);
@@ -509,7 +510,7 @@ test("a secret typed at the card goes nowhere: not into the message box, and not
   // The box is empty as the card appears, or the page loads on it: the card takes the keyboard on
   // itself and says how to get to its field. A secret typed there, with its Enter, right away or
   // after the settle time, is dropped: nothing is in the message box, nothing is sent, nothing is given.
-  for (const [way, ms] of [["appears", 300], ["loads", 1200]] as const) {
+  for (const [way, ms] of [["appears", 100], ["loads", 1200]] as const) {
     const id = await create(request, `Secret ${way}`, ws);
     if (way === "appears") { await open(page, [id]); await reset(page); await ask(request, id, "secret"); }
     else { await ask(request, id, "secret"); await page.goto(`/s/${id}`); }
@@ -529,8 +530,10 @@ test("a secret typed at the card goes nowhere: not into the message box, and not
     expect(await answersSent(page)).toEqual([]);
     expect(await secretsAsked(request, id)).toBe(1);
     if (way === "appears") { await shoot(page, "answer-keys-13-secret-card"); await drop(request, id); continue; }
-    // After the settle time Enter on the card goes to the field. The value typed there is masked, and
-    // Enter gives it once the field has had the keyboard for the settle time.
+    // After the settle time Enter on the card goes to the field (the keys typed there are a run of
+    // their own: the card says when it is ready again). The value typed there is masked, and Enter
+    // gives it once the field has had the keyboard for the settle time.
+    await expect(card).toHaveAttribute("data-keys", "ready");
     await page.keyboard.press("Enter");
     await expect(field).toBeFocused();
     await expect(field).toHaveAttribute("type", "password");
@@ -1009,8 +1012,8 @@ test("the hint says Enter allows once exactly when it would, and says so quietly
   await expect(allow).toHaveAttribute("data-arming", "");
   const line = await allow.getByTestId("allow-arming").evaluate((el) => { const a = getComputedStyle(el); return { name: a.animationName, ms: parseFloat(a.animationDuration) * 1000, h: a.height }; });
   expect(line.name).toBe("k-arm");
-  expect(line.ms).toBeGreaterThan(150);
-  expect(line.ms).toBeLessThanOrEqual(1000);
+  expect(line.ms).toBeGreaterThan(100);
+  expect(line.ms).toBeLessThanOrEqual(400);
   const where = async () => (await card.getByTestId("approval-actions").locator("button").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)))).join();
   const before = await where(), height = Math.round((await card.boundingBox())!.height);
   await page.keyboard.press("Enter");
@@ -1077,12 +1080,12 @@ test("Enter held through an answer in the sequence allows one card, never the ne
   await drop(request, quiet, a, b);
 });
 
-// The page brings the keyboard onto an answer by itself (an approval's Allow once, once its text was
-// read): that is an arrival with its own settle time. Four panes, a question and the next session's
+// A key that went down sooner than a key's settle time after a card was painted (lib/approvals.ts,
+// KEY_MS) was on its way before the owner saw it. Four panes, a question and the next session's
 // approval in the sequence: the number answers the question, the sequence moves on, and an Enter
-// that lands right as Allow once takes the keyboard (pressed for the question, the owner never saw
-// the approval) allows nothing. Only after the settle time from then does Enter allow.
-test("an Allow that took the keyboard by itself is not allowed by a key pressed as it took it", async ({ page, request }) => {
+// pressed the moment the approval arrives (meant for the question, the owner never saw the approval)
+// allows nothing. One pressed once the card says it is ready allows it.
+test("a key pressed as an approval arrives is not taken; one pressed once it is ready is", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
   const ws = folder("page-focus");
@@ -1097,15 +1100,15 @@ test("an Allow that took the keyboard by itself is not allowed by a key pressed 
   await expect(question.getByTestId("question-digit")).toHaveCount(3);
   await page.keyboard.press("1");
   await expect.poll(() => waits(request, q, "question")).toBe(false);
-  // The approval, as a look: once its Allow takes the keyboard, Enter at once.
+  // The approval arrives: Enter at once.
   const allow = cardIn(page, w, "approval").getByTestId("allow-once");
-  await page.waitForFunction(() => (document.activeElement as HTMLElement | null)?.dataset.testid === "allow-once", null, { polling: "raf", timeout: 10_000 });
+  await page.waitForFunction((id) => !!document.activeElement?.closest(`section.k-station[data-station="${id}"] [data-ask-card]`), w, { polling: "raf", timeout: 10_000 });
   await page.keyboard.press("Enter");
   await page.waitForTimeout(500);
-  expect((await approvals(request, w))[0], "Enter right as Allow once took the keyboard").toMatchObject({ state: "pending" });
-  // Meanwhile the card says Enter allows in a moment, and shows it arming; after that, Enter allows.
-  await expect(cardIn(page, w, "approval").getByTestId("allow-arming")).toHaveCount(0, { timeout: 3000 });
-  await expect(allow).toHaveAttribute("data-ready", "true");
+  expect((await approvals(request, w))[0], "Enter the moment the approval arrived").toMatchObject({ state: "pending" });
+  // The card says when it is ready; from then Enter allows.
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 3000 });
+  await expect(cardIn(page, w, "approval").getByTestId("approval-hint")).toHaveText("Enter allows once, Esc to deny with a reason");
   await page.keyboard.press("Enter");
   await expect.poll(async () => (await approvals(request, w))[0]).toMatchObject({ state: "allowed", choice: "once" });
   await drop(request, helm, q, b, c, w);

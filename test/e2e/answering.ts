@@ -84,6 +84,9 @@ export const row = (page: Page, id: string) => page.getByTestId("session-list").
 // and for every key press how long after each of them it came and where the keyboard was. It also
 // keeps every answer and every message the page sent.
 export const SETTLE = 1000;
+// A key's own settle time (ui/src/lib/approvals.ts, KEY_MS): a key that went down sooner after the card
+// was painted answers nothing.
+export const KEY = 300;
 export async function watchKeys(page: Page) {
   await page.addInitScript(() => {
     const w = window as any;
@@ -175,19 +178,19 @@ export async function answerOnPurpose(page: Page, request: APIRequestContext, id
   if (kind === "question") expect(await answersOf(request, id)).toEqual({ "0": { picked: ["Amber"] } });
 }
 
-// One arrival of the keyboard on a card, read at the two delays that decide: 300 ms after it every
-// key is refused, 1,200 ms after it the deliberate way answers. `from` names the clock the arrival
-// is read on.
+// One arrival of the keyboard on a card, read at the two delays that decide: within a key's settle
+// time of it (KEY: pressed 100 ms after it) every key is refused, 1,200 ms after it the deliberate way
+// answers. `from` names the clock the arrival is read on.
 export async function arrives(page: Page, request: APIRequestContext, o: { way: string; kind: Exclude<Kind, "secret">; target: string; from: From; own: boolean }) {
-  expect(await since(page, o.from, 300), `the keyboard never arrived (${o.way}, ${o.kind})`).toBe(true);
+  expect(await since(page, o.from, 100), `the keyboard never arrived (${o.way}, ${o.kind})`).toBe(true);
   for (const k of EARLY[o.kind]) await page.keyboard.press(k);
   const log = await presses(page), sent = await answersSent(page);
-  // No answer to it left the page within the settle time of the arrival, whatever was pressed.
-  expect(sent.filter((a) => a.path.includes(o.target) && (a[o.from] ?? 0) < SETTLE), `${o.way}: answered early by ${JSON.stringify(log)}`).toEqual([]);
-  // Where every press came inside the settle time, it still waits. (A machine too slow to press in
-  // time proves only the line above, and says so.)
-  if (log.every((p) => (p[o.from] ?? 0) < SETTLE)) expect(await waits(request, o.target, o.kind), `${o.way}: answered by ${JSON.stringify(log)}`).toBe(true);
-  else console.log(`slow at 300 ms (${o.way}, ${o.kind}): pressed at ${JSON.stringify(log.map((p) => p[o.from]))}`);
+  // No answer to it left the page within a key's settle time of the arrival, whatever was pressed.
+  expect(sent.filter((a) => a.path.includes(o.target) && (a[o.from] ?? 0) < KEY), `${o.way}: answered early by ${JSON.stringify(log)}`).toEqual([]);
+  // Where every press came inside that time, it still waits. (A machine too slow to press in time
+  // proves only the line above, and says so.)
+  if (log.every((p) => (p[o.from] ?? 0) < KEY)) expect(await waits(request, o.target, o.kind), `${o.way}: answered by ${JSON.stringify(log)}`).toBe(true);
+  else console.log(`slow at 100 ms (${o.way}, ${o.kind}): pressed at ${JSON.stringify(log.map((p) => p[o.from]))}`);
   expect(await since(page, o.from, 1200)).toBe(true);
   await answerOnPurpose(page, request, o.target, o.kind, o.own);
 }

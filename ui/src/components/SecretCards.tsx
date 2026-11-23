@@ -1,7 +1,7 @@
 import { KeyRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { SETTLE_MS } from "../lib/approvals.ts";
-import { dropRepeats, keyRefused, noteAnswer, useAskKeys, useHold } from "../lib/asks.ts";
+import { KEY_MS, SETTLE_MS } from "../lib/approvals.ts";
+import { dropRepeats, keyRefused, keyTried, noteAnswer, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { secrets, useSecrets, type SecretMeta, type SecretRequest } from "../lib/secrets.ts";
 import { reportError, failed } from "../lib/store.ts";
@@ -108,6 +108,8 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
         } else if (e.key.length === 1) {
           e.preventDefault();
           setDropped(true);
+          // (A key typed nowhere is a key refused: the key settle time runs again from it, lib/asks.ts.)
+          keyTried(e.currentTarget);
         }
       }}
       onPaste={(e) => {
@@ -132,7 +134,7 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
           // Enter gives the value as a key on any answer does: not as the keyboard arrives by code, not under a dialog.
           onKeyDown={(e) => {
             if (e.key !== "Enter" || composing(e)) return;
-            const no = keyRefused(e.currentTarget, e.repeat) || (performance.now() - fieldAt.current < SETTLE_MS ? "Not yet: the keyboard has only just arrived" : "");
+            const no = keyRefused(e.currentTarget, e.repeat) || (performance.now() - fieldAt.current < KEY_MS ? "Not yet: the keyboard has only just arrived" : "");
             if (no) { e.preventDefault(); setErr(no); }
           }}
           placeholder="Paste the value: it goes to commands only, never to the model"

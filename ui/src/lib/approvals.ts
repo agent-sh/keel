@@ -12,6 +12,20 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 // "allow all" before it acts again. The time a browser's permission prompt
 // holds its button for.
 export const SETTLE_MS = 1000;
+// A key answers sooner. The settle time above guards a hand that may have
+// moved before it saw (a pointer over a control that slid there). A key press
+// is judged by when it started instead: one that went down sooner than this
+// after the request was painted may have been on its way before the owner saw
+// it (meant for the request before), and answers nothing; one that goes down
+// later was pressed with the request on screen. Simple visual reaction time,
+// from a screen to a key, averages 231 ms in 1,469 adults, most between about
+// 190 and 280 (Woods et al. 2015, Frontiers in Human Neuroscience 9:131), and
+// a press already on its way takes about 200 to 250 ms more to call off
+// (stop-signal reaction time; Verbruggen and Logan 2008, Trends in Cognitive
+// Sciences 12:418). 300 ms is past both for most people, with a frame or two
+// of a display's own delay to spare. A text must still be read before it is
+// allowed: the lines a key may allow are those that stood in view this long.
+export const KEY_MS = 300;
 // How often the cards are read when nothing tells that they moved (a scroll,
 // a resize and a change of the list each read at once, and so does a press).
 export const READ_MS = 100;
@@ -25,7 +39,7 @@ export function stand(prev: Stand | undefined, at: { x: number; y: number; whole
   if (prev?.whole && at.whole && Math.abs(prev.x - at.x) < 1 && Math.abs(prev.y - at.y) < 1) return prev;
   return { ...at, since: now };
 }
-export const settled = (s: Stand | undefined, now: number): boolean => !!s && s.whole && now - s.since >= SETTLE_MS;
+export const settled = (s: Stand | undefined, now: number, ms = SETTLE_MS): boolean => !!s && s.whole && now - s.since >= ms;
 
 // A request that is only ever answered on its own: high risk, a call the
 // harness refused, one only the owner answers, one the daemon shows the start of.
@@ -57,6 +71,9 @@ export function hold(prev: Hold | undefined, at: { x: number; y: number; whole: 
 // not new (`ripe`) and nothing in the list changed for the settle time.
 export const pressable = (h: Hold | undefined, ripe: boolean, scrolling: boolean, now: number): boolean =>
   !!h && h.view.whole && (settled(h.view, now) || (h.own && ripe && !scrolling && settled(h.place, now)));
+// The same for a key press: the control stood whole and still for KEY_MS, while no scroll moves it.
+export const keyPressable = (h: Hold | undefined, scrolling: boolean, now: number): boolean =>
+  !!h && h.view.whole && !scrolling && settled(h.view, now, KEY_MS);
 
 // ---- The lines of a text the owner has had in view.
 // A request is answered only for what was read, so a card keeps how much of
@@ -97,7 +114,8 @@ function withRows(seen: Rows[], [a, b]: Rows): Rows[] {
 // since the last reading, with nothing else changed. `painted`: the reading
 // was taken after the frame that drew this view was painted.
 const sameRows = (a: Rows | null, b: Rows | null) => !!a && !!b && Math.abs(a[0] - b[0]) < 1 && Math.abs(a[1] - b[1]) < 1;
-export function sawLines(prev: Lines | undefined, at: { total: number; line: number; view: Rows | null; painted?: boolean }, own: boolean, now: number): Lines {
+// `stood`: how long a view must stand for its lines to count (KEY_MS for what a key may allow).
+export function sawLines(prev: Lines | undefined, at: { total: number; line: number; view: Rows | null; painted?: boolean }, own: boolean, now: number, stood = SETTLE_MS): Lines {
   const same = !!prev && prev.total === at.total && Math.abs(prev.line - at.line) < 0.01;
   let seen = same ? prev!.seen : [];
   const kept = sameRows(same ? prev!.view : null, at.view);
@@ -105,7 +123,7 @@ export function sawLines(prev: Lines | undefined, at: { total: number; line: num
   const left = same ? prev!.shown : null; // the painted view the owner's scroll left from
   if (at.view) {
     if (own && at.painted && !sameRows(left, at.view)) seen = withRows(left ? withRows(seen, left) : seen, at.view);
-    else if (now - since >= SETTLE_MS) seen = withRows(seen, at.view);
+    else if (now - since >= stood) seen = withRows(seen, at.view);
   }
   return { total: at.total, line: at.line, seen, view: at.view, since, shown: at.painted ? at.view : left };
 }
