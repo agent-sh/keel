@@ -991,6 +991,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     // (Only while the Allow is still to take the keyboard for this arrival: else Enter stays where
     // it is, as it does for an owner brought here from outside the page.)
     : hold.take && moved.current !== hold.at && (!wasBrought() || chosen.current) ? ARMING
+    // (A key typed at it took the move back: the owner goes to the answer.)
+    : keysOn === "list" && first && !hold.take && hold.keys !== "" && !mustOpen ? "Down, then Enter allows once"
     : "";
 
   // How long the arming line takes to fill: what is left of the settle time of the keyboard's

@@ -1130,16 +1130,26 @@ test("a number pressed on a card that took the keyboard by itself goes nowhere, 
   await expect(pane(page, id).getByTestId("composer")).toHaveValue("");
   expect(await said(request, id)).toEqual([]);
   await expect(pane(page, id).getByTestId("queue-item")).toHaveCount(0);
-  // On its Allow once, ready: a number types nothing and starts the settle time again, so the Enter
-  // right behind it allows nothing either.
+  // The key took back the page's move onto the answer: Allow once does not take the keyboard by
+  // itself any more, and the card says how to get there.
   const allow = list.getByTestId("allow-once");
-  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 8000 });
+  await page.waitForTimeout(1500);
+  await expect(list).toBeFocused();
+  await expect(list.getByTestId("approval-arming")).toHaveText("Down, then Enter allows once");
+  await page.keyboard.press("ArrowDown");
+  await expect(allow).toBeFocused();
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 4000 });
+  // On its Allow once, ready: a number types nothing, gives the keyboard back to the list and starts
+  // the settle time again, so the Enter right behind it allows nothing either.
   await page.keyboard.press("1");
   await page.keyboard.press("Enter");
   await page.waitForTimeout(500);
   expect((await approvals(request, id))[0]).toMatchObject({ state: "pending" });
+  await expect(list).toBeFocused();
   await expect(pane(page, id).getByTestId("composer")).toHaveValue("");
   expect(await said(request, id)).toEqual([]);
+  // The owner's own move to the answer, then Enter: allowed.
+  await page.keyboard.press("ArrowDown");
   await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 4000 });
   await page.keyboard.press("Enter");
   await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
