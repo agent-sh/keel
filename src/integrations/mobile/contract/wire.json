@@ -153,7 +153,9 @@
    "id": "string",
    "question": "string",
    "options": "array",
-   "multi": "boolean"
+   "multi": "boolean",
+   "details": "array?",
+   "header": "string?"
   },
   "picked": {
    "picked": "array",
@@ -931,7 +933,12 @@
      "Debug",
      "Release"
     ],
-    "multi": true
+    "multi": true,
+    "details": [
+     "With symbols, for the debugger",
+     ""
+    ],
+    "header": "Build"
    }
   ],
   "picked": [

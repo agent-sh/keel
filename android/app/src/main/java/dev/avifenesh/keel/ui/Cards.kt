@@ -204,10 +204,14 @@ private fun Questions(c: Card, picks: MutableMap<String, List<String>>, other: M
     }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         for (q in c.questions) Column {
+            if (q.header.isNotBlank()) { Txt(q.header.uppercase(), T.meta, k.faint); Spacer(Modifier.height(2.dp)) }
             Txt(q.question, T.bodyStrong)
             if (q.multi) Txt("Pick any", T.meta, k.faint)
             Spacer(Modifier.height(8.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(S.sm), verticalArrangement = Arrangement.spacedBy(S.sm)) {
+            // Choices the model explained are rows, each with what it means under its label; bare labels are chips.
+            if (q.details.any { it.isNotBlank() }) Column(verticalArrangement = Arrangement.spacedBy(S.sm)) {
+                q.options.forEachIndexed { i, o -> Choice(q, o, picks, enabled, q.detail(i), Modifier.fillMaxWidth()) }
+            } else FlowRow(horizontalArrangement = Arrangement.spacedBy(S.sm), verticalArrangement = Arrangement.spacedBy(S.sm)) {
                 for (o in q.options) Choice(q, o, picks, enabled)
             }
             if (c.pending) {
@@ -219,17 +223,20 @@ private fun Questions(c: Card, picks: MutableMap<String, List<String>>, other: M
 }
 
 @Composable
-private fun Choice(q: Question, o: String, picks: MutableMap<String, List<String>>, enabled: Boolean) {
+private fun Choice(q: Question, o: String, picks: MutableMap<String, List<String>>, enabled: Boolean, detail: String = "", modifier: Modifier = Modifier) {
     val k = k()
     val on = o in picks[q.id].orEmpty()
     val shape = RoundedCornerShape(S.r)
-    Box(
-        Modifier.clip(shape).background(if (on) k.needSoft else k.raised).border(1.dp, if (on) k.need else k.lineStrong, shape)
+    Column(
+        modifier.clip(shape).background(if (on) k.needSoft else k.raised).border(1.dp, if (on) k.need else k.lineStrong, shape)
             .press({
                 val cur = picks[q.id].orEmpty()
                 picks[q.id] = if (q.multi) (if (on) cur - o else cur + o) else (if (on) emptyList() else listOf(o))
             }, enabled).semantics { contentDescription = "option-$o" }.padding(horizontal = 12.dp, vertical = 8.dp),
-    ) { Txt(o, T.ui, if (on) k.ownerInk else k.fg) }
+    ) {
+        Txt(o, T.ui, if (on) k.ownerInk else k.fg)
+        if (detail.isNotBlank()) Txt(detail, T.small, k.muted)
+    }
 }
 
 /** A card the transcript names but the app holds no record of: what the message says. */

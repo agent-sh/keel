@@ -532,7 +532,13 @@ export function mobileApi(ctx: MobileCtx) {
       command: asked ? [`${asked.from} asks: ${asked.message}`, ...(asked.notes ?? []), ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
       description: options.join(" / "), options, unavailable: !tu,
       // One entry per question, by id: a card of several takes one answer each.
-      questions: qs.map((q) => ({ id: q.id, question: q.question, options: q.options.map((o) => o.label), multi: q.multi })),
+      // What each choice means, as the model wrote it beside its label (`details`, one per option, "" for
+      // none), and the question's short header: sent where the model gave them.
+      questions: qs.map((q) => ({
+        id: q.id, question: q.question, options: q.options.map((o) => o.label), multi: q.multi,
+        ...(q.options.some((o) => o.description) ? { details: q.options.map((o) => o.description ?? "") } : {}),
+        ...(q.header ? { header: q.header } : {}),
+      })),
       // Just after its tool call's row in the chat (traceOf), not before the words of the reply that asks.
       actions: [["Answer", "once", "primary"], ["Dismiss", "deny", "danger"]], state: "pending", choice: null, ts: e ? (e.ts + (e.seq % 1000) / 1000 + 0.0008) / 1000 : null,
     };
@@ -1502,12 +1508,16 @@ function stepWhat(input: any): string | undefined {
 }
 
 // The question tools' inputs, in one shape.
-function normQuestions(input: any): { id: string; question: string; options: { label: string }[]; multi: boolean }[] {
+function normQuestions(input: any): { id: string; question: string; header?: string; options: { label: string; description?: string }[]; multi: boolean }[] {
   const list = Array.isArray(input?.questions) ? input.questions : input?.question ? [input] : [];
   return list.map((q: any, i: number) => ({
     id: String(q.id ?? i),
     question: String(q.question ?? ""),
+    ...(typeof q.header === "string" && q.header.trim() ? { header: q.header.trim() } : {}),
     multi: !!(q.multiSelect ?? q.multi_select ?? q.multiple),
-    options: (q.type === "yesno" ? ["Yes", "No"] : Array.isArray(q.options) ? q.options : []).map((o: any) => ({ label: String(typeof o === "string" ? o : o?.label ?? "") })),
+    options: (q.type === "yesno" ? ["Yes", "No"] : Array.isArray(q.options) ? q.options : []).map((o: any) => ({
+      label: String(typeof o === "string" ? o : o?.label ?? ""),
+      ...(typeof o?.description === "string" && o.description.trim() ? { description: o.description.trim() } : {}),
+    })),
   }));
 }

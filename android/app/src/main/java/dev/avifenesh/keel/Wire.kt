@@ -360,7 +360,10 @@ data class Msg(
 
 private fun strings(a: JSONArray?): List<String> = if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) }
 
-data class Question(val id: String, val question: String, val options: List<String>, val multi: Boolean)
+/** `details`: what each option means, as the model wrote it beside the label ("" for none); `header`: the question's short head. */
+data class Question(val id: String, val question: String, val options: List<String>, val multi: Boolean, val details: List<String> = emptyList(), val header: String = "") {
+    fun detail(i: Int): String = details.getOrNull(i).orEmpty()
+}
 data class Act(val label: String, val choice: String, val style: String)
 
 /**
@@ -426,7 +429,7 @@ data class Card(
                 state = o.str("state", "pending"), choice = o.str("choice").takeIf { it.isNotBlank() }, ts = o.optDouble("ts", 0.0),
                 questions = (0 until qs.length()).map { qs.getJSONObject(it) }.map { q ->
                     val opts = q.optJSONArray("options") ?: JSONArray()
-                    Question(q.str("id"), q.str("question"), (0 until opts.length()).map { opts.optString(it) }, q.optBoolean("multi"))
+                    Question(q.str("id"), q.str("question"), (0 until opts.length()).map { opts.optString(it) }, q.optBoolean("multi"), strings(q.optJSONArray("details")), q.str("header"))
                 },
                 answers = ans?.keys()?.asSequence()?.associate { k ->
                     val a = ans.optJSONObject(k)
@@ -694,7 +697,7 @@ fun Msg.json(): JSONObject {
 
 fun Card.json(): JSONObject = JSONObject().put("id", id).put("chat_id", chatId).put("kind", kind).put("command", command).put("description", description)
     .put("actions", JSONArray(actions.map { JSONArray(listOf(it.label, it.choice, it.style)) })).put("state", state).put("choice", choice ?: JSONObject.NULL).put("ts", ts)
-    .put("questions", JSONArray(questions.map { q -> JSONObject().put("id", q.id).put("question", q.question).put("options", JSONArray(q.options)).put("multi", q.multi) }))
+    .put("questions", JSONArray(questions.map { q -> JSONObject().put("id", q.id).put("question", q.question).put("options", JSONArray(q.options)).put("multi", q.multi).put("details", JSONArray(q.details)).put("header", q.header) }))
     .apply { if (answers.isNotEmpty()) put("answers", JSONObject().apply { answers.forEach { (k, v) -> put(k, JSONObject().put("picked", JSONArray(v))) } }) }
     .opt("text", text).apply { if (notes.isNotEmpty()) put("notes", JSONArray(notes)) }.put("cut", cut).put("total", total ?: JSONObject.NULL).put("lines", lines)
     .apply { if (hold.isNotEmpty()) put("hold", JSONArray(hold)) }.put("rtl", rtl).opt("machine", machine).opt("from", from).opt("line", line).put("glance", glance)

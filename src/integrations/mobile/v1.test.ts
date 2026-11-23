@@ -809,6 +809,19 @@ describe("questions", () => {
     expect(reopened.questions.map((q: any) => q.id)).toEqual(["build", "checks"]);
   });
 
+  // The model says what each choice means beside its label, and heads the question with a word: the
+  // phone chooses from the same words the page shows.
+  test("a choice's meaning and the question's header reach the phone", async () => {
+    const s = session();
+    const input = { questions: [{ header: "Scope", question: "Fix only cart.js or the whole module?", options: [{ label: "Only cart.js", description: "Smallest change, ships today" }, { label: "Whole module", description: "Every caller gets the bound" }, { label: "Ask the team" }] }, { question: "Go?", options: [{ label: "Yes" }, { label: "No" }] }] };
+    store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-d", name: "AskUserQuestion", input }] });
+    ask({ callId: "call-d", sessionId: s.id, signal: new AbortController().signal } as any);
+    const card = (await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.find((a: any) => a.id === `q-${s.id}.call-d`);
+    expect(card.questions[0]).toMatchObject({ header: "Scope", options: ["Only cart.js", "Whole module", "Ask the team"], details: ["Smallest change, ships today", "Every caller gets the bound", ""] });
+    // A question with no meanings and no header says neither.
+    expect(Object.keys(card.questions[1]).sort()).toEqual(["id", "multi", "options", "question"]);
+  });
+
   // A server can ask one question after another on one call. A card of the
   // first, still on the phone after it was answered on the desktop, must not
   // answer or decline the second.
