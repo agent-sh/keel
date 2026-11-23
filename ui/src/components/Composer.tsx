@@ -1102,6 +1102,9 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
     // is in view already, as a card's answers are that stay at the region's foot, nothing moves:
     // the text stays where the owner is reading it.)
     const box = ref.current.getBoundingClientRect(), at = a.getBoundingClientRect();
+    // (Nor where what holds the keyboard is itself taller than the region and shows in it, as a list
+    // of requests read through does: the owner reads inside it, and it stays where they are.)
+    if (at.height > box.height && at.top < box.bottom && at.bottom > box.top) return true;
     const stays = !!card && card.getBoundingClientRect().height > box.height && at.top >= box.top && at.bottom <= box.bottom;
     if (card && !stays) show(card);
     show(a);

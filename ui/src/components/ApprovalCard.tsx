@@ -343,7 +343,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   const list = useRef<HTMLDivElement>(null);
   const { view, tick, waiting, setHot, spend, own, reader, latest } = useReadings(list, cards);
   // A reading on by keys under way (End, Space): one at a time, and a press meanwhile joins it.
-  const steps = useRef<{ on: boolean; more: number; end: boolean }>({ on: false, more: 0, end: false });
+  const steps = useRef<{ on: boolean; more: number; end: boolean; at: number }>({ on: false, more: 0, end: false, at: 0 });
   // How the list holds the keyboard (lib/asks.ts): said on it for the page and its tests.
   const hold = useHold(list);
   const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => shownOf(c).flagged).map((c) => c.id)]));
@@ -466,42 +466,49 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   // key the browser repeats. It goes on while the card has lines not seen and the region can move.
   // `end`: on to the card's end, else one step. Not for a card whose text must be opened first.
   const readOn = (from: HTMLElement, end: boolean): boolean => {
-    const el = list.current, tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
     const r = reader();
-    if (!el || !tray || !r) return false;
+    if (!list.current || !r) return false;
     const unread = (c: HTMLElement) => (latest().unseen.get(c.dataset.approvalId!)?.n ?? 0) > 0 && !shut.some((x) => x.id === c.dataset.approvalId);
     const own_ = from.closest<HTMLElement>('[data-testid="approval"]');
-    const card = own_ ? (unread(own_) ? own_ : null) : [...el.querySelectorAll<HTMLElement>(':scope > [data-testid="approval"]')].find(unread);
-    const text = card?.querySelector<HTMLElement>('[data-testid="approval-summary"]');
+    const first = own_ ? (unread(own_) ? own_ : null) : [...list.current.querySelectorAll<HTMLElement>(':scope > [data-testid="approval"]')].find(unread);
     const run = steps.current;
-    if (run.on) { if (end) run.end = true; else run.more++; return true; }
-    if (!card || !text) return false;
-    const id = card.dataset.approvalId!;
+    // (A run that made no step for a second is over, whatever ended it: a reader stopped with its list.)
+    if (run.on && performance.now() - run.at < SETTLE_MS) { if (end) run.end = true; else run.more++; return true; }
+    if (!first?.querySelector('[data-testid="approval-summary"]')) return false;
+    const id = first.dataset.approvalId!;
+    // Found again at every step: the pane may draw the list anew meanwhile (the run goes on in the new one).
+    const parts = () => {
+      const el = list.current, card = el?.querySelector<HTMLElement>(`:scope > [data-approval-id="${CSS.escape(id)}"]`);
+      const text = card?.querySelector<HTMLElement>('[data-testid="approval-summary"]'), tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
+      return el && card && text && tray ? { el, card, text, tray } : null;
+    };
     const rem = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const foot = () => (card.hasAttribute("data-foot") ? card.querySelector<HTMLElement>(":scope > .k-ask-foot")?.offsetHeight ?? 0 : 0);
-    const canMove = () => tray.scrollTop + tray.clientHeight < tray.scrollHeight - 1;
+    const foot = (card: HTMLElement) => (card.hasAttribute("data-foot") ? card.querySelector<HTMLElement>(":scope > .k-ask-foot")?.offsetHeight ?? 0 : 0);
     // What of the text is still under the readable frame's foot (the fade and the card's foot counted out).
-    const rest = () => text.getBoundingClientRect().bottom - (tray.getBoundingClientRect().bottom - foot() - 1.25 * rem());
-    const stepBy = () => {
+    const rest = ({ card, text, tray }: NonNullable<ReturnType<typeof parts>>) => text.getBoundingClientRect().bottom - (tray.getBoundingClientRect().bottom - foot(card) - 1.25 * rem());
+    const stepBy = ({ el, card, text, tray }: NonNullable<ReturnType<typeof parts>>) => {
       const b = tray.getBoundingClientRect(), fade = 1.25 * rem(); // the region's fades (styles.css), counted whether they show or not
       const bar = el.hasAttribute("data-bar-stays") ? el.querySelector<HTMLElement>(":scope > .k-ask-bar")?.getBoundingClientRect().bottom ?? 0 : 0;
-      const top = Math.max(b.top + fade, bar), bottom = b.bottom - foot() - fade;
+      const top = Math.max(b.top + fade, bar), bottom = b.bottom - foot(card) - fade;
       const line = parseFloat(getComputedStyle(text).lineHeight) || 1.5 * rem();
       return Math.max(line, Math.floor(bottom - top - line));
     };
-    const left = () => (latest().unseen.get(id)?.n ?? 0) > 0 && canMove() && rest() > -1.25 * rem();
-    if (!left()) return false;
-    run.on = true; run.more = end ? 0 : 1; run.end = end;
+    const left = (p: ReturnType<typeof parts>) => !!p && (latest().unseen.get(id)?.n ?? 0) > 0 && p.tray.scrollTop + p.tray.clientHeight < p.tray.scrollHeight - 1 && rest(p) > -1.25 * rem();
+    if (!left(parts())) return false;
+    run.on = true; run.more = end ? 0 : 1; run.end = end; run.at = performance.now();
     const go = () => {
       // (Each step is the run's: an End, or a press of Space not yet made.)
       if (!run.end && run.more <= 0) return false;
-      if (!left()) return false;
+      const p = parts();
+      if (!p || !left(p)) return false;
       if (!run.end) run.more--;
+      run.at = performance.now();
       own();
-      tray.scrollTop += Math.min(stepBy(), Math.max(1, Math.ceil(rest()) + 1));
+      p.tray.scrollTop += Math.min(stepBy(p), Math.max(1, Math.ceil(rest(p)) + 1));
       return true;
     };
-    readOnSteps(go, r, true, () => { run.on = false; run.more = 0; run.end = false; });
+    // (The list's reader, also when the list was drawn anew: whichever is the list's now.)
+    readOnSteps(go, { ask: (then) => (reader() ?? r).ask(then), stop: () => {} }, true, () => { run.on = false; run.more = 0; run.end = false; });
     return true;
   };
   const onFocus = (e: ReactFocusEvent<HTMLDivElement>) => {

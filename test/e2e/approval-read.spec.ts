@@ -418,6 +418,40 @@ test("End reads a long command on only through views that were painted, each lin
   }
 });
 
+// A list of requests read through by keys keeps its place when the region changes size: the
+// keyboard is on the list, taller than the region, and the region does not go back to the list's
+// top (the reading would start again from there, and on a phone it never reached the end).
+test("a long list read through by keys stays where it was read when the region changes size", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const s = await asking(request, "Read: kept place on a resize", [bash(LONG)]);
+  try {
+    await waits(request, s.id);
+    await page.goto(`/s/${s.id}`);
+    const list = page.getByTestId("approvals"), card = list.getByTestId("approval").first();
+    await expect(list).toBeFocused();
+    await expect(list).toHaveAttribute("data-keys", "ready");
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("approval-expand")).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press(" ");
+    await page.keyboard.press(" ");
+    const tray = page.getByTestId("composer-tray");
+    await expect.poll(() => tray.evaluate((el) => el.scrollTop), { timeout: 5000 }).toBeGreaterThan(100);
+    await page.waitForTimeout(400);
+    const at = await tray.evaluate((el) => el.scrollTop);
+    await expect(list).toBeFocused();
+    // The window grows and shrinks a little (the phone's own bars come and go).
+    await page.setViewportSize({ width: 390, height: 800 });
+    await page.waitForTimeout(300);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(400);
+    expect(Math.abs((await tray.evaluate((el) => el.scrollTop)) - at), "the region went back to the list's top").toBeLessThan(80);
+  } finally {
+    await drop(request, [s.id]);
+  }
+  await page.setViewportSize({ width: 1920, height: 1040 });
+});
+
 // The step a card asks for first is the one it leads with. A card that must be
 // opened shows that as its first button, says why its Allow once waits before
 // anything was pressed, and Enter on the list of requests opens it: two keys,
