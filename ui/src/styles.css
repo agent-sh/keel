@@ -237,6 +237,8 @@
   --spacing-ctl-md: 1.75rem;
   --spacing-ctl-lg: 2rem;
   --spacing-ctl-xl: 2.25rem;
+  /* A finger's target on a phone: 44 px at the default text size (see "A finger's target" below). */
+  --spacing-tap: 2.75rem;
 
   /* Instrument corners: small and few. */
   --radius-xs: 2px;
@@ -386,6 +388,17 @@ button { cursor: default; }
 .k-image-toggle:focus-visible { border-radius: var(--radius-lg); }
 /* Code shows the characters typed: no programming ligatures. */
 code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "calt" 0; }
+/* ---------- A finger's target ----------
+   On a phone (a touch screen at a phone's width) whatever a finger presses is at least
+   --spacing-tap each way: 44 px at the default text size, the least that Apple's guidance and
+   WCAG 2.5.5 give a finger. The control's box grows, centered on what it shows; a link among
+   words keeps its line (WCAG leaves those out). A floor, so it wins over a control's own size. */
+@media (pointer: coarse) and (max-width: 767px) {
+  :where(button, [role="button"], [role="link"], [role="tab"], [role="switch"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="radio"], select, summary, input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"]), a[href]):not(.prose-keel *, [data-inline-target], [hidden]) {
+    min-height: var(--spacing-tap) !important;
+    min-width: var(--spacing-tap) !important;
+  }
+}
 /* Phone: inputs at 16 px so iOS does not zoom on focus. */
 @media (max-width: 640px) {
   textarea, input { font-size: max(16px, 1rem) !important; }

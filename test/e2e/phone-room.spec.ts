@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "./isolate.ts";
+import { expect, test, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: on a phone the conversation has the screen. The message box rests
@@ -49,7 +49,9 @@ test.describe("on a phone", () => {
       await pane.getByTestId("composer").tap();
       await expect(tools).toBeVisible();
       await expect(pane.getByTestId("send")).toBeVisible();
-      expect((await tools.boundingBox())!.height).toBeLessThanOrEqual(48);
+      // (One row: a finger's target, 2.75rem, and the row's foot under it.)
+      const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+      expect((await tools.boundingBox())!.height).toBeLessThanOrEqual(3.375 * rem);
       for (const id of ["attach", "model-picker", "effort-picker", "context-meter", "send"]) await expect(pane.getByTestId(id)).toBeInViewport({ ratio: 1 });
       await shoot(page, "phone-02-open");
       await pane.getByTestId("model-picker").tap();
@@ -176,4 +178,118 @@ test.describe("on a phone", () => {
       for (const id of ids) await request.delete(`/api/sessions/${id}`);
     }
   });
+
+  // Feature: on a phone every target a finger presses is 2.75rem each way (44 px at the default
+  // text size) and none lies over another: the start page, a session page and its header, the
+  // message box at rest and with its tools, the dock, the list, the menus, and each kind of card.
+  test("every target is a finger's size, and none lies over another", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const made: string[] = [];
+    const make = async (title: string, mode: string, calls: unknown[] | string) => {
+      const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title } })).json();
+      made.push(session.id);
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode, sandbox: "off" } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: typeof calls === "string" ? calls : `script:calls ${JSON.stringify(calls)}` } });
+      return session.id as string;
+    };
+    try {
+      const plain = await make("Targets plain", "full-auto", "script:render");
+      const ask = await make("Targets approval", "ask", [{ name: "Bash", input: { command: "mkdir -p out/reports && touch out/reports/a" } }]);
+      const q = await make("Targets question", "full-auto", [{ name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } }]);
+      const plan = await make("Targets plan", "plan", [{ name: "present_plan", input: { plan: "1. Bound the retry delay.\n2. Run the tests." } }]);
+      const pending = async (id: string, path: string) => (await (await request.get(`/api/sessions/${id}/${path}`)).json());
+      await expect.poll(async () => (await pending(ask, "approvals")).approvals?.length ?? 0, { timeout: 30_000 }).toBe(1);
+      await expect.poll(async () => (await pending(plan, "plan")).open?.length ?? 0, { timeout: 30_000 }).toBe(1);
+      const pane = page.locator(".k-station[data-helm]");
+      const seen: string[] = [];
+      const check = async (where: string) => {
+        const bad = await misfits(page);
+        seen.push(`${where}: ${bad.count}`);
+        expect(bad.small, `${where}: targets under 2.75rem`).toEqual([]);
+        expect(bad.over, `${where}: targets over one another`).toEqual([]);
+      };
+
+      await page.goto("/");
+      await expect(page.getByTestId("home-open").first()).toBeVisible();
+      await check("start page");
+      await page.goto(`/s/${plain}`);
+      await expect(pane.getByTestId("assistant-text").last()).toBeVisible();
+      await check("session at rest");
+      await pane.getByTestId("composer").tap();
+      await expect(pane.getByTestId("composer-tools")).toBeVisible();
+      await check("message box tools");
+      await pane.getByTestId("model-picker").tap();
+      await expect(page.getByTestId("model-popup")).toBeVisible();
+      await check("model menu");
+      await page.keyboard.press("Escape");
+      for (const menu of ["session-menu", "permission-menu", "panel-menu"]) {
+        await pane.getByTestId(menu).first().tap();
+        await expect(page.getByRole("menu").or(page.getByRole("dialog")).first()).toBeVisible();
+        await check(menu);
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("menu").or(page.getByRole("dialog"))).toHaveCount(0);
+      }
+      await pane.getByTestId("show-sidebar").tap();
+      await expect(page.getByTestId("session-row").first()).toBeInViewport();
+      await check("session list");
+      await page.goto(`/s/${ask}`);
+      await expect(pane.getByTestId("allow-once")).toBeVisible();
+      await check("approval card");
+      await shoot(page, "phone-04-targets-approval");
+      await page.goto(`/s/${q}`);
+      await expect(pane.getByTestId("question-option").first()).toBeVisible();
+      await check("question card");
+      await shoot(page, "phone-05-targets-question");
+      await page.goto(`/s/${plan}`);
+      await expect(pane.getByTestId("plan-approve")).toBeVisible();
+      await check("plan card");
+      console.log(`targets measured: ${seen.join(", ")}`);
+    } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  });
 });
+
+// The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
+// another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
+// box is taken as it shows, cut by what clips it). A target is what a press acts on: a
+// control, a link outside the words of a message, a row; one inside another is its part.
+async function misfits(page: Page) {
+  await page.waitForTimeout(300);
+  return page.evaluate(() => {
+    const sel = 'button, a[href], input:not([type=hidden]), select, textarea, summary, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=option], [role=tab], [role=switch], [role=radio], [role=checkbox]';
+    const tap = parseFloat(getComputedStyle(document.documentElement).fontSize) * 2.75;
+    const shown = (el: Element) => {
+      if (el.closest("[inert], .prose-keel")) return false;
+      const b = el.getBoundingClientRect();
+      if (b.width < 2 || b.height < 2 || b.right <= 0 || b.bottom <= 0 || b.left >= innerWidth || b.top >= innerHeight) return false;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === "hidden" || cs.pointerEvents === "none" || Number(cs.opacity) === 0) return false;
+      const top = document.elementFromPoint(Math.min(innerWidth - 1, Math.max(0, b.left + b.width / 2)), Math.min(innerHeight - 1, Math.max(0, b.top + b.height / 2)));
+      return !!top && (el.contains(top) || top.contains(el));
+    };
+    const all = [...document.querySelectorAll(sel)].filter(shown);
+    const outer = all.filter((el) => !all.some((o) => o !== el && o.contains(el)));
+    const name = (el: Element) => `${(el as HTMLElement).dataset.testid ?? el.tagName.toLowerCase()} "${(el.getAttribute("aria-label") || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 32)}"`;
+    const layer = (el: Element) => { for (let e = el.parentElement; e; e = e.parentElement) { const cs = getComputedStyle(e); if (cs.position === "fixed" || cs.position === "sticky" || /^(dialog|menu|listbox)$/.test(e.getAttribute("role") ?? "")) return e; } return document.body; };
+    const box = (el: Element) => {
+      const b = el.getBoundingClientRect();
+      let l = b.left, t = b.top, r = b.right, btm = b.bottom;
+      for (let e = el.parentElement; e && e !== document.body; e = e.parentElement) {
+        const cs = getComputedStyle(e), c = e.getBoundingClientRect();
+        if (cs.overflowX !== "visible") { l = Math.max(l, c.left); r = Math.min(r, c.right); }
+        if (cs.overflowY !== "visible") { t = Math.max(t, c.top); btm = Math.min(btm, c.bottom); }
+      }
+      return { l, t, r, b: btm, w: b.width, h: b.height };
+    };
+    const items = outer.map((el) => ({ el, n: name(el), L: layer(el), ...box(el) }));
+    const small = items.filter((t) => t.w < tap - 0.5 || t.h < tap - 0.5).map((t) => `${t.n} ${t.w.toFixed(1)}x${t.h.toFixed(1)}`);
+    const over: string[] = [];
+    for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+      const a = items[i]!, b = items[j]!;
+      if (a.L !== b.L) continue;
+      const x = Math.min(a.r, b.r) - Math.max(a.l, b.l), y = Math.min(a.b, b.b) - Math.max(a.t, b.t);
+      if (x > 0.5 && y > 0.5) over.push(`${a.n} over ${b.n}`);
+    }
+    return { count: items.length, small, over };
+  });
+}

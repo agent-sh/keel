@@ -397,7 +397,7 @@ function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId
                       data-n={i + 1}
                       className={cn(
                         // (Brought into view, it stops over the card's Answer row, not under it.)
-                        "flex scroll-mb-14 items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
+                        "k-q-option flex scroll-mb-14 items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
                         on ? "border-accent bg-accent-soft" : "border-line bg-sunken hover:border-line-strong",
                       )}
                     >

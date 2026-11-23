@@ -902,14 +902,14 @@ const SessionComposer = memo(function SessionComposer({
           // (Escape right after the pane was uncovered, a look or the start page left, stops nothing: lib/looks.ts.)
           if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); if (onEscape) onEscape(); else if (!session || !stopHeld(session.id)) onStop?.(); }
         }}
-        className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 text-read leading-relaxed outline-none placeholder:text-faint", rest ? "pb-3 pr-12" : "pb-1.5")}
+        className={cn("block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 text-read leading-relaxed outline-none placeholder:text-faint", rest ? "k-rest-text pb-3 pr-2" : "pb-1.5")}
       />
       {/* At rest a context that is nearly full still shows its ring: it is the one tool that warns. */}
-      {rest && sid && <span className="absolute right-11 top-1/2 -translate-y-1/2" data-testid="rest-meter"><ContextMeter sessionId={sid} above={REST_RING} /></span>}
+      {rest && sid && <span className="k-rest-ring absolute right-11 top-1/2 -translate-y-1/2" data-testid="rest-meter"><ContextMeter sessionId={sid} above={REST_RING} /></span>}
       {/* At rest the tools are one tap away without raising the keyboard. */}
       {rest && (
         <button type="button" data-testid="composer-open" aria-label="Show the model and tools" onClick={() => setTapped(true)}
-          className="absolute right-1.5 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
+          className="k-rest-open absolute right-1.5 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
           <SlidersHorizontal className="size-4" />
         </button>
       )}
