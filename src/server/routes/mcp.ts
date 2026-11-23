@@ -7,6 +7,7 @@ import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { installTacitServer } from "../../integrations/tacit-mcp.ts";
 import { memoryOn } from "../../integrations/tacit.ts";
+import { ProjectServers } from "../../mcp/project.ts";
 import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
 import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
@@ -53,6 +54,13 @@ export const mcpRoutes: RouteModule = (deps) => {
   installPhone(m);
   installTacitServer(m, (id) => memoryOn(deps.store, id));
   m.start();
+  // A project's .mcp.json: its servers the owner approved go to the sessions working in it, from each turn's start.
+  const projects = new ProjectServers(deps.store, m);
+  projects.onPending = (sid, root, names) => {
+    const ev = deps.store.append(sid, "note", { kind: "mcp-project", text: `This project's .mcp.json (${root}) names ${names.length === 1 ? "a server" : "servers"} waiting for your approval: ${names.join(", ")}. ${names.length === 1 ? "It is" : "They are"} not started until you approve ${names.length === 1 ? "it" : "them"} in Settings > MCP servers.`, servers: names, root });
+    deps.bus.emit({ t: "event", event: ev });
+  };
+  registerHooks({ turnStart: (s) => { try { projects.refresh(s); } catch (e) { deps.errors.capture("server", e, { at: "mcp project servers", session: s.id }); } } });
   // Once a process, when the servers had a moment to connect: one line of what was found (daemon-log.ts).
   if (!g.__keelMcpSaid) {
     g.__keelMcpSaid = true;
@@ -69,7 +77,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   (g as any).__keelMcpOff?.();
   // (And of the servers an editor passed with it.)
   (g as any).__keelMcpOff = deps.bus.on((f) => {
-    if (f.t === "session" && (f.session.archived || f.deleted)) m.releaseSession(f.session.id);
+    if (f.t === "session" && (f.session.archived || f.deleted)) { m.releaseSession(f.session.id); projects.forgetSession(f.session.id); }
     // The session's sandbox changed: a command an editor passed is started again inside the new one.
     else if (f.t === "feature" && f.name === "perm" && f.session_id) m.sessionPermChanged(f.session_id);
   });
@@ -87,9 +95,10 @@ export const mcpRoutes: RouteModule = (deps) => {
   // What a session's own server did is in the session's activity and on the
   // bus: it is a program the session runs, and the owner sees that it does.
   m.onSessionServer = (e) => {
-    const text = e.what === "started" ? `MCP server ${e.name}, passed by the editor, started: ${e.target}`
-      : e.what === "failed" ? `MCP server ${e.name}, passed by the editor, did not connect: ${e.error ?? "it failed"}`
-      : `MCP server ${e.name}, passed by the editor, ended`;
+    const from = e.project ? "of this project's .mcp.json" : "passed by the editor";
+    const text = e.what === "started" ? `MCP server ${e.name}, ${from}, started: ${e.target}`
+      : e.what === "failed" ? `MCP server ${e.name}, ${from}, did not connect: ${e.error ?? "it failed"}`
+      : `MCP server ${e.name}, ${from}, ended`;
     activity.record("turn", e.what === "failed" ? "mcp-failed" : "mcp", e.session, text, { server: e.name, target: e.target });
     deps.bus.emit({ t: "feature", name: "mcp-session", session_id: e.session, data: { name: e.name, what: e.what, target: e.target, ...(e.error ? { error: e.error } : {}) } });
   };
@@ -169,6 +178,21 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (holder && list.length && !holders.has(holder)) return bad("no open hold socket has this holder (GET /api/mcp/hold?holder=ID first)", 409);
         const remote = s.machine && s.machine !== "local" ? s.machine : undefined;
         return json({ set: m.setSessionServers(s.id, list, { cwd: s.workspace, remote, holder }), servers: m.list(s.id).filter((x) => x.session) });
+      },
+    },
+    // A project's .mcp.json servers and what the owner decided of each; a decision is the owner's alone.
+    "/api/mcp/projects": {
+      GET: () => json({ projects: projects.projects() }),
+    },
+    "/api/mcp/projects/decide": {
+      POST: async (req: Request) => {
+        const guard = needs(req);
+        if (guard) return guard;
+        const b = await body(req);
+        if (!["approved", "rejected", "forget"].includes(b.decision)) return bad("decision is approved, rejected or forget");
+        if (typeof b.root !== "string" || !b.root.startsWith("/") || typeof b.name !== "string" || typeof b.digest !== "string") return bad("give root, name and digest as shown");
+        const err = projects.decide(b.root, b.name, b.digest, b.decision);
+        return err ? bad(err, 409) : json({ projects: projects.projects() });
       },
     },
     "/api/mcp/servers": {

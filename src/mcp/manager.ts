@@ -196,10 +196,12 @@ type Entry = {
   plugin?: string;
   // A session's own server: its events go into its session (the owner's switch, kept in memory with it).
   channel?: boolean;
+  // A session's own server from its project's .mcp.json (the owner approved it), not from its editor.
+  project?: string;
 };
 
 // What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
-type Own = { session: string; label: string; given: string; holder?: string };
+type Own = { session: string; label: string; given: string; holder?: string; project?: string };
 
 // A server an editor named, as a name Keel's tools can carry: the characters a
 // server name takes, and never one a shared server already has.
@@ -212,7 +214,7 @@ function sessionLabel(name: string, taken: (n: string) => boolean): string {
 
 // Credential-shaped variables stay out of tool servers' environments unless
 // the config names them; a server gets what it was configured with.
-const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|SESSION)|^(AWS_|ANTHROPIC_|OPENAI_|CLAUDE_CODE_|GEMINI_|GOOGLE_|AZURE_|KEEL_)/i;
+export const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|SESSION)|^(AWS_|ANTHROPIC_|OPENAI_|CLAUDE_CODE_|GEMINI_|GOOGLE_|AZURE_|KEEL_)/i;
 
 // A server as it is shown: its command and arguments, or its address without
 // a user, a password or what follows a `?` (a key is often passed there).
@@ -353,7 +355,7 @@ export class McpManager {
   // A session ended: what a bundled server held for it (tabs) is let go.
   releaseSession(session: string) {
     for (const e of this.entries.values()) e.bundled?.released?.(session);
-    this.setSessionServers(session, []);
+    for (const e of [...this.entries.values()]) if (e.session === session) this.drop(e.name);
   }
 
   // How a session's own command is held to the session's sandbox: the argv
@@ -367,12 +369,12 @@ export class McpManager {
   // address without what follows a `?`: never an environment or header value.
   // Whether a session's tools run on another machine (set where the sessions are known).
   elsewhere?: (sessionId: string) => boolean;
-  onSessionServer?: (e: { session: string; name: string; what: "started" | "failed" | "ended"; target: string; error?: string }) => void;
+  onSessionServer?: (e: { session: string; name: string; what: "started" | "failed" | "ended"; target: string; error?: string; project?: string }) => void;
   private told(e: Entry, what: "started" | "failed" | "ended", error?: string) {
     if (!e.session) return;
     // The reason in one line: what a failed command printed is not passed on.
     const why = error?.split("\nstderr:")[0]!.split("\n")[0];
-    try { this.onSessionServer?.({ session: e.session, name: e.label ?? e.name, what, target: shownTarget(e.config), ...(why ? { error: why } : {}) }); } catch (err) { this.errors.capture("server", err, { at: "mcp session server", mcp: e.name }); }
+    try { this.onSessionServer?.({ session: e.session, name: e.label ?? e.name, what, target: shownTarget(e.config), ...(why ? { error: why } : {}), ...(e.project ? { project: e.project } : {}) }); } catch (err) { this.errors.capture("server", err, { at: "mcp session server", mcp: e.name }); }
   }
 
   // The servers an editor passed with a session. They run with the session's
@@ -388,8 +390,11 @@ export class McpManager {
   // The whole list each time: one not named again goes, one named again
   // unchanged keeps its connection. `cwd` is the session's folder; `remote`
   // names the machine the session's tools run on, when it is not this one.
-  setSessionServers(session: string, servers: { name: string; config: McpServerConfig }[], opts: { cwd?: string; remote?: string; holder?: string } = {}): { name: string; label?: string; error?: string }[] {
-    const mine = () => [...this.entries.values()].filter((e) => e.session === session);
+  // `project`: the servers are the ones the owner approved of the session's
+  // project's .mcp.json (src/mcp/project.ts), its root named: they are a list
+  // of their own, beside the editor's, and the editor's list leaves them be.
+  setSessionServers(session: string, servers: { name: string; config: McpServerConfig }[], opts: { cwd?: string; remote?: string; holder?: string; project?: string } = {}): { name: string; label?: string; error?: string }[] {
+    const mine = () => [...this.entries.values()].filter((e) => e.session === session && e.project === opts.project);
     const keep = new Set<string>();
     const out: { name: string; label?: string; error?: string }[] = [];
     for (const s of servers.slice(0, 32)) {
@@ -413,7 +418,7 @@ export class McpManager {
       const held = config.command ? this.sessionSandbox?.(session, [config.command, ...(config.args ?? [])]) : undefined;
       if (held && "refuse" in held) { out.push({ name: s.name, error: held.refuse }); continue; }
       const key = `${label}@${session}`;
-      this.addEntry(key, config, undefined, { session, label, given: s.name, holder: opts.holder });
+      this.addEntry(key, config, undefined, { session, label, given: s.name, holder: opts.holder, ...(opts.project ? { project: opts.project } : {}) });
       keep.add(key);
       out.push({ name: s.name, label });
       this.ensure(key).catch(() => {}); // its state says why it failed

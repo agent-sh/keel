@@ -7,6 +7,7 @@ import { ChevronRight, Download, Eye, Globe, KeyRound, LogOut, RefreshCw, Rotate
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
+import type { ProjectServer, ProjectState } from "../../../../src/mcp/project.ts";
 import { api, reportError, failed, useStore } from "../../lib/store.ts";
 import type { Outcome } from "../../../../src/mcp/channel.ts";
 import { ownerStop } from "../../../../src/core/stoppers.ts";
@@ -14,7 +15,8 @@ import { Select } from "../Select.tsx";
 import { ago, cn, when } from "../../lib/utils.ts";
 import { Connect } from "./McpConnect.tsx";
 import { navigate } from "../../lib/ui.ts";
-import { Blank, FolderLine, Ledger, ReaderHead, Seg, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
+import { STATE_WORD } from "../../../../src/core/state-words.ts";
+import { Blank, FolderLine, Ledger, ReaderHead, Seg, tail, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
 
 // A command line to argv: spaces split, quotes group.
 function argv(line: string): string[] {
@@ -50,6 +52,36 @@ function IconButton({ title, onClick, children, danger, testid }: { title: strin
       className={cn("grid size-7 place-items-center rounded-md text-faint transition-colors hover:bg-hover", danger ? "hover:text-danger" : "hover:text-fg")}>
       {children}
     </button>
+  );
+}
+
+const PROJECT_LABEL: Record<ProjectServer["state"], string> = { approved: "Approved", rejected: "Rejected", pending: STATE_WORD.need, changed: "Changed since approved" };
+const projectMark = (x: ProjectServer): Mark => (x.state === "approved" ? "on" : x.state === "rejected" ? "off" : "need");
+
+// A server a project's .mcp.json names: what it runs, and the owner's decision.
+function ProjectReader({ p, x, decide }: { p: ProjectState; x: ProjectServer; decide: (decision: "approved" | "rejected" | "forget") => void }) {
+  const waiting = x.state === "pending" || x.state === "changed";
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="mcp-project-server" data-name={x.name} data-state={x.state}>
+      <ReaderHead
+        title={x.name}
+        path={x.target}
+        desc={waiting
+          ? "This project's .mcp.json names this server. Keel starts it for the sessions working in the project only once you approve it, as it reads now: a change to its entry waits for you again."
+          : x.state === "approved" ? "Sessions working in this project get it, inside their own sandbox. A change to its entry in .mcp.json waits for you again." : "It is never started for this project."}
+        facts={[
+          ["State", <span data-testid="mcp-project-state">{PROJECT_LABEL[x.state]}</span>],
+          ["Project", tilde(p.root)],
+          ...(x.by === "claude" ? [["Decided", "in Claude Code"] as [string, React.ReactNode]] : []),
+        ]}
+      >
+        <div className="mt-3.5 flex flex-wrap items-center gap-2">
+          {x.state !== "approved" && <button type="button" className="k-btn" data-ink data-testid="mcp-project-approve" onClick={() => decide("approved")}>Approve</button>}
+          {x.state !== "rejected" && <button type="button" className="k-btn" data-quiet data-testid="mcp-project-reject" onClick={() => decide("rejected")}>Reject</button>}
+          {!waiting && <button type="button" className="k-btn" data-quiet data-testid="mcp-project-forget" onClick={() => decide("forget")}>Ask again</button>}
+        </div>
+      </ReaderHead>
+    </div>
   );
 }
 
@@ -522,7 +554,11 @@ export default function McpServers() {
   const [unread, setUnread] = useState<{ file: string; error: string }[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [note, setNote] = useState("");
-  const load = useCallback(() => api<{ servers: McpServerState[] }>("/api/mcp/servers").then((r) => setServers(r.servers)).catch(reportError), []);
+  const [projects, setProjects] = useState<ProjectState[]>([]);
+  const load = useCallback(() => {
+    api<{ projects: ProjectState[] }>("/api/mcp/projects").then((r) => setProjects(r.projects)).catch(reportError);
+    return api<{ servers: McpServerState[] }>("/api/mcp/servers").then((r) => setServers(r.servers)).catch(reportError);
+  }, []);
   const loadImportable = useCallback(() => api<{ servers: ImportableServer[]; failed: { file: string; error: string }[] }>("/api/mcp/importable").then((r) => { setImportable(r.servers); setUnread(r.failed ?? []); }).catch(reportError), []);
   // States change on the daemon (connects, crashes): read them again while the page is open.
   useEffect(() => {
@@ -548,8 +584,14 @@ export default function McpServers() {
     { id: "yours", title: "Yours", path: "mcp.json", entries: all.filter((s) => !s.bundled && !s.plugin).map(entry) },
     { id: "plugins", title: "From plugins", entries: all.filter((s) => s.plugin).map((s) => ({ ...entry(s), desc: `${s.plugin} · ${tilde(s.target)}` })) },
     { id: "bundled", title: "Built into Keel", entries: all.filter((s) => s.bundled).map(entry) },
+    ...projects.map((p) => ({
+      id: `project:${p.root}`, title: `Project ${tail(p.root, 28)}`, path: ".mcp.json",
+      entries: p.servers.map((x) => ({ id: `project:${p.root}\u0000${x.name}`, name: x.name, desc: tilde(x.target), mark: projectMark(x), markLabel: PROJECT_LABEL[x.state], aside: PROJECT_LABEL[x.state].toLowerCase(), testid: "mcp-project-entry" })),
+    })),
   ];
   const cur = all.find((s) => s.name === sel);
+  const proj = sel?.startsWith("project:") ? (() => { const [root, name] = sel.slice(8).split("\u0000"); const p = projects.find((x) => x.root === root); const x = p?.servers.find((y) => y.name === name); return p && x ? { p, x } : null; })() : null;
+  const pendingProjects = projects.reduce((n, p) => n + p.servers.filter((x) => x.state === "pending" || x.state === "changed").length, 0);
   const ready = all.filter((s) => s.state === "ready" || s.state === "idle" || s.state === "armed");
   const waiting = all.filter((s) => s.state === "needs_auth").length;
   const failing = all.filter((s) => mcpMark(s) === "fail").length;
@@ -565,6 +607,7 @@ export default function McpServers() {
         { n: ready.reduce((n, s) => n + s.tools, 0), label: "tools offered" },
         ...(waiting ? [{ n: waiting, label: "need sign-in", tone: "need" as const }] : []),
         ...(failing ? [{ n: failing, label: "failed", tone: "fail" as const }] : []),
+        ...(pendingProjects ? [{ n: pendingProjects, label: "wait for your approval", tone: "need" as const }] : []),
       ]} />
       {note && (
         <div className="k-issue mb-3 flex items-center gap-2" data-tone="quiet" data-testid="mcp-note">
@@ -611,7 +654,12 @@ export default function McpServers() {
               <ImportList rows={rows} taken={taken} onImport={async (i, as) => { await act("/api/mcp/import", { source: i.source, name: i.name, as }); loadImportable(); setSel(as ?? i.name); }} />
             </div>
           </>
-        ) : cur ? <ServerReader key={cur.name} s={cur} act={act} /> : <Blank title={servers ? "No server picked" : "Reading the servers"} />}
+        ) : proj ? <ProjectReader key={sel!} p={proj.p} x={proj.x} decide={async (decision) => {
+          try {
+            const r = await api<{ projects: ProjectState[] }>("/api/mcp/projects/decide", { method: "POST", body: JSON.stringify({ root: proj.p.root, name: proj.x.name, digest: proj.x.digest, decision }) });
+            setProjects(r.projects);
+          } catch (e) { setNote(failed(e, { at: "Mcp" })); }
+        }} /> : cur ? <ServerReader key={cur.name} s={cur} act={act} /> : <Blank title={servers ? "No server picked" : "Reading the servers"} />}
       </Ledger>
     </div>
   );

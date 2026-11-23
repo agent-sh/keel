@@ -31,7 +31,7 @@ const secs = (ms: unknown) => (typeof ms === "number" && ms > 0 ? Math.ceil(ms /
 
 // Claude Code, Claude Desktop and Cursor share one entry shape; `type` says
 // the transport ("http", "sse", "ws", "stdio"). Antigravity calls the URL serverUrl.
-function claudeShape(c: any): McpServerConfig {
+export function claudeShape(c: any): McpServerConfig {
   const url = c.url ?? c.serverUrl;
   return clean({
     command: url ? undefined : c.command ? String(c.command) : undefined,

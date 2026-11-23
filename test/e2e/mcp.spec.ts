@@ -335,3 +335,67 @@ test("tacit's tools reach a session, and a server that fails says so", async ({ 
   await shoot(page, "mcp-10-tacit");
   await request.delete("/api/mcp/servers/broken");
 });
+
+// Feature: a project's own servers (Claude Code's .mcp.json, project scope).
+// A session in the project is not given one until the owner approves it in
+// Settings > MCP servers; the session is told what waits. An approved one is
+// that project's sessions' own; a changed entry waits again; an approval the
+// owner gave in Claude Code (their own ~/.claude.json) is taken over.
+test("a project's .mcp.json servers run once the owner approves them", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "drives the calls with the scripted model");
+  const imp = await (await request.get("/api/mcp/importable")).json();
+  test.skip(!String(imp.home).includes("keel-work"), "needs a scratch import home (KEEL_IMPORT_HOME)");
+  const { writeFileSync, readFileSync, existsSync, rmSync } = await import("node:fs");
+  const tag = Date.now().toString(36);
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `proj-mcp-${tag}`);
+  mkdirSync(join(root, ".git"), { recursive: true });
+  const entry = (extra: string[] = []) => ({ command: "bun", args: [FIXTURE, ...extra] });
+  writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { [`pe${tag}`]: entry(), [`cc${tag}`]: entry(["claude"]) } }));
+  // The owner approved one of them in Claude Code, in their own file.
+  const claudeJson = join(imp.home, ".claude.json");
+  const before = existsSync(claudeJson) ? readFileSync(claudeJson, "utf8") : null;
+  writeFileSync(claudeJson, JSON.stringify({ projects: { [root]: { enabledMcpjsonServers: [`cc${tag}`] } } }));
+  try {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: root, model: HAIKU } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    const results = async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[]).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data.results[0].content));
+    const run = async (c: unknown[], n: number) => {
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(c)}` } });
+      await expect.poll(async () => (await results()).length, { timeout: 60_000 }).toBe(n);
+      return (await results()).at(-1)!;
+    };
+    // Not approved: not started, and the session says what waits.
+    expect(await run([{ name: "mcp_call", input: { tool: `pe${tag}__echo`, arguments: { text: "hi" } } }], 1)).toContain(`No tool named pe${tag}__echo`);
+    // The one approved in Claude Code runs.
+    expect(await run([{ name: "mcp_call", input: { tool: `cc${tag}__echo`, arguments: { text: "from claude" } } }], 2)).toContain("echo: from claude");
+    await page.goto(`/s/${session.id}`);
+    await expect(page.getByTestId("note").filter({ hasText: `waiting for your approval: pe${tag}` })).toHaveCount(1);
+
+    // The owner approves it in the panel.
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-project-entry"]').filter({ hasText: `cc${tag}` }).first().click();
+    await expect(panel.getByTestId("mcp-project-state")).toHaveText("Approved");
+    await panel.locator('[data-testid="mcp-project-entry"]').filter({ hasText: `pe${tag}` }).first().click();
+    await expect(panel.getByTestId("mcp-project-state")).toHaveText("Needs you");
+    await shoot(page, "mcp-11-project-pending");
+    await panel.getByTestId("mcp-project-approve").click();
+    await expect(panel.getByTestId("mcp-project-state")).toHaveText("Approved");
+    expect(await run([{ name: "mcp_call", input: { tool: `pe${tag}__echo`, arguments: { text: "approved" } } }], 3)).toContain("echo: approved");
+
+    // Its entry changes: it waits for the owner again, and is not run meanwhile.
+    writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { [`pe${tag}`]: entry(["changed"]), [`cc${tag}`]: entry(["claude"]) } }));
+    expect(await run([{ name: "mcp_call", input: { tool: `pe${tag}__echo`, arguments: { text: "again" } } }], 4)).toContain(`No tool named pe${tag}__echo`);
+    await expect(panel.locator('[data-testid="mcp-project-entry"]').filter({ hasText: `pe${tag}` }).first()).toContainText("changed since approved");
+    // A decision on what the owner was shown before the change is refused.
+    const shownBefore = (await (await request.get("/api/mcp/projects")).json()).projects.find((p: any) => p.root === root).servers.find((x: any) => x.name === `pe${tag}`);
+    expect((await request.post("/api/mcp/projects/decide", { data: { root, name: `pe${tag}`, digest: "0".repeat(32), decision: "approved" } })).status()).toBe(409);
+    expect((await request.post("/api/mcp/projects/decide", { data: { root, name: `pe${tag}`, digest: shownBefore.digest, decision: "rejected" } })).ok()).toBe(true);
+    await shoot(page, "mcp-12-project-rejected");
+  } finally {
+    if (before === null) rmSync(claudeJson, { force: true }); else writeFileSync(claudeJson, before);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
