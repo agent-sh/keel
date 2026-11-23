@@ -160,11 +160,12 @@ function Row({ e }: { e: ErrorRecord }) {
       <summary className="flex cursor-default list-none items-baseline gap-2 text-ui [&::-webkit-details-marker]:hidden">
         {/* The row opens: a marker of its own says so, and turns when it has. */}
         <ChevronRight aria-hidden className="size-3.5 shrink-0 self-center text-faint transition-transform duration-150 group-open:rotate-90 group-open:text-fg" data-testid="error-marker" />
-        <span className="rounded-xs bg-danger-soft px-1.5 py-px text-micro font-medium text-danger">{e.source}</span>
+        {/* The message leads; where it came from is a quiet word after it, not a red tag on every row (the drawer is all failures). */}
         <span className={cn("min-w-0 flex-1 truncate", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
+        <span className="shrink-0 text-micro text-faint" data-testid="error-source">{e.source}</span>
         {state === "recovered" && <span className="shrink-0 text-micro text-ok" title={`Every time, a retry of the request passed. Last healed ${when(e.recovered_ts!)}`} data-testid="error-recovered">{ERROR_STATE.recovered}</span>}
         {n > 1 && (
-          <span className="rounded-xs bg-sunken px-1.5 text-micro tabular-nums text-muted" data-testid="error-count" title={`${n} times since ${when(e.first_ts ?? e.ts)}${(e.sites?.length ?? 0) > 1 ? `, in ${e.sites!.length} sessions` : ""}`}>
+          <span className="k-face-figure shrink-0 text-micro text-muted" data-testid="error-count" title={`${n} times since ${when(e.first_ts ?? e.ts)}${(e.sites?.length ?? 0) > 1 ? `, in ${e.sites!.length} sessions` : ""}`}>
             {n}x
           </span>
         )}
@@ -179,7 +180,7 @@ function Row({ e }: { e: ErrorRecord }) {
             onClick={(ev) => { ev.preventDefault(); actions.readError(e.id, unread).catch(reportError); }}
             data-testid="error-read"
           >
-            {unread ? <span className="size-2 rounded-full bg-danger" /> : <Check className="size-3.5" />}
+            {unread ? <span className="size-2 rounded-full bg-fg" /> : <Check className="size-3.5" />}
           </button>
         )}
       </summary>
@@ -274,7 +275,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
           data-testid="errors-panel"
           data-float
           className={cn(
-            "k-surface fixed right-3 top-3 bottom-3 z-50 w-[min(36rem,calc(100vw-1.5rem))]",
+            "k-surface fixed right-3 top-3 bottom-3 z-50 w-[min(40rem,calc(100vw-1.5rem))]",
             "transition-[transform,opacity] duration-200 data-starting-style:translate-x-4 data-starting-style:opacity-0 data-ending-style:translate-x-4 data-ending-style:opacity-0",
           )}
         >
@@ -286,7 +287,8 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               <X />
             </Dialog.Close>
           </div>
-          <div className="flex flex-col gap-1.5 border-b border-line px-3 py-2 whitespace-nowrap">
+          {/* One band: which errors, then what to do with the open ones at its right end. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-3 py-2 whitespace-nowrap">
             <Seg
               kind="tabs"
               panel={panel}
@@ -295,20 +297,20 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               onChange={setTab}
               options={([["open", ERROR_STATE.open, openList.length], ["recovered", ERROR_STATE.recovered, recovered.length], ["resolved", ERROR_STATE.resolved, resolved.length]] as const).map(([id, label, n]) => ({ value: id, label: <>{label}<span className="text-micro tabular-nums text-faint">{n}</span></> }))}
             />
-            <div className={cn("items-center gap-2", tab === "open" && openList.length > 0 ? "flex" : "hidden")}>
+            <div className={cn("ml-auto items-center gap-1", tab === "open" && openList.length > 0 ? "flex" : "hidden")}>
             {tab === "open" && (
-              <label className="flex h-7 items-center gap-1.5 px-1.5 text-caption text-muted">
+              <label className="flex h-ctl-md items-center gap-1.5 px-1.5 text-caption text-muted">
                 <input type="checkbox" checked={unreadOnly} onChange={(ev) => setUnreadOnly(ev.currentTarget.checked)} className="accent-[var(--accent)]" data-testid="errors-unread-only" />
                 Unread only
               </label>
             )}
             {tab === "open" && unread.length > 0 && (
-              <button type="button" onClick={() => actions.readAllErrors(unread).catch(reportError)} className="ml-auto flex h-7 items-center gap-1.5 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="errors-read-all">
+              <button type="button" onClick={() => actions.readAllErrors(unread).catch(reportError)} className="flex h-ctl-md items-center gap-1.5 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="errors-read-all">
                 <CheckCheck className="size-3.5" /> Mark all read
               </button>
             )}
             {tab === "open" && openList.length > 1 && (
-              <button type="button" onClick={() => actions.resolveAllErrors(openList).catch(reportError)} className={cn("h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg", !unread.length && "ml-auto")}>
+              <button type="button" onClick={() => actions.resolveAllErrors(openList).catch(reportError)} className="h-ctl-md rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">
                 Resolve all
               </button>
             )}
