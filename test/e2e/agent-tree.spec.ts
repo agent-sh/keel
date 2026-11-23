@@ -51,7 +51,11 @@ test("agents start agents, message each other, and stop as a tree", async ({ pag
     const first = ((await api(`/api/sessions/${session.id}/agents`)).agents as any[]).find((a) => a.title === "Coordinator");
     // The coordinator starts an agent of its own.
     await expect.poll(() => own(first.session_id), { timeout: 30_000 }).toEqual(["Worker"]);
-    expect((await tree()).map((a) => `${a.title}:${a.depth}`)).toEqual(["Coordinator:1", "Worker:2", "Sibling:1"]);
+    // Depth first: an agent's own agents come right under it. The two started in one step have no order
+    // between them (they are made side by side, and either can be stored first).
+    const order = (await tree()).map((a) => `${a.title}:${a.depth}`);
+    expect([...order].sort()).toEqual(["Coordinator:1", "Sibling:1", "Worker:2"]);
+    expect(order[order.indexOf("Coordinator:1") + 1]).toBe("Worker:2");
     const coord = await node("Coordinator");
     const sib = await node("Sibling");
     const work = await node("Worker");
