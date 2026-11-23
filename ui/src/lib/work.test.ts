@@ -247,6 +247,9 @@ test("a refusal says who refused and why, without what was written for the model
   expect(refusalOf(r("Refused by the judge (risk high): The command discards work. Do not retry it as it is or work around it."))).toEqual({ by: "Judge", why: "The command discards work." });
   expect(refusalOf(r("Refused: the command deletes / recursively, which never runs without the owner. Do not try another form of it; say what you wanted it for."))).toEqual({ by: "Keel", why: "the command deletes / recursively, which never runs without the owner." });
   expect(refusalOf(r("This session is read-only: only read-only commands run, and `rm x` is not one."))).toEqual({ by: "Read only", why: "only read-only commands run, and `rm x` is not one." });
+  // A hook of the owner's blocked it: it never ran, and the hook's reason is the reason.
+  const hooked = r("A hook blocked this call: rm -rf is not allowed here");
+  expect([callState(hooked), ranOf(callState(hooked), hooked), refusalOf(hooked)]).toEqual(["refused", false, { by: "Hook", why: "rm -rf is not allowed here" }]);
 });
 
 test("a failure's reason is the tool's own output, and a call to a tool that is not there did not run", () => {

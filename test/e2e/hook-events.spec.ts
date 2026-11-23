@@ -278,8 +278,12 @@ test("an http hook receives the event at a local sink", async ({ page, request }
     expect(pre[0]).toMatchObject({ type: "application/json", body: { session_id: id, cwd: ws, hook_event_name: "PreToolUse", tool_name: "Bash", permission_mode: "bypassPermissions" } });
     expect(post.length).toBe(1);
     expect(post[0]!.body).toMatchObject({ hook_event_name: "PostToolUse", tool_input: { command: "echo to-the-sink" }, tool_response: expect.stringContaining("to-the-sink") });
-    // The sink's answer refused the second call.
-    await expect(page.getByTestId("tool-call").nth(1)).toHaveAttribute("data-state", "error");
+    // The sink's answer refused the second call: it never ran, and its line says the hook blocked it and why.
+    const blocked = page.getByTestId("tool-call").nth(1);
+    await expect(blocked).toHaveAttribute("data-state", "refused");
+    await expect(blocked.getByTestId("tool-refused")).toHaveText("blocked by a hook");
+    await expect(blocked.getByTestId("tool-refusal")).toHaveText("Hookthe sink refused it");
+    await expect(blocked.locator(".k-line-verb")).toHaveText("Run");
     const results = JSON.stringify((await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "tool_result"));
     expect(results).toContain("A hook blocked this call: the sink refused it");
     await page.getByTestId("tool-call").nth(1).click();

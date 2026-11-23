@@ -267,7 +267,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {state === "waiting" && <><span className="k-line-state" data-tone="need" data-testid="call-state">{NEEDS_APPROVAL}</span>{" "}</>}
           {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{noSuchTool(result) ? "no such tool" : shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
           {state === "denied" && <><span className="k-line-state" data-tone="own" data-testid="call-state">denied by you</span>{" "}</>}
-          {state === "refused" && <><span className="k-line-state" data-tone="warn" data-testid="tool-refused">refused</span>{" "}</>}
+          {state === "refused" && <><span className="k-line-state" data-tone="warn" data-testid="tool-refused">{turned?.by === "Hook" ? "blocked by a hook" : "refused"}</span>{" "}</>}
           {ended && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"} data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : stoppedByUser(result?.content) ? "You stopped the turn while this call ran." : resultText(result)}>{ended === "cut" ? "cut by a restart" : CALL_STOPPED}</span>{" "}</>}
           {state === "unfinished" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title="The turn ended before this call had a result.">no result</span>{" "}</>}
           {state === "unrun" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title={resultText(result)}>{notRun(result?.content)}</span>{" "}</>}

@@ -13,6 +13,7 @@ import { Hooks, hookContext, hookFailureText, namesOf, ownerHooksPath, parseHook
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 import { ownerStop, replaced } from "../../core/stoppers.ts";
+import { HOOK_BLOCKED } from "../../core/stops.ts";
 import { hookLine, sayAt } from "../../admin/daemon-log.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -166,7 +167,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       if (r.failed?.length) call.hook = { ...call.hook, failed: [...(call.hook?.failed ?? []), ...r.failed] };
       if (r.block) {
         sayAt({ session: s.id }, hookLine({ event: "PreToolUse", did: `refused ${name}`, reason: r.block, title: s.title }), "warn");
-        return { deny: `A hook blocked this call: ${r.block}` };
+        return { deny: `${HOOK_BLOCKED}: ${r.block}` };
       }
       if (r.context.length) c.context = r.context;
       if (r.ask) c.ask = r.ask;

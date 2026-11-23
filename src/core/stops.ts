@@ -52,11 +52,14 @@ export const notRun = (content: unknown): string | undefined => (typeof content 
 // the words after the colon are the owner's reason.
 export const OWNER_DENIED = "The owner denied this call";
 export const ownerDenial = (why?: string) => (why ? `${OWNER_DENIED}: ${why}` : `${OWNER_DENIED}. Do not retry it; take another way or ask.`);
+// What the model gets for a call a PreToolUse hook of the owner's blocked,
+// followed by the hook's reason. The call never ran.
+export const HOOK_BLOCKED = "A hook blocked this call";
 // How a call that never ran was turned away, by its result's own words: the
-// owner denied it, or the policy, the reviewer or the judge refused it.
+// owner denied it, or the policy, the reviewer, the judge or a hook refused it.
 export const turnedAway = (content: unknown): "denied" | "refused" | undefined =>
   typeof content !== "string" ? undefined
     : content.startsWith(OWNER_DENIED) ? "denied"
-      : /^(Refused: |Refused by |The reviewer refused this call|This session is (read-only|in plan mode)\b)/.test(content) ? "refused" : undefined;
+      : content.startsWith(`${HOOK_BLOCKED}: `) || /^(Refused: |Refused by |The reviewer refused this call|This session is (read-only|in plan mode)\b)/.test(content) ? "refused" : undefined;
 // The reason the owner gave with a denial; empty when they gave none.
 export const denialReason = (content: string): string => (content.startsWith(`${OWNER_DENIED}: `) ? content.slice(OWNER_DENIED.length + 2) : "");

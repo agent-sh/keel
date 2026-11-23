@@ -7,7 +7,7 @@
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
-import { RESTART_CUT, notRun, stopKind, stoppedRunning, turnedAway } from "../../../src/core/stops.ts";
+import { HOOK_BLOCKED, RESTART_CUT, notRun, stopKind, stoppedRunning, turnedAway } from "../../../src/core/stops.ts";
 import { patchFiles, resultText, shellStatus, toolKind, type ToolKind, splitDiagnostics, splitMemory, splitNested } from "./tools.ts";
 import { NEEDS, STATE_WORD, countWord } from "../../../src/core/state-words.ts";
 
@@ -235,6 +235,7 @@ export function refusalOf(result?: ToolResultBlock): { by: string; why: string }
   if ((m = text.match(/^The reviewer refused this call(?: \([^)]*\))?: ([\s\S]*)$/))) return { by: "Reviewer", why: body(m[1]!) };
   if ((m = text.match(/^Refused by the (\w+)(?: \([^)]*\))?: ([\s\S]*)$/))) return { by: m[1]![0]!.toUpperCase() + m[1]!.slice(1), why: body(m[2]!) };
   if ((m = text.match(/^Refused: ([\s\S]*)$/))) return { by: "Keel", why: body(m[1]!) };
+  if (text.startsWith(`${HOOK_BLOCKED}: `)) return { by: "Hook", why: body(text.slice(HOOK_BLOCKED.length + 2)) };
   if ((m = text.match(/^This session is (read-only|in plan mode)[:,]? ?([\s\S]*)$/))) return { by: m[1] === "read-only" ? "Read only" : "Plan mode", why: body(m[2]!) };
   return { by: "Keel", why: body(text) };
 }
