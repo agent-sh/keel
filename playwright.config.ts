@@ -26,6 +26,29 @@ if (given && !relative(resolve(given), shared).startsWith("..")) {
   throw new Error(`--output ${given} holds other runs' output folders, which Playwright empties when a run starts; use a folder of this run's own (the default is ${outputDir}).`);
 }
 
+// A daemon a spec starts takes the run's environment ({ ...process.env }). From a shell that names
+// none of these, it would find the owner's own tools and setups: the real tacit (his memory store),
+// parlar (his mic and speaker), his Hermes gateway (his phone) and the other harnesses' sessions and
+// MCP servers in his home. Each gets a default here, so every daemon a spec starts inherits it: a
+// TACIT_BIN and a KEEL_PARLAR that name no file (Keel then runs no memory tool and no voice, and
+// looks nowhere else), a phone socket and the readers' homes under the e2e state. What the shell
+// names is kept: scripts/dev.sh and a spec that wants a stand-in name their own.
+// (test/e2e/spec-env.spec.ts checks what such a daemon would find.)
+const envRoot = `${process.env.HOME}/.cache/keel-work/bun/e2e-state/run-env-${new URL(url).port || "80"}`;
+const defaults: Record<string, string> = {
+  TACIT_BIN: `${envRoot}/no-tacit`,
+  KEEL_PARLAR: `${envRoot}/no-parlar`,
+  KEEL_PHONE_SOCKET: `${envRoot}/phone/phone.sock`,
+  KEEL_IMPORT_HOME: `${envRoot}/import/home`,
+  KEEL_IMPORT_CLAUDE_DIR: `${envRoot}/import/claude`,
+  KEEL_IMPORT_CODEX_DIR: `${envRoot}/import/codex`,
+  KEEL_IMPORT_AGY_DIR: `${envRoot}/import/agy`,
+  KEEL_IMPORT_HERMES_DIR: `${envRoot}/import/hermes`,
+  KEEL_IMPORT_OPENCODE_DIR: `${envRoot}/import/opencode`,
+  KEEL_IMPORT_KEEL_DB: `${envRoot}/import/keel.db`,
+};
+for (const [k, v] of Object.entries(defaults)) if (!process.env[k]?.trim()) process.env[k] = v;
+
 // Spec files named on the command line run in the order they are named. Playwright by
 // itself runs files by name whatever order they are given in, so a spec that passes only
 // after another (it reads what the other left behind) is never seen failing. With the
