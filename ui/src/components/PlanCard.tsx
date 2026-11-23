@@ -193,11 +193,14 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const comes = hold.take && moved.current !== hold.at && at === "text" && readKey && fits && !editing && !wasBrought();
   useEffect(() => {
     if (hold.keys !== "ready" || !hold.take || moved.current === hold.at || !readKey) return;
+    // Not whole in view (a window made short, a foot over it): the move waits for it, asked again when it
+    // fits. The arrival is not used up meanwhile.
+    if (!fits) return;
     // Whole in view for the settle time first: asked again when that time is up (it may change meanwhile).
-    const wait = fits && fitsAt.current !== null ? fitsAt.current + KEY_MS - performance.now() : 0;
+    const wait = fitsAt.current !== null ? fitsAt.current + KEY_MS - performance.now() : 0;
     if (wait > 0) { const t = window.setTimeout(() => wake((n) => n + 1), wait + 1); return () => window.clearTimeout(t); }
     moved.current = hold.at;
-    if (document.activeElement !== text.current || !fits || editing || wasBrought() || !approve.current || approve.current.disabled) return;
+    if (document.activeElement !== text.current || editing || wasBrought() || !approve.current || approve.current.disabled) return;
     // (An arrival of its own: Enter approves only after the settle time from now, lib/asks.ts.)
     pageFocus(approve.current);
   }, [hold.keys, hold.take, hold.at, readKey, fits, fitsAt.current, woke]);

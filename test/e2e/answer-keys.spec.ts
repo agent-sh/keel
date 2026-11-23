@@ -1494,6 +1494,35 @@ test("an Allow once ready for Enter is drawn whole while a press does not count 
   await drop(request, id);
 });
 
+// A plan brought the keyboard as a thing to answer, but not whole in view when its keys are ready (a short
+// window): Approve takes the keyboard once the plan stands whole, not never. The arrival is not used up
+// while the plan does not fit.
+test("a plan that does not fit as its keys are ready gets Approve the keyboard once it fits", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const id = await create(request, "Plan fit", folder("plan-fit"));
+  await page.goto(`/s/${id}`);
+  await ask(request, id, "plan", "p");
+  const plan = cardIn(page, id, "plan"), approve = plan.getByTestId("plan-approve");
+  await expect(approve).toBeFocused({ timeout: 8000 });
+  await page.keyboard.press("ArrowUp");
+  await expect(plan.getByTestId("plan-text")).toBeFocused();
+  // A short window: the plan no longer stands whole. The owner's key to what waits is a new arrival.
+  const size = page.viewportSize()!;
+  await page.setViewportSize({ width: size.width, height: 360 });
+  await page.waitForTimeout(300);
+  await page.keyboard.press("Alt+a");
+  await expect(plan).toHaveAttribute("data-keys", "ready");
+  await page.waitForTimeout(600);
+  await expect(plan.getByTestId("plan-text")).toBeFocused();
+  await page.setViewportSize(size);
+  await expect(approve).toBeFocused({ timeout: 4000 });
+  await expect(approve).toHaveAttribute("data-ready", "true", { timeout: 4000 });
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/plan`)).json()).open.length).toBe(0);
+  await drop(request, id);
+});
+
 // End pressed at once after Enter opened a long command reads it to its end. The opened view may not have
 // been read after a paint yet when End comes: a step then would carry its lines out of view unread, and
 // End would stop short ("7 lines not seen yet"). The step waits for that view to count. Six times each
