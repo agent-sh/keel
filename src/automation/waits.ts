@@ -438,7 +438,8 @@ function pattern(p: unknown): string {
 }
 
 // Validates a spec the way the model or the page wrote it; throws the reason.
-export function normalize(raw: any, cwd: string): WaitSpec {
+// `elsewhere`: the session's commands run on another machine, whose files a wait here does not see.
+export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}): WaitSpec {
   const spec = raw?.spec && typeof raw.spec === "object" ? raw.spec : raw;
   const kind = spec?.kind ?? (spec?.command ? "monitor" : spec?.pid ? "process" : spec?.url ? "http" : spec?.match && spec?.path ? "log" : spec?.path ? "file" : spec?.seconds || spec?.at_ms ? "timer" : undefined);
   const custom = kinds.get(kind);
@@ -470,7 +471,12 @@ export function normalize(raw: any, cwd: string): WaitSpec {
       const pid = Number(spec.pid);
       // Models sent pid 0 for a pause, or for a command they started in the background (src/tools/jobs.ts
       // writes `<log>.exit` when a command ends; its end starts no turn, so a file wait on that is the wake).
-      if (!Number.isInteger(pid) || pid <= 1) throw new Error('a process wait needs a running process\'s id (a number above 1, as `echo $!` prints it). A background command you started does not wake this session when it ends (its end is told with the session\'s next request): to be woken then, wait with kind "file" on its log\'s path plus ".exit", which its end writes. For a pause, use kind "timer" with seconds.');
+      if (!Number.isInteger(pid) || pid <= 1) {
+        const woken = o.elsewhere
+          ? "its command runs on the session's machine, whose files and processes a wait here does not see: wait there with a command in the shell tool"
+          : 'to be woken then, wait with kind "file" on its log\'s path plus ".exit", which its end writes';
+        throw new Error(`a process wait needs a running process's id (a number above 1, as \`echo $!\` prints it). A background command you started does not wake this session when it ends (its end is told with the session's next request): ${woken}. For a pause, use kind "timer" with seconds.`);
+      }
       if (!procAlive(pid)) throw new Error(`process ${pid} has already ended`);
       const start = startTime(pid);
       return start ? { kind, pid, start } : { kind, pid };

@@ -372,13 +372,15 @@ const waitSchema = {
 
 const waitRun = (input: any, ctx: ToolContext) => guard(() => {
   if (input.kind === "webhook" || input.spec?.kind === "webhook") return fail("A webhook wait is the owner's to create.");
-  const spec = waits.normalize(input, ctx.cwd);
+  // A session whose commands run on another machine: their files are there, not on this disk.
+  const elsewhere = !!D().store.session(ctx.sessionId)?.machine;
+  const spec = waits.normalize(input, ctx.cwd, { elsewhere });
   if (waits.isMonitor(spec.kind)) return fail("Use the monitor tool for a command's output or a socket.");
   // The output file of a background command of this session (logDir in src/tools/shell.ts) that does not
   // exist names no command of it: a wait on it only reaches its deadline. Its exit file (`<log>.exit`, src/tools/jobs.ts)
   // is written when the command ends, so it is waited for while its log is there.
   const out = spec.kind === "file" || spec.kind === "log" ? spec.path : "";
-  if (out && dirname(out) === join(ctx.spillDir, "jobs") && !existsSync(out) && !(out.endsWith(".exit") && existsSync(out.slice(0, -".exit".length))))
+  if (out && !elsewhere && dirname(out) === join(ctx.spillDir, "jobs") && !existsSync(out) && !(out.endsWith(".exit") && existsSync(out.slice(0, -".exit".length))))
     return fail(`${basename(out)} is the output file of no background command of this session. A background command you started does not wake this session when it ends (its end is told with the session's next request): to be woken then, wait with kind "file" on its log's path plus ".exit", which its end writes.`);
   // The model's http wait follows web fetch's address rules (the wait tool runs unasked, as a read).
   if (spec.kind === "http" && privateHost(new URL(spec.url).hostname))

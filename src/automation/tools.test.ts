@@ -12,6 +12,8 @@ import * as waits from "./waits.ts";
 import { automationTools } from "./tools.ts";
 
 const store = new Store(mkdtempSync(join(tmpdir(), "keel-auto-")));
+// The fleet's column, before the first read of a session (a read prepared before it would not see it).
+if (!store.columnExists("sessions", "machine")) store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
 setDeps({ store, bus: new Bus(), errors: { capture() {} } } as any);
 loops.migrate();
 waits.migrate();
@@ -45,6 +47,26 @@ test("a wait on a background command's output file that no command of the sessio
   const elsewhere = await tool("WaitFor").run({ kind: "file", path: join(spill, "later.log") }, own);
   expect(elsewhere.is_error).toBeFalsy();
   for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
+});
+
+// A session whose commands run on another machine: its jobs and their exit files are there, and a wait
+// here checks this disk. It is not told to wait on an exit file, nor refused by what this disk lacks.
+test("a session on another machine is not told to wait for a file of its machine here", async () => {
+  const far = store.createSession({ model: "m", workspace: "/", title: "far" });
+  store.db.run("UPDATE sessions SET machine = 'm2' WHERE id = ?", [far.id]);
+  const spill = mkdtempSync(join(tmpdir(), "keel-spill-"));
+  const own = { ...ctx, sessionId: far.id, spillDir: spill };
+  const r = await tool("WaitFor").run({ kind: "process", pid: 0 }, own);
+  expect(r.is_error).toBe(true);
+  expect(text(r)).toContain("does not wake this session");
+  expect(text(r)).toContain("runs on the session's machine, whose files and processes a wait here does not see: wait there with a command in the shell tool");
+  expect(text(r)).not.toContain(".exit");
+  const near = await tool("WaitFor").run({ kind: "process", pid: 0 }, ctx);
+  expect(text(near)).toContain('plus ".exit"');
+  // A file wait of such a session is refused for where its files are, not as a command it does not have.
+  const there = await tool("WaitFor").run({ kind: "file", path: join(spill, "jobs", "b1there.log.exit") }, own);
+  expect(text(there)).not.toContain("output file of no background command");
+  for (const w of waits.list(far.id)) waits.cancel(w.id, far.id);
 });
 
 test("CronDelete deletes the model's own scheduled tasks, not the owner's", async () => {
