@@ -11,8 +11,8 @@ renderers() { local p; for p in $(under "$(win_pid)"); do tr '\0' ' ' < "/proc/$
 # The session's own window of the section before is closed: what follows is typed into the main one.
 for id in $($A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
 ws=sorted(json.load(sys.stdin).get("windows", []), key=lambda w: -w["geometry"]["width"]*w["geometry"]["height"])
-print(" ".join(str(w["id"]) for w in ws[1:]))'); do $A close-window --id "$WS" --window "$id" > /dev/null 2>&1; done
-wait_for 10 '[ "$(windows)" = 1 ]' || true
+print(" ".join(str(w["id"]) for w in ws[1:]))'); do $A close-window --id "$WS" "$id" > /dev/null 2>&1; done
+wait_for 10 '[ "$(windows)" = 1 ]' || echo "# note: the session's own window did not close; the cases below run with $(windows) windows"
 
 # --- a. a content frame asks for the keyboard as fast as it can while the owner types: every
 # character is the message box's, in an artifact's frame and in the preview's; and the owner's
@@ -145,6 +145,8 @@ else
 fi
 
 # --- g. a page whose own process ends is loaded again and says so; one that keeps ending is left
+# (One window, one page: of two pages whose processes end at the same moment one often comes
+# back without the app's script in it, which the README names as known and not fixed.)
 for round in 1 2 3 4; do
   stops=$(logged page-stopped); mark=$(lines)
   for p in $(renderers); do sig -KILL "$p"; done
