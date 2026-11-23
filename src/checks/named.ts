@@ -50,13 +50,15 @@
 // `$PWD` and `$HOME` are put in: a check with a `$` of another kind left in
 // its words is recorded but never answered.
 
+import { normalize } from "node:path";
+
 export const FILE = ".keel/checks.json";
 export const NAMES_MAX = 64;
 const NAME = /^[A-Za-z0-9][\w.:-]{0,39}$/;
 const RUN_MAX = 400;
 
 export type TreeSpec = { kind: "work" } | { kind: "folder"; arg: number } | { kind: "commit" };
-export type Check = { name: string; run: string; args: boolean; dir: string; cache: boolean; tree: TreeSpec; drop: string[] };
+export type Check = { name: string; run: string; args: boolean; dir: string; cache: boolean; tree: TreeSpec; drop: string[]; inputs: string[] };
 export type Named = { checks: Check[]; wait: string[]; env: string[]; problems: string[] };
 
 const squash = (s: string) => s.trim().replace(/\s+/g, " ");
@@ -94,7 +96,9 @@ function oneCheck(name: string, v: unknown, problems: string[]): Check | undefin
   }
   const drop = o!.drop === undefined ? [] : strings(o!.drop, 40);
   if (!drop || drop.some((d) => !/^--?[\w-]+$/.test(d))) { problems.push(`${name}: "drop" is a list of options (--out)`); return; }
-  return { name, run, args: o!.args === true, dir, cache: o!.cache !== false, tree, drop };
+  const inputs = o!.inputs === undefined ? [] : strings(o!.inputs, 200);
+  if (!inputs || inputs.length > 16 || inputs.some((x) => x.startsWith("/") || x.includes("\0"))) { problems.push(`${name}: "inputs" is a list of up to 16 paths from the repository's top`); return; }
+  return { name, run, args: o!.args === true, dir, cache: o!.cache !== false, tree, drop, inputs };
 }
 
 // The checks of a parsed file or setting, with what was wrong in it.
@@ -218,16 +222,19 @@ export function tokens(line: string): Tok[] | undefined {
   }
 }
 
-type Simple = { words: Word[]; redirs: { redir: string; target?: Word }[]; sep: string };
+// `depth`: how many `( )` groups it is in (a `cd` there does not outlast the group).
+type Simple = { words: Word[]; redirs: { redir: string; target?: Word }[]; sep: string; depth: number };
 // The simple commands of a line, each with the operator that follows it; the
 // group marks `(` `)` `{` `}` are left out (where their output goes is not what runs).
 function simples(toks: Tok[]): Simple[] | undefined {
   const out: Simple[] = [];
-  let cur: Simple = { words: [], redirs: [], sep: "" };
-  const close = (sep: string) => { if (cur.words.length || cur.redirs.length) { cur.sep = sep; out.push(cur); } else if (out.length && sep) out.at(-1)!.sep = out.at(-1)!.sep === "|" ? "|" : sep; cur = { words: [], redirs: [], sep: "" }; };
+  let depth = 0;
+  let cur: Simple = { words: [], redirs: [], sep: "", depth };
+  const close = (sep: string) => { if (cur.words.length || cur.redirs.length) { cur.sep = sep; out.push(cur); } else if (out.length && sep) out.at(-1)!.sep = out.at(-1)!.sep === "|" ? "|" : sep; cur = { words: [], redirs: [], sep: "", depth }; };
   for (const t of toks) {
     if ("op" in t) {
-      if (t.op === "(" || t.op === ")") { if (t.op === ")" ) close(""); continue; }
+      if (t.op === "(") { close(""); depth++; cur.depth = depth; continue; }
+      if (t.op === ")") { close(""); depth = Math.max(0, depth - 1); cur.depth = depth; continue; }
       close(t.op);
       continue;
     }
@@ -252,9 +259,12 @@ export type Where = {
 export type Match = {
   check: Check;
   command: string;   // what the check run is known by: the check's command and the words added to it
-  dir: string;       // the folder it ran in, from the top ("*" for a check that runs anywhere)
+  dir: string;       // the folder it ran in, from the top (absolute when it is outside the repository)
   exact: boolean;    // its words hold no `$` that is not known here: an earlier pass of it can answer it
-  tree: { kind: "work"; folder: string } | { kind: "folder"; folder: string } | { kind: "commit"; rev: string };
+  // A check of a commit: `rev` is its last argument when that may name one (it does not follow an
+  // option), which the caller resolves; `named` is what the run is known by when it names none.
+  tree: { kind: "work"; folder: string } | { kind: "folder"; folder: string } | { kind: "commit"; rev?: string; named?: string };
+  shellCwd: string;  // where the command leaves the shell: its `cd`s outside a `( )` group, the check's own folder for an answer
   start: string;     // the check's simple command as the shell reports it (startText)
   filters: number;   // commands its output goes through after it in its pipe (its status is the pipe's first)
   alone: boolean;    // nothing runs before or after it: the command's own status is the check's (with no filter)
@@ -280,7 +290,11 @@ export function matchCommand(command: string, named: Pick<Named, "checks" | "wai
   const cmds = simples(toks);
   if (!cmds?.length) return;
   const vars = new Map<string, string | undefined>([["HOME", where.home], ["PWD", where.cwd]]);
-  let cwd = where.cwd;
+  // What the command exports for what it runs: part of what the check run is known by (unless the repository
+  // says the variable does not change a result). Undefined value: not known here.
+  const exported = new Map<string, string | undefined>();
+  let allExport = false;
+  let cwd = where.cwd, kept = where.cwd;
   // `$NAME` and `${NAME}` put in where they are known; `~` at a word's start is the home folder.
   const expand = (w: Word): string => {
     if (w.raw.startsWith("'")) return w.text;
@@ -288,7 +302,8 @@ export function matchCommand(command: string, named: Pick<Named, "checks" | "wai
     s = s.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (m, v: string) => (v === "PWD" ? cwd : vars.get(v) ?? m));
     return s;
   };
-  const resolve = (p: string) => (p.startsWith("/") ? p : `${cwd}/${p}`).replace(/\/+/g, "/");
+  // (As bash's cd reads it: `..` takes off the last part of the path as written.)
+  const resolve = (p: string) => normalize(p.startsWith("/") ? p : `${cwd}/${p}`);
   const runWords = (c: Check) => c.run.split(" ").map((r) => (r === "~" || r.startsWith("~/") ? where.home + r.slice(1) : r.replace(/^\$HOME(?=\/|$)/, where.home)));
   const isWait = (words: string[]) => named.wait.some((p) => { const pw = p.split(" "); return pw.every((x, i) => words[i] === x); });
   for (let i = 0; i < cmds.length; i++) {
@@ -328,13 +343,22 @@ export function matchCommand(command: string, named: Pick<Named, "checks" | "wai
         args.splice(check.tree.arg - 1, 1);
       } else if (check.tree.kind === "commit") {
         const last = args.at(-1);
-        if (last && /^(?:[0-9a-f]{7,64}|HEAD(?:[~^]\d*)*)$/.test(last)) { tree = { kind: "commit", rev: last }; args = args.slice(0, -1); }
-        else tree = { kind: "commit", rev: "HEAD" };
+        const before = args.at(-2);
+        // (The value of an option is not a commit: `--only unit`.)
+        if (last && !last.startsWith("-") && !before?.startsWith("-")) { tree = { kind: "commit", rev: last }; args = args.slice(0, -1); }
+        else tree = { kind: "commit" };
       }
-      const known = [...lead, ...rw, ...args].join(" ");
+      const env = [...exported].filter(([n]) => !named.env.includes(n)).sort(([a], [b]) => (a < b ? -1 : 1));
+      const known = [...env.map(([n, v]) => `${n}=${v ?? "$?"}`), ...lead, ...rw, ...args].join(" ");
+      if (tree.kind === "commit" && tree.rev) tree.named = [...env.map(([n, v]) => `${n}=${v ?? "$?"}`), ...lead, ...rw, ...args, tree.rev].join(" ");
+      // (A check that runs anywhere is known by the folder it ran in.)
+      const dir = rel ?? cwd;
+      // Where the shell is left: an answer stands for the command, and the `cd`s before the check
+      // outside a group hold after it (nothing after a check moves: only readers follow it).
+      const shellCwd = s.depth === 0 ? cwd : kept;
       return {
-        check, command: known, dir: check.dir === "*" ? "*" : rel!, exact: !/[$*?[]/.test(known),
-        tree, start: s.words.slice(k).map((w) => w.raw).join(" "), filters, alone: i === 0 && j === cmds.length - 1,
+        check, command: known, dir, exact: !/[$*?[]/.test(known) && env.every(([, v]) => v !== undefined),
+        tree, start: s.words.slice(k).map((w) => w.raw).join(" "), filters, alone: i === 0 && j === cmds.length - 1, shellCwd,
       };
     }
     // Else it is a part allowed before a check, or nothing is a check.
@@ -344,17 +368,24 @@ export function matchCommand(command: string, named: Pick<Named, "checks" | "wai
       const to = words[1]!;
       if (to.includes("$")) return;
       cwd = resolve(to).replace(/(?<=.)\/$/, "");
+      if (s.depth === 0) kept = cwd;
       continue;
     }
-    if (words.every((_, x) => ASSIGN.test(s.words[x]!.raw)) || (head === "export" && words.slice(1).every((_, x) => ASSIGN.test(s.words[x + 1]!.raw)))) {
+    const exporting = head === "export";
+    if (exporting && words.slice(1).some((w) => w.startsWith("-"))) return;
+    if (words.every((_, x) => ASSIGN.test(s.words[x]!.raw)) || (exporting && words.slice(1).every((w, x) => ASSIGN.test(s.words[x + 1]!.raw) || /^[A-Za-z_]\w*$/.test(w)))) {
       for (const [x, w] of words.entries()) {
-        if (!ASSIGN.test(s.words[x]!.raw)) continue;
+        if (exporting && x === 0) continue;
+        if (!ASSIGN.test(s.words[x]!.raw)) { exported.set(w, vars.has(w) ? vars.get(w) : undefined); continue; } // `export NAME`
         const at = w.indexOf("=");
-        const value = w.slice(at + 1);
-        vars.set(w.slice(0, at), value.includes("$") ? undefined : value);
+        const name = w.slice(0, at), value = w.slice(at + 1);
+        vars.set(name, value.includes("$") ? undefined : value);
+        if (exporting || allExport || exported.has(name)) exported.set(name, vars.get(name));
       }
       continue;
     }
+    // `set -a`: every assignment after it is exported.
+    if (head === "set" && words.slice(1).some((w) => /^-[a-zA-Z]*a/.test(w) || w === "allexport")) allExport = true;
     if ((head === "mkdir" && words[1] === "-p") || head === "true" || head === ":" || (head === "set" && words.slice(1).every((w) => /^[-+][a-zA-Z]+$|^pipefail$/.test(w)))) continue;
     if (isWait(words)) continue;
     return;

@@ -6,7 +6,7 @@ const NOW = at(15, 0);
 let id = 0;
 const run = (o: Partial<Run>): Run => ({
   id: ++id, name: "unit", command: "bun test", dir: ".", tree: "t1", head: null, session_id: "s1", by: "agent", result: "pass",
-  exit: 0, pass: 10, fail: 0, started: at(14, 0), ended: at(14, 1), log: "/logs/b1.log", from_run: null, ...o,
+  exit: 0, pass: 10, fail: 0, started: at(14, 0), ended: at(14, 1), log: "/logs/b1.log", from_run: null, inputs: null, top: null, ...o,
 });
 
 test("the base: red since the oldest red commit in a row, green at its newest run, or nothing known", () => {

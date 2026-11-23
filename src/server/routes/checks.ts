@@ -14,6 +14,7 @@ import { bindLedger, KEEP, list, namedFor, repoOf, setKeep } from "../../checks/
 import { FILE, readChecks } from "../../checks/named.ts";
 import { afterCall, beforeCall, dropCall, jobDone, jobStarted } from "../../checks/runs.ts";
 import { registerHooks } from "../../engine/hooks.ts";
+import { readsOf } from "../reads.ts";
 import { jobDone as jobDoneTell, jobStarted as jobStartedTell } from "../../tools/jobs.ts";
 import type { RouteModule } from "../app.ts";
 
@@ -65,7 +66,9 @@ export const checkRoutes: RouteModule = ({ store, errors }) => {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
         const n = (k: string) => (q.get(k) ? Number(q.get(k)) : undefined);
-        return Response.json(list({ session: q.get("session") ?? undefined, repo: q.get("repo") ?? undefined, tree: q.get("tree") ?? undefined, before: n("before"), limit: n("limit") }));
+        // (Its sums go over the whole table: on the read thread.)
+        const reads = readsOf(store);
+        return list({ session: q.get("session") ?? undefined, repo: q.get("repo") ?? undefined, tree: q.get("tree") ?? undefined, before: n("before"), limit: n("limit") }, (sql, params) => reads.sql(sql, params)).then((r) => Response.json(r));
       },
     },
     "/api/checks/named": {

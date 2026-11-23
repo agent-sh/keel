@@ -256,6 +256,7 @@ function jobScope(): { slice?: string; why?: string } {
 export type Meta = {
   id: string; num: number; sessionId: string; command: string; description?: string; cwd: string; started: number; background: boolean; pid: number;
   boot?: string; reported?: boolean; pty?: boolean; call_id?: string; by?: "owner"; handle?: Handle;
+  trace_file?: string; // where its shell reports the commands it runs (a check's run): read when it ends, whichever daemon sees that
   stopping?: true;   // a stop was under way when this was written: a daemon that went down then left it for the next one
   wake?: true;       // its end starts a turn of its session (a call a restart cut was waiting on it)
   cgroup?: string; contain?: "cgroup" | "group"; contain_why?: string;
@@ -264,7 +265,7 @@ export type Meta = {
 };
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
-  started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, handle: j.handle, stopping: j.stopping || undefined, wake: j.wake || undefined, read_off: j.readOff,
+  started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, handle: j.handle, trace_file: j.traceFile, stopping: j.stopping || undefined, wake: j.wake || undefined, read_off: j.readOff,
   cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy,
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
@@ -392,6 +393,13 @@ function notOurs(m: Meta): string | undefined {
   return `process ${m.pid} was not started as that job (it does not carry the job's mark)`;
 }
 
+// The trace file a record names, when it is one the shell tool makes in the job's own folder (it is
+// read and removed when the job ends: a record names no other file).
+function traceIn(dir: string, f: unknown): string | undefined {
+  if (typeof f !== "string" || !f.startsWith(`${dir}/`)) return undefined;
+  return /^cwd-[\w.-]+\.trace$/.test(f.slice(dir.length + 1)) ? f : undefined;
+}
+
 // `refused`: told each record that is not adopted, with why.
 export function adoptJobs(spillRoot: string, refused?: (file: string, why: string) => void): number {
   let n = 0;
@@ -417,7 +425,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
       if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
       const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
         pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-        callId: m.call_id, by: m.by, handle: m.handle, cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
+        callId: m.call_id, by: m.by, handle: m.handle, traceFile: traceIn(dir, m.trace_file), cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
       // A stop the last daemon began and did not see through (it went down
       // first) is finished here: whoever asked for it was told the command
       // was stopped, and what ignored the first signal still runs.

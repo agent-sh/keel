@@ -177,7 +177,14 @@ under `~/.cache/keel-work/bun/research/`.
   never started (its wait gave up) records nothing and one that ran is
   known by its own status. A check that passed on the same tree is
   answered from the ledger before anything of the command runs, its wait
-  included; sending the same command again runs it. A red run says whether the base is red too, or that the tree is
+  included, and only after the permission gate let the call through;
+  sending the same command again runs it. What the command exports is part
+  of what the run is known by. What a check reads beside the tree (installed
+  packages, a lock file outside it, generated files) is named in its
+  `inputs`, and an answer needs them unchanged. A look hashes new and
+  changed files into an object folder of Keel's own, never the
+  repository's, and at most `NEW_MAX` bytes of them: a run over that is
+  kept with no tree and answers nothing. A red run says whether the base is red too, or that the tree is
   flaky. An agent's report carries a proof line from the ledger, never from a
   model (`src/checks/proof.ts`). The ledger keeps the newest
   `checks.keep_runs` rows (20,000 by default) and is read at `/api/checks`

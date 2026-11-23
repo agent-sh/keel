@@ -21,6 +21,8 @@ export type Run = {
   ended: number;
   log: string | null;
   from_run: number | null;
+  inputs: string | null;   // the check's inputs as they were (src/checks/ledger.ts inputsOf), when it names any
+  top: string | null;      // the work tree the run's tree was read from
 };
 
 // A time as the owner reads it: HH:MM today, else with its day.
@@ -119,6 +121,7 @@ export type ProofIn = {
   treeNow?: string;            // the tree of its folder as it reports
   base?: ReadonlyMap<number, string>; // a red run's base words, by run id
   named: boolean;              // its repository names checks
+  top?: string;                // the work tree it worked in: a run on another one checked other files
   now?: number;
 };
 
@@ -127,9 +130,20 @@ export type ProofIn = {
 // run, and whether the files changed after its last check. "" when there is
 // nothing to say (no checks named and none run, or no edit and no run).
 export function proofLine(p: ProofIn): string {
-  const runs = p.runs.filter((r) => r.result !== "stopped");
   const lastEdit = p.edits.length ? Math.max(...p.edits) : undefined;
+  // Runs on another work tree (a clone, another worktree) did not check its edits: said apart, last.
+  const all = p.runs.filter((r) => r.result !== "stopped");
+  const runs = p.top === undefined ? all : all.filter((r) => !r.top || r.top === p.top);
+  const others = p.top === undefined ? [] : all.filter((r) => r.top && r.top !== p.top);
+  const elsewhere = (() => {
+    if (!others.length) return "";
+    const by = new Map<string, Run>();
+    for (const r of others) by.set(`${r.dir}\n${r.command}`, r);
+    const list = [...by.values()].slice(-3).map((r) => `${r.name} ${r.result === "fail" ? "failed" : r.result === "pass" || r.result === "answered" ? "passed" : "ended"} ${when(r.ended, p.now)}`);
+    return ` On other files: ${list.join(", ")}${by.size > 3 ? `, ${by.size - 3} more` : ""}.`;
+  })();
   if (!runs.length) {
+    if (others.length) return `(Checks: none ran on its own files.${elsewhere})`.slice(0, PROOF_MAX);
     if (!p.named || !p.edits.length) return "";
     return `(Checks: none ran; it made ${plural(p.edits.length, "edit")}.)`;
   }
@@ -154,7 +168,7 @@ export function proofLine(p: ProofIn): string {
   const treeWords = p.treeNow === undefined ? "" : latest.tree === p.treeNow ? "Its files are the ones its last check ran on." : "Its files changed after its last check run.";
   for (const full of [true, false]) {
     const list = after.length ? `: ${after.map((r) => said(r, full)).join(", ")}.` : before.length ? `; before it: ${before.map((r) => said(r, full)).join(", ")}.` : ".";
-    const text = `(${head}${list} ${[greenWords, treeWords].filter(Boolean).join(" ")})`.replace(/ \)$/, ")");
+    const text = `(${head}${list} ${[greenWords, treeWords].filter(Boolean).join(" ")}${elsewhere})`.replace(/ \)$/, ")");
     if (text.length <= PROOF_MAX) return text;
   }
   const n = after.length || before.length;

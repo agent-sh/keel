@@ -353,9 +353,6 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
 const SOURCE: Record<string, string> = { provider: "Model request", tool: "Tool", server: "Daemon", client: "Page" };
 // (The vocabulary's one word a class, src/core/state-words.ts: the timeline, the digest and a session's row say the same.)
 export const CLASS: Record<string, string> = FAIL_WORD;
-// A kind of failure that last happened in this session. The errors table folds
-// repeats across every session, so its count is said as that; the message
-// stays in the Errors panel.
 // A run of one of the repository's checks (src/checks): its name, how it
 // ended, its counts and the tree it ran on. The name is the repository's word
 // for it, never the command as the model wrote it.
@@ -366,11 +363,14 @@ export function checkRow(c: CheckIn): TimelineRow {
   const name = c.name.replace(/[^\w.:-]/g, "").slice(0, 40) || "?";
   return clean({
     id: `c:${c.id}`, ts: c.ts, kind: "check" as const, sub: c.result, tone: (c.result === "fail" ? "failed" : "plain") as Tone,
-    text: `Check ${name} ${CHECK_SAID[c.result] ?? c.result}${counts && c.result !== "answered" ? ` (${counts})` : ""}${c.by === "owner" ? ", run by the owner" : ""}, on tree ${c.tree.slice(0, 9)}`,
+    text: `Check ${name} ${CHECK_SAID[c.result] ?? c.result}${counts && c.result !== "answered" ? ` (${counts})` : ""}${c.by === "owner" ? ", run by the owner" : ""}, ${c.tree ? `on tree ${c.tree.slice(0, 9)}` : "with no tree kept (its files were too large to read)"}`,
     ms: c.result === "answered" ? undefined : Math.max(0, c.ts - c.started), ...refs({ call_id: c.call_id ?? undefined }),
   });
 }
 
+// A kind of failure that last happened in this session. The errors table folds
+// repeats across every session, so its count is said as that; the message
+// stays in the Errors panel.
 export function errorRow(e: Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts" | "recovered_ts">): TimelineRow {
   const cls = e.source === "provider" ? errorClass({ message: e.message }) : null;
   const n = e.count ?? 1;

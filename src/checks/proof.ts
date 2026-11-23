@@ -2,6 +2,7 @@
 // agent's checks, not what the agent says of them. No model call: the
 // ledger's rows since the agent's task began, the times of its edits, and
 // the tree of its folder as it reports (one look, as a check's run takes).
+import { realOf } from "../core/paths.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { editTimes } from "../automation/report-did.ts";
 import { namedFor, ofSession, repoOf, treeOf } from "./ledger.ts";
@@ -17,7 +18,7 @@ export async function proofFor(sessionId: string, folder: string, evs: readonly 
   if (!runs.length && !named) return "";
   const edits = editTimes(evs);
   if (!runs.length && !edits.length) return "";
-  const treeNow = repo && runs.length ? (await treeOf(repo))?.tree : undefined;
+  const treeNow = repo && runs.length ? (await treeOf(repo))?.tree ?? undefined : undefined;
   // The base's words for the newest red run of each check.
   const base = new Map<number, string>();
   if (repo) {
@@ -25,5 +26,5 @@ export async function proofFor(sessionId: string, folder: string, evs: readonly 
     for (const r of runs) newest.set(`${r.dir}\n${r.command}`, r);
     for (const r of newest.values()) if (r.result === "fail") { const w = await baseFor(r, repo); if (w) base.set(r.id, w); }
   }
-  return proofLine({ runs, edits, treeNow, base, named });
+  return proofLine({ runs, edits, treeNow, base, named, top: repo ? realOf(repo.top) : undefined });
 }

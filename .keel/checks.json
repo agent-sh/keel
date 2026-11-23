@@ -1,11 +1,52 @@
 {
   "checks": {
-    "typecheck": "bunx tsc --noEmit -p .",
-    "unit": { "run": "bun test", "args": true },
-    "e2e": { "run": "bunx playwright test", "args": true, "cache": false },
-    "smoke": { "run": "scripts/smoke.sh", "args": true },
-    "remote-verify": { "run": "scripts/remote-verify.sh", "args": true, "tree": { "commit": "last" }, "drop": ["--wait", "--out"] }
+    "typecheck": {
+      "run": "bunx tsc --noEmit -p .",
+      "inputs": [
+        "node_modules",
+        "node_modules/../bun.lock",
+        "node_modules/.bin"
+      ]
+    },
+    "unit": {
+      "run": "bun test",
+      "args": true,
+      "inputs": [
+        "node_modules",
+        "node_modules/../bun.lock",
+        "node_modules/.bin"
+      ]
+    },
+    "e2e": {
+      "run": "bunx playwright test",
+      "args": true,
+      "cache": false
+    },
+    "smoke": {
+      "run": "scripts/smoke.sh",
+      "args": true,
+      "inputs": [
+        "node_modules",
+        "node_modules/../bun.lock",
+        "node_modules/.bin"
+      ]
+    },
+    "remote-verify": {
+      "run": "scripts/remote-verify.sh",
+      "args": true,
+      "tree": {
+        "commit": "last"
+      },
+      "drop": [
+        "--wait",
+        "--out"
+      ]
+    }
   },
-  "wait": ["waitfor --capacity"],
-  "env": ["KEEL_VERIFY_MAX_RUNS"]
+  "wait": [
+    "waitfor --capacity"
+  ],
+  "env": [
+    "KEEL_VERIFY_MAX_RUNS"
+  ]
 }

@@ -2,7 +2,7 @@
 // directory that follows `cd` (inside the workspace only), merged
 // stdout/stderr, and the move to the background when a foreground command
 // outlives its timeout instead of killing it.
-import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { backgrounded, startJob, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
 import { notFound } from "./missing.ts";
@@ -15,6 +15,12 @@ const cwds = new SessionMap<string>(1024);
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
 export const shellCwd = (ctx: ToolContext) => cwds.get(ctx.sessionId) ?? ctx.cwd;
+// Where a command left the shell, as a command's end moves it: inside the session's folder only.
+export function moveShell(ctx: ToolContext, dir: string) {
+  const next = real(dir);
+  if (next === real(shellCwd(ctx))) return;
+  if (contains(real(ctx.cwd), next)) cwds.set(ctx.sessionId, next);
+}
 export const logDir = (ctx: ToolContext) => join(ctx.spillDir, "jobs");
 
 // Why no command can start in `dir`, or nothing when one can. A spawn into a
@@ -62,9 +68,13 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   // level and the statuses of the pipe before it, read first (anything in the
   // trap resets them; bash gives the command back its own). At most 200 lines
   // a shell, 400 characters a command. The last line is the end's statuses.
+  // The trap's own lines are not traced (set -x before the check stays the
+  // command's), and the file is the owner's alone: it holds the command as it ran.
   const traceFile = ctx.checkRun ? `${cwdFile}.trace` : undefined;
-  const debug = traceFile ? `__keel_ps="\${PIPESTATUS[*]}"; (( __keel_n++ < 200 )) && printf 'D\\t%s\\t%s\\t%s\\t%s\\n' "$BASHPID" "$BASH_SUBSHELL" "$__keel_ps" "\${BASH_COMMAND:0:400}" >> ${shq(traceFile)} 2>/dev/null` : "";
-  const end = traceFile ? `printf 'E\\t%s\\n' "\${PIPESTATUS[*]}" >> ${shq(traceFile)} 2>/dev/null; ` : "";
+  if (traceFile) { mkdirSync(dir, { recursive: true }); writeFileSync(traceFile, "", { mode: 0o600 }); }
+  const quiet = (body: string, ps: string) => `{ ${ps}__keel_x=$-; set +x; } 2>/dev/null; ${body}; if [[ $__keel_x == *x* ]]; then set -x; fi`;
+  const debug = traceFile ? quiet(`(( __keel_n++ < 200 )) && printf 'D\\t%s\\t%s\\t%s\\t%s\\n' "$BASHPID" "$BASH_SUBSHELL" "$__keel_ps" "\${BASH_COMMAND:0:400}" >> ${shq(traceFile)} 2>/dev/null`, `__keel_ps="\${PIPESTATUS[*]}"; `) : "";
+  const end = traceFile ? `{ __keel_ps="\${PIPESTATUS[*]}"; set +x; } 2>/dev/null; printf 'E\\t%s\\n' "$__keel_ps" >> ${shq(traceFile)} 2>/dev/null; ` : "";
   // The command is handed to bash as written; the trap records where it ended.
   // The traps' words are quoted as a whole around the quoted file names, so a
   // state folder with a space, a quote or a `$` in its name stays one word.

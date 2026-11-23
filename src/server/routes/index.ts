@@ -68,8 +68,8 @@ import { checkRoutes } from "./checks.ts";
 const modules: Record<string, RouteModule> = {
   codeModeRoutes, // refuses run_code for a session on another machine before the gate asks about it
   repeatRoutes, // before the gate: a repeat it refuses needs no approval; it reads a result before others add to it
-  checkRoutes, // before the gate: a check the ledger answers does not run, and needs no approval
   permissionRoutes, // first: its beforeTool gate decides before the others run
+  checkRoutes, // after the gate: a check is looked at (its files hashed) and answered only once the call may run
   planRoutes,
   trustRoutes, // protected files are watched around calls the gate let through
   nestedRoutes, // after trust: nested instruction files go through its filter
