@@ -66,8 +66,7 @@ type Holder = Held & { session: string; command: string; pattern: string; call?:
 
 // What a change of a held call says (a frame of the session's: its state and its trace read it).
 export type HeavyChange = { session_id: string; call_id?: string; key: string; state: "waiting" | "started" | "left"; line?: string; pattern: string; waited_ms?: number };
-// `title`: a session's title, so the line can say who holds the slots.
-export const heavyChanged: { tell?: (c: HeavyChange) => void; title?: (session: string) => string | undefined } = {};
+export const heavyChanged: { tell?: (c: HeavyChange) => void } = {};
 // How many slots quiet holders gave back (src/tools/heavy-pool.ts, nextQuiet), for the view.
 let quietFreed = 0;
 
@@ -217,10 +216,12 @@ class Pool {
     });
   }
 
-  // Who holds the slots, as a waiting session is told: the program and whose it is.
+  // Who holds the slots, as a waiting session is told: the program and whose
+  // it is. Another session is named by its kind only: its title can hold a
+  // path or a name that is not the waiting session's to read.
   private holders(session: string): string[] {
     return [...this.held.values()].map((h) => {
-      const whose = h.session === session ? "this session" : `${h.who === "agent" ? "agent" : h.who === "owner" ? "the owner's terminal" : "session"}${h.who === "owner" ? "" : title(h.session)}`;
+      const whose = h.session === session ? "this session" : h.who === "agent" ? "an agent" : h.who === "owner" ? "the owner's terminal" : "another session";
       return `${program(h.command)} (${whose})`;
     });
   }
@@ -291,14 +292,13 @@ class Pool {
 
 // While a line waits, the holders' processor time is read every QUIET_EVERY samples.
 const QUIET_EVERY = 3;
-// A holder's program as a waiting session is told it: its first word and its command word, no arguments.
-const program = (line: string) => {
+// A holder's program as a waiting session is told it: its first word, and its
+// command word only when it is one of a fixed few (a make target or a script
+// name such as deploy-prod is another session's to read, not the line's).
+const SUBS = new Set(["build", "test", "run", "check", "vet", "clippy", "bench"]);
+export const program = (line: string) => {
   const [p, sub] = line.split(" ");
-  return sub && /^[a-z][\w:-]*$/.test(sub) ? `${p} ${sub}` : p!;
-};
-const title = (session: string) => {
-  const t = heavyChanged.title?.(session)?.trim();
-  return t ? ` "${t.length > 40 ? `${t.slice(0, 39)}…` : t}"` : "";
+  return sub && SUBS.has(sub) ? `${p} ${sub}` : p!;
 };
 
 export const pool = new Pool();

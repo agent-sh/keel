@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { splitCommand } from "../safety/shell.ts";
-import { before, checkConfig, compile, cpuList, heavyPattern, loadBetween, nextQuiet, order, placeLine, quiet, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
+import { before, checkConfig, compile, cpuList, heavyPattern, light, loadBetween, nextQuiet, order, placeLine, quiet, room, schedTime, type PoolConfig } from "./heavy-pool.ts";
 import { DEFAULTS } from "./heavy.ts";
 
 const pats = compile(DEFAULTS.patterns, DEFAULTS.cost);
@@ -31,6 +31,11 @@ describe("which commands are heavy", () => {
     for (const c of ["tsc --watch", "bunx tsc -w -p .", "bun run build --watch", "bun test --watch", "vitest --watch=true", "jest --watchAll", "playwright test --ui", "npm run dev", "bun run serve", "make serve", "make dev"]) expect([c, heavy(c)]).toEqual([c, undefined]);
     // A watcher beside a real suite: the suite still is.
     expect(heavy("tsc --watch & bun test")?.pattern).toBe("(bun|deno) test");
+    // The words of a server only for script runners, makes and servers, and never as an argument of a suite or a build.
+    for (const c of ["npm start", "pnpm dev", "yarn run preview", "deno task dev", "vite serve", "next dev", "make watch"]) expect(light(c.split(" "))).toBe(true);
+    for (const c of ["bun test dev", "cargo test start", "pytest start", "playwright test dev", "bunx playwright test dev", "docker build --target dev .", "go test ./start", "npm test dev", "bun run build dev", "make build serve"]) expect([c, light(c.split(" ").filter((w) => w !== "bunx"))]).toEqual([c, false]);
+    expect(heavy("bun test dev")?.pattern).toBe("(bun|deno) test");
+    expect(heavy("docker build --target dev .")).toBeDefined();
   });
   test("not one that says something and ends", () => {
     for (const c of ["tsc --version", "bun test --help", "cargo build -h", "go help test", "make -n", "make -j4 --dry-run all", "make clean", "make distclean", "ninja -t clean", "make -q all"]) expect([c, heavy(c)]).toEqual([c, undefined]);

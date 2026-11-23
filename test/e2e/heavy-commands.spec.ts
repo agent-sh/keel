@@ -33,7 +33,7 @@ test("a heavy command waits for a slot, and the owner's does not", async ({ page
     await expect.poll(async () => (await heavy()).line.map((l) => l.session_id), { timeout: 30_000 }).toEqual([second]);
     // Its state says its place in one line.
     const state = async (id: string) => (await (await request.get("/api/state")).json()).states[id] as { text?: string };
-    await expect.poll(async () => (await state(second))?.text, { timeout: 10_000 }).toBe('Waiting for a heavy-command slot: next in line, held by sleep (session "First suite"); every slot is taken');
+    await expect.poll(async () => (await state(second))?.text, { timeout: 10_000 }).toBe('Waiting for a heavy-command slot: next in line, held by sleep (another session); every slot is taken');
 
     // The owner's own command starts at once, over the pool.
     const own = await request.post(`/api/sessions/${first}/terminal/run`, { data: { command: `${cmd}; echo owner-ran` } });

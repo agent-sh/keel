@@ -119,24 +119,42 @@ export function heavyPattern(parts: Simple[] | null, patterns: Compiled[], split
 
 // Forms of a heavy program that are not a heavy command:
 //   - one that stays up for later: a watcher (--watch, tsc/vite/bun -w), a
-//     dev server or a preview (serve, dev, preview, start as its command or
-//     script). It holds a slot for as long as it lives, so on a small machine
-//     every other heavy command, the same session's next one included, would
-//     wait for it forever; its load, while it works, is in the busy count.
+//     dev server or a preview (serve, dev, preview, start, watch as the script
+//     of a script runner, the target of a make, or the command of a server
+//     such as vite or next). It holds a slot for as long as it lives, so on a
+//     small machine every other heavy command, the same session's next one
+//     included, would wait for it forever; its load, while it works, is in
+//     the busy count. Only those programs: in `bun test dev`, `cargo test
+//     start` or `docker build --target dev` the word is an argument, and a
+//     command whose word is test, build, check, vet or compile is pooled.
 //   - one that says something and ends: --version, --help, a make or ninja
 //     dry run, a clean.
 const WATCHERS = new Set(["tsc", "vite", "bun", "esbuild", "rollup", "webpack", "tsup", "nodemon", "deno"]);
 const STAYS = new Set(["serve", "dev", "preview", "start", "watch"]);
+const WORKS = new Set(["test", "build", "check", "vet", "compile"]);
+// Script runners: `npm run dev`, `npm start`, `yarn dev`, `bun run serve`, `deno task dev`.
+const RUNNERS = new Set(["npm", "pnpm", "yarn", "bun", "deno"]);
+const TARGETS = new Set(["make", "gmake", "just"]);
+const SERVERS = new Set(["vite", "next", "nuxt", "nuxi", "astro", "ng", "webpack", "webpack-dev-server", "wrangler", "hugo", "gatsby", "docusaurus", "react-scripts", "expo", "remix", "svelte-kit", "vue-cli-service", "parcel", "eleventy", "jekyll", "storybook", "turbo"]);
 const MAKES = new Set(["make", "gmake", "ninja"]);
+export function stays(prog: string, args: string[]): boolean {
+  const words = args.filter((a) => !a.startsWith("-") && !a.includes("="));
+  const first = words[0];
+  if (!first || WORKS.has(first)) return false;
+  if (RUNNERS.has(prog)) {
+    const script = first === "run" || first === "task" || first === "run-script" ? words[1] : first;
+    return !!script && STAYS.has(script);
+  }
+  if (TARGETS.has(prog) || SERVERS.has(prog)) return STAYS.has(first);
+  return false;
+}
 export function light(w: string[]): boolean {
   const prog = w[0]!;
   const args = w.slice(1);
   if (args.some((a) => /^--(watch|watchAll|serve|ui)(=|$)/.test(a) || a === "--version" || a === "--help" || a === "--dry-run")) return true;
   if (WATCHERS.has(prog) && args.includes("-w")) return true;
   if (args.includes("-h") || args.includes("-V") || args[0] === "help") return true;
-  // Its command or script word: `vite serve`, `npm run dev`, `make serve`, `next dev`.
-  const words = args.filter((a) => !a.startsWith("-")).slice(0, 2);
-  if (words.some((a) => STAYS.has(a))) return true;
+  if (stays(prog, args)) return true;
   if (MAKES.has(prog)) {
     if (args.some((a) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a) || a === "--just-print" || a === "--recon" || a === "-q" || a === "--question" || a === "-t")) return true;
     const targets = args.filter((a) => !a.startsWith("-") && !a.includes("="));

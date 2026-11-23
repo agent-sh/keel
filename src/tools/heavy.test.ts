@@ -1,10 +1,10 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test";
-import { heavyChanged, machine, pool, type HeavyChange, type Slot } from "./heavy.ts";
+import { heavyChanged, machine, pool, program, type HeavyChange, type Slot } from "./heavy.ts";
 import type { Job } from "./jobs.ts";
 
 const read = machine.read;
 const cpu = machine.cpu;
-afterEach(() => { pool.reset(); machine.read = read; machine.cpu = cpu; heavyChanged.tell = undefined; heavyChanged.title = undefined; setSystemTime(); });
+afterEach(() => { pool.reset(); machine.read = read; machine.cpu = cpu; heavyChanged.tell = undefined; setSystemTime(); });
 
 // A small machine, idle: 4 cores, room for one browser or two suites.
 const small = () => { machine.read = () => ({ cores: 4, load1: 0.1, runnable: 0.1, sched_ns: undefined, mem_available_mb: 40_000 }); };
@@ -23,7 +23,6 @@ test("a quiet holder gives its slot back to the line, and the line names who hol
   small();
   const told: HeavyChange[] = [];
   heavyChanged.tell = (c) => told.push(c);
-  heavyChanged.title = (id) => (id === "b" ? "Browser left open" : undefined);
   setSystemTime(new Date(1_000_000));
   // A browser holds the 4-core machine's room (3 cores of 3.3).
   const browser = (await pool.take({ session: "b", who: "agent", command: "chromium --headless about:blank", call: "c" })) as Slot;
@@ -34,7 +33,7 @@ test("a quiet holder gives its slot back to the line, and the line names who hol
   void pool.take({ session: "s", who: "session", command: "bunx playwright test", call: "d" }).then((s) => { got = s; });
   await Bun.sleep(0);
   expect(got).toBeUndefined();
-  expect(pool.lineOf("s")).toBe('Waiting for a heavy-command slot: next in line, held by chromium (agent "Browser left open"); every slot is taken');
+  expect(pool.lineOf("s")).toBe('Waiting for a heavy-command slot: next in line, held by chromium (an agent); every slot is taken');
   // After its ramp it works for a while (2 cores), then sits.
   for (let t = 4_000; t <= 34_000; t += 3_000) {
     setSystemTime(new Date(1_000_000 + t));
@@ -48,4 +47,14 @@ test("a quiet holder gives its slot back to the line, and the line names who hol
   browser.release();
   expect([...pool.held.values()].map((h) => h.session)).toEqual(["s"]);
   expect(told.some((c) => c.state === "started" && c.session_id === "s")).toBe(true);
+});
+
+test("the line names another session's holder by its kind and a fixed command word, never its title or its target", async () => {
+  small();
+  const held = await pool.take({ session: "o", who: "session", command: "make deploy-prod", call: "m" });
+  expect(held && held !== "aborted").toBe(true);
+  void pool.take({ session: "w", who: "session", command: "bun test ./src", call: "t" });
+  await Bun.sleep(0);
+  expect(pool.lineOf("w")).toBe("Waiting for a heavy-command slot: next in line, held by make (another session); every slot is taken");
+  expect(["cargo test --workspace", "bun run deploy-prod", "npm deploy", "go vet ./..."].map(program)).toEqual(["cargo test", "bun run", "npm", "go vet"]);
 });
