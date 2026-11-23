@@ -315,3 +315,26 @@ test("deferred tools on the Responses wire: client tool_search, namespaces, roun
   // Without a search tool (a route that refused it) nothing changes.
   expect(responsesBody({ ...req, messages: [], tools: tools.slice(0, 1) }, ctx, "codex").tools).toEqual([{ type: "function", name: "exec_command", description: "run", parameters: { type: "object" }, strict: false }]);
 });
+
+// A response the provider's policy check stopped (ChatGPT's cyber_policy) is
+// the model declining with that category, not a failed request.
+test("a policy response.failed on the Responses wire is a refusal with its category", () => {
+  const p = responsesWire("codex").parser(req, ctx, () => {});
+  p.event({ data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, delta: "partial" }) } as any);
+  p.event({ data: JSON.stringify({ type: "response.failed", response: { error: { code: "cyber_policy", message: "This content was flagged for possible cybersecurity risk." } } }) } as any);
+  expect(p.finished).toBe(true);
+  const r = p.result();
+  expect(r.stop).toBe("refusal");
+  expect(r.stop_details).toEqual({ category: "cyber_policy", explanation: "This content was flagged for possible cybersecurity risk." });
+  for (const code of ["bio_policy", "misalignment_policy_violation"]) {
+    const b = responsesWire("codex").parser(req, ctx, () => {});
+    b.event({ data: JSON.stringify({ type: "response.failed", response: { error: { code, message: "flagged" } } }) } as any);
+    expect(b.result().stop_details).toEqual({ category: code, explanation: "flagged" });
+  }
+  // A workspace hook's block is not the model declining.
+  const h = responsesWire("codex").parser(req, ctx, () => {});
+  expect(() => h.event({ data: JSON.stringify({ type: "response.failed", response: { error: { code: "inference_hook_denied", message: "blocked" } } }) } as any)).toThrow("inference_hook_denied");
+  // Any other failure still fails the request.
+  const q = responsesWire("codex").parser(req, ctx, () => {});
+  expect(() => q.event({ data: JSON.stringify({ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }) } as any)).toThrow("server_error: boom");
+});

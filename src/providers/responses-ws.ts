@@ -16,6 +16,7 @@
 import type { SseEvent } from "./sse.ts";
 import { idleGuard, ProviderError, scrub, streamIdleMs } from "./http.ts";
 import type { ProviderRequest } from "./types.ts";
+import { isPolicyCode } from "./wires/responses.ts";
 
 const MAX_AGE = 55 * 60_000;     // under the server's 60 minute limit
 const IDLE_CLOSE = 10 * 60_000;  // a socket nobody used for this long is closed
@@ -152,7 +153,8 @@ export class ResponsesSockets {
                 const code = m.error?.code ?? m.response?.error?.code ?? m.code ?? "";
                 // The connection lost the previous response: send it whole once.
                 if (cont && /previous_response_not_found/.test(code) && attempt === 0) { retry = true; c.last = undefined; break; }
-                if (m.status && !m.error?.type) {
+                // (A policy stop goes to the wire's reader, which reads it as the model declining.)
+                if (m.status && !m.error?.type && !isPolicyCode(String(code))) {
                   throw new ProviderError(m.status === 429 ? "rate" : m.status >= 500 ? "server" : m.status === 401 ? "auth" : "invalid", `${self.label}: ${scrub(String(m.error?.message ?? code))}`, m.status);
                 }
               }

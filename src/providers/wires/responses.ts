@@ -20,7 +20,7 @@ import type { AssistantBlock } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { ProviderError } from "../http.ts";
 import { project, type WireRules } from "../project.ts";
-import type { ProviderRequest } from "../types.ts";
+import type { ProviderRequest, ProviderResult } from "../types.ts";
 import { effortFor, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
 // openai: OpenAI's API. codex: the ChatGPT backend. xai: xAI's API. compat: a
@@ -202,6 +202,14 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
   return body;
 }
 
+// The error codes of a response the provider's safety policy stopped (the
+// Responses API's response.failed or error event). Read as a refusal with the
+// code as its category, as an incomplete response's content_filter is. A
+// workspace's own inference hook blocking a request is not the model declining
+// and stays a failure.
+const POLICY_CODES = /^(?:cyber_policy|bio_policy|misalignment_policy_violation|content_policy(?:_violation)?|invalid_prompt)$/;
+export const isPolicyCode = (code: string) => POLICY_CODES.test(code);
+
 export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string, place?: SystemPlace): WireCodec {
   return {
     body: (req, ctx) => responsesBody(req, ctx, dialect, systemPrefix, place),
@@ -212,6 +220,17 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string, 
       let stop = "end_turn";
       let finished = false;
       let served: string | undefined;
+      let stopDetails: ProviderResult["stop_details"];
+      // A response the provider's policy check stopped is the model declining,
+      // as a content_filter end is: a turn that ends declined, with the
+      // provider's category and words, never a failed request to send again.
+      const declined = (code: string, message: string) => {
+        if (!isPolicyCode(code)) return false;
+        stop = "refusal";
+        stopDetails = { category: code, explanation: message };
+        finished = true;
+        return true;
+      };
       const fail = (code: string, message: string) => {
         const kind = /context_length|context_window/.test(code) ? "context"
           : /rate_limit/.test(code) ? "rate"
@@ -274,12 +293,14 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string, 
             }
             case "response.failed": {
               const err = ev.response?.error ?? {};
+              if (declined(String(err.code ?? ""), String(err.message ?? ""))) break;
               fail(err.code ?? "failed", err.message ?? "the response failed");
               break;
             }
             case "error": {
-              if (typeof ev.error === "string") fail(ev.code ?? "error", ev.error);
+              if (typeof ev.error === "string") { if (declined(String(ev.code ?? ""), ev.error)) break; fail(ev.code ?? "error", ev.error); }
               const err = ev.error ?? ev;
+              if (declined(String(err.code ?? ""), String(err.message ?? ""))) break;
               fail(err.code ?? err.type ?? "error", err.message ?? e.data);
             }
           }
@@ -310,7 +331,7 @@ export function responsesWire(dialect: ResponsesDialect, systemPrefix?: string, 
             }
           }
           if (stop === "end_turn" && blocks.some((b) => b.type === "tool_use")) stop = "tool_use";
-          return { blocks, usage, stop, model: req.model, served };
+          return { blocks, usage, stop, ...(stopDetails ? { stop_details: stopDetails } : {}), model: req.model, served };
         },
       };
     },
