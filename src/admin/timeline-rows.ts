@@ -247,7 +247,7 @@ export function markRow(e: Mark, turn?: string): TimelineRow | null {
   if (e.kind !== "note") return null;
   switch (d.kind) {
     case "model_told": return row("model", "switch", `Model changed from ${short(d.from)} to ${short(d.to)}`);
-    case "fallback": return row("model", "fallback", "The model declined: the turn went on with the fallback model");
+    case "fallback": return row("model", "fallback", d.overloaded ? "The model stayed overloaded: the turn went on with the fallback model" : "The model declined: the turn went on with the fallback model");
     case "restart": return row("restart", "held", "Not resumed after the daemon restart: it waits for the owner", "owner");
     case "compaction_failed": return row("compaction", "failed", "The context could not be compacted", "failed");
     // Written when files are put back from a checkpoint: the conversation is as it was.

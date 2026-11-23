@@ -322,3 +322,11 @@ test("a cache plan's row says what the wait did with the cache and what it cost,
   // Gone before the wait began (the request before it had waited out an outage): the wait lost nothing.
   expect(plan({ outcome: "lapsed", before_wait: true, idle_ms: 8 * 60_000, pings: 0, lapse_usd: 1.713, waited_ms: 300 })).toMatchObject({ text: "The prompt cache had lapsed before this wait began, 8 min after the request that last read it: nothing could keep it, and the next request writes the context again for about $1.71" });
 });
+
+// A turn moved off an overloaded model is said as that, not as a refusal.
+test("a fallback for an overload reads as an overload", () => {
+  const said = (data: Record<string, unknown>) => JSON.stringify(markRow({ id: "1", ts: Date.now(), kind: "note", data }));
+  expect(said({ kind: "fallback", overloaded: true })).toContain("stayed overloaded");
+  expect(said({ kind: "fallback" })).toContain("declined");
+});
+
