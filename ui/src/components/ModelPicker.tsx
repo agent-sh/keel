@@ -26,7 +26,7 @@ export function TriggerLabel({ label, any, value, placeholder }: { label?: strin
     <>
       <span className="k-model-name max-w-40 truncate sm:max-w-56" title={missing ? `${value} is not in the current listing` : undefined}>{text}</span>
       {missing && <span className="shrink-0 text-micro text-warn" data-testid="model-unlisted">not in current listing</span>}
-      <ChevronsUpDown className="size-3.5 opacity-60" />
+      <ChevronsUpDown className="size-3.5 shrink-0 opacity-60" />
     </>
   );
 }

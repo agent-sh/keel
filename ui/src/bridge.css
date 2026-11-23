@@ -985,11 +985,14 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-rail-card { display: none; }
   .k-stations { height: calc(100% - 3.25rem - env(safe-area-inset-bottom)); scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
   .k-station { min-width: 100%; flex: 0 0 100%; border-right: 0; }
-  /* A phone's message box keeps its tools to one row: in a conversation the model's name is cut short there, so the
+  /* A phone's message box keeps its tools to one row: in a conversation the model's name is cut short there, and
+     shorter still when the row needs it (the context ring keeps the width of its widest reading), so the
      effort and the context ring are whole beside it. While a turn runs: Stop, the queue button, Send and the context ring take
      the right. On the left the attach button and the effort stay whole; the model, which cannot
      change under a running turn, goes last and is reached by scrolling the row. */
   .k-compose-tools[data-short][data-talk] .k-model-name { max-width: 4.5rem; }
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-compose-lead { flex-shrink: 1; min-width: 0; }
+  .k-compose-tools[data-short][data-talk]:not([data-busy]) .k-model-pick { min-width: 0; }
   .k-compose-tools[data-busy] .k-compose-lead { display: contents; }
   .k-compose-tools[data-busy] .k-model-pick { order: 5; flex-shrink: 0; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
