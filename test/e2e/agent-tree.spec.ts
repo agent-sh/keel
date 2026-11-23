@@ -152,3 +152,62 @@ test("agents start agents, message each other, and stop as a tree", async ({ pag
     rmSync(state, { recursive: true, force: true });
   }
 });
+
+// Feature: a middle agent its parent stopped while its own turn had ended (it
+// waited on its agent) stays stopped: its agent's report waits behind the
+// stop instead of starting it again, the parent gets one report for the task,
+// and the tree stays within its limit while the parent starts others. A
+// sibling's message removed from a held agent's queue is told to the sibling
+// as removed, never as a deleted session. On the run's shared daemon.
+test("a stopped middle agent stays stopped and the tree stays within its limit", async ({ request }) => {
+  test.setTimeout(150_000);
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === "scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const api = async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    (await request.fetch(path, { method, ...(body === undefined ? {} : { data: body }) })).json() as Promise<any>;
+  const { session } = await api("/api/sessions", { model: "scripted:stand-in", title: "A stopped middle agent" });
+  await api(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+  await api(`/api/sessions/${session.id}/agents`, { limit: 3 }, "PATCH");
+  const kid = (n: string, secs: number) => `${n}\n${calls([bash(`sleep ${secs}; echo ${n}`)])}`;
+  // Mid starts two agents and its own turn ends while they work; Sib messages Kid2 once Mid is stopped.
+  const mid = `Mid\nscript:batch ${JSON.stringify([{ name: "spawn_agent", input: { message: kid("Kid", 30) } }, { name: "spawn_agent", input: { message: kid("Kid2", 30) } }])}`;
+  const leaf = (n: string) => ({ name: "spawn_agent", input: { message: kid(n, 6) } });
+  // X messages Kid2, which waits behind the stop that went down from Mid.
+  const x = { name: "spawn_agent", input: { message: `X\n${calls([{ name: "send_input", input: { target: "Kid2", message: "hello from X" } }, bash("sleep 6; echo X")])}` } };
+  await api(`/api/sessions/${session.id}/messages`, { text: calls([{ name: "spawn_agent", input: { message: mid } }, bash("sleep 5"), { name: "close_agent", input: { target: "Mid" } }, x, leaf("Y"), leaf("Z"), bash("sleep 12")]) });
+  const tree = async () => (await api(`/api/sessions/${session.id}/agents`)).tree as any[];
+  const node = async (title: string) => (await tree()).find((a) => a.title === title);
+  const turns = async (id: string) => ((await api(`/api/sessions/${id}`)).events as any[]).filter((e) => e.kind === "turn_start").length;
+  await expect.poll(async () => (await node("Mid"))?.status, { timeout: 30_000 }).toBe("stopped");
+  const m = await node("Mid");
+  expect(m.stopped_by).toBe("parent");
+  expect((await api(`/api/sessions/${m.session_id}`)).held).toBe(true);
+  const at = await turns(m.session_id);
+  // While X, Y and Z come and go, the tree never has more live agents than its limit, and Mid runs no turn.
+  let most = 0;
+  for (const end = Date.now() + 20_000; Date.now() < end;) {
+    most = Math.max(most, (await tree()).filter((a) => a.status === "running" || a.status === "waiting").length);
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  expect(most).toBeLessThanOrEqual(3);
+  expect(await turns(m.session_id)).toBe(at);
+  expect((await node("Mid")).status).toBe("stopped");
+  // The root holds one report of Mid's task: stopped, never a "completed" after it.
+  const reports = ((await api(`/api/sessions/${session.id}`)).events as any[]).filter((e) => e.kind === "user").map((e) => JSON.stringify(e.data)).join("\n");
+  expect(reports.match(new RegExp(`agent_id=\\\\"${m.id}\\\\"[^>]*status=\\\\"(\\w+)\\\\"`, "g"))?.length).toBe(1);
+  expect(reports).toContain(`agent_id=\\"${m.id}\\" title=\\"Mid\\" status=\\"stopped\\"`);
+  // The owner removes X's message from Kid2's queue: X is told it was removed, and Kid2's session is not called deleted.
+  const k2 = await node("Kid2");
+  const row = ((await api(`/api/sessions/${k2.session_id}/queue`)).queue as any[]).find((q) => q.meta?.from_agent);
+  expect(row.text).toContain('Message from agent "X"');
+  await request.delete(`/api/sessions/${k2.session_id}/queue/${row.id}`);
+  const xs = (await node("X")).session_id;
+  await expect.poll(async () => ((await api(`/api/sessions/${xs}`)).events as any[]).filter((e) => e.kind === "user").map((e) => String(e.data.text)).join("\n"), { timeout: 20_000 })
+    .toContain("the owner removed it from that session's queue before the agent read it");
+  expect(((await api(`/api/sessions/${xs}`)).events as any[]).filter((e) => e.kind === "user").map((e) => String(e.data.text)).join("\n")).not.toContain("its session was deleted");
+  // A parent's message still continues it: the stop was the parent's.
+  const sent = await api(`/api/sessions/${session.id}/agents/${m.id}/message`, { message: "go on" });
+  expect(sent.held).toBeUndefined();
+  await expect.poll(async () => (await node("Mid")).status, { timeout: 15_000 }).not.toBe("stopped");
+  await api(`/api/sessions/${session.id}`, undefined, "DELETE");
+});

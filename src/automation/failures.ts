@@ -195,9 +195,10 @@ const notes = new Map<string, string>();
 function knownOf(sessionId: string): Known {
   const { store } = D();
   type AgentRow = { id: string; session_id: string; machine: string | null };
-  let rows: Map<string, AgentRow> | undefined; // read once, and only when a notice names an agent
+  const rows = new Map<string, AgentRow | null>(); // each read once, and only when a notice names it
   return (id) => {
-    rows ??= new Map(store.db.query<AgentRow, [string]>("SELECT id, session_id, machine FROM agents WHERE parent_id = ?").all(sessionId).map((a) => [a.id, a]));
+    // By id: a notice names agents of the session's tree that it did not start (a peer it messaged).
+    if (!rows.has(id)) rows.set(id, store.db.query<AgentRow, [string]>("SELECT id, session_id, machine FROM agents WHERE id = ?").get(id) ?? null);
     const a = rows.get(id);
     if (!a || !store.session(a.session_id)) return { gone: true };
     return a.machine ? { where: machineName(a.machine) } : undefined;

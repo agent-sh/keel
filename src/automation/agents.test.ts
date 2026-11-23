@@ -46,17 +46,23 @@ const store = new Store(join(dir, "state"));
 const busy = new Set<string>();
 const sends: { id: string; text: string }[] = [];
 const interrupted: { id: string; by?: string }[] = [];
-const held = new Set<string>(); // sessions whose queue is held after the owner's Stop
+const held = new Set<string>(); // sessions whose queue is held
+const heldWho = new Map<string, string>(); // who made a hold, as the engine keeps it (none said: the owner)
 const engine = {
   isRunning: (id: string) => busy.has(id),
   isHeld: (id: string) => held.has(id),
   send: (id: string, text: string, o: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...o?.meta }) }),
   // A parent's message to its agent: stored as the agent's prompt (the engine keeps one for a working agent in its queue).
   message: (id: string, text: string, meta: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...meta }) }),
-  // (A hold in these tests is the owner's: nothing here stops an agent's session for its parent.)
-  heldBy: (id: string) => (held.has(id) ? "owner" : undefined),
-  holdQueue: (id: string) => void held.add(id),
-  releaseHold: (id: string) => !held.has(id),
+  heldBy: (id: string) => (held.has(id) ? heldWho.get(id) ?? "owner" : undefined),
+  holdQueue: (id: string, by?: string) => { held.add(id); heldWho.set(id, by ?? "owner"); },
+  // The hold goes when one of `makers` made it, as in the engine.
+  releaseHold: (id: string, makers: readonly string[] = []) => {
+    if (!held.has(id)) return true;
+    if (!makers.includes(heldWho.get(id) ?? "owner")) return false;
+    held.delete(id); heldWho.delete(id);
+    return true;
+  },
   hasInput: () => false,
   interrupt: async (id: string, by?: string) => { interrupted.push({ id, by }); busy.delete(id); agents.onTurnEnd(id, "interrupted"); },
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),

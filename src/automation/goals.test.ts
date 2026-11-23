@@ -35,6 +35,7 @@ const engine = {
   isRunning: (id: string) => running || live.has(id),
   isDraining: () => draining,
   isHeld: () => false,
+  holdQueue: () => {}, // a stop of an agent with no turn holds its queue (nothing here reads it back)
   ownerResumes: () => {},
   interrupt: async () => {},
   idle: async () => {},

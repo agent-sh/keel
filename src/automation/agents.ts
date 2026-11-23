@@ -9,7 +9,7 @@ import { proofFor } from "../checks/proof.ts";
 import { awaited } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, hasPending, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, flush, hasPending, heldWhy, inert, isPending, parkedOn, pendingSessions, startGate, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
@@ -414,7 +414,40 @@ const cutCalls = new Set<string>();
 const slotWaiters = new Map<string, Set<() => void>>(); // parent id -> blocking spawns
 const reservations = new Map<string, number>(); // placements not yet recorded as live
 
-const wakeSlots = (parentId: string) => slotWaiters.get(parentId)?.forEach((wake) => wake());
+// A slot of the tree under `root` may be free: blocking spawns try again, and
+// an ended agent of the tree that has input lined up starts with it (the
+// start gate kept it back while the tree was full). After the write that
+// freed the slot: a caller may be inside a transaction.
+function wakeSlots(root: string) {
+  slotWaiters.get(root)?.forEach((wake) => wake());
+  queueMicrotask(() => {
+    for (const id of pendingSessions()) {
+      if (id === root || rootSession(id) !== root) continue;
+      try { flush(id); } catch (e) { capture(e, { at: "agent slot freed", session: id }); }
+    }
+  });
+}
+
+// A turn that would reopen an ended agent takes a slot of its tree: lined-up
+// input (a report from below, a failure notice, a wake) starts no turn there
+// while the tree's limit is in use. The check and the reopening (onTurnStart,
+// in the same synchronous start) have no await between them. A message sent
+// to the agent (send) takes its slot itself; the owner's own prompt on the
+// agent's page is the owner's act and is not held to the limit.
+// (A store the agents module never opened has no table: nothing to check there.)
+const withAgents = new WeakMap<object, boolean>();
+startGate.open = (sessionId) => {
+  const { store } = D();
+  if (!withAgents.get(store)) {
+    if (!store.columnExists("agents", "session_id")) return true;
+    withAgents.set(store, true);
+  }
+  const a = byChild(sessionId);
+  if (!a || !isEnded(a) || isSilent(a.id)) return true;
+  const parent = D().store.session(a.parent_id);
+  if (!parent || parent.archived) return true;
+  return !full(rootSession(a.parent_id));
+};
 
 function waitForSlot(parentId: string, signal?: AbortSignal) {
   return new Promise<void>((resolve) => {
@@ -1252,9 +1285,12 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
     // Its own agents stop now, not when its turn has wound down.
     stopBelow(a, by);
   } else {
-    // The owner's stop holds its queue also when no turn runs in it (it waits
-    // on a timer): a message of its parent after that starts nothing either.
-    if (by === "owner") engine.holdQueue(a.session_id, by);
+    // Its queue is held also when no turn runs in it (it waits on a timer, or
+    // on its own agents), as a stop of a running turn holds it: nothing lined
+    // up for it (a report of an agent below, a wake) starts it again. The
+    // owner's hold waits for the owner; the others go with a message of the
+    // agent's parent (OWN_HOLDS). A session that is gone has no queue to hold.
+    if (D().store.session(a.session_id)) engine.holdQueue(a.session_id, by);
     onTurnEnd(a.session_id, "interrupted");
   }
   return get(id);
@@ -1517,6 +1553,8 @@ function outsideWorktree(a: AgentRecord, sessionId: string, input: any): string 
 // wrote on its page, or anything else started one): the agent runs, so its
 // record says so, its parent lists it and can stop it, and the report of this
 // turn is handed back like any other. The new task begins at that prompt.
+// The slot it takes was checked where the start was decided (startGate, in
+// the same synchronous call), or is the owner's own act on its page.
 export function onTurnStart(sessionId: string) {
   const a = byChild(sessionId);
   if (!a) return;

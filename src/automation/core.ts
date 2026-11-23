@@ -81,6 +81,13 @@ const pending = new Map<string, Pending[]>();
 const riding = new Map<string, Pending[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// Whether a turn may start in the session now (an ended agent whose tree has
+// no free slot may not: what is lined up for it waits there, and goes when a
+// slot frees). Set by the agents module.
+export const startGate: { open?: (sessionId: string) => boolean } = {};
+// The sessions with something lined up.
+export const pendingSessions = () => [...pending.keys()];
+
 export function hasPending(sessionId: string) {
   return (pending.get(sessionId)?.length ?? 0) > 0;
 }
@@ -155,6 +162,8 @@ export function flush(sessionId: string) {
   // Nor does a session where the owner's own message is about to be the next turn (a prompt they
   // edited or sent now): what waits here goes after that turn, never in its place.
   if (D().engine.isRunning(sessionId) || D().engine.isDraining?.() || D().engine.isClosing?.(sessionId) || D().engine.startsNext?.(sessionId)) return;
+  // Nor does an ended agent whose tree's agent limit is in use: the start would reopen it past the limit.
+  if (startGate.open && !startGate.open(sessionId)) return;
   pending.delete(sessionId);
   const s = D().store.session(sessionId);
   if (!s || s.archived) return void riding.delete(sessionId);
