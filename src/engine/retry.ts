@@ -80,7 +80,8 @@ export function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 export function errorText(e: unknown): string {
   const err = e as any;
-  const status = err?.status ? `HTTP ${err.status}: ` : "";
-  const msg = err?.error?.error?.message ?? err?.message ?? String(e);
+  const msg = String(err?.error?.error?.message ?? err?.message ?? String(e));
+  // A provider's failure already names its status ("Amazon Bedrock: HTTP 503: ..."): said once.
+  const status = err?.status && !msg.includes(`HTTP ${err.status}`) ? `HTTP ${err.status}: ` : "";
   return `${status}${msg}`.slice(0, 300);
 }

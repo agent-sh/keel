@@ -33,9 +33,9 @@ const WORDS: [RegExp, ErrorClass][] = [
 const NEVER_OPENED = /\b(?:EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENETDOWN|ConnectionRefused|FailedToOpenSocket)\b|\bUnable to connect\b|getaddrinfo/i;
 
 // The class of a failed request from the text it is stored as (a turn's error, a retry's message):
-// an "HTTP 429: ..." opening gives its status.
+// an "HTTP 429: ..." opening, or one after the provider's name ("Amazon Bedrock: HTTP 503: ..."), gives its status.
 export function classOfText(message: string): ErrorClass {
-  const status = Number(/^HTTP (\d{3}):/.exec(message)?.[1] ?? 0);
+  const status = Number(/^(?:[^:\n]{1,60}: )?HTTP (\d{3}):/.exec(message)?.[1] ?? 0);
   return errorClass({ status, message }) ?? "other";
 }
 
