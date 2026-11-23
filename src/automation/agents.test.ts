@@ -1101,3 +1101,57 @@ test("a report that settles leaves a wake's short coalesce as it was", async () 
   expect(String(inputs()[0]!.data.text)).toContain("the first report");
   end(b!, "end_turn");
 });
+
+// INT-M13: Claude Code's sub-agent fields. maxTurns bounds its steps, skills start its task whole, an effort the
+// model lists is its own; inline MCP servers, hooks and a memory folder are not run, and its parent is told so.
+test("a Claude Code agent's maxTurns, skills and effort hold; what Keel does not run is told to its parent", async () => {
+  const folder = join(dir, ".claude", "agents"), skill = join(dir, ".claude", "skills", "api-conventions");
+  mkdirSync(folder, { recursive: true });
+  mkdirSync(skill, { recursive: true });
+  writeFileSync(join(skill, "SKILL.md"), "---\nname: api-conventions\ndescription: Our API rules.\n---\nEvery endpoint returns JSON.");
+  const hidden = join(dir, ".claude", "skills", "owner-only");
+  mkdirSync(hidden, { recursive: true });
+  writeFileSync(join(hidden, "SKILL.md"), "---\nname: owner-only\ndescription: x\ndisable-model-invocation: true\n---\nSecret steps.");
+  writeFileSync(join(folder, "api-builder.md"), [
+    "---", "name: api-builder", "description: Builds endpoints", "maxTurns: 7", "effort: high",
+    "skills:", "  - api-conventions", "  - owner-only", "  - missing-skill",
+    "mcpServers:", "  - github", "  - playwright:", "      type: stdio", "      command: npx", "      args: [\"-y\", \"@playwright/mcp\"]",
+    "hooks:", "  PreToolUse:", "    - matcher: Bash", "      hooks:", "        - type: command", "          command: ./check.sh",
+    "memory: project", "---", "Build the endpoint.",
+  ].join("\n"));
+  const def = agents.definitions(dir).find((d) => d.name === "api-builder")!;
+  expect([def.maxTurns, def.skills, def.mcpServers, def.effort]).toEqual([7, ["api-conventions", "owner-only", "missing-skill"], ["github"], "high"]);
+  expect(def.notTaken).toEqual([expect.stringContaining("its own MCP servers (playwright)"), expect.stringContaining("its hooks (PreToolUse)"), expect.stringContaining("its project memory folder")]);
+  const r = await tool("Agent").run({ description: "endpoint", prompt: "add /health", subagent_type: "api-builder", run_in_background: true, isolation: "none" }, ctx as any);
+  const text = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
+  for (const said of ["playwright", "hooks", "memory folder", "the skill owner-only", "the skill missing-skill", "the MCP server github", "the effort high"]) expect(text).toContain(said);
+  const a = agents.list(parent.id).find((x) => x.type === "api-builder")!;
+  expect(store.session(a.session_id)!.settings?.max_steps).toBe(7);
+  const task = sends.find((x) => x.id === a.session_id)!.text;
+  expect(task).toContain("Every endpoint returns JSON.");
+  expect(task).not.toContain("Secret steps.");
+  end(a, "end_turn");
+  await settled();
+});
+
+// The same note when the agent waits for a slot: on the spawn's answer of either tool, its queued row, and the row of its start.
+test("what an agent is started without is told when it waits for a slot, and again when it starts", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "A definition in line" });
+  store.append(p.id, "assistant", { blocks: [] });
+  agents.setLimit(p.id, 1);
+  const pctx = { ...ctx, sessionId: p.id };
+  const busy = await agents.spawn(p.id, { prompt: "hold the slot", isolation: "none", background: true });
+  const r = await tool("Agent").run({ description: "queued endpoint", prompt: "add /ready", subagent_type: "api-builder", run_in_background: true, isolation: "none" }, pctx as any);
+  const text = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
+  expect(text).toContain("waits for a slot");
+  expect(text).toContain("the MCP server github");
+  const j = JSON.parse(String((await tool("spawn_agent").run({ message: "add /live", agent_type: "api-builder", isolation: "none" }, pctx as any)).content));
+  expect(j).toMatchObject({ status: "waits_for_slot", not_carried: expect.stringContaining("its hooks (PreToolUse)") });
+  const rows = () => activity.list({ session_id: p.id, limit: 50 }).items.map((x: any) => `${x.sub}: ${x.text}`);
+  expect(rows().filter((x) => x.startsWith("queued:") && x.includes("Not carried from its definition: its own MCP servers (playwright)"))).toHaveLength(2);
+  end(busy, "end_turn");
+  for (let i = 0; i < 100 && !rows().some((x) => x.startsWith("started:") && x.includes("when a slot freed") && x.includes("Not carried")); i++) await Bun.sleep(20);
+  expect(rows().some((x) => x.startsWith("started:") && x.includes("when a slot freed") && x.includes("Not carried from its definition"))).toBe(true);
+  for (const a of agents.list(p.id)) if (a.status === "running" || a.status === "waiting") agents.stop(a.id);
+  await settled();
+});

@@ -93,10 +93,10 @@ const Agent: Tool = {
     const fork = String(input.subagent_type ?? "").toLowerCase() === "fork";
     const spawn = () => agents.spawn(ctx.sessionId, { title: input.description, prompt: input.prompt, type: fork ? undefined : input.subagent_type, fork, model: input.model, background: !!input.run_in_background, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
     const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
-    if (input.run_in_background && agents.queuedForSlot(a)) return ok(agents.queuedLine(a));
-    if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.`);
-    if (a.status === "waiting") return ok(`Agent ${a.id} is waiting for ${agents.waitsOn(a.session_id) || "a scheduled wait"} and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
-    const report = agents.withUnread(agents.reportBlock(a), a.id);
+    if (input.run_in_background && agents.queuedForSlot(a)) return ok(agents.queuedLine(a) + agents.notCarried(a.id));
+    if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.${agents.notCarried(a.id)}`);
+    if (a.status === "waiting") return ok(`Agent ${a.id} is waiting for ${agents.waitsOn(a.session_id) || "a scheduled wait"} and goes on in the background; its report arrives later.${agents.notCarried(a.id)}\n\nSo far:\n${a.result ?? ""}`);
+    const report = agents.withUnread(agents.reportBlock(a), a.id) + agents.notCarried(a.id);
     return a.status === "completed" ? ok(report) : fail(report);
   }),
 };
@@ -215,7 +215,8 @@ const spawn_agent: Tool = {
   target: (input) => onMachine(input, input.message ?? input.prompt),
   run: (input, ctx) => guard(async () => {
     const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, machine: input.machine, cwd: input.cwd, call_id: ctx.callId }, ctx.signal);
-    return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}) }));
+    const left = agents.notCarried(a.id).trim();
+    return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}) }));
   }),
 };
 

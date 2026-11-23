@@ -398,6 +398,20 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}`);
 }
 
+// A skill an agent's definition preloads (Claude Code's sub-agent `skills`):
+// its whole content, rendered as the skill tool renders it with no
+// arguments. One only the owner invokes is not preloaded, as there. Its
+// allowed-tools grant nothing: the agent did not invoke it.
+export function preloadSkill(name: string, cwd: string, sessionId: string): { text: string } | { error: string } {
+  const skill = discoverSkills(cwd).find((s) => s.name === name);
+  if (!skill) return { error: "no skill of that name here" };
+  if (!skill.enabled) return { error: "it is turned off in Settings > Skills" };
+  if (!skill.modelInvocable) return { error: "only the owner invokes it (disable-model-invocation)" };
+  const { body } = frontmatter(readFileSync(skill.file, "utf8"));
+  usage?.record(skill.name);
+  return { text: `Skill ${skill.name} (base directory ${skill.dir}):\n\n${renderSkill(body, "", skill.arguments, varsOf(skill, cwd, sessionId)).trim()}` };
+}
+
 // The owner invoking a skill from the message box: same rendering, and skills
 // hidden from the model are allowed; ones marked not user-invocable are not.
 // Its allowed-tools hold for the turn the owner's command starts (`grant`).

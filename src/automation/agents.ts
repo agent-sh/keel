@@ -21,7 +21,8 @@ import { Worktrees } from "../worktree/manager.ts";
 import { contains } from "../core/paths.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
-import { carriedPlugins } from "../tools/skills.ts";
+import { carriedPlugins, preloadSkill } from "../tools/skills.ts";
+import { catalogSources } from "../tools/catalog.ts";
 import { enabledUnits } from "../plugins/registry.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
@@ -110,6 +111,11 @@ export type AgentDef = {
   silent?: boolean; // its result goes to its own panel (a reviewer's findings), not to the parent's conversation
   effort?: string; // a reasoning effort, used when the child's model lists it
   format?: "codex"; // a Codex TOML file: its model is another harness's id, a preference rather than a demand
+  // Claude Code's sub-agent fields (code.claude.com/docs/en/sub-agents, "Supported frontmatter fields"):
+  maxTurns?: number;      // the model steps it may take before it stops, its report marked partial
+  skills?: string[];      // skills whose whole content starts its task
+  mcpServers?: string[];  // servers it names by name: every session has the owner's, so they are said only when missing
+  notTaken?: string[];    // what its definition asks for that Keel does not run, each with why: told to its parent at the start
 };
 
 // A value that is not a whole number of at least 1 would mean no limit (NaN) or no agents (0).
@@ -273,9 +279,15 @@ export function setLimit(parentId: string, limit: number | null) {
 
 // --- definitions -----------------------------------------------------------
 
-function frontMatter(text: string): { meta: Record<string, string | string[]>; body: string } | undefined {
+// The frontmatter as YAML (Claude Code's fields include lists of objects:
+// mcpServers, hooks), else read line by line as before.
+function frontMatter(text: string): { meta: Record<string, any>; body: string } | undefined {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return undefined;
+  try {
+    const y = Bun.YAML.parse(m[1]!);
+    if (y && typeof y === "object" && !Array.isArray(y)) return { meta: y as Record<string, any>, body: m[2]!.trim() };
+  } catch {}
   const meta: Record<string, string | string[]> = {};
   let key = "";
   for (const line of m[1]!.split(/\r?\n/)) {
@@ -297,15 +309,39 @@ function modeName(v: string | string[] | undefined): string | undefined {
   return ({ readonly: "read-only", plan: "read-only", dontask: "read-only", ask: "ask", default: "ask", acceptedits: "auto-edits", autoedits: "auto-edits", auto: "auto", fullauto: "full-auto", bypasspermissions: "full-auto" } as Record<string, string>)[m];
 }
 
-const listOf = (v: string | string[] | undefined) =>
-  v === undefined ? undefined : (Array.isArray(v) ? v : v.replace(/^\[|\]$/g, "").split(",")).map((x) => x.trim()).filter(Boolean);
+const listOf = (v: unknown) =>
+  v === undefined || v === null ? undefined : (Array.isArray(v) ? v.map(String) : String(v).replace(/^\[|\]$/g, "").split(",")).map((x) => x.trim()).filter(Boolean);
 
-function readDir(dir: string, source: string): AgentDef[] {
-  if (!existsSync(dir)) return [];
-  return readFiles(readdirSync(dir).filter((f) => f.endsWith(".md")).map((f) => join(dir, f)), source);
+// What a Claude Code agent file asks for beyond its prompt and tools. A
+// plugin's agent has no hooks, mcpServers or permissionMode, as there
+// (Claude Code ignores them for a plugin's agents). What Keel does not run
+// is named with why, so it is never dropped without a word.
+function claudeFields(meta: Record<string, any>, plugin: boolean): Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "notTaken" | "effort"> {
+  const out: Pick<AgentDef, "maxTurns" | "skills" | "mcpServers" | "notTaken" | "effort"> = {};
+  const left: string[] = [];
+  const turns = Number(meta.maxTurns);
+  if (meta.maxTurns !== undefined && Number.isSafeInteger(turns) && turns >= 1) out.maxTurns = turns;
+  const skills = listOf(meta.skills);
+  if (skills?.length) out.skills = [...new Set(skills)].slice(0, 32);
+  if (typeof meta.effort === "string" && meta.effort.trim()) out.effort = meta.effort.trim().toLowerCase();
+  if (!plugin && Array.isArray(meta.mcpServers)) {
+    const named = meta.mcpServers.filter((x: unknown) => typeof x === "string") as string[];
+    const inline = meta.mcpServers.filter((x: unknown) => x && typeof x === "object").flatMap((x: object) => Object.keys(x));
+    if (named.length) out.mcpServers = named;
+    if (inline.length) left.push(`its own MCP servers (${inline.join(", ")}): Keel does not start servers an agent file defines; add them in Settings > MCP servers`);
+  }
+  if (!plugin && meta.hooks && typeof meta.hooks === "object" && Object.keys(meta.hooks).length) left.push(`its hooks (${Object.keys(meta.hooks).join(", ")}): Keel runs no hooks of an agent file`);
+  if (typeof meta.memory === "string" && meta.memory) left.push(`its ${meta.memory} memory folder: Keel gives an agent no memory folder of its own`);
+  if (left.length) out.notTaken = left;
+  return out;
 }
 
-function readFiles(files: string[], source: string): AgentDef[] {
+function readDir(dir: string, source: string, plugin = false): AgentDef[] {
+  if (!existsSync(dir)) return [];
+  return readFiles(readdirSync(dir).filter((f) => f.endsWith(".md")).map((f) => join(dir, f)), source, plugin);
+}
+
+function readFiles(files: string[], source: string, plugin = false): AgentDef[] {
   const out: AgentDef[] = [];
   for (const p of files) {
     const f = basename(p);
@@ -322,8 +358,9 @@ function readFiles(files: string[], source: string): AgentDef[] {
         disallowed: listOf(fm.meta.disallowedTools ?? fm.meta.disallowed_tools),
         model: fm.meta.model && fm.meta.model !== "inherit" ? String(fm.meta.model) : undefined,
         timeoutMins: fm.meta.timeout_mins ? Number(fm.meta.timeout_mins) : undefined,
-        permissionMode: modeName(fm.meta.permission_mode ?? fm.meta.permissionMode),
+        permissionMode: plugin ? undefined : modeName(fm.meta.permission_mode ?? fm.meta.permissionMode),
         isolation: fm.meta.isolation === "worktree" ? "worktree" : fm.meta.isolation === "none" ? "none" : undefined,
+        ...claudeFields(fm.meta, plugin),
       });
     } catch (e) {
       capture(e, { at: "agent definition", path: p });
@@ -370,8 +407,8 @@ export function definitions(cwd: string): AgentDef[] {
   for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
   // Agents of the plugins Keel installed (while enabled) and of the Claude Code
   // plugins the owner carried, as Claude Code names them (<plugin>:<agent>).
-  for (const u of enabledUnits()) for (const d of readFiles(u.agents.map((a) => a.file), "owner")) byName.set(`${u.id}:${d.name}`, { ...d, name: `${u.id}:${d.name}` });
-  for (const p of carriedPlugins()) for (const d of readDir(join(p.dir, "agents"), "owner")) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
+  for (const u of enabledUnits()) for (const d of readFiles(u.agents.map((a) => a.file), "owner", true)) byName.set(`${u.id}:${d.name}`, { ...d, name: `${u.id}:${d.name}` });
+  for (const p of carriedPlugins()) for (const d of readDir(join(p.dir, "agents"), "owner", true)) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
   const dirs: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {
     dirs.unshift(d);
@@ -713,7 +750,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
       .place(parent, { machine: input.machine, cwd: input.cwd, worktree: wantWorktree, key: id, title })
     : null;
   const iso = placed ? null : await isolate(parent, def, input, title, id, mode);
-  const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title, settings: effort ? { effort } : undefined });
+  const settings = { ...(effort ? { effort } : {}), ...(def.maxTurns ? { max_steps: def.maxTurns } : {}) };
+  const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title, settings: Object.keys(settings).length ? settings : undefined });
   store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
   if (iso) wts().adopt(child.id, iso.wt);
   inheritPermissions(parentId, child.id, mode);
@@ -741,8 +779,19 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
 
   const now = Date.now();
   const schema = input.output_schema === undefined ? null : JSON.stringify(input.output_schema);
+  // Its definition's skills, whole, before its task; what of the definition does not run is told to its parent.
+  const left = [...(def.notTaken ?? [])];
+  const preloaded: string[] = [];
+  for (const name of def.skills ?? []) {
+    const r = preloadSkill(name, placed?.cwd ?? iso?.cwd ?? parent.workspace, child.id);
+    if ("error" in r) left.push(`the skill ${name}: ${r.error}`); else preloaded.push(r.text);
+  }
+  const have = catalogSources(child.id).map((x) => x.name.split("@")[0]!);
+  for (const name of def.mcpServers ?? []) if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
+  if (def.effort && !effort && def.format !== "codex") left.push(`the effort ${def.effort}: ${model} does not list it`);
+  if (left.length) leftOut.set(id, left);
   const task = [
-    preamble(depth, max), def.body,
+    preamble(depth, max), def.body, ...preloaded,
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Edit only there and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
     placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Edit only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
@@ -760,11 +809,11 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null);
   release(); // the persisted running row now occupies the slot
   if (queued !== undefined) {
-    activity.record("agent", "queued", parentId, `Agent "${title}" (${def.name} on ${model}) waits for a slot: every agent slot of this session works`, { agent_id: id, child_session: child.id });
+    activity.record("agent", "queued", parentId, `Agent "${title}" (${def.name} on ${model}) waits for a slot: every agent slot of this session works${leftLine(id)}`, { agent_id: id, child_session: child.id });
     lineUp(get(id)!);
     return get(id)!;
   }
-  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})`, { agent_id: id, child_session: child.id });
+  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})${leftLine(id)}`, { agent_id: id, child_session: child.id });
   return begin(id, input, model, signal);
 }
 
@@ -775,7 +824,7 @@ function lineUp(a: AgentRecord) {
     const now = get(a.id);
     if (!now || now.status !== "waiting" || !queuedTask(now.id)) return;
     update(a.id, { status: "running" });
-    activity.record("agent", "started", a.parent_id, `Started agent "${a.title}" (${a.type} on ${a.model}) when a slot freed`, { agent_id: a.id, child_session: a.session_id });
+    activity.record("agent", "started", a.parent_id, `Started agent "${a.title}" (${a.type} on ${a.model}) when a slot freed${leftLine(a.id)}`, { agent_id: a.id, child_session: a.session_id });
     begin(a.id, { background: true }, a.model).catch((e) => capture(e, { at: "queued agent start", agent: a.id }));
   } });
   emit("agent", get(a.id));
@@ -818,6 +867,16 @@ async function begin(id: string, input: Pick<SpawnInput, "background">, model: s
     return get(id)!;
   }
   return rec;
+}
+
+// What an agent's definition asked for that it was started without, by agent
+// id, for the spawn's result to say (kept while the daemon runs).
+const leftOut = new Map<string, string[]>();
+// The same for an activity row.
+const leftLine = (id: string) => { const l = leftOut.get(id); return l?.length ? `. Not carried from its definition: ${l.join("; ")}` : ""; };
+export function notCarried(id: string): string {
+  const l = leftOut.get(id);
+  return l?.length ? `\n\nIts definition asks for what Keel does not give it: ${l.join("; ")}.` : "";
 }
 
 // The agent's first prompt goes into its session, once: from the start that
