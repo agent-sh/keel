@@ -101,6 +101,9 @@ test("a step's line says what was done, to what and how it went, from the calls 
 test("why a call failed is a line of its own output", () => {
   expect(failureLine(done("x", "Exit code 1\nbun test v1\n\n\u001b[31m✗\u001b[0m reports each part once\n  error: expect(received).toEqual(expected)\n 1 fail", true))).toBe("error: expect(received).toEqual(expected)");
   expect(failureLine(done("x", "File does not exist: /w/a.md", true))).toBe("File does not exist: /w/a.md");
+  // In a deep folder the file's name stays whole: the path is made the session's before the line is cut.
+  const deep = `/w/${"nested/".repeat(30)}x`;
+  expect(failureLine(done("x", `File does not exist: ${deep}/docs/progress.md`, true), deep)).toBe("File does not exist: docs/progress.md");
   expect(failureLine(done("x", "Exit code 2\nplain words", true))).toBe("plain words");
   // A line longer than the row shows ends at a word, marked: never in the middle of one.
   const long = `Delivery to receipt-fixture/receiver is unconfirmed (the daemon at http://127.0.0.1:41529 did not prove the pairing (HTTP 200)). The message may have arrived; check the receiving session before retrying.`;

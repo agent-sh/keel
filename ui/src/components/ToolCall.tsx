@@ -8,7 +8,7 @@ import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
-import { CALL_STOPPED, NOT_RUN, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, smallChange } from "../lib/work.ts";
+import { CALL_STOPPED, NOT_RUN, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, shortPaths, smallChange } from "../lib/work.ts";
 import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
 import { callHeld, callKey, letGo, useHeld, useLetGoUnseen } from "../lib/held.ts";
@@ -232,7 +232,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const rejected = plan && result?.is_error && !ended ? resultText(result) : undefined;
   // Why it failed, in a line of its own output, while the call is closed. A call that was turned away says
   // who turned it away and why: the words written for the model are not the reason.
-  const why = state === "error" && !open && !rejected ? shortPaths(failureLine(result), cwd) : "";
+  const why = state === "error" && !open && !rejected ? failureLine(result, cwd) : "";
   const ownReason = state === "denied" ? denialReason(resultText(result)) : "";
   const turned = state === "refused" && !refused ? refusalOf(result) : null;
   // A plan update says where the plan stands: the step in progress, and how many are done.
@@ -370,7 +370,6 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
 }
 
 // Paths in a line of output as the call's own line names them: under the session's folder, else from the home folder.
-const shortPaths = (line: string, cwd?: string) => (cwd ? line.replaceAll(`${cwd}/`, "") : line).replace(/\/home\/[^/\s]+\//g, "~/");
 
 // A plan's steps as marks: the done ones filled.
 function Pips({ done, total }: { done: number; total: number }) {

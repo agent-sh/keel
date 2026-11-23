@@ -245,13 +245,17 @@ export function refusalOf(result?: ToolResultBlock): { by: string; why: string }
 // ends at a word, with a mark that it goes on (the whole of it is in the open
 // call): cut in the middle of a word it read as the end of what was said.
 const LINE_MAX = 200;
-export function failureLine(result?: ToolResultBlock): string {
+// A line's paths as the transcript writes them: under the session's folder from it, under a home from ~.
+export const shortPaths = (line: string, cwd?: string) => (cwd ? line.replaceAll(`${cwd}/`, "") : line).replace(/\/home\/[^/\s]+\//g, "~/");
+// `cwd`: the session's folder. Paths are shortened before the line is cut: a long folder (a deep checkout,
+// a test machine's scratch folder) would otherwise cut the name of the file the line is about.
+export function failureLine(result?: ToolResultBlock, cwd?: string): string {
   // The tool's own output: not what a hook or the harness put into the result for the model (memory,
   // instructions that were loaded, what a language server found).
   const own = splitNested(splitDiagnostics(splitMemory(resultText(result)).text).text).text.replace(/<memory [^>]*>[\s\S]*?(<\/memory>|$)/g, "");
   const lines = own.replace(/\u001b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
   const body = lines.filter((l) => !/^(Exit code|Exit Code:|Process exited with code) ?-?\d+$/.test(l));
-  const line = body.find((l) => /\b(error|failed|failure|cannot|not found|no such|denied|refused|does not exist|timed out|killed)\b/i.test(l)) ?? body[0] ?? lines[0] ?? "";
+  const line = shortPaths(body.find((l) => /\b(error|failed|failure|cannot|not found|no such|denied|refused|does not exist|timed out|killed)\b/i.test(l)) ?? body[0] ?? lines[0] ?? "", cwd);
   if (line.length <= LINE_MAX) return line;
   const head = line.slice(0, LINE_MAX);
   // Back to the last whole word, unless that gives up most of the line (one long path or token).
