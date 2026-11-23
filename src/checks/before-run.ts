@@ -15,7 +15,7 @@ import { chunksUntil, readText } from "../core/proc.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { sandboxStatus, scopeHead } from "../safety/sandbox.ts";
-import { toolEnv } from "../tools/jobs.ts";
+import { jobScope, sessionMark, toolEnv } from "../tools/jobs.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
 import * as cache from "./package-cache.ts";
 import { BEFORE_DIR, clipWhy, commandFor, declaredOf, howToRun, keyOf, limitFor, lockDirOf, missingOnBase, needsOf, testsOf, timesCpu, TIMES_FILE, verdictOf, withTimes, type BasePackages, type FileResult } from "./before.ts";
@@ -283,7 +283,7 @@ async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof tes
       const pk = pkgs.get(t.check.dir);
       // (A check whose packages the base's install could not make does not run: it says why at once.)
       if (!missing && pk?.failed) { run.results[i] = { ...run.results[i]!, state: "unrun", why: pk.why!, install: pk.failed }; save(run); continue; }
-      run.results[i] = { ...run.results[i]!, ...(missing ? { state: "unrun" as const, why: missing } : await runOne({ cwd, tool, env, command: run.results[i]!.command, limitMs: limitFor(mine), wrap, unit: `keel-before-${process.pid}-${run.id}-${i}` }, pkgs.get(t.check.dir))) };
+      run.results[i] = { ...run.results[i]!, ...(missing ? { state: "unrun" as const, why: missing } : await runOne({ cwd, tool, env, command: run.results[i]!.command, limitMs: limitFor(mine), wrap, unit: `keel-before-${process.pid}-${run.id}-${i}`, session: run.session_id }, pkgs.get(t.check.dir))) };
       save(run);
     }
     return run;
@@ -424,7 +424,8 @@ const SCOPE_SLACK_S = 10;
 // One file's run. A run that is not in the sandbox (whose processes all end with it: its own process space) runs
 // in a systemd scope of its own when the machine has them, so what it started goes with it, also a process that
 // left its group. Its process group goes at its end in any case, also after a normal exit.
-type One = { cwd: string; tool: string; env: Record<string, string>; command: string; limitMs: number; wrap?: (argv: string[]) => string[]; unit: string };
+// `session`: whose run it is; while it runs, a request it makes to the daemon's API has that session's authority only.
+type One = { cwd: string; tool: string; env: Record<string, string>; command: string; limitMs: number; wrap?: (argv: string[]) => string[]; unit: string; session?: string };
 export async function runOne(o: One, base?: BasePackages): Promise<Partial<FileResult>> {
   const times = join(o.tool, TIMES_FILE);
   rmSync(times, { force: true });
@@ -435,8 +436,14 @@ export async function runOne(o: One, base?: BasePackages): Promise<Partial<FileR
   const started = performance.now();
   let timedOut = false;
   let p: ReturnType<typeof Bun.spawn>;
-  try { p = Bun.spawn(full, { cwd: o.cwd, env: o.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }); }
+  const slice = scoped ? jobScope().slice : undefined;
+  const mark = o.session ? sessionMark(o.session, "before", slice ? `/sys/fs/cgroup${slice}/${o.unit}.scope` : undefined) : undefined;
+  try { p = Bun.spawn(full, { cwd: o.cwd, env: { ...o.env, ...mark?.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }); }
   catch (e) { return { state: "unrun", why: `it could not start: ${(e as Error).message}`, exit: null }; }
+  if (mark) {
+    const release = mark.hold(p.pid);
+    void p.exited.then(release, release);
+  }
   const stop = () => { try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill("SIGKILL"); } catch {} } };
   const timer = setTimeout(() => { timedOut = true; stop(); }, o.limitMs);
   // Its end: what is left of its group and its scope goes, and its pipes are read for DRAIN_MS more at most.

@@ -17,7 +17,7 @@
 // API, results by console.log).
 import type { ToolResultBlock } from "../core/types.ts";
 import { shq } from "./shell.ts";
-import { toolEnv, UNREAD_CAP } from "./jobs.ts";
+import { sessionScope, toolEnv, UNREAD_CAP } from "./jobs.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { pump } from "../core/proc.ts";
@@ -124,10 +124,13 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
   let done: { printed: string; dropped: number; error: string | null } | null = null;
   let resolveDone!: () => void;
   const doneP = new Promise<void>((r) => (resolveDone = r));
-  const proc = Bun.spawn(ctx.wrapSpawn ? ctx.wrapSpawn(argv) : argv, {
+  // In a scope of its own, as a shell command is (else in a process group and session of its own): a
+  // request it makes to the daemon's API has its session's authority only (src/server/peer-scope.ts).
+  const scope = sessionScope("code", ctx.wrapSpawn ? ctx.wrapSpawn(argv) : argv, ctx.sessionId);
+  const proc = Bun.spawn(scope.argv, {
     cwd: ctx.cwd,
-    env: toolEnv(ctx.sessionId, { BUN_BE_BUN: "1", NO_COLOR: "1" }),
-    stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    env: toolEnv(ctx.sessionId, { BUN_BE_BUN: "1", NO_COLOR: "1", ...scope.env }),
+    stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: !scope.cgroup,
     ipc(m: any) {
       if (m?.done) { done = m; resolveDone(); return; }
       if (typeof m?.call !== "number") return;
@@ -162,6 +165,8 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
       })();
     },
   });
+  const release = scope.hold(proc.pid);
+  void proc.exited.then(release, release);
   const onAbort = () => proc.kill("SIGKILL");
   ctx.signal.addEventListener("abort", onAbort, { once: true });
   const streams = Promise.all([head(proc.stdout), head(proc.stderr)]);

@@ -3,10 +3,10 @@
 // No e2e reaches this: a page cannot tell which way its connection's owner was read.
 import { expect, test } from "bun:test";
 import { connect, createServer } from "node:net";
-import { endsOf, uidLookup } from "./admission.ts";
-import { readdirSync, readlinkSync } from "node:fs";
+import { endsOf, tableFacts, uidLookup } from "./admission.ts";
+import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { holderOf } from "./caller.ts";
-import { request, socketInode, socketUid, uidIn } from "./sockdiag.ts";
+import { factsIn, request, socketFacts, socketInode, socketUid, uidIn } from "./sockdiag.ts";
 
 test("the request names both ends in network order, and only a connected socket's record with those ports is an answer", () => {
   const req = request({ bytes: [127, 0, 0, 1], port: 40001 }, { bytes: [127, 0, 0, 2], port: 8080 }, 7);
@@ -50,6 +50,14 @@ test.skipIf(process.platform !== "linux")("a live connection's owner is this acc
     expect(mine).toContain(`socket:[${inode}]`);
     expect(holderOf(inode, [process.pid])).toBe(process.pid);
     expect(holderOf(inode, [process.pid], () => ["socket:[1]", "pipe:[2]"])).toBeUndefined();
+    // The cgroup it was made in is this process's: its id is the inode of the cgroup's folder.
+    const facts = socketFacts(e[0], e[1])!;
+    expect([facts.uid, facts.inode]).toEqual([me, inode]);
+    // The table, where the kernel cannot be asked, names the same socket; no table, no answer.
+    expect(tableFacts(peer, server)).toEqual({ uid: me, inode, cgroup: null });
+    expect(tableFacts(peer, server, () => null)).toBeNull();
+    const cg = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((l) => l.startsWith("0::"));
+    if (cg && facts.cgroup !== null) expect(facts.cgroup).toBe(statSync(`/sys/fs/cgroup${cg.slice(3)}`, { bigint: true }).ino);
     // The same connection named with a mapped address, where it has one.
     if (host === "127.0.0.1") expect(ask({ address: `::ffff:${peer.address}`, port: peer.port }, { address: "::ffff:127.0.0.1", port })).toBe(me);
     // The listening socket's own end, the ends the other way round with another port, a port nobody has, a daemon on every address.
@@ -65,4 +73,21 @@ test.skipIf(process.platform !== "linux")("a live connection's owner is this acc
     await Bun.sleep(50);
     expect([null, 0]).toContain(ask(peer, server));
   }
+});
+
+test("the cgroup is read from the attributes after the record, wherever it is among them", () => {
+  const b = new Uint8Array(160), v = new DataView(b.buffer);
+  const at = 88;
+  // A mark (4 bytes of value), then the cgroup id (8 bytes).
+  v.setUint16(at, 8, true); v.setUint16(at + 2, 15, true); v.setUint32(at + 4, 7, true);
+  v.setUint16(at + 8, 12, true); v.setUint16(at + 10, 21, true); v.setBigUint64(at + 12, 4242n, true);
+  v.setUint32(0, at + 20, true); v.setUint16(4, 20, true); v.setUint32(8, 3, true);
+  v.setUint8(16, 2); v.setUint8(17, 1); v.setUint16(20, 40001, false); v.setUint16(22, 8080, false);
+  v.setUint32(80, 1000, true); v.setUint32(84, 99, true);
+  expect(factsIn(b, at + 20, 3, 40001, 8080)).toEqual({ uid: 1000, inode: 99, cgroup: 4242n });
+  // A kernel that does not say: no cgroup. An attribute that runs past the reply: read no further.
+  v.setUint32(0, at + 8, true);
+  expect(factsIn(b, at + 8, 3, 40001, 8080)).toEqual({ uid: 1000, inode: 99, cgroup: null });
+  v.setUint32(0, at + 20, true); v.setUint16(at + 8, 40, true);
+  expect(factsIn(b, at + 20, 3, 40001, 8080)).toEqual({ uid: 1000, inode: 99, cgroup: null });
 });

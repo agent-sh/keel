@@ -1,21 +1,18 @@
 // Whether a request to the daemon's own API comes from a command a session
-// runs: a model's shell call that reaches the API on loopback (a session
-// outside a sandbox can; a sandbox has no route to it). The admission check
-// (admission.ts) lets every process of the owner's account through, the
-// session's commands among them; a route that only the owner's own hand may
-// take (landing a branch the session does not hold) asks this as well.
+// runs: a model's shell call, a run_code program or a repository's check that
+// reaches the API on loopback (a session outside a sandbox can; a sandbox has
+// no route to it). The admission check (admission.ts, peer-scope.ts) gives such
+// a request that session's authority only; a route asks who it was with
+// sessionOfCaller.
 //
-// The client's socket is named by the kernel by its two ends (sockdiag.ts):
-// its inode is the one an open file of the calling process links to
-// (`socket:[N]` under /proc/PID/fd). The processes looked at are the ones the
-// daemon holds as a session's commands (jobs.ts sessionCommandPids), never a
-// process's own word about itself.
+// The processes looked at are the ones the daemon holds as a session's (the
+// jobs code: each command's scope, else its process group and session), never
+// a process's own word about itself. A socket is found first by the cgroup the
+// kernel records it was made in, else by its inode: the one an open file of the
+// calling process links to (`socket:[N]` under /proc/PID/fd).
 import { readdirSync, readlinkSync } from "node:fs";
-import { sessionCommandPids } from "../tools/jobs.ts";
-import { endsOf } from "./admission.ts";
-import { socketInode } from "./sockdiag.ts";
-
-const LOOPBACK_IP = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+import { sessionCallerPids, sessionCgroups, sessionCommandPids, sessionLooseProcesses } from "../tools/jobs.ts";
+import { callerSession, useSessionScopes } from "./admission.ts";
 
 // The process whose open files hold socket `inode`, among `pids`.
 export function holderOf(inode: number, pids: Iterable<number>, fdsOf: (pid: number) => string[] = fds): number | undefined {
@@ -31,16 +28,31 @@ function fds(pid: number): string[] {
   return out;
 }
 
+// One look at every session's processes at a time; a socket is answered only by a look that began after
+// its request arrived, so the askers that come while one looks share the one that follows it.
+let looking: Promise<Map<number, string>> | undefined;
+let after: Promise<Map<number, string>> | undefined;
+function freshPids(): Promise<Map<number, string>> {
+  const start = () => (looking = sessionCallerPids().finally(() => (looking = undefined)));
+  if (!looking) return start();
+  const next = () => { after = undefined; return start(); };
+  return (after ??= looking.then(next, next));
+}
+
+// The admission check learns where sessions' commands run from the jobs code.
+export function watchSessionCallers() {
+  useSessionScopes({
+    cgroups: sessionCgroups,
+    loose: sessionLooseProcesses,
+    // Among the processes the daemon holds first, then among every process that is a session's
+    // (sessionCallerPids: its mark, its parents), read again.
+    holder: (inode) => {
+      const find = (pids: Map<number, string>) => { const pid = holderOf(inode, pids.keys()); return pid === undefined ? null : pids.get(pid)!; };
+      return find(sessionCommandPids()) ?? freshPids().then(find);
+    },
+  });
+}
+
 // The session whose command made this request, or null (the owner's page, the
 // command line, another daemon, or a request this cannot read: not Linux).
-export function sessionOfCaller(req: Request, srv: Bun.Server<unknown> | undefined): string | null {
-  const ip = srv?.requestIP(req);
-  if (!ip || !srv?.port || !LOOPBACK_IP.test(ip.address)) return null;
-  const host = srv.hostname && !/^(0\.0\.0\.0|::|\[::\]|)$/.test(srv.hostname) ? srv.hostname : ip.address.startsWith("::ffff:") ? ip.address.slice(7) : ip.address === "::1" ? "::1" : "127.0.0.1";
-  const ends = endsOf({ address: ip.address, port: ip.port }, { address: host, port: srv.port });
-  const inode = ends ? socketInode(ends[0], ends[1]) : null;
-  if (!inode) return null;
-  const pids = sessionCommandPids();
-  const pid = holderOf(inode, pids.keys());
-  return pid === undefined ? null : pids.get(pid)!;
-}
+export const sessionOfCaller = (req: Request, _srv?: Bun.Server<unknown>): string | null => callerSession(req);

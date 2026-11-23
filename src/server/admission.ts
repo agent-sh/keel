@@ -10,6 +10,9 @@
 // browsers (the CLI, the phone app, fleet peers) send no Origin and pass.
 //
 // Who is calling comes from the socket, never from Host alone. A direct call on
+// loopback from a process a session runs (its shell, a program, a check) has
+// that session's authority only, with or without the token (peer-scope.ts):
+// it reads its own session and changes nothing. Any other direct call on
 // loopback from a process of this daemon's own user (or root) is the owner's
 // machine. Everything else needs the access token (`<state>/api-token`, 0600):
 // a call through a proxy or tunnel (a forwarding header), a peer that is not
@@ -18,11 +21,12 @@
 // the `keel_token` cookie (set by /api/remote/enter for a remote browser) or
 // `?token=` on /ws. The phone API (/v1, /pair) signs its own requests and the
 // portal carries a capability key in its path: neither needs it.
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { socketUid } from "./sockdiag.ts";
+import { socketFacts, socketUid, type SocketFacts } from "./sockdiag.ts";
+import { cgroupIds, peerAuthority, sessionMay, sessionRefusal, type Authority } from "./peer-scope.ts";
 
 type Check = (req: Request, path: string) => Response | undefined;
 const checks: Check[] = [];
@@ -75,8 +79,74 @@ export const forwarded = (req: Request) => FORWARDING.some((h) => req.headers.ha
 
 const LOOPBACK_IP = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
 // What admit learned about a request's socket, for isLocal (safety/presence.ts).
-const peers = new WeakMap<Request, { loopback: boolean }>();
+const peers = new WeakMap<Request, { loopback: boolean; session?: string }>();
 export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false;
+// The session whose command made this request (peer-scope.ts), or null: the owner's page, the command line, a peer.
+export const callerSession = (req: Request) => peers.get(req)?.session ?? null;
+
+// Where sessions' commands run, as the jobs code holds them (src/server/caller.ts gives it at the start).
+export type ScopeSource = { cgroups(): Map<string, string>; loose(): boolean; holder(inode: number): string | null | Promise<string | null> };
+let scopes: ScopeSource | undefined;
+export const useSessionScopes = (s: ScopeSource | undefined) => void (scopes = s);
+// The daemon's own end of a loopback connection: the address it listens on, else the one the client reached it at.
+const ownEnd = (ip: string, hostname: string | undefined) =>
+  boundAddress(hostname) ?? (ip.startsWith("::ffff:") ? ip.slice(7) : ip === "::1" ? "::1" : LOOPBACK_IP.test(ip) ? ip : "127.0.0.1");
+// What a socket was found to be is kept a minute, by the cgroup it was made in: a cgroup's id is never
+// given to another and a socket's cgroup is set when it is made, so the next connection from the owner's
+// browser or terminal costs no look at the processes. Not for the daemon's own cgroup, where sessions'
+// commands run on a machine with no scopes (and a socket is kept by its inode there), nor for a socket
+// no process holds.
+const verdicts = new Map<string, { a: Authority; at: number }>();
+const KEPT_MS = 60_000;
+let ownCgroup: bigint | null | undefined;
+function daemonCgroup(): bigint | null {
+  if (ownCgroup !== undefined) return ownCgroup;
+  try {
+    const line = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((l) => l.startsWith("0::"));
+    ownCgroup = line ? statSync(`/sys/fs/cgroup${line.slice(3)}`, { bigint: true }).ino : null;
+  } catch { ownCgroup = null; }
+  return ownCgroup;
+}
+export function peerScope(ip: { address: string; port: number }, srv: { hostname?: string; port: number }): Authority | Promise<Authority> {
+  if (!scopes) return { kind: "owner" };
+  const ends = endsOf(ip, { address: ownEnd(ip.address, srv.hostname), port: srv.port });
+  const src = scopes;
+  let busy: { loose: boolean; cgroups: Map<string, string> } | undefined;
+  const sessions = () => (busy ??= { loose: src.loose(), cgroups: src.cgroups() });
+  // Where the kernel cannot be asked for the one socket, its table is read for the socket's owner and inode
+  // (only while a session runs something: what is not a session's needs no answer).
+  const facts = (ends ? socketFacts(ends[0], ends[1]) : null) ?? (sessions().loose || sessions().cgroups.size ? tableFacts(ip, { address: boundAddress(srv.hostname), port: srv.port }) : null);
+  const key = !facts || facts.inode === 0 ? null : facts.cgroup !== null && facts.cgroup !== daemonCgroup() ? `c${facts.cgroup}` : `i${facts.inode}`;
+  const hit = key ? verdicts.get(key) : undefined;
+  if (hit && Date.now() - hit.at < KEPT_MS) return hit.a;
+  const keep = (a: Authority) => {
+    if (key && (a.kind === "owner" || a.kind === "session")) {
+      if (verdicts.size > 4096) verdicts.clear();
+      verdicts.set(key, { a, at: Date.now() });
+    }
+    return a;
+  };
+  const { loose, cgroups } = sessions();
+  const a = peerAuthority({ facts, linux: process.platform === "linux", cgroups: cgroupIds(cgroups), loose, holder: (inode) => src.holder(inode) });
+  return a instanceof Promise ? a.then(keep) : keep(a);
+}
+// The owner and inode of a loopback client's socket from the kernel's table (/proc/net/tcp and tcp6), read
+// here and now; null when no line, or more than one, names it.
+export function tableFacts(peer: End, server: { address?: string; port: number }, read: (f: string) => string | null = readTable): SocketFacts | null {
+  const from = tableAddresses(peer.address), to = server.address ? tableAddresses(server.address) : [];
+  if (!from.length) return null;
+  const hex = (p: number) => p.toString(16).toUpperCase().padStart(4, "0");
+  const line = new RegExp(`^\\s*\\d+: (?:${from.join("|")}):${hex(peer.port)} ${to.length ? `(?:${to.join("|")})` : "[0-9A-F]+"}:${hex(server.port)} (?:\\S+\\s+){4}(\\d+)\\s+\\d+\\s+(\\d+)`, "gm");
+  const found: SocketFacts[] = [];
+  for (const t of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    const text = read(t);
+    if (text) for (const m of text.matchAll(line)) found.push({ uid: Number(m[1]), inode: Number(m[2]), cgroup: null });
+  }
+  return found.length === 1 ? found[0]! : null;
+}
+const readTable = (f: string) => { try { return readFileSync(f, "latin1"); } catch { return null; } };
+// What a session's command may reach besides its own session: the portal, whose path holds its own capability key.
+const SESSION_OPEN = /^\/(fleet-)?portal\//;
 
 // Who holds the other end of a loopback connection, from the kernel's socket
 // table. A connection is its two addresses and its two ports: the kernel lets
@@ -271,21 +341,37 @@ export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined):
   const ip = srv?.requestIP(req);
   const loopback = !!ip && LOOPBACK_IP.test(ip.address);
   peers.set(req, { loopback: !!ip ? loopback : true });
-  if (OWN_AUTH.test(new URL(req.url).pathname)) return undefined;
-  const answer = (why: string | null) => (!why || hasToken(req, new URL(req.url).pathname === "/ws") ? undefined : refuse(`${why} needs the access token (Settings > Safety > Remote access)`));
-  if (forwarded(req)) return answer("a request through a proxy or tunnel");
-  if (ip && !loopback) return answer(`a request from ${ip.address}`);
-  if (!ip || !srv?.port) return answer(null);
-  const owner = (who: Owner) => {
-    const me = process.getuid?.();
-    if (who === "unlisted") return answer("a connection the kernel does not list");
-    if (who === "shared") return answer("a connection whose address and port more than one account holds");
-    if (who === "unreadable") return answer("a connection whose owner cannot be read (the kernel's socket table is not readable)");
-    if (who !== undefined && me !== undefined && who !== me && who !== 0) return answer(`a process of another account (uid ${who})`);
-    return answer(null);
+  const path = new URL(req.url).pathname;
+  const answer = (why: string | null) => (!why || hasToken(req, path === "/ws") ? undefined : refuse(`${why} needs the access token (Settings > Safety > Remote access)`));
+  const account = (): Response | undefined | Promise<Response | undefined> => {
+    if (OWN_AUTH.test(path)) return undefined;
+    if (forwarded(req)) return answer("a request through a proxy or tunnel");
+    if (ip && !loopback) return answer(`a request from ${ip.address}`);
+    if (!ip || !srv?.port) return answer(null);
+    const owner = (who: Owner) => {
+      const me = process.getuid?.();
+      if (who === "unlisted") return answer("a connection the kernel does not list");
+      if (who === "shared") return answer("a connection whose address and port more than one account holds");
+      if (who === "unreadable") return answer("a connection whose owner cannot be read (the kernel's socket table is not readable)");
+      if (who !== undefined && me !== undefined && who !== me && who !== 0) return answer(`a process of another account (uid ${who})`);
+      return answer(null);
+    };
+    const who = peerUid({ address: ip.address, port: ip.port }, { address: boundAddress(srv.hostname), port: srv.port });
+    return who instanceof Promise ? who.then(owner) : owner(who);
   };
-  const who = peerUid({ address: ip.address, port: ip.port }, { address: boundAddress(srv.hostname), port: srv.port });
-  return who instanceof Promise ? who.then(owner) : owner(who);
+  if (!ip || !loopback || !srv?.port) return account();
+  // A session's command first, whatever it carries: the token does not make it the owner (it can read the token's file).
+  const scope = peerScope({ address: ip.address, port: ip.port }, { hostname: srv.hostname, port: srv.port });
+  const decide = (a: Authority) => {
+    if (a.kind === "session") {
+      peers.set(req, { loopback, session: a.session });
+      return sessionMay(req.method, path, a.session) || SESSION_OPEN.test(path) ? undefined : refuse(sessionRefusal(a.session, req.method, path));
+    }
+    if (a.kind === "ended") return refuse("the process that made this connection closed it or ended before it was answered, so who made it cannot be told");
+    if (a.kind === "unknown" && !OWN_AUTH.test(path)) return answer("a connection the kernel names no maker of, while sessions' commands run,");
+    return account();
+  };
+  return scope instanceof Promise ? scope.then(decide) : decide(scope);
 }
 
 // The portal proxies a session's own dev server under a capability key in its

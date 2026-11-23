@@ -19,6 +19,7 @@ import { storeLocked } from "../core/store-files.ts";
 import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
 import { addAdmission } from "./admission.ts";
+import { watchSessionCallers } from "./caller.ts";
 import { serve } from "./app.ts";
 import { readsOf } from "./reads.ts";
 import { routeModules } from "./routes/index.ts";
@@ -138,6 +139,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // (src/core/checkpoint.ts): what would write is turned away at the door, with why.
   // What stops work or answers what waits is taken all the same (STORE_PASSES): a stop, a card's
   // answer, a job's stop, a drain or a restart. Those act in memory and owe their writes.
+  // A request from a session's own command has that session's authority only (peer-scope.ts).
+  watchSessionCallers();
   addAdmission((req, path) => {
     if (!checkpointer.refusing || req.method === "GET" || req.method === "HEAD" || STORE_PASSES.test(path)) return;
     return Response.json({ error: checkpointer.refusalSays ?? STORE_REFUSES, store_refusing: true }, { status: 503 });

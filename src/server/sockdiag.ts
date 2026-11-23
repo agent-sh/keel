@@ -80,14 +80,39 @@ export function inodeIn(reply: Uint8Array, length: number, n: number, localPort:
   return new DataView(reply.buffer, reply.byteOffset, length).getUint32(84, true);
 }
 
-const reply = new Uint8Array(512);
+// What the kernel holds of one socket: its owner, its inode (0 once no process holds it: the one that
+// made it closed it or ended), and the cgroup it was made in (its id, the inode of the cgroup's folder
+// under /sys/fs/cgroup; null on a kernel that does not say). The cgroup is the one of the process that
+// made the socket, set when it was made: a child that took it, or the pid of a process that ended, does
+// not change it.
+export type SocketFacts = { uid: number; inode: number; cgroup: bigint | null };
+const INET_DIAG_CGROUP_ID = 21;
+export function factsIn(reply: Uint8Array, length: number, n: number, localPort: number, remotePort: number): SocketFacts | null {
+  const uid = uidIn(reply, length, n, localPort, remotePort);
+  if (uid === null) return null;
+  const v = new DataView(reply.buffer, reply.byteOffset, length);
+  const end = Math.min(length, v.getUint32(0, true));
+  let cgroup: bigint | null = null;
+  // The attributes after the record: a length (with its own 4 bytes), a type, the value, each to 4 bytes.
+  for (let at = HEADER + REPLY; at + 4 <= end;) {
+    const len = v.getUint16(at, true), type = v.getUint16(at + 2, true) & 0x3fff;
+    if (len < 4 || at + len > end) break;
+    if (type === INET_DIAG_CGROUP_ID && len >= 12) cgroup = v.getBigUint64(at + 4, true);
+    at += (len + 3) & ~3;
+  }
+  return { uid, inode: v.getUint32(84, true), cgroup };
+}
+
+const reply = new Uint8Array(2048);
 
 // The uid that owns the TCP socket with these two ends, or null when the kernel was not asked or named none.
 export const socketUid = (local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }): number | null => ask(local, remote, uidIn);
 // The inode of that socket, the same way.
 export const socketInode = (local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }): number | null => ask(local, remote, inodeIn);
+// The socket's owner, inode and cgroup, the same way.
+export const socketFacts = (local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }): SocketFacts | null => ask(local, remote, factsIn);
 
-function ask(local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }, read: typeof uidIn): number | null {
+function ask<T>(local: { bytes: number[]; port: number }, remote: { bytes: number[]; port: number }, read: (reply: Uint8Array, length: number, n: number, localPort: number, remotePort: number) => T | null): T | null {
   if (failed >= GIVE_UP || local.bytes.length !== remote.bytes.length || (local.bytes.length !== 4 && local.bytes.length !== 16)) return null;
   const c = open();
   if (!c) return null;

@@ -48,6 +48,7 @@ export type Job = {
   handle?: Handle;
   stops?: boolean;
   stopping?: boolean;    // a stop of it is under way
+  markGone?: boolean;    // ended with no cgroup, and a look for what carries its mark found nothing
   // Its call was cut by a restart while the command ran in front and the command
   // ran on: the turn was waiting on it, so its end starts a turn (see finish).
   wake?: boolean;
@@ -945,7 +946,7 @@ const inCgroup = (pid: number, cg: string) => { try { return readFileSync(`/proc
 
 // One read of every process's state, group, session and start time. The looks of one moment share
 // it (a stop of a dozen jobs polls each of them), so it is kept for less than a poll; `fresh` reads again.
-type Row = { state: string; group: number; session: number; start: string };
+type Row = { state: string; parent: number; group: number; session: number; start: string };
 const TABLE_MS = 15;
 let table: { at: number; rows: Map<number, Row> } | undefined;
 function procTable(fresh = false): Map<number, Row> {
@@ -965,7 +966,7 @@ function rowOf(pid: number): Row | undefined {
   try {
     const st = procfs.stat(pid);
     const f = st.slice(st.lastIndexOf(") ") + 2).split(" ");
-    return { state: f[0]!, group: Number(f[2]), session: Number(f[3]), start: f[19]! };
+    return { state: f[0]!, parent: Number(f[1]), group: Number(f[2]), session: Number(f[3]), start: f[19]! };
   } catch { return undefined; }
 }
 const dead = (r: Row | undefined) => !r || r.state === "Z" || r.state === "X";
@@ -1184,6 +1185,114 @@ export function sessionCommandPids(): Map<number, string> {
   for (const j of jobs.values()) {
     if (j.by === "owner" || !jobLive(j)) continue;
     for (const m of members(j)) out.set(m.pid, j.sessionId);
+  }
+  for (const h of livingHeld()) for (const pid of heldPids(h)) out.set(pid, h.sessionId);
+  return out;
+}
+
+// What a session runs outside the jobs table: a run_code program, a repository's checks. Each is held by
+// its own scope's cgroup where the machine has them, else by its process group and session (it is started
+// detached, as a job is) and the mark every process of it carries in its environment (one that took a
+// session of its own is found by that), with its start time checked: while it runs, a request it makes
+// to the daemon's API has that session's authority only (src/server/peer-scope.ts).
+type Held = { sessionId: string; id: string; started: number; pid: number; boot?: string; cgroup?: string; ended?: boolean; gone?: boolean };
+const held = new Set<Held>();
+const asJob = (h: Held) => ({ id: h.id, started: h.started, pid: h.pid, boot: h.boot, cgroup: h.cgroup }) as unknown as Job;
+const heldPids = (h: Held): number[] => h.cgroup ? cgroupPids(asJob(h)).filter((pid) => !dead(rowOf(pid))) : members(asJob(h)).map((m) => m.pid);
+// The held programs, without the ones that ended and left nothing alive: what a program started stays its
+// session's for as long as it runs.
+function livingHeld(): Held[] {
+  for (const h of held) if (h.ended && (h.cgroup ? !heldPids(h).length : h.gone)) held.delete(h);
+  return [...held];
+}
+// The mark of a program of `sessionId` (`env`, for its environment) and `hold`, to call with its pid as
+// soon as it started: the returned call says it ended (what it left running is still the session's).
+// `cgroup`: the scope it runs in, when it has one.
+export function sessionMark(sessionId: string, kind: string, cgroup?: string): { id: string; env: Record<string, string>; hold(pid: number): () => void } {
+  const id = `${kind}${Math.random().toString(36).slice(2, 10)}`, started = Date.now();
+  return {
+    id, env: { [MARK]: markOf({ id, started }) },
+    hold: (pid) => {
+      const h: Held = { sessionId, id, started, pid, boot: procStart(pid), cgroup };
+      held.add(h);
+      return () => void (h.ended = true);
+    },
+  };
+}
+// Where a program of a session runs: a scope of its own (`kind` names it in the unit) around `argv` as the
+// confinement left it, its scope's properties taken into this one as startJob does (`argv` back as it is
+// where there are no scopes; `cgroup` is where the scope will be), with its mark (sessionMark).
+export function sessionScope(kind: string, argv: string[], sessionId: string): { argv: string[]; cgroup?: string; env: Record<string, string>; hold(pid: number): () => void } {
+  const box = jobScope();
+  const unit = `keel-${kind}-${Math.random().toString(36).slice(2, 10)}.scope`;
+  const { props, argv: inner } = splitScope(argv);
+  const cgroup = box.slice ? `/sys/fs/cgroup${box.slice}/${unit}` : undefined;
+  const mark = sessionMark(sessionId, kind, cgroup);
+  return { argv: box.slice ? [...scopeHead(), "--slice=app.slice", `--unit=${unit}`, ...props, "--", ...inner] : argv, cgroup, env: mark.env, hold: mark.hold };
+}
+// The cgroups that hold a session's commands and programs now, each with its session: the folder of
+// each live job's scope and of each held program's, with any folder made under one (a process may make
+// a cgroup in its own scope and move into it). A socket made in one of them was made by that session.
+export function sessionCgroups(): Map<string, string> {
+  const out = new Map<string, string>();
+  const add = (dir: string, sessionId: string, depth = 0) => {
+    out.set(dir, sessionId);
+    if (depth > 3) return;
+    let names: import("node:fs").Dirent[];
+    try { names = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const d of names) if (d.isDirectory()) add(join(dir, d.name), sessionId, depth + 1);
+  };
+  for (const j of jobs.values()) if (j.by !== "owner" && j.cgroup && jobLive(j) && j.cgroup) add(j.cgroup, j.sessionId);
+  for (const h of livingHeld()) if (h.cgroup) add(h.cgroup, h.sessionId);
+  return out;
+}
+// Whether a session may have processes that no cgroup of its holds: a command or program that runs, or
+// that ended and was not yet looked at and found with nothing left (a look that finds nothing is final: a
+// process gains a mark only from a marked parent). Its processes are found by sessionCallerPids.
+export function sessionLooseProcesses(): boolean {
+  for (const j of jobs.values()) if (j.by !== "owner" && (running(j) || (j.cgroup && jobLive(j)) || !j.markGone)) return true;
+  return livingHeld().length > 0;
+}
+// The processes of sessions' commands that no cgroup holds, each with its session: by their group and
+// session (sessionCommandPids), and by their mark, read off the loop with the other askers of the moment.
+// Every process that is a session's, read off the loop as far as it can be and with the process table read
+// again (a process that started since the table the moment shares was read is in no other answer): what
+// the daemon holds of each command and program (its cgroup, its group and session), what carries a
+// command's mark in its environment, and what descends from any of them (a process that left its scope
+// for another, as `systemd-run --scope` does, still has its parent). For a socket that no session's
+// cgroup made: the answer says whether a process of a session holds it all the same.
+export async function sessionCallerPids(): Promise<Map<number, string>> {
+  const marking = [...jobs.values()].filter((j) => j.by !== "owner" && (jobLive(j) || !j.markGone));
+  const progs = livingHeld();
+  const wanted = [...marking.map(markOf), ...progs.map((h) => markOf(h))];
+  const by = wanted.length ? await procfs.marks(wanted).catch(() => new Map<string, number[]>()) : new Map<string, number[]>();
+  const out = new Map<number, string>();
+  const rows = procTable(true);
+  const self = selfLine();
+  const add = (pid: number, sessionId: string) => { const r = rows.get(pid); if (!dead(r) && !self.has(pid)) out.set(pid, sessionId); };
+  for (const j of marking) {
+    const near = jobLive(j) ? members(j, { rows }) : [];
+    for (const m of near) add(m.pid, j.sessionId);
+    const far = by.get(markOf(j)) ?? [];
+    for (const pid of far) add(pid, j.sessionId);
+    if (!near.length && !far.some((pid) => !dead(rows.get(pid))) && !running(j)) j.markGone = true;
+  }
+  for (const h of progs) {
+    const near = heldPids(h);
+    for (const pid of near) add(pid, h.sessionId);
+    const far = by.get(markOf(h)) ?? [];
+    for (const pid of far) add(pid, h.sessionId);
+    if (h.ended && !near.length && !far.some((pid) => !dead(rows.get(pid)))) h.gone = true;
+  }
+  // What descends from them: each process's line of parents, up to one that is a session's.
+  if (out.size) for (const [pid, r] of rows) {
+    if (out.has(pid) || self.has(pid) || dead(r)) continue;
+    for (let up = r.parent, i = 0; up > 1 && i < 64; i++) {
+      const s = out.get(up);
+      if (s) { out.set(pid, s); break; }
+      if (self.has(up)) break;
+      up = rows.get(up)?.parent ?? 0;
+    }
   }
   return out;
 }
