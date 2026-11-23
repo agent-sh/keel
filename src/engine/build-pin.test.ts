@@ -247,6 +247,30 @@ test("a loaded tool whose server is not connected is declared as it was loaded, 
   expect(pins.loaded(s.id, [{ ...standIn, name: "mcp__echo__add" } as Tool], new Set(["mcp__echo__add"]))[0]!.description).toBe("No longer available.");
 }));
 
+test("a session that takes a new build while a loaded tool's server reconnects still declares the tool as loaded", () => withPins((pins, _store, s) => {
+  const schema = { type: "object", properties: { text: { type: "string" } } };
+  const names = new Set(["mcp__echo__echo"]);
+  const live = (description: string) => ({ ...tool("mcp__echo__echo", description), input_schema: schema, defer: true, namespace: "mcp__echo", catalog: "echo__echo" }) as Tool;
+  const standIn = { ...tool("mcp__echo__echo", "No longer available."), defer: true, catalog: "mcp__echo__echo", left: true } as Tool;
+  const adopt = (v: Tool[]) => {
+    const why = pins.due(s, at, v, () => "a compaction");
+    pins.begin(s.id, why);
+    pins.tools(s, at, v);
+    pins.end(s.id);
+  };
+  pins.prompt(s.id, undefined, blocks("one"), [], false);
+  pins.tools(s, at, [tool("Read", "Reads.")]);
+  pins.loaded(s.id, [live("Echo.")], names);
+  // A daemon start with a build the session takes at once: the server is still connecting.
+  adopt([tool("Read", "Reads, in parts.")]);
+  expect(pins.loaded(s.id, [standIn], names)[0]!.description).toBe("Echo.");
+  // Connected again: the definition that request carried, so the next request is the same bytes.
+  expect(pins.loaded(s.id, [live("Echo.")], names)[0]!.description).toBe("Echo.");
+  // A build taken while the server is connected still takes the server's words of now.
+  adopt([tool("Read", "Reads, in parts, again.")]);
+  expect(pins.loaded(s.id, [live("Echo, reworded.")], names)[0]!.description).toBe("Echo, reworded.");
+}));
+
 test("the open sessions behind are listed, and all can be asked at once", () => withPins((pins, store, s) => {
   const v1 = [tool("Read", "Reads.")], v2 = [tool("Read", "Reads, in parts.")];
   const other = store.createSession({ model: "p:m", workspace: "/" });

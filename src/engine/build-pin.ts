@@ -310,8 +310,10 @@ export class BuildPins {
         .query("INSERT INTO build_adoptions (session_id, ts, reason, from_build, to_build, blocks, tools) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .run(id, Date.now(), reason ?? "a new context", row.build, build, JSON.stringify(took?.blocks ?? []), JSON.stringify(tools));
     }
-    // The definitions the conversation loaded are this build's from here.
-    this.store.db.query("DELETE FROM session_loaded WHERE session_id = ?").run(id);
+    // The definitions the conversation loaded are this build's from here: each takes the
+    // catalog's at its next request. Kept meanwhile, so a tool whose server is still
+    // connecting (a daemon start) is declared as loaded, not as a stand-in (loaded, below).
+    this.store.db.query("UPDATE session_loaded SET def = json_set(def, '$.retake', json('true')) WHERE session_id = ?").run(id);
     // Tools the build took away on the same model: a call to one says so (removed).
     const names = new Set(pin.map((t) => t.name));
     const gone = row && !otherList(row, to) ? [...new Set([...row.gone, ...from!.filter((t) => !names.has(t.name)).map((t) => t.name)])].filter((n) => !names.has(n)).slice(-64) : [];
@@ -338,15 +340,20 @@ export class BuildPins {
   loaded(id: string, tools: Tool[], names: Set<string>): Tool[] {
     const rows = this.store.db.query<{ name: string; def: string }, [string]>("SELECT name, def FROM session_loaded WHERE session_id = ?").all(id);
     if (!names.size && !rows.length) return tools;
-    const kept = new Map(rows.map((r) => [r.name, JSON.parse(r.def) as PinnedTool]));
+    // `retake`: the session took a build since the tool was loaded, so the catalog's definition of now is taken.
+    const kept = new Map(rows.map((r) => [r.name, JSON.parse(r.def) as PinnedTool & { retake?: boolean }]));
     for (const n of kept.keys()) if (!names.has(n)) this.store.db.query("DELETE FROM session_loaded WHERE session_id = ? AND name = ?").run(id, n);
     return tools.map((t) => {
       // A built-in the list defers is pinned with the list.
       if (!t.defer || !names.has(t.name) || !(t as { catalog?: string }).catalog) return t;
       const was = kept.get(t.name);
       // (Every field the request sends, the namespace too: the Responses wire nests an MCP tool in its server's.)
-      if ((t as { left?: boolean }).left) return was ? { ...t, ...pinOf(was) } : t;
-      if (was && servable(was, t)) return { ...t, description: was.description, input_schema: was.input_schema, built: t.input_schema };
+      // Sent as loaded while its server reconnects, it is the definition the cache holds from here.
+      if ((t as { left?: boolean }).left) {
+        if (was?.retake) this.store.db.query("INSERT OR REPLACE INTO session_loaded (session_id, name, def) VALUES (?, ?, ?)").run(id, t.name, JSON.stringify(pinOf(was)));
+        return was ? { ...t, ...pinOf(was) } : t;
+      }
+      if (was && !was.retake && servable(was, t)) return { ...t, description: was.description, input_schema: was.input_schema, built: t.input_schema };
       this.store.db.query("INSERT INTO session_loaded (session_id, name, def) VALUES (?, ?, ?) ON CONFLICT(session_id, name) DO UPDATE SET def = excluded.def").run(id, t.name, JSON.stringify(pinOf(t)));
       return t;
     });
