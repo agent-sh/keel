@@ -336,6 +336,8 @@ class WireTest {
         assertEquals(Triple(7, "a+b", true), inlineMath("\$\$a+b\$\$", 0))
         assertEquals(Triple(8, "a \\$ b", false), inlineMath("\$a \\$ b\$", 0))
         assertNull(inlineMath("\\(x\ny\\)", 0))
+        // A block sets its first 1,000 formulas; the rest is shown as written.
+        assertEquals("x ".repeat(1_000) + "\$y\$", inline("\$x\$ ".repeat(1_000) + "\$y\$", sp, sp).text)
         // Math longer than a formula is text, and display math ends at a blank line.
         assertNull(inlineMath("\$" + "x".repeat(2_100) + "\$", 0))
         assertEquals(Block.Para("\$\$ a"), blocks("\$\$ a\n\nb \$\$")[0])

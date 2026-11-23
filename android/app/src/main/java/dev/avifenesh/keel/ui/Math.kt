@@ -428,10 +428,10 @@ private fun merge(list: List<MathRun>): List<MathRun> {
         if (prev != null && prev.italic == r.italic && prev.bold == r.bold && prev.level == r.level) texts.last().append(r.text)
         else { runs += r; texts += StringBuilder(r.text) }
     }
-    val joined = runs.mapIndexed { k, r -> r.copy(text = texts[k].toString().replace(SPACES, " ")) }.toMutableList()
+    val joined = runs.mapIndexed { k, r -> r.copy(text = texts[k].toString().let { t -> if (t.contains("  ")) t.replace(SPACES, " ") else t }) }.toMutableList()
     // No space at the start or the end of a line.
     if (joined.isNotEmpty()) { joined[0] = joined[0].copy(text = joined[0].text.trimStart(' ')); joined[joined.size - 1] = joined.last().copy(text = joined.last().text.trimEnd(' ')) }
-    return joined.map { it.copy(text = it.text.replace(" \n", "\n").replace("\n ", "\n")) }.filter { it.text.isNotEmpty() }
+    return joined.map { if ('\n' in it.text) it.copy(text = it.text.replace(" \n", "\n").replace("\n ", "\n")) else it }.filter { it.text.isNotEmpty() }
 }
 
 private val SPACES = Regex("  +")

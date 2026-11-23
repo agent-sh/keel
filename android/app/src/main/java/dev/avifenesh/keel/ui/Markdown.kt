@@ -138,11 +138,14 @@ fun blocks(md: String): List<Block> {
 fun inline(s: String, code: SpanStyle, link: SpanStyle): AnnotatedString = buildAnnotatedString {
     var i = 0
     val scan = MathScan(s)
+    // The same TeX is set once ($n$ comes back), and a block sets MATH_PER_BLOCK formulas at most.
+    val set = HashMap<String, List<MathRun>>()
+    var formulas = 0
     while (i < s.length) {
         val c = s[i]
-        val math = if (c == '$' || s.startsWith("\\(", i)) scan.at(i) else null
+        val math = if ((c == '$' || s.startsWith("\\(", i)) && formulas < MATH_PER_BLOCK) scan.at(i) else null
         when {
-            math != null -> { math(mathRuns(math.second)); i += math.first }
+            math != null -> { formulas++; math(set.getOrPut(math.second) { mathRuns(math.second) }); i += math.first }
             c == '\\' && i + 1 < s.length && s[i + 1] in ESCAPABLE -> { append(s[i + 1]); i += 2 }
             c == '`' -> { val e = s.indexOf('`', i + 1); if (e > i) { withStyle(code) { append(s.substring(i + 1, e)) }; i = e + 1 } else { append(c); i++ } }
             s.startsWith("**", i) -> { val e = s.indexOf("**", i + 2); if (e > i) { withStyle(SpanStyle(fontWeight = FontWeight(600))) { append(inline(s.substring(i + 2, e), code, link)) }; i = e + 2 } else { append(c); i++ } }
@@ -161,6 +164,11 @@ fun inline(s: String, code: SpanStyle, link: SpanStyle): AnnotatedString = build
         }
     }
 }
+
+// How many formulas one block of a reply sets; the rest is shown as written. A screen shows a few
+// dozen; a block of more is a table or a dump, and setting each costs the UI thread some 15 us on
+// a phone, again with every streamed token: 1,000 keep a block under about 15 ms.
+private const val MATH_PER_BLOCK = 1_000
 
 // What CommonMark lets a backslash write as it is.
 private const val ESCAPABLE = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
