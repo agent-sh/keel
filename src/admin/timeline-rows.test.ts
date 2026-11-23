@@ -329,4 +329,3 @@ test("a fallback for an overload reads as an overload", () => {
   expect(said({ kind: "fallback", overloaded: true })).toContain("stayed overloaded");
   expect(said({ kind: "fallback" })).toContain("declined");
 });
-
