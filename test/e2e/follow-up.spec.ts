@@ -48,7 +48,11 @@ test("a follow-up to a finished agent at a large context starts from a capsule, 
   expect(evs[cut].data.other_messages.join("\n")).toContain("Reader of three logs");
   const next = evs.slice(cut).find((e) => e.kind === "assistant").data.usage;
   const read = next.input + next.cache_read + next.cache_write;
-  expect(read).toBeLessThan(a.start.used / 2);
+  // What its tools and prompt cost every request (its first request) is read either way: of what the
+  // earlier work added past that, the capsule reads less than half.
+  const opening = evs.find((e) => e.kind === "assistant").data.usage;
+  const base = opening.input + opening.cache_read + opening.cache_write;
+  expect(read - base).toBeLessThan((a.start.used - base) / 2);
   // The tool result that told the parent says it too.
   const parent = (await api(`/api/sessions/${session.id}`)).events as any[];
   const told = parent.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content))).join("\n");
