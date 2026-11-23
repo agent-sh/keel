@@ -405,13 +405,14 @@ export function mobileApi(ctx: MobileCtx) {
   // pending call is read from its own tool call, however far back it is.
   // A card's id. A question a server asked carries its own id too: a call can
   // have several, one after another, and an answer to a card that is no
-  // longer the one waiting must find nothing (never the next question).
-  const questionId = (callId: string, asked?: string) => (asked ? `q-${callId}-${asked}` : `q-${callId}`);
+  // longer the one waiting must find nothing (never the next question). The session is in the id: a
+  // call's id is unique in its session only (a wire whose ids count the calls gives two sessions the same).
+  const questionId = (sessionId: string, callId: string, asked?: string) => `q-${sessionId}.${callId}${asked ? `-${asked}` : ""}`;
   // The pending question a card id is for.
   function questionFor(aid: string): { s: Session; callId: string; asked?: string } | undefined {
     for (const s of store.sessions()) for (const callId of pendingQuestions(s.id)) {
       const asked = askedOf(s.id, callId)?.id;
-      if (questionId(callId, asked) === aid) return { s, callId, asked };
+      if (questionId(s.id, callId, asked) === aid) return { s, callId, asked };
     }
     return undefined;
   }
@@ -423,7 +424,7 @@ export function mobileApi(ctx: MobileCtx) {
     const qs = asked ? normQuestions({ questions: asked.questions }) : tu ? normQuestions(tu.input) : [];
     const options = qs.flatMap((q) => q.options.map((o) => o.label));
     return {
-      id: questionId(callId, asked?.id), chat_id: s.id, session_key: s.id, kind: "question",
+      id: questionId(s.id, callId, asked?.id), chat_id: s.id, session_key: s.id, kind: "question",
       command: asked ? [`${asked.from} asks: ${asked.message}`, ...(asked.notes ?? []), ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
       description: options.join(" / "), options, unavailable: !tu,
       // One entry per question, by id: a card of several takes one answer each.
@@ -437,7 +438,7 @@ export function mobileApi(ctx: MobileCtx) {
   function closedQuestion(q: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers; question?: string }) {
     const s = store.session(q.session_id);
     // (A server's question is gone once it closed: its card closes by its id, with nothing of another question in it.)
-    const base = s && !q.question ? questionCard(s, q.call_id) : { id: questionId(q.call_id, q.question), chat_id: q.session_id, session_key: q.session_id, kind: "question", command: "", description: "", options: [], questions: [] };
+    const base = s && !q.question ? questionCard(s, q.call_id) : { id: questionId(q.session_id, q.call_id, q.question), chat_id: q.session_id, session_key: q.session_id, kind: "question", command: "", description: "", options: [], questions: [] };
     let answers = q.answers;
     if (!answers && q.answered) {
       const r = store.db.query<{ data: string }, [string, string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'tool_result' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(q.session_id, JSON.stringify(q.call_id));
@@ -690,7 +691,7 @@ export function mobileApi(ctx: MobileCtx) {
                 // A question answered elsewhere: its card closes on the phone too.
                 if (f.event.kind === "tool_result") {
                   const ids = new Set(((f.event.data.results ?? []) as any[]).map((r) => r.tool_use_id));
-                  for (const q of closedQuestions(f.event.ts - 60_000)) if (ids.has(q.call_id)) send({ type: "approval", seq: gseq, approval: closedQuestion(q) });
+                  for (const q of closedQuestions(f.event.ts - 60_000)) if (q.session_id === f.event.session_id && ids.has(q.call_id)) send({ type: "approval", seq: gseq, approval: closedQuestion(q) });
                 }
               } else if (f.t === "delta" && f.kind === "text") send({ type: "delta", chat_id: f.session_id, delta: f.text });
               else if (f.t === "session") {
@@ -707,8 +708,9 @@ export function mobileApi(ctx: MobileCtx) {
               else if (f.t === "feature" && f.name === "automation" && f.data?.kind === "alert" && f.data.data?.kind === "question" && !f.data.data.read && f.data.data.data?.call_id) {
                 // A question raised: its card reaches the phone now, not at the next sync.
                 const a = f.data.data;
-                if (closedQuestions(0).some((q) => q.call_id === a.data.call_id)) return;
-                const s = store.session(a.data.open_session ?? a.session_id);
+                const asker = a.data.open_session ?? a.session_id;
+                if (closedQuestions(0).some((q) => q.call_id === a.data.call_id && q.session_id === asker)) return;
+                const s = store.session(asker);
                 if (s) {
                   const q = questionCard(s, a.data.call_id);
                   send({ type: "approval", seq: mobile.globalSeq(), approval: q });

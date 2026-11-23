@@ -536,17 +536,17 @@ describe("questions", () => {
     let got: any;
     ask({ callId: "call-q", sessionId: s.id, signal: new AbortController().signal } as any).then((a) => (got = a));
     for (let i = 0; i < 45; i++) store.append(s.id, "note", { text: "later" });
-    const card = (await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.find((a: any) => a.id === "q-call-q");
+    const card = (await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.find((a: any) => a.id === `q-${s.id}.call-q`);
     expect(card.command).toBe("Build type?\nWhich checks?");
     expect(card.questions.map((q: any) => q.options)).toEqual([["Debug", "Release"], ["Unit", "Integration"]]);
     // The card has its place in the chat, where the app answers it.
     const inChat = (await call("GET", `/v1/chats/${s.id}/messages`)).body.messages.find((m: any) => m.kind === "approval");
-    expect(inChat.meta).toMatchObject({ approval_id: "q-call-q", card: "question", state: "pending" });
+    expect(inChat.meta).toMatchObject({ approval_id: `q-${s.id}.call-q`, card: "question", state: "pending" });
     // Answers are signed with the approval key over what they say.
     const answer = (body: any, text: string) => {
       const ts = String(Math.floor(Date.now() / 1000));
-      const asig = sign("sha256", Buffer.from(`approve2\nq-call-q\nonce\n${sha256Hex(text)}\n${ts}`), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
-      return call("POST", "/v1/approvals/q-call-q", { choice: "once", ...body }, { "x-hm-asig": asig, "x-hm-asig-v": "2" });
+      const asig = sign("sha256", Buffer.from(`approve2\nq-${s.id}.call-q\nonce\n${sha256Hex(text)}\n${ts}`), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+      return call("POST", `/v1/approvals/q-${s.id}.call-q`, { choice: "once", ...body }, { "x-hm-asig": asig, "x-hm-asig-v": "2" });
     };
     // One scalar for two questions is refused, and so is an answer that leaves one out.
     expect((await answer({ answer: "Debug" }, "Debug")).status).toBe(400);
@@ -558,7 +558,7 @@ describe("questions", () => {
     await Bun.sleep(0);
     expect(got).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Integration"] } });
     // Reopened later (a sync), the closed card still says what was picked, question by question.
-    const reopened = (await call("GET", "/v1/sync?since=0")).body.approvals.find((a: any) => a.id === "q-call-q");
+    const reopened = (await call("GET", "/v1/sync?since=0")).body.approvals.find((a: any) => a.id === `q-${s.id}.call-q`);
     expect(reopened).toMatchObject({ state: "approved", answers: { build: { picked: ["Debug"] }, checks: { picked: ["Integration"] } } });
     expect(reopened.questions.map((q: any) => q.id)).toEqual(["build", "checks"]);
   });
@@ -578,24 +578,46 @@ describe("questions", () => {
       return call("POST", `/v1/approvals/${id}`, { choice, ...(answer ? { answer } : {}) }, choice === "once" ? { "x-hm-asig": asig, "x-hm-asig-v": "2" } : {});
     };
     const first = askFor(ctx, form("q-one", "Go on?"));
-    expect(await cards()).toEqual(["q-call-s-q-one"]);
+    expect(await cards()).toEqual([`q-${s.id}.call-s-q-one`]);
     // Answered on the desktop; the server asks its next question on the same call.
     expect(answer(s.id, "call-s", { ok: { picked: ["Yes"] } }, false, "q-one")).toBe(true);
     expect(await first).toEqual({ ok: { picked: ["Yes"] } });
     let second: any = "waiting";
     askFor(ctx, form("q-two", "Delete it all?")).then((a) => (second = a));
-    expect(await cards()).toEqual(["q-call-s-q-two"]);
+    expect(await cards()).toEqual([`q-${s.id}.call-s-q-two`]);
     // The phone still shows the first card: its answer, its dismissal and the call's bare id find nothing.
-    expect([(await send("q-call-s-q-one", "once", "Yes")).status, (await send("q-call-s-q-one", "deny")).status, (await send("q-call-s", "once", "Yes")).status, (await send("q-call-s", "deny")).status]).toEqual([409, 409, 409, 409]);
+    expect([(await send(`q-${s.id}.call-s-q-one`, "once", "Yes")).status, (await send(`q-${s.id}.call-s-q-one`, "deny")).status, (await send(`q-${s.id}.call-s`, "once", "Yes")).status, (await send(`q-${s.id}.call-s`, "deny")).status]).toEqual([409, 409, 409, 409]);
     await Bun.sleep(0);
     expect(second).toBe("waiting");
     // The first card comes back closed under its own id, with nothing of the second question in it.
-    const closed = (await call("GET", "/v1/sync?since=0")).body.approvals.find((a: any) => a.id === "q-call-s-q-one");
+    const closed = (await call("GET", "/v1/sync?since=0")).body.approvals.find((a: any) => a.id === `q-${s.id}.call-s-q-one`);
     expect([closed.state, closed.command, closed.questions]).toEqual(["approved", "", []]);
     // The second card answers the second question.
-    expect((await send("q-call-s-q-two", "once", "No")).status).toBe(200);
+    expect((await send(`q-${s.id}.call-s-q-two`, "once", "No")).status).toBe(200);
     await Bun.sleep(0);
     expect(second).toEqual({ ok: { picked: ["No"] } });
+  });
+
+  test("two sessions' questions under one call id are two cards: answering one leaves the other waiting", async () => {
+    const a = session("A"), b = session("B");
+    const one = { questions: [{ id: "q", question: "Ship it?", options: [{ label: "Yes" }, { label: "No" }] }] };
+    const got: Record<string, any> = {};
+    for (const s of [a, b]) {
+      store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-1-0", name: "AskUserQuestion", input: one }] });
+      ask({ callId: "call-1-0", sessionId: s.id, signal: new AbortController().signal } as any).then((x) => (got[s.id] = x));
+    }
+    const ids = (await call("GET", "/v1/sync?since=0")).body.approvals.filter((c: any) => c.kind === "question" && c.id.endsWith(".call-1-0") && c.state === "pending").map((c: any) => c.id);
+    expect(ids.sort()).toEqual([`q-${a.id}.call-1-0`, `q-${b.id}.call-1-0`].sort());
+    const ts = String(Math.floor(Date.now() / 1000));
+    const aid = `q-${b.id}.call-1-0`;
+    const text = answersText({ q: "No" });
+    const asig = sign("sha256", Buffer.from(approvalMessage(aid, "once", ts, true, text)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    expect((await call("POST", `/v1/approvals/${aid}`, { choice: "once", answers: { q: "No" } }, { "x-hm-asig": asig, "x-hm-asig-v": "2" })).status).toBe(200);
+    await Bun.sleep(0);
+    expect([got[a.id], got[b.id]]).toEqual([undefined, { q: { picked: ["No"] } }]);
+    expect((await call("POST", `/v1/approvals/q-${a.id}.call-1-0`, { choice: "deny" })).status).toBe(200);
+    // A push names the card of the session that asked.
+    expect(alertPush({ id: "al-q", kind: "question", session_id: a.id, title: "Question", body: "Ship it?", data: { call_id: "call-1-0", open_session: b.id } } as any).data.aid).toBe(`q-${b.id}.call-1-0`);
   });
 
   test("a question answered elsewhere comes back closed in the next sync", async () => {
@@ -604,11 +626,11 @@ describe("questions", () => {
     const ac = new AbortController();
     const p = ask({ callId: "call-c", sessionId: s.id, signal: ac.signal } as any);
     const from = mobile.globalSeq();
-    let cards = (await call("GET", `/v1/sync?since=${from}`)).body.approvals.filter((a: any) => a.id === "q-call-c");
+    let cards = (await call("GET", `/v1/sync?since=${from}`)).body.approvals.filter((a: any) => a.id === `q-${s.id}.call-c`);
     expect(cards.map((c: any) => c.state)).toEqual(["pending"]);
     ac.abort();
     await p;
-    cards = (await call("GET", `/v1/sync?since=${from}`)).body.approvals.filter((a: any) => a.id === "q-call-c");
+    cards = (await call("GET", `/v1/sync?since=${from}`)).body.approvals.filter((a: any) => a.id === `q-${s.id}.call-c`);
     expect(cards.map((c: any) => c.state)).toEqual(["expired"]);
   });
 });
@@ -962,7 +984,7 @@ describe("the wire contract", () => {
       bus.emit({ t: "event", event: ev } as any);
       bus.emit({ t: "session", session: store.session(s.id)! } as any);
       bus.emit({ t: "delta", session_id: parent.id, kind: "text", index: 0, text: " build" } as any);
-      take("resolved", (await approve("q-call-w", { choice: "once", answers: { build: "Debug", checks: ["Unit", "by hand"] } })).body);
+      take("resolved", (await approve(`q-${s.id}.call-w`, { choice: "once", answers: { build: "Debug", checks: ["Unit", "by hand"] } })).body);
       const res = store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "call-w", content: "answered" }] });
       bus.emit({ t: "event", event: res } as any);
       bus.emit({ t: "session", session: store.updateSession(s.id, { head: left.id }) } as any);
@@ -1005,8 +1027,8 @@ describe("the wire contract", () => {
     // A card answered by question id, and one dismissed.
     const [answer, dismiss] = wire.examples.answer;
     const a = asks(s.id, "call-x"), b = asks(s.id, "call-y");
-    expect((await approve("q-call-x", answer)).status).toBe(200);
-    expect((await approve("q-call-y", dismiss)).status).toBe(200);
+    expect((await approve(`q-${s.id}.call-x`, answer)).status).toBe(200);
+    expect((await approve(`q-${s.id}.call-y`, dismiss)).status).toBe(200);
     await Bun.sleep(0);
     expect(a.answer()).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Unit", "Integration"] } });
     expect(b.answer().build.picked).toEqual([]);
