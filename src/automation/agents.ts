@@ -1762,12 +1762,17 @@ function taskOf(a: AgentRecord, evs: readonly StoredEvent[]): { head: string; ta
   // What the harness put before the task (the preamble, its definition, skills), less what a successor says itself.
   const head = text.slice(0, at).replace(/\n*Task:\n$/, "").split("\n\n")
     .filter((p) => !p.startsWith("The conversation above is your parent's") && !p.startsWith("You work in your own git worktree at")).join("\n\n").trim();
+  // A later task (a message to it once it ended, the owner's prompt on its page) begins with the
+  // message that gave it, the first user event of the task; the first task with its brief.
+  const opening = a.tasks > 0 && !a.lost?.length ? evs.find((e) => e.kind === "user") : undefined;
+  const later = opening && !(opening.data.kind === "task" && opening.data.agent_id === a.id) ? opening : undefined;
   // A predecessor's capsule is the harness's: the task is read again from its record (taskText).
-  const base = a.lost?.length ? taskText(a) ?? text.slice(at) : text.slice(at);
-  const sent = evs.filter((e) => e.kind === "user" && e.data.kind === "steer" && !e.data.from_agent).map((e) => String(e.data.text ?? "").replace(/^Message from the session that started you:\n/, ""));
+  const base = a.lost?.length ? taskText(a) ?? text.slice(at) : later ? unprefixed(later) : text.slice(at);
+  const sent = evs.filter((e) => e !== later && e.kind === "user" && e.data.kind === "steer" && !e.data.from_agent).map(unprefixed);
   const steers = [...(a.lost ?? []).flatMap((l) => l.steers ?? []), ...sent];
   return { head, task: taskWithSteers(base, steers), base, steers: sent };
 }
+const unprefixed = (e: StoredEvent) => String(e.data.text ?? "").replace(/^Message from the session that started you:\n/, "");
 // The task as the first context got it, kept with the record once a successor started (lost[0]).
 const taskText = (a: AgentRecord) => D().store.db.query<{ t: string | null }, [string]>("SELECT json_extract(lost, '$[0].task') AS t FROM agents WHERE id = ?").get(a.id)?.t ?? undefined;
 
@@ -2021,7 +2026,8 @@ export async function send(id: string, message: string, interrupt = false, key?:
       // One that waits holds no slot: the message that would start it takes one, as a finished agent's does.
       if (a.status === "waiting" && !engine.isRunning(a.session_id) && !(key && engine.hasInput(a.session_id, key))) needSlot(a.parent_id);
       const r = engine.message(a.session_id, text, meta, opts);
-      // (A new budget counts from this message, as a finished agent's next task does.)
+      // (A new budget counts from this message, as a finished agent's next task does. The task is the same
+      // one, so the successors it used stay counted: lost is a task's, cleared where a new task starts.)
       if (!r.duplicate && !r.held) update(id, { status: "running", ...(budget ? { budget, task_at: Date.now() } : {}) });
       return sent(r);
     }
@@ -2223,7 +2229,8 @@ export function onTurnStart(sessionId: string) {
   if (!parent || parent.archived) return; // no one to report to: it stays the owner's own turn
   const evs = D().store.events(sessionId);
   const prompt = evs.findLast((e) => e.kind === "user");
-  update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), tasks: a.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now() });
+  // (A new task: it has both successors again, and its brief is this prompt.)
+  update(a.id, { status: "running", ended: null, first_seq: prompt ? prompt.seq - 1 : (evs.at(-1)?.seq ?? 0), tasks: a.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), lost: [] });
 }
 
 // The one decision on an agent's turn that a daemon restart cut, asked by the

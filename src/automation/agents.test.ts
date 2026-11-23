@@ -240,6 +240,40 @@ test("a stop that comes once a successor's session is made finds its task there,
   expect(agents.get(a.id)!.status).toBe("stopped");
 });
 
+test("a later task that is lost has a successor briefed with that task, and each new task has both successors again", async () => {
+  const fail = (a: agents.AgentRecord) => {
+    store.append(a.session_id, "error", { message: "HTTP 500: Internal Server Error" });
+    store.append(a.session_id, "turn_end", { reason: "error" });
+    agents.onTurnEnd(a.session_id, "error");
+  };
+  const briefOf = (a: agents.AgentRecord) => sends.filter((x) => x.id === agents.get(a.id)!.session_id).map((x) => x.text).join("\n");
+  // A finished agent's next task, from its parent, lost to its provider.
+  const a = await spawn({ prompt: "FIRST TASK alpha", title: "Later task" });
+  end(a, "end_turn", "done one");
+  await settled();
+  await agents.send(a.id, "SECOND TASK beta");
+  fail(a);
+  await settled();
+  expect(agents.get(a.id)!.lost?.length).toBe(1);
+  expect(briefOf(a)).toContain("SECOND TASK beta");
+  expect(briefOf(a)).not.toContain("FIRST TASK alpha");
+  agents.stop(a.id);
+  // A task the owner starts on a finished agent's page whose task used both successors: it has both again.
+  const b = await spawn({ prompt: "FIRST TASK gamma", title: "Owner task" });
+  spendSuccessors(b);
+  end(b, "end_turn", "done one");
+  await settled();
+  store.append(b.session_id, "user", { text: "THIRD TASK delta" });
+  agents.onTurnStart(b.session_id);
+  expect(agents.get(b.id)!.lost).toBeUndefined();
+  fail(b);
+  await settled();
+  expect(agents.get(b.id)!.lost?.length).toBe(1);
+  expect(briefOf(b)).toContain("THIRD TASK delta");
+  expect(briefOf(b)).not.toContain("FIRST TASK gamma");
+  agents.stop(b.id);
+});
+
 test("wait_agent returns the first final result at once and names a stop as interrupted", async () => {
   const [done, live, stopped] = [await spawn(), await spawn(), await spawn()];
   end(done, "end_turn");
