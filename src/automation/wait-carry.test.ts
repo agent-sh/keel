@@ -47,11 +47,20 @@ test("a stall: quiet past its time, and no process of it waits on something else
 });
 
 test("a job's process that waits on something is not stuck: a timer, the network, a lock, the disk, a child moved out of its cgroup", () => {
-  const p = (o: Partial<Parameters<typeof waitingProc>[0]>) => waitingProc({ comm: "python3", state: "S", wchan: "", childOutside: false, ...o });
-  for (const wchan of ["hrtimer_nanosleep", "do_nanosleep", "do_epoll_wait", "ep_poll", "do_sys_poll", "do_select", "inet_csk_accept", "sk_wait_data", "unix_stream_read_generic", "locks_lock_inode_wait"]) expect([wchan, p({ wchan })]).toEqual([wchan, true]);
+  const t = (o: Partial<Parameters<typeof waitingProc>[0]["threads"][0]>) => ({ state: "S", wchan: "", ...o });
+  const p = (o: Partial<Parameters<typeof waitingProc>[0]["threads"][0]> = {}, more: Partial<Parameters<typeof waitingProc>[0]> = {}) => waitingProc({ comm: "python3", threads: [t(o)], childOutside: false, ...more });
+  for (const wchan of ["hrtimer_nanosleep", "do_nanosleep", "do_epoll_wait", "ep_poll", "do_sys_poll", "do_select", "poll_schedule_timeout.constprop.0", "inet_csk_accept", "sk_wait_data", "unix_stream_read_generic", "locks_lock_inode_wait"]) expect([wchan, p({ wchan })]).toEqual([wchan, true]);
   expect(p({ state: "D" })).toBe(true);
-  expect(p({ comm: "bash", wchan: "do_wait", childOutside: true })).toBe(true);
-  expect(p({ comm: "ssh" })).toBe(true);
-  // A shell waiting on its own command, a reader of a stuck pipe, a deadlock, a stopped process: not waiting on anything outside.
-  for (const wchan of ["do_wait", "pipe_read", "futex_wait_queue", "do_signal_stop", "0", ""]) expect([wchan, p({ wchan })]).toEqual([wchan, false]);
+  expect(p({ wchan: "do_wait" }, { comm: "bash", childOutside: true })).toBe(true);
+  expect(p({}, { comm: "ssh" })).toBe(true);
+  // A blocking read of a socket waits on the other end; one of a terminal waits for a person.
+  expect(p({ wchan: "wait_woken", fd: "socket:[4242]" })).toBe(true);
+  expect(p({ wchan: "wait_woken", fd: "/dev/pts/7" })).toBe(false);
+  // A named FIFO another program writes; the job's own pipe, whose writer is in the job.
+  expect(p({ wchan: "pipe_wait_readable", fd: "/w/ff", fifo: true })).toBe(true);
+  expect(p({ wchan: "pipe_wait_readable", fd: "pipe:[77]", fifo: false })).toBe(false);
+  // A main thread that joins a sleeping thread: the sleeper says it waits.
+  expect(waitingProc({ comm: "python3", threads: [t({ wchan: "futex_do_wait" }), t({ wchan: "hrtimer_nanosleep" })], childOutside: false })).toBe(true);
+  // A shell waiting on its own command, a deadlock, a stopped process: not waiting on anything outside.
+  for (const wchan of ["do_wait", "futex_do_wait", "futex_wait_queue", "do_signal_stop", "0", ""]) expect([wchan, p({ wchan })]).toEqual([wchan, false]);
 });

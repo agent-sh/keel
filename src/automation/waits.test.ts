@@ -573,12 +573,14 @@ test("a waited path that is not a regular file is not opened, and one that leads
   const viaFile = waits.create(s.id, waits.normalize({ kind: "file", path: link }, dir), { timeout_seconds: 60 });
   symlinkSync(own, link);
   await waits.tick();
-  expect(status(viaLog.id)).toBe("active");
-  expect(waits.get(viaLog.id)!.last_error).toContain("is not carried: it leads where this session may not read without the owner");
+  // (A path that leads where the session may not read is never read before the deadline: the wait ends now.)
+  expect(status(viaLog.id)).toBe("ended");
+  expect(waits.get(viaLog.id)!.outcome).toContain(`${link} leads where this session may not read without the owner`);
+  expect(waits.get(viaLog.id)!.outcome).not.toContain("the daemon's own words");
   expect(status(viaFile.id)).toBe("fired");
   expect(wakes(viaFile.id)[0]).toContain(`${link} is not carried: it leads where this session may not read without the owner.`);
   expect(wakes(viaFile.id)[0]).not.toContain("the daemon's own words");
-  for (const w of [holds, lines, viaLog]) waits.cancel(w.id);
+  for (const w of [holds, lines]) waits.cancel(w.id);
 });
 
 test.skipIf(!jobScope().slice)(`a job that ended before the wait is not its writer, and one started after the linked one ended is${jobScope().slice ? "" : ` (needs a job cgroup: ${jobScope().why})`}`, async () => {
@@ -603,5 +605,80 @@ test.skipIf(!jobScope().slice)(`a job that ended before the wait is not its writ
   } finally {
     waits.cancel(w.id);
     await stopJob(b);
+  }
+});
+
+test("a wait the gate or the owner let read a file reads that file there, and ends when the path leads elsewhere", async () => {
+  // One of Keel's own files, which the session's sandbox does not show: the wait on it was allowed (the owner's card).
+  const own = join(process.env.KEEL_STATE_DIR!, "wait-approved.log");
+  writeFileSync(own, "before\n");
+  const w = waits.create(s.id, waits.normalize({ kind: "log", path: own, match: "^READY$" }, dir), { timeout_seconds: 60 });
+  appendFileSync(own, "READY\n");
+  await waits.tick();
+  expect(status(w.id)).toBe("fired");
+  expect(wakes(w.id)[0]).toContain("READY");
+  // Another file put at the path: read only when the session may read it, else the wait ends now, saying why.
+  const swapped = join(process.env.KEEL_STATE_DIR!, "wait-swapped.log");
+  writeFileSync(swapped, "first\n");
+  const v = waits.create(s.id, waits.normalize({ kind: "log", path: swapped, match: "^READY$" }, dir), { timeout_seconds: 60 });
+  writeFileSync(`${swapped}.new`, "READY\nother words\n");
+  renameSync(`${swapped}.new`, swapped);
+  await waits.tick();
+  expect(status(v.id)).toBe("ended");
+  expect(waits.get(v.id)!.outcome).toContain(`${swapped} leads where this session may not read without the owner, which is not what the wait was set on: the wait ends here.`);
+  expect(waits.get(v.id)!.outcome).not.toContain("other words");
+});
+
+test("a file or log wait of a session whose files are on another machine is refused when it is set", async () => {
+  const { migrate } = await import("../fleet/db.ts");
+  migrate(store);
+  const far = store.createSession({ model: "m", workspace: "/far/w", title: "far" });
+  // (As a move to another machine sets it: src/fleet/handoff.ts.)
+  store.atomic(far.id, () => { store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run("box-b", far.id); store.updateSession(far.id, { workspace: "/far/w" }); });
+  expect(store.session(far.id)?.machine).toBe("box-b");
+  expect(() => waits.create(far.id, waits.normalize({ kind: "log", path: "/far/w/x.log", match: "x" }, "/far/w"))).toThrow("a log wait reads this machine's files, and this session's are on box-b: wait there with a command in the shell tool instead");
+  expect(() => waits.create(far.id, waits.normalize({ kind: "file", path: "/far/w/x" }, "/far/w"))).toThrow("this session's are on box-b");
+  expect(waits.create(far.id, waits.normalize({ kind: "timer", seconds: 60 }, "/far/w")).status).toBe("active");
+});
+
+// A blocking read of a socket, a main thread that joins a sleeping thread: each waits, and is not called stuck.
+test.skipIf(!jobScope().slice)(`a job that waits on the network or on a sleeping thread is not called stuck${jobScope().slice ? "" : ` (needs a job cgroup: ${jobScope().why})`}`, async () => {
+  const { startJob, stopJob } = await import("../tools/jobs.ts");
+  const py = (name: string, code: string) => { const f = join(dir, `${name}.py`); writeFileSync(f, code); return f; };
+  const recv = py("recv", "import socket\ns = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen()\nc = socket.create_connection(s.getsockname()); a, _ = s.accept()\nprint('started', flush=True)\nc.recv(1)\n");
+  const join2 = py("join", "import threading, time\nt = threading.Thread(target=time.sleep, args=(60,)); t.start()\nprint('started', flush=True)\nt.join()\n");
+  const jobs: Awaited<ReturnType<typeof startJob>>[] = [];
+  const was = waits.stall.ms;
+  waits.stall.ms = 1500;
+  try {
+    const ws = [recv, join2].map((f, k) => {
+      const out = join(dir, `waiting-${k}.log`);
+      jobs.push(startJob({ sessionId: s.id, command: `exec python3 ${f} > ${out}`, cwd: dir, logDir: join(dir, "jobs") }));
+      return { out, w: waits.create(s.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 600 }) };
+    });
+    await until(() => ws.every(({ out }) => existsSync(out) && readFileSync(out, "utf8").includes("started")));
+    await Bun.sleep(300);
+    await waits.tick(); // (the first look: where their progress stands)
+    await Bun.sleep(1700);
+    await waits.tick();
+    expect(ws.map(({ w }) => status(w.id))).toEqual(["active", "active"]);
+    for (const { w } of ws) waits.cancel(w.id);
+  } finally {
+    waits.stall.ms = was;
+    for (const j of jobs) await stopJob(j);
+  }
+});
+
+test("a wait set before the job that writes its file finds the job when it starts", async () => {
+  const { startJob, stopJob } = await import("../tools/jobs.ts");
+  const out = join(dir, "later-job.log");
+  const w = waits.create(s.id, waits.normalize({ kind: "log", path: out, match: "^DONE$" }, dir), { timeout_seconds: 60 });
+  expect(waits.carries(w)).not.toContain("that writes it");
+  const job = startJob({ sessionId: s.id, command: `echo started > ${out}; sleep 5`, cwd: dir, logDir: join(dir, "jobs") });
+  try {
+    expect(waits.carries(w)).toContain(`job ${job.id} that writes it`);
+  } finally {
+    waits.cancel(w.id);
+    await stopJob(job);
   }
 });

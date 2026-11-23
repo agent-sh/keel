@@ -531,3 +531,13 @@ test("a session whose network is off gets no web tool, however it is called", as
   g.setPerm(session.id, { mode: "read-only", sandbox: "read-only", network: true });
   for (const [name, input] of asks) expect([name, ((await g.beforeTool(session, call(tool(name), input))) as any)?.deny ?? ""]).toEqual([name, expect.not.stringContaining("no network")]);
 });
+
+test("what a session's Read would get without asking: a file of its folder here, nothing here when its files are on another machine", () => {
+  const { g, session } = scratchGate();
+  g.setPerm(session.id, { mode: "ask", sandbox: "off" });
+  const file = join(session.workspace, "run.log");
+  writeFileSync(file, "x\n");
+  expect(g.readable(session, file)).toBe(true);
+  // (Its tools run on another machine: a file at that path here is not its file.)
+  expect(g.readable({ ...session, machine: "box-b" } as Session, file)).toBe(false);
+});

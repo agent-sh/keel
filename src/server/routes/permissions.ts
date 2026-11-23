@@ -10,6 +10,7 @@ import { configRefused, refusedConfigs, refusedSentence } from "../../core/named
 import { sandboxConfig, setSandboxConfig } from "../../safety/sandbox-config.ts";
 import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
+import { readGate } from "../../automation/waits.ts";
 import { stopKind } from "../../core/stops.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { skillRun } from "../../tools/skills.ts";
@@ -43,6 +44,8 @@ export { asksLess };
 export const permissionRoutes: RouteModule = (deps: Deps) => {
   const { store } = deps;
   const g = (gate = new Gate(store, deps.bus, (_s, p) => p.sandbox !== "off" && sandboxStatus().available));
+  // (A wait reads the file it waits on as the session's Read would.)
+  readGate.readable = (s, path) => g.readable(s, path);
   const pk = (presence = new Presence(store));
   // 428 tells the page which action to get a passkey assertion for, then retry once.
   const needs = (req: Request, action: string) => (pk.allows(req, action) ? null : json({ error: "this needs your passkey from a remote device", presence: { action } }, 428));

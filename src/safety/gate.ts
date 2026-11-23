@@ -453,15 +453,18 @@ export class Gate {
     return { session_id: sessionId, mode: this.defaultMode(), sandbox: this.defaultSandbox(), network: true };
   }
 
+  // Whether the session's Read of a file on this machine would run without asking anyone: what a part
+  // of Keel that reads a file for the session later, as the daemon (a wait's wake), may read of it. A
+  // session whose tools run on another machine reads none of this one's files.
+  readable(session: Session, path: string): boolean {
+    if (session.machine) return false;
+    return "allow" in this.evaluate(session, "Read", { kind: "read", paths: [path] });
+  }
+
   // What a session's sandbox shows beyond the toolchains: the owner's list
   // for its repository, and of Keel's own state the session's own files:
   // what it was given by path, and its artifacts (written in the
   // workspace-write profile, see `writable`).
-  // Whether the session's Read of a file would run without asking anyone: what a part of Keel that
-  // reads a file for the session later, as the daemon (a wait's wake), may read of it.
-  readable(session: Session, path: string): boolean {
-    return "allow" in this.evaluate(session, "Read", { kind: "read", paths: [path] });
-  }
   readOpts(session: Session, profile?: SessionPerm["sandbox"]): ReadOpts {
     if (session.machine) return readOptsFor(sandboxScope(session.workspace));
     const artifacts = this.scope(session).scratch;

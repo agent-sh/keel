@@ -1,6 +1,6 @@
 import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { gitEnv } from "../core/git.ts";
-import { isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
@@ -13,8 +13,8 @@ import { waitsFor } from "../core/state-words.ts";
 import { homedir } from "node:os";
 import { conceal } from "../core/conceal.ts";
 import { findJob, jobLive, jobsOf, running, type Job } from "../tools/jobs.ts";
-import { CARRY_MAX, carryText, jobLine, stalled, waitingProc, writesPath, type ProcLook } from "./wait-carry.ts";
-import * as perm from "../server/routes/permissions.ts";
+import { CARRY_MAX, carryText, HELD_ON_FILE, jobLine, stalled, waitingProc, writesPath, type ProcLook, type ThreadLook } from "./wait-carry.ts";
+import type { Session } from "../core/types.ts";
 import { shownTo } from "../safety/sandbox-view.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
@@ -186,22 +186,24 @@ function stateOf(id: string): Record<string, any> {
 // The Keel job that writes a file or log wait's file: its own log is the file, or its command sends
 // its output there, and it was running when the wait was set or started after (one that ended before
 // says nothing of what comes). A running one is kept with the wait; one that ended is not, so a job
-// started after it is found. When none is found, none is looked for again for a while.
-const NO_WRITER_MS = 30_000;
+// started after it is found. When none is found, none is looked for again until the session starts
+// another job (the newest start is kept).
 const noWriter = new Map<string, number>();
 function linkJob(w: WaitRecord, now = Date.now()): Job | undefined {
   if (w.kind !== "file" && w.kind !== "log") return undefined;
   const st = stateOf(w.id);
   const kept = st.job ? findJob(w.session_id, st.job) : undefined;
   if (kept && running(kept)) return kept;
-  if (!kept && (noWriter.get(w.id) ?? 0) > now) return undefined;
+  const jobs = jobsOf(w.session_id);
+  const newest = jobs.reduce((m, j) => Math.max(m, j.started), 0);
+  if (!kept && noWriter.get(w.id) === newest) return undefined;
   const path = (w.spec as { path: string }).path;
   const home = homedir();
-  const found = jobsOf(w.session_id).filter((j) => j.started <= now && (running(j) || (j.ended ?? 0) >= w.created) && (!kept || j.started > kept.started) && (j.log === path || writesPath(j.command, j.cwd, home, path))).sort((a, b) => b.started - a.started)[0];
+  const found = jobs.filter((j) => j.started <= now && (running(j) || (j.ended ?? 0) >= w.created) && (!kept || j.started > kept.started) && (j.log === path || writesPath(j.command, j.cwd, home, path))).sort((a, b) => b.started - a.started)[0];
   if (found && running(found)) setState(w.id, "job", found.id);
   if (!found && !kept) {
     if (noWriter.size > 512) noWriter.clear();
-    noWriter.set(w.id, now + NO_WRITER_MS);
+    noWriter.set(w.id, newest);
   }
   return found ?? kept;
 }
@@ -213,9 +215,11 @@ function factsOf(j: Job, path: string) {
   return { id: j.id, command: j.command, started: j.started, running: running(j), live: jobLive(j), exit: j.exitCode, signal: j.signal, ended: j.ended, stopReason: j.stopReason, lastOutput };
 }
 
-// Whether the session may read a file without asking anyone: as its Read tool would (the
-// permission gate, with what its sandbox shows), else what its folder's sandbox shows. A wait's
+// Whether the session may read a file without asking anyone: as its Read tool would (the permission
+// gate, set by src/server/routes/permissions.ts, with what its sandbox shows), else what its folder's
+// sandbox shows. A session whose files are on another machine reads none of this one's. A wait's
 // probe and wake read as the daemon, so they read only that. Kept for a few seconds a path.
+export const readGate: { readable?: (s: Session, path: string) => boolean } = {};
 const readVerdicts = new Map<string, { at: number; ok: boolean }>();
 function readable(sessionId: string, real: string): boolean {
   const key = `${sessionId}\0${real}`;
@@ -224,36 +228,65 @@ function readable(sessionId: string, real: string): boolean {
   let ok = false;
   try {
     const s = D().store.session(sessionId);
-    if (s) ok = perm.gate ? perm.gate.readable(s, real) : shownTo(real, s.workspace).shown;
+    if (s && !s.machine) ok = readGate.readable ? readGate.readable(s, real) : shownTo(real, s.workspace).shown;
   } catch (e) { capture(e, { at: "wait read check" }); }
   if (readVerdicts.size > 512) readVerdicts.clear();
   readVerdicts.set(key, { at: Date.now(), ok });
   return ok;
 }
 
+// What the wait was allowed to read when it was set (by the gate, or by the owner on its card): the
+// path where it really is, and the file there then. That file at that path is read without asking
+// again; another file, or another path a link leads to, only when the session may read it.
+type Approved = { real: string; ident?: string };
+const realOrPlanned = (path: string) => {
+  try { return realpathSync(path); } catch {}
+  try { return join(realpathSync(dirname(path)), basename(path)); } catch { return path; }
+};
+function approve(id: string, path: string) {
+  const a: Approved = { real: realOrPlanned(path) };
+  try { const st = statSync(a.real); if (st.isFile()) a.ident = `${st.dev}:${st.ino}`; } catch {}
+  setState(id, "approved", a);
+}
+
 // A waited file opened for reading where it really is, or why it is not read: not there, not a
 // regular file (a FIFO's open would wait for a writer, a device's read may never end), or not
-// readable by the session (a link that leads out of what it may read).
+// readable by the session (a link that leads out of what it may read). What is opened is the file
+// that was looked at: the same file before and after the open, at the path that was checked.
 type Opened = { fd: number; size: number; ident: string; real: string } | { not: "missing" | "special" | "hidden"; real?: string };
-function openWaited(path: string, sessionId: string): Opened {
+function openWaited(path: string, w: Pick<WaitRecord, "id" | "session_id">): Opened {
   let real: string;
   try { real = realpathSync(path); } catch { return { not: "missing" }; }
-  if (!readable(sessionId, real)) return { not: "hidden", real };
+  let st: ReturnType<typeof statSync>;
+  try { st = statSync(real); } catch { return { not: "missing" }; }
+  if (!st.isFile()) return { not: "special", real };
+  const ident = `${st.dev}:${st.ino}`;
+  const a = stateOf(w.id).approved as Approved | undefined;
+  const allowed = (a && a.real === real && (!a.ident || a.ident === ident)) || readable(w.session_id, real);
+  if (!allowed) return { not: "hidden", real };
   let fd: number;
+  // (O_NONBLOCK: a FIFO put at the path since the look does not hold the open; a regular file's reads are the same.)
   try { fd = openSync(real, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch (e: any) { return { not: e?.code === "ENOENT" ? "missing" : e?.code === "ELOOP" ? "hidden" : "special", real }; }
   try {
-    const st = fstatSync(fd);
-    if (!st.isFile()) { closeSync(fd); return { not: "special", real }; }
+    const f = fstatSync(fd);
+    if (!f.isFile() || `${f.dev}:${f.ino}` !== ident) { closeSync(fd); return { not: f.isFile() ? "hidden" : "special", real }; }
     // (What was opened is where the check looked: a folder on the way was not swapped since.)
     if (process.platform === "linux") {
       let at: string | undefined;
       try { at = readlinkSync(`/proc/self/fd/${fd}`); } catch {}
       if (at !== undefined && at !== real) { closeSync(fd); return { not: "hidden", real }; }
     }
-    return { fd, size: st.size, ident: `${st.dev}:${st.ino}`, real };
+    return { fd, size: f.size, ident, real };
   } catch { closeSync(fd); return { not: "special", real }; }
 }
 const notRead = (path: string, o: Exclude<Opened, { fd: number }>) => o.not === "missing" ? `${path} is not there.` : o.not === "special" ? `${path} is not a regular file: it is not carried.` : `${path} is not carried: it leads where this session may not read without the owner.`;
+// A waited path the probe cannot read: one the session may not read ends the wait now (it would never
+// be read before the deadline); one that is not a regular file is said on the wait.
+function unread(w: WaitRecord, path: string, o: Exclude<Opened, { fd: number }>): undefined {
+  if (o.not === "hidden") settle(w.id, "ended", `${path} leads where this session may not read without the owner, which is not what the wait was set on: the wait ends here.`);
+  else if (o.not === "special") setError(w.id, notRead(path, o));
+  return undefined;
+}
 
 // What a file or log wait's wake carries: the file's new content (src/automation/wait-carry.ts), and
 // what Keel knows of the job that writes it. Secrets in it are hidden as in a tool's output.
@@ -262,7 +295,7 @@ function carried(w: WaitRecord): string {
   const path = (w.spec as { path: string }).path;
   const from = (stateOf(w.id).from ?? { offset: 0 }) as { offset: number; ident?: string };
   const parts: string[] = [];
-  const f = openWaited(path, w.session_id);
+  const f = openWaited(path, w);
   if ("not" in f) parts.push(notRead(path, f));
   else {
     try {
@@ -299,14 +332,32 @@ export function carries(w: WaitRecord): string {
 // far past what a working job shows, and well before a wait's usual deadline (20 min).
 export const stall = { ms: 5 * 60_000 }; // (a test sets it shorter, and puts it back)
 
-// What one of a job's processes is doing, read from /proc (src/automation/wait-carry.ts decides).
+// What one of a job's processes is doing, read from /proc (src/automation/wait-carry.ts decides): each
+// of its threads, and for one held in a read or a pipe, what the file its call names is.
 function procLook(pid: string, inCgroup: Set<string>): ProcLook {
   const read = (p: string) => { try { return readFileSync(p, "utf8"); } catch { return ""; } };
-  const stat = read(`/proc/${pid}/stat`);
-  const state = stat ? stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) : "";
+  const stateOf = (stat: string) => (stat ? stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) : "");
   const children: string[] = [];
-  try { for (const t of readdirSync(`/proc/${pid}/task`)) children.push(...read(`/proc/${pid}/task/${t}/children`).split(" ").filter(Boolean)); } catch {}
-  return { comm: read(`/proc/${pid}/comm`).trim(), state, wchan: read(`/proc/${pid}/wchan`).trim(), childOutside: children.some((c) => !inCgroup.has(c)) };
+  const threads: ThreadLook[] = [];
+  let tids: string[] = [];
+  try { tids = readdirSync(`/proc/${pid}/task`); } catch {}
+  for (const t of tids.slice(0, 256)) {
+    const at = `/proc/${pid}/task/${t}`;
+    children.push(...read(`${at}/children`).split(" ").filter(Boolean));
+    const wchan = read(`${at}/wchan`).trim();
+    const look: ThreadLook = { state: stateOf(read(`${at}/stat`)), wchan };
+    if (HELD_ON_FILE.test(wchan)) {
+      // (The call's first argument: the file it reads or waits on, for read, recv, splice and the like.)
+      const arg = read(`${at}/syscall`).split(" ")[1];
+      const fd = arg && /^0x[0-9a-f]{1,4}$/.test(arg) ? Number.parseInt(arg, 16) : undefined;
+      if (fd !== undefined) {
+        try { look.fd = readlinkSync(`/proc/${pid}/fd/${fd}`); } catch {}
+        try { look.fifo = look.fd?.startsWith("/") === true && statSync(`/proc/${pid}/fd/${fd}`).isFIFO(); } catch {}
+      }
+    }
+    threads.push(look);
+  }
+  return { comm: read(`/proc/${pid}/comm`).trim(), threads, childOutside: children.some((c) => !inCgroup.has(c)) };
 }
 
 // A wait whose job ended without its condition, or went quiet: told now, not at the deadline. Only
@@ -457,6 +508,8 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   const s = D().store.session(sessionId);
   if (!s) throw new Error("no such session");
   if (s.archived) throw new Error("the session is archived");
+  // (The wait reads this machine's disk; such a session's files are on another. A command waits there.)
+  if (s.machine && (spec.kind === "file" || spec.kind === "log")) throw new Error(`a ${spec.kind} wait reads this machine's files, and this session's are on ${s.machine}: wait there with a command in the shell tool instead`);
   if (activeFor(sessionId) >= WAIT_LIMIT) throw new Error(`the session already has ${WAIT_LIMIT} active waits; cancel one first`);
   const now = Date.now();
   const isMon = isMonitor(spec.kind);
@@ -482,6 +535,8 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
     let from: { offset: number; ident?: string } = { offset: 0 };
     try { const f = identOf(spec.path); from = { offset: f.size, ident: f.ident }; } catch {}
     setState(rec.id, "from", from);
+    // (What the gate, or the owner on its card, let it read.)
+    approve(rec.id, spec.path);
     linkJob(get(rec.id)!);
   }
   live.set(rec.id, st);
@@ -591,7 +646,8 @@ export function cancelForSession(sessionId: string) {
 // The last probe's error, of a wait still active (a probe that answers after
 // its wait was settled changes nothing).
 function setError(id: string, msg: string | null) {
-  D().store.db.query("UPDATE waits SET last_error = ? WHERE id = ? AND status = 'active'").run(msg, id);
+  // (Only a change is written: a probe says the same thing at every tick.)
+  D().store.db.query("UPDATE waits SET last_error = ? WHERE id = ? AND status = 'active' AND last_error IS NOT ?").run(msg, id, msg);
 }
 
 // pr_checks at the pace gh pr checks --watch polls (10 s).
@@ -620,8 +676,8 @@ function probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> 
       if (!existsSync(s.path)) return undefined;
       if (!s.contains) return `${s.path} exists.`;
       // (Read as the session may: a regular file it may read, never a FIFO that holds the open.)
-      const f = openWaited(s.path, w.session_id);
-      if ("not" in f) { if (f.not !== "missing") setError(w.id, notRead(s.path, f)); return undefined; }
+      const f = openWaited(s.path, w);
+      if ("not" in f) return unread(w, s.path, f);
       let text: string;
       try { text = readFileSync(f.fd, "utf8"); } finally { closeSync(f.fd); }
       const i = text.indexOf(s.contains);
@@ -631,8 +687,8 @@ function probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> 
       const st = live.get(w.id) ?? { offset: 0 };
       live.set(w.id, st);
       // (Read as the session may: a regular file it may read, where it really is.)
-      const f = openWaited(s.path, w.session_id);
-      if ("not" in f) { if (f.not !== "missing") setError(w.id, notRead(s.path, f)); return undefined; }
+      const f = openWaited(s.path, w);
+      if ("not" in f) return unread(w, s.path, f);
       // Another file at the path (rotated, renamed over it) is read from its
       // start; the same file shorter than the cursor was truncated.
       if ((st.ident && st.ident !== f.ident) || f.size < (st.offset ?? 0)) { st.offset = 0; st.skip = false; }
