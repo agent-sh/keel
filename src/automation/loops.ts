@@ -2,7 +2,7 @@ import { zonedStamp } from "../core/clock.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { StoredEvent } from "../core/types.ts";
 import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw, stopperOf } from "./core.ts";
-import { checkZone, localZone, nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
+import { checkZone, localZone, nextCron, intervalStepMs, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { stopSays } from "../core/stoppers.ts";
@@ -214,7 +214,7 @@ function patchRun(id: string, p: Record<string, unknown>) {
 function nextDue(l: Pick<LoopRecord, "kind" | "schedule" | "tz">, from: number): number | null {
   if (l.kind === "interval") {
     const sec = parseSchedule(l.schedule).kind === "interval" ? (parseSchedule(l.schedule) as any).seconds : 0;
-    return from + (sec === 300 ? 285_000 : sec * 1000);
+    return from + intervalStepMs(sec);
   }
   if (l.kind === "cron") return nextCron(parseCron(l.schedule), from, l.tz ?? undefined) ?? null;
   return null;

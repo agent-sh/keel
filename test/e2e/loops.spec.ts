@@ -166,3 +166,60 @@ test("loops: a panel loop names its folder and mode, and a run waiting on you sa
   const errors = (await (await request.get("/api/errors")).json()).errors;
   expect(errors.length, JSON.stringify(errors.slice(0, 3))).toBe(errorsBefore);
 });
+
+// The form says what a schedule means as it is typed: its words and its next three runs, or why it
+// is refused (and Create waits for one it takes). A loop of its own runs on the model and effort the
+// form names, and the made loop says them. The footer's Loops entry is named by its words, the count
+// of loops that are on with it.
+test("loops: the form reads the schedule as it is typed, with a model and an effort", async ({ page, request }) => {
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: { id: string }) => m.id === STAND_IN), "requires the scripted provider");
+  const backup = models.find((m: { id: string }) => m.id === "scripted:stand-in-backup");
+  test.skip(!backup?.efforts?.includes("low"), "requires the scripted backup model with its efforts");
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Form host" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("loops-button").click();
+  await page.getByTestId("new-loop-button").click();
+  const form = page.getByTestId("new-loop");
+  const when = page.getByTestId("new-loop-when");
+
+  await page.getByTestId("new-loop-schedule").fill("weekdays 09:30");
+  await expect(when).toContainText("weekdays at 09:30");
+  await expect(when).toContainText(/next \w{3} 09:30, \w{3} 09:30, \w{3} 09:30/);
+  await page.getByTestId("new-loop-schedule").fill("every 3 bananas");
+  await expect(when).toHaveAttribute("data-bad", "");
+  await expect(when).toContainText("is not a schedule");
+  await expect(page.getByRole("button", { name: "Create loop" })).toBeDisabled();
+  await page.getByTestId("new-loop-schedule").fill("2h");
+  await expect(when).toContainText(/every 2 hours · next \d\d:\d\d, \d\d:\d\d, \d\d:\d\d/);
+  await expect(when).not.toHaveAttribute("data-bad", "");
+
+  // The model and the effort, offered as the model lists them.
+  await form.getByTestId("model-picker").click();
+  await page.getByPlaceholder("Search models").fill(backup.id);
+  await page.locator('[data-group="exact"] [data-testid="model-option"]').click();
+  await expect(form.getByTestId("model-picker")).toContainText(backup.name);
+  await page.getByTestId("new-loop-effort").click();
+  await page.getByRole("option", { name: "low", exact: true }).click();
+  await page.getByTestId("new-loop-prompt").fill("Say only the word tock.");
+  await shoot(page, "loops-08-form-preview");
+  await page.getByRole("button", { name: "Create loop" }).click();
+  await expect(page.getByTestId("loop-model")).toHaveText(`${backup.name} · low`);
+  const loop = (await (await request.get("/api/loops")).json()).loops.find((l: any) => l.prompt === "Say only the word tock.");
+  const made = (await (await request.get(`/api/sessions/${loop.session_id}`)).json()).session;
+  expect(made.model).toBe(backup.id);
+  expect(made.settings.effort).toBe("low");
+  await shoot(page, "loops-09-made-on-model");
+  // An effort the model does not list makes no loop.
+  const bad = await request.post("/api/loops", { data: { schedule: "1h", prompt: "Never made.", model: backup.id, effort: "ludicrous" } });
+  expect(bad.status()).toBe(400);
+  expect((await (await request.get("/api/loops")).json()).loops.some((l: any) => l.prompt === "Never made.")).toBe(false);
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("loops-button")).toHaveAccessibleName(/^Loops\. \d+ on$/);
+
+  for (const l of (await (await request.get("/api/loops")).json()).loops) await request.delete(`/api/loops/${l.id}`);
+  const errors = (await (await request.get("/api/errors")).json()).errors;
+  expect(errors.length, JSON.stringify(errors.slice(0, 3))).toBe(errorsBefore);
+});

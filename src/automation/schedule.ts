@@ -64,6 +64,25 @@ export function parseSchedule(input: string): Schedule {
   return { kind: "cron", expr, text: describeCron(expr) };
 }
 
+// The time from one run of an interval to the next: its length, but 285 s for five minutes.
+export const intervalStepMs = (seconds: number) => (seconds === 300 ? 285_000 : seconds * 1000);
+
+// What a schedule typed in a form means before the loop is made: its words and the next `n` runs it
+// would have from `now` (a calendar's in `tz`, an interval's one step after another), or why it is
+// refused. The times are the ones the made loop shows.
+export type Preview = { kind: Schedule["kind"]; text: string; next: number[] } | { error: string };
+export function previewSchedule(input: string, now: number, n = 3, tz?: string): Preview {
+  if (!input.trim()) return { error: "a schedule is needed: 5m, 2h, daily, weekdays 09:30, a cron expression, auto or webhook" };
+  let s: Schedule;
+  try { s = parseSchedule(input); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  if (s.kind === "cron") return { kind: s.kind, text: s.text, next: nextRuns(s.expr, now, n, tz) };
+  if (s.kind === "interval") {
+    const step = intervalStepMs(s.seconds);
+    return { kind: s.kind, text: s.text, next: Array.from({ length: n }, (_, i) => now + (i + 1) * step) };
+  }
+  return { kind: s.kind, text: s.text, next: [] };
+}
+
 function interval(seconds: number): Schedule {
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("an interval is a positive number");
   // The scheduler counts in minutes: seconds round up to the next minute.

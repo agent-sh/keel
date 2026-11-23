@@ -6,10 +6,13 @@ import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunR
 import { api, reportError, useStore, failed, workspaces } from "../../lib/store.ts";
 import { useSessionState } from "../../lib/watch.ts";
 import { NEEDS } from "../../../../src/core/state-words.ts";
+import { previewSchedule } from "../../../../src/automation/schedule.ts";
+import { ModelPicker } from "../ModelPicker.tsx";
 import { Mark } from "../Mark.tsx";
 import { Select } from "../Select.tsx";
 import { WorkspacePicker } from "../WorkspacePicker.tsx";
 import { ago, clock, cn, fmtTokens } from "../../lib/utils.ts";
+import { modelOf } from "../Mark.tsx";
 import { Empty, IconButton } from "./bits.tsx";
 import { QUEUED, STATE_WORD } from "../../../../src/core/state-words.ts";
 
@@ -103,6 +106,7 @@ function History({ loop }: { loop: LoopRecord }) {
     return () => void (stale = true);
   }, [loop]);
   const session = useStore((s) => s.sessions[loop.session_id]);
+  const modelName = useStore((s) => s.models.find((m) => m.id === session?.model)?.name);
   const waits = useWaitsOnOwner(loop);
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="loop-history">
@@ -126,6 +130,8 @@ function History({ loop }: { loop: LoopRecord }) {
           {loop.until_ms ? ` · until ${new Date(loop.until_ms).toLocaleDateString()}` : ""}
         </p>
         <p className="mt-0.5 flex min-w-0 gap-1.5 text-caption text-faint" data-testid="loop-where">
+          {session && <span className="shrink-0 text-muted" data-testid="loop-model">{[modelName ?? modelOf(session.model), session.settings.effort].filter(Boolean).join(" · ")}</span>}
+          {session && (loop.mode || session.workspace) && <span aria-hidden>·</span>}
           {loop.mode && <span className="shrink-0 text-muted" data-testid="loop-mode">{MODE_NAME[loop.mode] ?? loop.mode}</span>}
           {loop.mode && session?.workspace && <span aria-hidden>·</span>}
           {session?.workspace && <span className="truncate font-mono text-micro leading-[inherit]" title={session.workspace}>{session.workspace}</span>}
@@ -166,6 +172,27 @@ function History({ loop }: { loop: LoopRecord }) {
   );
 }
 
+// What the schedule typed means, read as it is typed: its words and its next three runs (a time
+// that is not today with its day), or why it is not a schedule.
+function When({ preview, zone }: { preview: ReturnType<typeof previewSchedule>; zone: string }) {
+  const today = new Date().toDateString();
+  const at = (t: number, cal: boolean) => clock(t, { weekday: cal || new Date(t).toDateString() !== today });
+  const words = "error" in preview
+    ? preview.error
+    : preview.kind === "cron"
+      ? `${preview.text} (${zone})${preview.next.length ? ` · next ${preview.next.map((t) => at(t, true)).join(", ")}` : ""}`
+      : preview.kind === "interval"
+        ? `${preview.text} · next ${preview.next.map((t) => at(t, false)).join(", ")}`
+        : preview.kind === "auto"
+          ? "self-paced: after each run the model says when the next one comes"
+          : "runs when its webhook is called; the URL is shown once, when it is made";
+  return (
+    <p id="new-loop-when" data-testid="new-loop-when" data-bad={"error" in preview ? "" : undefined} aria-live="polite" className={cn("px-1 text-caption tabular-nums", "error" in preview ? "text-warn" : "text-muted")}>
+      {words}
+    </p>
+  );
+}
+
 function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   const [schedule, setSchedule] = useState("1h");
   const [prompt, setPrompt] = useState("");
@@ -187,6 +214,16 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   }, []);
   const asks = mode === "ask" || mode === "auto-edits" || mode === "plan";
   const isHook = schedule.trim().toLowerCase() === "webhook";
+  // The model and effort its runs use: the default model until another is picked, and the model's
+  // own effort unless one it lists is picked.
+  const def = useStore((s) => s.defaultModel);
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const runsOn = model || def;
+  const efforts = useStore((s) => s.models.find((m) => m.id === runsOn)?.efforts) ?? [];
+  if (effort && !efforts.includes(effort)) setEffort("");
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const preview = useMemo(() => previewSchedule(schedule, Date.now(), 3, zone), [schedule, zone]);
   const field = "k-field h-auto w-full py-2";
   return (
     <form
@@ -198,7 +235,8 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
         if (e.target !== e.currentTarget) return;
         setErr("");
         try {
-          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(cwd ? { cwd } : {}), ...(mode ? { mode } : {}), ...(isHook ? { signed, ...(push ? { push } : {}) } : {}) });
+          // The zone the preview read the schedule in: the made loop's times are the ones shown.
+          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(cwd ? { cwd } : {}), ...(mode ? { mode } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(zone ? { tz: zone } : {}), ...(isHook ? { signed, ...(push ? { push } : {}) } : {}) });
           if (l.hook_key) setKeys({ hook_key: l.hook_key, hook_secret: l.hook_secret });
           else onDone(l.id);
         } catch (x) {
@@ -207,16 +245,26 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
       }}
     >
       <h3 className="text-base font-semibold">New loop</h3>
-      <p className="-mt-2 text-caption text-muted">Runs in a session of its own on the default model. Use /loop in a session's composer to loop there.</p>
+      <p className="-mt-2 text-caption text-muted">Runs in a session of its own. Use /loop in a session's composer to loop there.</p>
       <div className="flex flex-wrap items-center gap-2" data-testid="new-loop-where">
         <WorkspacePicker value={cwd} onChange={setCwd} />
         <Select data-testid="new-loop-mode" aria-label="Permission mode" value={mode} onChange={(e) => setMode(e.target.value)} className="w-40 text-caption">
           {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </Select>
+        <ModelPicker value={runsOn} onChange={(id) => setModel(id)} placeholder="Default model" />
+        {efforts.length > 0 && (
+          <Select data-testid="new-loop-effort" aria-label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)} className="w-36 text-caption">
+            <option value="">Model's effort</option>
+            {efforts.map((x) => <option key={x} value={x}>{x}</option>)}
+          </Select>
+        )}
       </div>
       {asks && <p className="-mt-1 text-caption text-faint" data-testid="new-loop-asks">In this mode a run that edits or runs a command waits for your approval, and the runs due meanwhile are skipped.</p>}
       <input className={field} placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
-      <input className={cn(field, "font-mono")} placeholder="5m, 2h, daily, weekdays 09:30, 0 9 * * 1-5, auto, webhook" value={schedule} onChange={(e) => setSchedule(e.target.value)} data-testid="new-loop-schedule" />
+      <div className="flex flex-col gap-1">
+        <input className={cn(field, "font-mono")} placeholder="5m, 2h, daily, weekdays 09:30, 0 9 * * 1-5, auto, webhook" value={schedule} onChange={(e) => setSchedule(e.target.value)} data-testid="new-loop-schedule" aria-describedby="new-loop-when" />
+        <When preview={preview} zone={zone} />
+      </div>
       <textarea className={cn(field, "min-h-28 resize-y")} placeholder="What to do each run" value={prompt} onChange={(e) => setPrompt(e.target.value)} data-testid="new-loop-prompt" />
       {isHook && (
         <label className="flex items-center gap-2 text-ui">
@@ -232,7 +280,7 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
       )}
       {err && <p className="text-caption text-danger">{err}</p>}
       {keys && <ShownOnce keys={keys} />}
-      <button type="submit" disabled={!schedule.trim() || !!keys} className="self-start rounded-lg bg-accent px-3.5 py-1.5 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
+      <button type="submit" disabled={"error" in preview || !!keys} className="self-start rounded-lg bg-accent px-3.5 py-1.5 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">
         Create loop
       </button>
     </form>

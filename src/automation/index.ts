@@ -629,6 +629,7 @@ export const automationRoutes: RouteModule = (deps) => {
         if (sid && !session(sid)) return bad("no such session", 404);
         if (b.mode !== undefined && !isMode(b.mode)) return bad(`unknown mode: ${b.mode}`);
         if (b.mode !== undefined && sid) return bad("mode is for a loop of its own: a session's loop runs in the session's mode");
+        if ((b.model !== undefined || b.effort !== undefined) && sid) return bad("model and effort are for a loop of its own: a session's loop runs on the session's");
         if (!sid) {
           // A loop of its own: its runs go to a session made for it, in the folder and the
           // permission mode it is made with (the owner's default mode when none is named).
@@ -641,8 +642,11 @@ export const automationRoutes: RouteModule = (deps) => {
           }
           const model = b.model || (await providers.defaultModel());
           if (!model) return bad("no model is available", 409);
-          await providers.resolve(model);
-          const s = store.createSession({ model, workspace, title: `Loop: ${String(b.name || b.prompt || "").slice(0, 60)}` });
+          const { info } = await providers.resolve(model);
+          // An effort is one the model lists; none is the model's default.
+          const effort = b.effort ? String(b.effort) : undefined;
+          if (effort && !info.efforts.includes(effort)) return bad(`${info.name} does not take effort ${effort}`);
+          const s = store.createSession({ model, workspace, title: `Loop: ${String(b.name || b.prompt || "").slice(0, 60)}`, ...(effort ? { settings: { effort } } : {}) });
           if (b.mode && perm.gate) perm.gate.setPerm(s.id, { mode: b.mode });
           deps.bus.emit({ t: "session", session: s });
           sid = s.id;

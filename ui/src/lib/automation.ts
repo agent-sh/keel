@@ -117,7 +117,7 @@ export const auto = {
     const { [id]: _, ...rest } = state.loops;
     set({ loops: rest });
   },
-  createLoop: (body: { name?: string; schedule: string; prompt: string; session_id?: string; max_runs?: number; signed?: boolean; push?: boolean; cwd?: string; mode?: string }) =>
+  createLoop: (body: { name?: string; schedule: string; prompt: string; session_id?: string; max_runs?: number; signed?: boolean; push?: boolean; cwd?: string; mode?: string; model?: string; effort?: string; tz?: string }) =>
     api<LoopRecord & { hook_key?: string; hook_secret?: string }>("/api/loops", { method: "POST", body: JSON.stringify(body) }),
   rotateKey: (id: string) => api<{ hook_key: string; hook_secret?: string }>(`/api/loops/${id}/hook-key`, { method: "POST" }),
   runs: (id: string) => api<{ loop: LoopRecord; runs: RunRecord[] }>(`/api/loops/${id}/runs`),

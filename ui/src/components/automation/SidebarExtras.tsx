@@ -237,7 +237,9 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         type="button"
         data-testid="loops-button"
         onClick={onLoops}
-        title="Loops"
+        // Named by its word, with the count it shows: the count alone named the button "2".
+        title={loops > 0 ? `Loops. ${loops} on` : "Loops"}
+        aria-label={loops > 0 ? `Loops. ${loops} on` : "Loops"}
         className="flex items-center gap-1.5 h-ctl-md rounded-md px-2 text-caption text-faint hover:bg-raised hover:text-fg"
       >
         <Repeat className="size-3.5" />
