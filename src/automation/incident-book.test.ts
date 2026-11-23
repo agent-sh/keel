@@ -125,4 +125,3 @@ test("a provider that answers once between failures stays one incident", () => {
   // Quiet for the window, then an answer: it ends.
   expect(b.answered("provider:p", "it answers again", T0 + 4 * 60_000 + 5_000 + WINDOW_MS + 1)?.id).toBe(first);
 });
-
