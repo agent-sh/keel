@@ -14,7 +14,11 @@
 //     words) gives a title made again once, after the next reply (`start`);
 //   - an edit of the first prompt gives the session a new task: its title is
 //     the new prompt's words until the next reply makes one again;
-//   - the title is saved only when nobody renamed the session meanwhile.
+//   - the title is saved only when nobody renamed the session meanwhile;
+//   - it is written by one of the owner's small models, else by a model
+//     cheaper than the session's own (the readers' choices), never by the
+//     session's own model unless the owner named it a small model: with no
+//     such model the session keeps its first prompt's words.
 import type { StoredEvent } from "../core/types.ts";
 
 // Who wrote a session's title: "" given (the owner, the session's maker, or a

@@ -793,7 +793,12 @@ export class Engine {
     const prompts = ownerPrompts(line);
     const prompt = conceal(titlePrompt(prompts, firstReply(line)), id);
     const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(s.model).then((r) => r.info)]);
-    const choices = readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels());
+    // The session's own model is a reader's last choice, never a title's (unless the owner named it a
+    // small model): a title is not worth a request at the working model's price. With no other
+    // choice the session keeps its first prompt's words.
+    const named = [...smallModels(), process.env.KEEL_READER_MODEL];
+    const choices = readerChoices(models, cur, Math.ceil(prompt.length / bytesPerToken(cur.id)) + TITLE_OUTPUT, process.env, (m) => this.providers.catalog?.lookup(m.model)?.price, smallModels())
+      .filter((m) => m.id !== cur.id || named.includes(m.id));
     let last: unknown;
     for (const m of choices) {
       try {

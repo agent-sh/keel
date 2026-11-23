@@ -30,7 +30,7 @@ function rig(listed: any[], title: (req: any, n: number) => Promise<any>, turn: 
     stream: async (req: any) => { asked.push(req); return req.purpose === "title" ? title(req, n++) : turn(req); },
   };
   const providers = { resolve: async (id: string) => ({ provider, info: listed.find((m) => m.id === id) ?? BIG }), models: async () => listed, current: () => listed };
-  const engine = new Engine(store, bus, providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  const engine = new Engine(store, bus, providers as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }), recovered: () => {} } as any, join(dir, "spill"));
   (engine as any).systemOf = async () => ({ text: "A stand-in system prompt.", split: 0 });
   const s = store.createSession({ model: BIG.id, workspace: dir });
   const statuses: TurnStatus[] = [];
@@ -45,10 +45,21 @@ async function waitFor(ok: () => boolean, ms = 3_000) {
 
 test("a title request that is retried says nothing in the session's status", async () => {
   const busy = new ProviderError("overloaded", "overloaded", 529, 1);
-  const { engine, s, statuses, titled } = rig([BIG, SMALL], async (_req, n) => { if (n === 0) throw busy; return said("Cart discounts"); });
+  const { engine, s, statuses, titled, asked } = rig([BIG, SMALL], async (_req, n) => { if (n === 0) throw busy; return said("Cart discounts"); });
   engine.send(s.id, "Fix the cart discount rounding");
   await engine.idle(s.id);
   const after = statuses.length;
   await titled("Cart discounts");
+  // Asked twice of the small model: the retry was the request's own.
+  expect(asked.filter((r) => r.purpose === "title").map((r) => r.model)).toEqual(["small", "small"]);
   expect(statuses.slice(after)).toEqual([]);
+});
+
+test("with no model cheaper than the session's own, no title is asked for", async () => {
+  const { engine, s, asked, store } = rig([BIG], async () => said("Should not be asked"));
+  engine.send(s.id, "Fix the cart discount rounding");
+  await engine.idle(s.id);
+  await Bun.sleep(50);
+  expect(asked.filter((r) => r.purpose === "title")).toEqual([]);
+  expect(store.session(s.id)!.title).toBe("Fix the cart discount rounding");
 });
