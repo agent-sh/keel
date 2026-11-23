@@ -21,6 +21,8 @@ import * as failures from "./failures.ts";
 import { classOf } from "./failure-groups.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { git, Worktrees } from "../worktree/manager.ts";
+import { git as gitRead, locate } from "../core/git.ts";
+import { namedIn, reviewsInput } from "../board/rules.ts";
 import * as leftovers from "./leftovers.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { parseWrites } from "../safety/write-scope.ts";
@@ -118,6 +120,7 @@ export type AgentRecord = {
   start?: AgentStart | null; // where its last follow-up started, and why (src/engine/follow-up.ts)
   start_force?: Way | null; // the owner's choice of where its follow-ups start (none: Keel decides)
   lost?: Lost[]; // the contexts its current task lost, each taken up by a successor (src/automation/successor.ts)
+  reviews?: string[]; // the branches it reviews (its spawn named them, or its task did): the work board's reviewer of them
 };
 // Where a follow-up to the finished agent started: in its context, from a
 // summary, or fresh from a capsule of its work; why; and the context its first
@@ -211,7 +214,7 @@ CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('runni
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
   writeAsks.migrate(); // the questions an agent asked its parent about a write outside its scope
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"], ["reviews", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
   // A budget's read of the tree under a task walks the sessions' parents (TREE_SPEND_SQL).
@@ -227,9 +230,10 @@ const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir
 // `park_told`: the task (its first_seq) whose park on a command the parent has been woken for.
 // `task`: its first prompt, kept until it is in its session (sendTask).
 // `start_from`: the last follow-up's start, as JSON (AgentStart).
-type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost"> & { lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null };
+// `reviews`: the branches it reviews with their tips as it started, as JSON (reviewsAt), for the work board.
+type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews"> & { lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null; reviews?: string | null };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, ...rest } = r;
+  const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, ...rest } = r;
   void def; void schema_tries; void restarts; void park_told; void task; void parked;
   // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
   const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
@@ -237,7 +241,9 @@ const toRec = (r: Row): AgentRecord => {
   try { start = start_from ? JSON.parse(start_from) : undefined; } catch {}
   let lost: Lost[] | undefined;
   try { lost = lostJson ? JSON.parse(lostJson) : undefined; } catch {}
-  return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}) };
+  let reviews: string[] | undefined;
+  try { reviews = reviewsRaw ? (JSON.parse(reviewsRaw) as { branch: string }[]).map((x) => x.branch) : undefined; } catch {}
+  return { ...rest, ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}) };
 };
 // The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
 const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
@@ -766,6 +772,7 @@ export type SpawnInput = {
   writes?: unknown; // the folders, files or globs it may write (src/automation/write-asks.ts); a reviewer gets its own folders
   effort?: string; // over its definition's (a skill's with context: fork); not in any tool's schema
   disallowed?: string[]; // added to its definition's (a skill's disallowed-tools with context: fork); not in any tool's schema
+  reviews?: unknown; // the branch (or branches) it reviews, for the work board (src/board/rules.ts reviewsInput)
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -983,10 +990,11 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // as history is: a secret in it is its placeholder.
   // task_at: where the parent's own words start, so the page shows them verbatim.
   const budget = mergeBudget(def.budget, parseBudget(input.budget));
+  const reviews = await reviewsAt(parentId, parent.workspace, input, !!(iso || placed?.worktree)).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
   store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes, reviews) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
-    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json);
+    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json, reviews);
   release(); // the persisted running row now occupies the slot
   // The repositories it may change, as they are before its first step: what it makes there is told at its end.
   if (!placed) await leftovers.before(store, id, [child.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: id }));
@@ -997,6 +1005,42 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   }
   activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})${leftLine(id)}`, { agent_id: id, child_session: child.id });
   return begin(id, input, model, signal);
+}
+
+// The branches an agent reviews, with each one's tip as it starts (what it reviewed), as the work board
+// reads them (src/board/board.ts): the ones its spawn names in `reviews`, else, for an agent with no branch
+// of its own, the branches of its tree's agents its task names by their whole name or their head.
+async function reviewsAt(parentId: string, workspace: string, input: SpawnInput, ownBranch: boolean): Promise<string | null> {
+  const asked = reviewsInput(input.reviews);
+  if (!asked && ownBranch) return null;
+  // (The worktree manager is kept per process for one store: its reads are not taken here.)
+  let at: ReturnType<typeof locate> | undefined;
+  try { at = locate(workspace); } catch {}
+  const here = at?.top ? (at.common.endsWith("/.git") ? dirname(at.common) : at.top) : null;
+  // (The worktrees table is the worktree manager's: a store it has not opened yet has none.)
+  const joined = D().store.columnExists("worktrees", "repo_root");
+  const rows = D().store.db.query<{ branch: string; repo: string | null }, [string]>(
+    `${BELOW} SELECT a.branch AS branch, ${joined ? "w.repo_root" : "NULL"} AS repo FROM agents a ${joined ? "LEFT JOIN worktrees w ON w.session_id = a.session_id" : ""} WHERE a.session_id IN (SELECT s FROM t) AND a.branch IS NOT NULL ORDER BY a.created DESC LIMIT 400`,
+  ).all(rootSession(parentId));
+  const repoOf = (b: string) => rows.find((r) => r.branch === b)?.repo ?? here;
+  const tipOf = async (b: string) => {
+    const repo = repoOf(b);
+    if (!repo) return null;
+    const r = await gitRead(repo, ["rev-parse", "-q", "--verify", `refs/heads/${b}^{commit}`], { read: true, timeout: 10_000 });
+    return r.code === 0 ? r.out.trim() || null : null;
+  };
+  let named: { branch: string; how: "named" | "task" }[];
+  if (asked) named = asked.map((branch) => ({ branch, how: "named" as const }));
+  else {
+    // A head named by its digits is looked up only when the task holds such a word.
+    const hex = /\b[0-9a-f]{7,40}\b/.test(input.prompt);
+    const cands = [...new Map(rows.map((r) => [r.branch, r])).values()].slice(0, 100);
+    const tips = hex ? await Promise.all(cands.map((c) => tipOf(c.branch))) : cands.map(() => null);
+    named = namedIn(input.prompt, cands.map((c, i) => ({ branch: c.branch, tip: tips[i] ?? null }))).map((branch) => ({ branch, how: "task" as const }));
+  }
+  if (!named.length) return null;
+  const out = await Promise.all(named.slice(0, 20).map(async (n) => ({ ...n, tip: await tipOf(n.branch) })));
+  return JSON.stringify(out);
 }
 
 // A queued agent (made, its task stored, never started) in line for a slot,

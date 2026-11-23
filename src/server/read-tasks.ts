@@ -14,6 +14,7 @@ import { claudeMcpChoices } from "../mcp/claude-choices.ts";
 import type { SettleAsk } from "../engine/compact.ts";
 import { readHours, type HoursAsk } from "../admin/hours-read.ts";
 import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.ts";
+import { boardChecks, boardFacts } from "../board/facts.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -43,6 +44,10 @@ export const tasks = {
   // Why a range cost what it did, from the cost drivers' rollup; and that rollup held against the ledger (no repair: the thread reads only).
   "usage.drivers": (db: Database, a: DriversAsk) => driversOf(db, a),
   "usage.driversCheck": (db: Database, _a: Record<string, never>) => checkDrivers(db, false),
+  // The work board of a session's tree (src/board/board.ts): its agents and what is known of their branches,
+  // and the check runs on their heads' trees.
+  "board.facts": (db: Database, a: { root: string }) => boardFacts(db, a),
+  "board.checks": (db: Database, a: { trees: string[] }) => boardChecks(db, a),
 };
 
 export type Tasks = typeof tasks;

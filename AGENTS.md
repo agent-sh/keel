@@ -322,6 +322,7 @@ under `~/.cache/keel-work/bun/research/`.
 | `src/tools/` | tool profiles per family, spill |
 | `src/server/app.ts` | HTTP API and WebSocket |
 | `src/server/reads.ts` | the read thread: heavy reads off the loop |
+| `src/board/` | the work board: each agent's branch, checks, review, landed and live, from facts |
 | `src/landing/` | the landing queue: branches built on the base and the entries ahead, checked on that tree, landed by fast-forward |
 | `src/core/checkpoint.ts` | the checkpoint thread: the log's syncs off the loop |
 | `src/admin/stall-watch.ts` | the stall watcher's thread: what the main thread did while the loop was held |

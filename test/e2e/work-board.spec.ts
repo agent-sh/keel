@@ -1,0 +1,131 @@
+import { expect, test } from "./isolate.ts";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { HAIKU, ask, openPanel, shoot } from "./shots.ts";
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
+
+// Feature: the work board. A coordinator starts three agents that commit on branches of their own:
+// alpha runs the repository's named check and lands through the landing queue onto a main that moved
+// (so main holds its patch, not its commit) and the after-land step runs on it; beta is reviewed by an
+// agent started with `reviews: <its branch>` that refuses it, and main gets a commit with beta's subject
+// but not its change; gamma is still working. A second reviewer names alpha's branch in its task only.
+// The board (the API, the coordinator's keel__work_board and the Board panel) says of each what git,
+// the check ledger, the landing queue and the agents table say: alpha landed as patches and live,
+// approved; beta not landed, refused with the reviewer's line; gamma working, not landed, no review.
+test("the work board keeps each agent's branch, checks, review, landed and live from facts", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+  const top = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `board-${Date.now()}`);
+  const repo = join(top, "repo");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "notes.md"), Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  writeFileSync(join(repo, "check.sh"), "echo checking; grep -q 'line 1' notes.md\n");
+  mkdirSync(join(repo, ".keel"));
+  writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { notes: "sh check.sh" }, land: { checks: ["notes"], after: "printf '%s\\n' \"$KEEL_LANDED\" >> ../after.log" } }));
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "init");
+  const gate = join(top, "gamma-may-end");
+
+  const idle = (id: string) => expect.poll(async () => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 90_000 }).toBe(true);
+  const send = async (id: string, text: string) => { await request.post(`/api/sessions/${id}/messages`, { data: { text } }); await idle(id); };
+  const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
+  const commit = (sed: string, msg: string) => `sed -i '${sed}' notes.md && git -c user.name=k -c user.email=k@k commit -qam '${msg}'`;
+  const bash = (command: string, timeout?: number) => ({ name: "Bash", input: { command, ...(timeout ? { timeout } : {}) } });
+
+  // The coordinator's three agents. Alpha runs the named check on its commit; gamma keeps working until the spec lets it end.
+  const coord = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+  const lane = (title: string, steps: unknown[]) => ({ name: "spawn_agent", input: { message: `${title}\n${calls(steps)}` } });
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: ask("Start three agents.", `script:batch ${JSON.stringify([
+    lane("Lane alpha", [bash(commit("s/^line 1$/line 1 ALPHA/", "Lane alpha")), bash("sh check.sh")]),
+    lane("Lane beta", [bash(commit("s/^line 12$/line 12 BETA/", "Lane beta"))]),
+    lane("Lane gamma", [bash(`${commit("s/^line 6$/line 6 GAMMA/", "Lane gamma")} && while [ ! -e '${gate}' ]; do sleep 0.2; done`, 600_000)]),
+  ])}`) } });
+  const agentsOf = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as any[];
+  await expect.poll(async () => (await agentsOf()).filter((a) => a.status === "completed" && a.branch).length, { timeout: 90_000 }).toBe(2);
+  const by = async (title: string) => (await agentsOf()).find((a) => a.title === title)!;
+  const alpha = await by("Lane alpha"), beta = await by("Lane beta");
+  let gamma = await by("Lane gamma");
+  await expect.poll(async () => { gamma = await by("Lane gamma"); return gamma.branch ? git(repo, "log", "-1", "--format=%s", gamma.branch).trim() : ""; }, { timeout: 60_000 }).toBe("Lane gamma");
+  expect(gamma.status).toBe("running");
+  await idle(coord);
+
+  // main moves twice: a commit of its own, and one with beta's subject but another change (the board must not take it for beta's).
+  writeFileSync(join(repo, "other.md"), "other\n");
+  git(repo, "add", "other.md");
+  git(repo, "commit", "-qm", "Other work on main");
+  writeFileSync(join(repo, "other.md"), "other\nLane beta\n");
+  git(repo, "commit", "-qam", "Lane beta");
+
+  // Two reviewers: one started with `reviews` that refuses beta, one whose task names alpha's branch and approves it.
+  const betaTip = git(repo, "rev-parse", beta.branch).trim();
+  await send(coord, ask("Start two reviewers.", `script:batch ${JSON.stringify([
+    { name: "spawn_agent", input: { message: "Review it.\nscript:say Verdict: refused. Line 12 must keep its number.", agent_type: "explorer", reviews: beta.branch } },
+    { name: "spawn_agent", input: { message: `Review the branch ${alpha.branch}.\nscript:say Checked the diff.\\nLGTM, ready to land.`, agent_type: "explorer" } },
+  ])}`));
+  await expect.poll(async () => (await agentsOf()).filter((a) => a.reviews?.length && a.status === "completed").length, { timeout: 60_000 }).toBe(2);
+  const refuser = (await agentsOf()).find((a) => a.reviews?.includes(beta.branch))!;
+  await idle(coord);
+
+  // Alpha lands through the queue onto the moved main: rebased, so main holds its patch under another commit.
+  await send(coord, calls([{ name: "keel__landing_queue", input: { action: "queue", branches: [alpha.branch] } }]));
+  const entry = async () => ((await (await request.get(`/api/sessions/${coord}/landing`)).json()).entries as any[]).find((e) => e.branch === alpha.branch);
+  await expect.poll(async () => (await entry())?.state, { timeout: 90_000 }).toBe("landed");
+  const main = git(repo, "rev-parse", "main").trim();
+  const alphaTip = git(repo, "rev-parse", alpha.branch).trim();
+  expect(main).not.toBe(alphaTip);
+  expect(() => git(repo, "merge-base", "--is-ancestor", alphaTip, main)).toThrow();
+  await expect.poll(() => existsSync(join(top, "after.log")) && readFileSync(join(top, "after.log"), "utf8"), { timeout: 30_000 }).toBe(`${main}\n`);
+  await idle(coord);
+
+  // The board, as the page and the API read it.
+  const board = async () => (await (await request.get(`/api/sessions/${coord}/board?fresh=1`)).json()) as any;
+  const rowOf = (b: any, id: string) => b.rows.find((r: any) => r.id === id);
+  await expect.poll(async () => rowOf(await board(), alpha.id)?.live?.state, { timeout: 30_000 }).toBe("yes");
+  const b = await board();
+  expect(b.total).toBe(5);
+  const a = rowOf(b, alpha.id), be = rowOf(b, beta.id), g = rowOf(b, gamma.id), rv = rowOf(b, refuser.id);
+  expect(a).toMatchObject({ state: "completed", branch: alpha.branch, head: alphaTip, landed: { state: "yes", how: "patch" }, live: { state: "yes", at: main, how: "after step" } });
+  expect(a.checks).toEqual({ state: "known", passed: ["notes"], failed: [], notRun: [] });
+  expect(a.review).toMatchObject({ how: "task", verdict: "approved", line: "LGTM, ready to land.", current: true });
+  expect(be).toMatchObject({ state: "completed", head: betaTip, landed: { state: "no", missing: 1 }, live: null });
+  expect(be.checks).toEqual({ state: "known", passed: [], failed: [], notRun: ["notes"] });
+  expect(be.review).toMatchObject({ by: refuser.id, how: "named", verdict: "refused", line: "Verdict: refused. Line 12 must keep its number.", tip: betaTip, current: true });
+  expect(g).toMatchObject({ state: "running", landed: { state: "no", missing: 1 }, review: null, worktree: "here" });
+  expect(rv).toMatchObject({ branch: null, reviews: [beta.branch], landed: null });
+
+  // The coordinator reads the same rows in a few hundred tokens, with no model request behind them.
+  await send(coord, calls([{ name: "keel__work_board", input: {} }]));
+  const told = async () => { const d = await (await request.get(`/api/sessions/${coord}`)).json(); return String(JSON.stringify(d.events.filter((e: any) => e.kind === "tool_result").at(-1)?.data ?? {})); };
+  const text = await told();
+  expect(text).toContain(`${gamma.id} working \\"Lane gamma\\"`);
+  expect(text).toContain(`review refused by ${refuser.id}`);
+  expect(text).toContain(`Landed (and live where a deploy is known): ${alpha.id}.`);
+  expect(text.length).toBeLessThan(2400);
+
+  // The Board panel, at the desktop size and the phone's, in both themes.
+  await page.goto(`/s/${coord}`);
+  await openPanel(page, "board");
+  const panel = page.getByTestId("work-board");
+  const card = (id: string) => panel.locator(`[data-testid="board-row"][data-agent="${id}"]`);
+  await expect(card(alpha.id).getByTestId("board-landed")).toHaveAttribute("data-state", "yes");
+  await expect(card(alpha.id).getByTestId("board-live")).toHaveAttribute("data-state", "yes");
+  await expect(card(alpha.id).getByTestId("board-review")).toHaveAttribute("data-state", "approved");
+  await expect(card(beta.id).getByTestId("board-landed")).toHaveAttribute("data-state", "no");
+  await expect(card(beta.id).getByTestId("board-review")).toHaveAttribute("data-state", "refused");
+  await expect(card(beta.id).getByTestId("board-verdict")).toContainText("Verdict: refused. Line 12 must keep its number.");
+  await expect(card(gamma.id)).toHaveAttribute("data-state", "running");
+  await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "none");
+  await page.mouse.move(0, 0);
+  await shoot(page, "work-board-01-desktop");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(card(beta.id)).toBeVisible();
+  await shoot(page, "work-board-02-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+
+  // Gamma ends when the spec lets it.
+  writeFileSync(gate, "");
+  await expect.poll(async () => (await by("Lane gamma")).status, { timeout: 60_000 }).toBe("completed");
+});
