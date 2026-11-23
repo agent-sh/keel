@@ -6,10 +6,12 @@ import type { Deps, RouteModule } from "../app.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { toMessages } from "../../engine/turn.ts";
 import type { Session, ToolResultBlock } from "../../core/types.ts";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { contains } from "../../core/paths.ts";
-import { Hooks, hookContext, hookFailureText, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, stopBackground, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
+import { Hooks, hookContext, hookFailureText, ifHolds, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, skillHookTrust, stopBackground, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
+import { hooksOf, skillFilter, skillRun } from "../../tools/skills.ts";
+import { choiceOf, disallowedWhy } from "../../tools/skill-turn.ts";
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 import { ownerStop, replaced } from "../../core/stoppers.ts";
@@ -168,8 +170,8 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     // PreToolUse runs before every gate: a call a hook changed is judged as changed.
     async prepareTool(s, call) {
       // A session with no hook on a call's events pays one look at the hook files' text, and nothing more.
-      if (!hooks.names(s.workspace, ...CALL_EVENTS)) return;
-      const srcs = hooks.sources(s.workspace, true);
+      if (!hooks.namesFor(s, ...CALL_EVENTS)) return;
+      const srcs = hooks.sources(s.workspace, true, s.id);
       const live = hooks.events(s.workspace, srcs);
       if (!CALL_EVENTS.some((e) => live.has(e))) return;
       // (With the session: a tool only this session is offered, an editor's own server's, is found for it.)
@@ -282,7 +284,31 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
   });
 
   // The scripts the session's hooks run are the owner's alone to change.
-  if (gate) gate.hookFiles = (s) => hooks.runsFrom(s.workspace);
+  if (gate) gate.hookFiles = (s) => hooks.runsFrom(s.workspace, s.id);
+
+  // A skill's frontmatter hooks (src/integrations/hooks.ts, Skills): registered when a session
+  // invokes the skill, run while the owner trusts a repository's skill as it is now, and gone with a clear.
+  skillHookTrust.trusted = (dir) => skillFilter.ownerDigest?.(dir) ?? null;
+  skillHookTrust.digest = (dir) => skillFilter.digest?.(dir) ?? null;
+  skillHookTrust.read = (file) => { try { return hooksOf(readFileSync(file, "utf8")); } catch (e) { return { problem: `its file cannot be read: ${(e as Error).message}` }; } };
+  // A skill's disallowed-tools: refused for the rest of the turn that loaded it (src/tools/skill-turn.ts).
+  registerHooks({
+    beforeTool: async (s, call) => {
+      if (!choiceOf(s.id)?.disallowed.length) return undefined;
+      // A dispatched call (mcp_call) answers to the tool it runs too.
+      const target = call.tool.target ? await call.tool.target(call.input, s.id) : null;
+      const input = target ? target.input : call.input;
+      const names = namesOf(target?.name ?? call.tool.name, input, call.tool.name);
+      const why = disallowedWhy(s.id, names, (rule) => ifHolds(rule, names, input, call.ctx.cwd));
+      return why ? { deny: why } : undefined;
+    },
+  });
+  skillRun.hooks = (sid, skill, raw) => hooks.addSkill(sid, skill, raw);
+  const g0 = globalThis as { __keelSkillHooksOff?: () => void };
+  g0.__keelSkillHooksOff?.();
+  g0.__keelSkillHooksOff = bus.on((f) => {
+    if (f.t === "event" && f.event.kind === "compaction" && f.event.data?.mode === "clear") hooks.dropSkills(f.event.session_id);
+  });
 
   // A card is about to open: PermissionRequest. A deny refuses the call; an
   // allow answers a low-risk card and no other (the gate decides which).

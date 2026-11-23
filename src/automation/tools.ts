@@ -561,7 +561,7 @@ const notify: Tool = {
 skillRun.fork = async (ctx, skill, prompt) => {
   const fg = skill.fork?.background === false;
   try {
-    const spawn = () => agents.spawn(ctx.sessionId, { title: `/${skill.name}`, prompt, type: skill.fork?.agent, model: skill.model, ...(skill.effort ? { effort: skill.effort } : {}), background: !fg, call_id: ctx.callId }, ctx.signal);
+    const spawn = () => agents.spawn(ctx.sessionId, { title: `/${skill.name}`, prompt, type: skill.fork?.agent, model: skill.model, ...(skill.effort ? { effort: skill.effort } : {}), ...(skill.disallowed ? { disallowed: skill.disallowed } : {}), background: !fg, call_id: ctx.callId }, ctx.signal);
     const a = fg ? await blocks(ctx, spawn) : await spawn();
     if (!fg) return ok(`The skill ${skill.name} runs as agent ${a.id} (its context: fork). Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.`);
     if (a.status === "waiting") return ok(`The skill ${skill.name}'s agent ${a.id} is waiting and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);

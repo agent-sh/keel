@@ -16,6 +16,7 @@ import type { RuleKind } from "../safety/policy.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { offerToSandbox } from "../safety/sandbox-view.ts";
 import { holdChoice } from "./skill-turn.ts";
+import { yamlWithin } from "../core/yaml-bound.ts";
 
 export type Skill = {
   name: string;
@@ -36,6 +37,7 @@ export type Skill = {
   allowedTools?: string[]; // run without asking in the turn that invoked it
   model?: string;          // the model the rest of the turn runs on (with context: fork, the agent's)
   effort?: string;         // the effort the rest of the turn runs at (with context: fork, the agent's)
+  disallowed?: string[];   // tools that do not run for the rest of the turn (with context: fork, in the agent)
   fork?: { agent?: string; background: boolean }; // context: fork: it runs as an agent of its own
 };
 
@@ -160,7 +162,8 @@ offerToSandbox(() => [
 
 // A feature may hold back a repository's skill (one changed since it was trusted).
 // `ownerTrusted`: the owner pinned that repository skill himself (not on first sight).
-export const skillFilter: { allow?: (dir: string) => boolean; ownerTrusted?: (dir: string) => boolean } = {};
+// `ownerDigest`: the digest he pinned it at, while it is still that; `digest`: its digest now (src/safety/trust.ts).
+export const skillFilter: { allow?: (dir: string) => boolean; ownerTrusted?: (dir: string) => boolean; ownerDigest?: (dir: string) => string | null; digest?: (dir: string) => string | null } = {};
 
 // Whether a skill's allowed-tools may run without asking: the owner's own
 // skills and his plugins' do; a repository's only once the owner trusted that
@@ -231,6 +234,7 @@ export function discoverSkills(cwd: string): Skill[] {
       ...(listField(data["allowed-tools"]).length ? { allowedTools: listField(data["allowed-tools"]) } : {}),
       ...(typeof data.model === "string" && data.model.trim() && data.model.trim() !== "inherit" ? { model: data.model.trim() } : {}),
       ...(typeof data.effort === "string" && data.effort.trim() ? { effort: data.effort.trim().toLowerCase() } : {}),
+      ...(listField(data["disallowed-tools"]).length ? { disallowed: listField(data["disallowed-tools"]) } : {}),
       ...(data.context === "fork" ? { fork: { ...(typeof data.agent === "string" && data.agent.trim() ? { agent: data.agent.trim() } : {}), background: data.background !== false } } : {}),
     });
   };
@@ -364,12 +368,44 @@ export const skillRun: {
   grant?: (sessionId: string, rules: { kind: RuleKind; pattern: string }[], from: string, next: boolean, cmd?: string) => void;
   drop?: (sessionId: string) => void;
   fork?: (ctx: ToolContext, skill: Skill, prompt: string) => Promise<ToolOutput>;
+  // Registers the hooks of a skill's frontmatter for the session (src/integrations/hooks.ts, Skills).
+  hooks?: (sessionId: string, skill: { name: string; scope: Skill["scope"]; dir: string; file: string }, hooks: unknown) => { events: string[]; problems: string[]; notes: string[]; held?: string };
 } = {};
+
+// A skill's frontmatter hooks: nested YAML (events, matchers, handlers), which the small reader
+// above does not take, so the frontmatter is read again as YAML when it names hooks.
+export function hooksOf(text: string): { hooks?: Record<string, unknown>; problem?: string } {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!m || !/^hooks\s*:/m.test(m[1]!)) return {};
+  // Within what Keel shows of a hooks file whole (SHOWN_MAX in src/integrations/hooks.ts), aliases counted.
+  const y = yamlWithin(m[1]!, HOOKS_SHOWN_MAX);
+  if ("problem" in y) return { problem: `its frontmatter: ${y.problem}` };
+  const h = (y.value as any)?.hooks;
+  if (h === undefined || h === null || h === "") return {};
+  return h && typeof h === "object" && !Array.isArray(h) ? { hooks: h } : { problem: "its hooks are not a map of events" };
+}
+const HOOKS_SHOWN_MAX = 400_000;
+
+// The hooks a skill registers when it is invoked, said back with its text.
+function hooksSaid(skill: Skill, text: string, sessionId: string): string {
+  const { hooks, problem } = hooksOf(text);
+  if (problem) return `Its hooks are not registered: ${problem}.`;
+  if (!hooks) return "";
+  if (!skillRun.hooks) return "Its hooks are not registered: nothing here runs them.";
+  const r = skillRun.hooks(sessionId, { name: skill.name, scope: skill.scope, dir: skill.kind === "command" ? skill.file : skill.dir, file: skill.file }, hooks);
+  const out: string[] = [];
+  if (r.events.length) out.push(r.held ? `Its hooks (${r.events.join(", ")}) are kept for this session and run none yet: ${r.held}.` : `Its hooks (${r.events.join(", ")}) run for the rest of this session.`);
+  if (r.problems.length) out.push(`Of its hooks, these are not taken: ${r.problems.join("; ")}.`);
+  if (r.notes.length) out.push(`${r.notes.join("; ")}.`);
+  return out.join(" ");
+}
 
 // What a skill's frontmatter did besides its text, said with it (to the model
 // or the owner): which of its allowed-tools run without asking, and which ask.
-function said(skill: Skill, granted: string[], left: string[], held?: string): string {
+function said(skill: Skill, granted: string[], left: string[], held?: string, hooks = ""): string {
   const out: string[] = [];
+  if (!skill.fork && skill.disallowed?.length) out.push(`For the rest of this turn these do not run, as the skill's disallowed-tools say: ${skill.disallowed.join(", ")}.`);
+  if (hooks) out.push(hooks);
   if (granted.length) out.push(`For this turn these run without asking, as the skill's allowed-tools say: ${granted.join(", ")}.`);
   if (held && skill.allowedTools?.length) out.push(`Its allowed-tools (${skill.allowedTools.join(", ")}) ask as usual: ${held}.`);
   if (left.length) out.push(`Its allowed-tools Keel cannot hold the same way, so they ask as usual: ${left.join("; ")}.`);
@@ -378,7 +414,7 @@ function said(skill: Skill, granted: string[], left: string[], held?: string): s
 }
 
 // The model and effort an inline skill names for the rest of its turn (src/tools/skill-turn.ts).
-const choiceOf = (skill: Skill) => ({ ...(skill.model ? { model: skill.model } : {}), ...(skill.effort ? { effort: skill.effort } : {}) });
+const choiceOf = (skill: Skill) => ({ ...(skill.model ? { model: skill.model } : {}), ...(skill.effort ? { effort: skill.effort } : {}), ...(skill.disallowed ? { disallowed: skill.disallowed } : {}) });
 
 // The grant a skill makes, or why it makes none.
 const NOT_TRUSTED = "it is this repository's own skill, and its tools run without asking only once the owner trusts it himself (the session's Trust panel)";
@@ -398,7 +434,8 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
     return fail(`No skill named "${name}". Available: ${names.join(", ") || "none"}.`);
   }
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);
-  const { body } = frontmatter(readFileSync(skill.file, "utf8"));
+  const raw = readFileSync(skill.file, "utf8");
+  const { body } = frontmatter(raw);
   const vars = varsOf(skill, ctx.cwd, ctx.sessionId);
   const text = renderSkill(body, args ?? "", skill.arguments, vars);
   // context: fork: the skill is an agent's task, not this conversation's text.
@@ -412,7 +449,7 @@ export async function loadSkill(name: string, args: string, ctx: ToolContext): P
   const g = grantOf(skill, vars);
   if (g.rules.length) skillRun.grant!(ctx.sessionId, g.rules, skill.name, false);
   holdChoice(ctx.sessionId, choiceOf(skill), skill.name, mayGrant(skill), false);
-  const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held);
+  const extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, hooksSaid(skill, raw, ctx.sessionId));
   if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.${extra}`);
   usage?.record(skill.name);
   return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}`);
@@ -441,7 +478,8 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
   if (!skill) return { error: `no skill named ${name}` };
   if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
   if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
-  const { body } = frontmatter(readFileSync(skill.file, "utf8"));
+  const raw = readFileSync(skill.file, "utf8");
+  const { body } = frontmatter(raw);
   const vars = varsOf(skill, cwd, sessionId);
   const text = renderSkill(body, args, skill.arguments, vars);
   if (opts.count !== false) usage?.record(skill.name);
@@ -450,7 +488,7 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
     const g = grantOf(skill, vars);
     if (g.rules.length) skillRun.grant!(sessionId, g.rules, skill.name, opts.grant === "next", opts.cmd);
     holdChoice(sessionId, choiceOf(skill), skill.name, mayGrant(skill), opts.grant === "next", opts.cmd);
-    extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held);
+    extra = said(skill, g.rules.length ? g.granted : [], g.left, g.held, hooksSaid(skill, raw, sessionId));
   }
   return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}` };
 }

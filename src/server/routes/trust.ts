@@ -9,7 +9,7 @@ import { git } from "../../core/git.ts";
 import { instructionFilter } from "../../engine/turn.ts";
 import { classifyCall } from "../../safety/gate.ts";
 import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
-import { rootOf, Trust } from "../../safety/trust.ts";
+import { rootOf, skillDigest, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
@@ -46,6 +46,8 @@ export const trustRoutes: RouteModule = (deps: Deps) => {
   instructionFilter.file = (path, text) => trust.instructionText(path, text);
   skillFilter.allow = (dir) => trust.skillAllowed(dir);
   skillFilter.ownerTrusted = (dir) => trust.skillOwnerTrusted(dir);
+  skillFilter.ownerDigest = (dir) => trust.skillOwnerDigest(dir);
+  skillFilter.digest = (dir) => skillDigest(dir);
 
   const notify = (sessionId: string, text: string, kind: string) =>
     bus.emit({ t: "event", event: store.append(sessionId, "note", { kind, text }) });

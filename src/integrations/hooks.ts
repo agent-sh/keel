@@ -129,7 +129,33 @@ type Group = { matcher?: string; hooks: Handler[] };
 
 // `covers`: the files under .keel/ the pin covers besides hooks.json (what its commands run).
 // `plugin`: the installed plugin a source is (scope "plugin"): its hooks as the owner agreed to them at install.
-export type Source = { path: string; scope: "owner" | "project" | "plugin"; plugin?: string; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers: string[]; groups: Partial<Record<HookEvent, Group[]>> };
+// `skill`: the hooks of a skill's frontmatter a session invoked (Skills below): its own session's only.
+export type Source = { path: string; scope: "owner" | "project" | "plugin" | "skill"; plugin?: string; skill?: string; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers: string[]; groups: Partial<Record<HookEvent, Group[]>> };
+
+// A skill's frontmatter hooks (Claude Code: code.claude.com/docs/en/hooks, "Hooks in skills and
+// agents"): registered when the session invokes the skill, kept for the rest of the session, and
+// removed by a clear. They run through the same path as every other hook file here: the same
+// events, matchers, `if`, time limits, failures in Errors, background runs, and the gate that asks
+// before a session changes a script they run. Whose they are decides whether they run, as with
+// hook files: the owner's own skills and his plugins' run; a repository's skill runs its hooks only
+// while the owner trusts that skill himself, as it is now, which is checked again at every event
+// (`trusted`, set by the daemon from the trust pins). A repository skill's hooks are kept with the
+// skill's digest when they were read, and run only while that is the digest the owner trusts now;
+// when it is not, they are read again from the skill's file. `once`: removed after its first run
+// that ends well (exit 0), as documented; a failed, blocking or timed-out run leaves it in place.
+export type SkillHookScope = "personal" | "project" | "plugin";
+// (A command file's trust is its file; its folder is where it lives.)
+const skillFolder = (dir: string) => (dir.endsWith(".md") ? dirname(dir) : dir);
+export const skillHookTrust: {
+  // The skill's digest as it is on disk now (src/safety/trust.ts), null when it has none.
+  digest?: (dir: string) => string | null;
+  // The digest the owner trusted a repository skill at himself, while it is still that on disk; else null.
+  trusted?: (dir: string) => string | null;
+  // The frontmatter hooks the skill's file holds now (src/tools/skills.ts, hooksOf).
+  read?: (file: string) => { hooks?: unknown; problem?: string };
+} = {};
+const SKILL_ENV = new WeakMap<object, Record<string, string>>();
+const SKILL_ONCE = new WeakMap<object, { session: string; skill: string }>();
 
 export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(configDir(), "hooks.json");
 
@@ -312,13 +338,15 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
 // placeholders, ~ and $HOME filled in, a relative one from the repository's
 // root. A script in a folder of .keel/ or .claude/ stands for its whole folder
 // (what it sources). Nothing is read: a script that is not there yet is named too.
-export function scriptsOf(root: string, groups: Partial<Record<HookEvent, Group[]>>): string[] {
+// `skillDir`: a skill's hooks, whose ${CLAUDE_SKILL_DIR} (and $KEEL_SKILL_DIR) is that folder.
+export function scriptsOf(root: string, groups: Partial<Record<HookEvent, Group[]>>, skillDir?: string): string[] {
   const out = new Set<string>();
   const home = homedir();
   for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
     if (h.type !== "command") continue;
     for (const raw of [h.command, ...(h.args ?? [])].join(" ").split(/[\s;|&<>()=]+/).slice(0, 200)) {
       let w = raw.replace(/["']/g, "").replace(/\$\{?(?:KEEL|CLAUDE)_PROJECT_DIR\}?/g, root).replace(/^(?:~|\$\{?HOME\}?)(?=\/|$)/, home);
+      if (skillDir) w = w.replace(/\$\{?(?:KEEL|CLAUDE)_SKILL_DIR\}?/g, skillDir);
       if (!w.includes("/") && !/\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|php)$/.test(w)) continue;
       if (/[$`*?]/.test(w) || w.startsWith("/dev/") || w.startsWith("-")) continue;
       w = resolve(root, w);
@@ -425,6 +453,10 @@ export class Hooks {
     store.migrate("CREATE TABLE IF NOT EXISTS hook_pins (root TEXT NOT NULL, sha256 TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (root));");
     // What background hooks said that the session's next turn reads: stored when the hook ends, deleted in the
     // write that stores the note carrying it. One row per hook: a later run of it replaces words not delivered yet.
+    // The hooks of the skills each session invoked, as their frontmatter held them then.
+    store.migrate(`CREATE TABLE IF NOT EXISTS skill_hooks (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      skill TEXT NOT NULL, scope TEXT NOT NULL, dir TEXT NOT NULL, file TEXT NOT NULL, text TEXT NOT NULL, digest TEXT, ts INTEGER NOT NULL, PRIMARY KEY (session_id, skill));`);
+    if (!store.columnExists("skill_hooks", "digest")) store.migrate("ALTER TABLE skill_hooks ADD COLUMN digest TEXT");
     store.migrate(`CREATE TABLE IF NOT EXISTS hook_owed (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       event TEXT NOT NULL, hook TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS hook_owed_session ON hook_owed(session_id);`);
@@ -564,21 +596,138 @@ export class Hooks {
   // one elsewhere runs as it is on disk when its hook fires, and the owner's
   // own hooks have no pin at all. The gate asks the owner before a session
   // changes any of them.
-  runsFrom(cwd: string): string[] {
+  runsFrom(cwd: string, sessionId?: string): string[] {
     const out: string[] = [];
-    for (const t of this.texts(cwd)) {
-      const key = `${t.scope}\u0000${t.root}`;
+    const root = projectRoot(cwd);
+    // A skill's scripts are named from its own folder; the owner's own skill and a plugin's have no
+    // pin, so their folder is the owner's to change as a whole (a repository's skill folder is
+    // covered by its trust digest: a change there holds its hooks until the owner trusts it again).
+    const skills = sessionId ? this.skillRowsNow(sessionId).map((r) => ({ scope: "skill" as const, root, text: r.text, groups: r.groups, name: r.skill, dir: skillFolder(r.dir), whole: r.scope !== "project" })) : [];
+    for (const t of [...this.texts(cwd).map((x) => ({ ...x, name: "", dir: undefined, whole: false })), ...skills]) {
+      const key = `${t.scope}\u0000${t.root}\u0000${t.name}`;
       let kept = this.named.get(key);
-      if (kept?.text !== t.text) this.named.set(key, (kept = { text: t.text, files: scriptsOf(t.root, t.groups) }));
+      if (kept?.text !== t.text) this.named.set(key, (kept = { text: t.text, files: scriptsOf(t.root, t.groups, t.dir) }));
       out.push(...kept.files);
+      if (t.whole && t.dir && kept.files.length) out.push(t.dir);
     }
+    if (this.named.size > 2_000) this.named.delete(this.named.keys().next().value!);
     return out;
   }
 
   // `run`: for an event, which needs only what can run (a file with no pin is left out unread).
-  sources(cwd: string, run = false): Source[] {
+  // `sessionId`: with the hooks of the skills that session invoked.
+  sources(cwd: string, run = false, sessionId?: string): Source[] {
     const root = projectRoot(cwd);
-    return [this.ownerSource(root), this.projectSource(root, run), ...this.pluginSources(root)].filter((s) => s !== undefined);
+    return [this.ownerSource(root), this.projectSource(root, run), ...this.pluginSources(root), ...(sessionId ? this.skillSources(sessionId, root) : [])].filter((s) => s !== undefined);
+  }
+
+  // Whether any hook file of the folder, or a skill the session invoked, names one of these events.
+  namesFor(s: Session, ...events: HookEvent[]): boolean {
+    return this.names(s.workspace, ...events) || this.skillRowsNow(s.id).some((r) => events.some((e) => r.groups[e]?.length));
+  }
+
+  // --- the hooks of skills a session invoked ---------------------------------
+  private skills = new Map<string, { skill: string; scope: SkillHookScope; dir: string; file: string; text: string; digest: string | null; groups: Source["groups"] }[]>();
+  private skillRows(sessionId: string) {
+    let rows = this.skills.get(sessionId);
+    if (rows) return rows;
+    rows = this.store.db.query<{ skill: string; scope: SkillHookScope; dir: string; file: string; text: string; digest: string | null }, [string]>("SELECT skill, scope, dir, file, text, digest FROM skill_hooks WHERE session_id = ? ORDER BY ts").all(sessionId)
+      .map((r) => ({ ...r, groups: this.skillGroups(sessionId, r) }));
+    this.skills.set(sessionId, rows);
+    if (this.skills.size > 2_000) this.skills.delete(this.skills.keys().next().value!);
+    return rows;
+  }
+  private skillGroups(sessionId: string, r: { skill: string; scope: SkillHookScope; dir: string; text: string }): Source["groups"] {
+    const { groups } = parseHooks(r.text);
+    const dir = skillFolder(r.dir);
+    const env: Record<string, string> = { CLAUDE_SKILL_DIR: dir, KEEL_SKILL_DIR: dir };
+    for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
+      SKILL_ENV.set(h, env);
+      if ((h as { once?: unknown }).once === true) SKILL_ONCE.set(h, { session: sessionId, skill: r.skill });
+    }
+    return groups;
+  }
+
+  // A session invoked a skill whose frontmatter has hooks: they are registered for the rest of the
+  // session (a second invocation registers the skill's hooks as they are now, in place of the
+  // first's). What is wrong with them, what never runs here, and why a repository's skill runs none
+  // yet, are said back, for the skill's result.
+  addSkill(sessionId: string, skill: { name: string; scope: SkillHookScope; dir: string; file: string }, hooks: unknown): { events: string[]; problems: string[]; notes: string[]; held?: string } {
+    // A repository's skill: its hooks are read again here between two digests of the skill, so the
+    // digest kept with them is the one of the content they came from (null when it changed meanwhile:
+    // they are read again at the next event).
+    let digest: string | null = null;
+    if (skill.scope === "project") {
+      const d0 = skillHookTrust.digest?.(skill.dir) ?? null;
+      const again = skillHookTrust.read?.(skill.file);
+      if (again?.problem) return { events: [], problems: [again.problem], notes: [] };
+      if (again) hooks = again.hooks ?? {};
+      digest = d0 && d0 === (skillHookTrust.digest?.(skill.dir) ?? null) ? d0 : null;
+    }
+    const text = JSON.stringify({ hooks });
+    if (text.length > SHOWN_MAX) return { events: [], problems: [`its hooks are longer than ${SHOWN_MAX} characters`], notes: [] };
+    const { groups, problems, notes } = parseHooks(text);
+    const events = Object.keys(groups);
+    if (!events.length) return { events, problems, notes };
+    const held = skill.scope === "project" && !(digest && skillHookTrust.trusted?.(skill.dir) === digest)
+      ? "it is this repository's own skill, and its hooks run only while the owner trusts it himself, as it is now (the session's Trust panel)" : undefined;
+    this.store.db.query("INSERT INTO skill_hooks (session_id, skill, scope, dir, file, text, digest, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, skill) DO UPDATE SET scope = excluded.scope, dir = excluded.dir, file = excluded.file, text = excluded.text, digest = excluded.digest, ts = excluded.ts")
+      .run(sessionId, skill.name, skill.scope, skill.dir, skill.file, text, digest, Date.now());
+    this.skills.delete(sessionId);
+    return { events, problems, notes, ...(held ? { held } : {}) };
+  }
+
+  // The session's skill rows, a repository skill's brought up to what the owner trusts now: hooks
+  // kept from another content than the one he trusts are read again from the skill's file, and
+  // taken only when the skill is still that content after the read. They never run otherwise.
+  private skillRowsNow(sessionId: string) {
+    const rows = this.skillRows(sessionId);
+    for (const r of rows) {
+      if (r.scope !== "project") continue;
+      const t = skillHookTrust.trusted?.(r.dir) ?? null;
+      if (!t || t === r.digest) continue;
+      const again = skillHookTrust.read?.(r.file);
+      if (!again || skillHookTrust.digest?.(r.dir) !== t) continue;
+      const text = JSON.stringify({ hooks: again.problem ? {} : again.hooks ?? {} });
+      if (text.length > SHOWN_MAX) continue;
+      r.text = text;
+      r.digest = t;
+      r.groups = this.skillGroups(sessionId, r);
+      this.store.db.query("UPDATE skill_hooks SET text = ?, digest = ? WHERE session_id = ? AND skill = ?").run(text, t, sessionId, r.skill);
+    }
+    return rows;
+  }
+
+  // A clear: the session's skill hooks are gone with what the skills said (as /clear does in Claude Code).
+  dropSkills(sessionId: string) {
+    this.store.db.query("DELETE FROM skill_hooks WHERE session_id = ?").run(sessionId);
+    this.skills.delete(sessionId);
+  }
+
+  // The hooks of the skills the session invoked, each a source of its own. A repository's skill's
+  // are active only while the owner trusts that skill as it is on disk now.
+  private skillSources(sessionId: string, root: string): Source[] {
+    return this.skillRowsNow(sessionId).map((r) => {
+      const active = r.scope !== "project" || (!!r.digest && skillHookTrust.trusted?.(r.dir) === r.digest);
+      const events = Object.fromEntries(Object.entries(r.groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
+      return { path: r.file, scope: "skill" as const, skill: r.skill, root, text: r.text, sha256: sha(r.text), active, events, problems: active ? [] : ["the skill changed since the owner trusted it, or he no longer does"], covers: [], groups: r.groups };
+    });
+  }
+
+  // A `once` hook of a skill ran well: it is taken out of the skill's hooks.
+  private ranOnce(h: Handler) {
+    const at = SKILL_ONCE.get(h);
+    if (!at) return;
+    SKILL_ONCE.delete(h);
+    const row = this.skillRows(at.session).find((r) => r.skill === at.skill);
+    if (!row) return;
+    for (const [e, list] of Object.entries(row.groups)) {
+      const kept = (list ?? []).map((g) => ({ ...g, hooks: g.hooks.filter((x) => x !== h) })).filter((g) => g.hooks.length);
+      if (kept.length) row.groups[e as HookEvent] = kept; else delete row.groups[e as HookEvent];
+    }
+    const text = JSON.stringify({ hooks: Object.fromEntries(Object.entries(row.groups).map(([e, list]) => [e, (list ?? []).map((g) => ({ ...(g.matcher !== undefined ? { matcher: g.matcher } : {}), hooks: g.hooks }))])) });
+    row.text = text;
+    this.store.db.query("UPDATE skill_hooks SET text = ? WHERE session_id = ? AND skill = ?").run(text, at.session, at.skill);
   }
 
   // The hooks of each enabled plugin Keel installed: its record holds them as
@@ -628,8 +777,8 @@ export class Hooks {
   async run(event: HookEvent, s: Session, payload: Record<string, unknown> | (() => Record<string, unknown>), match?: string[], srcs?: Source[]): Promise<HookResult> {
     const res: HookResult = { context: [], ran: 0 };
     // An event no file names reads no covered script: the events of every model request would otherwise read them all each time.
-    if (!srcs && !this.names(s.workspace, event)) return res;
-    srcs ??= this.sources(s.workspace, true);
+    if (!srcs && !this.namesFor(s, event)) return res;
+    srcs ??= this.sources(s.workspace, true, s.id);
     // Each matching handler with the file it is in.
     const found: { h: Handler; path: string }[] = [];
     for (const src of srcs) if (src.active) for (const g of src.groups[event] ?? []) if (matches(g.matcher, match)) for (const h of g.hooks) found.push({ h, path: src.path });
@@ -673,6 +822,7 @@ export class Hooks {
         continue;
       }
       if (o.code !== 0) { fails(o.code === -1 ? "it could not be started" : `exit ${o.code}`); continue; }
+      this.ranOnce(h);
       const text = o.stdout.trim();
       if (!text) continue;
       let j: any;
@@ -842,11 +992,12 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   // With `args` the program runs as given, no shell: each argument is one word, and the project folder's placeholders are filled in.
   const own = PLUGIN_ENV.get(h);
   const opts = own ? hookOptions(own.plugin) : { text: {}, env: {} };
-  const place = (x: string) => x.replace(/\$\{(?:KEEL|CLAUDE)_PROJECT_DIR\}/g, root);
+  const skill = SKILL_ENV.get(h);
+  const place = (x: string) => x.replace(/\$\{(?:KEEL|CLAUDE)_PROJECT_DIR\}/g, root).replace(/\$\{(?:KEEL|CLAUDE)_SKILL_DIR\}/g, (m) => skill?.CLAUDE_SKILL_DIR ?? m);
   const argv = h.args ? [place(h.command), ...h.args.map((a) => (own ? substitute(place(a), opts.text) : place(a)))] : ["bash", "-c", h.command];
   let p: ReturnType<typeof Bun.spawn>;
   try {
-    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, ...own?.env, ...opts.env, KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
+    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, ...own?.env, ...opts.env, ...skill, KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
   } catch (e) {
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }

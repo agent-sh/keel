@@ -42,6 +42,9 @@ import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow
 import type { NowLine } from "./now-line.ts";
 import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
 import { agentTitle } from "./agent-title.ts";
+import { yamlWithin } from "../core/yaml-bound.ts";
+import { ifHolds } from "../integrations/hooks.ts";
+import { choiceOf as turnChoiceOf } from "../tools/skill-turn.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. The child gets the same system
@@ -125,6 +128,9 @@ export type AgentDef = {
   readOnly?: boolean;
   tools?: string[];
   disallowed?: string[];
+  // A skill's disallowed-tools the agent was started under (with context: fork, or in a turn the skill
+  // narrowed): unlike disallowedTools, a rule with a pattern takes only what it matches (src/tools/skill-turn.ts).
+  skillDisallowed?: string[];
   model?: string;
   timeoutMins?: number;
   permissionMode?: string;
@@ -320,15 +326,18 @@ export function setLimit(parentId: string, limit: number | null) {
 
 // --- definitions -----------------------------------------------------------
 
+// The most of an agent definition file read: the budget of repository instructions.
+const AGENT_FILE_MAX = 32 * 1024;
+
 // The frontmatter as YAML (Claude Code's fields include lists of objects:
 // mcpServers, hooks), else read line by line as before.
 function frontMatter(text: string): { meta: Record<string, any>; body: string } | undefined {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return undefined;
-  try {
-    const y = Bun.YAML.parse(m[1]!);
-    if (y && typeof y === "object" && !Array.isArray(y)) return { meta: y as Record<string, any>, body: m[2]!.trim() };
-  } catch {}
+  // (Its aliases counted: a definition stands for no more than its file's bound, AGENT_FILE_MAX.)
+  const r = yamlWithin(m[1]!, AGENT_FILE_MAX);
+  const y = "value" in r ? r.value : undefined;
+  if (y && typeof y === "object" && !Array.isArray(y)) return { meta: y as Record<string, any>, body: m[2]!.trim() };
   const meta: Record<string, string | string[]> = {};
   let key = "";
   for (const line of m[1]!.split(/\r?\n/)) {
@@ -424,7 +433,7 @@ function readFiles(files: string[], source: string, plugin = false): AgentDef[] 
   for (const p of files) {
     const f = basename(p);
     try {
-      if (statSync(p).size > 32 * 1024) continue; // the budget of repository instructions
+      if (statSync(p).size > AGENT_FILE_MAX) continue;
       const fm = frontMatter(readFileSync(p, "utf8"));
       if (!fm) continue;
       const name = String(fm.meta.name ?? f.slice(0, -3));
@@ -721,6 +730,7 @@ export type SpawnInput = {
   branch?: string; // Keel's own: an existing branch its worktree has out (it takes over a gone agent's work); never from a tool's input
   writes?: unknown; // the folders, files or globs it may write (src/automation/write-asks.ts); a reviewer gets its own folders
   effort?: string; // over its definition's (a skill's with context: fork); not in any tool's schema
+  disallowed?: string[]; // added to its definition's (a skill's disallowed-tools with context: fork); not in any tool's schema
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -902,7 +912,11 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   if (def.memory && placed) left.push(`its ${def.memory} memory folder: it is on this machine, and the agent's tools run on ${placed.name}`);
   if (def.memory && !placed && !mem) left.push(`its ${def.memory} memory folder: auto memory is turned off in Claude Code's settings`);
   // (It keeps its folder with Read, Write and Edit, as in Claude Code, whatever its tools list names.)
-  const stored: AgentDef = memory && def.tools ? { ...def, tools: [...new Set([...def.tools, "Read", "Write", "Edit"])] } : def;
+  const kept: AgentDef = memory && def.tools ? { ...def, tools: [...new Set([...def.tools, "Read", "Write", "Edit"])] } : def;
+  // What a skill took out of the turn that starts it (disallowed-tools) is out of the agent's whole life too: it was
+  // started under that skill, and a skill only narrows what runs (src/tools/skill-turn.ts).
+  const narrowed = [...(input.disallowed ?? []), ...(turnChoiceOf(parentId)?.disallowed.map((d) => d.rule) ?? [])];
+  const stored: AgentDef = narrowed.length ? { ...kept, skillDisallowed: [...new Set([...(kept.skillDisallowed ?? []), ...narrowed])] } : kept;
   const preloaded: string[] = [];
   let bytes = 0;
   for (const name of def.skills ?? []) {
@@ -2339,6 +2353,11 @@ export function gate(sessionId: string, toolName: string, input?: any, names: st
     const whole = e !== toolOfEntry(e) ? `; its definition's disallowedTools entry ${e} takes the whole tool away, as in Claude Code` : "";
     return `${names[0]} is not allowed for this agent${n !== names[0] ? ` (${n} is not)` : ""}${whole}.`;
   }
+  // A skill's disallowed-tools the agent was started under: a plain name takes the tool, a rule with a
+  // pattern (`Bash(git push *)`) holds as a hook's `if` does, a shell command or a file's path.
+  const ws = () => D().store.session(sessionId)?.workspace ?? homedir();
+  const rule = def.skillDisallowed?.find((r) => /^[\w.-]+$/.test(r.trim()) ? names.some((n) => n.toLowerCase() === r.trim().toLowerCase()) : ifHolds(r, names, input, ws()));
+  if (rule) return `${names[0]} is not allowed for this agent: the skill it was started under disallows ${rule}.`;
   return undefined;
 }
 

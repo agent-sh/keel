@@ -12,6 +12,7 @@ import * as agents from "./agents.ts";
 import * as leftovers from "./leftovers.ts";
 import { deliver, dropPending, flush, isPending, setDeps } from "./core.ts";
 import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
+import { dropChoice, holdChoice } from "../tools/skill-turn.ts";
 import * as waits from "./waits.ts";
 import { bindBefore, latest } from "../checks/before-run.ts";
 import { bindLedger } from "../checks/ledger.ts";
@@ -1616,5 +1617,19 @@ test("a spawn's write scope: its writes, a reviewer's default, a scoped agent's 
     rmSync(join(folder, "code-review.md"), { force: true });
     scopes.of = undefined;
     scopes.ask = undefined;
+  }
+});
+
+test("an agent started in a turn a skill narrowed keeps the skill's disallowed-tools, patterns too", async () => {
+  holdChoice(parent.id, { disallowed: ["WebFetch", "Bash(git push *)"] }, "careful", false, false);
+  try {
+    const a = await spawn();
+    expect(agents.gate(a.session_id, "WebFetch")).toContain("not allowed for this agent");
+    expect(agents.gate(a.session_id, "Bash", { command: "git push origin main" }, ["Bash"])).toContain("Bash(git push *)");
+    expect(agents.gate(a.session_id, "Bash", { command: "git status" }, ["Bash"])).toBeUndefined();
+    end(a, "end_turn");
+    await settled();
+  } finally {
+    dropChoice(parent.id);
   }
 });

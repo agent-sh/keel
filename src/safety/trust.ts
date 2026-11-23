@@ -11,6 +11,7 @@ import { contains, realOf } from "../core/paths.ts";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import type { Store } from "../core/store.ts";
+import { timed } from "../admin/stall.ts";
 
 export type TrustKind = "instructions" | "skill";
 export type ProjectFile = {
@@ -43,11 +44,39 @@ export function rootOf(dir: string): string | null {
   }
 }
 
+// A file's SHA-256, read again only when the file is no longer the one hashed:
+// another inode, size, or change time (nanoseconds). The change time is the
+// kernel's (a write or a utime call sets it to now), so a file edited and given
+// its old modification time back is read again. A file changed in the last two
+// seconds is not kept (a write in the same tick as the hash would look the same,
+// as git's racily clean entries). Bounded: the oldest go first.
+// (`hashing`: how many files were read, and the window, for the tests.)
+const HASHED_MAX = 20_000;
+const hashed = new Map<string, { key: string; sha: string }>();
+export const hashing = { reads: 0, racyMs: 2_000 };
+function fileSha(p: string): string {
+  const st = statSync(p, { bigint: true });
+  const key = `${st.dev}:${st.ino}:${st.size}:${st.ctimeNs}:${st.mtimeNs}`;
+  const kept = hashed.get(p);
+  if (kept?.key === key) return kept.sha;
+  hashing.reads++;
+  const h = sha(readFileSync(p));
+  hashed.delete(p);
+  if (Date.now() - Number(st.ctimeMs) >= hashing.racyMs) hashed.set(p, { key, sha: h });
+  if (hashed.size > HASHED_MAX) hashed.delete(hashed.keys().next().value!);
+  return h;
+}
+
 // A skill folder's digest: each file's path and content; a link's path, where
 // it points and the content it lands on, so retargeting a link changes the
 // digest. A link that lands outside the skill is named in `outside`: such a
-// skill does not load (what it runs is not the skill's to pin).
+// skill does not load (what it runs is not the skill's to pin). Hook events
+// ask for it (a repository skill's hooks run only while it is trusted as it is
+// now), so a file's content is hashed again only when it changed (fileSha).
 function skillScan(dir: string): { digest: string; outside: string[] } | null {
+  return timed(() => `trust: scan skill ${relative(homedir(), dir)}`, () => scanSkill(dir));
+}
+function scanSkill(dir: string): { digest: string; outside: string[] } | null {
   if (!existsSync(join(dir, "SKILL.md"))) return null;
   const parts: string[] = [];
   const outside: string[] = [];
@@ -61,14 +90,14 @@ function skillScan(dir: string): { digest: string; outside: string[] } | null {
       let st;
       try { st = lstatSync(p); } catch { continue; }
       if (st.isDirectory()) walk(p, depth + 1);
-      else if (st.isFile() && st.size <= 2_000_000) parts.push(`${relative(dir, p)}\0${sha(readFileSync(p))}`);
+      else if (st.isFile() && st.size <= 2_000_000) parts.push(`${relative(dir, p)}\0${fileSha(p)}`);
       else if (st.isSymbolicLink()) {
         let target = "";
         try { target = readlinkSync(p); } catch {}
         const lands = realOf(p);
         if (!contains(top, lands)) { outside.push(relative(dir, p)); parts.push(`${relative(dir, p)}\0link\0${target}\0outside`); continue; }
         let body = "missing";
-        try { const t = statSync(lands); body = t.isFile() && t.size <= 2_000_000 ? sha(readFileSync(lands)) : t.isDirectory() ? "dir" : "large"; } catch {}
+        try { const t = statSync(lands); body = t.isFile() && t.size <= 2_000_000 ? fileSha(lands) : t.isDirectory() ? "dir" : "large"; } catch {}
         parts.push(`${relative(dir, p)}\0link\0${target}\0${body}`);
       }
     }
@@ -77,9 +106,14 @@ function skillScan(dir: string): { digest: string; outside: string[] } | null {
   return { digest: sha(parts.join("\n")), outside };
 }
 
+// A skill's digest as it is on disk now: a command file's content, a folder's scan.
+export function skillDigest(dir: string): string | null {
+  return dir.endsWith(".md") ? commandDigest(dir) : skillScan(dir)?.digest ?? null;
+}
+
 // A command file (<repo>/.claude/commands/<name>.md): its content.
 function commandDigest(p: string): string | null {
-  try { return statSync(p).isFile() ? sha(readFileSync(p)) : null; } catch { return null; }
+  try { const st = statSync(p); return st.isFile() ? fileSha(p) : null; } catch { return null; }
 }
 
 export class Trust {
@@ -201,10 +235,15 @@ export class Trust {
   // skill may grant beyond its text (its allowed-tools) needs that. A pin made
   // on first sight (auto) lets a skill load, never grant itself tools.
   skillOwnerTrusted(dir: string): boolean {
-    const digest = dir.endsWith(".md") ? commandDigest(dir) : skillScan(dir)?.digest;
-    if (!digest) return false;
+    return this.skillOwnerDigest(dir) !== null;
+  }
+  // The digest the owner pinned a project skill at himself, while the skill
+  // is still that on disk; else null.
+  skillOwnerDigest(dir: string): string | null {
+    const digest = skillDigest(dir);
+    if (!digest) return null;
     const p = this.pin(dir);
-    return !!p && !p.auto && p.sha === digest;
+    return p && !p.auto && p.sha === digest ? digest : null;
   }
 
   // The owner trusts a file of `cwd` at the content shown to them (the digest they saw).

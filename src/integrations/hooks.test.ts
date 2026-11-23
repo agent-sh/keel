@@ -4,7 +4,8 @@ import { chmodSync, cpSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFil
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Store } from "../core/store.ts";
-import { coveredFiles, Hooks, namesOf, parseHooks, pinKey } from "./hooks.ts";
+import { coveredFiles, Hooks, namesOf, parseHooks, pinKey, scriptsOf, skillHookTrust } from "./hooks.ts";
+import { hooksOf } from "../tools/skills.ts";
 
 // Every folder a test makes is removed when the file's tests are over.
 const made: string[] = [];
@@ -228,4 +229,59 @@ test("a pinned repository file is decided from what is on disk at each event, wh
 test("a folder that is not on this machine is its own pin key, and asking does not throw", () => {
   const gone = join(tmpdir(), `keel-hooks-gone-${process.pid}-${Date.now()}`);
   expect(pinKey(gone)).toBe(gone);
+});
+
+test("a repository skill's hooks run as the content the owner trusted, never as an earlier one", () => {
+  const repo = scratch("keel-skill-hooks-");
+  mkdirSync(join(repo, ".git"));
+  const dir = join(repo, ".agents/skills/s");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "SKILL.md");
+  const skill = (cmd: string) => `---\nname: s\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: ${cmd}\n---\nBody\n`;
+  writeFileSync(file, skill("echo A"));
+  const store = new Store(scratch("keel-skill-hooks-state-"));
+  const h = new Hooks(store);
+  const s = store.createSession({ model: "fixture:m", workspace: repo });
+  // What the trust pins say: the digest is the file's text; the owner trusts what `trusted` holds.
+  let trusted: string | null = null;
+  const digest = () => readFileSync(file, "utf8");
+  skillHookTrust.digest = () => digest();
+  skillHookTrust.trusted = () => (trusted === digest() ? trusted : null);
+  skillHookTrust.read = (f) => hooksOf(readFileSync(f, "utf8"));
+  try {
+    // Invoked while not trusted: kept, and runs none.
+    const r = h.addSkill(s.id, { name: "s", scope: "project", dir, file }, hooksOf(readFileSync(file, "utf8")).hooks);
+    expect(r.held).toBeDefined();
+    const src = () => h.sources(repo, true, s.id).find((x) => x.scope === "skill")!;
+    expect(src().active).toBe(false);
+    // The file becomes B and the owner trusts B: B runs, not the A read at invocation.
+    writeFileSync(file, skill("echo B"));
+    trusted = digest();
+    expect(src().active).toBe(true);
+    expect(src().text).toContain("echo B");
+    expect(src().text).not.toContain("echo A");
+    // Changed again and not trusted: none run.
+    writeFileSync(file, skill("echo C"));
+    expect(src().active).toBe(false);
+  } finally {
+    delete skillHookTrust.digest;
+    delete skillHookTrust.trusted;
+    delete skillHookTrust.read;
+  }
+});
+
+test("a skill's hook scripts named through its folder's variable are the owner's to change", () => {
+  const home = scratch("keel-skill-dir-");
+  const dir = join(home, "skills/s");
+  mkdirSync(dir, { recursive: true });
+  const store = new Store(scratch("keel-skill-dir-state-"));
+  const h = new Hooks(store);
+  const ws = scratch("keel-skill-dir-ws-");
+  const s = store.createSession({ model: "fixture:m", workspace: ws });
+  h.addSkill(s.id, { name: "s", scope: "personal", dir, file: join(dir, "SKILL.md") }, { PreToolUse: [{ hooks: [{ type: "command", command: "bash ${CLAUDE_SKILL_DIR}/check.sh" }] }] });
+  const files = h.runsFrom(ws, s.id);
+  expect(files).toContain(join(dir, "check.sh"));
+  // The owner's own skill has no pin: its whole folder (what the script sources) is his.
+  expect(files).toContain(dir);
+  expect(scriptsOf(ws, { Stop: [{ hooks: [{ type: "command", command: "$KEEL_SKILL_DIR/x.sh" }] }] } as any, dir)).toEqual([join(dir, "x.sh")]);
 });

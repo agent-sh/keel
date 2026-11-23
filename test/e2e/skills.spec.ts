@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
@@ -251,3 +251,91 @@ test("skills: an untrusted repository skill never raises the turn's effort", asy
   }
 });
 
+// Feature: a skill's disallowed-tools and hooks (Claude Code's skills and
+// hooks references). Its disallowed-tools refuse those tools for the rest of
+// the turn that loaded it, and the next turn has them again. Its hooks are
+// registered when it loads and run on later events of the session, through
+// the same path as the owner's own hooks; a `once` hook runs one time. A
+// repository's skill registers its hooks and runs none of them until the
+// owner trusts it himself.
+test("skills: disallowed-tools for the turn, hooks for the session", async ({ request }) => {
+  test.skip(!SCRIPTED, "drives the calls with the scripted model");
+  const tag = Date.now().toString(36);
+  const home = process.env.HOME!;
+  const base = join(process.env.KEEL_DEV_DIR ?? `${home}/.cache/keel-work/bun/dev-tools`, `skills-hooks-${tag}`);
+  const ws = join(base, "ws"), repo = join(base, "repo");
+  mkdirSync(ws, { recursive: true });
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  writeFileSync(join(ws, "notes.txt"), "notes\n");
+  const every = join(base, "every.log"), once = join(base, "once.log"), theirs = join(base, "theirs.log");
+  const mine = join(home, ".claude/skills");
+  const name = `guard-${tag}`;
+  const write = (root: string, n: string, front: string) => {
+    mkdirSync(join(root, n), { recursive: true });
+    writeFileSync(join(root, n, "SKILL.md"), `---\nname: ${n}\ndescription: Test skill ${n}\n${front}---\nGo on with the task.\n`);
+  };
+  write(mine, name, [
+    "disallowed-tools: Read",
+    "hooks:",
+    "  PreToolUse:",
+    "    - matcher: Bash",
+    "      hooks:",
+    "        - type: command",
+    `          command: echo ran >> ${every}`,
+    "        - type: command",
+    `          command: echo ran >> ${once}`,
+    "          once: true",
+    "",
+  ].join("\n"));
+  write(join(repo, ".claude/skills"), `theirs-${tag}`, ["hooks:", "  PreToolUse:", "    - hooks:", "        - type: command", `          command: echo ran >> ${theirs}`, ""].join("\n"));
+  const lines = (f: string) => (existsSync(f) ? readFileSync(f, "utf8").trim().split("\n").filter(Boolean).length : 0);
+  try {
+    const open = async (folder: string) => {
+      const { session } = await (await request.post("/api/sessions", { data: { workspace: folder, model: HAIKU } })).json();
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+      return session.id as string;
+    };
+    const events = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
+    const results = async (id: string) => (await events(id)).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results.map((r: any) => JSON.stringify(r.content)));
+    const ends = async (id: string) => (await events(id)).filter((e) => e.kind === "turn_end").length;
+    const send = (id: string, c: unknown[]) => request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify(c)}` } });
+    const read = { name: "Read", input: { file_path: join(ws, "notes.txt") } };
+    const bash = { name: "Bash", input: { command: "echo hello" } };
+
+    const id = await open(ws);
+    await send(id, [{ name: "Skill", input: { skill: name } }, read, bash]);
+    await expect.poll(() => ends(id), { timeout: 60_000 }).toBe(1);
+    let r = await results(id);
+    expect(r[0]).toContain("these do not run, as the skill's disallowed-tools say: Read");
+    expect(r[0]).toContain("Its hooks (PreToolUse) run for the rest of this session.");
+    expect(r[1]).toContain(`Read is not allowed while the skill ${name} is active`);
+    expect(r[2]).toContain("hello");
+    expect([lines(every), lines(once)]).toEqual([1, 1]);
+    // The next turn: Read runs again, and the skill's hooks still run (the once hook does not).
+    await send(id, [read, bash]);
+    await expect.poll(() => ends(id), { timeout: 60_000 }).toBe(2);
+    r = await results(id);
+    expect(r.at(-2)).toContain("notes");
+    expect([lines(every), lines(once)]).toEqual([2, 1]);
+    // A clear takes the skill's hooks away with what it said.
+    expect((await request.post(`/api/sessions/${id}/clear`)).ok()).toBe(true);
+    await send(id, [bash]);
+    await expect.poll(() => ends(id), { timeout: 60_000 }).toBe(3);
+    expect(lines(every)).toBe(2);
+
+    // A repository's skill: its hooks are kept and run none until the owner trusts it.
+    const rid = await open(repo);
+    await send(rid, [{ name: "Skill", input: { skill: `theirs-${tag}` } }, bash]);
+    await expect.poll(() => ends(rid), { timeout: 60_000 }).toBe(1);
+    expect((await results(rid))[0]).toContain("run none yet: it is this repository's own skill");
+    expect(lines(theirs)).toBe(0);
+    const pinned = (await (await request.get(`/api/trust?cwd=${encodeURIComponent(repo)}`)).json()).files.find((f: any) => f.path.endsWith(`theirs-${tag}`));
+    expect((await request.post("/api/trust", { data: { cwd: repo, files: [{ path: pinned.path, sha256: pinned.sha256 }] } })).ok()).toBe(true);
+    await send(rid, [bash]);
+    await expect.poll(() => ends(rid), { timeout: 60_000 }).toBe(2);
+    expect(lines(theirs)).toBe(1);
+  } finally {
+    rmSync(join(mine, name), { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
+  }
+});
