@@ -20,10 +20,10 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
   const repo = join(DEV, `checks-${Date.now()}`);
   mkdirSync(join(repo, ".keel"), { recursive: true });
   // The unit check counts its runs in an ignored file, so counting does not change the tree.
-  writeFileSync(join(repo, ".gitignore"), "*.log\n");
+  writeFileSync(join(repo, ".gitignore"), "*.log\nnested/\n");
   // (The ledger is kept by content: a repository of this run's own content has no runs of an earlier run.)
   writeFileSync(join(repo, "README.md"), `# ${repo}\n`);
-  writeFileSync(join(repo, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "sh unit.sh", args: true }, lint: "sh lint.sh" }, wait: ["sh gate.sh"] }, null, 2));
+  writeFileSync(join(repo, ".keel", "checks.json"), JSON.stringify({ checks: { unit: { run: "sh unit.sh", args: true }, lint: "sh lint.sh", any: { run: "sh any.sh", dir: "*" } }, wait: ["sh gate.sh"] }, null, 2));
   writeFileSync(join(repo, "unit.sh"), "echo ran >> runs.log\necho ' 3 pass'\necho ' 0 fail'\n");
   // A wait for room: it notes each time it runs, and gives up with the status it is given.
   writeFileSync(join(repo, "gate.sh"), "echo waited >> gates.log\nexit \"$1\"\n");
@@ -33,11 +33,19 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
   git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "first");
   const mainCommit = git(repo, "rev-parse", "HEAD");
   const mainTree = git(repo, "rev-parse", "HEAD^{tree}");
+  // A repository of its own inside it (ignored there), with a check that runs in any folder.
+  const nested = join(repo, "nested");
+  mkdirSync(nested);
+  writeFileSync(join(nested, "any.sh"), "echo ' 1 pass'\n");
+  git(nested, "init", "-q", "-b", "main");
+  git(nested, "add", "-A");
+  git(nested, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "nested");
+  const nestedTree = git(nested, "rev-parse", "HEAD^{tree}");
 
   const { session } = await (await request.post("/api/sessions", { data: { workspace: repo } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   const named = await (await request.get(`/api/checks/named?cwd=${encodeURIComponent(repo)}`)).json();
-  expect(named).toMatchObject({ source: "file", checks: [{ name: "unit", args: true }, { name: "lint", args: false }] });
+  expect(named).toMatchObject({ source: "file", checks: [{ name: "unit", args: true }, { name: "lint", args: false }, { name: "any" }] });
   await page.goto(`/s/${session.id}`);
   const idle = async (id = session.id) => {
     const d = await (await request.get(`/api/sessions/${id}`)).json();
@@ -57,6 +65,15 @@ test("check ledger: a pass on the same tree is answered, a red check is red on m
     { name: "unit", command: "sh unit.sh --in-background", result: "pass", pass: 3, tree: mainTree },
     { name: "lint", result: "fail", exit: 1, fail: 2, tree: mainTree, head: mainCommit },
   ]);
+
+  // 1b. What a check's own status is not known from is not a pass: a red check filtered inside a group
+  // (whose status is its filter's), so the plain run after it runs and is red. A check after `||` that
+  // did not run is not recorded. A check after a cd into another repository is on that one's tree.
+  await page.getByTestId("composer").fill(script([bash("(sh lint.sh 2>&1 | tail -1) && echo z"), bash("sh lint.sh"), bash("sh unit.sh --twice || sh unit.sh --twice"), bash("true && cd nested && sh any.sh; cd ..")]));
+  await page.keyboard.press("Enter");
+  await expect.poll(() => idle(), { timeout: 60_000 }).toBe(true);
+  await expect.poll(async () => (await ofMain()).length, { timeout: 30_000 }).toBeGreaterThanOrEqual(6);
+  expect((await ofMain()).slice(0, -2).map((r: any) => `${r.name}:${r.result}:${r.tree === nestedTree ? "nested" : r.tree === mainTree ? "main" : r.tree}`).reverse()).toEqual(["lint:unknown:main", "lint:fail:main", "unit:pass:main", "any:pass:nested"]);
 
   // 2. An agent in its own worktree: the unit check twice on one tree (the second is answered), an edit,
   // the unit check again (it runs), then the lint check, red on main too. Its report carries the proof.

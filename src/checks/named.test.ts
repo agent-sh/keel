@@ -128,8 +128,9 @@ test("a leading assignment and a cd into the repository, from a folder outside i
 
 test("every check a command runs, each on its tree", () => {
   const all = matchAll("cd /r/repo && bunx tsc --noEmit -p . | tail -3; bun test src/x 2>&1 | grep -E 'pass|fail'; git log --oneline -1", named, at("/elsewhere"));
-  expect(all.map((x) => [x.check.name, x.treeAt, x.answers])).toEqual([["typecheck", "start", false], ["unit", "start", false]]);
-  expect(matchAll("git rebase origin/main && bunx tsc --noEmit -p . && bun test", named, at()).map((x) => [x.check.name, x.treeAt])).toEqual([["typecheck", "end"], ["unit", "end"]]);
+  // (A check is not still for the one after it: it may write a snapshot, a cache, what it found.)
+  expect(all.map((x) => [x.check.name, x.treeAt, x.answers])).toEqual([["typecheck", "start", false], ["unit", "end", false]]);
+  expect(matchAll("git rebase origin/main && bunx tsc --noEmit -p . && bun test", named, at()).map((x) => [x.check.name, x.treeAt])).toEqual([["unit", "end"]]);
 });
 
 test("a check runs in its own folder; a cd moves there", () => {
@@ -200,4 +201,60 @@ test("the shell's report: a check that never started has no status; one that did
   expect(matchAll("bun test; bun test", named, at()).map((x) => x.nth)).toEqual([undefined, 1]);
   // Under `timeout`: its own statuses for a stop, the check's for the rest.
   expect([124, 125, 137, 1, 0, 127].map(stoppedByTimeout)).toEqual([true, true, true, false, false, false]);
+});
+
+test("a check's status inside a group or past a shell it started is its own, or not known", () => {
+  const trace = (rows: string[][]) => parseTrace(rows.map((r) => r.join("\t")).join("\n"));
+  // `(chk | tail -1) && echo z`: the group's status is its last filter's, not the check's.
+  expect(checkStatus(trace([["D", "2", "1", "0", "bun test"], ["D", "2", "1", "0", "tail -1"], ["D", "1", "0", "0", "echo z"], ["E", "0"]]), "bun test", 1)).toEqual({ exit: null });
+  expect(checkStatus(trace([["D", "2", "1", "0", "bun test"], ["D", "2", "1", "0", "tail -1"], ["E", "0"]]), "bun test", 1)).toEqual({ exit: null });
+  // `chk; (true)` and `(chk); (true)`: the next shell's first line holds the check's status, not the end's.
+  expect(checkStatus(trace([["D", "1", "0", "0", "bun test"], ["D", "3", "1", "1", "true"], ["E", "0"]]), "bun test", 0)).toEqual({ exit: 1 });
+  expect(checkStatus(trace([["D", "2", "1", "0", "bun test"], ["D", "3", "1", "1", "true"], ["E", "0"]]), "bun test", 0)).toEqual({ exit: 1 });
+  // (Unless a job in the background may have printed it.)
+  expect(checkStatus(trace([["D", "1", "0", "0", "bun test"], ["D", "3", "1", "0", "true"], ["E", "0"]]), "bun test", 0, 0, true)).toEqual({ exit: null });
+  // A report at its cap: the end's statuses are of what ran last, not the check's.
+  const full = [...Array.from({ length: 199 }, () => ["D", "1", "0", "0", "true"]), ["D", "1", "0", "0", "bun test"], ["E", "0"]];
+  expect(checkStatus(trace(full), "bun test", 0)).toEqual({ exit: null });
+  // Its pipe stays in its group: a group piped into a filter is not a run as named.
+  for (const c of ["( (bun test) | tail -1 ); echo", "(bun test) | tail -2", "{ bun test; } | tail -2", "(bun test) 2>&1 | tail -2", "bun test | (cat)", "bun test | tee >(cat) | tail -1"]) expect([c, m(c)]).toEqual([c, undefined]);
+  expect(matchAll("sleep 9 & bun test; (true)", named, at())[0]?.bg).toBe(true);
+});
+
+test("an assignment to a variable of the shell's environment is exported", () => {
+  const env = (c: string) => matchCommand(c, named, { ...at(), environ: (n) => n === "PATH" || n === "NODE_ENV" });
+  expect(env("PATH=/opt/other/bin; bun test")?.command).toBe("PATH=/opt/other/bin bun test");
+  expect(env("NODE_ENV=production; bun test")?.command).toBe("NODE_ENV=production bun test");
+  // (Its value not known here: not counted.)
+  expect(env("PATH=/x:$PATH; bun test")).toBeUndefined();
+  expect(env("S=/x; bun test")?.command).toBe("bun test");
+  // What a `( )` group sets ends with it.
+  expect(m("(X=1); bun test $X")).toBeUndefined();
+  expect(m("(export MODE=x); bun test")?.command).toBe("bun test");
+  expect(m("(cd web); (npm test)", `${TOP}/web`)?.check.name).toBe("web");
+  expect(m("(cd web); (npm test)")).toBeUndefined();
+});
+
+test("commands that write while they seem to read, and what an answer would drop", () => {
+  // Each moves the tree: the check is not on the tree the command started with.
+  for (const c of ["sort -o src/a.ts src/a.ts && bun test", "sort --output=src/a.ts x && bun test", "uniq src/a.txt src/b.txt; bun test", "sed -n 'w src/a.ts' src/b.ts && bun test", "sed 's/a/b/w out' x; bun test", "sed '1e touch x' f; bun test",
+    "waitfor --until 'git checkout other -- .' && bun test", "waitfor --capacity 20,8 --until 'git stash' && bun test", "> src/a.ts; bun test", "X=1 > src/a.ts; bun test", "git -c core.fsmonitor=x status && bun test"]) {
+    expect([c, m(c)?.treeAt]).toEqual([c, "end"]);
+  }
+  for (const c of ["sort -u x; bun test", "uniq -c x; bun test", "sed -n '1,5p;/x/{p;q}' f; bun test", "sed -e 's/w/e/g' f; bun test", "waitfor --capacity 20,8 --timeout 10m && bun test"]) {
+    expect([c, m(c)?.treeAt]).toEqual([c, "start"]);
+  }
+  // A check before another may have written what the other reads: the other is on the tree as the command ended.
+  expect(matchAll("bun test --update-snapshots && bunx tsc --noEmit -p .", named, at()).map((x) => [x.check.name, x.treeAt])).toEqual([["unit", "start"], ["typecheck", "end"]]);
+  // A shell function by a check's name, a here-document whose body runs a command: not read past.
+  expect(m("bun() { :; }; bun test")).toBeUndefined();
+  expect(m("cat <<EOF >/dev/null\n$(git checkout other -- .)\nEOF\nbun test")).toBeUndefined();
+  expect(m("cat <<'EOF' >/dev/null\n$(not run)\nEOF\nbun test")).toMatchObject({ treeAt: "start" });
+  // A cd that may not run, or runs in the background: the folder after it is not known.
+  for (const c of ["[ -d web ] && cd web; npm test", "false || cd web && npm test", "cd web & npm test"]) expect([c, m(c)]).toEqual([c, undefined]);
+  expect(m("mkdir -p web && cd web && npm test")?.check.name).toBe("web");
+  // An answer would not write what the commands after the check write.
+  expect(m("bun test; echo x > /h/out.txt")).toMatchObject({ treeAt: "start", answers: false });
+  expect(m("bun test; tail -3 log | tee /h/t.txt")?.answers).toBe(false);
+  expect(m("bun test > /h/u.log 2>&1; tail -3 /h/u.log")?.answers).toBe(true);
 });

@@ -19,7 +19,7 @@ import { answerText, baseState, baseWords, flakyOn, runNote, type Result, type R
 // A check run on its way, as plain data: kept with the call in the store too (owe), so a run a
 // restart cut whose command the next daemon takes back is still recorded when it ends.
 type Pending = {
-  repo: Repo; name: string; command: string; dir: string; start: string; filters: number; timeout?: true; nth?: number;
+  repo: Repo; name: string; command: string; dir: string; start: string; filters: number; timeout?: true; nth?: number; bg?: true;
   tree: string; head: string | null; inputs: string | null; why?: string;
   sessionId: string; by: "agent" | "owner"; callId?: string; traced: boolean;
   // Its tree is taken when the command ends (something before the check may have changed a file):
@@ -69,7 +69,8 @@ async function treeFor(repo: Repo, tree: Match["tree"], command: string): Promis
     const t = named ?? (await commitTree(repo, "HEAD"));
     return t && { repo, tree: t.tree, head: t.head, command: named || !tree.named ? command : tree.named };
   }
-  const at = tree.kind === "folder" ? repoOf(tree.folder) : repo;
+  // (The work tree of the folder it ran in: a cd may have gone into another one, or a nested repository.)
+  const at = repoOf(tree.folder);
   // A folder argument that is not the top of a work tree: the check reads more than one tree.
   if (!at || (tree.kind === "folder" && realOf(at.top) !== realOf(tree.folder))) return undefined;
   const t = await treeOf(at);
@@ -91,7 +92,7 @@ export async function beforeCall(s: Session, call: ToolCall): Promise<ToolGate> 
   // (Checks of one tree in one call: the tree is looked at once.)
   const looks = new Map<string, Promise<Target | undefined>>();
   for (const match of matches) {
-    const base = { name: match.check.name, dir: match.dir, start: match.start, filters: match.filters, ...(match.timeout ? { timeout: true as const } : {}), ...(match.nth ? { nth: match.nth } : {}), sessionId: s.id, by: "agent" as const, callId: call.id, traced };
+    const base = { name: match.check.name, dir: match.dir, start: match.start, filters: match.filters, ...(match.timeout ? { timeout: true as const } : {}), ...(match.nth ? { nth: match.nth } : {}), ...(match.bg ? { bg: true as const } : {}), sessionId: s.id, by: "agent" as const, callId: call.id, traced };
     if (match.treeAt === "end") {
       ps.push({ ...base, repo: found.repo, command: match.command, tree: "", head: null, inputs: null, atEnd: { tree: match.tree, command: match.command, inputs: match.check.inputs } });
       continue;
@@ -156,7 +157,7 @@ async function store(p: Pending, job: Job): Promise<Stored | undefined> {
   // or the pipe's first, which nothing reported.
   let exit: number | null;
   if (p.traced) {
-    const st = checkStatus(parseTrace(conceal(job.trace ?? "", job.sessionId)), p.start, p.filters, p.nth);
+    const st = checkStatus(parseTrace(conceal(job.trace ?? "", job.sessionId)), p.start, p.filters, p.nth, !!p.bg);
     if (!st) return undefined;
     exit = st.exit;
   } else exit = p.filters ? null : job.exitCode ?? null;

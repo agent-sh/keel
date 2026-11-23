@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, wr
 import { join } from "node:path";
 import { backgrounded, startJob, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
 import { notFound } from "./missing.ts";
+import { TRACE_CAP } from "../checks/named.ts";
 import type { ToolContext } from "./types.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { contains } from "../core/paths.ts";
@@ -66,15 +67,19 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   // A check's run (src/checks): each simple command the shell runs, in this
   // shell and its groups (set -T), is reported with its shell's process and
   // level and the statuses of the pipe before it, read first (anything in the
-  // trap resets them; bash gives the command back its own). At most 200 lines
-  // a shell, 400 characters a command. The last line is the end's statuses.
-  // The trap's own lines are not traced (set -x before the check stays the
-  // command's), and the file is the owner's alone: it holds the command as it ran.
+  // trap resets them; bash gives the command back its own). At most
+  // TRACE_CAP lines a shell, 400 characters a command. The last line is the
+  // end's statuses: the exit trap runs at line 1, where no command of the
+  // script is, so its own commands are not reported (they would repeat the
+  // last command's words), and it takes the statuses the debug trap read
+  // before its first command. The trap's own lines are not traced (set -x
+  // before the check stays the command's), and the file is the owner's alone:
+  // it holds the command as it ran.
   const traceFile = ctx.checkRun ? `${cwdFile}.trace` : undefined;
   if (traceFile) { mkdirSync(dir, { recursive: true }); writeFileSync(traceFile, "", { mode: 0o600 }); }
   const quiet = (body: string, ps: string) => `{ ${ps}__keel_x=$-; set +x; } 2>/dev/null; ${body}; if [[ $__keel_x == *x* ]]; then set -x; fi`;
-  const debug = traceFile ? quiet(`(( __keel_n++ < 200 )) && printf 'D\\t%s\\t%s\\t%s\\t%s\\n' "$BASHPID" "$BASH_SUBSHELL" "$__keel_ps" "\${BASH_COMMAND:0:400}" >> ${shq(traceFile)} 2>/dev/null`, `__keel_ps="\${PIPESTATUS[*]}"; `) : "";
-  const end = traceFile ? `{ __keel_ps="\${PIPESTATUS[*]}"; set +x; } 2>/dev/null; printf 'E\\t%s\\n' "$__keel_ps" >> ${shq(traceFile)} 2>/dev/null; ` : "";
+  const debug = traceFile ? quiet(`(( LINENO > 1 && __keel_n++ < ${TRACE_CAP} )) && printf 'D\\t%s\\t%s\\t%s\\t%s\\n' "$BASHPID" "$BASH_SUBSHELL" "$__keel_ps" "\${BASH_COMMAND:0:400}" >> ${shq(traceFile)} 2>/dev/null`, `__keel_ps="\${PIPESTATUS[*]}"; `) : "";
+  const end = traceFile ? `{ __keel_e=$__keel_ps; set +x; } 2>/dev/null; printf 'E\\t%s\\n' "$__keel_e" >> ${shq(traceFile)} 2>/dev/null; ` : "";
   // The command is handed to bash as written; the trap records where it ended.
   // The traps' words are quoted as a whole around the quoted file names, so a
   // state folder with a space, a quote or a `$` in its name stays one word.
