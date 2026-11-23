@@ -350,10 +350,17 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
   }
   const gone = new Set(lifted.map((l) => l.text));
   const out: Statement[] = [];
+  // One statement said twice: the same words, or (for standing ones of one
+  // speaker, a file's of one path) one holding the other. Words of another
+  // speaker that hold a statement are their own: a file that repeats the
+  // owner's rule and adds a sentence does not become the owner's.
+  const speaker = (x: Statement) => `${x.by}\0${x.by === "file" ? x.path ?? "" : ""}`;
   const same = (a: Statement, b: Statement) => {
     const x = norm(a.text), y = norm(b.text);
-    return x === y || (a.kind === "standing" && b.kind === "standing" && (x.includes(y) || y.includes(x)));
+    return x === y || (speaker(a) === speaker(b) && a.kind === "standing" && b.kind === "standing" && (x.includes(y) || y.includes(x)));
   };
+  // The same words of two speakers are the owner's first, then the work's, then a file's.
+  const rank = (x: Statement) => (x.by === "owner" ? 0 : x.by === "work" ? 1 : 2);
   let fileBytes = 0, fileLeft = 0;
   for (const s of [...prior.filter((p) => !gone.has(p.text)), ...said]) {
     const k = out.findIndex((o) => same(o, s));
@@ -362,11 +369,12 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
       if (fileBytes + n > FILE_STATEMENTS_BYTES) { fileLeft++; continue; }
       fileBytes += n;
     }
-    if (k < 0) out.push(s);
-    else if (s.kind === "standing") {
-      const old = out[k]!;
-      if (old.kind === "request" || s.text.length > old.text.length) out[k] = { ...old, text: s.text, kind: "standing" };
-    }
+    if (k < 0) { out.push(s); continue; }
+    const old = out[k]!;
+    // The owner's entry stands for words both said; one speaker's longer words replace its shorter ones.
+    if (rank(s) < rank(old)) out[k] = { ...s, kind: old.kind === "standing" || s.kind === "standing" ? "standing" : "request" };
+    else if (s.kind === "standing" && speaker(s) === speaker(old) && (old.kind === "request" || s.text.length > old.text.length)) out[k] = { ...old, text: s.text, kind: "standing" };
+    else if (s.kind === "standing" && old.kind === "request") out[k] = { ...old, kind: "standing" };
   }
   // Done can retire only an exact quote already recorded as a scoped request.
   // Check after merging so an exact quote also kept as standing cannot be retired.
