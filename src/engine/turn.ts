@@ -1484,6 +1484,9 @@ export class Engine {
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
     const bare = purpose === "reader" || purpose === "title";
+    // A title is written after the turn, while the session is idle or already in its next turn:
+    // what it waits on is no part of the session's status.
+    const shown = purpose !== "title";
     if (st.native && !bare) {
       st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c), id);
       // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
@@ -1578,7 +1581,7 @@ export class Engine {
         })).finally(() => { if (!quiet) this.deltas.end(id); });
         clearInterval(hush);
         if (!quiet) { this.outputs.delete(id); this.wires.delete(id); }
-        if (!quiet || attempt) this.status(id, { kind: "idle" });
+        if ((!quiet || attempt) && shown) this.status(id, { kind: "idle" });
         this.measure(id, (h) => h.requestDone?.(session, req, res));
         this.boundThinking(id, res);
         if (fixed) this.imagesFixed(id, fixed, purpose);
@@ -1628,7 +1631,7 @@ export class Engine {
         if (large && !resent) {
           resent = true;
           const wait = backoffMs(0);
-          this.status(id, { kind: "retry", attempt: 1, max: 1, at: Date.now() + wait, message: errorText(e) });
+          if (shown) this.status(id, { kind: "retry", attempt: 1, max: 1, at: Date.now() + wait, message: errorText(e) });
           await sleep(wait, signal);
           attempt++;
           continue;
@@ -1697,7 +1700,7 @@ export class Engine {
         const wait = backoffMs(attempt, e);
         if (wait > RETRY_WAIT_MAX_MS) throw new RetryTooLong(e, Date.now() + wait);
         retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait }));
-        this.status(id, { kind: "retry", attempt: attempt + 1, max: RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
+        if (shown) this.status(id, { kind: "retry", attempt: attempt + 1, max: RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
         await sleep(wait, signal);
         attempt++;
       }
