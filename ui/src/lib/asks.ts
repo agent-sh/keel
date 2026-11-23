@@ -245,6 +245,7 @@ export const dropRepeats = (e: { key: string; repeat: boolean; target: EventTarg
 // card took the keyboard (a key in it within the settle time before the arrival). Any other key
 // the card does not take was pressed for the card (a number for a question, a key meant for the
 // card before): it types nothing anywhere, so it can never become a message, and the card says so.
+// Its settle time runs again from that key: an Enter right behind it answers nothing.
 export function typeToBox(e: { key: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; target: EventTarget | null; currentTarget: EventTarget | null; preventDefault?: () => void }): boolean {
   const t = e.target as HTMLElement;
   if (e.altKey || e.ctrlKey || e.metaKey || e.key.length !== 1) return false;
@@ -255,6 +256,9 @@ export function typeToBox(e: { key: string; altKey: boolean; ctrlKey: boolean; m
   const h = holds.get(unitOf(t)!);
   if (h && boxTyped < h.at - SETTLE_MS) {
     e.preventDefault?.();
+    // The owner's hands are not on what is shown: the card's settle time runs again from this key.
+    holds.set(unitOf(t)!, { ...h, at: performance.now(), code: true });
+    changed();
     tipSay(unitOf(t) as HTMLElement | null, "Nothing typed: this request has the keyboard", SETTLE_MS * 2);
     return true;
   }

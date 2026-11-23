@@ -383,8 +383,7 @@ test("End reads a long command on only through views that were painted, each lin
     const list = page.getByTestId("approvals"), card = list.getByTestId("approval").first();
     await expect(list).toBeFocused();
     await expect(list).toHaveAttribute("data-keys", "ready");
-    await page.keyboard.press("Enter");
-    await expect(card.getByTestId("approval-read-key")).toBeVisible();
+    // (Watched from before the text is opened: what the open text shows first counts too.)
     await page.evaluate(() => {
       const w = window as unknown as { __painted: { tops: number[]; lines: Set<number>; total: number } };
       w.__painted = { tops: [], lines: new Set(), total: 0 };
@@ -406,13 +405,13 @@ test("End reads a long command on only through views that were painted, each lin
       };
       requestAnimationFrame(() => ch.port2.postMessage(0));
     });
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("approval-read-key")).toBeVisible();
     await page.keyboard.press("End");
     await expect.poll(async () => Number(await card.getAttribute("data-unseen")), { timeout: 10_000 }).toBe(0);
     const seen = await page.evaluate(() => { const p = (window as unknown as { __painted: { tops: number[]; lines: Set<number>; total: number } }).__painted; const missing: number[] = []; for (let i = 0; i < p.total; i++) if (!p.lines.has(i)) missing.push(i); return { tops: p.tops, total: p.total, missing }; });
     expect(seen.total).toBeGreaterThan(150);
-    // (The lines in view before End were painted before the sampling began.)
-    const before = seen.missing.filter((i) => i > 25);
-    expect(before, `lines never painted on screen, scroll positions painted ${seen.tops.join(",")}`).toEqual([]);
+    expect(seen.missing, `lines never painted on screen, scroll positions painted ${seen.tops.join(",")}`).toEqual([]);
     expect(seen.tops.length).toBeGreaterThan(3);
   } finally {
     await drop(request, [s.id]);

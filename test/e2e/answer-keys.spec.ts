@@ -24,6 +24,8 @@ test("Esc twice on an approval gives the keyboard back to Allow once", async ({ 
   const card = page.getByTestId("approval");
   const allow = card.getByTestId("allow-once");
   await expect(allow).toBeFocused();
+  // (The page brought the keyboard there: its keys act after the settle time from then.)
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 5000 });
   // Esc opens the reason, Esc again leaves it: the keyboard is on Allow once, not on the page.
   await page.keyboard.press("Escape");
   await expect(card.getByTestId("deny-reason")).toBeFocused();
@@ -1122,11 +1124,24 @@ test("a number pressed on a card that took the keyboard by itself goes nowhere, 
   await expect(list).toBeFocused();
   await expect(list).toHaveAttribute("data-keys", "ready");
   await page.keyboard.press("1");
+  await expect(page.locator(".k-tip")).toHaveText("Nothing typed: this request has the keyboard");
   await page.keyboard.press("Enter");
   await page.waitForTimeout(600);
   await expect(pane(page, id).getByTestId("composer")).toHaveValue("");
-  await expect(page.locator(".k-tip")).toHaveText("Nothing typed: this request has the keyboard");
   expect(await said(request, id)).toEqual([]);
   await expect(pane(page, id).getByTestId("queue-item")).toHaveCount(0);
+  // On its Allow once, ready: a number types nothing and starts the settle time again, so the Enter
+  // right behind it allows nothing either.
+  const allow = list.getByTestId("allow-once");
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 8000 });
+  await page.keyboard.press("1");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(500);
+  expect((await approvals(request, id))[0]).toMatchObject({ state: "pending" });
+  await expect(pane(page, id).getByTestId("composer")).toHaveValue("");
+  expect(await said(request, id)).toEqual([]);
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 4000 });
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
   await drop(request, id);
 });

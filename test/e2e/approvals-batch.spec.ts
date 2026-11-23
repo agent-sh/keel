@@ -632,14 +632,15 @@ test("Enter as a request appears allows nothing", async ({ page, request }) => {
     expect((await cards()).map((c) => c.state)).toEqual(["pending"]);
     expect(existsSync(join(ws, "solo.txt"))).toBe(false);
 
-    // Stood for a second, the card takes the keyboard from the empty box. Words typed now are the box's.
+    // Stood for a second, the card takes the keyboard from the empty box. Words typed at it now are
+    // typed nowhere (a key meant for a card never becomes a message), and the card says so.
     await expect(once).toBeFocused();
     await expect(once).not.toHaveAttribute("aria-disabled");
     await expect(card.getByTestId("approval-hint")).toBeVisible();
     await expect(once).not.toHaveAttribute("data-nudge");
     await page.keyboard.type("ok");
-    await expect(box).toBeFocused();
-    await expect(box).toHaveValue("ok");
+    await expect(page.locator(".k-tip")).toHaveText("Nothing typed: this request has the keyboard");
+    await expect(box).toHaveValue("");
     await page.waitForTimeout(300);
     expect((await cards()).map((c) => c.state)).toEqual(["pending"]);
     expect(existsSync(join(ws, "solo.txt"))).toBe(false);
