@@ -1649,34 +1649,53 @@ export function onTurnEnd(sessionId: string, reason: string) {
 // agents' runs in the same repository (one at a time there), does not hold the report, its parent's slot or its
 // wake. The report then says how many are still running, and their answers follow (followBefore).
 export const BEFORE_WAIT = { ms: 10_000 };
-type Before = { run?: beforeRun.BeforeRun; deadline: number };
 const beforeOf = (r: beforeRun.BeforeRun) => beforeLine({ mergeBase: r.merge_base, base: r.base, why: r.why, unconfined: r.unconfined, results: r.results });
-async function startBefore(sessionId: string, folder: string): Promise<Before> {
-  const deadline = Date.now() + BEFORE_WAIT.ms;
-  try { return { run: await beforeRun.startFor(sessionId, folder), deadline }; }
-  catch (e) { capture(e, { at: "agent fails before", session: sessionId }); return { deadline }; }
+const isOpen = (r: beforeRun.BeforeRun) => r.results.some((f) => f.state === "running" || f.state === "waiting");
+const startBefore = (sessionId: string, folder: string): Promise<beforeRun.BeforeRun | undefined> =>
+  beforeRun.startFor(sessionId, folder).catch((e) => { capture(e, { at: "agent fails before", session: sessionId }); return undefined; });
+// Waits for the run's start and for the run, both by `deadline`. `late`: its start had not come by then (finding
+// its files reads git, which can be slow): the report holds no line for it, and what it finds follows it.
+async function settleBefore(starting: Promise<beforeRun.BeforeRun | undefined>, deadline: number): Promise<{ run?: beforeRun.BeforeRun; late?: true }> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const timeUp = new Promise<"late">((res) => { t = setTimeout(() => res("late"), Math.max(0, deadline - Date.now())); });
+  try {
+    const got = await Promise.race([starting, timeUp]);
+    if (got === "late") return { late: true };
+    return { run: got && await beforeRun.settled(got, Math.max(0, deadline - Date.now())) };
+  } finally { clearTimeout(t); }
 }
-async function settleBefore(b: Before): Promise<beforeRun.BeforeRun | undefined> {
-  return b.run && beforeRun.settled(b.run, Math.max(0, b.deadline - Date.now()));
+// A run the report went without the answers of (files still open when its line was written, or its start came
+// after it): the report owes them. Owed in the store (beforeRun.owe), so a daemon that stops first owes them still
+// (recover: a run it cut says so). When the run has ended (now, or already), the agent's report says what it found
+// in the place of the line that said it ran (or under it, when it had none), and its parent is told once: settled
+// in the write that stores the parent's prompt. A file that passes without the change is one to act on: the
+// parent's next turn starts with it (unless the owner's Stop holds the parent). Otherwise the answer rides with
+// whatever the parent is sent next.
+function followBefore(agentId: string, said: string, run: beforeRun.BeforeRun) {
+  beforeRun.owe(run.id, agentId, said);
+  void (beforeRun.whenDone(run) ?? Promise.resolve(run)).then((r) => tellBefore(agentId, said, r)).catch((e) => capture(e, { at: "agent fails before follow-up", agent: agentId }));
 }
-// A run that was still going when the report went: when it ends, the agent's report says what it found in the
-// place of the line that said it ran (while the report has that line), and its parent is told. A file that
-// passes without the change is one to act on: the parent's next turn starts with it (unless the owner's Stop
-// holds the parent). Otherwise the answer rides with whatever the parent is sent next.
-function followBefore(a: AgentRecord, said: string, run: beforeRun.BeforeRun) {
-  const done = beforeRun.whenDone(run);
-  if (!done) return;
-  void done.then((r) => {
-    const line = beforeOf(r);
-    if (!line) return;
-    const now = get(a.id);
-    if (now?.result?.includes(said)) emit("agent", brief(update(a.id, { result: now.result.replace(said, line) }, true)!));
-    const parent = D().store.session(a.parent_id);
-    if (!parent || parent.archived) return;
-    const act = r.results.some((f) => f.state === "passes") && !D().engine.isHeld(a.parent_id);
-    deliver(a.parent_id, `[harness] Agent "${a.title}" (${a.id}): its tests that were still running on the base when it reported have ended. ${line}`,
-      { kind: "harness", agent_id: a.id, fails_before: r.id }, act ? { coalesceMs: 300 } : { ride: true });
-  }).catch((e) => capture(e, { at: "agent fails before follow-up", agent: a.id }));
+function tellBefore(agentId: string, said: string, r: beforeRun.BeforeRun) {
+  const a = get(agentId);
+  const line = beforeOf(r);
+  if (!a || !line) return beforeRun.followed(r.id);
+  if (a.result != null && !a.result.includes(line)) {
+    const result = said && a.result.includes(said) ? a.result.replace(said, line) : `${a.result}${a.result ? "\n\n" : ""}${line}`;
+    emit("agent", brief(update(a.id, { result }, true)!));
+  }
+  const parent = D().store.session(a.parent_id);
+  if (!parent) return beforeRun.followed(r.id);
+  if (parent.archived || isPending(a.parent_id, (m) => m.fails_before === r.id)) return; // a restored parent gets it (deliverOwed)
+  const act = r.results.some((f) => f.state === "passes") && !D().engine.isHeld(a.parent_id);
+  deliver(a.parent_id, `[harness] Agent "${a.title}" (${a.id}): its tests on the base${said ? " that were still running when it reported" : ", whose run started after it reported,"} have ended. ${line}`,
+    { kind: "harness", agent_id: a.id, fails_before: r.id }, { ...(act ? { coalesceMs: 300 } : { ride: true }), onSent: () => beforeRun.followed(r.id) });
+}
+// Every answer a report owes that is there (at a start, after the runs a restart cut were ended; for a restored parent).
+function tellOwedBefore(parentId?: string) {
+  for (const r of beforeRun.owedFollows()) {
+    const a = get(r.follow_agent!);
+    if (!parentId || a?.parent_id === parentId) tellBefore(r.follow_agent!, r.follow_said ?? "", r);
+  }
 }
 
 // Agents whose ended turn is being settled (a work agent's worktree is read
@@ -1744,14 +1763,17 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // What the check ledger saw of its checks (src/checks/proof.ts), read before an empty worktree goes.
   const folder = a.worktree ?? D().store.session(a.session_id)?.workspace;
   // (Its tests' run on the base starts first, and goes beside the rest: BEFORE_WAIT.)
+  const beforeBy = Date.now() + BEFORE_WAIT.ms;
   const starting = status !== "completed" || row.output_schema || a.machine || !folder ? undefined : startBefore(a.session_id, folder);
   const proof = row.output_schema && status === "completed" || a.machine || !folder ? "" : await proofFor(a.session_id, folder, got.events).catch(() => "");
   // What it left running is stopped, and what is new in its repositories is named (leftovers.ts), before its
   // worktree is looked at: a process of it could still write there.
   const left = a.machine ? "" : await leftovers.settle({ store: D().store, isRunning: (sid) => D().engine.isRunning(sid) }, { ...a, report: reportId(a) })
     .catch((e) => { capture(e, { at: "agent leftovers", agent: a.id }); return ""; });
-  const ran = starting ? await settleBefore(await starting) : undefined;
+  const { run: ran, late } = starting ? await settleBefore(starting, beforeBy) : {};
   const before = ran ? beforeOf(ran) : "";
+  // Decided by what the report says, not by the run's state later: one that ends after this is still owed.
+  const owes = !!ran && !!before && isOpen(ran);
   const lines = [did, proof, before, row.output_schema && status === "completed" ? "" : left].filter(Boolean).join("\n");
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
@@ -1772,6 +1794,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   let grouped = false;
   const rec = D().store.db.transaction(() => {
     if (status === "failed") grouped = failures.agentFailed({ ...a, report: reportId(a) }, cls, cause || got.error || how.note || result, !!cause && !blocked);
+    if (owes) beforeRun.owe(ran!.id, a.id, before);
     return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
   })();
   emit("agent", brief(rec));
@@ -1781,7 +1804,8 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);
   if (!blocked) handback(rec, grouped);
-  if (ran && before && ran.state === "running") followBefore(a, before, ran);
+  if (owes) followBefore(a.id, before, ran!);
+  else if (late) void starting!.then((r) => { if (r) followBefore(a.id, "", r); });
 }
 
 // --- a successor for a lost context ------------------------------------------
@@ -2343,6 +2367,8 @@ export function recover() {
     if (a.type !== "verifier" && !waits.cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
   }
   sendAllOwed(D().store.db.query<Owed, []>("SELECT * FROM agent_owed ORDER BY created, rowid").all(), true);
+  // Answers of tests on the base a report owes: a run the last daemon cut was ended when it was bound (before-run.ts).
+  tellOwedBefore();
 }
 
 // Every report still owed goes out, oldest first, unless a stored wait result
@@ -2375,6 +2401,7 @@ export function tick() {
 export function deliverOwed(parentId: string) {
   for (const a of list(parentId)) if (a.handback && isEnded(a)) owe(a);
   sendAllOwed(owedOf(parentId));
+  tellOwedBefore(parentId);
   failures.wake(parentId);
 }
 

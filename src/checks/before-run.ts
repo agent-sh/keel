@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { git } from "../core/git.ts";
-import { chunksUntil } from "../core/proc.ts";
+import { chunksUntil, readText } from "../core/proc.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { sandboxStatus, scopeHead } from "../safety/sandbox.ts";
@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS fails_before (
   merge_base TEXT,
   common TEXT,
   unconfined TEXT,
+  follow_agent TEXT,
+  follow_said TEXT,
   state TEXT NOT NULL,
   why TEXT,
   results TEXT NOT NULL,
@@ -39,7 +41,10 @@ CREATE INDEX IF NOT EXISTS fails_before_session ON fails_before(session_id, id);
 
 // `common`: the repository's common git directory, where its scratch worktree is listed.
 // `unconfined`: why its tests ran outside the sandbox (the session runs in full auto with its sandbox off).
-export type BeforeRun = { id: number; session_id: string; key: string; repo: string; base: string | null; merge_base: string | null; common: string | null; unconfined: string | null; state: "running" | "done"; why: string | null; results: FileResult[]; created: number; ended: number | null };
+// `follow_agent`: the agent whose report went while files of the run were open, owed their answers (its parent
+// is told once, in the write that stores the parent's prompt); `follow_said`: the line that report holds for
+// them ("" when the report holds none: the run started after it went).
+export type BeforeRun = { id: number; session_id: string; key: string; repo: string; base: string | null; merge_base: string | null; common: string | null; unconfined: string | null; follow_agent?: string | null; follow_said?: string | null; state: "running" | "done"; why: string | null; results: FileResult[]; created: number; ended: number | null };
 type Row = Omit<BeforeRun, "results"> & { results: string };
 
 // `confine`: the session's own sandbox profile with `workspace` in the place of its folder and `tool` as its tool
@@ -59,13 +64,39 @@ const OUT_MAX = 256 * 1024;
 export function bindBefore(deps: Deps): Promise<void> {
   d = deps;
   d.store.migrate(SCHEMA);
+  for (const col of ["common", "unconfined", "follow_agent", "follow_said"]) if (!d.store.columnExists("fails_before", col)) d.store.migrate(`ALTER TABLE fails_before ADD COLUMN ${col} TEXT`);
   const cut = d.store.db.query<Row, []>("SELECT * FROM fails_before WHERE state = 'running'").all().filter((r) => !going.has(r.id));
   for (const r of cut) {
     const results = (JSON.parse(r.results) as FileResult[]).map((f) => (f.state === "running" || f.state === "waiting" ? { ...f, state: "unrun" as const, why: "the daemon restarted while it ran" } : f));
     d.store.db.query("UPDATE fails_before SET state = 'done', results = ?, ended = ? WHERE id = ?").run(JSON.stringify(results), Date.now(), r.id);
   }
-  return sweep().catch((e) => d!.capture(e, { at: "fails before sweep" }));
+  return Promise.all([sweep(), stopLeftScopes()]).then(() => {}, (e) => d!.capture(e, { at: "fails before sweep" }));
 }
+
+// A file's run outside the sandbox goes in a scope named for the daemon that started it (keel-before-<pid>-...):
+// one a killed daemon left, with what it started, is stopped. Its own time limit (RuntimeMaxSec) ends it in any
+// case; this ends it at the next start. (A run in the sandbox ends with the daemon: bwrap dies with its parent.)
+async function stopLeftScopes() {
+  if (!sandboxStatus().scope || !Bun.which("systemctl")) return;
+  const ls = Bun.spawn(["systemctl", "--user", "list-units", "--plain", "--no-legend", "--all", "keel-before-*.scope"], { stdout: "pipe", stderr: "ignore" });
+  const out = await readText(ls.stdout, "systemctl list-units");
+  await ls.exited;
+  const units = leftScopes(out, (pid) => pid === process.pid || alive(pid));
+  for (const u of units) await Bun.spawn(["systemctl", "--user", "stop", u], { stdout: "ignore", stderr: "ignore" }).exited.catch(() => {});
+}
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as { code?: string }).code === "EPERM"; } };
+// The units of `systemctl list-units` output whose daemon is not alive.
+export function leftScopes(out: string, alive: (pid: number) => boolean): string[] {
+  return out.split("\n").map((l) => /^\s*(keel-before-(\d+)-\d+-\d+\.scope)\b/.exec(l)).filter((m): m is RegExpExecArray => !!m && !alive(Number(m[2]))).map((m) => m[1]!);
+}
+
+// Runs whose answers an agent's report owes its parent and that have them (the run ended, or a restart cut it).
+export const owedFollows = (): BeforeRun[] => d ? d.store.db.query<Row, []>("SELECT * FROM fails_before WHERE follow_agent IS NOT NULL AND state = 'done' ORDER BY id").all().map(toRun) : [];
+// The report of `agent` went while files of the run were open, and holds `said` for them (stored with the report).
+export const owe = (id: number, agent: string, said: string) => { d?.store.db.query("UPDATE fails_before SET follow_agent = ?, follow_said = ? WHERE id = ?").run(agent, said, id); };
+// Told: in the write that stores the parent's prompt.
+export const followed = (id: number) => { d?.store.db.query("UPDATE fails_before SET follow_agent = NULL, follow_said = NULL WHERE id = ?").run(id); };
+export const byId = (id: number): BeforeRun | undefined => { const r = d?.store.db.query<Row, [number]>("SELECT * FROM fails_before WHERE id = ?").get(id); return r ? toRun(r) : undefined; };
 
 // Scratch worktrees an earlier daemon left (one that was killed while it ran): removed, and the list of each
 // repository they were checked out from pruned. The repository is read from the scratch worktree itself (its
@@ -227,6 +258,8 @@ const mainTop = (repo: Repo) => (repo.common.endsWith("/.git") ? dirname(repo.co
 // How long the output of a run is still read after its end: what a process it started outside its group still
 // holds open (a `setsid` child) is not waited for after that.
 export const DRAIN_MS = 2_000;
+// Seconds a run's scope may outlive the run's own limit: its kill and the read of its pipes (DRAIN_MS), with room.
+const SCOPE_SLACK_S = 10;
 
 // One file's run. A run that is not in the sandbox (whose processes all end with it: its own process space) runs
 // in a systemd scope of its own when the machine has them, so what it started goes with it, also a process that
@@ -237,7 +270,8 @@ export async function runOne(o: One): Promise<Partial<FileResult>> {
   rmSync(times, { force: true });
   const argv = [...LOW(), "bash", "-c", withTimes(o.command, times)];
   const scoped = !o.wrap && sandboxStatus().scope && scopeHead().length > 0;
-  const full = o.wrap ? o.wrap(argv) : scoped ? [...scopeHead(), `--unit=${o.unit}`, "--", ...argv] : argv;
+  // (Its scope ends by its own time limit too, a little after the run's: what a killed daemon left goes by itself.)
+  const full = o.wrap ? o.wrap(argv) : scoped ? [...scopeHead(), `--unit=${o.unit}`, "-p", `RuntimeMaxSec=${Math.ceil(o.limitMs / 1000) + SCOPE_SLACK_S}`, "--", ...argv] : argv;
   const started = performance.now();
   let timedOut = false;
   let p: ReturnType<typeof Bun.spawn>;

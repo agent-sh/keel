@@ -9,7 +9,7 @@ import { Store } from "../core/store.ts";
 import { Gate } from "../safety/gate.ts";
 import { sandboxStatus } from "../safety/sandbox.ts";
 import { Worktrees } from "../worktree/manager.ts";
-import { bindBefore, settled, startFor } from "./before-run.ts";
+import { bindBefore, leftScopes, runOne, settled, startFor } from "./before-run.ts";
 import { bindLedger } from "./ledger.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-before-run-"));
@@ -78,4 +78,34 @@ test("a scratch worktree a killed daemon left goes at the next start, with its r
   await bindBefore({ store, bus: new Bus(), perm: (id) => gate.perm(id), confine: (id, ws, tool) => gate.confineFor(id, ws, tool), capture: (e) => { throw e; } });
   expect(existsSync(left)).toBe(false);
   expect(list()).toBe(1);
+});
+
+// A daemon killed while a file runs outside the sandbox takes no timer with it: the file's scope has a limit of its
+// own, and the next start stops a scope whose daemon is gone.
+const scoped = sandboxStatus().scope;
+test.skipIf(!scoped)("a file's scope ends by its own time limit, whatever happens to the daemon", async () => {
+  const tool = mkdtempSync(join(dir, "tool-"));
+  // The test passes when its own scope has a runtime limit (systemd says "infinity" when it has none).
+  const command = `u=$(basename "$(cut -d: -f3 /proc/self/cgroup)"); v=$(systemctl --user show -p RuntimeMaxUSec --value "$u"); echo "$u $v"; [ -n "$v" ] && [ "$v" != infinity ]`;
+  const r = await runOne({ cwd: tool, tool, env: { ...process.env } as Record<string, string>, command, limitMs: 120_000, unit: `keel-before-${process.pid}-0-limit` });
+  expect(r.state).toBe("passes");
+});
+
+test.skipIf(!scoped)("a scope a killed daemon left is stopped at the next start, with what runs in it", async () => {
+  const gone = Bun.spawn(["true"]);
+  await gone.exited; // a daemon that is not there any more
+  const unit = `keel-before-${gone.pid}-7-0`;
+  const left = Bun.spawn(["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, "--", "sleep", "60"], { stdout: "ignore", stderr: "ignore" });
+  const active = () => Bun.spawnSync(["systemctl", "--user", "is-active", `${unit}.scope`]).stdout.toString().trim() === "active";
+  const t0 = Date.now();
+  while (!active() && Date.now() - t0 < 5_000) await Bun.sleep(50);
+  expect(active()).toBe(true);
+  await bindBefore({ store, bus: new Bus(), perm: (id) => gate.perm(id), confine: (id, ws, tool) => gate.confineFor(id, ws, tool), capture: (e) => { throw e; } });
+  expect(await Promise.race([left.exited.then(() => true), Bun.sleep(5_000).then(() => false)])).toBe(true);
+  expect(active()).toBe(false);
+});
+
+test("the scopes a start stops are those of daemons that are gone", () => {
+  const out = ["keel-before-100-3-0.scope loaded active running keel-before-100-3-0.scope", "  keel-before-200-1-2.scope loaded active running x", "keel-other-1.scope loaded active running y", ""].join("\n");
+  expect(leftScopes(out, (pid) => pid === 200)).toEqual(["keel-before-100-3-0.scope"]);
 });

@@ -1466,3 +1466,83 @@ test("a stop while an agent's report is being written leaves its end as it was a
   expect(agents.get(a.id)).toMatchObject({ status: "completed", stopped_by: null });
   expect(sends.filter((x) => x.id === p.id && x.text.includes("report Q"))).toHaveLength(1);
 });
+
+// The report says files are still running: that is what owes their answers, also when the run ends before the
+// report's write (a slow read of the parent between the wait and the write).
+test("a run that ends between the report's wait and its write still has its answers told", async () => {
+  const p = beforeRepo({ "slow.test.sh": "sleep 1; exit 0\n" });
+  const was = agents.BEFORE_WAIT.ms, warm = store.warm.bind(store);
+  agents.BEFORE_WAIT.ms = 200;
+  (store as any).warm = async (...args: Parameters<Store["warm"]>) => { await Bun.sleep(3_000); return warm(...args); };
+  try {
+    const a = await agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true });
+    sends.length = 0;
+    end(a, "end_turn", "report W");
+    expect(await until(() => agents.get(a.id)!.status === "completed", 10_000)).toBe(true);
+    expect(latest(a.session_id)!.state).toBe("done"); // it ended before the report was written
+    expect(await until(() => sends.some((x) => x.id === p.id && x.text.includes("slow.test.sh passes without the change")), 5_000)).toBe(true);
+    expect(agents.get(a.id)!.result).toContain("slow.test.sh passes without the change");
+    expect(agents.get(a.id)!.result).not.toContain("still running");
+    expect(latest(a.session_id)!.follow_agent).toBeNull(); // told: no longer owed
+  } finally {
+    agents.BEFORE_WAIT.ms = was;
+    (store as any).warm = warm;
+  }
+});
+
+// A daemon that stops while the files run owes their answers still: the next one says the restart cut them.
+test("answers a report owes for a run a restart cut are told by the next daemon", async () => {
+  const p = beforeRepo({});
+  const a = await agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true });
+  end(a, "end_turn", "report C");
+  expect(await until(() => agents.get(a.id)!.status === "completed", 5_000)).toBe(true);
+  flush(p.id);
+  const said = "(Its new and changed tests on the base, without the change: 1 still running (its answer follows when done, and the Review view shows it).)";
+  store.db.query("UPDATE agents SET result = ? WHERE id = ?").run(`report C\n\n${said}`, a.id);
+  const results = [{ path: "cut.test.sh", check: "unit", command: "sh t.sh cut.test.sh", state: "running", why: "", exit: null, ms: null, cpu_ms: null }];
+  store.db.query("INSERT INTO fails_before (session_id, key, repo, base, merge_base, state, results, created, follow_agent, follow_said) VALUES (?, 'k', ?, 'main', 'aaaaaaa', 'running', ?, ?, ?, ?)")
+    .run(a.session_id, p.workspace, JSON.stringify(results), Date.now(), a.id, said);
+  sends.length = 0;
+  // The next daemon: the run is ended where it was bound, and the report's answer is told.
+  await bindBefore({ store, bus, perm: () => ({ mode: "full-auto", sandbox: "off" }), confine: () => undefined, capture: (e) => { throw e; } });
+  agents.recover();
+  expect(agents.get(a.id)!.result).toContain("cut.test.sh could not run (the daemon restarted while it ran)");
+  expect(agents.get(a.id)!.result).not.toContain("still running");
+  // Nothing in it to act on: it rides with the parent's next input, once, and is no longer owed when it went.
+  const id = latest(a.session_id)!.id;
+  expect(isPending(p.id, (m) => m.fails_before === id)).toBe(true);
+  agents.recover();
+  deliver(p.id, "next input", { kind: "harness" });
+  flush(p.id);
+  expect(sends.filter((x) => x.id === p.id && x.text.includes("cut.test.sh could not run (the daemon restarted while it ran)"))).toHaveLength(1);
+  expect(latest(a.session_id)!.follow_agent).toBeNull();
+  agents.recover();
+  flush(p.id);
+  expect(sends.filter((x) => x.text.includes("cut.test.sh could not run"))).toHaveLength(1);
+});
+
+// Finding the files reads git: a slow read does not hold the report past BEFORE_WAIT, and what it finds follows.
+test("a run whose start is slow does not hold the report, and its answers follow it", async () => {
+  const p = beforeRepo({ "late.test.sh": "exit 1\n" });
+  const bin = mkdtempSync(join(tmpdir(), "keel-agents-git-"));
+  const real = Bun.which("git")!;
+  writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in *" merge-base "*) sleep 3;; esac\nexec ${real} "$@"\n`, { mode: 0o755 });
+  const was = agents.BEFORE_WAIT.ms, path = process.env.PATH;
+  agents.BEFORE_WAIT.ms = 300;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    const a = await agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true });
+    sends.length = 0;
+    end(a, "end_turn", "report L");
+    expect(await until(() => agents.get(a.id)!.status === "completed", 2_000)).toBe(true);
+    expect(agents.get(a.id)!.result).not.toContain("Its new and changed tests");
+    // It fails before: nothing to act on, so its answer rides with the parent's next input.
+    expect(await until(() => !!agents.get(a.id)!.result?.includes("late.test.sh fails before: yes (exit 1)"), 15_000)).toBe(true);
+    deliver(p.id, "next input", { kind: "harness" });
+    flush(p.id);
+    expect(sends.find((x) => x.id === p.id && x.text.includes("late.test.sh fails before: yes (exit 1)"))!.text).toContain("whose run started after it reported");
+  } finally {
+    agents.BEFORE_WAIT.ms = was;
+    process.env.PATH = path;
+  }
+});
