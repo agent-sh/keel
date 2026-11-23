@@ -26,7 +26,7 @@ import { laneText } from "../../automation/lane-line.ts";
 import { byChild as agentByChild } from "../../automation/agents.ts";
 import { WATCH_LABEL } from "../../core/watch.ts";
 import { stateWords } from "../../core/state-words.ts";
-import { costLine, costs, rankWaiting } from "../../core/wait-rank.ts";
+import { costLine, costs, rankWaiting, type WaitNow } from "../../core/wait-rank.ts";
 import { lineage } from "../../core/tree.ts";
 import * as push from "./push.ts";
 import {
@@ -573,25 +573,34 @@ export function mobileApi(ctx: MobileCtx) {
   const cardOf = (a: Approval) => approvalOf(a, a.state === "pending" ? ctx.gate()?.form(a) : undefined);
   const plans = (sessionId?: string) => plansWaiting().filter((p) => !sessionId || p.session_id === sessionId).map((p) => planCardOf(p));
   // What waits on the owner, in the order of the next-look queue (src/core/wait-rank.ts): the
-  // costliest wait first, then the one that waited longest. Each card says what its wait costs
-  // (`wait`: the facts it began with, times in seconds; `wait_line`: the words, as they stand now).
+  // costliest wait first, then the one asked first (`asked`: when its alert was first raised, in
+  // seconds; the phone breaks ties by it too). Each card says what its wait costs: `wait`, the facts
+  // it began with (times in seconds) and its key; `wait_line`, the words as the wait stands now.
+  // Each card's wait is read by its own key (alerts.waitOf), so a read costs what waits.
   const pendingApprovals = (sessionId?: string) => {
     const gate = ctx.gate();
     const asks = gate?.approvals({ session: sessionId, pending: true }) ?? [];
     const qs = (sessionId ? [store.session(sessionId)].filter(Boolean) as Session[] : store.sessions()).flatMap((s) => pendingQuestions(s.id).map((callId) => ({ s, callId })));
     const ps = plansWaiting().filter((p) => !sessionId || p.session_id === sessionId);
     if (!asks.length && !qs.length && !ps.length) return [];
-    const since = Math.min(...asks.map((a) => a.created), ...ps.map((p) => p.created), Date.now() - 30 * 86_400_000);
-    const known = alerts.waitsSince(since);
     const now = Date.now();
-    const withWait = (card: any, w: alerts.WaitOf | undefined) => ({
-      ...card, _ts: w?.ts ?? card.ts * 1000,
-      ...(w?.wait ? { wait: { ...w.wait, at: secs(w.wait.at), ...(w.wait.until !== undefined ? { until: secs(w.wait.until) } : {}) }, _key: w.wait.key, wait_line: costs(w.wait) ? costLine(w.wait, now) : "" } : {}),
-    });
+    const live = new Map<string, WaitNow | undefined>();
+    const nowOf = (asker: string) => {
+      if (!live.has(asker)) { let w: WaitNow | undefined; try { w = alerts.waitHook.now?.(asker); } catch {} live.set(asker, w); }
+      return live.get(asker);
+    };
+    const withWait = (card: any, asker: string, w: alerts.WaitOf | undefined) => {
+      const line = w?.wait ? nowOf(asker) ?? w.wait : undefined;
+      return {
+        ...card, _ts: w?.ts ?? card.ts * 1000,
+        ...(w ? { asked: secs(w.ts) } : {}),
+        ...(w?.wait ? { wait: { ...w.wait, at: secs(w.wait.at), ...(w.wait.until !== undefined ? { until: secs(w.wait.until) } : {}) }, _key: w.wait.key, wait_line: costs(line) ? costLine(line, now) : "" } : {}),
+      };
+    };
     const all = [
-      ...asks.map((a) => withWait(cardOf(a), known.approval.get(a.id))),
-      ...qs.map(({ s, callId }) => withWait(questionCard(s, callId), known.question.get(`${s.id}.${callId}`))),
-      ...ps.map((p) => withWait(planCardOf(p), known.plan.get(`${p.session_id}.${p.id}`))),
+      ...asks.map((a) => withWait(cardOf(a), a.session_id, alerts.waitOf({ approval: a.id }))),
+      ...qs.map(({ s, callId }) => withWait(questionCard(s, callId), s.id, alerts.waitOf({ call: callId, session: s.id }))),
+      ...ps.map((p) => withWait(planCardOf(p), p.session_id, alerts.waitOf({ plan: p.id, session: p.session_id }))),
     ];
     return rankWaiting(all, (c) => ({ id: c.id, ts: c._ts, wait: { key: c._key ?? 0 } })).map(({ _ts, _key, ...c }) => c);
   };

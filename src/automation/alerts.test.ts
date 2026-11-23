@@ -488,3 +488,60 @@ test("an answered approval is taken back alone while its session has another; th
   expect(taken).toEqual(["apA"]);
   expect(withdrawn).toEqual([s]);
 });
+
+// The cost a card's wait began with is read by the card's own key, on its index: a read of what
+// waits costs what waits, not a walk over a month of alerts.
+test("a card's wait is read by its key on its index, however old and among however many", () => {
+  const { store, session } = scratch();
+  const a = session("Asks");
+  const old = Date.now() - 40 * 86_400_000;
+  const ins = store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, rev, kept) VALUES (?, ?, ?, ?, 'x', 'x', 1, ?, 0, 0)");
+  store.db.transaction(() => {
+    for (let i = 0; i < 2_000; i++) ins.run(`n${i}`, Date.now() - i, i % 2 ? "approval" : "question", a, JSON.stringify(i % 2 ? { approval_id: `ap${i}` } : { call_id: `c${i}`, open_session: a }));
+  })();
+  const wait = { at: old, agents: 2, rate: 0.1, key: 0.1 };
+  ins.run("old-ap", old, "approval", a, JSON.stringify({ approval_id: "ap-old", open_session: a, wait }));
+  ins.run("old-q", old, "question", a, JSON.stringify({ call_id: "c-old", open_session: a, wait: { ...wait, key: 0.2 } }));
+  ins.run("old-plan", old, "question", a, JSON.stringify({ plan_id: "p-old", open_session: a }));
+  expect(alerts.waitOf({ approval: "ap-old" })).toEqual({ ts: old, wait });
+  expect(alerts.waitOf({ call: "c-old", session: a })?.wait?.key).toBe(0.2);
+  expect(alerts.waitOf({ call: "c-old", session: "elsewhere" })).toBeUndefined();
+  expect(alerts.waitOf({ plan: "p-old", session: a })).toEqual({ ts: old });
+  const plan = (sql: string) => store.db.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${sql}`).all().map((r) => r.detail).join("; ");
+  expect(plan(alerts.WAIT_OF_SQL.approval)).toContain("alerts_approval_id");
+  expect(plan(alerts.WAIT_OF_SQL.call)).toContain("alerts_call_id");
+  expect(plan(alerts.WAIT_OF_SQL.plan)).toContain("alerts_plan_id");
+});
+
+// The order's key is the one a wait began with; the line it says is what it costs as it is read:
+// the agents that wait now, the cache's life now (a warm ping lengthened it).
+test("a wait's line says what it costs as the list is read; its key stays the one it began with", () => {
+  const { store, session } = scratch();
+  const p = session("Lead"), a = session("Asker", p), f = session("Broke"), fine = session("Fine");
+  const began = { at: Date.now(), agents: 3, rate: 0.12, tokens: 180_000, usd: 0.9, until: Date.now() + 60_000, key: 0.57 };
+  const now = { agents: 1, rate: 0.04, tokens: 180_000, usd: 0.9, until: Date.now() + 50 * 60_000 };
+  const was = { ...alerts.waitHook };
+  try {
+    alerts.waitHook.of = () => began;
+    alerts.waitHook.now = () => now;
+    const sig = new AbortController().signal;
+    void ask({ sessionId: a, callId: "qa", signal: sig } as any);
+    alerts.raise("question", a, "Question: Asker", "Which?", { call_id: "qa", open_session: a });
+    alerts.raise("failed", f, "Failed: Broke", "HTTP 500", {});
+    alerts.raise("failed", fine, "Failed: Fine", "HTTP 500", {});
+    store.updateSession(f, { settings: { failed_ms: Date.now() } } as any);
+    const listed = alerts.list({ withUnread: true });
+    const q = listed.find((x) => x.kind === "question")!;
+    expect(q.data.wait.key).toBe(0.57);
+    expect(q.wait_now).toEqual(now);
+    expect(listed.find((x) => x.session_id === f)!.wait_now).toEqual(now);
+    // A failure the session has gone on from waits on nobody.
+    expect(listed.find((x) => x.session_id === fine)!.wait_now).toBeUndefined();
+    expect(alerts.waitsNow([q.id, listed.find((x) => x.session_id === fine)!.id])).toEqual({ [q.id]: now });
+    expect(alerts.liveWait(q)).toEqual(now);
+    answer(a, "qa", {});
+  } finally {
+    alerts.waitHook.of = was.of;
+    alerts.waitHook.now = was.now;
+  }
+});

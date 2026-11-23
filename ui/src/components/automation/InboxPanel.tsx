@@ -16,7 +16,7 @@ import { ALERT_GROUPS, ALERT_GROUP_WORD, ASK_KINDS, COUNTERS, STATE_WORD, alertG
 import { Mark } from "../Mark.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
 import { Seg, tabId } from "../Seg.tsx";
-import { costLine, costs } from "../../../../src/core/wait-rank.ts";
+import { costLine, costs, type WaitNow } from "../../../../src/core/wait-rank.ts";
 import { holdOrder, nextLook, waitsOnOwner } from "../../lib/next-look.ts";
 import { every } from "../../lib/clock.ts";
 
@@ -89,10 +89,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
   // The order of what waits as it stood when the pointer or the keyboard came into the list (null: neither is there).
   const [held, setHeld] = useState<string[] | null>(null);
   const needIds = useRef<string[]>([]);
-  const hold = (on: boolean) => setHeld(on ? needIds.current : null);
-  // What a wait costs counts down (a cache's time left): the rows say it again on the page's clock.
-  const [, beat] = useState(0);
-  useEffect(() => every(15_000, () => beat((n) => n + 1)), []);
+  // A hold that stands (the keyboard came first, then the pointer) is kept: only leaving both ends it.
+  const hold = (on: boolean) => setHeld((h) => (on ? h ?? needIds.current : null));
   const parts = useMemo(() => {
     // A turn the model declined is filed as a finish: its row says Declined, as its session does (its newest word only).
     const newest = new Map<string, string>();
@@ -121,6 +119,19 @@ function Inbox({ onClose }: { onClose: () => void }) {
       return { part, n: of.length, rows };
     }).filter((p) => p.n);
   }, [alerts, shown, sessions, wide, told, held]);
+  // What each wait costs as it stands (the agents that wait now, the cache's life now), read when what
+  // waits changes and again on the page's clock: the lines say it, and a cache's time left counts down.
+  // (The order's key is the one each wait began with.) Until it comes, what the list said.
+  const [live, setLive] = useState<Record<string, WaitNow>>({});
+  const needKey = parts.find((p) => p.part === "need")?.rows.map((r) => r.a.id).sort().join(",") ?? "";
+  useEffect(() => {
+    if (!needKey) return;
+    let gone = false;
+    const read = () => { auto.waitsNow(needKey.split(",")).then((w) => { if (!gone) setLive(w); }).catch(() => {}); };
+    read();
+    const stop = every(15_000, read);
+    return () => { gone = true; stop(); };
+  }, [needKey]);
 
   const open = async (a: Alert) => {
     note(a.id, null);
@@ -230,11 +241,14 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     <span className={cn("shrink-0 text-micro text-faint tabular-nums", tight && "sr-only")} title={when(a.ts)}>{ago(a.ts)}</span>
                   </span>
                   {/* What the wait costs, under what it is: why it stands where it does in the queue. */}
-                  {part === "need" && costs(a.data?.wait) && (
-                    <span className="block pb-0.5 pl-6 text-caption leading-snug text-muted sm:truncate" data-testid="inbox-cost" title="What this wait costs. The costliest wait is listed first.">
-                      {costLine(a.data.wait, Date.now())}
-                    </span>
-                  )}
+                  {part === "need" && (() => {
+                    const now = live[a.id] ?? a.wait_now ?? a.data?.wait;
+                    return costs(now) && (
+                      <span className="block pb-0.5 pl-6 text-caption leading-snug text-muted sm:truncate" data-testid="inbox-cost" title="What this wait costs now. The wait that cost most as it began is listed first.">
+                        {costLine(now, Date.now())}
+                      </span>
+                    );
+                  })()}
                 </button>
                 <button
                   type="button"

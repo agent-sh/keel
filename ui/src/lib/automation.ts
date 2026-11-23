@@ -6,6 +6,7 @@ import type { AgentBrief } from "../../../src/automation/agents.ts";
 // An agent as the page holds it: its record without its report, which is read when shown (agentReport).
 type AgentRecord = AgentBrief;
 import type { Alert, AlertSettings } from "../../../src/automation/alerts.ts";
+import type { WaitNow } from "../../../src/core/wait-rank.ts";
 import type { LoopRecord, RunRecord } from "../../../src/automation/loops.ts";
 import type { WaitRecord } from "../../../src/automation/waits.ts";
 import type { Activity } from "../../../src/automation/activity.ts";
@@ -101,6 +102,8 @@ export const auto = {
     const r = await api<{ alerts: Alert[]; unread: Unread }>("/api/alerts?limit=100&with_unread");
     applyInbox(r.unread, r.alerts);
   },
+  // What the waits of these alerts cost now, by alert id (the Inbox's cost lines).
+  waitsNow: (ids: string[]) => api<{ waits: Record<string, WaitNow> }>(`/api/alerts/waits?ids=${encodeURIComponent(ids.join(","))}`).then((r) => r.waits),
   reviewAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/reviews`, { method: "POST", body: JSON.stringify({ agent_id: a.id }) }),
   // An agent's report, read when its card opens: the list and the frames leave it out.
   agentReport: (a: AgentRecord) => api<{ report: string | null }>(`/api/sessions/${a.parent_id}/agents/${a.id}/report`).then((r) => r.report),

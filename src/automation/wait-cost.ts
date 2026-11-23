@@ -13,7 +13,7 @@
 // - The cache: what the asking session's cache plan holds while its tool step
 //   waits (src/engine/cache-plans.ts). A session with no plan has none at stake.
 import { PAUSE_MARGIN_MS } from "../engine/cachewarn.ts";
-import { waitKey, type WaitCost } from "../core/wait-rank.ts";
+import { waitKey, type WaitCost, type WaitFacts, type WaitNow } from "../core/wait-rank.ts";
 import { D } from "./core.ts";
 import * as agents from "./agents.ts";
 
@@ -21,6 +21,20 @@ const OWN_SPEND_SQL = "SELECT COALESCE(SUM(cost), 0) AS c FROM telemetry_calls W
 const DEPTH = 16;
 
 export function waitCost(sessionId: string, now = Date.now()): WaitCost | undefined {
+  const f = factsOf(sessionId, now);
+  return f && { ...f, key: waitKey(f, PAUSE_MARGIN_MS) };
+}
+
+// What the wait costs as it stands now, for its line (the key stays the one it began with):
+// the agents that wait now, and the cache plan's life now (a warm ping lengthens it).
+export function waitNow(sessionId: string, now = Date.now()): WaitNow | undefined {
+  const f = factsOf(sessionId, now);
+  if (!f) return undefined;
+  const { at: _, ...rest } = f;
+  return rest;
+}
+
+function factsOf(sessionId: string, now: number): WaitFacts | undefined {
   const { engine, store } = D();
   if (!store.session(sessionId)) return undefined;
   let n = 0, rate = 0;
@@ -38,8 +52,7 @@ export function waitCost(sessionId: string, now = Date.now()): WaitCost | undefi
     cur = up;
   }
   const cache = engine.cachePlans?.stake(sessionId);
-  const facts = { at: now, agents: n, rate: round(rate), ...(cache ? { tokens: cache.tokens, usd: cache.usd, until: cache.until } : {}) };
-  return { ...facts, key: waitKey(facts, PAUSE_MARGIN_MS) };
+  return { at: now, agents: n, rate: round(rate), ...(cache ? { tokens: cache.tokens, usd: cache.usd, until: cache.until } : {}) };
 }
 
 function rateOf(sessionId: string, since: number, now: number): number {

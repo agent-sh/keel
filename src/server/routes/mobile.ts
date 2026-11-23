@@ -1,7 +1,7 @@
 // The phone: pairing and the device list for the workbench (/api/mobile), the
 // Hermes Mobile API the phone app calls (/v1), and phone push as an alert channel.
 import { renderSVG } from "uqr";
-import { atDesk, get as alertOf, registerChannel, type Alert } from "../../automation/alerts.ts";
+import { atDesk, liveWait, get as alertOf, registerChannel, type Alert } from "../../automation/alerts.ts";
 import { costLine, costs } from "../../core/wait-rank.ts";
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
@@ -50,9 +50,9 @@ export function alertPush(a: Alert, card?: { hold: string[]; glance: boolean; li
     data.hold = held.join(",");
     data.opts = JSON.stringify((card ? card.glance : a.data?.glance === true) ? ["once", "deny"] : ["deny"]);
   }
-  // What the wait costs, and the key the phone orders what waits by (src/core/wait-rank.ts).
-  const w = a.data?.wait;
-  if (costs(w)) { data.cost = costLine(w, Date.now()); data.wk = String(w.key); }
+  // What the wait costs as it stands, and the key the phone orders what waits by: the one it began with (src/core/wait-rank.ts).
+  const now = liveWait(a);
+  if (costs(now)) { data.cost = costLine(now, Date.now()); data.wk = String(a.data.wait.key ?? 0); }
   const high = ["approval", "question", "failed", "loop_failed", "limit", "test"].includes(a.kind);
   data.pri = high ? "high" : "normal";
   return { kind, session_id: a.session_id, high, data };

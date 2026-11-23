@@ -423,6 +423,17 @@ class WireTest {
         assertEquals("cp \u2067\u05d0\u2069 b", card.shown)
     }
 
+    // What waits goes as the daemon lists it: the costliest wait first, then the one whose alert was
+    // raised first (a card's own time can be later or earlier than that), then by id.
+    @Test fun theCardsThatWaitGoByCostThenByWhenTheyWereAsked() {
+        fun card(id: String, ts: Double, key: Double = 0.0, asked: Double = 0.0) = Card(id, "s", "permission", "touch x", "Bash", emptyList(), "pending", null, ts, emptyList(), waitKey = key, asked = asked)
+        val cards = listOf(card("late-card", 1.0, asked = 9.0), card("early-alert", 8.0, asked = 2.0), card("dear", 50.0, key = 0.4, asked = 50.0), card("untold", 5.0))
+        assertEquals(listOf("dear", "early-alert", "untold", "late-card"), nextLook(cards).map { it.id })
+        // The key and the time it was asked go to the app's store and back.
+        val back = Card.of(cards[1].json())
+        assertEquals(2.0, back.asked, 0.0)
+    }
+
     // An answer in a session's screen goes on to the session whose card has waited longest, as the
     // page on a phone does; it stays while its own session still asks, or when nothing waits.
     @Test fun anAnswerGoesOnToTheCardThatWaitedLongest() {

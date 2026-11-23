@@ -11,7 +11,8 @@ import { shoot } from "./shots.ts";
 // sits in a prompt cache that lapses, and a plain question with nothing behind
 // it waits beside it. The approval comes first, its row saying what the wait
 // costs, at a desk and on a phone; the key that goes to what waits goes there
-// first too.
+// first too. While the owner's keyboard or pointer is in the list nothing in it
+// moves: what comes meanwhile joins at the end.
 // The spec runs its own daemon on the scripted stand-in with a prompt cache
 // that keeps 10 minutes (KEEL_SCRIPTED_CACHE_TTL_MS), so each wait's cache
 // plan knows its cache's life and size.
@@ -54,6 +55,13 @@ test("what waits is ordered by what the wait costs, and each row says it", async
     await call(`/api/sessions/${q.id}/messages`, { text: `script:calls ${JSON.stringify([colors])}` });
     await expect.poll(async () => (await alerts()).map((a) => a.kind), { timeout: 30_000 }).toEqual(["question"]);
 
+    // The owner is in the list, on the keyboard (the question's row has focus), when the costlier one comes.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${d.url}/?inbox=1`);
+    await expect(needRows(page)).toHaveCount(1, { timeout: 20_000 });
+    await needRows(page).first().locator("button").first().focus();
+    await expect(page.getByTestId("inbox-list")).toHaveAttribute("data-held", "");
+
     // Then the expensive one: a coordinator's agent waits on an agent of its own, whose command asks,
     // with a context worth a cache.
     const { session: c } = await call("/api/sessions", { model: "scripted:claude-stand-in", title: "Ship the importer" });
@@ -74,11 +82,23 @@ test("what waits is ordered by what the wait costs, and each row says it", async
     expect(asked.agents).toBe(0);
     expect(ask.key).toBeGreaterThan(asked.key);
 
-    // At a desk: the newer approval stands first, with its cost; the question after it.
-    await page.setViewportSize({ width: 1920, height: 1040 });
-    await page.goto(`${d.url}/?inbox=1`);
+    // Nothing moves under the owner: the approval joins at the end, and stays there when the pointer
+    // comes into the list as well. Only when both have left does it take its place.
     await expect(needRows(page)).toHaveCount(2, { timeout: 20_000 });
-    expect(await words(page)).toEqual(["Approval", "Question"]);
+    expect(await words(page)).toEqual(["Question", "Approval"]);
+    const list = page.getByTestId("inbox-list");
+    const box = (await list.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + 10);
+    await page.mouse.move(box.x + box.width / 2, box.y + 30);
+    await expect(list).toHaveAttribute("data-held", "");
+    expect(await words(page)).toEqual(["Question", "Approval"]);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(await words(page)).toEqual(["Question", "Approval"]);
+    await page.mouse.move(0, 0);
+    await expect(list).not.toHaveAttribute("data-held", "");
+
+    // At a desk: the newer approval stands first, with its cost; the question after it.
+    await expect.poll(() => words(page)).toEqual(["Approval", "Question"]);
     const cost = needRows(page).first().getByTestId("inbox-cost");
     await expect(cost).toHaveText(/^3 agents wait( \(\$[\d.]+\/min\))?; cache of \d+K tokens expires in (9|10) min: about \$0\.\d+ to rewrite$/);
     await expect(needRows(page).nth(1).getByTestId("inbox-cost")).toHaveText(/^Cache of \d+K? tokens expires in/);

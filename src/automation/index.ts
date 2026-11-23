@@ -28,7 +28,7 @@ import * as writeAsks from "./write-asks.ts";
 import * as agents from "./agents.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
-import { waitCost } from "./wait-cost.ts";
+import { waitCost, waitNow } from "./wait-cost.ts";
 import * as failures from "./failures.ts";
 import * as outage from "./outage.ts";
 import * as snooze from "./snooze.ts";
@@ -85,6 +85,7 @@ function init(deps: Deps) {
   deps.engine.waitShape = (id) => waits.shapeOf(id);
   // What a wait on the owner costs as it begins, kept with its alert (the next-look queue's key).
   alerts.waitHook.of = (id) => waitCost(id);
+  alerts.waitHook.now = (id) => waitNow(id);
   agents.migrate();
   writeAsks.init();
   leftovers.migrate(deps.store);
@@ -715,6 +716,13 @@ export const automationRoutes: RouteModule = (deps) => {
           alerts: alerts.list({ before: q.get("before") ?? undefined, limit, unread: q.has("unread"), withUnread: q.has("with_unread") }),
           unread: alerts.unreadCounts(),
         }));
+      },
+    },
+    // What the waits of these alerts (by id, comma separated) cost now: the Inbox's cost lines, again on its clock.
+    "/api/alerts/waits": {
+      GET: (req: Request) => {
+        const ids = (new URL(req.url).searchParams.get("ids") ?? "").split(",").filter(Boolean);
+        return attempt(async () => json({ waits: alerts.waitsNow(ids) }));
       },
     },
     "/api/alerts/read": {

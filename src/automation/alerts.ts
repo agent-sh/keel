@@ -18,7 +18,7 @@ import { classOfText } from "../admin/classes.ts";
 import { groupsOf } from "./failures.ts";
 import { exampleOf, OTHERS, SELF } from "./failure-groups.ts";
 import { handShell, shellShows, tellShells } from "../server/shell.ts";
-import { costLine, costs, rankWaiting, type WaitCost } from "../core/wait-rank.ts";
+import { costLine, costs, rankWaiting, type WaitCost, type WaitNow } from "../core/wait-rank.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -52,6 +52,9 @@ export type Alert = {
   kept: boolean;
   // An ask whose card still waits for the owner, read or not (told with a list, not stored).
   open?: boolean;
+  // What the wait costs as the list is read, for its line (told with a list, not stored; the
+  // order's key is the one kept with it as it began: src/core/wait-rank.ts).
+  wait_now?: WaitNow;
   // What became of an ask that waits no more, in words (told with a list): how an approval was
   // answered (its choice, from where, by a rule), whether a question was answered or declined.
   outcome?: string;
@@ -110,6 +113,11 @@ INSERT OR IGNORE INTO alert_rev (id, n) VALUES (1, 0);`);
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_far ON alerts(far_id) WHERE far_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS alerts_far_session ON alerts(far_session) WHERE far_session IS NOT NULL;
 CREATE TABLE IF NOT EXISTS alert_far (machine TEXT PRIMARY KEY, ts INTEGER NOT NULL);
+-- An ask's alerts by the card they tell of: the row a card raised again replaces, and the cost
+-- its wait began with, read for the cards that wait and nothing else (waitsOf).
+CREATE INDEX IF NOT EXISTS alerts_approval_id ON alerts(json_extract(data, '$.approval_id')) WHERE kind = 'approval';
+CREATE INDEX IF NOT EXISTS alerts_call_id ON alerts(json_extract(data, '$.call_id')) WHERE kind = 'question';
+CREATE INDEX IF NOT EXISTS alerts_plan_id ON alerts(json_extract(data, '$.plan_id')) WHERE kind = 'question';
 CREATE TABLE IF NOT EXISTS alert_far_reads (machine TEXT NOT NULL, alert TEXT NOT NULL, PRIMARY KEY (machine, alert));`);
   sweep();
   const g = globalThis as { __keelAlertSweep?: ReturnType<typeof setInterval> };
@@ -269,9 +277,10 @@ export function list(opts: { before?: string; limit?: number; unread?: boolean; 
     for (const r of readAsksWaiting(rows.map(toAlert))) if (!have.has(r.id)) rows.push(r);
     rows.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
   }
+  const memo = new Map<string, WaitNow | undefined>();
   return rows.map(toAlert).map((a) => {
-    if (!ASK_KINDS.includes(a.kind)) return a;
-    if (waits(a)) return { ...a, open: true };
+    if (!ASK_KINDS.includes(a.kind)) return withNow(a, false, memo);
+    if (waits(a)) return withNow({ ...a, open: true }, true, memo);
     const outcome = outcomeOf(a);
     return outcome ? { ...a, outcome } : a;
   });
@@ -410,6 +419,9 @@ export function retry(id: string): Alert | undefined {
 }
 
 const DECISION: Partial<Record<AlertKind, string>> = { approval: "approval_id", question: "call_id" };
+// A decision's key as the text of its JSON path: written in the statement (a bound path cannot use the
+// card's index: alerts_approval_id, alerts_call_id), one fixed text a key.
+const KEY_PATH: Record<string, string> = { approval_id: "'$.approval_id'", call_id: "'$.call_id'", plan_id: "'$.plan_id'" };
 // The session a question's alert was asked in (an agent's own, under its parent's inbox row).
 const ASKED_IN = "COALESCE(json_extract(data, '$.open_session'), session_id, far_session)";
 
@@ -450,26 +462,71 @@ const absorbedBy = (kind: AlertKind, sessionId: string, data: unknown) => {
 
 // What a wait on the owner costs as it begins (src/automation/wait-cost.ts), kept with the alert of
 // an ask or a failure: the next-look queue's key (src/core/wait-rank.ts).
-export const waitHook: { of?: (sessionId: string) => WaitCost | undefined } = {};
+// `now`: what it costs as it stands, for the line an alert says when it is listed or told.
+export const waitHook: { of?: (sessionId: string) => WaitCost | undefined; now?: (sessionId: string) => WaitNow | undefined } = {};
 const COSTED = new Set<AlertKind>(["approval", "question", "failed"]);
 
-// The cost each ask that waits began with, by its card (an approval's id, a question's or a plan's
-// session and id), with the time it was first asked: what the phone orders its cards by. One read
-// from the alerts asked since `since` (the oldest card that waits), on the time index.
+// The cost each card that waits began with, and the time it was first asked: what the phone
+// orders its cards by. Read by the card's own key on its index, one row a card: an approval by
+// its id, a question by its call and a plan by its id, each in the session that asks.
 export type WaitOf = { wait?: WaitCost; ts: number };
-export function waitsSince(since: number): { approval: Map<string, WaitOf>; question: Map<string, WaitOf>; plan: Map<string, WaitOf> } {
-  const out = { approval: new Map<string, WaitOf>(), question: new Map<string, WaitOf>(), plan: new Map<string, WaitOf>() };
-  const rows = D().store.db.query<{ kind: string; ts: number; data: string | null; session_id: string | null }, [number]>(
-    "SELECT kind, ts, data, session_id FROM alerts WHERE ts >= ? AND far_id IS NULL AND kind IN ('approval', 'question') ORDER BY ts").all(since);
-  for (const r of rows) {
-    let d: any;
-    try { d = r.data ? JSON.parse(r.data) : {}; } catch { continue; }
-    const at = { ...(d.wait ? { wait: d.wait as WaitCost } : {}), ts: r.ts };
-    const asker = d.open_session ?? d.child_session ?? r.session_id;
-    const put = (m: Map<string, WaitOf>, k: string) => { if (!m.has(k)) m.set(k, at); };
-    if (r.kind === "approval" && d.approval_id) put(out.approval, String(d.approval_id));
-    else if (d.plan_id) put(out.plan, `${asker}.${d.plan_id}`);
-    else if (d.call_id) put(out.question, `${asker}.${d.call_id}`);
+export type WaitCard = { approval: string } | { call: string; session: string } | { plan: string; session: string };
+const FIRST = "SELECT ts AS t, json_extract(data, '$.wait') AS w FROM alerts WHERE far_id IS NULL AND ";
+export const WAIT_OF_SQL = {
+  approval: `${FIRST}kind = 'approval' AND json_extract(data, '$.approval_id') = ? ORDER BY ts LIMIT 1`,
+  call: `${FIRST}kind = 'question' AND json_extract(data, '$.call_id') = ? AND ${ASKED_IN} = ? ORDER BY ts LIMIT 1`,
+  plan: `${FIRST}kind = 'question' AND json_extract(data, '$.plan_id') = ? AND ${ASKED_IN} = ? ORDER BY ts LIMIT 1`,
+};
+export function waitOf(card: WaitCard): WaitOf | undefined {
+  const db = D().store.db;
+  const r = "approval" in card ? db.query<{ t: number; w: string | null }, [string]>(WAIT_OF_SQL.approval).get(card.approval)
+    : "call" in card ? db.query<{ t: number; w: string | null }, [string, string]>(WAIT_OF_SQL.call).get(card.call, card.session)
+    : db.query<{ t: number; w: string | null }, [string, string]>(WAIT_OF_SQL.plan).get(card.plan, card.session);
+  if (!r) return undefined;
+  let wait: WaitCost | undefined;
+  if (r.w) try { wait = JSON.parse(r.w); } catch {}
+  return { ts: r.t, ...(wait ? { wait } : {}) };
+}
+
+// What a wait costs now, for the line of an alert that waits on the owner (an ask whose card waits,
+// a failure of a session still failed that the owner has not looked at). `memo`: one walk a session.
+const askerOfAlert = (a: Alert): string | null => a.data?.child_session ?? a.data?.open_session ?? a.session_id;
+function nowOf(a: Alert, open: boolean, memo: Map<string, WaitNow | undefined>): WaitNow | undefined {
+  if (!waitHook.now || a.data?.far) return undefined;
+  const asker = askerOfAlert(a);
+  if (!asker) return undefined;
+  if (!open && !(a.kind === "failed" && !a.read && D().store.session(asker)?.settings?.failed_ms)) return undefined;
+  if (!memo.has(asker)) {
+    let w: WaitNow | undefined;
+    try { w = waitHook.now(asker); } catch (e) { capture(e, { at: "the cost of a wait now", kind: a.kind }); }
+    memo.set(asker, w);
+  }
+  return memo.get(asker);
+}
+const withNow = (a: Alert, open: boolean, memo: Map<string, WaitNow | undefined>): Alert => {
+  const w = nowOf(a, open, memo);
+  return w ? { ...a, wait_now: w } : a;
+};
+
+// What an alert's wait costs as it is told (a notification, a push, sent now or released later):
+// as it stands now, else as it began. Only an alert whose wait was costed as it began says one.
+export function liveWait(a: Pick<Alert, "session_id" | "data">): WaitNow | undefined {
+  if (!a.data?.wait) return undefined;
+  const asker = askerOfAlert(a as Alert);
+  try { return (asker ? waitHook.now?.(asker) : undefined) ?? a.data.wait; } catch { return a.data.wait; }
+}
+
+// What the waits of these alerts cost now, by alert id (the page's line, again on its clock).
+export function waitsNow(ids: string[]): Record<string, WaitNow> {
+  const db = D().store.db;
+  const memo = new Map<string, WaitNow | undefined>();
+  const out: Record<string, WaitNow> = {};
+  for (const id of ids.slice(0, 200)) {
+    const r = db.query<Row, [string]>("SELECT * FROM alerts WHERE id = ?").get(id);
+    if (!r) continue;
+    const a = toAlert(r);
+    const w = nowOf(a, ASK_KINDS.includes(a.kind) && waits(a), memo);
+    if (w) out[id] = w;
   }
   return out;
 }
@@ -534,8 +591,9 @@ function file(x: Filing): Alert | undefined {
   // And the cost it had when it began to wait: the queue's key is read once (src/core/wait-rank.ts).
   let first: unknown;
   if (key && decision) {
-    const r = store.db.query<{ t: number; w: string | null }, string[]>(`SELECT ts AS t, json_extract(data, '$.wait') AS w FROM alerts WHERE kind = ? AND json_extract(data, ?) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin} ORDER BY ts LIMIT 1`)
-      .get(...[kind, `$.${key}`, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
+    // (The kind is written in the statement, so the card's index serves it.)
+    const r = store.db.query<{ t: number; w: string | null }, string[]>(`SELECT ts AS t, json_extract(data, '$.wait') AS w FROM alerts WHERE kind = '${kind}' AND json_extract(data, ${KEY_PATH[key]}) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin} ORDER BY ts LIMIT 1`)
+      .get(...[String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
     asked = r?.t ?? undefined;
     if (r?.w) try { first = JSON.parse(r.w); } catch {}
   }
@@ -546,8 +604,8 @@ function file(x: Filing): Alert | undefined {
     // An approval the owner has looked at and not answered is still listed while it waits: told of
     // again (its card changed while it waits), it is the same row, not a second one beside it.
     if (kind === "approval" && store.db.query(`SELECT 1 FROM alerts WHERE read = 1 AND kind = 'approval' AND json_extract(data, '$.approval_id') = ?${origin} LIMIT 1`).get(...[String(decision), ...theirs])) return undefined;
-    store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, ?) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
-      .run(...[kind, `$.${key}`, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
+    store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = '${kind}' AND json_extract(data, ${KEY_PATH[key]}) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
+      .run(...[String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
   } else if (sid && failureFp(data)) {
     // Agents' failures of one cause are one row a cause: a newer count replaces the unread row of its cause, never the session's own failure.
     store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ?`).run(sid, kind, failureFp(data)!);
@@ -1097,7 +1155,8 @@ registerChannel({
   available: () => shellShows() || (process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!(Bun.which("gjs") || Bun.which("gdbus"))),
   async deliver(given) {
     // What the wait costs, under what it is: the order the Inbox lists it in, said (src/core/wait-rank.ts).
-    const cost = costs(given.data?.wait) ? costLine(given.data.wait, Date.now()) : "";
+    const now = liveWait(given);
+    const cost = costs(now) ? costLine(now, Date.now()) : "";
     const a = cost ? { ...given, body: `${given.body}\n${cost}` } : given;
     const key = a.session_id ?? "_";
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;

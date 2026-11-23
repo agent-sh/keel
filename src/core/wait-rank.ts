@@ -20,6 +20,11 @@
 // never change places. A new one takes its place by its key. Ties, and every
 // item of no cost, go by the wait: the oldest first, then by id.
 //
+// The line an item says is not the key's: it says what the wait costs as it
+// stands when the list is read (the agents that wait now, the cache's life
+// now: a warm ping lengthens it), so its words are never facts of the past
+// told in the present.
+//
 // Imports nothing: the page and the daemon both use it.
 
 export type WaitCost = {
@@ -33,9 +38,13 @@ export type WaitCost = {
 };
 
 export type WaitFacts = Omit<WaitCost, "key">;
+// What a wait costs at one moment, for its line: the facts without when it began or its key.
+export type WaitNow = Omit<WaitCost, "key" | "at">;
 
-// The key of a wait from its facts. `margin`: what a request needs of a cache's
-// lifetime before it ends (src/engine/cachewarn.ts PAUSE_MARGIN_MS).
+// The key of a wait from its facts: the agents' rate, plus the cache's rewrite
+// spread over the minutes it had left as the wait began, less the `margin` a
+// request needs of a cache's lifetime before it ends (src/engine/cachewarn.ts
+// PAUSE_MARGIN_MS). No minutes left (lapsed, or within the margin): the cache adds nothing.
 export function waitKey(f: WaitFacts, margin: number): number {
   const left = f.until !== undefined ? (f.until - f.at - margin) / 60_000 : 0;
   const cache = f.usd && left > 0 ? f.usd / left : 0;
@@ -64,11 +73,11 @@ const span = (ms: number) => {
 };
 
 // Whether the wait costs anything to say: agents wait behind it, or a cache is at stake.
-export const costs = (c: WaitCost | null | undefined): c is WaitCost => !!c && (c.agents > 0 || (!!c.tokens && !!c.usd && c.until !== undefined));
+export const costs = (c: WaitNow | null | undefined): c is WaitNow => !!c && (c.agents > 0 || (!!c.tokens && !!c.usd && c.until !== undefined));
 
 // The item's cost in one short line, as it stands at `now`:
 // "3 agents wait ($0.12/min); cache of 180K tokens expires in 2 min: about $0.90 to rewrite".
-export function costLine(c: WaitCost | null | undefined, now: number): string {
+export function costLine(c: WaitNow | null | undefined, now: number): string {
   if (!c) return "";
   const parts: string[] = [];
   if (c.agents > 0) parts.push(`${c.agents} ${c.agents === 1 ? "agent waits" : "agents wait"}${c.rate >= 0.0001 ? ` (${usd(c.rate)}/min)` : ""}`);
