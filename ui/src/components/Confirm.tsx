@@ -25,7 +25,11 @@ import { CommandWords } from "./CommandWords.tsx";
 // `code`: a command shown exactly as it will run, in a box of its own under
 // the body (its arguments, so a line breaks between them). `after`: lines
 // under the box, a paragraph each.
-type Ask = { title: string; body?: string; action: string; danger?: boolean; careful?: boolean; alt?: string; code?: string[]; after?: string[] };
+//
+// `recheck`: read again what the answer is given for, as the action is pressed. A new question
+// (what changed meanwhile made the action cost more) takes the dialog's place, with the keyboard
+// on Cancel and the settle time begun again, and the press answers nothing.
+type Ask = { title: string; body?: string; action: string; danger?: boolean; careful?: boolean; alt?: string; code?: string[]; after?: string[]; recheck?: () => Promise<Partial<Omit<Ask, "recheck">> | null> };
 let current: (Ask & { resolve: (ok: any) => void; at: number }) | null = null;
 const subs = new Set<() => void>();
 const emit = () => subs.forEach((f) => f());
@@ -75,6 +79,22 @@ export function ConfirmHost() {
     timer.current = window.setTimeout(() => setRefused(null), SETTLE_MS);
     return false;
   };
+  // The action: answered, unless reading again what it is for asks a new question.
+  const checking = useRef(false);
+  const act = async () => {
+    const was = current;
+    if (!was?.recheck) return close(true);
+    if (checking.current) return;
+    checking.current = true;
+    try {
+      const again = await was.recheck().catch(() => null);
+      if (current !== was) return; // answered or replaced meanwhile
+      if (!again) return close(true);
+      current = { ...was, ...again, careful: true, at: performance.now() };
+      emit();
+      cancel.current?.focus();
+    } finally { checking.current = false; }
+  };
   // The mark of a refused press, as on a refused approval: the warning outline, and one small move.
   const marked = (on: boolean): React.CSSProperties | undefined => (on ? { outline: "2px solid var(--warn)", outlineOffset: "1px", animation: "k-nudge 320ms var(--ease-out)" } : undefined);
   return (
@@ -115,7 +135,7 @@ export function ConfirmHost() {
               data-testid="confirm-action"
               data-nudge={refused === "action" || undefined}
               style={marked(refused === "action")}
-              onClick={(e) => { if (answers(e, "action")) close(true); }}
+              onClick={(e) => { if (answers(e, "action")) void act(); }}
               className={cn("h-8 rounded-md px-3 text-ui font-medium", ask?.danger ? "bg-danger text-accent-fg hover:opacity-90" : "bg-accent text-accent-fg hover:bg-accent-hover")}
             >
               {ask?.action}

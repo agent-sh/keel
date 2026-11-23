@@ -40,6 +40,56 @@ test("the restart question counts the turns that wait on you apart from those th
   await drop(request, one, two, busy);
 });
 
+// The answer is read against the daemon as it is when it is given: a turn that started while the
+// question stood, or a command in a terminal (it ends with the daemon), is asked about again, on Cancel.
+test("a restart asks again, on Cancel, when work started while its question stood, and counts terminals", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("restart-again");
+  const before = (await (await request.get("/api/daemon")).json()).pid as number;
+  const busy = await create(request, "Starts while asked", ws);
+  await request.put(`/api/sessions/${busy}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  const gpt = (await (await request.post("/api/sessions", { data: { model: "scripted:gpt-stand-in", title: "Runs in a terminal", workspace: ws } })).json()).session.id as string;
+  await request.put(`/api/sessions/${gpt}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  try {
+    await page.goto("/");
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("restart");
+    await expect(page.getByRole("option").first()).toContainText("Restart Keel");
+    await page.keyboard.press("Enter");
+    const confirm = page.getByTestId("confirm");
+    await expect(confirm).toContainText("No turn is working. The page reconnects by itself.");
+    await expect(confirm.getByTestId("confirm-action")).toBeFocused();
+    // Meanwhile a turn starts working.
+    await request.post(`/api/sessions/${busy}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 30" } }]) } });
+    await expect.poll(async () => (await daemon(request)).running.includes(busy), { timeout: 30_000 }).toBe(true);
+    await page.keyboard.press("Enter");
+    await expect(confirm).toContainText("1 turn is working.");
+    await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await shoot(page, "restart-ask-04-again");
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(confirm).toHaveCount(0);
+    expect((await (await request.get("/api/daemon")).json()).pid).toBe(before);
+    await request.post(`/api/sessions/${busy}/interrupt`, { data: { by: "owner" } });
+    await expect.poll(async () => (await daemon(request)).running.includes(busy), { timeout: 30_000 }).toBe(false);
+
+    // A command left running in a terminal, its turn over: it ends with the daemon, so it is work.
+    await request.post(`/api/sessions/${gpt}/messages`, { data: { text: calls([{ name: "exec_command", input: { cmd: "sleep 120", tty: true, yield_time_ms: 250 } }]) } });
+    await expect.poll(async () => ((await daemon(request)) as { terminals?: number }).terminals, { timeout: 30_000 }).toBe(1);
+    await expect.poll(async () => (await daemon(request)).running.includes(gpt), { timeout: 30_000 }).toBe(false);
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("restart");
+    await expect(page.getByRole("option").first()).toContainText("Restart Keel");
+    await page.keyboard.press("Enter");
+    await expect(confirm).toContainText("No turn is working. 1 command runs in a terminal and ends with the restart.");
+    await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+  } finally {
+    for (const j of ((await (await request.get(`/api/sessions/${gpt}/jobs`)).json()).jobs ?? []) as { id: string }[]) await request.post(`/api/sessions/${gpt}/jobs/${j.id}/stop`);
+    await drop(request, busy, gpt);
+  }
+});
+
 // A dev daemon's page reloads itself once its reload socket finds the server again after a
 // restart (daemon.spec.ts says why): the test waits for that before it navigates.
 function selfReload(page: Page, hmr: { on: boolean }): () => Promise<void> {

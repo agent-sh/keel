@@ -20,6 +20,7 @@ import { beatLife, endLife, lifeDraining, restarts } from "./life.ts";
 import { describeStall, type Stall, StallMonitor, TurnWatch, unanswered, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
+import { liveJobs } from "../tools/jobs.ts";
 
 export * from "../core/daemon-lock.ts";
 export { relaunchArgv };
@@ -236,6 +237,8 @@ export class Daemon {
       // Of those, the turns that do nothing but wait on the owner (an approval, a question, a plan): a
       // restart does not wait for them, and they ask again after it.
       waiting: this.runningSessions().filter((id) => this.deps.engine.waitsOnOwner(id)),
+      // Commands that run in a terminal this daemon holds (a tty): unlike other commands, they end with it.
+      terminals: liveJobs().filter((j) => j.pty).length,
       draining: this.draining,
       // What the daemon before this one left to be said at this start (a restart that made no backup, writes it could not save).
       start_notes: startNotes,
