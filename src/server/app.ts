@@ -95,6 +95,12 @@ function withModules(core: Record<string, any>, modules: RouteModule[], deps: De
 // The UI's pages; the client routes the rest.
 const PAGES = ["/", "/s/:id", "/p/:id", "/settings", "/settings/:section"];
 
+// Routes that name a session and read only its rows in the table, never its events as kept in
+// memory: a request to one brings nothing in (Store.warm). A session brought in stays for an hour,
+// so a reader that asks one of these of every session (a page of timelines, a sampler) would
+// otherwise hold every session's events in memory, up to the whole budget.
+const TABLE_READS = new Set(["GET /api/sessions/:id/timeline"]);
+
 // The route a request matched, as it is registered: each value of its path is its parameter's name.
 function routeOf(req: Request & { params?: Record<string, string> }): string {
   const values = new Map(Object.entries(req.params ?? {}).map(([k, v]) => [v, k] as const));
@@ -162,7 +168,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         // waits for it. Not for a read that asks for no event (`events=0`,
         // a cursor): those read a row or a part, and bring nothing in.
         const sid = req.params?.id;
-        if (typeof sid === "string" && !store.isKept(sid)) {
+        if (typeof sid === "string" && !store.isKept(sid) && !TABLE_READS.has(routeOf(req))) {
           const url = new URL(req.url);
           // (Nor for the whole session, which the read thread writes from the table.)
           const whole = req.method === "GET" && url.pathname === `/api/sessions/${sid}` && !(Number(url.searchParams.get("page")) > 0);
