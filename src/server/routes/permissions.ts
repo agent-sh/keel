@@ -12,6 +12,7 @@ import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
 import { stopKind } from "../../core/stops.ts";
 import { registerHooks } from "../../engine/hooks.ts";
+import { skillRun } from "../../tools/skills.ts";
 import { toolFacts, webUse } from "../../tools/registry.ts";
 import { catalogReady } from "../../tools/catalog.ts";
 import { RUN_CODE } from "../../tools/codemode.ts";
@@ -85,7 +86,10 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     toolRan: (s, call) => g.settled(s.id, call.id),
     resultStored: (s, results) => { for (const r of results) g.settled(s.id, r.tool_use_id); },
     turnStart: (s) => g.turnStarted(s.id),
+    turnEnd: (s) => g.turnEnded(s.id),
   });
+  // A skill's allowed-tools hold for the turn that invoked it (src/tools/skills.ts).
+  skillRun.grant = (sid, rules, from, next) => { const s = store.session(sid); if (s) g.grantTurn(s, rules, from, next); };
 
   const presenceCall = async (f: () => Promise<Response>) => {
     try { return await f(); } catch (e) {

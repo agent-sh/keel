@@ -72,3 +72,49 @@ test("skills: listed, run by the owner, loaded by the model", async ({ page, req
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// Feature: what a skill's frontmatter asks for (Claude Code's skills
+// reference). allowed-tools run without asking in the turn that loaded the
+// skill and ask again in the next; context: fork runs the skill as an agent
+// of its own (background: false waits for its report in the same call); the
+// owner's /command of an inline skill grants its tools for the turn it starts.
+test("skills: allowed-tools for one turn, context: fork as an agent", async ({ page, request }) => {
+  test.skip(!SCRIPTED, "drives the calls with the scripted model");
+  const tag = Date.now().toString(36);
+  const ws = join(process.env.KEEL_DEV_DIR ?? `${process.env.HOME}/.cache/keel-work/bun/dev-tools`, `skills-fm-${tag}`);
+  const skill = (name: string, front: string, body: string) => {
+    mkdirSync(join(ws, ".claude/skills", name), { recursive: true });
+    writeFileSync(join(ws, ".claude/skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: Test skill ${name}\n${front}---\n${body}\n`);
+  };
+  skill(`grant-${tag}`, `allowed-tools: Bash(touch granted-${tag}.txt) Write\n`, "Touch the file.");
+  skill(`fork-${tag}`, "context: fork\nbackground: false\n", `script:say forked-${tag}-done`);
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  const results = async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results.map((r: any) => JSON.stringify(r.content)));
+  const send = (c: unknown[]) => request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(c)}` } });
+  const touch = { name: "Bash", input: { command: `touch granted-${tag}.txt` } };
+  const ends = async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[]).filter((e) => e.kind === "turn_end").length;
+
+  // The model loads the skill: its command runs without a card in that turn.
+  await send([{ name: "Skill", input: { skill: `grant-${tag}` } }, touch]);
+  await expect.poll(async () => (await results()).length, { timeout: 60_000 }).toBe(2);
+  expect((await results())[0]).toContain("run without asking, as the skill's allowed-tools say");
+  expect((await (await request.get(`/api/sessions/${session.id}/approvals`)).json()).approvals ?? []).toHaveLength(0);
+  await expect.poll(ends, { timeout: 30_000 }).toBe(1);
+  // The next turn: the same command asks again.
+  await send([touch]);
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("approval").first().getByTestId("approval-summary")).toContainText(`touch granted-${tag}.txt`, { timeout: 30_000 });
+  await shoot(page, "skills-04-grant-ended");
+  const [card] = (await (await request.get(`/api/sessions/${session.id}/approvals`)).json()).approvals;
+  expect((await request.post(`/api/sessions/${session.id}/approvals/${card.id}`, { data: { choice: "deny", reason: "not this turn" } })).ok()).toBe(true);
+
+  // context: fork: the skill is an agent's task; background: false waits for its report.
+  await expect.poll(ends, { timeout: 30_000 }).toBe(2);
+  const before = (await results()).length;
+  await send([{ name: "Skill", input: { skill: `fork-${tag}` } }]);
+  await expect.poll(async () => (await results()).length, { timeout: 60_000 }).toBe(before + 1);
+  expect((await results()).at(-1)).toContain(`forked-${tag}-done`);
+  const agents = (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as any[];
+  expect(agents.map((a) => a.title)).toContain(`/fork-${tag}`);
+});

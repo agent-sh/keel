@@ -9,7 +9,9 @@ import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { enabledUnits } from "../plugins/registry.ts";
-import { fail, ok, type Tool, type ToolContext } from "./types.ts";
+import { claudeAllow } from "../integrations/port-permissions.ts";
+import type { RuleKind } from "../safety/policy.ts";
+import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { offerToSandbox } from "../safety/sandbox-view.ts";
 
 export type Skill = {
@@ -27,7 +29,28 @@ export type Skill = {
   enabled: boolean; // the owner can turn a skill off without deleting it
   data?: string; // a plugin's folder that outlives its updates (${CLAUDE_PLUGIN_DATA})
   plugin?: string; // the installed plugin it came with
+  // Claude Code's frontmatter for how it runs (code.claude.com/docs/en/skills):
+  allowedTools?: string[]; // run without asking in the turn that invoked it
+  model?: string;          // the model it runs on (with context: fork, the agent's)
+  fork?: { agent?: string; background: boolean }; // context: fork: it runs as an agent of its own
 };
+
+// A list field as Claude Code takes it: a YAML list, or one string split at spaces and commas
+// (outside a rule's parentheses: "Bash(git add *) Read" is two).
+export function listField(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String).map((x) => x.trim()).filter(Boolean);
+  if (typeof v !== "string") return [];
+  const out: string[] = [];
+  let cur = "", depth = 0;
+  for (const c of v) {
+    if (c === "(") depth++;
+    if (c === ")") depth = Math.max(0, depth - 1);
+    if (!depth && (c === " " || c === ",")) { if (cur.trim()) out.push(cur.trim()); cur = ""; continue; }
+    cur += c;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
 
 // <config>/skills.json: the skills the owner turned off, by name ("off"), the
 // other folders Keel reads skills from ("roots", e.g. Codex's), and the Claude
@@ -191,6 +214,9 @@ export function discoverSkills(cwd: string): Skill[] {
       root,
       enabled: !off.has(name),
       ...(unit ? { data: unit.data, plugin: unit.id } : {}),
+      ...(listField(data["allowed-tools"]).length ? { allowedTools: listField(data["allowed-tools"]) } : {}),
+      ...(typeof data.model === "string" && data.model.trim() && data.model.trim() !== "inherit" ? { model: data.model.trim() } : {}),
+      ...(data.context === "fork" ? { fork: { ...(typeof data.agent === "string" && data.agent.trim() ? { agent: data.agent.trim() } : {}), background: data.background !== false } } : {}),
     });
   };
   const list = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
@@ -280,7 +306,49 @@ export function renderSkill(body: string, args: string, names: string[], vars: R
   return out;
 }
 
-export function loadSkill(name: string, args: string, ctx: ToolContext) {
+// What ${...} stands for in a skill's text and in its allowed-tools rules.
+function varsOf(skill: Skill, cwd: string, sessionId: string): Record<string, string> {
+  return {
+    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root, ...(skill.data ? { CLAUDE_PLUGIN_DATA: skill.data } : {}) } : {}), CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
+    CLAUDE_SESSION_ID: sessionId, KEEL_SESSION_ID: sessionId,
+  };
+}
+
+// A skill's allowed-tools as Keel's rules: each one maps as a Claude Code
+// allow rule does (src/integrations/port-permissions.ts), with the skill's
+// variables filled in (Claude Code does so in Bash rules). A write tool is an
+// edit rule (Keel has one rule for every edit tool). Reads need no rule. What
+// cannot be held the same way is named, never widened.
+export function skillRules(skill: Skill, vars: Record<string, string>): { rules: { kind: RuleKind; pattern: string }[]; left: string[] } {
+  const rules: { kind: RuleKind; pattern: string }[] = [];
+  const left: string[] = [];
+  for (const raw of skill.allowedTools ?? []) {
+    const rule = raw.replace(/\$\{([A-Z_]+)\}/g, (m, k) => vars[k] ?? m).replace(/^(Write|MultiEdit|NotebookEdit)\b/, "Edit");
+    const m = claudeAllow(rule, vars.CLAUDE_PROJECT_DIR);
+    if ("kind" in m) rules.push({ kind: m.kind, pattern: m.pattern });
+    else if ("skip" in m) left.push(`${raw} (${m.skip})`);
+  }
+  return { rules, left };
+}
+
+// Where the daemon gives a skill what it asks for beyond its text: a turn's
+// grant of its allowed-tools (the permission gate), and an agent of its own
+// for one with context: fork (the agents). Unset, a skill loads as text alone.
+export const skillRun: {
+  grant?: (sessionId: string, rules: { kind: RuleKind; pattern: string }[], from: string, next: boolean) => void;
+  fork?: (ctx: ToolContext, skill: Skill, prompt: string) => Promise<ToolOutput>;
+} = {};
+
+// What a skill's frontmatter did besides its text, said with it (to the model or the owner).
+function said(skill: Skill, left: string[], granted: boolean): string {
+  const out: string[] = [];
+  if (granted) out.push(`For this turn these run without asking, as the skill's allowed-tools say: ${(skill.allowedTools ?? []).join(", ")}.`);
+  if (left.length) out.push(`Its allowed-tools Keel cannot hold the same way, so they ask as usual: ${left.join("; ")}.`);
+  if (skill.model && !skill.fork) out.push(`It names the model ${skill.model}; an inline skill runs on the session's model in Keel (with context: fork, its agent runs on it).`);
+  return out.length ? `\n\n[keel] ${out.join(" ")}` : "";
+}
+
+export async function loadSkill(name: string, args: string, ctx: ToolContext): Promise<ToolOutput> {
   const skill = discoverSkills(ctx.cwd).filter((s) => s.enabled).find((s) => s.name === name || s.name === name.replace(/^\//, ""));
   if (!skill) {
     const names = discoverSkills(ctx.cwd).filter((s) => s.modelInvocable && s.enabled).map((s) => s.name);
@@ -288,31 +356,41 @@ export function loadSkill(name: string, args: string, ctx: ToolContext) {
   }
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
-  const text = renderSkill(body, args ?? "", skill.arguments, {
-    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root, ...(skill.data ? { CLAUDE_PLUGIN_DATA: skill.data } : {}) } : {}), CLAUDE_PROJECT_DIR: gitRoot(ctx.cwd) ?? ctx.cwd,
-    CLAUDE_SESSION_ID: ctx.sessionId, KEEL_SESSION_ID: ctx.sessionId,
-  });
+  const vars = varsOf(skill, ctx.cwd, ctx.sessionId);
+  const text = renderSkill(body, args ?? "", skill.arguments, vars);
+  // context: fork: the skill is an agent's task, not this conversation's text.
+  if (skill.fork && skillRun.fork) {
+    usage?.record(skill.name);
+    return skillRun.fork(ctx, skill, `Base directory for this skill: ${skill.dir}\n\n${text.trim()}`);
+  }
   // Sent again unless the model can still see it: after a clear, a rewind or
   // another branch it is gone from the context even though it was loaded.
   if (ctx.inContext?.(text.trim())) return ok(`The skill "${skill.name}" is already loaded above; follow it.`);
   usage?.record(skill.name);
-  return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}`);
+  const { rules, left } = skillRules(skill, vars);
+  if (rules.length) skillRun.grant?.(ctx.sessionId, rules, skill.name, false);
+  return ok(`Base directory for this skill: ${skill.dir}\n\n${text.trim()}${said(skill, left, rules.length > 0 && !!skillRun.grant)}`);
 }
 
 // The owner invoking a skill from the message box: same rendering, and skills
 // hidden from the model are allowed; ones marked not user-invocable are not.
-export function renderForOwner(name: string, args: string, cwd: string, sessionId: string): { skill: Skill; text: string } | { error: string } {
+// Its allowed-tools hold for the turn the owner's command starts (`grant`).
+export function renderForOwner(name: string, args: string, cwd: string, sessionId: string, opts: { grant?: boolean; count?: boolean } = {}): { skill: Skill; text: string } | { error: string } {
   const skill = discoverSkills(cwd).find((s) => s.name === name);
   if (!skill) return { error: `no skill named ${name}` };
   if (!skill.userInvocable) return { error: `${name} is not meant to be invoked by hand` };
   if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
-  const text = renderSkill(body, args, skill.arguments, {
-    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root, ...(skill.data ? { CLAUDE_PLUGIN_DATA: skill.data } : {}) } : {}), CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
-    CLAUDE_SESSION_ID: sessionId, KEEL_SESSION_ID: sessionId,
-  });
-  usage?.record(skill.name);
-  return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}` };
+  const vars = varsOf(skill, cwd, sessionId);
+  const text = renderSkill(body, args, skill.arguments, vars);
+  if (opts.count !== false) usage?.record(skill.name);
+  let extra = "";
+  if (opts.grant && !skill.fork) {
+    const { rules, left } = skillRules(skill, vars);
+    if (rules.length) skillRun.grant?.(sessionId, rules, skill.name, true);
+    extra = said(skill, left, rules.length > 0 && !!skillRun.grant);
+  }
+  return { skill, text: `Base directory for this skill: ${skill.dir}\n\n${text.trim()}${extra}` };
 }
 
 // The listing, as Claude Code keeps it (code.claude.com/docs/en/skills,

@@ -6,6 +6,7 @@ import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as loops from "./loops.ts";
 import { toolsFor } from "../tools/registry.ts";
+import { skillRun } from "../tools/skills.ts";
 import { D, familyOf } from "./core.ts";
 import * as waits from "./waits.ts";
 import { privateHost } from "../tools/web.ts";
@@ -490,6 +491,24 @@ const PushNotification: Tool = {
 const notify: Tool = {
   name: "notify", families: OTHERS, readOnly: true, description: notifyDesc,
   input_schema: { type: "object", properties: { text: { type: "string", description: "The notification text, one short line" } }, required: ["text"] }, run: notifyRun,
+};
+
+// A skill with context: fork (Claude Code's skills frontmatter): its text is
+// the task of an agent of the session, of the skill's `agent` type, on its
+// `model`. In the background by default, its report waking the session as an
+// agent's does; `background: false` waits for it in the call that loaded it.
+skillRun.fork = async (ctx, skill, prompt) => {
+  const fg = skill.fork?.background === false;
+  try {
+    const spawn = () => agents.spawn(ctx.sessionId, { title: `/${skill.name}`, prompt, type: skill.fork?.agent, model: skill.model, background: !fg, call_id: ctx.callId }, ctx.signal);
+    const a = fg ? await blocks(ctx, spawn) : await spawn();
+    if (!fg) return ok(`The skill ${skill.name} runs as agent ${a.id} (its context: fork). Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.`);
+    if (a.status === "waiting") return ok(`The skill ${skill.name}'s agent ${a.id} is waiting and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
+    const report = agents.withUnread(agents.reportBlock(a), a.id);
+    return a.status === "completed" ? ok(report) : fail(report);
+  } catch (e) {
+    return fail(`The skill ${skill.name} runs as an agent (context: fork), and it could not start: ${(e as Error).message}`);
+  }
 };
 
 export const automationTools: Tool[] = [

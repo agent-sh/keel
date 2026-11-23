@@ -7,7 +7,7 @@ import { registerHooks } from "../../engine/hooks.ts";
 import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
 import { ackNotices, adoptJobs, cutCommand, drainNotices, jobEnded, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
-import { renderForOwner } from "../../tools/skills.ts";
+import { renderForOwner, skillRun } from "../../tools/skills.ts";
 import { hookContext } from "../../integrations/hooks.ts";
 import { promptExpansion } from "./hooks.ts";
 import type { RouteModule } from "../app.ts";
@@ -140,13 +140,25 @@ export const toolRoutes: RouteModule = (deps) => {
         const s = deps.store.session(req.params.id);
         if (!s) return json({ error: "no such session" }, 404);
         const b = (await req.json().catch(() => ({}))) as { name?: string; args?: string };
-        const r = renderForOwner(String(b.name ?? ""), String(b.args ?? ""), s.workspace, s.id);
+        // (Its allowed-tools are granted once the hooks below let it through.)
+        const r = renderForOwner(String(b.name ?? ""), String(b.args ?? ""), s.workspace, s.id, { count: false });
         if ("error" in r) return json({ error: r.error }, 400);
         // The owner's UserPromptExpansion hooks see the command and what it expands to: they refuse it, or add to it.
         const hooked = await promptExpansion?.(s, { name: r.skill.name, args: String(b.args ?? ""), source: r.skill.scope, prompt: r.text });
         if (hooked?.block) return json({ error: `A hook refused this command: ${hooked.block}` }, 400);
         const more = hooked?.context.length ? `\n${hookContext("UserPromptExpansion", hooked.context)}` : "";
-        const note = deps.store.append(s.id, "note", { text: `<skill name="${r.skill.name}">\n${r.text}\n</skill>${more}`, model: true, skill: r.skill.name });
+        // context: fork: the skill runs as an agent of this session, its text the agent's task; its report comes back here.
+        if (r.skill.fork && skillRun.fork) {
+          const cmd = `/${r.skill.name}${b.args?.trim() ? ` ${b.args.trim()}` : ""}`;
+          const note = deps.store.append(s.id, "note", { kind: "skill_fork", text: `${cmd} runs as an agent of its own (the skill's context: fork).`, skill: r.skill.name });
+          deps.bus.emit({ t: "event", event: note });
+          const out = await skillRun.fork({ sessionId: s.id, cwd: s.workspace, signal: AbortSignal.timeout(60_000), seen: new Map(), spillDir: "" } as any, { ...r.skill, fork: { ...r.skill.fork, background: true } }, `${r.text}${more}`);
+          if (out.is_error) return json({ error: String(out.content) }, 400);
+          return json({ event: note, agent: String(out.content) }, 201);
+        }
+        const granted = renderForOwner(r.skill.name, String(b.args ?? ""), s.workspace, s.id, { grant: true });
+        if ("error" in granted) return json({ error: granted.error }, 400);
+        const note = deps.store.append(s.id, "note", { text: `<skill name="${r.skill.name}">\n${granted.text}\n</skill>${more}`, model: true, skill: r.skill.name });
         deps.bus.emit({ t: "event", event: note });
         const ev = deps.engine.send(s.id, `/${r.skill.name}${b.args?.trim() ? ` ${b.args.trim()}` : ""}`);
         return json({ event: ev }, 201);

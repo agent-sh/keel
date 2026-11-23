@@ -553,7 +553,31 @@ export class Gate {
   rules(session?: Session): Rule[] {
     const all = this.store.db.query<Rule, []>("SELECT * FROM perm_rules ORDER BY created").all();
     if (!session) return all;
-    return all.filter((r) => (r.lifetime === "session" ? r.session_id === session.id : contains(r.scope, session.workspace) || contains(r.scope, this.scopeOf(session.workspace))));
+    const turn = this.turnGrants.get(session.id);
+    return [...all.filter((r) => (r.lifetime === "session" ? r.session_id === session.id : contains(r.scope, session.workspace) || contains(r.scope, this.scopeOf(session.workspace)))), ...(turn && !turn.next ? turn.rules : [])];
+  }
+
+  // A skill's allowed-tools (Claude Code's skills frontmatter): rules that
+  // hold for the one turn that invoked the skill and for no other. Kept in
+  // memory only (a restart ends them with the turn). `next`: the owner ran
+  // the skill and its turn has not started yet; it holds from that turn's
+  // start. Every rule still goes through the gate as a rule does: the mode,
+  // the sandbox and the high-risk checks ask whatever a rule says.
+  private turnGrants = new Map<string, { rules: Rule[]; next: boolean; from: string }>();
+  grantTurn(session: Session, rules: { kind: RuleKind; pattern: string }[], from: string, next: boolean) {
+    const had = this.turnGrants.get(session.id);
+    const made: Rule[] = rules.map((r) => ({ id: `turn:${crypto.randomUUID()}`, kind: r.kind, pattern: r.pattern.trim(), scope: this.scopeOf(session.workspace), lifetime: "session", session_id: session.id, created: Date.now(), bind: null }));
+    // Two skills in one turn: both grants hold (the newer one's `next` follows the newer invocation).
+    this.turnGrants.set(session.id, { rules: [...(had && had.next === next ? had.rules : []), ...made], next, from });
+  }
+  turnGrant(sessionId: string) { return this.turnGrants.get(sessionId); }
+  private turnBegan(sessionId: string) {
+    const g = this.turnGrants.get(sessionId);
+    if (g?.next) g.next = false;
+  }
+  turnEnded(sessionId: string) {
+    const g = this.turnGrants.get(sessionId);
+    if (g && !g.next) this.turnGrants.delete(sessionId);
   }
 
   addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session", bind?: string): Rule {
@@ -1007,6 +1031,7 @@ export class Gate {
   turnStarted(sessionId: string) {
     this.streak.delete(sessionId);
     this.ownRefs.delete(sessionId);
+    this.turnBegan(sessionId);
   }
 
   // Full auto's high-risk call, settled without the owner: a retry the owner
