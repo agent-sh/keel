@@ -16,6 +16,8 @@ import * as waits from "./waits.ts";
 import { bindBefore, latest } from "../checks/before-run.ts";
 import { bindLedger } from "../checks/ledger.ts";
 import { Worktrees } from "../worktree/manager.ts";
+import * as writeAsks from "./write-asks.ts";
+import { scopes } from "../safety/write-scope.ts";
 
 // Agents get git worktrees here, several git commands each, and on a busy disk one git
 // command takes half a second: the 5 s default was passed in whole-suite runs.
@@ -1544,5 +1546,37 @@ test("a run whose start is slow does not hold the report, and its answers follow
   } finally {
     agents.BEFORE_WAIT.ms = was;
     process.env.PATH = path;
+  }
+});
+
+// A spawn's writes, a reviewer's own folders, and the parent's yes as the agents keep them (the gate's decision is
+// write-scope.test.ts; the whole path is test/e2e/write-scope.spec.ts).
+test("a spawn's write scope: its writes, a reviewer's default, one question a path, and only its parent's yes", async () => {
+  writeAsks.init();
+  try {
+    const plain = await spawn({ title: "Build the thing" });
+    expect(writeAsks.given(plain.session_id)).toBeUndefined();
+    const review = await spawn({ title: "Review the patch" });
+    expect(writeAsks.given(review.session_id)).toEqual({ places: [] });
+    const given = await spawn({ title: "Write the logs", writes: ["out", "/abs/logs/*.txt"] });
+    expect(writeAsks.given(given.session_id)!.places).toEqual([{ path: join(dir, "out") }, { path: "/abs/logs/*.txt", glob: true }]);
+    await expect(spawn({ writes: ["/"] })).rejects.toThrow("the whole file system");
+    // One question a path, however often the agent tries it.
+    const first = writeAsks.ask(review.session_id, ["/elsewhere/x"], "Bash");
+    expect(first).toContain("Your parent session was asked once");
+    expect(writeAsks.ask(review.session_id, ["/elsewhere/x"], "Bash")).toContain("asked about it already");
+    // Only the parent widens the scope; an agent with none is told it has none.
+    const send = (from: string, to: string, writes: unknown) => tool("SendMessage").run({ to, message: "go on", writes }, { ...ctx, sessionId: from });
+    expect((await send(given.session_id, review.id, ["/elsewhere/x"])).is_error).toBe(true);
+    expect(String((await send(parent.id, plain.id, ["/elsewhere/x"])).content)).toContain("has no write scope");
+    expect((await send(parent.id, review.id, ["/elsewhere"])).is_error).toBeFalsy();
+    expect(writeAsks.given(review.session_id)!.places.map((x) => x.path).sort()).toEqual(["/elsewhere", "/elsewhere/x"]);
+    // The question under the folder given is answered, and nothing is owed to the parent any more.
+    expect(store.db.query("SELECT state FROM agent_write_asks WHERE agent_session = ? AND path = '/elsewhere/x'").get(review.session_id)).toEqual({ state: "allowed" });
+    for (const x of [plain, review, given]) agents.stop(x.id);
+    await settled();
+  } finally {
+    scopes.of = undefined;
+    scopes.ask = undefined;
   }
 });

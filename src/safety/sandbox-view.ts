@@ -70,6 +70,9 @@ export type ReadOpts = {
   // The worktrees Keel made that this session may read: its own agents'. Another session's worktree of the same
   // repository, in Keel's state, is not one of the repository's checkouts to this session.
   worktrees?: string[];
+  // What an agent's write scope keeps read-only in a workspace-write profile (src/safety/write-scope.ts): the
+  // session's folder, when no place of the scope holds it, and the ref files of branches other checkouts have out.
+  held?: { workspace?: true; refs?: string[] };
 };
 
 // The folders at the top of a Linux file system that hold the system.

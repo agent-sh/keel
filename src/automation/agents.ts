@@ -22,7 +22,9 @@ import { classOf } from "./failure-groups.ts";
 import { check as checkSchema, extractJson, validSchema } from "./schema.ts";
 import { git, Worktrees } from "../worktree/manager.ts";
 import * as leftovers from "./leftovers.ts";
-import { contains } from "../core/paths.ts";
+import { contains, realOf } from "../core/paths.ts";
+import { parseWrites } from "../safety/write-scope.ts";
+import * as writeAsks from "./write-asks.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
 import { carriedPlugins, preloadSkill } from "../tools/skills.ts";
@@ -199,7 +201,8 @@ CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);
 CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('running', 'waiting');`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"]] as const) {
+  writeAsks.migrate(); // the questions an agent asked its parent about a write outside its scope
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"], ["tasks", "INTEGER NOT NULL DEFAULT 0"], ["parked", "INTEGER"], ["budget", "TEXT"], ["task_at", "INTEGER"], ["start_from", "TEXT"], ["start_force", "TEXT"], ["lost", "TEXT"], ["writes", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
   // A budget's read of the tree under a task walks the sessions' parents (TREE_SPEND_SQL).
@@ -692,6 +695,7 @@ export type SpawnInput = {
   call_id?: string; // the tool_use id of the spawning call
   budget?: unknown; // steps, minutes or dollars for its task (parseBudget); over its definition's
   branch?: string; // Keel's own: an existing branch its worktree has out (it takes over a gone agent's work); never from a tool's input
+  writes?: unknown; // the folders, files or globs it may write (src/automation/write-asks.ts); a reviewer gets its own folders
 };
 
 // Agents on another machine: the fleet places them (a directory there, its own
@@ -778,6 +782,7 @@ export async function spawn(parentId: string, input: SpawnInput, signal?: AbortS
     if (bad) throw new Error(bad);
   }
   parseBudget(input.budget); // refused before anything is made
+  { const w = parseWrites(input.writes ?? [], parent.workspace, realOf(homedir())); if ("error" in w) throw new Error(w.error); }
   const root = rootSession(parentId);
   for (;;) {
     if (signal?.aborted) throw new Error("cancelled");
@@ -824,6 +829,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
       .place(parent, { machine: input.machine, cwd: input.cwd, worktree: wantWorktree, key: id, title })
     : null;
   const iso = placed ? null : await isolate(parent, def, input, title, id, mode);
+  // Where it may write, when its spawn says or its task is to review: an agent on another machine has none here.
+  const scope = placed || (mode && writesNothing(mode)) ? { json: null, left: [] } : await writeAsks.forSpawn(parent, input.writes, { type: def.name, title, cwd: iso?.cwd ?? parent.workspace });
   const settings = { ...(effort ? { effort } : {}), ...(def.maxTurns ? { max_steps: def.maxTurns } : {}) };
   const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title, settings: Object.keys(settings).length ? settings : undefined });
   store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
@@ -861,7 +868,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     const given = agentServers.give ? agentServers.give(store.session(child.id) ?? child, def.file) : { pending: def.ownServers };
     if (given.pending.length) left.push(`its own MCP ${given.pending.length === 1 ? "server" : "servers"} (${given.pending.join(", ")}): ${given.pending.length === 1 ? "it waits" : "they wait"} for the owner's approval in Settings > MCP servers, so it starts without ${given.pending.length === 1 ? "it" : "them"}`);
   }
-  left.push(...(def.notTaken ?? []));
+  left.push(...(def.notTaken ?? []), ...scope.left);
   // Its memory folder, with what MEMORY.md holds now; on another machine it is not where the agent works.
   const mem = def.memory && !placed && !memoryOff() ? agentMemory(def.memory, def.name, child.workspace) : undefined;
   const memory = mem && "dir" in mem ? mem : undefined;
@@ -890,6 +897,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
     iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Change the repository only there (a scratch folder your task names is yours too) and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
     placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Change the repository only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
+    scope.json ? writeAsks.taskLine(store.session(child.id) ?? child, scope.json) : "",
     schema ? `Your final message must be only one JSON value that matches this JSON schema, with no other text:\n${schema}` : "",
     `Task:\n${input.prompt}`,
   ].filter(Boolean).join("\n\n");
@@ -900,9 +908,9 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   // task_at: where the parent's own words start, so the page shows them verbatim.
   const budget = mergeBudget(def.budget, parseBudget(input.budget));
   store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task, parked, budget, task_at, writes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, queued === undefined ? "running" : "waiting", now, JSON.stringify(stored), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
-    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null);
+    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })), queued ?? null, budget ? JSON.stringify(budget) : null, queued === undefined ? now : null, scope.json);
   release(); // the persisted running row now occupies the slot
   // The repositories it may change, as they are before its first step: what it makes there is told at its end.
   if (!placed) await leftovers.before(store, id, [child.workspace, parent.workspace]).catch((e) => capture(e, { at: "agent leftovers before", agent: id }));

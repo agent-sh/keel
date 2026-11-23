@@ -36,6 +36,7 @@ import { ownerDenial } from "../core/stops.ts";
 export const HOOK_ASKS = "A hook of yours asks";
 import { landing, type MarkArgs } from "./marks.ts";
 import { readOptsFor } from "./sandbox-config.ts";
+import { bindable, globBase, judgeWrite, ownerOpens, refusedWrites, scopes, shellWrites, type Base } from "./write-scope.ts";
 import { ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
 
 // Whether a file is, by its inode, one of the files Keel keeps at the top of its state or config folders (and one
@@ -515,7 +516,19 @@ export class Gate {
     const worktrees = this.agentTrees(session.id);
     const root = (this.rootOf(session), this.pins.get(`${session.id}\0${session.workspace}`)?.id);
     const more = [...this.readMore.values()].flatMap((f) => f(session));
-    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts), ...more], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}) };
+    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts), ...more], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}), ...(profile === "workspace-write" ? this.held(session) : {}) };
+  }
+  // What an agent's write scope keeps read-only in its sandbox: its folder when no place of the scope holds it, and
+  // the branches another checkout has out (sandbox.ts compose).
+  private held(session: Session): Pick<ReadOpts, "held"> {
+    if (!scopes.of?.(session.id)) return {};
+    const ws = realOf(session.workspace);
+    const base = this.baseOf(session);
+    // (Its folder is its own place unless it is the owner's checkout itself: an agent that shares that checkout writes
+    // in it only where its writes name a folder, bound after it.)
+    const shut = !!base && (ws === base.root || contains(base.git, ws));
+    const refs = base ? base.branches.map((b) => join(base.git, "refs", "heads", b)) : [];
+    return shut || refs.length ? { held: { ...(shut ? { workspace: true as const } : {}), ...(refs.length ? { refs } : {}) } } : {};
   }
   // How a command Keel runs as the session's own is confined (its tests on the base without its change,
   // src/checks/before-run.ts): the profile its own commands get, with `workspace` in the place of its folder
@@ -563,6 +576,11 @@ export class Gate {
       if (wt && realOf(wt) !== list[0]!.path) list.push({ path: realOf(wt), from: "worktree" });
     } catch {} // no worktree was ever made here
     for (const d of this.scope(session).scratch) list.push({ path: d, from: "scratch" });
+    // What its parent gave it to write (its spawn's writes, the parent's yes to a question since): src/automation/write-asks.ts.
+    for (const g of scopes.of?.(session.id)?.places ?? []) {
+      const path = g.glob ? g.path : realOf(g.path);
+      if (!list.some((x) => x.path === path)) list.push({ path, from: "writes", ...(g.glob ? { glob: true as const } : {}) });
+    }
     const home = realOf(homedir());
     const keel = ownFolders();
     const words = await this.placeWords(session);
@@ -581,6 +599,152 @@ export class Gate {
     this.placesKept.set(session.id, { at: Date.now(), list });
     return list;
   }
+  // The places are read again at the next call (the parent widened the agent's scope).
+  forgetPlaces(sessionId: string) { this.placesKept.delete(sessionId); }
+  placesFor(session: Session): OwnPlace[] { return this.placesNow(session); }
+  // Why a parent cannot give an agent whose folder is `agentFolder` a path to write: it is in the owner's checkout or
+  // its git directory (and not in the agent's own folder, made inside it), or the parent has a scope of its own that
+  // does not hold it (a parent gives no more than it may write itself).
+  async giftRefused(parent: Session, agentFolder: string, path: string): Promise<string | undefined> {
+    const glob = /[*?[{]/.test(path);
+    const p = realOf(glob ? globBase(path) : path);
+    const folder = realOf(agentFolder);
+    const base = this.baseAt(folder);
+    if (base && (contains(base.root, p) || contains(base.git, p) || contains(p, base.root))) {
+      const inOwn = folder !== base.root && !contains(base.git, folder) && contains(folder, p);
+      if (!inOwn) return `it is in the owner's checkout (${base.root}) or its git directory, or holds them, and no agent writes there unless the owner's own words name it`;
+    }
+    if (scopes.of?.(parent.id) && !parent.machine) {
+      const v = judgeWrite(p, { places: await this.places(parent), base: this.baseOf(parent) });
+      if (!("ok" in v) && !("free" in v)) return "it is outside the paths you may write yourself, and a session gives an agent no more than it may write";
+    }
+    return undefined;
+  }
+  // The places as last read, for what cannot wait for a read (the sandbox's binds): before the first read, the ones
+  // Keel's own records give.
+  private placesNow(session: Session): OwnPlace[] {
+    const have = this.placesKept.get(session.id)?.list;
+    if (have) return have;
+    const list: OwnPlace[] = [{ path: realOf(session.workspace), from: "folder" }, ...this.scope(session).scratch.map((path) => ({ path, from: "scratch" as const }))];
+    for (const g of scopes.of?.(session.id)?.places ?? []) list.push({ path: g.glob ? g.path : realOf(g.path), from: "writes", ...(g.glob ? { glob: true as const } : {}) });
+    return list;
+  }
+
+  // The owner's base checkout of the repository a session works in, its git directory, and the branches checked
+  // out in a checkout that is not the session's own (src/safety/write-scope.ts). None outside a repository.
+  baseOf(session: Session): Base | undefined {
+    return session.machine ? undefined : this.baseAt(session.workspace);
+  }
+  baseAt(folder: string): Base | undefined {
+    let w: ReturnType<typeof locate> = null;
+    try { w = locate(folder); } catch {} // a folder git cannot read: no base
+    if (!w) return undefined;
+    const git = realOf(w.common);
+    const root = basename(git) === ".git" ? dirname(git) : git;
+    const branches = new Set<string>();
+    const own = realOf(w.gitDir);
+    const headOf = (dir: string) => { try { return /^ref: refs\/heads\/(.+)$/m.exec(readFileSync(join(dir, "HEAD"), "utf8"))?.[1]?.trim(); } catch { return undefined; } };
+    if (own !== git) { const b = headOf(git); if (b) branches.add(b); }
+    try {
+      for (const name of readdirSync(join(git, "worktrees")).slice(0, 500)) {
+        const dir = join(git, "worktrees", name);
+        if (realOf(dir) === own) continue;
+        const b = headOf(dir);
+        if (b) branches.add(b);
+      }
+    } catch {} // no linked worktrees
+    return { root, git, branches: [...branches] };
+  }
+
+  // An agent with a write scope writes only where it may: a call whose writes (a file tool's paths, a command's
+  // writes that its words show) fall outside is refused before it runs, in every mode, Full auto included. A write
+  // into the owner's checkout or its git directory is refused as it is; any other is one question to the parent
+  // (scopes.ask), whose yes widens the scope. Undefined: the call goes on to the rest of the gate.
+  // (Answered in the same tick when the places were read lately and the owner's words need no read: the calls of
+  // one reply keep their order to the gate.)
+  private scopeRefusal(session: Session, call: ToolCall, cls: CallClass): string | undefined | Promise<string | undefined> {
+    if (session.machine || !scopes.of?.(session.id)) return undefined;
+    let paths: string[] = [], refs: string[] = [];
+    if (cls.kind === "edit") paths = cls.paths;
+    else if (cls.kind === "shell") ({ paths, refs } = shellWrites(cls.command, cls.cwd ?? session.workspace, realOf(homedir())));
+    else if (cls.kind === "other" && cls.paths?.length && !call.tool.readOnly) paths = cls.paths;
+    if (!paths.length && !refs.length) return undefined;
+    const kept = this.placesKept.get(session.id);
+    const fresh = kept && Date.now() - kept.at < 30_000 ? kept.list : undefined;
+    const go = (places: OwnPlace[], opened: Set<string>): string | undefined | { owner: string } => {
+      const base = this.baseOf(session);
+      const outside: string[] = [];
+      for (const raw of paths) {
+        const p = realOf(raw);
+        const v = judgeWrite(p, { places, base });
+        if ("never" in v) {
+          if (opened.has(p)) continue;
+          if (!opened.has(`asked\0${p}`)) return { owner: p };
+          return `Refused: ${v.never}. No agent writes there unless the owner's own words name it, and your parent cannot give it: this is not a question for anyone. Work in your own folders (${places.filter((x) => x.from !== "folder" || x.path !== base?.root).map((x) => x.path).join(", ")}).`;
+        }
+        if ("out" in v && !outside.includes(p)) outside.push(p);
+      }
+      const theirs = refs.filter((r) => base?.branches.includes(r));
+      if (theirs.length) return `Refused: the command moves ${theirs.map((r) => `the branch ${r}`).join(" and ")}, which another checkout of the repository has out (the owner's, or another session's). No agent moves it: commit on your own branch, and your parent merges it.`;
+      if (!outside.length) return undefined;
+      return scopes.ask?.(session.id, outside, call.tool.name) ?? `Refused: ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} outside the paths this agent may write.`;
+    };
+    const opened = new Set<string>();
+    const first = fresh ? go(fresh, opened) : { owner: "" };
+    if (typeof first !== "object") return first;
+    return (async () => {
+      const places = fresh ?? await this.places(session);
+      const base = this.baseOf(session);
+      for (let n = 0; n < 64; n++) {
+        const r = go(places, opened);
+        if (typeof r !== "object") return r;
+        // A path of the base: the owner's words are read once for it.
+        if (!r.owner) continue;
+        opened.add(base && (await this.ownerOpens(session, r.owner, base)) ? r.owner : `asked\0${r.owner}`);
+      }
+      return undefined;
+    })();
+  }
+  // What a confined command of an agent with a scope was refused by its sandbox (a write it made that the gate could
+  // not read from its words): a path outside the scope is the same one question to the parent; one in the owner's
+  // checkout is said as it is. Lines for the command's result.
+  async sandboxRefused(session: Session, output: string): Promise<string[]> {
+    if (session.machine || !scopes.of?.(session.id)) return [];
+    const refused = refusedWrites(output);
+    if (!refused.length) return [];
+    const facts = { places: await this.places(session), base: this.baseOf(session) };
+    const outside: string[] = [], lines: string[] = [];
+    const opts = this.readOpts(session, "workspace-write");
+    for (const { path: p, how } of refused) {
+      // (A folder that is not there to the command only because its sandbox hides it: a path it shows is really missing.)
+      if (how === "missing" && shownTo(p, session.workspace, opts).shown) continue;
+      const v = judgeWrite(realOf(p), facts);
+      if ("never" in v) lines.push(`The sandbox refused a write: ${v.never}. No agent writes there unless the owner's own words name it.`);
+      else if ("out" in v) outside.push(realOf(p));
+    }
+    if (outside.length) lines.push(`The sandbox refused a write outside the paths this agent may write. ${(scopes.ask?.(session.id, outside, "a command") ?? "").replace(/^Refused: /, "")}`);
+    return lines;
+  }
+  // Whether the owner's own words open a path of the base to this agent: a prompt the owner typed in the agent's own
+  // session, or in a session above it after it started, that names the path or a folder holding it, in a sentence
+  // that does not say no. The git directory opens only by a name inside it: naming the checkout opens its files.
+  private async ownerOpens(session: Session, path: string, base: Base): Promise<boolean> {
+    const ids: { id: string; since: number }[] = [{ id: session.id, since: 0 }];
+    for (let up = session, n = 0; up.parent_id && n < 32; n++) { ids.push({ id: up.parent_id, since: session.created }); up = this.store.session(up.parent_id) ?? up; }
+    const home = realOf(homedir());
+    for (const { id, since } of ids) {
+      type Row = { kind: string | null; origin: string | null; text: string | null; ts: number };
+      let rows: Row[] = [];
+      try { rows = await this.readSql("SELECT json_extract(data, '$.kind') AS kind, json_extract(data, '$.origin') AS origin, substr(json_extract(data, '$.text'), 1, 20000) AS text, ts FROM events WHERE session_id = ? AND kind = 'user' AND ts >= ? ORDER BY seq DESC LIMIT 200", [id, since]) as Row[]; } catch { continue; }
+      for (const r of rows) {
+        const text = typeof r.text === "string" ? r.text : "";
+        if (!text || !ownerPrompt({ kind: r.kind ?? undefined, origin: r.origin ?? undefined }) || text.startsWith("[harness]") || text.startsWith(PEER_PREFIX)) continue;
+        if (ownerOpens(text, path, base, home)) return true;
+      }
+    }
+    return false;
+  }
+
   // The stored words that may name a session's own folders, newest first: for an agent its tasks and its parent's
   // messages, and the owner's own prompts (ownerPrompt), but none a session imported from another harness holds
   // (they are that harness's transcript). Read on the read thread, only the fields read.
@@ -644,6 +808,19 @@ export class Gate {
     if (profile !== "workspace-write" || session.machine) return out;
     for (const dir of this.scope(session).scratch) {
       try { mkdirSync(dir, { recursive: true }); out.push(dir); } catch {} // not writable here: the command is told when it tries
+    }
+    // An agent's write scope: the places its parent gave it, and the ones named as its own, writable too.
+    // A folder or a file that is there is bound as it is. One that is not there yet: a file in a folder that is
+    // there is reached through that folder (a bind needs something to bind, and a file made empty here would be
+    // a file nobody asked for), and anything else is made as the folder it names.
+    if (scopes.of?.(session.id)) for (const p of bindable(this.placesNow(session), this.baseOf(session))) {
+      let at = p;
+      if (!existsSync(p)) {
+        const up = dirname(p);
+        if (existsSync(up) && statSync(up).isDirectory() && up !== realOf(homedir()) && !contains(up, realOf(homedir()))) at = up;
+        else try { mkdirSync(p, { recursive: true }); } catch { continue; } // not there and not made: the command is told when it tries
+      }
+      if (!out.some((x) => contains(x, at))) out.push(at);
     }
     return out;
   }
@@ -1052,6 +1229,12 @@ export class Gate {
     }) : undefined;
     const asJudged = (c: CallClass) => sentAs(c, fresh);
     const cls = asJudged(raw);
+    // (Only an agent with a scope waits for it: every other call goes on in the same tick, as before.)
+    if (!session.machine && scopes.of?.(session.id)) {
+      const r = this.scopeRefusal(session, call, cls);
+      const out = typeof r === "object" ? await r : r;
+      if (out) return { deny: out };
+    }
     const mode = this.perm(session.id).mode;
     const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;
     // Nothing is waited for unless the line names such a program.

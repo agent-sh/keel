@@ -504,7 +504,7 @@ function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">
   if (have?.mark && kindOf(have.mark[0]) !== have.mark[1]) {
     // (The view is the kept one: only the binds of git's files are made again.)
     const mark = markOf(workspace, p);
-    profiles.set(key, { at: have.at, view: have.view, mark, argv: compose(bwrap, p, workspace, scratch, have.view, flock, read.root) });
+    profiles.set(key, { at: have.at, view: have.view, mark, argv: compose(bwrap, p, workspace, scratch, have.view, flock, read.root, read.held) });
     return profiles.get(key)!.argv;
   }
   if (have) {
@@ -515,19 +515,19 @@ function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">
         void asked.then((view) => {
           // (No answer: the kept one stays for another round.)
           if (profiles.get(key) !== have) return;
-          if (view) profiles.set(key, { at: Date.now(), view, mark: markOf(workspace, p), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root) });
+          if (view) profiles.set(key, { at: Date.now(), view, mark: markOf(workspace, p), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root, read.held) });
           else { have.busy = false; have.at = Date.now(); }
         });
       } else {
         const view = readView(workspace, p.sandbox, read, process.env, layered);
-        profiles.set(key, { at: Date.now(), view, mark: markOf(workspace, p), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root) });
+        profiles.set(key, { at: Date.now(), view, mark: markOf(workspace, p), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root, read.held) });
       }
     }
     return profiles.get(key)!.argv;
   }
   const view = readView(workspace, p.sandbox, read, process.env, layered);
   const mark = markOf(workspace, p);
-  const argv = compose(bwrap, p, workspace, scratch, view, flock, read.root);
+  const argv = compose(bwrap, p, workspace, scratch, view, flock, read.root, read.held);
   if (profiles.size > 256) profiles.clear();
   profiles.set(key, { at: Date.now(), view, mark, argv });
   return argv;
@@ -539,7 +539,11 @@ function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">
 // hold a layer by).
 // `root`: the folder the session was made in, as the gate pinned it (device and inode): checked inside, after the
 // folder is bound, so a command never runs in a folder that took the session folder's name.
-function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[], view: View, flock: string | null, root?: string): string[] {
+// `held`: what an agent's write scope keeps read-only (src/safety/write-scope.ts): the session's folder when no
+// place of the scope holds it (the places in it are bound writable after it, with the scratch), and the refs of the
+// branches another checkout has out, each one a file there now (a ref git writes is renamed into place, and a name
+// that is a mount point is not renamed over: the update fails, the branch stays where it was).
+function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[], view: View, flock: string | null, root?: string, held?: ReadOpts["held"]): string[] {
   // A network namespace of its own, always: the host's loopback (Keel's own API among the listeners there), the
   // local network and the display's abstract sockets are not in it. With the session's network on, what leaves
   // goes through the proxy this process runs for the repository (src/safety/net-proxy.ts).
@@ -573,7 +577,8 @@ function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[]
     // The repository's hooks and config run code outside the sandbox later:
     // they stay read-only. Commits still work.
     const linked = linkedGitBinds(workspace);
-    own = ["--bind", workspace, workspace, ...cloneGitBinds(workspace), ...linked];
+    own = [held?.workspace ? "--ro-bind" : "--bind", workspace, workspace, ...cloneGitBinds(workspace), ...linked];
+    for (const f of held?.refs ?? []) if (linked.length && kindOf(f) === "file") own.push(...ro(f));
     if (linked.length) settings.push(...LINKED_GIT);
     // A file of Keel's own configuration that the owner keeps inside the session's folder (KEEL_HOOKS and its kin)
     // is read-only there: Keel runs what it names, outside the sandbox. (One that is not there yet cannot be

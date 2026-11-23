@@ -16,8 +16,9 @@ import { gitCall, located, type Look } from "./autonomy.ts";
 import type { RiskRule } from "./risk-words.ts";
 import { isReadOnly, type Simple } from "./shell.ts";
 
-export type PlaceFrom = "folder" | "worktree" | "scratch" | "parent" | "owner";
-export type OwnPlace = { path: string; from: PlaceFrom };
+export type PlaceFrom = "folder" | "worktree" | "scratch" | "parent" | "owner" | "writes";
+// `glob`: the path is a pattern (an agent's write scope may name one, write-scope.ts).
+export type OwnPlace = { path: string; from: PlaceFrom; glob?: true };
 
 // How each kind of place is said to the judge.
 const SAID: Record<PlaceFrom, string> = {
@@ -26,6 +27,7 @@ const SAID: Record<PlaceFrom, string> = {
   scratch: "the scratch folder Keel made for this session",
   parent: "named as this session's own in the task or a message its parent session gave it",
   owner: "named as this session's own in the owner's message",
+  writes: "given to this agent to write by its parent session (its spawn's writes, or a yes to its question)",
 };
 
 // The words that name a folder as the reader's own, right before the path: "Scratch dir PATH", "scratch folder:
@@ -61,6 +63,23 @@ export function namedPlaces(text: string, home: string): string[] {
   return [...out].slice(0, 16);
 }
 
+// The paths a text names in sentences that do not say no (absolute, or from the home folder), whatever words come
+// before them: what the owner's words name (write-scope.ts ownerOpens).
+export function pathsSaid(text: string, home: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.slice(0, 200_000).matchAll(PATH)) {
+    const raw = m[1]!, at = m.index!, end = at + raw.length;
+    const after = text.slice(end, end + 200), before = text.slice(Math.max(0, at - 200), at);
+    if (/^[<$*{]/.test(after)) continue;
+    const clause = before.split(/[.!?;]\s|\n/).pop() ?? "";
+    const rest = after.split(/[.!?;,(]|\s-\s|\n/)[0] ?? "";
+    if (NEGATED.test(clause) || NEGATED.test(rest)) continue;
+    const word = raw.replace(/[.,:;]+$/, "").replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, home);
+    if (isAbsolute(word)) out.add(resolve(word));
+  }
+  return [...out].slice(0, 64);
+}
+
 // Whether a folder can be anyone's scratch: two levels or more below the home (outside the folders of the
 // owner's keys and settings), or a folder of its own under a temporary folder.
 export function fitsAsPlace(p: string, home: string): boolean {
@@ -74,10 +93,27 @@ export function fitsAsPlace(p: string, home: string): boolean {
 }
 
 // The place a path is in, the most specific first (a scratch folder inside the session's folder is still its folder).
+// A glob place holds what it matches and what is under a folder it matches, and counts as deep as the folder it
+// starts from.
 export function placeOf(p: string, places: OwnPlace[]): OwnPlace | null {
-  let best: OwnPlace | null = null;
-  for (const x of places) if (contains(x.path, p) && (!best || x.path.length > best.path.length)) best = x;
+  let best: OwnPlace | null = null, depth = -1;
+  for (const x of places) {
+    const d = x.glob ? globDepth(x.path) : x.path.length;
+    if ((x.glob ? globHolds(x.path, p) : contains(x.path, p)) && d > depth) { best = x; depth = d; }
+  }
   return best;
+}
+const globDepth = (g: string) => globBase(g).length;
+// The folder a glob starts from: its parts before the first that has a pattern.
+export function globBase(p: string): string {
+  const parts = p.split("/");
+  const at = parts.findIndex((x) => /[*?[{]/.test(x));
+  return (at < 0 ? parts : parts.slice(0, at)).join("/") || "/";
+}
+function globHolds(g: string, p: string): boolean {
+  const glob = new Bun.Glob(g);
+  for (let at = p; at.length > 1; at = at.slice(0, at.lastIndexOf("/")) || "/") if (glob.match(at)) return true;
+  return false;
 }
 
 // The places as the judge reads them.

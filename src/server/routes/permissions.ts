@@ -78,6 +78,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         const opts = g.readOpts(s, confined.sandbox === "read-only" ? "read-only" : "workspace-write");
         shut.push(...hiddenSaid(said, { workspace: s.workspace, shown: () => shownPaths(s.workspace, opts), escape: escapeOf(call.tool), sshAgent: opts.sshAgent, cwd: call.ctx.cwd }));
       }
+      // A write the sandbox refused to an agent with a scope: one question to its parent (src/safety/write-scope.ts).
+      if (confined) shut.push(...await g.sandboxRefused(s, said));
       if (watched?.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
       const text = [watched?.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, ...shut.map((line) => `[sandbox] ${line}`)].filter(Boolean).join("\n\n");
       if (!text) return;

@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
+import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, FolderLock, GitBranch, GitMerge, Mail, Network, Radio, RotateCcw, ScanSearch, Repeat, Sprout, Timer, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
@@ -250,6 +250,15 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     const others = ((e.data.parts ?? []) as Record<string, any>[]).filter((p) => p.kind !== "failures");
     const data = others.length === 1 ? { ...others[0], text: fails.rest } : { ...e.data, text: fails.rest, parts: others };
     return <div className="flex flex-col gap-2"><InputNotice e={{ ...e, data }} />{failCard}</div>;
+  }
+  // An agent's question about a write outside the paths it was given (src/automation/write-asks.ts): open, since its
+  // parent's answer is what it waits for.
+  if (kind === "write_asks") {
+    return (
+      <Shell icon={FolderLock} label="An agent asks to write outside its paths" testid="write-ask-notice" defaultOpen>
+        <p className="whitespace-pre-wrap text-ui text-muted">{text.replace(/^\[harness\]\s*/, "")}</p>
+      </Shell>
+    );
   }
   if (kind === "loop") {
     return (

@@ -23,6 +23,7 @@ import * as consult from "./consult.ts";
 import * as goals from "./goals.ts";
 import * as taskOut from "./task-out.ts";
 import * as taskRenames from "./task-renames.ts";
+import * as writeAsks from "./write-asks.ts";
 import * as agents from "./agents.ts";
 import { maxDepth } from "../core/agent-tree.ts";
 import * as alerts from "./alerts.ts";
@@ -80,6 +81,7 @@ function init(deps: Deps) {
   // What a parked session waits on, for its cache plan.
   deps.engine.waitShape = (id) => waits.shapeOf(id);
   agents.migrate();
+  writeAsks.init();
   leftovers.migrate(deps.store);
   waits.migrate();
   loops.migrate();
@@ -324,6 +326,7 @@ function init(deps: Deps) {
       waits.recover();
       loops.recover();
       agents.recover();
+      writeAsks.recover();
       failures.recover();
       goals.recover();
     } catch (e) {
