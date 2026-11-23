@@ -43,3 +43,20 @@ test("the head says what the session cost, once, and opens Usage", async ({ page
   await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "usage");
   await shoot(page, "quiet-02-head-cost");
 });
+
+test("the list's top rows say their shortcut only where the pointer or the keyboard is", async ({ page }) => {
+  await page.goto("/");
+  const key = (id: string) => page.getByTestId(id).locator(".k-act-key");
+  await expect(key("open-palette")).toBeAttached();
+  await page.mouse.move(1100, 900);
+  for (const id of ["new-session", "open-palette", "open-helper"]) await settles(key(id), 0);
+  await page.getByTestId("open-palette").hover();
+  await settles(key("open-palette"), 1);
+  await settles(key("open-helper"), 0);
+  await page.mouse.move(1100, 900);
+  await page.getByTestId("open-helper").focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await settles(key("open-helper"), 1);
+  await shoot(page, "quiet-03-rail-keys");
+});
