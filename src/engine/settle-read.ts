@@ -11,7 +11,7 @@ import type { Database } from "bun:sqlite";
 import { bareBy } from "../core/bare-index.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { holdsQuote, quotesOf, settle, type SettleAsk, type Settled } from "./compact.ts";
-import { fileTexts } from "./work-calls.ts";
+import { fileReader } from "./work-calls.ts";
 
 export function settleStored(db: Database, a: SettleAsk): Settled {
   // The branch that ends at `upto`: walked back over the session's rows without their bodies.
@@ -31,22 +31,19 @@ export function settleStored(db: Database, a: SettleAsk): Settled {
   const said: StoredEvent[] = [];
   const quotes = quotesOf(a.text);
   const holds = holdsQuote(quotes);
-  const reads: ReturnType<typeof fileTexts> = [];
+  const reads = fileReader(holds);
   const bodies = db.prepare<{ seq: number; kind: string; data: string }, [string, number]>(
     `SELECT seq, kind, data FROM events WHERE session_id = ? AND seq <= ? AND kind IN ('user', 'assistant'${quotes.length ? ", 'tool_result'" : ""}) ORDER BY seq`);
   try {
-    let calls: StoredEvent[] = [];
     for (const r of bodies.iterate(a.session, a.upto.seq)) {
       if (!on.has(r.seq)) continue;
       const e = { kind: r.kind, data: JSON.parse(r.data) } as StoredEvent;
       if (r.kind !== "tool_result") said.push(e);
       if (!quotes.length) continue;
-      // A round's results follow the reply that holds its calls.
-      if (r.kind === "assistant") calls = [e];
-      else if (r.kind === "tool_result" && calls.length) reads.unshift(...fileTexts([...calls, e], holds));
+      if (r.kind === "assistant" || r.kind === "tool_result") reads.add(e);
     }
   } finally {
     bodies.finalize();
   }
-  return settle(said, a.text, a.stored, reads);
+  return settle(said, a.text, a.stored, reads.texts());
 }

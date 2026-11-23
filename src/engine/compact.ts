@@ -252,7 +252,8 @@ function statementLine(l: string): { by: Statement["by"]; path?: string; q: stri
   if (!m) return null;
   const by = m[1]!.toLowerCase() as Statement["by"];
   if (by !== "file") { const q = quoted(m[2]!); return q === null ? null : { by, q }; }
-  const f = m[2]!.match(/^[`"\u201c]?([^`"\u201d\s]+?)[`"\u201d]?\s*:\s*(["\u201c].*)$/);
+  // The path quoted (it may hold spaces: a command that printed two files names both), or bare.
+  const f = m[2]!.match(/^[`"\u201c]([^`"\u201c\u201d]+)[`"\u201d]\s*:\s*(["\u201c].*)$/) ?? m[2]!.match(/^([^`"\s]+?)\s*:\s*(["\u201c].*)$/);
   const q = quoted(f ? f[2]! : m[2]!);
   return q === null ? null : { by, path: f?.[1], q };
 }
