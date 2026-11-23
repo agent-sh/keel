@@ -253,7 +253,10 @@ test.describe("on a phone", () => {
       await check("approval card");
       // What else waits is said without the key that goes there, and without what is left of its words:
       // a finger's way to the next stands in their place, and goes there.
-      await expect(pane.getByTestId("waiting-elsewhere")).toHaveText(/waits? for you\.\nGo to the next$/, { useInnerText: true });
+      await expect(pane.getByTestId("waiting-elsewhere")).toHaveText(/waits? for you\.\s*\nGo to the next$/, { useInnerText: true });
+      // (Beside the words, out of their live region: a screen reader tells a status's words, not a control in it.)
+      expect(await pane.getByTestId("waiting-next").evaluate((b) => !!b.closest('[role="status"]'))).toBe(false);
+      await expect(pane.getByTestId("waiting-elsewhere").getByRole("status")).toHaveText(/waits? for you\.\s*$/, { useInnerText: true });
       await shoot(page, "phone-04-targets-approval");
       await pane.getByTestId("waiting-next").tap();
       await expect(page).not.toHaveURL(new RegExp(`/s/${ask}$`));

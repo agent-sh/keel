@@ -326,15 +326,17 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
   const n = `${others} more session${others === 1 ? " waits" : "s wait"} for you`;
   const words = on ? `Answering in sequence. ${n}: the next opens when this is answered.` : `${n}.`;
   // One line of a fixed height, cut where the pane ends: its height never depends on the pane's width.
-  // (A finger's screen has no key to name: there the way to the next is a button, a finger's size tall.)
+  // (A finger's screen has no key to name: there the way to the next is a button, a finger's size tall.
+  // It stands beside the words, out of their live region: a screen reader tells the words as they
+  // change, and a control read out inside a status is told as more of it.)
   return (
-    <p className="mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint pointer-coarse:h-tap" data-testid="waiting-elsewhere" data-on={on || undefined} role="status" title={words}>
-      <span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />
-      {on ? <span className="min-w-0 truncate"><span className="text-muted">Answering in sequence.</span> {n}: the next opens when this is answered.</span>
-        : <>
-          <span className="min-w-0 truncate">{n}.</span><Kbd keys={KEYS} className="shrink-0" /><span className="shrink-0 pointer-coarse:hidden">goes to the next.</span>
-          <button type="button" data-testid="waiting-next" onClick={goNextOther} className="hidden shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft pointer-coarse:inline-flex pointer-coarse:items-center">Go to the next</button>
-        </>}
-    </p>
+    <div className="mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint pointer-coarse:h-tap" data-testid="waiting-elsewhere" data-on={on || undefined} title={words}>
+      <p className="flex min-w-0 items-center gap-x-1.5" role="status">
+        <span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />
+        {on ? <span className="min-w-0 truncate"><span className="text-muted">Answering in sequence.</span> {n}: the next opens when this is answered.</span>
+          : <><span className="min-w-0 truncate">{n}.</span><Kbd keys={KEYS} className="shrink-0" /><span className="shrink-0 pointer-coarse:hidden">goes to the next.</span></>}
+      </p>
+      {!on && <button type="button" data-testid="waiting-next" onClick={goNextOther} className="hidden shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft pointer-coarse:inline-flex pointer-coarse:items-center">Go to the next</button>}
+    </div>
   );
 }
