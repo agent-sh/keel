@@ -7,7 +7,7 @@
 import { lstatSync, mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atCwd, canonical, realOf } from "../core/paths.ts";
-import { hold, type HoldContext } from "./files.ts";
+import { credentialFor, hold, type HoldContext } from "./files.ts";
 import { READ_WHOLE_CHARS, readersAtOnce, wholeText, type Material } from "../engine/reader.ts";
 import { coverageNote } from "../engine/readers.ts";
 import { isClaimFile } from "../core/claim.ts";
@@ -116,18 +116,22 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
   const items: Material[] = [];
   const skipped: string[] = [];
   const files: string[] = [];
+  // What a folder or a pattern finds that holds credentials is not read: a path named by itself was asked about at
+  // the gate, and its values are kept from the readers by the vault.
+  const credential = credentialFor(ctx);
+  const found = (got: string[]) => got.filter((f) => { if (!credential(f)) return true; skipped.push(`${show(f, ctx.cwd)} (holds credentials: name it by itself to ask the owner)`); return false; });
   for (const p of list(input.paths)) {
     stop();
     if (GLOB.test(p)) {
       const got = await globbed(p, ctx.cwd, ctx);
       if (!got.length) skipped.push(`${p} (no file matches)`);
-      files.push(...got);
+      files.push(...found(got));
       continue;
     }
     const full = realOf(atCwd(ctx.cwd, p));
     let st;
     try { st = statSync(full); } catch { skipped.push(`${p} (not found)`); continue; }
-    if (st.isDirectory()) { const got = await filesIn(full, ctx.signal, ctx); if ("skip" in got) skipped.push(`${p} (${got.skip})`); else files.push(...got); }
+    if (st.isDirectory()) { const got = await filesIn(full, ctx.signal, ctx); if ("skip" in got) skipped.push(`${p} (${got.skip})`); else files.push(...found(got)); }
     else if (st.isFile()) files.push(full);
     else skipped.push(`${p} (not a regular file)`);
   }

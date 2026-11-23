@@ -12,6 +12,7 @@ import type { ToolContext } from "./types.ts";
 import { removedNote } from "./spill.ts";
 import { readText } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
+import { credentialAt, homeOf, storesUnder } from "../safety/credentials.ts";
 
 // The file a tool's path names, as the kernel reaches it (links followed, `..` applied where the walk stands): the
 // path the gate judged (realOf), and the one every file tool opens, so the two cannot differ.
@@ -735,6 +736,17 @@ export type RgOpts = {
   fixed?: boolean; headLimit?: number; offset?: number;
 };
 
+// The credential a path found inside a searched folder is or is in: the gate's (with Keel's own folders), else the
+// home's stores and the names alone. What is inside a credential the call names by itself is not one here: the
+// gate asked the owner for that path, and the vault was given its values.
+export function credentialFor(ctx: Pick<ToolContext, "credential" | "judged">): (path: string) => { what: string } | null {
+  const of = ctx.credential ?? ((p: string) => credentialAt(p, { home: homeOf() }) ?? credentialAt(realOf(p), { home: realOf(homeOf()) }));
+  const asked = (ctx.judged ?? []).filter((j) => of(j));
+  return (p) => (asked.some((j) => contains(j, p)) ? null : of(p));
+}
+// A search's note of the files it left out because they hold credentials.
+export const leftOut = (names: string[]) => names.length ? `\n[Left out ${names.length} file${names.length === 1 ? "" : "s"} that hold${names.length === 1 ? "s" : ""} credentials: ${names.slice(0, 5).join(", ")}${names.length > 5 ? ` and ${names.length - 5} more` : ""}. A search of a folder does not read them; name one as the path to ask the owner.]` : "";
+
 export async function ripgrep(o: RgOpts, ctx: ToolContext): Promise<{ text: string; error?: boolean }> {
   const args = ["rg", "--color=never", "--max-columns=500", "--max-columns-preview", "--hidden", "--glob=!.git"];
   const mode = o.mode ?? "files_with_matches";
@@ -751,13 +763,43 @@ export async function ripgrep(o: RgOpts, ctx: ToolContext): Promise<{ text: stri
   if (o.fixed) args.push("-F");
   if (o.glob) for (const g of o.glob.split(/[\s,]+(?![^{]*})/).filter(Boolean)) args.push("--glob", g);
   if (o.type) args.push("--type", o.type);
-  args.push("--", o.pattern, o.path ? abs(o.path, ctx) : ctx.cwd);
+  const target = o.path ? abs(o.path, ctx) : ctx.cwd;
+  // A folder is searched without what holds credentials in it: the home's stores are not walked (after the
+  // model's own globs, so they win), and a file a credential by its name is left out of what is shown. Each path
+  // is printed with a NUL after it, so it is read whole whatever its name holds.
+  let folder = false;
+  try { folder = statSync(target).isDirectory(); } catch {}
+  const credential = credentialFor(ctx);
+  if (folder) {
+    args.push("--null");
+    for (const s of storesUnder(target, realOf(homeOf()))) args.push(`--glob=!**/${s.slice(target.length + 1).replace(/[\\*?[\]{}!]/g, "\\$&")}`);
+  }
+  args.push("--", o.pattern, target);
   const proc = Bun.spawn(ctx.wrapSpawn ? ctx.wrapSpawn(args) : args, { cwd: ctx.cwd, stdout: "pipe", stderr: "pipe", signal: ctx.signal });
   const [out, err, code] = await Promise.all([readText(proc.stdout), readText(proc.stderr), proc.exited]);
   if (code === 1 && !err.trim()) return { text: mode === "count" ? "No matches. Total: 0" : "No matches found." };
   if (code !== 0 && code !== 1) return { text: `ripgrep refused the search: ${err.trim() || `exit ${code}`}`, error: true };
   const rel = (l: string) => (l.startsWith(ctx.cwd + "/") ? l.slice(ctx.cwd.length + 1) : l);
-  let lines = out.trimEnd().split("\n").filter(Boolean).map(rel);
+  const skipped = new Set<string>();
+  const kept = (path: string) => { if (!credential(path)) return true; skipped.add(rel(path)); return false; };
+  let lines: string[];
+  if (!folder) lines = out.trimEnd().split("\n").filter(Boolean).map(rel);
+  else if (mode === "files_with_matches") lines = out.split("\0").map((l) => l.replace(/^\n/, "")).filter((l) => l && kept(l)).map(rel);
+  else {
+    lines = [];
+    for (const l of out.trimEnd().split("\n")) {
+      const cut = l.indexOf("\0");
+      if (cut < 0) { if (l === "--" && lines.length && lines.at(-1) !== "--") lines.push(l); continue; }
+      const path = l.slice(0, cut), rest = l.slice(cut + 1);
+      if (!kept(path)) continue;
+      // (As rg prints it without the NUL: a match's line number is followed by `:`, a context line's by `-`.)
+      const sep = mode === "content" && /^\d+-/.test(rest) ? "-" : ":";
+      lines.push(`${rel(path)}${sep}${rest}`);
+    }
+    while (lines.at(-1) === "--") lines.pop();
+  }
+  const note = leftOut([...skipped]);
+  if (!lines.length && skipped.size) return { text: (mode === "count" ? "No matches. Total: 0" : "No matches found.") + note };
   let total = "";
   if (mode === "count") total = `\nTotal: ${lines.reduce((n, l) => n + Number(l.slice(l.lastIndexOf(":") + 1) || 0), 0)} matches in ${lines.length} files`;
   const offset = o.offset ?? 0;
@@ -765,6 +807,5 @@ export async function ripgrep(o: RgOpts, ctx: ToolContext): Promise<{ text: stri
   const limit = o.headLimit ?? 250;
   const more = lines.length - offset - limit;
   lines = lines.slice(offset, offset + limit);
-  return { text: lines.join("\n") + (more > 0 ? `\n[${more} more; continue with offset ${offset + limit}]` : "") + total };
+  return { text: lines.join("\n") + (more > 0 ? `\n[${more} more; continue with offset ${offset + limit}]` : "") + total + note };
 }
-

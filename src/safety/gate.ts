@@ -32,7 +32,7 @@ import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { AddressBook, addressOf, dataIn, groupOf, sendShown, wholeOf, type WebUse } from "./addresses.ts";
 import { ownerPrompt, PEER_PREFIX } from "../core/owner.ts";
-import { childMode, classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { childMode, classify, decide, isMode, shellCredentialReads, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
 // What a card a hook asked for says before the hook's reason.
@@ -41,6 +41,7 @@ import { landing, type MarkArgs } from "./marks.ts";
 import { readOptsFor } from "./sandbox-config.ts";
 import { bindable, globBase, judgeWrite, ownerOpens, refusedWrites, scopes, shellWrites, type Base } from "./write-scope.ts";
 import { overlays, ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
+import { credentialAt, credentialValues, homeOf, type Credential } from "./credentials.ts";
 
 // Whether a file is, by its inode, one of the files Keel keeps at the top of its state or config folders (and one
 // level into the config): asked only of a file that has more than one name.
@@ -1154,6 +1155,10 @@ export class Gate {
       mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
       // An agent in a worktree Keel made: what it shares with the other checkouts (shared-branches.ts).
       ...((cls.kind === "shell" || cls.kind === "edit") && session.parent_id && !session.machine ? { shared: this.sharedOf(session) } : {}),
+      // Where credentials are kept, as a path is named and where it lands, with Keel's own folders (credentials.ts).
+      // An agent reads none. (A session on another machine is judged by the names and the home's stores alone.)
+      ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path) }),
+      ...(session.parent_id ? { agent: true as const } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
       ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, workspace, this.readOpts(session, "read-only"), this.spills(session), true) }),
       ...(session.machine || cls.kind === "read" ? {} : {
@@ -1173,6 +1178,46 @@ export class Gate {
         land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
       }) }),
     });
+  }
+
+  // The credential a path is or is in: as it is named, and where it lands (a link in the folder to a key is the key).
+  credentialOf(path: string): Credential | null {
+    const home = homeOf();
+    const named = credentialAt(path, { home, state: this.store.stateDir, config: configDir() });
+    if (named) return named;
+    return credentialAt(realOf(path), { home: realOf(home), state: realOf(this.store.stateDir), config: realOf(configDir()) });
+  }
+
+  // A read of where credentials are kept that is about to run (the owner allowed it, or Full auto runs it): the
+  // values the files hold go to the secrets vault first, so what the read returns, stored or spilled, carries their
+  // placeholders and reaches no model. Each file is read once here, at most a MiB of it, and a store's folder to a
+  // few levels and a few hundred files.
+  private async credentialValuesOf(session: Session, cls: CallClass): Promise<void> {
+    let paths: string[] = [];
+    if (cls.kind === "read") paths = (cls.paths ?? []).map((p) => this.credentialOf(p)?.path).filter((p): p is string => !!p);
+    else if (cls.kind === "shell" && cls.interpreter === undefined) {
+      const parts = splitCommand(cls.command);
+      if (parts) paths = shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p))?.paths ?? [];
+    }
+    if (!paths.length) return;
+    const files: string[] = [];
+    const walk = async (p: string, depth: number) => {
+      if (files.length >= 300) return;
+      let st;
+      try { st = await lstat(p); } catch { return; }
+      if (st.isFile()) { if (st.size <= 1024 * 1024) files.push(p); return; }
+      if (!st.isDirectory() || depth > 4) return;
+      let names: string[] = [];
+      try { names = await readdir(p); } catch { return; }
+      for (const n of names) await walk(join(p, n), depth + 1);
+    };
+    for (const p of [...new Set(paths)]) { await walk(p, 0); const r = realOf(p); if (r !== p) await walk(r, 0); }
+    let kept = 0;
+    for (const f of files) {
+      let text: string;
+      try { text = new TextDecoder("utf-8", { fatal: false }).decode(await Bun.file(f).bytes()); } catch { continue; }
+      for (const v of credentialValues(text)) { if (kept++ >= 2000) return; vault.add(v, "credential file", "output", session.id); }
+    }
   }
 
   // The checkouts an agent's worktree shares its branches with, when the agent
@@ -1253,6 +1298,7 @@ export class Gate {
     }
     const r = await this.check(session, call);
     if ("deny" in r) return r;
+    if (!session.machine && (r.cls.kind === "read" || r.cls.kind === "shell")) await this.credentialValuesOf(session, r.cls);
     // An agent in a worktree Keel made: every git its command starts carries the hook that keeps the branches the
     // worktree shares where they are (ref-guard.ts).
     if (r.cls.kind === "shell" && session.parent_id && !session.machine) {
@@ -1285,6 +1331,8 @@ export class Gate {
       ctx = { ...ctx, judged: looks.map((l) => l.path), looked: Object.fromEntries(looks.map((l) => [l.path, l.id])) };
       noteJudged(session.id, r.cls.kind === "read" ? "read" : "write", looks);
     }
+    // A reading tool's search of a folder leaves out what holds credentials, by the same list the gate reads (files.ts).
+    if (!session.machine && r.cls.kind === "read") ctx = { ...ctx, credential: (p: string) => this.credentialOf(p) };
     if (!r.authorization) return ctx ? { ctx } : undefined;
     const auth = r.authorization;
     const wrap = ctx?.wrapSpawn ?? call.ctx.wrapSpawn;

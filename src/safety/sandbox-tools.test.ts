@@ -51,6 +51,9 @@ beforeAll(() => {
   put(join(home, ".ssh/id_ed25519"), "KEY\n");
   put(join(home, ".config/pypoetry/auth.toml"), "TOKEN\n");
   put(join(home, "projects/other/.env"), "ENV\n");
+  put(join(home, "projects/other/notes.txt"), "NOTES\n");
+  // (A key under a name that says nothing, for the races below: a credential's name asks before anything opens.)
+  put(join(home, ".ssh/deploy"), "KEY\n");
   // Keel's own: the state's files, the config, another session's files, this session's files.
   put(join(state, "api-token"), "TOKEN\n");
   put(join(state, "settings.json"), "{}\n");
@@ -242,13 +245,16 @@ test("a sandboxed session's file tools read what its sandbox shows: anything els
   for (const mode of ["ask", "auto-edits", "auto"] as Mode[]) {
     gate.setPerm(atHome.id, { mode, sandbox: "workspace-write" });
     expect([mode, await through(atHome, "Read", { file_path: join(home, ".ssh/id_ed25519") })]).toEqual([mode, expect.stringMatching(/^owner: it reads ~\/\.ssh\/id_ed25519/)]);
-    expect([mode, await through(atHome, "Read", { file_path: join(home, "projects/other/.env") })]).toEqual([mode, "ran"]);
+    // (Another project's environment file is a credential by its name: the owner's in every sandbox, as with none.)
+    expect([mode, await through(atHome, "Read", { file_path: join(home, "projects/other/.env") })]).toEqual([mode, expect.stringMatching(/^owner: it reads ~\/projects\/other\/\.env, a file that holds credentials/)]);
+    expect([mode, await through(atHome, "Read", { file_path: join(home, "projects/other/notes.txt") })]).toEqual([mode, "ran"]);
   }
   gate.setPerm(atHome.id, { mode: "full-auto", sandbox: "workspace-write" });
   expect(await through(atHome, "Read", { file_path: join(home, ".ssh/id_ed25519") })).toMatch(/^refused: /);
-  // With no sandbox a read is a read.
+  // With no sandbox a read is a read, but for where credentials are kept (credentials.ts): that is the owner's.
   gate.setPerm(session.id, { mode: "ask", sandbox: "off" });
-  expect(await through(session, "Read", { file_path: join(home, ".ssh/id_ed25519") })).toBe("ran");
+  expect(await through(session, "Read", { file_path: join(home, "projects/other/notes.txt") })).toBe("ran");
+  expect(await through(session, "Read", { file_path: join(home, ".ssh/id_ed25519") })).toMatch(/^owner: it reads ~\/\.ssh\/id_ed25519, in ~\/\.ssh, where the owner's credentials are kept/);
 }, 180_000);
 
 test("a link whose name holds a glob character is a link: a path is cut at a wildcard only when it came from a pattern", async () => {
@@ -445,7 +451,7 @@ test("after the gate's look a tool does no I/O on a name: a file that cannot be 
   rmSync(name, { force: true });
   // The folder is not there when the gate looks; it is a link to the key folder by the time of the open.
   const dir = join(ws, "later");
-  for (const [tool, input] of [["Read", { file_path: join(dir, "id_ed25519") }], ["read_file", { file_path: join(dir, "id_ed25519") }], ["view_image", { path: join(dir, "id_ed25519") }]] as [string, Record<string, unknown>][]) {
+  for (const [tool, input] of [["Read", { file_path: join(dir, "deploy") }], ["read_file", { file_path: join(dir, "deploy") }], ["view_image", { path: join(dir, "deploy") }]] as [string, Record<string, unknown>][]) {
     rmSync(dir, { recursive: true, force: true });
     const got = await judgedThenRun(session, tool, input, () => symlinkSync(join(home, ".ssh"), dir));
     expect([tool, got.gate, got.out.includes("KEY")]).toEqual([tool, "ran", false]);
@@ -493,16 +499,16 @@ test("after the gate's look a tool does no I/O on a name: a file that cannot be 
   // The session's folder itself is replaced by a link to the key folder: nothing runs in it any more.
   const folder = join(root, "moving-ws");
   mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "id_ed25519"), "plain\n");
+  writeFileSync(join(folder, "deploy"), "plain\n");
   const moving = store.createSession({ model: "fixture:m", workspace: folder });
   gate.setPerm(moving.id, { mode: "auto-edits", sandbox: "workspace-write" });
-  expect((await judgedThenRun(moving, "Read", { file_path: join(folder, "id_ed25519") })).out).toContain("plain");
+  expect((await judgedThenRun(moving, "Read", { file_path: join(folder, "deploy") })).out).toContain("plain");
   renameSync(folder, `${folder}.was`);
   symlinkSync(join(home, ".ssh"), folder);
-  const after = await judgedThenRun(moving, "Read", { file_path: join(folder, "id_ed25519") });
+  const after = await judgedThenRun(moving, "Read", { file_path: join(folder, "deploy") });
   expect([after.gate, after.out]).toEqual(["refused", ""]);
-  expect(await through(moving, "Read", { file_path: join(folder, "id_ed25519") })).toMatch(/^refused: .*this session's folder is not the folder the session was made in/);
+  expect(await through(moving, "Read", { file_path: join(folder, "deploy") })).toMatch(/^refused: .*this session's folder is not the folder the session was made in/);
   rmSync(folder, { force: true });
   renameSync(`${folder}.was`, folder);
-  expect((await judgedThenRun(moving, "Read", { file_path: join(folder, "id_ed25519") })).out).toContain("plain");
+  expect((await judgedThenRun(moving, "Read", { file_path: join(folder, "deploy") })).out).toContain("plain");
 }, 120_000);

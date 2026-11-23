@@ -168,6 +168,8 @@ export class ScriptedProvider implements Provider {
     // For specs that compare what was sent across daemon restarts: one line per
     // request, with a fingerprint of the tool definitions as they were sent.
     if (process.env.KEEL_SCRIPTED_LOG) appendFileSync(process.env.KEEL_SCRIPTED_LOG, JSON.stringify({ ts: Date.now(), session: req.sessionKey, purpose: req.purpose ?? "turn", system: req.system, tools: req.tools.map((t) => t.name), tools_hash: Bun.hash(JSON.stringify(req.tools.map((t) => [t.name, t.description, t.input_schema, t.freeform ?? null, !!t.defer]))).toString(36), messages: msgs.length }) + "\n");
+    // For specs that check what a request carries (a value kept from every model): each request whole, as sent.
+    if (process.env.KEEL_SCRIPTED_BODY_LOG) appendFileSync(process.env.KEEL_SCRIPTED_BODY_LOG, JSON.stringify({ ts: Date.now(), session: req.sessionKey, purpose: req.purpose ?? "turn", system: req.system, messages: msgs }) + "\n");
     const last = msgs.at(-1);
     const lastText = textOf(last);
     // `script:outage-end` as the newest message: the provider is back at once (a spec ends what it began).

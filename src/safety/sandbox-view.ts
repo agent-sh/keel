@@ -51,6 +51,7 @@ import { contains, realOf } from "../core/paths.ts";
 import { readText } from "../core/proc.ts";
 import { configDir } from "../providers/config.ts";
 import { sandboxRoot, sandboxScope, SCOPE_ORIGIN, scopeDir } from "./sandbox-scope.ts";
+import { STORES } from "./credentials.ts";
 
 export { sandboxRoot, sandboxScope };
 
@@ -154,11 +155,13 @@ const XDG: [string, string][] = [["XDG_CACHE_HOME", "cache"], ["XDG_STATE_HOME",
 // The slot's place in a layer's path: the command's wrapper puts the number of the slot it took there.
 export const SLOT = "@KEEL_SLOT@";
 
-// The well-known credential stores of a home, and what holds the owner's
-// history or runs at login. Nothing in one is bound unless the owner's list
-// names the store; inside whatever else is bound they are hidden. No list
-// of these is complete, which is why the home is not readable to begin with.
-export const CREDENTIALS = [
+// The well-known credential stores of a home (credentials.ts STORES, the one
+// list the file tools and the shell's reads are held to as well), and what
+// holds the owner's history or runs at login. Nothing in one is bound unless
+// the owner's list names the store; inside whatever else is bound they are
+// hidden. No list of these is complete, which is why the home is not readable
+// to begin with.
+const HIDDEN_TOO = [
   ".ssh", ".aws", ".azure", ".gnupg", ".netrc", ".npmrc", ".yarnrc.yml", ".pypirc", ".git-credentials", ".config/git/credentials", ".docker", ".kube", ".minikube",
   ".password-store", ".local/share/keyrings", ".config/gh", ".config/hub", ".config/glab-cli", ".config/gcloud", ".config/op", ".config/1Password", ".config/rclone",
   ".config/doctl", ".config/hcloud", ".config/helm", ".config/nebius", ".config/configstore", ".config/github-copilot", ".config/sops", ".vault-token", ".terraform.d", ".oci", ".fly", ".wrangler",
@@ -172,6 +175,8 @@ export const CREDENTIALS = [
   ".local/share/atuin", ".cache/huggingface/token", ".cache/huggingface/stored_tokens", ".boto", ".s3cfg", ".bunfig.toml", ".Xauthority", ".config/uv", ".gemrc",
   ".config/Code", ".config/Cursor", ".config/zed", ".vscode", ".vscode-server", ".local/share/zed", ".config/JetBrains", ".local/share/JetBrains",
 ];
+const coveredBy = (s: string) => HIDDEN_TOO.some((o) => s === o || s.startsWith(o + "/"));
+export const CREDENTIALS = [...HIDDEN_TOO, ...STORES.filter((s) => !coveredBy(s))];
 
 // (Where a path is, as the kernel walks it: src/core/paths.ts. Never by its text.)
 const real = (p: string) => realOf(p);

@@ -46,6 +46,9 @@ export type ToolContext = {
   // With it: the file each of those names was at the gate's look (device and inode), or null for a name that was
   // not there. A name that is another file by the time of the open is not what was judged.
   looked?: Record<string, string | null>;
+  // Set by the permission gate on a reading call: the credential a path is or is in (src/safety/credentials.ts).
+  // A search of a folder leaves out what it names; a path the call names by itself was asked about at the gate.
+  credential?: (path: string) => { what: string } | null;
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
   // Set on a call a program made (run_code): the id of the turn's call that runs the program.
