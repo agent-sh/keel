@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { searchRoutes } from "./search.ts";
 import { fill, startFill } from "./search-fill.ts";
-import { fillStep, initSearchIndex, keepIndexed, searchMeta, searchTable, WRITES, writeOld } from "./search-index.ts";
+import { dropStep, fillStep, initSearchIndex, keepIndexed, searchMeta, searchTable, WRITES, writeOld } from "./search-index.ts";
 import { searchContent } from "./search-content.ts";
 import { ftsQuery } from "./search.ts";
 
@@ -46,8 +46,30 @@ const filler = (store: Store, n: number) => {
 
 // What a hit is, without its time: the same for the same row of any index.
 const shape = (h: any) => `${h.session_id}:${h.event_id}:${h.kind}:${h.ref ?? ""}:${h.partial ? 1 : 0}:${h.snippet}`;
-// FTS5 checks the index against the text the view gives for each row (external content: sqlite.org/fts5.html).
-const intact = (store: Store) => store.db.run("INSERT INTO search_words (search_words) VALUES ('integrity-check')");
+// The index holds what the events say, word by word. FTS5's own check against its content and its
+// 'rebuild' cannot read this index's view (search-index.ts), and its plain integrity-check checks
+// the index only against itself: here a plain FTS5 table of the same columns is made from the view's text and the two
+// are compared, every word of every row at its place, and each row's count of words.
+function intact(store: Store) {
+  const db = store.db;
+  store.side.flush();
+  db.run("INSERT INTO search_words (search_words) VALUES ('integrity-check')");
+  db.exec(`CREATE VIRTUAL TABLE temp.plain USING fts5(text, event_id UNINDEXED, session_id UNINDEXED, kind UNINDEXED, ts UNINDEXED, ref UNINDEXED, cut UNINDEXED, tokenize = 'unicode61 remove_diacritics 2');
+    INSERT INTO temp.plain (rowid, text) SELECT doc, text FROM search_text;
+    CREATE VIRTUAL TABLE temp.v_words USING fts5vocab(main, search_words, instance);
+    CREATE VIRTUAL TABLE temp.v_ref USING fts5vocab(temp, plain, instance);`);
+  const differ = (a: string, b: string) => {
+    const rows = db.query<Record<string, unknown>, []>(`SELECT * FROM ${a} EXCEPT SELECT * FROM ${b}`).all();
+    if (rows.length && process.env.KEEL_TRACE_INTACT) console.log(a, "not in", b, rows.slice(0, 4));
+    return rows.length;
+  };
+  const words = "(SELECT term, doc, col, offset FROM temp.v_words)", ref = "(SELECT term, doc, col, offset FROM temp.v_ref)";
+  expect([differ(words, ref), differ(ref, words)]).toEqual([0, 0]);
+  const sizes = "(SELECT id, sz FROM main.search_words_docsize)", refSizes = "(SELECT id, sz FROM temp.plain_docsize)";
+  expect([differ(sizes, refSizes), differ(refSizes, sizes)]).toEqual([0, 0]);
+  expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM temp.v_ref").get()!.n).toBeGreaterThan(0);
+  for (const t of ["v_words", "v_ref", "plain"]) db.run(`DROP TABLE temp.${t}`);
+}
 // How many rows the index itself holds (its own count of each row's words; a count over the table would read the view).
 const indexed = (db: Database) => db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_words_docsize").get()!.n;
 
@@ -115,6 +137,24 @@ test("an event's rows are made from that event alone, and a fill's from its rang
   }
 });
 
+test("a step of the fill takes the events' bodies up to its bytes, and one at least", () => {
+  const { store } = open();
+  const s = store.createSession({ model: "m", workspace: "/" });
+  for (let i = 0; i < 10; i++) store.append(s.id, "user", { text: `short ${i}` });
+  store.append(s.id, "tool_result", { results: [{ tool_use_id: "c", content: "long ".repeat(20_000) }] });
+  for (let i = 0; i < 10; i++) store.append(s.id, "user", { text: `after ${i}` });
+  initSearchIndex(store.db);
+  const size = store.db.query<{ n: number }, []>("SELECT octet_length(data) AS n FROM events WHERE kind = 'user' LIMIT 1").get()!.n;
+  // Three short prompts' worth: three of them (the newest first).
+  expect(fillStep(store.db, 3 * size).events).toBe(3);
+  // A step that reaches the long output stops before it, and the next takes it alone.
+  expect(fillStep(store.db, 100 * size).events).toBe(7);
+  expect(fillStep(store.db, size).events).toBe(1);
+  expect(fillStep(store.db, 1_000_000).events).toBe(10);
+  expect(searchMeta(store.db)?.fill_below).toBeNull();
+  intact(store);
+});
+
 // The layout before (version 4): every row's text in the index, mapped to its event by search_docs.
 const V4 = `
 DROP TABLE IF EXISTS search_meta;
@@ -166,17 +206,24 @@ test("an index of the layout before is read until the new one is whole, kept cur
   const now = find("wombat").map((h) => h.session_id);
   expect(now.filter((s) => s === c).length).toBe(6);
   expect(now.filter((s) => s === a)).toEqual([]);
-  // Part of the fill: still the old index, whole.
-  fillStep(db, 4);
+  // Part of the fill (the newest event alone): still the old index, whole.
+  expect(fillStep(db, 1).events).toBe(1);
   expect(searchTable(db)).toBe("search_idx");
   expect(find("wombat").length).toBe(12);
   // The rest: the new one is read, with the same hits, and the old one is dropped.
-  for (let i = 0; i < 100 && searchMeta(db)?.fill_below !== null; i++) fillStep(db, 4);
+  for (let i = 0; i < 1000 && searchMeta(db)?.fill_below !== null; i++) fillStep(db, 2000);
   expect(searchTable(db)).toBe("search_words");
   const after = find("wombat");
   expect(after.map((h) => h.session_id).sort()).toEqual([...Array(6).fill(b), ...Array(6).fill(c)].sort());
   expect(after.filter((h) => h.session_id === b).map(shape).sort()).toEqual(was.filter((h) => h.startsWith(b)).sort());
   intact(next.store);
+  // The old index is removed in steps of so many rows, then its tables go.
+  expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('search_in')").all()).toEqual([]);
+  const oldRows = () => db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_idx").get()!.n;
+  const had = oldRows();
+  expect(dropStep(db, 5)).toMatchObject({ rows: 5, left: true });
+  expect(oldRows()).toBe(had - 5);
+  expect(find("wombat").length).toBe(12);
   startFill(next.store, { oldGone: () => {}, thread: false });
   expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('search_idx', 'search_docs', 'search_in')").all()).toEqual([]);
   // A later event goes to the new index alone.

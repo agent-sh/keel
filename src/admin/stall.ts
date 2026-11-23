@@ -152,7 +152,27 @@ export function unanswered(): number {
 export function during<T>(label: string, work: Promise<T>): Promise<T> {
   const st = state();
   st.work.set(label, false);
-  return work.finally(() => void st.work.set(label, true));
+  passes.begun = performance.now();
+  passes.open.add(work);
+  return work.finally(() => { st.work.set(label, true); passes.open.delete(work); });
+}
+
+// The passes in progress, and when the last began (passesSettled).
+const passes: { open: Set<Promise<unknown>>; begun: number } = ((G as { __keelPasses?: typeof passes }).__keelPasses ??= { open: new Set(), begun: 0 });
+// Resolves once no pass of the daemon's own is in progress and none has begun for `quietMs` (a
+// start's passes begin one after another: the idle compaction once the providers have listed), or
+// after `mostMs`. Work that would contend with them for the write lock waits for this.
+export async function passesSettled(quietMs: number, mostMs: number): Promise<void> {
+  const end = performance.now() + mostMs;
+  while (performance.now() < end) {
+    if (passes.open.size) {
+      await Promise.race([Promise.allSettled([...passes.open]), Bun.sleep(Math.max(0, end - performance.now()))]);
+      continue;
+    }
+    const since = performance.now() - passes.begun;
+    if (since >= quietMs) return;
+    await Bun.sleep(Math.min(quietMs - since, Math.max(0, end - performance.now())));
+  }
 }
 
 export type RunningTurn = { session_id: string; turn?: string; doing: string };

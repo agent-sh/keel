@@ -37,14 +37,20 @@ function rowsWhere(q: ContentQuery, call: string): { sql: string; args: (string 
   return { sql: sql.map((s) => ` AND ${s}`).join(""), args };
 }
 
+// FTS5's own words for a query it cannot parse.
+export const unparsed = (e: unknown) => /^(fts5: syntax error|unterminated string)/.test(String((e as Error)?.message ?? ""));
+
 export function searchContent(db: Database, q: ContentQuery): ContentHit[] {
   const T = searchTable(db);
   if (!T) return [];
   let content: ContentHit[];
   try {
     content = T === SEARCH_TABLE ? ranked(db, q) : rankedOld(db, q);
-  } catch {
-    return []; // a query FTS cannot parse matches nothing
+  } catch (e) {
+    // A query FTS cannot parse matches nothing (a word of control characters); anything else is a
+    // failure of the search, said as one (the page offers Retry) and kept in Errors.
+    if (unparsed(e)) return [];
+    throw e;
   }
   // The reply that holds a tool call (its card is where a hit on the call's output opens).
   const callEvent = db.query<{ id: string }, [string, string]>(

@@ -21,11 +21,11 @@
 // event is gone (its text is what the index is told to remove).
 //
 // An index of an earlier layout (one that kept a copy of every row's text)
-// is replaced once, on a thread (search-fill-worker.ts): the new index is
-// filled from the events, newest first, while searches still read the old
-// one, which is kept current meanwhile; then the old one is emptied in parts
-// and dropped. A store with no index of its own is filled the same way, and
-// searches read the part that is filled.
+// is replaced once, on a thread (search-fill-worker.ts), once the start's own
+// work is over: the new index is filled from the events, newest first, while
+// searches still read the old one, which is kept current meanwhile; then the
+// old one is removed in steps and its tables dropped. A store with no index
+// of its own is filled the same way, and searches read the part that is filled.
 import type { Database } from "bun:sqlite";
 import type { Store } from "../../core/store.ts";
 
@@ -37,7 +37,11 @@ const L = TOOL_EXCERPT;
 export const PART_BITS = 8;
 const PARTS = 1 << PART_BITS;
 
-// Bumped when what is indexed changes: the index is made again from the events once.
+// Bumped when what is indexed changes: the index is made again from the events once. The same
+// bump is the repair of an index that is wrong: FTS5's 'rebuild' and its integrity-check against
+// the content read the view through statements of their own, which cannot take its json_each and
+// json_tree, so both fail on this index; never run 'rebuild' on it. (search.test.ts checks the
+// index word by word against a plain FTS5 table made from the view's text.)
 export const INDEX_VERSION = 5;
 
 // A declined reply is discarded (the transcript hides its partial text), so it is not found either.
@@ -266,19 +270,28 @@ export function keepIndexed(store: Pick<Store, "db" | "side"> & { stored?: Store
   return { oldGone: () => { old = false; } };
 }
 
-// One step of the fill: the events in the `batch` row numbers below
-// `fill_below` get their rows, newest first, and `fill_below` moves down.
-// Returns how many events it looked at (0: the fill is done, and recorded so).
+// One step of the fill: the events below `fill_below`, newest first, whose
+// bodies come to about `bytes` (at least one event, at most `most`), get their
+// rows, and `fill_below` moves down. What a step costs is the reading of those
+// bodies and the indexing of their words, so a step is sized by their bytes,
+// not by how many events it takes (a tool's output is up to TOOL_EXCERPT
+// characters of words, a short note a few). Returns how many events it took
+// (0: the fill is done, and recorded so) and whether any are left.
 // `held_ms`: how long the step worked with the write lock held (not the wait for it).
-export function fillStep(db: Database, batch: number): { events: number; left: number; held_ms: number } {
+export function fillStep(db: Database, bytes: number, most = 5_000): { events: number; left: number; held_ms: number } {
   let t = 0;
   const r = db.transaction(() => {
     t = performance.now();
     const m = db.query<{ fill_below: number | null }, []>("SELECT fill_below FROM search_meta").get();
     if (!m || m.fill_below === null) return { events: 0, left: 0 };
     const below = m.fill_below;
-    const range = db.query<{ lo: number | null; n: number }, [number, number]>(
-      "SELECT MIN(rowid) AS lo, count(*) AS n FROM (SELECT rowid FROM events WHERE rowid < ? ORDER BY rowid DESC LIMIT ?)").get(below, batch)!;
+    // (The bytes of the events up to each one, newest first: the step ends before the first that would pass `bytes`.)
+    const range = db.query<{ lo: number | null; n: number }, [number, number, number]>(
+      `SELECT MIN(rowid) AS lo, count(*) AS n FROM (
+         SELECT rowid, row_number() OVER w AS k, sum(octet_length(data)) OVER w AS upto
+         FROM (SELECT rowid, data FROM events WHERE rowid < ?1 ORDER BY rowid DESC LIMIT ?2)
+         WINDOW w AS (ORDER BY rowid DESC ROWS UNBOUNDED PRECEDING))
+       WHERE k = 1 OR upto <= ?3`).get(below, most, bytes)!;
     if (range.lo === null) {
       finishFill(db);
       return { events: 0, left: 0 };
@@ -320,16 +333,40 @@ export function passBelow(db: Database, rowid: number) {
 
 // The new index is whole: searches read it, and the old one is not kept
 // current any more (its triggers and the view it was written through go now;
-// its tables are dropped next, dropOld).
+// its rows are removed next, dropStep).
 function finishFill(db: Database) {
   db.exec(OLD_LAYOUT);
   db.query("UPDATE search_meta SET fill_below = NULL, reads_old = 0").run();
 }
 
-// The old index's tables are dropped (their pages go to the store's free
-// list and are used again by what is written next). One transaction: SQLite
-// frees a table's pages by reading each, about 20 ms for 120 MB with the
-// pages in memory.
-export function dropOld(db: Database) {
-  db.transaction(() => { db.exec("DROP TABLE IF EXISTS search_idx; DROP TABLE IF EXISTS search_docs;"); }).immediate();
+// One step of removing the old index: its `rows` oldest rows are deleted
+// (their pages go to the store's free list and are used again by what is
+// written next), and once none is left its tables are dropped, now nearly
+// empty. Dropping the whole index at once held the write lock for as long as
+// SQLite takes to free every page, near a second on a store of a gigabyte;
+// a delete of a few hundred rows takes a few milliseconds. (FTS5 reads each
+// row's text to remove its words: the old index holds its own copy.) Returns
+// how many rows it removed and whether anything is left.
+export function dropStep(db: Database, rows: number): { rows: number; left: boolean; held_ms: number } {
+  let t = 0;
+  const r = db.transaction(() => {
+    t = performance.now();
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'search_idx'").get()) {
+      db.exec("DROP TABLE IF EXISTS search_docs");
+      return { rows: 0, left: false };
+    }
+    // (Counted by the rows taken: FTS5's own writes to its tables are counted in a statement's changes.)
+    const ids = db.query<{ rowid: number }, [number]>("SELECT rowid FROM search_idx ORDER BY rowid LIMIT ?").all(rows).map((r) => r.rowid);
+    if (ids.length) {
+      db.query("DELETE FROM search_idx WHERE rowid BETWEEN ? AND ?").run(ids[0]!, ids.at(-1)!);
+      return { rows: ids.length, left: true };
+    }
+    // (The map of its rows to their events: rows of a few dozen bytes, removed many at a time.)
+    const docs = db.query("SELECT 1 FROM sqlite_master WHERE name = 'search_docs'").get()
+      ? db.query("DELETE FROM search_docs WHERE (event_id, doc) IN (SELECT event_id, doc FROM search_docs LIMIT ?)").run(rows * 16).changes : 0;
+    if (docs) return { rows: docs, left: true };
+    db.exec("DROP TABLE IF EXISTS search_idx; DROP TABLE IF EXISTS search_docs;");
+    return { rows: 0, left: false };
+  }).immediate();
+  return { ...r, held_ms: performance.now() - t };
 }

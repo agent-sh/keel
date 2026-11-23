@@ -67,6 +67,7 @@ test("the store's files are named in few places and opened outside SQLite only t
     "src/core/checkpoint.ts",       // the index's kept descriptor, to see how long the log is while the thread is in a step
     "src/core/log-pages.ts",        // the kept descriptors of the log and its index, to read which pages the frames name
     "src/core/store-files.ts",
+    "src/server/routes/search-fill-worker.ts", // the index's kept descriptor (storeFd), to see how long the log is before a step
   ]);
   // The file of owed writes is an instruction to the next start (src/core/owed.ts): the daemon alone
   // reads and writes it, and who names it is shorter still.

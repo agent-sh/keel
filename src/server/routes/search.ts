@@ -9,6 +9,7 @@ import { searchLimits } from "../search-query.ts";
 import { board } from "./state.ts";
 import { initSearchIndex, keepIndexed } from "./search-index.ts";
 import { startFill } from "./search-fill.ts";
+import { passesSettled } from "../../admin/stall.ts";
 
 export { TOOL_EXCERPT, initSearchIndex, keepIndexed } from "./search-index.ts";
 
@@ -42,10 +43,19 @@ export function ftsQuery(q: string): string | null {
   return words.map((w, i) => `"${w}"${i === words.length - 1 ? "*" : ""}`).join(" ");
 }
 
-export const searchRoutes: RouteModule = ({ store, errors }) => {
+// The fill waits for the start's own work to be over: its passes write the store too (the
+// recovery, the idle compaction, what they record of errors), and a fill beside them made them
+// wait for the write lock. Meanwhile a search reads the old index, kept current, so waiting costs
+// little; a pass that does not end does not keep the old index past SETTLE_MOST_MS.
+const SETTLE_QUIET_MS = 5_000;
+const SETTLE_MOST_MS = 10 * 60_000;
+
+export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
   const state = initSearchIndex(store.db);
   const kept = keepIndexed(store);
-  if (state.fill || state.drain) startFill(store, { oldGone: kept.oldGone, failed: (e, ctx) => errors?.capture("server", e, ctx) });
+  // (The idle compaction begins once the providers have listed: the passes are looked at after that.)
+  const after = () => providers ? providers.models().catch(() => {}).then(() => Bun.sleep(0)).then(() => passesSettled(SETTLE_QUIET_MS, SETTLE_MOST_MS)) : undefined;
+  if (state.fill || state.drain) startFill(store, { oldGone: kept.oldGone, failed: (e, ctx) => errors?.capture("server", e, ctx), after: after() });
 
   return {
     "/api/search": {
