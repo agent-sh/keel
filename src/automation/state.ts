@@ -179,15 +179,29 @@ export function lens(d: From = from(), counts?: Map<string, number>): Lens {
 
 // The tool step a turn is on, in the words the transcript uses for the call:
 // the command, the file, the pattern. With several calls in one step, the first and a count.
+// A state is read at every change of a running session (each page, each frame), and the reply that
+// holds the calls can be tens of KB: its line is kept by the reply's id and read again only for a new
+// reply (or other tools named), never the reply's body at every read.
+const steps = new Map<string, { id: string; names: string; line: string | undefined }>();
 function stepOf(store: Store, s: Session, names: string[]): string | undefined {
-  const e = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'assistant' ORDER BY seq DESC LIMIT 1").get(s.id);
-  if (!e) return undefined;
+  const head = store.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'assistant' ORDER BY seq DESC LIMIT 1").get(s.id);
+  if (!head) return undefined;
+  const key = names.join("\n");
+  const was = steps.get(s.id);
+  if (was && was.id === head.id && was.names === key) return was.line;
+  let line: string | undefined;
   try {
-    const uses = ((JSON.parse(e.data).blocks ?? []) as any[]).filter((b) => b.type === "tool_use" && names.includes(b.name));
-    if (!uses.length) return undefined;
-    const first = oneLine(toolLine(uses[0].name, uses[0].input ?? {}, s.workspace), 160);
-    return uses.length > 1 ? `${first}, and ${uses.length - 1} more` : first;
-  } catch { return undefined; }
+    const e = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE id = ?").get(head.id);
+    const uses = ((e ? JSON.parse(e.data).blocks ?? [] : []) as any[]).filter((b) => b.type === "tool_use" && names.includes(b.name));
+    if (uses.length) {
+      const first = oneLine(toolLine(uses[0].name, uses[0].input ?? {}, s.workspace), 160);
+      line = uses.length > 1 ? `${first}, and ${uses.length - 1} more` : first;
+    }
+  } catch { line = undefined; }
+  steps.delete(s.id);
+  steps.set(s.id, { id: head.id, names: key, line });
+  if (steps.size > 512) steps.delete(steps.keys().next().value!);
+  return line;
 }
 
 // What the daemon knows of one session.
