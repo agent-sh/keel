@@ -79,7 +79,7 @@ const VALUED: Record<string, RegExp> = Object.assign(Object.create(null), {
   uv: /^(--with|--with-editable|--with-requirements|--python|-p|--project|--directory|--env-file|--extra|--group|--index|--package|--isolated-from)$/,
   npm: /^(--prefix|-w|--workspace|-c|--call|--package|-p)$/, sshpass: /^-[pfdP]$/, direnv: /^$/, dotenv: /^(-e|-f|--file)$/, runuser: /^(-u|-g|-G|--user|--group)$/, screen: /^(-S|-L|-c|-e|-s|-T|-t|-p)$/,
 });
-const WRAPPERS = new Set(["env", "nohup", "setsid", "nice", "ionice", "timeout", "stdbuf", "command", "builtin", "exec", "sudo", "doas", "time", "chrt", "taskset", "watch", "xargs", "parallel", "npx", "bunx",
+export const WRAPPERS = new Set(["env", "nohup", "setsid", "nice", "ionice", "timeout", "stdbuf", "command", "builtin", "exec", "sudo", "doas", "time", "chrt", "taskset", "watch", "xargs", "parallel", "npx", "bunx",
   "busybox", "toybox", "coproc", "strace", "ltrace", "unshare", "fakeroot", "flock", "chronic", "systemd-run", "dotenv", "valgrind", "firejail", "proot", "runuser", "chroot", "faketime", "screen", "sshpass"]);
 // Programs that start another after a word of their own: `bundle exec CMD`, `uv run CMD`.
 const STARTS: Record<string, RegExp> = Object.assign(Object.create(null), { bundle: /^exec$/, npm: /^exec$/, pnpm: /^(exec|dlx)$/, yarn: /^(exec|dlx)$/, bun: /^x$/, uv: /^run$/, poetry: /^run$/, pipenv: /^run$/, pdm: /^run$/, direnv: /^exec$/, rye: /^run$/, hatch: /^run$/ });

@@ -52,6 +52,16 @@ test("a deny or ask holds an allow only where it can hold what the allow lets th
     ["Edit(//srv/app/**)", "Edit(*.env)"],
     ["mcp__github__get_issue", "mcp__github"],
     ["mcp__github__get_issue", "mcp__github__get_issue"],
+    // A command that runs another: Claude Code strips the wrapper before it matches the deny.
+    ["Bash(timeout:*)", "Bash(curl:*)"],
+    ["Bash(nice:*)", "Bash(curl:*)"],
+    ["Bash(xargs:*)", "Bash(rm:*)"],
+    ["Bash(env:*)", "Bash(rm:*)"],
+    ["Bash(sudo:*)", "Bash(rm:*)"],
+    // A write tool's deny holds an edit allow (Keel has one edit rule).
+    ["Edit(//srv/app/**)", "Write"],
+    ["Edit(//srv/app/**)", "Write(//srv/app/secret/**)"],
+    ["Edit(//srv/app/**)", "NotebookEdit(*)"],
   ];
   for (const [a, h] of apart) expect({ a, h, held: overlaps(a, h) }).toEqual({ a, h, held: false });
   for (const [a, h] of held) expect({ a, h, held: overlaps(a, h) }).toEqual({ a, h, held: true });

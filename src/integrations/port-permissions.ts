@@ -15,6 +15,7 @@
 import { homedir } from "node:os";
 import type { RuleKind } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
+import { WRAPPERS } from "../safety/risk-words.ts";
 
 export type Mapped = { kind: RuleKind; pattern: string } | { done: string } | { skip: string };
 
@@ -87,8 +88,10 @@ export function claudeAllow(rule: string, base?: string): Mapped {
 // folders neither holds the other. Whatever cannot be told apart overlaps.
 // `allowBase`, `heldBase`: the project roots the rules were written in.
 export function overlaps(allow: string, held: string, allowBase?: string, heldBase?: string): boolean {
-  const a = parseRule(allow), h = parseRule(held);
-  if (!a || !h) return true;
+  const a = parseRule(allow), h0 = parseRule(held);
+  if (!a || !h0) return true;
+  // A write tool's deny holds every edit (Keel has one edit rule for all of them).
+  const h = EDITS.has(h0.tool) && a.tool === "Edit" ? { ...h0, tool: "Edit" } : h0;
   const sameTool = a.tool === h.tool || (h.tool.endsWith("*") && a.tool.startsWith(h.tool.slice(0, -1))) || (h.tool.startsWith("mcp__") && a.tool.startsWith(`${h.tool}__`));
   if (!sameTool) return false;
   if (h.spec === undefined || h.spec.trim() === "*" || a.spec === undefined || a.spec.trim() === "*") return true;
@@ -100,6 +103,10 @@ export function overlaps(allow: string, held: string, allowBase?: string, heldBa
     };
     const x = head(a.spec), y = head(h.spec);
     if (x === null || y === null || !x || !y) return true;
+    // A command that runs another (timeout 5 curl, nice, xargs, env, sudo): Claude Code
+    // strips such wrappers before it matches a deny, so a deny of the command
+    // inside holds it, whatever the allow's first word says.
+    if (WRAPPERS.has(x.split(" ")[0]!) || WRAPPERS.has(y.split(" ")[0]!) || x.split(" ")[0] === "noglob" || y.split(" ")[0] === "noglob") return true;
     const begins = (long: string, short: string) => long === short || long.startsWith(`${short} `) || (!/\s$/.test(short) && long.startsWith(short));
     return begins(x, y) || begins(y, x);
   }
@@ -111,6 +118,8 @@ export function overlaps(allow: string, held: string, allowBase?: string, heldBa
   }
   return true;
 }
+
+const EDITS = new Set(["Write", "MultiEdit", "NotebookEdit"]);
 
 // A rule the Rust Keel stored (its "always" answers: kind, pattern, scope folder).
 export function rustRule(kind: string, pattern: string): Mapped {
