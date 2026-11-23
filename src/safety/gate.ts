@@ -437,7 +437,9 @@ export class Gate {
     });
     if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
     // How an agent's settings stand to its parent's (setPerm). A row from before this follows nothing: it is capped only.
-    if (!store.columnExists("perm_sessions", "follows")) store.migrate("ALTER TABLE perm_sessions ADD COLUMN follows INTEGER NOT NULL DEFAULT 0; ALTER TABLE perm_sessions ADD COLUMN want TEXT");
+    // (Each column on its own check: a stop between the two leaves a store that adds the other at the next start.)
+    if (!store.columnExists("perm_sessions", "follows")) store.migrate("ALTER TABLE perm_sessions ADD COLUMN follows INTEGER NOT NULL DEFAULT 0");
+    if (!store.columnExists("perm_sessions", "want")) store.migrate("ALTER TABLE perm_sessions ADD COLUMN want TEXT");
     const db = store.db;
     // Restart: an open card waits for its call to come back (callOutcome "waiting").
     for (const r of db.query<{ data: string }, []>("SELECT data FROM approvals WHERE state = 'pending'").all()) {

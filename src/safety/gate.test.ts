@@ -664,3 +664,14 @@ test("a deleted session's grants are deleted with it", async () => {
   new Gate(store, new Bus());
   expect(g.rules().map((r) => r.id)).not.toContain("left");
 });
+
+// A store whose start stopped between the two columns of an agent's tie (follows added, want not) takes the
+// other at the next start, and settings are written again.
+test("the columns of an agent's tie are added each on its own", () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-gate-tie-")));
+  store.migrate("CREATE TABLE perm_sessions (session_id TEXT PRIMARY KEY, mode TEXT NOT NULL, sandbox TEXT NOT NULL DEFAULT 'off', network INTEGER NOT NULL DEFAULT 1, follows INTEGER NOT NULL DEFAULT 0)");
+  const g = new Gate(store, new Bus());
+  const s = store.createSession({ workspace: mkdtempSync(join(tmpdir(), "keel-ws-")), model: "fixture:m", title: "t" });
+  expect(g.setPerm(s.id, { mode: "ask" }, { follows: true, want: "plan" }).mode).toBe("ask");
+  expect(g.tieOf(s.id)).toEqual({ follows: true, want: "plan" });
+});
