@@ -58,10 +58,10 @@ let hl: Promise<typeof import("../lib/highlight.ts")> | null = null;
 const loadHl = () => (hl ??= import("../lib/highlight.ts"));
 
 // Colors the code blocks under `root` that are not colored yet.
-function highlightIn(root: Element) {
+function highlightIn(root: Element): Promise<void> | undefined {
   const codes = root.querySelectorAll<HTMLElement>("code[data-lang]:not([data-hl])");
   if (!codes.length) return;
-  loadHl()
+  return loadHl()
     .then(({ highlightHtml }) => {
       codes.forEach((c) => {
         if (c.dataset.hl || !c.isConnected) return;
@@ -77,10 +77,10 @@ function highlightIn(root: Element) {
 
 // TeX becomes MathML (lib/math.ts, loaded the first time a reply has math).
 let mm: Promise<typeof import("../lib/math.ts")> | null = null;
-function mathIn(root: Element) {
+function mathIn(root: Element): Promise<void> | undefined {
   const list = root.querySelectorAll<HTMLElement>(".math:not([data-done])");
   if (!list.length) return;
-  (mm ??= import("../lib/math.ts"))
+  return (mm ??= import("../lib/math.ts"))
     .then(({ mathMl }) => list.forEach((el) => {
       if (el.dataset.done || !el.isConnected) return;
       el.dataset.done = "1";
@@ -150,7 +150,8 @@ function pathsIn(root: Element, sessionId?: string) {
   else askPaths(sessionId, new Set(fresh), 30);
 }
 
-const enhance = (root: Element, sessionId?: string) => { highlightIn(root); mathIn(root); pathsIn(root, sessionId); };
+// Settled once what it changed is in the page (math changes a reply's height).
+const enhance = (root: Element, sessionId?: string) => { const done = [highlightIn(root), mathIn(root)]; pathsIn(root, sessionId); return Promise.all(done); };
 
 // Opens a linked file in the session's Files panel, at its lines.
 function openLinked(el: HTMLElement, sessionId: string) {
@@ -165,8 +166,9 @@ function openLinked(el: HTMLElement, sessionId: string) {
 // it ever showed.
 // Math and file links wait for the view the same way.
 // In the transcript a reply is drawn only near the view (lib/window.ts), so it is colored once it
-// is drawn, in idle time, and nothing watches it: `NearView` says so. Elsewhere one observer
-// watches every reply that waits.
+// is drawn, in idle time, and nothing watches it: `NearView` says so, with what to call once the
+// reply has changed (the transcript holds the reader's line in the same task, before the frame
+// is painted). Elsewhere one observer watches every reply that waits.
 let seen: IntersectionObserver | null = null;
 const sessionOf = new WeakMap<Element, string | undefined>();
 const watch = (el: Element, sessionId?: string) => {
@@ -265,7 +267,7 @@ export const Markdown = memo(function Markdown({ text, live, sessionId }: { text
   return <StoredMarkdown text={text} sessionId={sessionId} />;
 });
 
-export const NearView = createContext(false);
+export const NearView = createContext<(() => void) | null>(null);
 
 function StoredMarkdown({ text, sessionId }: { text: string; sessionId?: string }) {
   const html = useMemo(() => md.parse(text, { async: false }) as string, [text]);
@@ -276,7 +278,7 @@ function StoredMarkdown({ text, sessionId }: { text: string; sessionId?: string 
     const el = ref.current;
     if (!el || !el.querySelector("code[data-lang]:not([data-hl]), .math:not([data-done]), code.k-fileref:not([data-checked])")) return;
     if (!near) return watch(el, sessionId);
-    whenIdle(() => { if (el.isConnected) enhance(el, sessionId); }, 400);
+    whenIdle(() => { if (el.isConnected) void enhance(el, sessionId).then(near); }, 400);
   }, [html, sessionId, near]);
   const click = onClick(sessionId);
   return <div ref={ref} className="prose-keel" dangerouslySetInnerHTML={{ __html: html }} onClick={click} onKeyDown={click} />;

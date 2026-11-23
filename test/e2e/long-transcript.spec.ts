@@ -1,6 +1,8 @@
 import { expect, test, type Locator, type Page } from "./isolate.ts";
-import { rmSync } from "node:fs";
-import { daemon, exited, seeded } from "./own-daemon.ts";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { daemon, exited, ROOT, seeded, sessionsFolder, specEnv } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a long session costs what its end costs. Rows of finished turns are
@@ -526,10 +528,13 @@ test("reading up through a run of calls longer than a part keeps the reader at t
 
 // Rows far from the view are not drawn: each block of them stands as one light box as tall as it
 // was, holding its rows' words and event ids (lib/window.ts). Find reaches the words and brings
-// the rows back, a selection keeps the rows it spans drawn, a jump draws its row, a step the
-// owner opened is open again when its row comes back, and a phone holds rows the same way.
+// the rows back with what it found still selected, a selection keeps the rows it spans drawn, a
+// jump draws its row, a call the owner opened is open again when its row comes back (in its own
+// session only), forced colors keep the held words unseen, a page printed draws every block, and a
+// phone holds rows the same way.
 test("rows far from the view are held as light boxes that Find, a selection and a jump still reach", async ({ page }) => {
-  const { state, ids: [id] } = seeded("held", 180, "turns", "Held rows");
+  // (Two sessions of the same turns: their calls have the same ids.)
+  const { state, ids: [id, twin] } = seeded("held", 180, "turns", "Held rows", "Held rows again");
   const d = await daemon(state);
   try {
     const all = ((await (await fetch(`${d.url}/api/sessions/${id}/events`)).json()) as any).events as { id: string; kind: string; data: any }[];
@@ -558,6 +563,8 @@ test("rows far from the view are held as light boxes that Find, a selection and 
     // the rows there are drawn, the found one in view.
     await page.evaluate(() => getSelection()!.getRangeAt(0).startContainer.parentElement!.scrollIntoView({ block: "center" }));
     await expect(page.locator(`[data-testid="user-message"]#e-${third.id}`)).toBeInViewport({ timeout: 10_000 });
+    // What Find found is still selected, in the drawn prompt (the next search goes on from there).
+    expect(await page.evaluate((at) => { const s = getSelection()!; return { text: s.toString(), drawn: !!s.anchorNode?.parentElement?.closest(`[data-testid="user-message"]#${at}`) }; }, `e-${third.id}`)).toEqual({ text: String(third.data.text).slice(0, 24), drawn: true });
 
     // A selection from that prompt to one two blocks on, made as a drag makes it (the view goes down
     // to its end), keeps every row it spans drawn, also when the view goes on to the end, and copies
@@ -601,6 +608,25 @@ test("rows far from the view are held as light boxes that Find, a selection and 
     // A screen reader reaches a held run of work by the name it has drawn.
     await expect(transcript.locator('.k-hold [role="group"][aria-label="What the model did"]').first()).toBeAttached();
 
+    // The call opened is this session's: the other session's call of the same id stays closed.
+    const twinAll = ((await (await fetch(`${d.url}/api/sessions/${twin}/events`)).json()) as any).events as { id: string; kind: string; data: any }[];
+    const twinPrompt = twinAll.find((e) => e.kind === "user" && String(e.data.text).startsWith("Prompt 14:"))!;
+    await page.goto(`${d.url}/s/${twin}?e=${twinPrompt.id}`);
+    await expect(page.locator(`[data-testid="user-message"]#e-${twinPrompt.id}`)).toBeInViewport({ timeout: 30_000 });
+    await expect(page.locator(`[data-events~="${twinAll[twinAll.indexOf(twinPrompt) + 2]!.id}"] .k-line`).first()).toHaveAttribute("aria-expanded", "false");
+
+    // In forced colors the held words stay unseen (the system's text color would show them).
+    await expect.poll(() => transcript.locator(":scope > .k-hold").count()).toBeGreaterThan(5);
+    const heldColor = () => transcript.locator(".k-hold > p").first().evaluate((el) => getComputedStyle(el).color);
+    await page.emulateMedia({ forcedColors: "active" });
+    expect(await heldColor()).toBe("rgba(0, 0, 0, 0)");
+    await page.emulateMedia({ forcedColors: "none" });
+    // A page printed draws every block, and holds them again after.
+    await page.evaluate(() => dispatchEvent(new Event("beforeprint")));
+    expect(await transcript.locator(":scope > .k-hold").count()).toBe(0);
+    await page.evaluate(() => dispatchEvent(new Event("afterprint")));
+    await expect.poll(() => transcript.locator(":scope > .k-hold").count()).toBeGreaterThan(5);
+
     // A phone holds the rows the same way.
     await page.setViewportSize({ width: 390, height: 844 });
     // (It opens where the owner was: the prompt jumped to.)
@@ -608,6 +634,67 @@ test("rows far from the view are held as light boxes that Find, a selection and 
     await expect(jumped).toBeInViewport({ timeout: 30_000 });
     await expect.poll(() => transcript.locator(":scope > .k-hold").count()).toBeGreaterThan(5);
     await shoot(page, "long-transcript-11-held-rows-phone");
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
+  }
+});
+
+// The reader's line holds in every frame while the view goes up a long transcript by the wheel:
+// a block drawn at its real height above the line, a reply's math set once it is drawn, and an
+// earlier part read in at the top move nothing the reader sees, not even for one frame. (Held
+// in the same task as the change, before the frame is painted, not by the size observer after.)
+test("reading up by the wheel holds the reader's line in every frame", async ({ page }) => {
+  test.setTimeout(240_000);
+  const state = join(ROOT, `wheel-${Date.now()}`);
+  mkdirSync(state, { recursive: true });
+  const [id] = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/mixed-transcript.ts"), state, sessionsFolder(state), "160", "Mixed"], { encoding: "utf8", env: specEnv(state) })) as string[];
+  const d = await daemon(state);
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // A part asked for and not yet in: the frames are watched until it is, and a few after.
+    await page.addInitScript(() => {
+      const w = window as any, f = w.fetch.bind(w);
+      w.__parts = 0;
+      w.fetch = (u: RequestInfo | URL, o?: RequestInit) => {
+        if (!String(u instanceof Request ? u.url : u).includes("/page?")) return f(u, o);
+        w.__parts++;
+        return f(u, o).finally(() => setTimeout(() => w.__parts--, 300));
+      };
+    });
+    await page.goto(`${d.url}/s/${id}`);
+    await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 60_000 });
+    const scroller = page.getByTestId("transcript").locator("xpath=..");
+    await scroller.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+    const box = (await scroller.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    const jolts: { step: number; px: number }[] = [];
+    let parts = 0;
+    page.on("response", (r) => { if (new URL(r.url()).pathname === `/api/sessions/${id}/page`) parts++; });
+    for (let step = 0; step < 160; step++) {
+      // A drawn line under the view's top: where it stands in each frame after one wheel step.
+      const picked = await scroller.evaluate((s) => {
+        const r = s.getBoundingClientRect(), c = s.firstElementChild!;
+        for (let y = r.top + r.height * 0.4; y < r.bottom - 10; y += 6) {
+          const el = document.elementFromPoint(r.left + r.width / 2, y);
+          if (el && el.children.length === 0 && !el.closest(".k-hold") && c.contains(el)) { (window as any).__line = el; return true; }
+        }
+        return false;
+      });
+      await page.mouse.wheel(0, -350);
+      const tops = await page.evaluate(() => new Promise<(number | null)[]>((done) => {
+        const el = (window as any).__line as Element, out: (number | null)[] = [], t0 = performance.now();
+        const f = () => { out.push(el.isConnected ? el.getBoundingClientRect().top : null); if (performance.now() - t0 < 220 || ((window as any).__parts > 0 && performance.now() - t0 < 15_000)) requestAnimationFrame(f); else done(out); };
+        requestAnimationFrame(f);
+      }));
+      // (The first frames carry the wheel's own move.)
+      const seen = tops.filter((x): x is number => x !== null);
+      for (let k = 3; k < seen.length; k++) if (picked && Math.abs(seen[k]! - seen[k - 1]!) > 2) jolts.push({ step, px: Math.round(Math.abs(seen[k]! - seen[k - 1]!)) });
+      if (parts > 0 && (await scroller.evaluate((el) => el.scrollTop)) < 2000) break;
+    }
+    expect(parts).toBeGreaterThan(0); // an earlier part was read in on the way
+    expect(jolts).toEqual([]);
   } finally {
     d.proc.kill("SIGTERM");
     await exited(d.proc);

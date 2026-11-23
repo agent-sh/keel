@@ -29,17 +29,42 @@ export function windowOf(spans: Span[], view: { top: number; bottom: number }, w
 
 export const sameKeys = (a: ReadonlySet<number> | null, b: ReadonlySet<number>) => !!a && a.size === b.size && [...b].every((k) => a.has(k));
 
-// What Markdown means to say, as words: the marks of emphasis, code and links taken away. Find
-// in a block that is not drawn looks for the words a reader sees, not for the asterisks around them.
+// What Markdown means to say, as words: the marks of emphasis, code and links taken away, as a
+// copy of the drawn reply has them. Find in a block that is not drawn looks for the words a reader
+// sees, not for the asterisks around them, and a selection across held and drawn blocks copies the
+// same text for both. As both engines copy a drawn reply: a list item without its bullet or number,
+// a table row as its cells with a tab between them, a heading and code as their lines. Math stays
+// as it was written (TeX), which a drawn reply does not show.
 export function plain(md: string): string {
-  return md
+  return tables(md)
     .replace(/```[^\n]*\n?/g, "")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "")
     .replace(/(\*\*|__|\*|_|~~|`)(?=\S)([^\n]*?\S)\1/g, "$2")
-    .replace(/`/g, "")
-    .replace(/^\s*\|?(\s*:?-{3,}:?\s*\|)+\s*:?-*:?\s*$/gm, "")
-    .replace(/\|/g, " ");
+    .replace(/`/g, "");
+}
+
+// A table's rows as their cells, a tab between them; the line under its head goes. (A table is a
+// head row, the line of dashes under it, and the rows after it that have a pipe.)
+const RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+function tables(md: string): string {
+  if (!md.includes("|")) return md;
+  const lines = md.split("\n");
+  const cells = (line: string) => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|")).join("\t");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const head = lines[i]!;
+    const rule = lines[i + 1];
+    // (As GitHub reads one: the line of dashes has as many cells as the head.)
+    if (head.includes("|") && rule !== undefined && RULE.test(rule) && cells(rule).split("\t").length === cells(head).split("\t").length) {
+      out.push(cells(head));
+      i++;
+      while (i + 1 < lines.length && lines[i + 1]!.includes("|") && lines[i + 1]!.trim()) out.push(cells(lines[++i]!));
+      continue;
+    }
+    out.push(head);
+  }
+  return out.join("\n");
 }
 
 // The words a row shows that Find reaches when it is drawn: the prompt, the reply's prose, what

@@ -720,8 +720,15 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    is not laid out at all. The mark before each block takes no room: its height is nothing, and the
    column's gap after it (--k-row-gap, Transcript.tsx) is taken back, so it stands at its block's top. */
 .k-block-mark { height: 0; margin-bottom: calc(-1 * var(--k-row-gap, 1rem)); }
-.k-hold { content-visibility: auto; overflow: clip; color: transparent; font-size: var(--text-micro); line-height: 1.2; }
+/* Its words stay unseen in forced colors too (the system's text color would show them over each
+   other). Printed, a page draws every block first (Transcript.tsx); a box still held is printed as
+   its words. */
+.k-hold { content-visibility: auto; overflow: clip; color: transparent; font-size: var(--text-micro); line-height: 1.2; forced-color-adjust: none; }
 .k-hold > * { margin: 0; overflow: clip; white-space: pre-line; }
+@media print {
+  .k-hold { content-visibility: visible; height: auto !important; overflow: visible; color: inherit; font-size: inherit; line-height: inherit; }
+  .k-hold > * { height: auto !important; overflow: visible; margin-bottom: 0.75em; }
+}
 
 /* Each row of a transcript lays out by itself: what a streamed reply changes
    stays in its row instead of the whole pane being laid out again. Layout

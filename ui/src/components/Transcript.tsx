@@ -3,6 +3,7 @@ import { CopyButton } from "./CopyButton.tsx";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolUseBlock } from "../../../src/core/types.ts";
 import { shownAsPrompt } from "../../../src/core/owner.ts";
@@ -31,6 +32,7 @@ import { ToolCall } from "./ToolCall.tsx";
 import { InputNotice, SYSTEM_INPUT } from "./automation/TranscriptExtras.tsx";
 import { LiveWork, Thinking, Work } from "./Work.tsx";
 import { useKept } from "../lib/kept.ts";
+import { carryPick, heldPick, type HeldPick } from "../lib/held-range.ts";
 import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
@@ -160,7 +162,7 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
 function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEvent[] }) {
   const text: string = e.data.text ?? "";
   const long = text.length > 1400 || text.split("\n").length > 18;
-  const [shownAll, setFull] = useKept(`full:${e.id}`);
+  const [shownAll, setFull] = useKept(`full:${sid}:${e.id}`);
   const full = !!shownAll;
   // `keys`: opened by Up in the message box, where the keyboard goes back when the edit ends.
   const [editing, setEditing] = useState<false | "click" | "keys">(false);
@@ -1327,6 +1329,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const onTail = useRef(() => tailChanged.current()).current;
   const viewSize = useRef(0);
   const holdView = useRef<(el: HTMLDivElement) => void>(() => {});
+  // A reply drawn near the view changed by itself (its math set, lib Markdown.tsx): the reader's
+  // line is held before the frame is painted.
+  const enhanced = useRef(() => {
+    const el = scroller.current;
+    if (el && (!stick.current || short.current) && el.scrollTop === lastTop.current) holdView.current(el);
+  }).current;
   useEffect(() => {
     const c = content.current;
     if (!c) return;
@@ -1603,13 +1611,15 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   };
   // Where each block stands, and which ones to draw: after an event, a scroll and a change of size.
   const measuring = useRef(0);
+  const printingNow = useRef(false);
   const again_ = useRef(0);
   const sizes = useRef({ rem: 16, gap: 14, width: 768 }); // the text size, the rows' gap and the column's width, for estimates
   const measureWindow = () => {
     cancelAnimationFrame(measuring.current);
     measuring.current = 0;
     const c = content.current, el = scroller.current;
-    if (!c || !el) return;
+    // (Printed, every block is drawn: nothing is measured until the print is done.)
+    if (!c || !el || printingNow.current) return;
     const marks = c.querySelectorAll<HTMLElement>(":scope > [data-block]");
     const spans: Span[] = [];
     for (const m of marks) {
@@ -1640,12 +1650,45 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const measureLater = useRef(() => { measuring.current ||= requestAnimationFrame(() => measures.current()); }).current;
   // After a commit that drew other blocks, they are measured again before the frame is painted:
   // a block drawn at its real height can bring the next one into the view.
-  // Whenever other blocks were drawn (asked by the view or by a pin), the view is held where the
-  // reader has it before the frame is painted.
+  // After every commit the view is held where the reader has it, in the same task, before the
+  // frame is painted: what the commit drew, held or read in above the reader's line (a block at
+  // its real height, a part read in at the top) would otherwise stand for one frame where the
+  // layout put it, until the size observer puts it back. Followed to its end, the view moves only
+  // when other blocks were drawn (the size observer follows what streams). Not when the view moved
+  // since this transcript last saw it (a wheel, a jump) and its scroll event is still to come:
+  // the place it went to is the reader's.
   const drawnSig = useRef("");
+  // A selection in one held row (Find's, as a rule): carried to the row when it is drawn.
+  const picked = useRef<HeldPick | null>(null);
+  // The blocks drawn at the last commit, of which session: a block drawn again after it was held
+  // shows its rows where they stand, with no entrance (they arrived long ago; a row coming in is
+  // drawn 0.25rem low for a moment, and a reader scrolling back saw each block slide into place).
+  // Only the conversation's newest block, where new rows land, and a session's first frame keep it.
+  const drawnBefore = useRef<{ sid: string; keys: Set<number> } | null>(null);
+  const still = (k: number) => {
+    const mark = content.current?.querySelector(`:scope > [data-block="${k}"]`);
+    for (let x = mark?.nextElementSibling; x && !x.classList.contains("k-block-mark"); x = x.nextElementSibling)
+      for (const a of x.getAnimations({ subtree: true })) if ((a as CSSAnimation).animationName === "fade-up") a.finish();
+  };
   useLayoutEffect(() => {
     const sig = [...drawnKeys.current].join(" ");
-    if (sig !== drawnSig.current) { drawnSig.current = sig; if (scroller.current) holdView.current(scroller.current); }
+    const other = sig !== drawnSig.current;
+    drawnSig.current = sig;
+    const was = drawnBefore.current;
+    if (other && was?.sid === sessionId && blocks.length) {
+      const newest = blockKey(blocks.at(-1)!);
+      for (const k of drawnKeys.current) if (k !== newest && !was.keys.has(k)) still(k);
+    }
+    if (other || was?.sid !== sessionId) drawnBefore.current = { sid: sessionId, keys: drawnKeys.current };
+    const el = scroller.current;
+    if (el && (other || !stick.current || short.current) && el.scrollTop === lastTop.current) holdView.current(el);
+    // What a selection held in a row that is drawn now (lib/held-range.ts).
+    const p = picked.current;
+    if (p && !p.row.isConnected) {
+      picked.current = null;
+      const h = holderOf(p.ev);
+      if (h) carryPick(h, p);
+    }
     if (!again_.current) return;
     again_.current = 0;
     measureWindow();
@@ -1661,6 +1704,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (!c) return;
     const onSel = () => {
       const s = document.getSelection();
+      const p = heldPick(s);
+      picked.current = p && c.contains(p.row) ? p : null;
       let sel = "";
       if (s && !s.isCollapsed && s.rangeCount) {
         const r = s.getRangeAt(0);
@@ -1686,6 +1731,16 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     c.addEventListener("focusout", onBlur);
     return () => { document.removeEventListener("selectionchange", onSel); c.removeEventListener("focusin", onFocus); c.removeEventListener("focusout", onBlur); };
   }, [!!events, sessionId]);
+  // A page printed has every block drawn: what the page holds of the conversation is printed as it
+  // is shown, not as held boxes. (beforeprint lets the page change before it is laid out for print.)
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => {
+    const before = () => { printingNow.current = true; flushSync(() => setPrinting(true)); };
+    const after = () => { printingNow.current = false; setPrinting(false); measureLater(); };
+    addEventListener("beforeprint", before);
+    addEventListener("afterprint", after);
+    return () => { removeEventListener("beforeprint", before); removeEventListener("afterprint", after); };
+  }, []);
   // What a pin kept drawn goes once nothing needs it, the next time the view is measured: now.
   const pinned = useRef("");
   useEffect(() => {
@@ -1799,7 +1854,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const before = drawnKeys.current;
   blocks.forEach((rows, i) => {
     const k = blockKey(rows);
-    if (!asked ? i >= blocks.length - TAIL_BLOCKS : asked.has(k) || i >= blocks.length - 2 || (!win!.seen.has(k) && (before.has(k) || i >= blocks.length - TAIL_BLOCKS))) shown.add(k);
+    if (printing || (!asked ? i >= blocks.length - TAIL_BLOCKS : asked.has(k) || i >= blocks.length - 2 || (!win!.seen.has(k) && (before.has(k) || i >= blocks.length - TAIL_BLOCKS)))) shown.add(k);
   });
   for (const k of pins) shown.add(k);
   drawnKeys.current = shown;
@@ -1872,7 +1927,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             </div>
           )}
           <TailContext.Provider value={tail}>
-            <NearView.Provider value={true}>
+            <NearView.Provider value={enhanced}>
               {blocks.map((rows) => {
                 const k = blockKey(rows);
                 return (

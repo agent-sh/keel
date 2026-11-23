@@ -23,5 +23,15 @@ test("Find looks for the words, not for the marks around them", () => {
   expect(plain("The change is in `notes/plan.md` and **keeps the public surface**.")).toBe("The change is in notes/plan.md and keeps the public surface.");
   expect(plain("See [the guide](https://example.com/x) now")).toBe("See the guide now");
   expect(plain("## Steps\n- one\n- two")).toBe("Steps\none\ntwo");
-  expect(plain("| File | Change |\n| --- | --- |\n| a.ts | +4 |").replace(/\s+/g, " ").trim()).toBe("File Change a.ts +4");
+});
+
+// What both engines copy of a drawn reply (measured in Chromium and WebKit: a selection's text and
+// what Ctrl+C puts on the clipboard): a list item without its marker, a table row as its cells with
+// a tab between them, no line for the rule under the head. A held block copies the same.
+test("a held reply copies as the drawn one does: list items as their words, table rows as cells and tabs", () => {
+  expect(plain("Totals:\n\n| File | Change |\n| :--- | ---: |\n| `a.ts` | +4 |\n| b \\| c | -1 |\n\nDone.")).toBe("Totals:\n\nFile\tChange\na.ts\t+4\nb | c\t-1\n\nDone.");
+  expect(plain("a | b\n|---|---|\n1 | 2")).toBe("a\tb\n1\t2");
+  expect(plain("1. one\n2. two\n- First: **x**")).toBe("one\ntwo\nFirst: x");
+  // A pipe in a sentence, and a line of dashes under it, are no table.
+  expect(plain("left | right\n---")).toBe("left | right\n---");
 });
