@@ -1938,7 +1938,10 @@ describe("a session out of memory is never read whole on the loop", () => {
       for (let i = 0; i < 600 && (await d.api(`/api/cli/state/${sid}`)).running; i++) await Bun.sleep(50);
       await d.stop();
       // As a build before the index left it: 25,000 events more on the session's branch, and no index.
+      // (A process of the stopped daemon's can still hold the write lock for a moment on a loaded machine:
+      // the edit waits for it, as the daemon's own connection does, instead of failing with SQLITE_BUSY.)
       const db = new Database(join(state, "keel.db"));
+      db.exec("PRAGMA busy_timeout = 30000");
       const last = db.query<{ id: string; seq: number }, [string]>("SELECT id, seq FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT 1").get(sid)!;
       const ins = db.query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, 'note', ?, ?)");
       db.transaction(() => {
