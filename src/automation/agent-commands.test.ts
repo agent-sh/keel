@@ -87,7 +87,7 @@ test("an agent that leaves a server listening reports; one with a run to come wa
   expect(await until(() => /port \d+/.test(readFileSync(srv.log, "utf8")))).toBe(true);
   end(a, "end_turn", "The dev server is up. Done.");
   expect(await until(() => agents.get(a.id)!.status === "completed", 15_000)).toBe(true);
-  expect(await until(() => to(p.id).some((t) => t.includes("The dev server is up. Done.")), 3000)).toBe(true);
+  expect(await until(() => to(p.id).some((t) => t.includes("The dev server is up. Done.")))).toBe(true);
   // Seen as a server, it was never a park: the parent was told nothing else.
   expect(to(p.id).filter((t) => t.includes("is waiting for"))).toEqual([]);
 
@@ -97,7 +97,7 @@ test("an agent that leaves a server listening reports; one with a run to come wa
   const run = bg(b.session_id, "sleep 30", "slow tests");
   end(b, "end_turn", "Started the tests.");
   expect(agents.get(b.id)!.status).toBe("waiting");
-  expect(await until(() => to(q.id).length === 1, 3000)).toBe(true);
+  expect(await until(() => to(q.id).length === 1)).toBe(true);
   expect(to(q.id)[0]).toContain(`(${b.id}) is waiting for background command ${run.id} (slow tests)`);
   // It goes on and parks again on the same command: that park rides the parent's next input.
   agents.onTurnStart(b.session_id);
@@ -112,8 +112,8 @@ test("the owner's Stop of an agent's turn stops the agent, though a command it s
   const a = await spawn(p.id);
   bg(a.session_id, "sleep 30", "long build");
   end(a, "interrupted", "partial", { stopped_by: "owner" });
-  expect(await until(() => agents.get(a.id)!.status === "stopped", 3000)).toBe(true);
-  expect(await until(() => to(p.id).some((t) => t.includes("partial")), 3000)).toBe(true);
+  expect(await until(() => agents.get(a.id)!.status === "stopped")).toBe(true);
+  expect(await until(() => to(p.id).some((t) => t.includes("partial")))).toBe(true);
 });
 
 test("a stop of the command an agent waits on gives the agent its turn", async () => {
@@ -124,7 +124,7 @@ test("a stop of the command an agent waits on gives the agent its turn", async (
   expect(agents.get(a.id)!.status).toBe("waiting");
   const before = to(a.session_id).length;
   await jobs.stopJob(j, "was stopped by the owner");
-  expect(await until(() => to(a.session_id).length > before, 3000)).toBe(true);
+  expect(await until(() => to(a.session_id).length > before)).toBe(true);
   expect(to(a.session_id).at(-1)).toContain(`(ID ${j.id}) was stopped by the owner`);
 });
 
@@ -142,7 +142,7 @@ test("command ends a moment apart start one turn of an idle session", async () =
   const before = to(s.id).length;
   bg(s.id, "sleep 0.3", "first");
   bg(s.id, "sleep 0.4", "second");
-  expect(await until(() => to(s.id).length > before, 3000)).toBe(true);
+  expect(await until(() => to(s.id).length > before)).toBe(true);
   await Bun.sleep(500);
   expect(to(s.id).length - before).toBe(1);
   expect(to(s.id).at(-1)).toContain('"first"');
