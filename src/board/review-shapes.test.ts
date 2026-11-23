@@ -6,7 +6,8 @@ import * as R from "./rules.ts";
 const A = "01fe3b3a9c0d1e2f3a4b5c6d7e8f901234567890"; // heads, by their first digits in the reports
 const B = "acd2cc0b1e2f3a4b5c6d7e8f9012345678901234";
 const C = "4b5c6d7e8f9012345678901234567890abcdef12";
-const v = (report: string, heads: (string | null)[] = [], branch?: string) => R.verdictOf(report, { heads, branch }).verdict;
+const DASH = "\u2014";
+const v = (report: string, heads: (string | null)[] = [], branch?: string) => R.verdictOf(report, { head: heads[0], tip: heads[1], branch }).verdict;
 
 describe("a reviewer's LAND line decides, before any prose", () => {
   test("words in the findings never decide", () => {
@@ -21,7 +22,7 @@ describe("a reviewer's LAND line decides, before any prose", () => {
     expect(v("The tests pass.\nI found one problem in the queue.")).toBe("unclear");
   });
   test("a labelled verdict line still decides", () => {
-    expect(R.verdictOf("I read the diff.\n\n**Verdict:** refused. Line 12 breaks the parser.")).toEqual({ verdict: "refused", line: "Verdict: refused. Line 12 breaks the parser." });
+    expect(R.verdictOf("I read the diff.\n\n**Verdict:** refused. Line 12 breaks the parser.")).toMatchObject({ verdict: "refused", line: "Verdict: refused. Line 12 breaks the parser." });
     expect(v("Decision: approve; the P2 can follow.")).toBe("approved");
   });
   test("per commit: the verdict for this row's head, else mixed", () => {
@@ -29,10 +30,10 @@ describe("a reviewer's LAND line decides, before any prose", () => {
     expect(v(list, [A])).toBe("approved");
     expect(v(list, [B])).toBe("refused");
     expect(v(list, [C])).toBe("mixed");
-    expect(R.verdictOf(list, { heads: [B] }).line).toBe("acd2cc0 FEAT-S02: LAND: no (P1-1)");
+    expect(R.verdictOf(list, { head: B }).line).toBe("acd2cc0 FEAT-S02: LAND: no (P1-1)");
   });
   test("a table, headings over the LAND line, and one line with two verdicts", () => {
-    const table = "| Commit | Lane | Verdict |\n| --- | --- | --- |\n| 01fe3b3 | scratch folder | LAND: yes |\n| acd2cc0 | FEAT-M02 | **LAND: no** — one P1 |";
+    const table = `| Commit | Lane | Verdict |\n| --- | --- | --- |\n| 01fe3b3 | scratch folder | LAND: yes |\n| acd2cc0 | FEAT-M02 | **LAND: no** ${DASH} one P1 |`;
     expect(v(table, [A])).toBe("approved");
     expect(v(table, [B])).toBe("refused");
     const sections = "## acd2cc0 FEAT-M07 diff lines\nLAND: no. It is independent of the other five.\n\n## 01fe3b3 FEAT-S04 image button\nLAND: yes\n\n- P2, ring nearly invisible";
@@ -47,31 +48,28 @@ describe("a reviewer's LAND line decides, before any prose", () => {
     expect(v(r, [A])).toBe("approved");
   });
   test("the head the reviewer was started on, or the branch by name, decides when the head moved", () => {
-    expect(v("## 4b5c6d7 FEAT-S03 — LAND: yes\n- Claim holds.", ["f".repeat(40), C])).toBe("approved");
+    expect(v(`## 4b5c6d7 FEAT-S03 ${DASH} LAND: yes\n- Claim holds.`, ["f".repeat(40), C])).toBe("approved");
     expect(v("**LAND: yes** (branch `keel/crash-safe-c5bc90` at 99aa88b)\n**LAND: no** (branch `keel/other-1` at 77cc66d)", ["f".repeat(40)], "keel/crash-safe-c5bc90")).toBe("approved");
     // A branch named as what it lands after is not the branch the verdict is of.
     expect(v("LAND: no. It needs two changes first, then it can land after keel/a-command-fd975e.", ["f".repeat(40)], "keel/mine")).toBe("refused");
-    expect(R.verdictOf("LAND: yes (branch keel/a)\nLAND: no (branch keel/b)", { branch: "keel/c", others: new Set(["keel/a", "keel/b"]) }).verdict).toBe("mixed");
+    expect(R.verdictOf("LAND: yes (branch keel/a)\nLAND: no (branch keel/b)", { branch: "keel/c", others: new Set(["keel/a", "keel/b"]) }).verdict).toBe("unclear");
   });
 });
 
 describe("pickReview", () => {
-  const rev = (o: Partial<R.ReviewFact>): R.ReviewFact => ({ by: "rv", title: "Review", how: "named", state: "completed", branch: "keel/x", tip: null, own: false, read: R.readReport("LAND: yes"), at: 10, ...o });
+  const rev = (o: Partial<R.ReviewFact>): R.ReviewFact => ({ by: "rv", title: "Review", how: "named", state: "completed", branch: "keel/x", tip: null, own: false, read: R.readReport("LAND: yes"), at: 10, chain: o.by === "kid" ? ["sc", "sb", "root"] : ["sr", "root"], ...o });
   // Sessions: the builder b (session sb) under the root; its child c (session sc) under sb; a reviewer r under the root.
-  const parents = new Map([["sb", "root"], ["sc", "sb"], ["sr", "root"]]);
-  const agentOf = new Map([["rv", "sr"], ["kid", "sc"]]);
   const row = { id: "b", session_id: "sb", branch: "keel/x", head: null };
-  const lineage = { parentOf: (s: string) => parents.get(s), sessionOf: (id: string) => agentOf.get(id) };
   test("a review started by the builder (or its children) of the branch is not its review", () => {
     const own = rev({ by: "kid", at: 20 });
-    const got = R.pickReview([own, rev({ by: "rv", read: R.readReport("LAND: no") })], row, lineage);
+    const got = R.pickReview([own, rev({ by: "rv", read: R.readReport("LAND: no") })], row);
     expect(got?.by).toBe("rv");
-    expect(R.pickReview([own], row, lineage)).toBeUndefined();
+    expect(R.pickReview([own], row)).toBeUndefined();
   });
   test("an agent with a branch of its own counts by its task only when a labelled line decides and it ended", () => {
-    expect(R.pickReview([rev({ how: "task", own: true, read: R.readReport("Rebased onto keel/x; all tests pass.") })], row, lineage)).toBeUndefined();
-    expect(R.pickReview([rev({ how: "task", own: true, state: "running", read: R.readReport("") })], row, lineage)).toBeUndefined();
-    expect(R.pickReview([rev({ how: "task", own: true, read: R.readReport("LAND: no") })], row, lineage)?.by).toBe("rv");
+    expect(R.pickReview([rev({ how: "task", own: true, read: R.readReport("Rebased onto keel/x; all tests pass.") })], row)).toBeUndefined();
+    expect(R.pickReview([rev({ how: "task", own: true, state: "running", read: R.readReport("") })], row)).toBeUndefined();
+    expect(R.pickReview([rev({ how: "task", own: true, read: R.readReport("LAND: no") })], row)?.by).toBe("rv");
   });
 });
 

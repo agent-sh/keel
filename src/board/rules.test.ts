@@ -3,19 +3,19 @@ import { boardText, landedFrom, namedIn, reviewsInput, verdictOf, type Board, ty
 
 describe("verdictOf", () => {
   test("a line that says it is the verdict decides, wherever it is", () => {
-    expect(verdictOf("I read the diff.\nIt looks fine overall.\n\n**Verdict:** refused. Line 12 breaks the parser.")).toEqual({ verdict: "refused", line: "Verdict: refused. Line 12 breaks the parser." });
-    expect(verdictOf("## Review\nVerdict: approve, ready to land.")).toEqual({ verdict: "approved", line: "Verdict: approve, ready to land." });
+    expect(verdictOf("I read the diff.\nIt looks fine overall.\n\n**Verdict:** refused. Line 12 breaks the parser.")).toMatchObject({ verdict: "refused", line: "Verdict: refused. Line 12 breaks the parser." });
+    expect(verdictOf("## Review\nVerdict: approve, ready to land.")).toMatchObject({ verdict: "approved", line: "Verdict: approve, ready to land." });
     // On the labeled line the plain words count; "not approved" refuses.
     expect(verdictOf("Decision: no").verdict).toBe("refused");
     expect(verdictOf("Verdict - correct").verdict).toBe("approved");
     expect(verdictOf("Verdict: not approved yet").verdict).toBe("refused");
   });
   test("a JSON report is read by its verdict key", () => {
-    expect(verdictOf('```json\n{"verdict":"incorrect","summary":"One P1."}\n```')).toEqual({ verdict: "refused", line: "verdict: incorrect · One P1." });
+    expect(verdictOf('```json\n{"verdict":"incorrect","summary":"One P1."}\n```')).toMatchObject({ verdict: "refused", line: "verdict: incorrect · One P1." });
     expect(verdictOf('{"approved": true}').verdict).toBe("approved"); // a yes-or-no key
     expect(verdictOf('{"decision": "approve"}').verdict).toBe("approved");
   });
-  test("an empty report", () => expect(verdictOf(null)).toEqual({ verdict: "unclear", line: "" }));
+  test("an empty report", () => expect(verdictOf(null)).toMatchObject({ verdict: "unclear", line: "" }));
 });
 
 describe("namedIn", () => {
@@ -66,7 +66,7 @@ describe("boardText", () => {
   test("agents that need the coordinator get a line each, the rest their ids", () => {
     const text = boardText(board([
       row({ id: "work1", state: "running", title: "Working lane", landed: { state: "no", missing: 2 } }),
-      row({ id: "refd1", review: { by: "rev1", title: "Review", how: "named", state: "completed", verdict: "refused", line: "Verdict: refused. It breaks X.", tip: "c".repeat(40), current: true, at: 3 } }),
+      row({ id: "refd1", review: { by: "rev1", title: "Review", how: "named", state: "completed", verdict: "refused", line: "Verdict: refused. It breaks X.", tip: "c".repeat(40), of: "c".repeat(40), current: true, at: 3 } }),
       row({ id: "land1", landed: { state: "yes", how: "patch" }, live: { state: "yes", at: "d".repeat(40), how: "after step passed" } }),
       row({ id: "rev1", branch: null, checks: null, landed: null, reviews: ["keel/lane"] }),
       row({ id: "gone1", branch: "keel/gone", head: null, landed: { state: "unknown", why: "its branch is gone" } }),

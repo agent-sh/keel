@@ -6,7 +6,8 @@
 // imports nothing of the daemon.
 import type { ChecksOn } from "../automation/landing.ts";
 
-export type Verdict = "approved" | "refused" | "mixed" | "unclear" | "pending";
+// stale: a review of another head than the branch's now, whatever it said (`was`).
+export type Verdict = "approved" | "refused" | "mixed" | "unclear" | "pending" | "stale";
 
 // A review of a branch: an agent whose spawn named the branch it reviews (`reviews`), one whose task named
 // the branch or its head, or a review the owner ran from the Review panel.
@@ -16,9 +17,11 @@ export type BoardReview = {
   how: "named" | "task" | "panel";
   state: string;               // the agent's status, or the panel review's state
   verdict: Verdict;
+  was?: Verdict;               // what it said, when the board does not take it as said (stale, or of a head not known)
   line: string;                // the reviewer's own words the verdict was read from
-  tip: string | null;          // the head it reviewed, when known
-  current: boolean | null;     // it reviewed the branch's head as it is now; null: not known
+  tip: string | null;          // the head it was started on, when known
+  of: string | null;           // the commit its verdict was said of, when known
+  current: boolean | null;     // its verdict is of the branch's head as it is now; null: not known
   at: number;
 };
 
@@ -27,6 +30,7 @@ export type BoardReview = {
 export type ReviewFact = {
   by: string; title: string; how: BoardReview["how"]; state: string; branch: string; tip: string | null;
   own: boolean;                // the reviewer has a branch of its own
+  chain: string[] | null;      // the reviewer's session and the sessions above it, up to the root; null: not read
   read: ReportRead; at: number;
 };
 
@@ -76,38 +80,84 @@ export const LINE_MAX = 160;
 // ---- reviews
 
 const clip = (s: string, n = LINE_MAX) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-const plain = (l: string) => l.replace(/^[\s>#*_`|-]+/, "").replace(/[*`]+/g, "").trim();
+const plain = (l: string) => l.replace(/^[\s#*_`|-]+/, "").replace(/[*`]+/g, "").trim();
 
 // The words of a labelled verdict line ("Verdict: ...", "Decision: ..."). A refusal is read first: "not approved" refuses.
-const REFUSE = /\b(refuse[sd]?|reject(?:s|ed)?|request(?:s|ed)? changes|changes (?:requested|needed|required)|needs? (?:changes|work|fixes|another pass)|not (?:approved?|ready|accepted|landable|mergeable|correct)|do not (?:land|merge|ship)|don'?t (?:land|merge|ship)|blocked|no[- ]go|nack|incorrect|fail(?:s|ed)?|no|wrong|broken)\b/i;
+const REFUSE = /\b(refuse[sd]?|reject(?:s|ed)?|request(?:s|ed)? changes|changes (?:requested|needed|required)|needs? (?:changes|work|fixes|another pass)|not (?:approved?|ready|accepted|landable|mergeable|correct)|do not (?:land|merge|ship)|don'?t (?:land|merge|ship)|blocked|no[- ]go|nack|incorrect|fail(?:s|ed)?|no|wrong|broken)\b/gi;
 const APPROVE = /\b(approve[sd]?|accept(?:s|ed)?|lgtm|ready to (?:land|merge|ship)|ship it|good to (?:go|land|merge)|land it|merge it|correct|pass(?:es|ed)?|yes|ok(?:ay)?|good|clean|ready)\b/i;
-const LABEL = /^(?:(?:final|review|my|overall)\s+)?(verdict|decision|outcome|recommendation)\b\s*[:=–-]/i;
+const LABEL = /^(?:(?:final|review|my|overall)\s+)?(verdict|decision|recommendation)\b\s*[:=\u2013\u2014-]/i;
+// Whether a clause holds a yes on something not done yet ("once X lands", "only after the rebase", "but
+// the P1 first", "needs a rebase"), or asks. A follow-up is not a hold: "fix the P2 right after landing",
+// "P3s only".
+const HOLD = /\b(?:once|until|unless|if|provided|assuming|pending|but|wait|then|when)\b|\bonly\s+(?:after|if|when|once|with|together|as|on)\b|\b(?:first|before|blocked|not yet|as part of|stacked on|sits on|together|one stack|on top|in order|must not land)\b|\b(?:lands?|must land) with\b|\b(?:with|without)\s+[`*'"]*[0-9a-f]{7,40}\b|\?/i;
+const AFTER = /\bafter\s+(?!landing\b|it lands\b|the land\b|that\b|this\b|it\b)[a-z]/i;
+const NEEDS = /\b(?:needs?|requires?|depends? on|relies on)\b/i;
+const FOLLOW = /\b(?:right after|after landing|after it lands|follow[- ]?up|in the same push|later|(?:is|are|was|were) (?:already )?(?:fixed|landed|on main|in main))\b/i;
+const holds = (clause: string) => HOLD.test(clause) || AFTER.test(clause) || (NEEDS.test(clause) && !FOLLOW.test(clause));
+const NEGATION = /\b(not|never|cannot|can'?t|won'?t|wouldn'?t|shouldn'?t|isn'?t|aren'?t|doesn'?t|don'?t)\b/i;
 
-// The verdict a labelled line's first clause says ("Verdict: refused. Line 12 ..." reads "refused").
+// The verdict a labelled line's first clause says ("Verdict: refused. Line 12 ..." reads "refused"). A
+// condition ("approve once ..."), a negation of an approval ("not LGTM") or both words is unclear.
 export function classify(text: string): Verdict {
-  const first = text.split(/[.;(—]|,\s/)[0] ?? "";
-  if (REFUSE.test(first)) return "refused";
-  if (APPROVE.test(first)) return "approved";
-  return "unclear";
+  const first = text.split(/[.;(\u2014]|,\s/)[0] ?? "";
+  if (holds(first)) return "unclear";
+  const no = new RegExp(REFUSE.source, "i").test(first);
+  const yes = APPROVE.test(first.replace(REFUSE, " "));
+  if (no && yes) return "unclear";
+  if (no) return "refused";
+  return yes && !NEGATION.test(first) ? "approved" : "unclear";
 }
 
-// A reviewer's "LAND: yes" or "LAND: no", with the commits and branches it was said of: the ones on its
-// line, else the ones of the heading above it. A line can say two ("LAND: yes for 1a2b3c4, no for 5d6e7f8").
-export type LandMark = { verdict: "approved" | "refused"; shas: string[]; branches: string[]; line: string };
+// A reviewer's "LAND: yes" or "LAND: no" (or a labelled verdict line), with the commits and branches it
+// was said of: the first on its line and any listed right after it, else the ones of the heading above
+// it. `part` 0 is the newest final, 1 the earlier ones the harness added after its separator.
+export type LandMark = { verdict: "approved" | "refused" | "unclear"; shas: string[]; branches: string[]; line: string; part: number };
 export type ReportRead = { marks: LandMark[]; verdict: Verdict; line: string };
 
-const LAND = /(?<![\w-])(?:LAND|Land)\s*:\s*["']?(yes|no|YES|NO|Yes|No)\b/;
+const LAND = /(?<![\w-])(?:LAND|Land)\s*:\s*["']?(yes|no|YES|NO|Yes|No)\b/g;
 const AGAIN = /\b(yes|no)\s+(?:for|on)\b/gi;
-const HEX = /(?<![\w/-])[0-9a-f]{7,40}(?![\w/-])/g;
-const BRANCH = /(?<![\w./-])[A-Za-z0-9][\w.-]*\/[\w./-]*[\w-](?![\w/-])/g;
-const said = (w: string): LandMark["verdict"] => (w.toLowerCase() === "yes" ? "approved" : "refused");
-const shasIn = (l: string) => [...new Set((l.match(HEX) ?? []).filter((w) => /[0-9]/.test(w)))];
+const TOKEN = /(?<![\w/-])[0-9a-f]{7,40}(?![\w/-])|(?<![\w./-])[A-Za-z0-9][\w.-]*\/[\w./-]*[\w-](?![\w/-])/g;
+const isSha = (w: string) => /^[0-9a-f]{7,40}$/.test(w) && /[0-9]/.test(w);
 // (Not a remote's ref or a file's path.)
-const branchesIn = (l: string) => [...new Set((l.match(BRANCH) ?? []).filter((w) => !/^(?:origin|upstream|refs|remotes|src|ui|test|tests|docs|scripts|lib)\//.test(w) && !/\.\w{1,5}$/.test(w)))];
+const isBranch = (w: string) => w.includes("/") && !/^(?:origin|upstream|refs|remotes|src|ui|test|tests|docs|scripts|lib)\//.test(w) && !/\.\w{1,5}$/.test(w);
+// A commit or branch after one of these is what the work depends on, not what the verdict is of.
+const DEPENDS = /\b(?:after|on|onto|with|by|stacked on|builds? on|built on|rel(?:y|ies) on|depends? on|needs?|requires?|fixed in|behind|than|from|like|see|before|over|atop|besides)\s*[`"'(*]*\s*$/i;
+// "LAND: yes on 1a2b3c4", "no for 5d6e7f8": what the verdict is of, not a dependency.
+const VERDICT_OF = /\b(?:yes|no)\s+(?:for|on)\s*[`"'(*]*\s*$/i;
+// Only list marks between two commits of one list ("a1b2c3d, e4f5a6b and c7d8e9f").
+const LISTED = /^[\s,`'"*+/&]*(?:and\s+)?[\s`'"*]*$/;
+// What may stand before a mark on its line: nothing, or a heading's, a list's or a cell's title (a sha, a
+// lane id, a few words) closed by a separator. Never a sentence, a negation, a modal or a condition.
+const BEFORE_BAD = /\b(not|no|never|cannot|can'?t|won'?t|would|wouldn'?t|should|shouldn'?t|could|might|may|must|will|say|says|said|write|writes|wrote|until|unless|if|once|after|before|when|whether|wait|or|either|expect(?:s|ed)?|wants?|wanted|previous|earlier|template|format|e\.g)\b|n't\b/i;
+function opensVerdict(before: string): boolean {
+  const p = before.replace(/[\s*_`"']+$/, "");
+  if (!p) return true;
+  if (p.length > 120 || /[.!?](?:\s|$)/.test(p) || BEFORE_BAD.test(p)) return false;
+  return /[:|\u2013\u2014)\]-]$/.test(p) || /(?:^|\s)(?:[0-9a-f]{7,40}|[A-Z][A-Z0-9]*-[A-Z]*\d+[a-z]?)$/.test(p);
+}
+const SELF = "";
+// The harness's own line between an agent's newest final and its earlier ones (src/automation/agents.ts).
+const EARLIER = /^Earlier reports, oldest first:$/;
 
-// A report read into its LAND marks, and, when it has none, the verdict of a labelled line or of a JSON
-// report's verdict-like key. Free prose decides nothing: words like "accepts" or "blocks" in a finding
-// are not a verdict, so a report with no labelled line is unclear.
+// The subjects of a part of a line: its first commit not named as a dependency and the commits listed
+// right after it; its branches the same way.
+function subjectsOf(text: string): { shas: string[]; branches: string[] } {
+  const toks = [...text.matchAll(TOKEN)].map((m) => ({ w: m[0], at: m.index!, end: m.index! + m[0].length }));
+  const pickOf = (keep: (w: string) => boolean) => {
+    const list = toks.filter((t) => keep(t.w));
+    const out: string[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i]!;
+      if (!out.length) { const before = text.slice(0, t.at); if (VERDICT_OF.test(before) || !DEPENDS.test(before)) out.push(t.w); continue; }
+      if (LISTED.test(text.slice(list[i - 1]!.end, t.at))) out.push(t.w); else break;
+    }
+    return [...new Set(out)];
+  };
+  return { shas: pickOf(isSha), branches: pickOf(isBranch) };
+}
+
+// A report read into its marks, and, when it is a JSON verdict, that verdict. Free prose decides nothing,
+// nor does a mark in a quote, a code block or a sentence about one ("we cannot say LAND: yes until ...").
 export function readReport(report: string | null | undefined): ReportRead {
   const text = (report ?? "").trim();
   if (!text) return { marks: [], verdict: "unclear", line: "" };
@@ -115,94 +165,165 @@ export function readReport(report: string | null | undefined): ReportRead {
   if (json) {
     try {
       const v = JSON.parse(json) as Record<string, unknown>;
-      for (const k of ["verdict", "decision", "outcome", "result", "status", "recommendation", "land", "approved"]) {
+      const keys = Object.keys(v);
+      for (const k of ["land", "verdict", "approved", "decision", "recommendation", "status", "result"]) {
         const got = v[k];
+        if ((k === "status" || k === "result") && keys.length !== 1) continue;
         if (typeof got === "string" || typeof got === "boolean") {
           const line = clip(`${k}: ${String(got)}${typeof v.summary === "string" ? ` · ${v.summary}` : ""}`);
           return { marks: [], verdict: typeof got === "boolean" ? (got ? "approved" : "refused") : classify(String(got)), line };
         }
       }
+      return { marks: [], verdict: "unclear", line: "" };
     } catch {}
   }
   const marks: LandMark[] = [];
   let section: { shas: string[]; branches: string[] } = { shas: [], branches: [] };
-  let labelled: { verdict: Verdict; line: string } | undefined;
+  let fence = false, part = 0;
   for (const raw of text.split("\n").slice(0, 2000)) {
+    const t = raw.trim();
+    if (/^(?:```|~~~)/.test(t)) { fence = !fence; continue; }
+    if (fence || t.startsWith(">")) continue;
+    if (EARLIER.test(t)) { part = 1; section = { shas: [], branches: [] }; continue; }
     const l = plain(raw);
     if (!l) continue;
-    if (/^\s*#/.test(raw)) section = { shas: shasIn(l), branches: branchesIn(l) };
-    const m = LAND.exec(l);
-    if (!m) {
-      if (!labelled && LABEL.test(l)) labelled = { verdict: classify(l.replace(LABEL, "").trim()), line: clip(l) };
+    if (/^#/.test(t)) section = subjectsOf(l);
+    const found = [...l.matchAll(LAND)];
+    if (!found.length) {
+      const lab = LABEL.exec(l);
+      const value = lab ? l.slice(lab[0].length).trim() : "";
+      if (lab && value && opensVerdict(l.slice(0, lab.index))) {
+        const own = subjectsOf(value);
+        const subj = own.shas.length || own.branches.length ? own : section;
+        marks.push({ verdict: classify(value) as LandMark["verdict"], ...subj, line: clip(l), part });
+      }
       continue;
     }
-    // The verdicts of the line in order, each with the commits after it up to the next; the commits before
-    // the label go with the first.
-    const at = [{ verdict: said(m[1]!), from: m.index }];
-    for (const a of l.slice(m.index + m[0].length).matchAll(AGAIN)) at.push({ verdict: said(a[1]!), from: m.index + m[0].length + a.index! });
+    const first = found[0]!;
+    if (!opensVerdict(l.slice(0, first.index))) continue;
+    // The line's verdicts in order: each LAND, and each "yes for" or "no on" after one; each holds the text
+    // up to the next, and the first the text before it too.
+    const at: { verdict: LandMark["verdict"]; from: number; word: number }[] = [];
+    for (const m of found) {
+      at.push({ verdict: m[1]!.toLowerCase() === "yes" ? "approved" : "refused", from: m.index!, word: m.index! + m[0].length });
+      const next = found.find((x) => x.index! > m.index!)?.index ?? l.length;
+      for (const a of l.slice(m.index! + m[0].length, next).matchAll(AGAIN)) {
+        const from = m.index! + m[0].length + a.index!;
+        at.push({ verdict: a[1]!.toLowerCase() === "yes" ? "approved" : "refused", from, word: from + a[0].length });
+      }
+    }
+    at.sort((x, y) => x.from - y.from);
     const line = clip(l);
-    at.forEach((x, i) => {
-      const part = i === 0 ? l.slice(0, at[1]?.from ?? l.length) : l.slice(x.from, at[i + 1]?.from ?? l.length);
-      let shas = shasIn(part), branches = branchesIn(part);
-      if (at.length === 1 && !shas.length && !branches.length) ({ shas, branches } = section);
-      marks.push({ verdict: x.verdict, shas, branches, line });
+    const parts = at.map((x, i) => {
+      const end = at[i + 1]?.from ?? l.length;
+      const after = l.slice(x.word, end);
+      // "LAND: yes/no" is a template; a yes with a condition in its clause ("yes, but only if") is not a yes.
+      const template = /^\s*(?:\/|\||or\b)\s*(?:LAND\s*:\s*)?(?:yes|no)\b/i.test(after);
+      const clause = after.split(/[.;!](?:\s|$)/)[0] ?? "";
+      const verdict: LandMark["verdict"] = template ? "unclear" : x.verdict === "approved" && (holds(clause) || /^\W*(?:not|n't)\b/i.test(clause)) ? "unclear" : x.verdict;
+      // A later sentence of the line that holds a commit ("d9483a49 can only land once c121c2af does")
+      // leaves that commit's yes unsure (the sentence's subject, not what it waits for).
+      const doubted = verdict === "approved" ? after.split(/[.;!](?:\s|$)/).slice(1).flatMap((x) => x.split(/,\s+(?:and|but|while)\s+/)).filter((x) => holds(x) || /\b(?:not|cannot|can'?t)\b/i.test(x)).flatMap((x) => subjectsOf(x).shas.length ? subjectsOf(x).shas : [SELF]) : [];
+      return { verdict, doubted, ...subjectsOf(i === 0 ? l.slice(0, end) : after) };
     });
+    const bare = (p: { shas: string[]; branches: string[] }) => !p.shas.length && !p.branches.length;
+    // Verdicts that disagree on one line with one of them said of nothing ("LAND: yes or LAND: no",
+    // "LAND: yes ... wait, LAND: no"): the line says nothing sure.
+    if (new Set(parts.map((p) => p.verdict)).size > 1 && parts.some(bare)) {
+      const own = parts.find((p) => !bare(p));
+      marks.push({ verdict: "unclear", ...(own ?? section), line, part });
+    } else {
+      for (const p of parts) {
+        const subj = bare(p) && parts.length === 1 ? section : p;
+        // (A later sentence that holds and names no commit of its own speaks of this mark's: "it lands with that fix on top".)
+        const self = p.doubted.includes(SELF);
+        const others = [...new Set(p.doubted.filter((x) => x !== SELF))];
+        marks.push({ verdict: self ? "unclear" : p.verdict, shas: subj.shas, branches: subj.branches, line, part });
+        if (others.length) marks.push({ verdict: "unclear", shas: others, branches: [], line, part });
+      }
+    }
     if (marks.length >= 200) break;
   }
-  if (marks.length) return { marks, verdict: "unclear", line: "" };
-  if (labelled) return { marks: [], ...labelled };
-  return { marks: [], verdict: "unclear", line: clip(plain(text.split("\n").find((l) => plain(l)) ?? "")) };
+  return { marks, verdict: "unclear", line: marks.length ? "" : clip(plain(text.split("\n").find((l) => plain(l)) ?? "")) };
 }
 
-// The verdict a read report gives this row: the first mark (a report holds its newest final first) that
-// names the row's head or the head the reviewer started on, else one that names the branch, else the
-// first mark that names no commit nor another branch the reviewer reviews; marks that name only other commits are mixed when they
-// disagree, unclear when they agree.
-// `others`: the other branches the same reviewer reviews; a mark that names one of them is its, not this
-// branch's (a branch named for another reason, "lands after keel/x", leaves a mark bare).
-export type VerdictAsk = { heads?: (string | null | undefined)[]; branch?: string | null; others?: ReadonlySet<string> };
-export function verdictFor(r: ReportRead, o: VerdictAsk = {}): { verdict: Verdict; line: string } {
-  if (!r.marks.length) return { verdict: r.verdict, line: r.line };
-  const pick = (m: LandMark | undefined) => m && { verdict: m.verdict, line: m.line };
-  for (const h of o.heads ?? []) {
-    if (!h) continue;
-    const got = r.marks.find((m) => m.shas.some((s) => h.startsWith(s)));
-    if (got) return pick(got)!;
+// The verdict a read report gives a row, and what it was said of: `head`, a mark that names the row's
+// head; `other`, one that names another commit (the head the reviewer started on, or one at a branch);
+// `unnamed`, a mark said of the branch or of nothing (what the reviewer started on decides then).
+// The newest final decides when it says anything of this row, else the earlier ones. In a part, the marks
+// that name the head decide, else the ones that name the head the reviewer started on, else the ones that
+// name the branch, else the ones that name nothing; marks said of nothing join each of these. Marks that
+// disagree are mixed; a refusal with an unsure mark refuses; an approval with one is unclear.
+// `others`: the other branches the same reviewer reviews; a mark that names one of them is its.
+export type VerdictAsk = { head?: string | null; tip?: string | null; branch?: string | null; others?: ReadonlySet<string> };
+export type VerdictRead = { verdict: Verdict; line: string; of: "head" | "other" | "unnamed"; sha?: string };
+function settle(ms: LandMark[]): { verdict: Verdict; line: string } {
+  const refused = ms.find((m) => m.verdict === "refused"), approved = ms.find((m) => m.verdict === "approved"), unclear = ms.find((m) => m.verdict === "unclear");
+  if (refused && approved) return { verdict: "mixed", line: refused.line };
+  if (refused) return { verdict: "refused", line: refused.line };
+  if (unclear) return { verdict: "unclear", line: unclear.line };
+  return { verdict: "approved", line: approved!.line };
+}
+export function verdictFor(r: ReportRead, o: VerdictAsk = {}): VerdictRead {
+  if (!r.marks.length) return { verdict: r.verdict, line: r.line, of: "unnamed" };
+  const names = (m: LandMark, h: string) => m.shas.some((s) => h.startsWith(s));
+  const bare = (m: LandMark) => !m.shas.length && !m.branches.length;
+  for (const part of [0, 1]) {
+    const ms = r.marks.filter((m) => m.part === part);
+    if (!ms.length) continue;
+    const bares = ms.filter(bare);
+    if (o.head) {
+      const hm = ms.filter((m) => names(m, o.head!));
+      if (hm.length) return { ...settle([...hm, ...bares]), of: "head" };
+    }
+    if (o.tip && o.tip !== o.head) {
+      const tm = ms.filter((m) => names(m, o.tip!));
+      if (tm.length) return { ...settle([...tm, ...bares]), of: "other", sha: o.tip };
+    }
+    if (o.branch) {
+      const bm = ms.filter((m) => m.branches.includes(o.branch!));
+      if (bm.length) {
+        const sha = bm.find((m) => m.shas.length)?.shas[0];
+        return { ...settle([...bm, ...bares]), of: sha ? "other" : "unnamed", ...(sha ? { sha } : {}) };
+      }
+    }
+    if (bares.length) return { ...settle(bares), of: "unnamed" };
   }
-  const byName = o.branch ? r.marks.find((m) => m.branches.includes(o.branch!)) : undefined;
-  if (byName) return pick(byName)!;
-  const bare = r.marks.find((m) => !m.shas.length && !m.branches.some((b) => o.others?.has(b)));
-  if (bare) return pick(bare)!;
-  const words = new Set(r.marks.map((m) => m.verdict));
+  const words = new Set(r.marks.filter((m) => m.verdict !== "unclear" && !m.branches.some((b) => o.others?.has(b))).map((m) => m.verdict));
   const named = [...new Set(r.marks.flatMap((m) => m.shas.map((s) => s.slice(0, 9))))].slice(0, 4).join(", ");
-  return { verdict: words.size > 1 ? "mixed" : "unclear", line: clip(`LAND said of other commits (${named || "other branches"}), not this head`) };
+  return { verdict: words.size > 1 ? "mixed" : "unclear", line: clip(`LAND said of other commits (${named || "other branches"}), not this head`), of: "unnamed" };
 }
 
 export function verdictOf(report: string | null | undefined, o: VerdictAsk = {}) {
   return verdictFor(readReport(report), o);
 }
 
-// The review a row shows: the newest of its branch, never one by the row's agent or an agent it started
-// (a builder cannot review its own work), and from an agent with a branch of its own (found by its task
-// naming the branch) only when it ended and a labelled line decided.
-export function pickReview(
-  reviews: readonly ReviewFact[],
-  row: { id: string; session_id: string; branch: string | null; head: string | null },
-  lineage: { parentOf(session: string): string | undefined; sessionOf(agent: string): string | undefined },
-): BoardReview | undefined {
-  const below = (by: string) => {
-    let s = lineage.sessionOf(by);
-    for (let i = 0; s && i < 16; i++) { if (s === row.session_id) return true; s = lineage.parentOf(s); }
-    return false;
-  };
+// The review a row shows. Never one by the row's agent or an agent below it (a builder cannot review its
+// own work: `chain`, the reviewer's sessions up to the root, read from the agents table; a review whose
+// chain is not known is not shown), and from an agent with a branch of its own (found by its task naming
+// the branch) only when it ended and a mark decided. A review of another head than the row's is stale,
+// whatever it said; an approval whose reviewed head is not known is unclear. Reviews of the row's head
+// come first, then the newest.
+export function pickReview(reviews: readonly ReviewFact[], row: { id: string; session_id: string; branch: string | null; head: string | null }): BoardReview | undefined {
   const out = reviews
-    .filter((x) => x.branch === row.branch && x.by !== row.id && (x.how === "panel" || !below(x.by)))
-    .map((x) => ({ x, v: x.state === "running" || x.state === "waiting" ? { verdict: "pending" as const, line: "" } : verdictFor(x.read, { heads: [row.head, x.tip], branch: row.branch, others: new Set(reviews.filter((y) => y.by === x.by && y.branch !== row.branch).map((y) => y.branch)) }) }))
-    .filter(({ x, v }) => !(x.how === "task" && x.own && (v.verdict === "pending" || v.verdict === "unclear")))
-    .sort((a, b) => b.x.at - a.x.at)[0];
+    .filter((x) => x.branch === row.branch && x.by !== row.id && (x.how === "panel" || (!!x.chain && !x.chain.includes(row.session_id))))
+    .map((x) => {
+      const running = x.state === "running" || x.state === "waiting";
+      const others = new Set(reviews.filter((y) => y.by === x.by && y.branch !== row.branch).map((y) => y.branch));
+      const r: VerdictRead = running ? { verdict: "pending", line: "", of: "unnamed" } : verdictFor(x.read, { head: row.head, tip: x.tip, branch: row.branch, others });
+      const current = r.of === "head" ? true : r.of === "other" ? false : x.tip && row.head ? x.tip === row.head : null;
+      return { x, r, current };
+    })
+    .filter(({ x, r }) => !(x.how === "task" && x.own && !["approved", "refused", "mixed"].includes(r.verdict)))
+    .sort((a, b) => Number(b.current === true) - Number(a.current === true) || b.x.at - a.x.at)[0];
   if (!out) return undefined;
-  const { x, v } = out;
-  return { by: x.by, title: x.title, how: x.how, state: x.state, verdict: v.verdict, line: v.line, tip: x.tip, current: x.tip && row.head ? x.tip === row.head : null, at: x.at };
+  const { x, r, current } = out;
+  const doubt = r.verdict !== "pending" && (current === false || (current === null && r.verdict === "approved"));
+  const verdict: Verdict = !doubt ? r.verdict : current === false ? "stale" : "unclear";
+  return {
+    by: x.by, title: x.title, how: x.how, state: x.state, verdict, ...(doubt ? { was: r.verdict } : {}), line: r.line,
+    tip: x.tip, of: r.of === "other" ? r.sha ?? x.tip : r.of === "head" ? row.head : x.tip, current, at: x.at,
+  };
 }
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -265,6 +386,12 @@ export function queueLanded(l: Landed, q: { state: string; current: boolean } | 
   return l.state === "no" && q?.current && q.state === "landed" ? { state: "yes", how: "queue" } : l;
 }
 
+// The commit whose place in a deploy says whether a landed row is live: its head, or for a head the queue
+// landed that git does not see on the base, the commit the queue put there.
+export function liveSha(r: Pick<BoardRow, "head" | "landed" | "queue">): string | null {
+  return r.landed?.state === "yes" && r.landed.how === "queue" && r.queue?.landed ? r.queue.landed : r.head;
+}
+
 // Live: whichever of the repository's deploys holds the head (the after step's commit, this daemon's
 // build), else not live at the first of them.
 export function liveFrom(held: readonly { deploy: Deploy; holds: Landed }[]): Live | null {
@@ -311,8 +438,10 @@ function landedWords(r: BoardRow, full: boolean): string {
 
 function reviewWords(v: BoardReview | null, full: boolean): string {
   if (!v) return full ? "review: none" : "";
-  const head = v.current === false ? `, of an older head ${short(v.tip)}` : "";
-  const words = v.verdict === "pending" ? "running" : v.verdict;
+  const head = v.current === false && v.verdict !== "stale" ? `, of an older head ${short(v.tip)}` : "";
+  const words = v.verdict === "pending" ? "running"
+    : v.verdict === "stale" ? `stale (${v.was ?? "said"} of ${short(v.of ?? v.tip)}, not its head now)`
+    : v.verdict === "unclear" && v.was ? `unclear (${v.was} of a head not known)` : v.verdict;
   const who = v.how === "panel" ? "the Review panel" : `${v.by} ("${clip(v.title, full ? LINE_MAX : 30)}")`;
   return `review ${words} by ${who}${head}${v.line ? `, reviewer wrote: "${full ? v.line : clip(v.line, 60)}"` : ""}`;
 }

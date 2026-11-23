@@ -12,7 +12,8 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user
 // agent started with `reviews: <its branch>` that refuses it by its head (its findings use words like
 // "accepts"), and main gets a commit with beta's subject but not its change; gamma is still working. A
 // second reviewer, with a worktree of its own, names alpha's branch in its task only and says LAND: yes.
-// At the end gamma starts a child that "reviews" gamma's own branch: that is not gamma's review.
+// At the end gamma starts a child that "reviews" gamma's own branch: that is not gamma's review; then a
+// reviewer of the coordinator approves gamma's head and the branch moves on: that review reads stale.
 // The board (the API, the coordinator's keel__work_board and the Board panel) says of each what git,
 // the check ledger, the landing queue and the agents table say: alpha landed as patches and live,
 // approved; beta not landed, refused with the reviewer's line; gamma working, not landed, no review.
@@ -146,4 +147,18 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const after = await board();
   expect(after.total).toBe(6);
   expect(rowOf(after, gamma.id).review).toBeNull();
+
+  // A reviewer of the coordinator approves gamma's head; then gamma's branch moves. The approval is of a
+  // head that is no longer the branch's: stale, never approved.
+  await send(coord, ask("Review gamma.", `script:batch ${JSON.stringify([{ name: "spawn_agent", input: { message: "Review it.\nscript:say LAND: yes", agent_type: "explorer", reviews: gamma.branch } }])}`));
+  await expect.poll(async () => (await agentsOf()).some((a) => a.reviews?.includes(gamma.branch) && a.status === "completed"), { timeout: 60_000 }).toBe(true);
+  await idle(coord);
+  await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 15_000 }).toBe("approved");
+  const wt = (await by("Lane gamma")).worktree as string;
+  git(wt, "commit", "-q", "--allow-empty", "-m", "Lane gamma, more");
+  await expect.poll(async () => rowOf(await board(), gamma.id).review?.verdict, { timeout: 15_000 }).toBe("stale");
+  expect(rowOf(await board(), gamma.id).review).toMatchObject({ was: "approved", current: false });
+  await page.reload();
+  await openPanel(page, "board");
+  await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "stale");
 });

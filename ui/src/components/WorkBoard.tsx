@@ -56,8 +56,11 @@ function reviewFact(r: BoardRow) {
   const v = r.review;
   if (!v) return <Fact name="Review" tone="none" value="none" testid="board-review" state="none" />;
   const word = v.verdict === "pending" ? "running" : v.verdict;
-  const tone: Tone = v.verdict === "approved" ? "ok" : v.verdict === "refused" ? "bad" : v.verdict === "pending" ? "wait" : "none";
-  return <Fact name="Review" tone={tone} value={<>{word}{v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${v.how === "panel" ? "The Review panel" : `${v.title} (agent ${v.by})`}${v.tip ? ` reviewed ${sha(v.tip)}` : ""}`} testid="board-review" state={v.verdict} />;
+  // Approved is the one word the board must never say wrongly: a review of another head is stale, whatever it said.
+  const tone: Tone = v.verdict === "approved" && v.current === true ? "ok" : v.verdict === "refused" ? "bad" : v.verdict === "pending" ? "wait" : "none";
+  const who = v.how === "panel" ? "The Review panel" : `${v.title} (agent ${v.by})`;
+  const said = v.was ? `; it said ${v.was}${v.of ? ` of ${sha(v.of)}` : ""}${v.verdict === "stale" ? ", not of the head now" : ", of a head not known"}` : "";
+  return <Fact name="Review" tone={tone} value={<>{word}{v.verdict === "stale" && v.of ? <span className="text-faint"> · of {sha(v.of)}</span> : v.current === false && <span className="text-faint"> · older head</span>}</>} title={`${who}${v.tip ? ` was started on ${sha(v.tip)}` : ""}${said}`} testid="board-review" state={v.verdict} />;
 }
 
 function landedFact(r: BoardRow) {

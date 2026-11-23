@@ -12,7 +12,7 @@ import { git } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { readsOf } from "../server/reads.ts";
 import type { AgentFact, Facts, TreeRun } from "./facts.ts";
-import { landedFrom, liveFrom, pickReview, queueLanded, toLand, type Board, type BoardRow, type Deploy, type Landed } from "./rules.ts";
+import { landedFrom, liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Deploy, type Landed } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -167,12 +167,9 @@ export class WorkBoard {
     }
 
     // The latest review of each branch (never its own agent's or one it started), and its newest landing queue entry.
-    const parentOf = new Map(facts.agents.map((a) => [a.session_id, a.parent_id]));
-    const sessionOf = new Map(facts.agents.map((a) => [a.id, a.session_id]));
-    const lineage = { parentOf: (s: string) => parentOf.get(s), sessionOf: (id: string) => sessionOf.get(id) };
     for (const r of rows.values()) {
       if (!r.branch) continue;
-      r.review = pickReview(facts.reviews, r, lineage) ?? null;
+      r.review = pickReview(facts.reviews, r) ?? null;
       const who = r.review && r.review.how === "task" ? rows.get(r.review.by) : undefined;
       if (who && !who.reviews.includes(r.branch)) who.reviews.push(r.branch);
       const q = facts.queue.filter((x) => x.branch === r.branch && (!r.repo || x.repo === r.repo)).sort((a, b) => b.updated - a.updated)[0];
@@ -185,8 +182,10 @@ export class WorkBoard {
       const ds = deploysOf.get(r.repo!) ?? [];
       if (!ds.length) { r.live = { state: "unknown", why: "no deploy record: the landing names no after step, and this daemon is not built from this repository" }; return; }
       const held = [];
+      // (A head the queue landed that git does not see on the base: the commit the queue put there.)
+      const sha = liveSha(r)!;
       for (const d of ds) {
-        const h = await this.holds(r.repo!, r.head!, d.sha, null, by);
+        const h = await this.holds(r.repo!, sha, d.sha, null, by);
         held.push({ deploy: d, holds: h });
         if (h.state === "yes") break;
       }

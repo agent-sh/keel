@@ -39,6 +39,9 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
   // Reviews by agents of the tree: each one's report read here into its marks, so only those leave the thread.
   const reviews: ReviewFact[] = [];
   const reviewers = agents.filter((x) => x.reviews);
+  // Each reviewer's sessions up to the root, from the agents table (not the board's page of rows, which may
+  // leave an agent between them out), so a review by an agent below a row's agent is known as its own.
+  const chainOf = (() => { try { return db.prepare<{ s: string }, [string]>("WITH RECURSIVE up(s, d) AS (SELECT ?1, 0 UNION SELECT a.parent_id, up.d + 1 FROM agents a JOIN up ON a.session_id = up.s WHERE up.d < 32) SELECT s FROM up ORDER BY d"); } catch { return undefined; } })();
   const reportOf = db.prepare<{ head: string | null; tail: string | null; n: number }, [string]>(`SELECT substr(result, 1, ${REPORT_HEAD}) AS head, CASE WHEN length(result) > ${REPORT_HEAD} THEN substr(result, -${REPORT_TAIL}) END AS tail, length(result) AS n FROM agents WHERE id = ?`);
   try {
     for (const r of reviewers) {
@@ -47,9 +50,11 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
       const live = r.status === "running" || r.status === "waiting";
       const rep = live ? undefined : reportOf.get(r.id);
       const read = readReport(live ? "" : rep?.tail ? `${rep.head}\n${rep.tail}` : rep?.head);
-      for (const n of named) if (branches.has(n.branch)) reviews.push({ by: r.id, title: r.title, how: n.how, state: r.status, branch: n.branch, tip: n.tip, own: !!r.branch, read, at: r.ended ?? r.created });
+      let chain: string[] | null = null;
+      try { chain = chainOf ? chainOf.all(r.session_id).map((x) => x.s) : null; } catch {}
+      for (const n of named) if (branches.has(n.branch)) reviews.push({ by: r.id, title: r.title, how: n.how, state: r.status, branch: n.branch, tip: n.tip, own: !!r.branch, chain, read, at: r.ended ?? r.created });
     }
-  } finally { reportOf.finalize(); }
+  } finally { reportOf.finalize(); chainOf?.finalize(); }
 
   // Reviews the owner ran from the Review panel on an agent's branch (src/safety/review.ts), each with its structured verdict.
   const sessions = [a.root, ...agents.map((x) => x.session_id)];
@@ -63,7 +68,7 @@ export function boardFacts(db: Database, a: { root: string }): Facts {
       if (!p.branch || !branches.has(p.branch)) continue;
       const verdict = p.verdict === "correct" ? "approved" : p.verdict === "incorrect" ? "refused" : "unclear";
       const line = [p.verdict ? `verdict: ${p.verdict}` : p.state, p.findings ? `${p.findings} ${p.findings === 1 ? "finding" : "findings"}` : "", p.summary ?? ""].filter(Boolean).join(" · ").slice(0, 160);
-      reviews.push({ by: p.id, title: p.agent_title ?? "Review", how: "panel", state: p.state, branch: p.branch, tip: typeof p.head === "string" ? p.head : null, own: false, read: { marks: [], verdict, line }, at: p.created });
+      reviews.push({ by: p.id, title: p.agent_title ?? "Review", how: "panel", state: p.state, branch: p.branch, tip: typeof p.head === "string" ? p.head : null, own: false, chain: [], read: { marks: [], verdict, line }, at: p.created });
     }
   }
 
