@@ -167,4 +167,3 @@ export function init() {
   // On the daemon's one tick, only while a line is owed.
   joinPulse("agent now lines", (now) => flush(now), { every: 1000, due: () => (dirty.size ? Math.min(...dirty.values()) : undefined) });
 }
-
