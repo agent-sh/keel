@@ -75,11 +75,12 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     try { real = realpathSync(p); } catch { return null; }
     return readable(real) ? real : null;
   };
-  // The folders sessions on this machine worked in, newest first.
-  const usedFolders = (): string[] => {
-    const seen = new Map<string, number>();
-    for (const s of [...store.sessions({ archived: true }), ...store.sessions()]) if (!s.machine && (seen.get(s.workspace) ?? -1) < s.updated) seen.set(s.workspace, s.updated);
-    return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+  // The folders sessions on this machine worked in, newest first, at most `n`: one grouped read of
+  // the table (a picker asks at every pause in typing), not every session parsed. A session placed
+  // on another machine (the fleet's column) names a folder there.
+  const usedFolders = (n: number): string[] => {
+    const here = store.columnExists("sessions", "machine") ? "WHERE machine IS NULL" : "";
+    return store.db.query<{ workspace: string }, [number]>(`SELECT workspace FROM sessions ${here} GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT ?`).all(n).map((r) => r.workspace);
   };
 
   return {
@@ -104,7 +105,7 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
     "/api/fs/find": {
       GET: async (req: Request) => {
         const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
-        const used = usedFolders().filter((p) => readable(p)).slice(0, 200);
+        const used = usedFolders(400).filter((p) => readable(p)).slice(0, 200);
         const roots: Root[] = [{ path: HOME, depth: 3 }];
         for (const p of used) if (dirname(p) !== p && contains(HOME, dirname(p)) && dirname(p) !== HOME) roots.push({ path: dirname(p), depth: 2 });
         for (const r of (process.env.KEEL_REPO_ROOTS ?? dirname(resolve(workspace))).split(":").filter(Boolean)) {
