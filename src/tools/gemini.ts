@@ -28,7 +28,8 @@ const run_shell_command: Tool = {
   autoShell: ({ command, ...options }) => typeof command === "string" ? { command, interpreter: "bash -c", options } : undefined,
   description:
     "Executes a given shell command as `bash -c <command>`. Set is_background for servers and watchers; " +
-    "a command still running after 5 minutes moves to the background, and its end wakes you with a notice. " +
+    "a command still running after 5 minutes moves to the background, and its end wakes you with a notice " +
+    "(where your tools run on another machine it does not: wait for it there with a command). " +
     "The result gives Output, Exit Code and Background PIDs.",
   input_schema: obj({
     command: { type: "string", description: "Exact bash command to execute as `bash -c <command>`" },

@@ -624,11 +624,12 @@ test("a report does not restart a parent held after the owner's Stop", async () 
   expect([agents.get(a.id)!.handback, agents.get(b.id)!.handback]).toEqual([false, false]);
 });
 
-// A park starts no turn of the parent, the first of a task included: it is a
-// line of the parent's next input, with the latest thing the agent waits on,
-// and the agent's report wakes the parent. (A parent woken for a park alone
-// ended that turn with no tool call 92 times in 100.)
-test("a park rides the parent's next input and starts no turn of its own", async () => {
+// A park on waits alone starts no turn of the parent, the first of a task
+// included: it is a line of the parent's next input, with the latest thing the
+// agent waits on, and the agent's report wakes the parent. (A parent woken for
+// a park alone ended that turn with no tool call 92 times in 100.) A park on a
+// command is in agent-commands.test.ts.
+test("a park on a wait rides the parent's next input and starts no turn of its own", async () => {
   const p = parentOf("parks");
   const a = await p.start();
   const park = (of = a) => {

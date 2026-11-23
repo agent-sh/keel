@@ -151,7 +151,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (!(e instanceof LinkError)) errors.capture("server", e, { at: "fleet instructions", machine: m.id });
       }
       const text = [
-        `Your workspace tools (shell, files, search) run on the machine "${m.name}"${facts ? ` (${facts.os} ${facts.arch}, ${facts.cpus} cores)` : ""}, not on this daemon's machine. Paths are paths there; the directory granted there is ${m.workspace_root}.`,
+        `Your workspace tools (shell, files, search) run on the machine "${m.name}"${facts ? ` (${facts.os} ${facts.arch}, ${facts.cpus} cores)` : ""}, not on this daemon's machine. Paths are paths there; the directory granted there is ${m.workspace_root}. A background command there does not wake you when it ends, and a wait here does not see its files: wait for it there with a command in the shell tool.`,
         inst ? `\nInstructions from the owner's files on ${m.name}:\n\n${inst}` : "",
       ].join("\n");
       // The machine and its instruction files are the owner's side of the block (hooks.ts SystemBlock).

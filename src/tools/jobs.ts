@@ -9,7 +9,7 @@
 // exit code, and the next daemon adopts it (its output, its stop, the note to
 // the model when it ends). A PTY dies with the daemon that holds its terminal.
 import type { Subprocess } from "bun";
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
@@ -390,7 +390,7 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     }
     // Any other the model started: its end starts a turn of its idle session, as Claude Code's
     // background tasks do, and rides a turn at work. (Not a command the owner ran in the terminal pane.)
-    if (jobEnded.tell && job.by !== "owner" && !job.front) {
+    if (jobEnded.tell && endTold(job)) {
       const key = endKey(job);
       job.owes = true;
       note({ key, stored: () => { if (!job.owes) return; job.owes = false; try { jobEnded.read?.(job); } catch {} } });
@@ -411,11 +411,54 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
 // One that ended counts until the input that says so is stored: its session is still owed that turn.
 export const awaited = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId && j.wake && (running(j) || j.owes));
 
-// The background commands of a session started at `since` or later that it has not been told the end
+// Whether a background command's end is an input of its own (finish): one the model started, not a
+// cut call's (`wake`: that turn waited on it), not one a restart took back from in front of a call
+// (`front`: that call's result says what became of it), not one the owner ran in the terminal pane.
+const endTold = (j: Job) => j.background && !j.wake && !j.front && j.by !== "owner";
+
+// The background commands of a session started at `since` or later whose end it is still to be told
 // of: they run, or the input that tells their end is on its way. An agent whose turn ends with one
-// waits on it (src/automation/agents.ts). Not one being stopped, a cut call's (awaited) or the owner's.
+// waits on it (src/automation/agents.ts). Not one being stopped, and not one that serves: a process of
+// it listens on a socket (a dev server, a database left up for the work), which is the state the
+// command was started to reach, not a run with a result to come.
 export const unfinished = (sessionId: string, since: number) =>
-  [...jobs.values()].filter((j) => j.sessionId === sessionId && j.background && !j.wake && j.by !== "owner" && j.started >= since && ((running(j) && !j.stopping) || j.owes));
+  [...jobs.values()].filter((j) => j.sessionId === sessionId && endTold(j) && j.started >= since && (j.owes || (running(j) && !j.stopping && !serving(j))));
+
+// The inodes of the sockets in the LISTEN state in a /proc/net/tcp or tcp6 table (the fourth
+// column is the state, 0A is LISTEN; the tenth is the inode).
+export function listeningInodes(table: string): Set<string> {
+  const out = new Set<string>();
+  for (const line of table.split("\n").slice(1)) {
+    const f = line.trim().split(/\s+/);
+    if (f.length > 9 && f[3] === "0A" && f[9] !== "0") out.add(f[9]!);
+  }
+  return out;
+}
+
+// Whether a process of a job holds a TCP socket that listens. Read from each process's open files and
+// the TCP tables of its own network namespace (a sandboxed job may have one of its own), once per namespace.
+export function serving(j: Job): boolean {
+  const tables = new Map<string, Set<string>>();
+  for (const m of members(j)) {
+    let fds: string[];
+    try { fds = readdirSync(`/proc/${m.pid}/fd`); } catch { continue; }
+    const socks: string[] = [];
+    for (const fd of fds) {
+      try { const l = readlinkSync(`/proc/${m.pid}/fd/${fd}`); if (l.startsWith("socket:[")) socks.push(l.slice(8, -1)); } catch {}
+    }
+    if (!socks.length) continue;
+    let ns = "";
+    try { ns = readlinkSync(`/proc/${m.pid}/ns/net`); } catch {}
+    let listen = tables.get(ns);
+    if (!listen) {
+      listen = new Set<string>();
+      for (const t of ["tcp", "tcp6"]) try { for (const i of listeningInodes(readFileSync(`/proc/${m.pid}/net/${t}`, "utf8"))) listen.add(i); } catch {}
+      tables.set(ns, listen);
+    }
+    if (socks.some((i) => listen!.has(i))) return true;
+  }
+  return false;
+}
 
 // After a restart: take back the jobs a previous daemon started under
 // `spillRoot/<session>/jobs/`. One still running is watched until it ends; one

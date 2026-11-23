@@ -34,8 +34,10 @@ const Bash: Tool = {
     "between calls when you cd inside the project; environment variables do not. Default timeout 120000 ms, " +
     "max 600000; a command still running at its timeout moves to the background instead of being killed. " +
     "Set run_in_background for servers, watchers and long jobs: you get a task ID and a log file to Read, " +
-    "and its end wakes you with a notice, so do not sleep, poll or wait for it: do other work or end your turn. " +
-    "Stop one with TaskStop once you no longer need it (as an agent, you are not done while one you started runs). " +
+    "and its end wakes you with a notice, so do not sleep, poll or wait for it: do other work or end your turn " +
+    "(as an agent, your report waits for its end, unless it is a server listening on a port). Where your tools " +
+    "run on another machine, its end does not reach you: wait for it there with a command. " +
+    "Stop one with TaskStop once you no longer need it. " +
     "Quote paths with spaces. Prefer the Read, Edit and Write tools for files.",
   input_schema: obj({
     command: { type: "string", description: "The command to execute" },

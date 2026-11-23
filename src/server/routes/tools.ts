@@ -40,7 +40,7 @@ export const toolRoutes: RouteModule = (deps) => {
         // turn's end) is not started again for a command it left running: nobody reads that turn.
         const agent = deps.store.db.query<{ status: string }, [string]>("SELECT status FROM agents WHERE session_id = ?").get(job.sessionId);
         if (agent && agent.status !== "running" && agent.status !== "waiting") return riding ? note() : sent();
-        if (riding) return commandEnded(job, text, riding, { sent, note });
+        if (riding) return commandEnded(job, text, riding, agent?.status === "waiting", { sent, note });
         // (An agent parked on the command is the one that still gets its turn after a stop: nothing else ends its wait.)
         if ((job.stopReason && agent?.status !== "waiting") || deps.engine.isHeld(job.sessionId)) return note();
         // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
@@ -53,16 +53,18 @@ export const toolRoutes: RouteModule = (deps) => {
   // A background command the model started has ended (not one a cut call waited on: above). Its note
   // is lined up for the session's next request already, so a turn at work reads it at its next step;
   // an idle session is started with it, once: the input is stored under the end's key, in the write
-  // that stores the prompt. It starts no turn where nobody waits for it: a command someone stopped,
-  // a session the owner stopped, and a session with a wait of its own on the command (that wait's
-  // wake says more: what the file gained, and the note rides it).
-  const commandEnded = (job: Job, text: string, key: string, { sent, note }: { sent: () => void; note: () => void }) => {
+  // that stores the prompt. It starts no turn where nobody waits for it: a command someone stopped
+  // (unless an agent is parked on it: nothing else ends that wait), a session the owner stopped, and
+  // a session with a wait of its own on the command (that wait's wake says more: what the file
+  // gained, and the note rides it). Ends that land a moment apart go as one input.
+  const commandEnded = (job: Job, text: string, key: string, parked: boolean, { sent, note }: { sent: () => void; note: () => void }) => {
     // (Its note is gone already when a request of a turn at work took it, or the result of a cut call told it.)
-    if (!hasNotice(job.sessionId, key) || job.stopReason || deps.engine.isHeld(job.sessionId) || waitsOnJob(job.sessionId, job)) return note();
+    if (!hasNotice(job.sessionId, key) || (job.stopReason && !parked) || deps.engine.isHeld(job.sessionId) || waitsOnJob(job.sessionId, job)) return note();
     // Told before a restart, and its record did not say so yet.
     if (deps.engine.hasInput(job.sessionId, key)) return sent();
     const meta = { kind: "harness", job: job.id };
     deliver(job.sessionId, text, meta, {
+      coalesceMs: 300,
       // Read with a request of a turn at work meanwhile (src/tools/jobs.ts calls jobEnded.read): nothing left to tell.
       refresh: () => hasNotice(job.sessionId, key) ? {
         text, meta,

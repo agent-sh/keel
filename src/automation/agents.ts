@@ -205,7 +205,7 @@ let wtsCache: Worktrees | undefined;
 const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir, "worktrees")));
 
 // `restarts`: a column from when a restart count decided an agent's end; unused.
-// `park_told`: from when a park woke the parent once a task; unused.
+// `park_told`: the task (its first_seq) whose park on a command the parent has been woken for.
 // `task`: its first prompt, kept until it is in its session (sendTask).
 // `start_from`: the last follow-up's start, as JSON (AgentStart).
 type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force"> & { budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null; parked: number | null; start_from: string | null; start_force: string | null };
@@ -936,7 +936,7 @@ async function begin(id: string, input: Pick<SpawnInput, "background">, model: s
     signal?.removeEventListener("abort", onAbort);
     // A blocking agent that parked on a wait goes on in the background; the
     // call's result tells the parent of the park.
-    if (r?.status === "waiting") update(id, { background: true });
+    if (r?.status === "waiting") { update(id, { background: true }); parkTold(get(id)!); }
     return get(id)!;
   }
   return rec;
@@ -1345,6 +1345,11 @@ export function releaseOwed(parentId: string) {
   const rows = owedOf(parentId);
   for (const o of rows) if (rode.has(o.report_id)) sendOwed(o, parentId);
   sendAllOwed(rows);
+  // A park on a command that rode only for the hold wakes the parent now, once a task; any other goes on riding.
+  for (const m of takeRiding(parentId, (m) => m.kind === "harness" && m.status === "waiting")) {
+    const a = get(String(m.agent_id));
+    if (a) tellPark(a, true);
+  }
 }
 
 // A deleted session's agents went with it: nothing rides to it or waits for
@@ -1373,6 +1378,10 @@ function withdrawParked(a: AgentRecord) {
   withdraw(a.parent_id, isParkOf(a));
 }
 
+// The parent was woken for the agent's park on a command in its current task: a later park of the task rides.
+const parkTold = (a: AgentRecord) => void D().store.db.query("UPDATE agents SET park_told = ? WHERE id = ?").run(a.first_seq, a.id);
+const toldOfPark = (a: AgentRecord) => D().store.db.query<{ park_told: number | null }, [string]>("SELECT park_told FROM agents WHERE id = ?").get(a.id)?.park_told === a.first_seq;
+
 // When the agent's current task began (kept with it; else its first event after the task's start).
 const taskStart = (a: AgentRecord) => a.task_at ??
   D().store.db.query<{ ts: number }, [string, number]>("SELECT ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT 1").get(a.session_id, a.first_seq)?.ts ?? a.created;
@@ -1382,12 +1391,13 @@ const taskStart = (a: AgentRecord) => a.task_at ??
 // started in this task that still runs. Each such command's end starts its next turn
 // (src/tools/jobs.ts), so an agent with any of them has not finished: its report is the answer
 // it writes after that. (Named by id and the model's own description, never by its command line.)
-export const waitsOn = (a: AgentRecord): string =>
-  [
-    waits.describeActive(a.session_id),
-    ...awaited(a.session_id).map((j) => `command ${j.id}, which runs on after a daemon restart`),
-    ...unfinished(a.session_id, taskStart(a)).map((j) => `background command ${j.id}${j.description ? ` (${attr(j.description).slice(0, 80)})` : ""}`),
-  ].filter(Boolean).join(", ");
+// `own: false`: without its background commands (a turn the owner stopped is not waiting on them).
+export const waitsOn = (a: AgentRecord, o: { own?: boolean } = {}): string =>
+  [waits.describeActive(a.session_id), ...commandsOf(a, o)].filter(Boolean).join(", ");
+const commandsOf = (a: AgentRecord, o: { own?: boolean } = {}): string[] => [
+  ...awaited(a.session_id).map((j) => `command ${j.id}, which runs on after a daemon restart`),
+  ...(o.own === false ? [] : unfinished(a.session_id, taskStart(a)).map((j) => `background command ${j.id}${j.description ? ` (${attr(j.description).slice(0, 80)})` : ""}`)),
+];
 
 // The park as it stands when it is sent: the latest thing the agent waits on,
 // or nothing once it went on or ended.
@@ -1402,23 +1412,32 @@ function parkNow(a: AgentRecord): { text: string; meta: Record<string, unknown> 
   const when = due ? `, due ${due > Date.now() ? `in ${dur(due - Date.now())}` : "now"} (at ${localTime(due).slice(0, 5)})` : "";
   return {
     text: `[harness] Agent ${attr(a.title) ? `"${attr(a.title)}" ` : ""}(${a.id}) is waiting for ${on}${when}. It has not finished; its report comes when it does.`,
-    meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on, title: a.title, ...(due ? { until: due } : {}) },
+    meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on, title: a.title, ...(due ? { until: due } : {}), ...(commandsOf(a).length ? { on_command: true } : {}) },
   };
 }
 
-// A park is one line of the parent's next input, as it stands then; it starts no turn of its own.
-// A parent woken for one could do nothing with it: of 79 turns a coordinator was woken for parks
-// alone, 75 ended with no tool call, and the other 4 looked at whether the waits were stuck (they
-// were not) or went on with other work. What an agent waits on ends by itself (a wait has its
-// deadline, a command its end), and then the agent goes on and its report wakes the parent. That
-// holds when nothing else is coming to the parent too: its next input is then that report, which
-// says more than the park, so the park is withdrawn with it. (The page shows the agent waiting,
-// and on what, all along.)
-function tellPark(a: AgentRecord) {
+// A park on waits alone is one line of the parent's next input, as it stands then: a wait has its
+// deadline, so the agent goes on by itself and its report wakes the parent, and a parent woken for
+// such a park could do nothing with it (of 79 turns a coordinator was woken for parks alone, 75
+// ended with no tool call). A park on a command has no deadline: the command may never end (a run
+// that hangs, a server the agent left up that listens on no TCP port), and nothing but the parent can
+// end that wait, so the first such park of a task wakes the parent; a later one of the task rides.
+// `wake`: it may start a turn; not in a parent held after the owner's Stop, where it rides too (and
+// wakes the parent when the hold ends, releaseOwed).
+function tellPark(a: AgentRecord, wake: boolean) {
   if (isPending(a.parent_id, isParkOf(a))) return; // on its way: it is read again when it is sent
   const first = parkNow(a);
   if (!first) return;
-  deliver(a.parent_id, first.text, first.meta, { ride: true, refresh: () => parkNow(a) });
+  const wakes = wake && !!first.meta.on_command && !toldOfPark(a) && !D().engine.isHeld(a.parent_id);
+  deliver(a.parent_id, first.text, first.meta, {
+    ride: !wakes,
+    refresh: () => {
+      // The owner stopped the parent since: the notice rides instead of starting a turn.
+      if (wakes && D().engine.isHeld(a.parent_id)) return void tellPark(a, false);
+      return parkNow(a);
+    },
+    onSent: wakes ? () => parkTold(a) : undefined,
+  });
 }
 
 const stopping = new Map<string, StopBy>();
@@ -1513,7 +1532,8 @@ export function onTurnEnd(sessionId: string, reason: string) {
   if (!stopping.has(a.id) && reason !== "interrupted" && reason !== "budget" && ownAtWork(sessionId)) return;
   // (A silent agent hands nothing back: its goal or its review has its answer at the turn's end, so it is
   // not kept waiting on a command that runs on.)
-  const waitingOn = stopping.has(a.id) || reason === "budget" ? "" : isSilent(a.id) ? waits.describeActive(sessionId) : waitsOn(a);
+  // (A turn stopped is not waiting on the commands it started: the stop ends the agent, and its commands with it.)
+  const waitingOn = stopping.has(a.id) || reason === "budget" ? "" : isSilent(a.id) ? waits.describeActive(sessionId) : waitsOn(a, { own: reason !== "interrupted" });
   if (waitingOn) {
     // When it parked: its place in line for a slot when its wake comes.
     D().store.db.query("UPDATE agents SET parked = ? WHERE id = ?").run(Date.now(), a.id);
@@ -1521,7 +1541,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
     wake(a.id);
     // A blocking spawn returns the park in its tool result. Reviewers and
     // other silent agents stay quiet. Recovery does not replay this notice.
-    if (a.background && !isSilent(a.id)) tellPark(a);
+    if (a.background && !isSilent(a.id)) tellPark(a, true);
     return;
   }
   // A turn of the child stopped from its own page is the owner's stop; one stopped by anything else
