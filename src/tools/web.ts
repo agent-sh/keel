@@ -148,8 +148,14 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     if (o.headers) params.headers = o.headers;
     const r = await rpc(bin, "webfetch", params, { unsafe_allow_fetch_without_hook: true, spill_dir: join(o.spillDir, "web") }, signal);
     if (r.kind === "error") return { text: String(r.error?.message ?? JSON.stringify(r.error)), error: true };
-    // The page itself, without the request echo: the model knows the URL.
-    const body = typeof r.body_markdown === "string" && o.extract !== "raw" ? r.body_markdown : String(r.output ?? "");
+    // The page itself, without the request echo: the model knows the URL. A
+    // page with an error status comes as the echo and the raw markup: it gets
+    // its status first and its text, as the built-in fetch gives it.
+    const status = r.kind !== "ok" && typeof r.meta?.status === "number" ? r.meta.status : undefined;
+    const raw = typeof r.body_raw === "string" ? r.body_raw : undefined;
+    const body = typeof r.body_markdown === "string" && o.extract !== "raw" ? r.body_markdown
+      : status !== undefined && raw !== undefined ? `HTTP ${status}\n\n${/html/.test(String(r.meta?.content_type ?? "")) && o.extract !== "raw" ? htmlToText(raw) : raw}`
+      : String(r.output ?? "");
     const final = r.meta?.final_url && r.meta.final_url !== u.href ? `Final URL: ${r.meta.final_url}\n\n` : "";
     return { text: o.whole ? final + body : await spill(final + body, o.spillDir, "webfetch"), error: r.kind !== "ok" };
   }
