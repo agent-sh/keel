@@ -45,10 +45,17 @@ class ContractTest {
     // --- what the app sends --------------------------------------------------------
 
     @Test fun theAppSendsTheBodiesOfTheContract() {
-        // The app sends words only; a prompt that names uploads is the daemon's side of the contract until the app attaches.
-        for (send in examples("send").filter { !it.has("attachments") }) {
-            assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"))))
+        // A prompt names its uploads by the id, type and name the upload's answer gave (upload_ref).
+        for (send in examples("send")) {
+            val files = send.optJSONArray("attachments")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } }.orEmpty()
+                .map { Upload(it.getString("id"), "", it.getString("mime"), it.getString("file_name"), 0) }
+            assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"), files)))
         }
+        // The upload the example names is the answer the daemon gave for it.
+        val up = Upload.of(examples("upload").first())
+        val ref = examples("upload_ref").first()
+        assertEquals(listOf(ref.getString("id"), ref.getString("mime"), ref.getString("file_name")), listOf(up.id, up.mime, up.fileName))
+        assertEquals(canon(examples("send")[1].getJSONArray("attachments")), canon(Wire.sendBody("", "send", "", listOf(up)).getJSONArray("attachments")))
         for (answer in examples("answer")) {
             // (`seen`: the card's text was read; `via`: where the answer was given.)
             val via = if (answer.has("via")) answer.getString("via") else null
@@ -96,6 +103,7 @@ class ContractTest {
         "usage" to ::usageLine,
         "usage_session" to { o -> usageLine(JSONObject().put("session", o)) },
         "me" to { o -> Me.of(o).toString() },
+        "upload" to { o -> Upload.of(o).toString() },
         "push_config" to { o -> PushConfig.of(o).toString() },
         "paired" to { o -> Paired.of(o).toString() },
         "revoked" to { o -> unpaired(o, null, null, "desk").toString() },
@@ -121,8 +129,8 @@ class ContractTest {
 
     @Test fun theAppReadsEveryFieldOfTheContractUnderItsName() {
         // Every shape the daemon sends has a reader here; `send` and `answer` are what the app sends.
-        // `send` and `answer` are what the app sends; `upload` and `upload_ref` wait for the app to attach files.
-        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload", "upload_ref"), reads.keys)
+        // `send`, `answer` and `upload_ref` (the uploads a send names) are what the app sends.
+        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload_ref"), reads.keys)
         for ((shape, read) in reads) for (path in fields.getJSONObject(shape).keys()) {
             // Without the field, the app must make something else of at least one example that has it.
             val read1 = examples(shape).any { ex -> has(ex, path) && read(copy(ex)) != read(without(ex, path)) }

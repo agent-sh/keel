@@ -1,8 +1,8 @@
 # Keel for Android
 
 The phone app for a Keel daemon you run: the session list with each session's
-state, a session's transcript and composer, approval and question cards, push
-for what needs you, and usage. It is a separate app from Hermes for Android and
+state, a session's transcript and composer, photos and files sent with a
+message, approval and question cards, push for what needs you, and usage. It is a separate app from Hermes for Android and
 can sit beside it on the same phone.
 
 | | |
@@ -60,6 +60,17 @@ line shows all of it.
   to read it first: it is 41 lines long."), and the card stays open. The app
   shows the sentence under the card, or as a toast when the answer came from a
   notification.
+
+## Photos and files
+
+The paperclip beside the message box offers Photos (the system photo picker,
+no storage permission) and Files (the system file picker). Each pick goes up
+at once (`POST /v1/upload`), so Send carries only the ids. A file over the
+daemon's limit (`/v1/me` says it) is refused before its bytes are read. A
+photo larger than the edge the daemon stores at, or in a type a model does not
+read (HEIC, AVIF), is written as JPEG at that edge first; a PNG stays PNG.
+Send waits for every pick to be stored. The sent message shows its photos as
+pictures (a tap opens one whole) and its files by name and size.
 
 ## Push
 
@@ -137,6 +148,7 @@ so it proves nothing about who built it.
 | `Wire.kt` | the daemon's shapes and the signed messages, as pure functions |
 | `Feed.kt` | what the app holds of the daemon and how sync answers and stream frames change it, as plain state |
 | `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
+| `Attach.kt` | what is picked for the next message: read, fitted, uploaded; the transcript's images |
 | `Approve.kt` | the biometric approval and the lock-screen approve activity |
 | `Push.kt` | notifications, Firebase push, the background check |
 | `ui/Theme.kt` | the design tokens (the workbench's colors and type) |

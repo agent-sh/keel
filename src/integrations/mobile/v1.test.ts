@@ -336,7 +336,7 @@ describe("sends", () => {
 describe("uploads", () => {
   test("a file over the limit is refused by its declared size, before its bytes are read, and the app is told the limit", async () => {
     const me = (await call("GET", "/v1/me")).body;
-    expect(me.uploads).toEqual({ max_bytes: 20 * 1024 * 1024, inline_images: ["image/png", "image/jpeg", "image/gif", "image/webp"] });
+    expect(me.uploads).toEqual({ max_bytes: 20 * 1024 * 1024, inline_images: ["image/png", "image/jpeg", "image/gif", "image/webp"], image_edge: 2000 });
     let read = false;
     const req = signedRaw("POST", "/v1/upload?name=big.bin&mime=application/octet-stream", PNG);
     req.headers.set("content-length", String(me.uploads.max_bytes + 1));

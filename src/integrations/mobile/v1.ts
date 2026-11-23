@@ -28,6 +28,7 @@ import {
 } from "./sig.ts";
 import type { Device, MobileStore, SendRecord } from "./store.ts";
 import { fitted } from "../../engine/image-fit.ts";
+import { STORE } from "../../providers/image-limits.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const err = (error: string, status: number) => json({ error }, status);
@@ -845,8 +846,9 @@ export function mobileApi(ctx: MobileCtx) {
           device: { id: dev.id, name: dev.name, created: dev.created }, name: host(), profile: "keel", model, agent_name: "Keel", user_name: "owner",
           models, profiles: ["default"], public_url: mobile.setting("public_url") ?? "",
           features: { radar: false, fleet: false, wake_wa: false, projects: false, rooms: false }, security: { signature_replay: REPLAY_VERSION },
-          // What /v1/upload takes, so the app can say no before it sends the bytes.
-          uploads: { max_bytes: ATTACHMENT_MAX, inline_images: INLINE_IMAGES },
+          // What /v1/upload takes, so the app can say no before it sends the bytes,
+          // and the long edge a photo is stored at, so it sends no more pixels than are kept.
+          uploads: { max_bytes: ATTACHMENT_MAX, inline_images: INLINE_IMAGES, image_edge: STORE.edge },
         });
       }),
     },

@@ -42,7 +42,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 import dev.avifenesh.keel.ApiError
+import dev.avifenesh.keel.Attach
+import dev.avifenesh.keel.Up
 import dev.avifenesh.keel.Earlier
 import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.MainActivity
@@ -70,6 +76,8 @@ fun SessionScreen(act: MainActivity, id: String) {
     val reloads by Hub.reloads.collectAsState()
     val scope = rememberCoroutineScope()
     var error by remember(id) { mutableStateOf("") }
+    // A photo of the transcript seen whole.
+    var viewing by remember(id) { mutableStateOf<dev.avifenesh.keel.Attachment?>(null) }
     var usage by remember(id) { mutableStateOf<String?>(null) }
     // Earlier messages: a read that failed says so and offers the way on. What is shown stays as it is.
     var earlierBusy by remember(id) { mutableStateOf(false) }
@@ -98,6 +106,7 @@ fun SessionScreen(act: MainActivity, id: String) {
     // Read as it arrives while open.
     LaunchedEffect(id, msgs.size) { if (msgs.isNotEmpty()) runCatching { dev.avifenesh.keel.Api.post("/v1/chats/$id/read") } }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
         Head(chat?.title ?: "Session", sub = {
             StateTag(state, when (state) { State.WORKING -> working[id]?.let { elapsed(it, now) }.orEmpty(); else -> "" })
@@ -121,7 +130,7 @@ fun SessionScreen(act: MainActivity, id: String) {
                     if (isWorking && !pending) StateTag(State.WORKING, working[id]?.let { elapsed(it, now) }.orEmpty())
                 }
             }
-            items(items.asReversed(), key = { it.id }) { m -> MsgView(act, m, cards[m.approvalId]) }
+            items(items.asReversed(), key = { it.id }) { m -> MsgView(act, m, cards[m.approvalId]) { viewing = it } }
             if (older[id] != null || earlierFail != null) item(key = "older") {
                 Column(Modifier.fillMaxWidth().padding(S.md), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(S.sm)) {
                     earlierFail?.let { (way, why) ->
@@ -139,10 +148,12 @@ fun SessionScreen(act: MainActivity, id: String) {
         }
         Composer(id, isWorking, chat?.archived == true) { error = it }
     }
+    viewing?.let { Viewer(it) { viewing = null } }
+    }
 }
 
 @Composable
-private fun MsgView(act: MainActivity, m: Msg, card: dev.avifenesh.keel.Card?) {
+private fun MsgView(act: MainActivity, m: Msg, card: dev.avifenesh.keel.Card?, onView: (dev.avifenesh.keel.Attachment) -> Unit) {
     val k = k()
     when {
         m.kind == "approval" -> Box(Modifier.padding(horizontal = S.md, vertical = 6.dp)) {
@@ -158,12 +169,13 @@ private fun MsgView(act: MainActivity, m: Msg, card: dev.avifenesh.keel.Card?) {
         m.mine -> Row(Modifier.fillMaxWidth().padding(start = 56.dp, end = S.md, top = 8.dp, bottom = 8.dp), horizontalArrangement = Arrangement.End) {
             Column(horizontalAlignment = Alignment.End) {
                 if (m.kind == "queued" || m.kind == "steer") Txt(if (m.kind == "queued") "QUEUED" else "STEER", T.label, k.work, Modifier.padding(bottom = 4.dp))
+                // What the prompt carried, above its words: its photos as pictures, its files by name.
+                SentFiles(m.attachments, onView)
                 val shape = RoundedCornerShape(topStart = S.rLg, topEnd = S.rLg, bottomStart = S.rLg, bottomEnd = 2.dp)
-                Box(Modifier.clip(shape).background(k.inkSoft).padding(horizontal = 14.dp, vertical = 10.dp).semantics { contentDescription = "mine-${m.content.take(40)}" }) {
+                // A message of files alone has no words to show.
+                if (m.content.isNotBlank() || m.attachments.isEmpty()) Box(Modifier.clip(shape).background(k.inkSoft).padding(horizontal = 14.dp, vertical = 10.dp).semantics { contentDescription = "mine-${m.content.take(40)}" }) {
                     Txt(m.content, T.body, k.fg)
                 }
-                // What the prompt carried, by name: a photo it was sent with, a file.
-                for (a in m.attachments) Txt(if (a.image) "Photo (${a.mime.substringAfter('/')})" else a.fileName.ifBlank { "File" }, T.meta, k.faint, Modifier.padding(top = 4.dp), maxLines = 1)
             }
         }
         else -> Column(Modifier.fillMaxWidth().padding(horizontal = S.lg, vertical = 8.dp).semantics { contentDescription = "agent-${m.content.take(40)}" }) {
@@ -200,6 +212,15 @@ private fun Trace(m: Msg) {
 private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (String) -> Unit) {
     val k = k()
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    // What is picked for this message; each file goes up as it is picked.
+    val picked = Attach.pending.collectAsState().value[id].orEmpty()
+    val files = picked.mapNotNull { if (it.state == Up.READY) it.upload else null }
+    val uploading = picked.count { it.busy }
+    val failed = picked.any { it.state == Up.FAILED }
+    var menu by rememberSaveable(id) { mutableStateOf(false) }
+    val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { if (it.isNotEmpty()) Attach.add(ctx, id, it) }
+    val docs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { if (it.isNotEmpty()) Attach.add(ctx, id, it) }
     var text by rememberSaveable(id) { mutableStateOf("") }
     var mode by rememberSaveable(id) { mutableStateOf("steer") }
     var busy by remember { mutableStateOf(false) }
@@ -207,6 +228,8 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
     // so sending them again after a lost answer makes no second prompt.
     var keptId by rememberSaveable(id) { mutableStateOf("") }
     var keptText by rememberSaveable(id) { mutableStateOf("") }
+    // The words and the files of the send in hand: the same send only while both are the same.
+    var keptKey by rememberSaveable(id) { mutableStateOf("") }
     // The newest message held when the send was first made (the daemon's clock).
     var keptAfter by rememberSaveable(id) { mutableStateOf(0.0) }
     val held = Hub.msgs.collectAsState().value[id].orEmpty()
@@ -214,17 +237,29 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
     // leave the box, and the same words sent again are a new prompt, not a retry of this one.
     val arrived = keptId.isNotEmpty() && !busy && sendArrived(held, keptText, keptAfter)
     LaunchedEffect(arrived) {
-        if (arrived) { if (text.trim() == keptText) text = ""; keptId = ""; keptText = ""; onError("") }
+        if (arrived) {
+            if (text.trim() == keptText) text = ""
+            // The files of that send leave the row; any picked since stay.
+            Attach.sent(id, keptKey)
+            keptId = ""; keptText = ""; keptKey = ""; onError("")
+        }
     }
+    // Send waits for every picked file to be stored; one that failed is removed or picked again first.
+    val ready = (text.isNotBlank() || files.isNotEmpty()) && uploading == 0 && !failed && !busy
     fun send() {
-        val t = text.trim(); if (t.isEmpty()) return
-        val cid = Wire.sendId(keptId, keptText, t)
+        val t = text.trim(); if (!ready) return
+        val sending = files
+        val key = Wire.sendKey(t, sending)
+        val cid = Wire.sendId(keptId, keptKey, key)
         if (cid != keptId) keptAfter = newestTs(held)
-        keptId = cid; keptText = t
+        keptId = cid; keptText = t; keptKey = key
         busy = true
         scope.launch {
-            runCatching { Hub.send(id, t, if (working) mode else "send", cid) }
-                .onSuccess { text = ""; keptId = ""; keptText = ""; onError("") }.onFailure { onError(it.message ?: "Not sent") }
+            runCatching { Hub.send(id, t, if (working) mode else "send", cid, sending) }
+                .onSuccess {
+                    text = ""; keptId = ""; keptText = ""; keptKey = ""; onError("")
+                    Attach.sent(id, sending)
+                }.onFailure { onError(it.message ?: "Not sent") }
             busy = false
         }
     }
@@ -232,28 +267,41 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
     Column(Modifier.fillMaxWidth().background(k.panel).navigationBarsPadding()) {
         Rule()
         if (archived) { Txt("This session is archived. Unarchive it on the computer to write here.", T.small, k.muted, Modifier.padding(S.lg)); return }
+        PickedRow(id, picked)
+        if (menu) Row(Modifier.padding(start = S.md, end = S.md, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(S.sm)) {
+            Btn("Photos", { menu = false; photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, Tone.LINE, icon = Ic.Image, compact = true, tag = "attach-photos")
+            Btn("Files", { menu = false; docs.launch(arrayOf("*/*")) }, Tone.LINE, icon = Ic.File, compact = true, tag = "attach-files")
+        }
         if (working) Row(Modifier.padding(start = S.md, end = S.md, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Segmented(listOf("steer" to "Steer", "queue" to "Queue"), mode) { mode = it }
             Spacer(Modifier.width(S.md))
             Txt(if (mode == "steer") "Joins the running turn" else "Runs after this turn", T.meta, k.faint, maxLines = 1)
         }
         Row(Modifier.fillMaxWidth().padding(S.md), verticalAlignment = Alignment.Bottom) {
+            Box(Modifier.padding(bottom = 3.dp)) { IconBtn(Ic.Paperclip, "attach", { menu = !menu }, tint = if (menu) k.fg else k.muted) }
+            Spacer(Modifier.width(4.dp))
             val shape = RoundedCornerShape(S.rLg)
             Box(Modifier.weight(1f).clip(shape).background(k.raised).border(1.dp, k.line, shape).padding(horizontal = 14.dp, vertical = 11.dp)) {
-                if (text.isEmpty()) Txt(if (working) (if (mode == "steer") "Steer the running turn" else "Queue the next message") else "Message Keel", T.body, k.faint, maxLines = 1)
+                if (text.isEmpty()) Txt(when {
+                    uploading > 0 -> "Uploading ${if (uploading == 1) "a file" else "$uploading files"}"
+                    working -> if (mode == "steer") "Steer the running turn" else "Queue the next message"
+                    picked.size == 1 -> "Add words, or send it as it is"
+                    picked.isNotEmpty() -> "Add words, or send them as they are"
+                    else -> "Message Keel"
+                }, T.body, k.faint, maxLines = 1)
                 BasicTextField(text, { text = it }, Modifier.fillMaxWidth().semantics { contentDescription = "composer" }, textStyle = T.body.copy(color = k.fg),
                     maxLines = 6, cursorBrush = SolidColor(k.fg))
             }
             Spacer(Modifier.width(S.sm))
-            val stopNow = working && text.isBlank()
+            val stopNow = working && text.isBlank() && picked.isEmpty()
             Box(
-                Modifier.size(46.dp).clip(RoundedCornerShape(S.rPill)).background(if (stopNow) k.dangerSoft else if (text.isBlank() || busy) k.inkSoft else k.ink)
-                    .press({ if (stopNow) stop() else send() }, enabled = stopNow || (text.isNotBlank() && !busy))
+                Modifier.size(46.dp).clip(RoundedCornerShape(S.rPill)).background(if (stopNow) k.dangerSoft else if (!ready) k.inkSoft else k.ink)
+                    .press({ if (stopNow) stop() else send() }, enabled = stopNow || ready)
                     .semantics { contentDescription = if (stopNow) "stop" else "send" },
                 contentAlignment = Alignment.Center,
             ) {
                 if (stopNow) Box(Modifier.size(14.dp).clip(RoundedCornerShape(3.dp)).background(k.danger))
-                else KIcon(Ic.ArrowUp, if (text.isBlank() || busy) k.faint else k.inkFg, 22.dp)
+                else KIcon(Ic.ArrowUp, if (!ready) k.faint else k.inkFg, 22.dp)
             }
         }
     }

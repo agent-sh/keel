@@ -107,7 +107,7 @@ class MainActivity : FragmentActivity() {
     fun unpaired(how: Unpaired) {
         Ui.unpaired.value = how
         Api.generation++
-        Hub.reset()
+        Hub.reset(); Attach.reset()
         Push.unschedule(this)
         Prefs.clear(); Keys.reset()
         Ui.paired.value = false

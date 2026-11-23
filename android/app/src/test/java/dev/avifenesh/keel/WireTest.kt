@@ -22,6 +22,55 @@ class WireTest {
         assertEquals(listOf("ship it", "steer", "id-1"), listOf(body.getString("text"), body.getString("mode"), body.getString("client_id")))
     }
 
+    @Test fun aSendWithFilesIsTheSameSendOnlyWithTheSameFiles() {
+        val photo = Upload("u1", "image", "image/png", "photo.png", 70)
+        val notes = Upload("u2", "file", "text/plain", "notes.txt", 12)
+        // Words alone keep the key they had; files make it another send.
+        assertEquals("look", Wire.sendKey("look", emptyList()))
+        val one = Wire.sendKey("look", listOf(photo))
+        assertEquals(setOf("u1"), Wire.keyFiles(one))
+        assertEquals(emptySet<String>(), Wire.keyFiles("look"))
+        var n = 0
+        val fresh = { "id-${++n}" }
+        val first = Wire.sendId("", "", one, fresh)
+        assertEquals(first, Wire.sendId(first, one, Wire.sendKey("look", listOf(photo)), fresh))
+        assertEquals("id-2", Wire.sendId(first, one, Wire.sendKey("look", listOf(photo, notes)), fresh))
+        // Files alone, with no words, are a send of their own.
+        val body = Wire.sendBody("", "send", "c", listOf(photo, notes))
+        assertEquals(listOf("u1", "u2"), (0 until 2).map { body.getJSONArray("attachments").getJSONObject(it).getString("id") })
+        assertEquals(false, Wire.sendBody("hi", "send", "c").has("attachments"))
+    }
+
+    @Test fun aPhotoGoesUpAtTheEdgeTheDaemonStoresAndInATypeTheModelReads() {
+        val inline = Me.DEFAULT_INLINE
+        // Within the edge and readable: as picked.
+        assertNull(Wire.photoPlan("image/jpeg", 1600, 1200, 2000, inline))
+        // A camera photo: scaled to the edge on its long side, still JPEG.
+        assertEquals(Wire.Photo(2000, 1500, "image/jpeg"), Wire.photoPlan("image/jpeg", 4032, 3024, 2000, inline))
+        assertEquals(Wire.Photo(1500, 2000, "image/jpeg"), Wire.photoPlan("image/jpeg", 3024, 4032, 2000, inline))
+        // A screenshot stays PNG.
+        assertEquals(Wire.Photo(923, 2000, "image/png"), Wire.photoPlan("image/png", 1080, 2340, 2000, inline))
+        // A HEIC photo, which no model reads, is written as JPEG at any size.
+        assertEquals(Wire.Photo(800, 600, "image/jpeg"), Wire.photoPlan("image/heic", 800, 600, 2000, inline))
+        // A daemon that names no edge: only the type is changed.
+        assertNull(Wire.photoPlan("image/jpeg", 8000, 6000, null, inline))
+        assertNull(Wire.photoPlan("application/pdf", 10, 10, 2000, inline))
+        assertEquals("IMG_1.jpg", Wire.renamed("IMG_1.HEIC", "image/jpeg"))
+        assertEquals("photo.jpg", Wire.renamed("", "image/jpeg"))
+    }
+
+    @Test fun aFileTooLargeIsRefusedBeforeItGoesUp() {
+        val max = 20L * 1024 * 1024
+        assertEquals("", Wire.tooLarge("a.zip", max, max))
+        assertEquals("a.zip is 25 MB; the computer takes at most 20 MB a file.", Wire.tooLarge("a.zip", 25L * 1024 * 1024, max))
+        // A size or a limit nobody knows: the daemon judges.
+        assertEquals("", Wire.tooLarge("a.zip", null, max))
+        assertEquals("", Wire.tooLarge("a.zip", max * 2, null))
+        // The name and type go in the query as encodeURIComponent writes them (the signed bytes are the sent ones).
+        assertEquals("/v1/upload?name=IMG%201%20(2).jpg&mime=image%2Fjpeg", Wire.uploadPath("IMG 1 (2).jpg", "image/jpeg"))
+        assertEquals("/v1/upload?name=file&mime=application%2Foctet-stream", Wire.uploadPath("", ""))
+    }
+
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))

@@ -50,9 +50,65 @@ object Wire {
     fun sendId(keptId: String, keptText: String, text: String, fresh: () -> String = { java.util.UUID.randomUUID().toString() }): String =
         if (keptId.isNotEmpty() && keptText == text) keptId else fresh()
 
-    /** A prompt as the daemon takes it (POST /v1/chats/:id/messages). mode: send, steer or queue. */
-    fun sendBody(text: String, mode: String, clientId: String): JSONObject =
-        JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
+    /**
+     * What makes two sends the same send: the words and the uploads they name, in order (the daemon
+     * takes a send id again only for the same words and files). Words alone are their own key.
+     */
+    fun sendKey(text: String, files: List<Upload>): String = if (files.isEmpty()) text else text + "\u0000" + files.joinToString(",") { it.id }
+    /** The upload ids a send key names. */
+    fun keyFiles(key: String): Set<String> = key.substringAfter('\u0000', "").split(',').filter { it.isNotEmpty() }.toSet()
+
+    /** A prompt as the daemon takes it (POST /v1/chats/:id/messages). mode: send, steer or queue. files: the uploads it carries. */
+    fun sendBody(text: String, mode: String, clientId: String, files: List<Upload> = emptyList()): JSONObject =
+        JSONObject().put("text", text).put("mode", mode).put("client_id", clientId).apply {
+            if (files.isNotEmpty()) put("attachments", JSONArray().apply {
+                for (f in files) put(JSONObject().put("id", f.id).put("mime", f.mime).put("file_name", f.fileName))
+            })
+        }
+
+    /** Where a file goes up (POST, its bytes as the body): its name and the type the phone gives it. */
+    fun uploadPath(name: String, mime: String): String = "/v1/upload?name=${enc(name.ifBlank { "file" })}&mime=${enc(mime.ifBlank { "application/octet-stream" })}"
+
+    /** A query value as encodeURIComponent writes it: the bytes the request is signed over are the bytes sent. */
+    fun enc(v: String): String = java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20").replace("%7E", "~")
+        .replace("%21", "!").replace("%27", "'").replace("%28", "(").replace("%29", ")").replace("%2A", "*")
+
+    /**
+     * Why a file is not sent, before its bytes are read: it is larger than the daemon takes. Empty
+     * when it may go up (an unknown size or limit is the daemon's to judge).
+     */
+    fun tooLarge(name: String, size: Long?, max: Long?): String =
+        if (size == null || max == null || max <= 0 || size <= max) "" else "$name is ${mb(size)}; the computer takes at most ${mb(max)} a file."
+
+    fun mb(b: Long): String = when {
+        b >= 1024 * 1024 -> "%.1f MB".format(b / 1048576.0).replace(".0 MB", " MB")
+        b >= 1024 -> "${b / 1024} KB"
+        else -> "$b bytes"
+    }
+
+    /**
+     * How a picked photo goes up. A photo larger than the edge the daemon stores at is scaled to it
+     * (the daemon would scale it anyway: the pixels past it are bytes on the phone's network for
+     * nothing), and one in a type the model does not read (HEIC, AVIF) is written as JPEG, which
+     * every model reads. PNG stays PNG, so a screenshot's text stays sharp. Null: it goes as it is.
+     */
+    data class Photo(val width: Int, val height: Int, val mime: String)
+    fun photoPlan(mime: String, width: Int, height: Int, edge: Int?, inline: List<String>): Photo? {
+        if (!mime.startsWith("image/") || width <= 0 || height <= 0) return null
+        val readable = mime in inline
+        val long = maxOf(width, height)
+        val scale = if (edge != null && edge > 0 && long > edge) edge.toDouble() / long else 1.0
+        if (readable && scale >= 1.0) return null
+        val out = if (mime == "image/png") "image/png" else "image/jpeg"
+        return Photo(maxOf(1, Math.round(width * scale).toInt()), maxOf(1, Math.round(height * scale).toInt()), out)
+    }
+
+    /** A file's name with the extension its new type has (a HEIC photo written as JPEG is IMG_1.jpg). */
+    fun renamed(name: String, mime: String): String {
+        val ext = when (mime) { "image/jpeg" -> "jpg"; "image/png" -> "png"; else -> return name }
+        val base = name.substringBeforeLast('.', name).ifBlank { "photo" }
+        return "$base.$ext"
+    }
 
     /**
      * A card's answer as the daemon takes it (POST /v1/approvals/:id). answers: by question id, one label or a list of them.
@@ -339,10 +395,34 @@ data class Paired(val token: String, val deviceId: String, val server: String) {
     }
 }
 
-/** GET /v1/me: what Settings says of the machine and of this phone. */
-data class Me(val model: String, val device: String) {
+/**
+ * GET /v1/me: what Settings says of the machine and of this phone, and what an upload may be:
+ * at most maxBytes, a photo at most imageEdge on its long edge, the image types a model reads.
+ * A daemon from before uploads says none of it: null, and the daemon judges each file.
+ */
+data class Me(val model: String, val device: String, val maxBytes: Long? = null, val imageEdge: Int? = null, val inlineImages: List<String>? = null) {
+    /** The image types a model reads: the daemon's list, else the ones every model reads. */
+    val readable get() = inlineImages ?: DEFAULT_INLINE
     companion object {
-        fun of(o: JSONObject) = Me(o.str("model"), o.optJSONObject("device")?.str("name").orEmpty())
+        /** The image types every model reads, for a daemon that does not list them. */
+        val DEFAULT_INLINE = listOf("image/png", "image/jpeg", "image/gif", "image/webp")
+        fun of(o: JSONObject): Me {
+            val u = o.optJSONObject("uploads")
+            return Me(
+                o.str("model"), o.optJSONObject("device")?.str("name").orEmpty(),
+                maxBytes = u?.takeIf { !it.isNull("max_bytes") }?.optLong("max_bytes"),
+                imageEdge = u?.takeIf { !it.isNull("image_edge") }?.optInt("image_edge"),
+                inlineImages = u?.optJSONArray("inline_images")?.let(::strings)?.takeIf { it.isNotEmpty() },
+            )
+        }
+    }
+}
+
+/** POST /v1/upload: the file as the daemon stored it. A prompt names it by `id`. */
+data class Upload(val id: String, val kind: String, val mime: String, val fileName: String, val size: Long) {
+    val image get() = kind == "image"
+    companion object {
+        fun of(o: JSONObject) = Upload(o.str("id"), o.str("kind", "file"), o.str("mime"), o.str("file_name"), o.optLong("size", 0))
     }
 }
 

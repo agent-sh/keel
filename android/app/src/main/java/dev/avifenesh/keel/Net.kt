@@ -164,6 +164,8 @@ object Api {
             .followRedirects(false).followSslRedirects(false).addInterceptor(signer).build()
     }
     val sse: OkHttpClient by lazy { http.newBuilder().readTimeout(45, TimeUnit.SECONDS).build() }
+    // An upload as large as the daemon takes (20 MB) needs under three minutes at 1 Mbit/s: the write gets five, not the minute a request of words gets.
+    private val slow: OkHttpClient by lazy { http.newBuilder().writeTimeout(5, TimeUnit.MINUTES).readTimeout(2, TimeUnit.MINUTES).build() }
     private val plain: OkHttpClient by lazy {
         OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
     }
@@ -189,6 +191,19 @@ object Api {
         exec(request(p).post(body.toString().toRequestBody(JSON)).apply { headers.forEach { (k, v) -> header(k, v) } }.build())
     suspend fun patch(p: String, body: JSONObject): JSONObject = exec(request(p).patch(body.toString().toRequestBody(JSON)).build())
     suspend fun delete(p: String): JSONObject = exec(request(p).delete().build())
+    /** A file's bytes as the body (POST /v1/upload). It may take longer than a request of words: the write waits for the network. */
+    suspend fun postBytes(p: String, bytes: ByteArray, mime: String): JSONObject =
+        exec(request(p).post(bytes.toRequestBody(mime.ifBlank { "application/octet-stream" }.toMediaType())).build(), slow)
+    /** The bytes of a stored file (GET /v1/media/<id>). */
+    suspend fun bytes(p: String): ByteArray {
+        val gen = generation
+        val b = http.newCall(request(p).build()).awaitBody { resp ->
+            if (!resp.isSuccessful) throw ApiError(resp.code, errorOf(resp.body.string()).ifBlank { "HTTP ${resp.code}" })
+            resp.body.bytes()
+        }
+        if (gen != generation) throw IOException("The pairing changed")
+        return b
+    }
 
     /** Pairs with a link's one-time code. Failure leaves the current pairing as it was. */
     suspend fun pair(link: Wire.PairLink): Unit = withContext(Dispatchers.IO) {

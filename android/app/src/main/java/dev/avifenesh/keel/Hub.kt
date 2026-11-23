@@ -141,9 +141,9 @@ object Hub {
         feed.olderPage(chat, Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150&before=${Uri.encode(before)}"), asked)
     }
 
-    /** mode: send, steer or queue. clientId names the send: a retry under it stores no second prompt. */
-    suspend fun send(chat: String, text: String, mode: String, clientId: String) {
-        feed.sent(Api.post("/v1/chats/${Uri.encode(chat)}/messages", Wire.sendBody(text, mode, clientId)))
+    /** mode: send, steer or queue. clientId names the send: a retry under it stores no second prompt. files: uploads it carries. */
+    suspend fun send(chat: String, text: String, mode: String, clientId: String, files: List<Upload> = emptyList()) {
+        feed.sent(Api.post("/v1/chats/${Uri.encode(chat)}/messages", Wire.sendBody(text, mode, clientId, files)))
     }
 
     suspend fun stopTurn(chat: String) { Api.post("/v1/chats/${Uri.encode(chat)}/stop") }
