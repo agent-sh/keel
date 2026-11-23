@@ -376,9 +376,13 @@ export class ScriptedProvider implements Provider {
         const next = calls[done];
         if (next) {
           // `after_ms` on a call: the model takes that long before it makes it, as a real one does (at most 10 s).
+          // `think` on a call: thinking streamed first, as a thinking model's reply has it (kept as its block).
+          const thought = typeof next.think === "string" ? next.think : "";
+          if (thought) for (const part of thought.match(/.{1,24}/gs) ?? []) { await Bun.sleep(pace); onDelta({ kind: "thinking", index: 0, text: part }); }
           if (typeof next.after_ms === "number") await Bun.sleep(Math.max(0, Math.min(next.after_ms, 10_000)));
           // `say` on a call: the words of the reply that makes it, in place of "Step N of M."
-          return reply(typeof next.say === "string" ? next.say : `Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
+          const said = await reply(typeof next.say === "string" ? next.say : `Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
+          return thought ? { ...said, blocks: [{ type: "thinking", thinking: thought, signature: "scripted" } as any, ...said.blocks] } : said;
         }
         const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
         // `script:then-find <word> ...` on a later line: an input that comes after the calls (a wait's
@@ -689,7 +693,7 @@ function numberWords(n: number): string {
 }
 
 // The JSON list that follows `script:calls` (or `word`) in a text.
-function callsAfter(text: string, word = "script:calls"): { name: unknown; input?: unknown; after_ms?: unknown; say?: unknown }[] {
+function callsAfter(text: string, word = "script:calls"): { name: unknown; input?: unknown; after_ms?: unknown; say?: unknown; think?: unknown }[] {
   const i = text.indexOf(word);
   const start = text.indexOf("[", i);
   if (i < 0 || start < 0) return [];

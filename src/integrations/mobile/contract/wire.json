@@ -13,7 +13,7 @@
   "A permission card that waits carries what the read-first rule needs (src/safety/card.ts, the one form every client gets): `text` is the whole text to judge with each hidden character written as its code point, `notes` say why it is asked, where it runs, what in the text can mislead and whether only its start is here, `rtl` says it holds letters written right to left, and `hold` says why Allow needs the text shown whole first (long, cut, marked, risk, where). An empty `hold` means one line shows all of it. The app sends `seen: \"whole\"` with an allow once all of `text` was on its screen. An allow of a held card without `seen` is answered 409 with the sentence to show in `error`, and the card stays open: an app from before these fields shows that sentence. `grants` are the rules a standing answer would store: the session action's label names them, and the app's button does (\"Allow echo * for this session\"). The action is offered only where there is a rule. `line` is what a notification says of the request (the tool, where it runs when not here, the text), and `glance` says that a collapsed notification shows all of that line: only then may a notification carry Allow once. A push says the same: its `body` is that line, its `opts` hold `once` only for such a request, and `hold` gives the reasons a request is held (comma separated; empty when none). An answer given from a notification says `via: \"notification\"`: it never counts as having shown the text, it allows once only what `glance` covers, and it gives no standing answer (409 with the sentence). A closed card says where it was answered in `from`. An answer to a card that was already answered is a 409 whose `error` says how it ended, who answered and how long ago (\"this approval is already allowed (once) from the page, 3 s ago\"), with the closed card in `approval`.",
   "A plan the model presents in plan mode is a card of kind `plan`: `command` is its title, `text` the whole plan, `hold` [\"plan\"] (approved only once all of it was on the screen, with `seen: \"whole\"` and the approval key). Its actions: `session` approves it with the work going on in auto edits, `once` in ask (each change asks; what a phone with no screen lock may start), `deny` sends it back to planning, with `feedback` in the answer when the owner wrote what to change. A closed plan card says `approved` with the choice it was approved with, or `denied`, or `expired` when the turn ended under it.",
   "changes (GET /v1/chats/:id/changes) is what a session changed in its folder, read-only: `turns` newest first, each with its files (file_change: git's status letter, lines added and removed, `outside` for a write made outside the session's turns), and `session`, the files changed since its first turn. `n` is the turn's place among the session's turns, as the page numbers it; `turn` is what /changes/diff takes. file_diff (GET /v1/chats/:id/changes/diff?path=<path>[&turn=<turn>]) is one file's unified diff, of one turn or since the first; `truncated` says it was cut where the page cuts a diff. `unavailable` says why there is nothing to show (the session's files are on another machine, no checkpoints are kept).",
-  "A session an agent works in has its starter's id in `parent_id`; an agent's agents have that agent's session there, so the rows make the tree. `agents` counts the agents at work below a session, at any depth; `state_word` is the state in the workbench's own words; `created` orders an agent among its siblings.",
+  "A session an agent works in has its starter's id in `parent_id`; an agent's agents have that agent's session there, so the rows make the tree. `agents` counts the agents at work below a session, at any depth; `state_word` is the state in the workbench's own words; `created` orders an agent among its siblings. A live agent's row says what it is doing now, as its line on the workbench does (src/automation/now.ts): `now` is the newest sentence of its thinking or the call it runs, `now_steps` its model steps, `now_since` when its task began (seconds), `now_usd` what it spent, `now_need` 1 when it waits on the owner. The daemon sends a row again with a new line at most every 15 s an agent.",
   "start (GET /v1/start) is what a new session can start with: the default `model` and the `models` to pick from, the `folders` this machine's sessions worked in (newest first, the daemon's own folder marked `home`), and the `machines` of the fleet that take a session (`ready` while it answers; `root`, the folder granted there). new_chat is the body of POST /v1/chats: each field may be left out (the default model, the daemon's folder, this machine); `workspace` is an absolute folder here, or one inside `root` on another machine; `text` is the first message, sent at once.",
   "away (GET /v1/away) is the digest of the owner's last absence, the page's own, in words: `span` (when), `brief` (one line), `totals`, what the daemon went through (`daemon`), and the sessions in which something happened, the one that failed first, each with its facts and the part that went wrong (`bad`). Null when the owner was not away or nothing happened. DELETE /v1/away says it was seen: it is shown no more, here or on the page. POST /v1/presence with `idle_ms` says the owner touched the app that long ago: the phone in use ends an absence, as a page in use does.",
   "A push of kind `live` is the lasting notification's news: `w` sessions working, `q` cards waiting on the owner, `title` and `body` to show as they are, `since` (epoch milliseconds) when the longest turn started. The push service keeps only the newest (one collapse key). `w` and `q` of 0 take the notification down. The background check reads the same status from `live` in GET /v1/pulse, with the same fields.",
@@ -92,7 +92,12 @@
    "created": "number?",
    "agents": "number?",
    "state_word": "string?",
-   "h": "string?"
+   "h": "string?",
+   "now": "string?",
+   "now_steps": "number?",
+   "now_since": "number?",
+   "now_usd": "number?",
+   "now_need": "number?"
   },
   "message": {
    "id": "string",
@@ -473,6 +478,28 @@
     "preview_id": null,
     "state_word": "Working: waiting for 1 agent",
     "h": "4e5f6a7b"
+   },
+   {
+    "id": "s-3",
+    "title": "Counter",
+    "kind": "chat",
+    "created": 1795190002.0,
+    "updated": 1795195002.0,
+    "unread": 0,
+    "pinned": 0,
+    "archived": 0,
+    "seq": 3,
+    "parent_id": "s-2",
+    "status": "needs_you",
+    "preview": "",
+    "last_role": "",
+    "preview_id": null,
+    "state_word": "Needs you",
+    "now": "Asking you",
+    "now_steps": 12,
+    "now_since": 1795194762.0,
+    "now_usd": 0.3121,
+    "now_need": 1
    }
   ],
   "message": [

@@ -1,14 +1,15 @@
 import { Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo } from "react";
-import { auto, autoState, isLive, type AgentRecord, type Alert } from "../../lib/automation.ts";
+import { auto, autoState, isLive, useAuto, type AgentRecord, type Alert } from "../../lib/automation.ts";
 import { descendants } from "../../../../src/core/agent-tree.ts";
 import { reportError } from "../../lib/store.ts";
-import { ALERT_WORD, agentState, agentWhy, stateWords, type AgentLike, type Said } from "../../../../src/core/state-words.ts";
+import { ALERT_WORD, agentState, agentWhy, STATE_WORD, stateWords, type AgentLike, type Said } from "../../../../src/core/state-words.ts";
 import { cn } from "../../lib/utils.ts";
 import { useToldState, type SessionState, type Watch } from "../../lib/watch.ts";
 import { confirmAction } from "../Confirm.tsx";
-import { Mark, span } from "../Mark.tsx";
+import { elapsed, Mark, span, useNow } from "../Mark.tsx";
+import { beatOf } from "../../lib/clock.ts";
 
 export { agentWhy };
 
@@ -74,6 +75,29 @@ export function AlertIcon({ kind, read, declined }: { kind: Alert["kind"]; read?
   // (A turn the model declined is filed as a finish until it has a kind of its own: it is drawn as declined.)
   const w: Watch = declined ? "declined" : (ALERT_STATE as Record<string, Watch>)[kind] ?? "idle";
   return <span className="k-alert-icon" data-watch={w} data-read={read || undefined} data-testid="alert-icon"><Mark w={w} /></span>;
+}
+
+// What a live agent is doing now (src/automation/now.ts): the newest sentence of its thinking or the
+// call it runs, then its steps, how long its task has run and what it spent. The daemon tells a
+// line at most every 15 s; the time counts here, on the page's one clock.
+// A spend that leaves out calls with no listed price (a plan, a local model) says so.
+export function nowMeta(l: { steps: number; since: number; usd: number; unpriced?: number }, now: number) {
+  const usd = l.usd >= 0.005 ? `$${l.usd.toFixed(2)}${l.unpriced ? " and unpriced calls" : ""}` : l.unpriced ? "no price listed" : "";
+  return [`${l.steps} step${l.steps === 1 ? "" : "s"}`, elapsed(now - l.since), ...(usd ? [usd] : [])].join(" · ");
+}
+export function AgentNow({ a, className }: { a: AgentRecord; className?: string }) {
+  const line = useAuto((s) => s.now[a.id]);
+  const shown = !!line && isLive(a);
+  const now = useNow(shown, beatOf(line?.since));
+  if (!shown) return null;
+  return (
+    <span className={cn("k-agent-now", className)} data-testid="agent-now" data-from={line.from} data-need={line.need || undefined}>
+      {/* (Its state word beside it already says it needs the owner: here it is said to a screen reader, and the line takes the state's ink.) */}
+      {line.need && <span className="sr-only" data-testid="agent-now-need">{STATE_WORD.need}:</span>}
+      {line.text && <span className="k-agent-now-text" data-testid="agent-now-text" title={line.text}>{line.text}</span>}
+      <span className="k-agent-now-meta" data-testid="agent-now-meta">{nowMeta(line, now)}</span>
+    </span>
+  );
 }
 
 export function IconButton({ title, onClick, children, danger, testid }: { title: string; onClick: () => void; children: ReactNode; danger?: boolean; testid?: string }) {

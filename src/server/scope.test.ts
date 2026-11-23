@@ -1,7 +1,7 @@
 // Where each frame goes, and when a session's row is told to the lists.
 import { expect, test } from "bun:test";
 import type { Frame, Session } from "../core/types.ts";
-import { ALL, EVERY, LAZY_MS, named, route, rowChange, RowGate, rowPrint, ROWS } from "./scope.ts";
+import { ALL, EVERY, feedNames, LAZY_MS, named, route, rowChange, RowGate, rowPrint, ROWS } from "./scope.ts";
 
 const row = (over: Partial<Session> = {}): Session => ({
   id: "s1", title: "One", model: "p:m", workspace: "/w", created: 1, updated: 10, phase: "idle", archived: false,
@@ -90,4 +90,11 @@ test("names a client sends are taken as ids only", () => {
   expect(named(["a-1", "m1--s2", 5, "", "has space", "x".repeat(201), null])).toEqual(["a-1", "m1--s2"]);
   expect(named("a")).toEqual([]);
   expect(named(Array.from({ length: 600 }, (_, i) => `s${i}`))).toHaveLength(512);
+});
+
+test("what a tree's agents are doing goes to the views of that tree only", () => {
+  const f = { t: "feature", name: "agents_now", session_id: "root", data: { root: "root", lines: [{ parent_id: "root" }, { parent_id: "a1" }, { parent_id: "root" }] } } as unknown as Frame;
+  expect(route(f).topics.sort()).toEqual(["f:tree:root", EVERY, "s:a1", "s:root"].sort());
+  expect(route(f).topics).not.toContain(ALL);
+  expect(feedNames(["activity", "tree:root", "tree:", "tree:has space", "nope", 3])).toEqual(["activity", "tree:root"]);
 });

@@ -32,6 +32,7 @@ import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
 import { agentMemory, memoryOff, SCOPES, type MemoryScope } from "./agent-memory.ts";
 import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
+import type { NowLine } from "./now-line.ts";
 import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
 
 // Subagents: a child session with its own context that works on one task and
@@ -217,7 +218,8 @@ export const get = (id: string) => {
 // What the page's list and a frame carry of an agent: all but its report, which can be long
 // (a coordinator's day of agents was 88% reports) and is shown only when its card is opened:
 // read then with report(). `report_chars`: how long it is (0 for none yet).
-export type AgentBrief = Omit<AgentRecord, "result"> & { report_chars: number };
+// `now`: a live agent's newest "now" line, when the read gives one (src/automation/now.ts).
+export type AgentBrief = Omit<AgentRecord, "result"> & { report_chars: number; now?: NowLine | null };
 export const brief = ({ result, ...rest }: AgentRecord): AgentBrief => ({ ...rest, report_chars: result?.length ?? 0 });
 export const report = (id: string) => D().store.db.query<{ result: string | null }, [string]>("SELECT result FROM agents WHERE id = ?").get(id)?.result ?? null;
 export const byChild = (sessionId: string) => {

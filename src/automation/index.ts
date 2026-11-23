@@ -34,6 +34,7 @@ import { automationTools, extendTaskStop, messageHooks, waitAckHooks } from "./t
 import { verifierSession } from "./verify.ts";
 import * as waits from "./waits.ts";
 import * as silent from "./silent.ts";
+import * as now from "./now.ts";
 import { liveAgents } from "./state.ts";
 import { joinPulse } from "../core/pulse.ts";
 import { runMode } from "../core/runmode.ts";
@@ -85,6 +86,7 @@ function init(deps: Deps) {
   silent.migrate();
   channels.migrate();
   failures.init();
+  now.init();
   outage.bind();
   // A called-off restart checks the goal turns its drain put off.
   afterCallOff.splice(0, afterCallOff.length, () => goals.recheckOwed());
@@ -397,7 +399,8 @@ export const automationRoutes: RouteModule = (deps) => {
         ) SELECT id FROM agents WHERE ${countedSql("agents", "?1")} OR session_id IN (SELECT sid FROM up) ORDER BY created`).all(countedSince());
         return json({
           // Without their reports: a card that opens reads its agent's (/api/sessions/:id/agents/:agent_id/report).
-          agents: agentRows.map((r) => agents.get(r.id)).filter((a) => !!a).map(agents.brief),
+          // A live agent's "now" line with it (src/automation/now.ts); frames bring the next ones.
+          agents: agentRows.map((r) => agents.get(r.id)).filter((a) => !!a).map((a) => ({ ...agents.brief(a), ...(agents.isEnded(a) ? {} : { now: now.lineOf(a.session_id) }) })),
           waits: waits.list(undefined, 30),
           loops: loops.list(),
           unread: alerts.unreadCounts(),
@@ -410,6 +413,16 @@ export const automationRoutes: RouteModule = (deps) => {
       },
     },
 
+    // What the live agents below a session are doing now (one line each), or, with no session,
+    // what making the lines has cost since the daemon started (for the measure of src/automation/now.ts).
+    "/api/automation/now": {
+      GET: (req: Request) => {
+        const sid = new URL(req.url).searchParams.get("session");
+        if (!sid) return json({ stats: now.nowStats });
+        if (!session(sid)) return bad("no such session", 404);
+        return json({ lines: now.linesOf(sid), text: now.statusText(sid) });
+      },
+    },
     // --- subagents
     "/api/agents": {
       GET: (req: Request) => json({ agents: agents.definitions(new URL(req.url).searchParams.get("cwd") || deps.workspace) }),
@@ -422,7 +435,7 @@ export const automationRoutes: RouteModule = (deps) => {
         // depth under this session; `limit`: the live agents its whole tree may have (its root's);
         // `slots`: how many of the tree's agents work (each holds a slot), wait on a wait of their own (none), and wait in line for one.
         const rows = agents.tree(s.id);
-        return json({ agents: agents.list(s.id), tree: rows.map((r) => ({ ...r.agent, depth: r.depth, below: r.below })), limit: agents.limitOf(s.id), root: agents.rootSession(s.id), depth: agents.depthIn(s.id), max_depth: maxDepth(),
+        return json({ agents: agents.list(s.id), tree: rows.map((r) => ({ ...r.agent, depth: r.depth, below: r.below })), now: now.linesOf(s.id), limit: agents.limitOf(s.id), root: agents.rootSession(s.id), depth: agents.depthIn(s.id), max_depth: maxDepth(),
           ...(s.parent_id ? {} : { default_limit: agents.DEFAULT_LIMIT, own_limit: agents.ownLimit(s.id), slots: agents.slotsOf(s.id) }) });
       },
       PATCH: async (req: any) => {

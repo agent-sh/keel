@@ -15,7 +15,7 @@ import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { ClientFrame, DraftBlocks, Frame, SocketFrame } from "../core/types.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
-import { ALL, EVERY, FEEDS, feedTopic, isScoped, LIST_ROWS, named, route, ROWS, RowGate, sessionTopic } from "./scope.ts";
+import { ALL, EVERY, feedNames, feedTopic, isScoped, LIST_ROWS, named, route, ROWS, RowGate, sessionTopic } from "./scope.ts";
 
 export class Live {
   // The reply each running turn has streamed since its last stored step.
@@ -77,7 +77,7 @@ export class Live {
     if (m.op === "ping") return void send(ws, { t: "pong", nonce: m.nonce });
     if (m.op === "unsub") {
       for (const id of named(m.watch)) ws.unsubscribe(sessionTopic(id));
-      for (const name of named(m.feeds)) ws.unsubscribe(feedTopic(name));
+      for (const name of feedNames(m.feeds)) ws.unsubscribe(feedTopic(name));
       return;
     }
     if (m.op !== "resume" && m.op !== "sub") return;
@@ -100,7 +100,7 @@ export class Live {
     }
     if (!every) {
       for (const id of named(m.watch)) ws.subscribe(sessionTopic(id));
-      for (const name of named(m.feeds)) if ((FEEDS as readonly string[]).includes(name)) ws.subscribe(feedTopic(name));
+      for (const name of feedNames(m.feeds)) ws.subscribe(feedTopic(name));
     }
     if (m.op === "resume") send(ws, { t: "replayed", cursors });
   }

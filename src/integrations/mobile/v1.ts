@@ -20,6 +20,7 @@ import { answer, askedOf, closedQuestions, decline, pendingQuestions, type Answe
 import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
 import { sessionState } from "../../automation/state.ts";
+import { lineOf as nowLineOf, type NowLine } from "../../automation/now.ts";
 import { WATCH_LABEL } from "../../core/watch.ts";
 import { stateWords } from "../../core/state-words.ts";
 import { lineage } from "../../core/tree.ts";
@@ -114,7 +115,7 @@ export function pairLink(base: string, code: string, app: PairApp = "keel") {
 // owner, a turn runs or its agents still work (agents: how many), or how the
 // last turn ended.
 export type ChatStatus = "needs_you" | "working" | "failed" | "stopped" | "done" | "idle";
-export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number; state_word?: string };
+export type ChatExtra = { unread?: number; preview?: { text: string; role: string; id: string } | null; status?: ChatStatus; failure?: string; agents?: number; state_word?: string; now?: NowLine | null };
 
 export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   const c: Record<string, unknown> = {
@@ -127,6 +128,8 @@ export function chatOf(s: Session, lastSeq = 0, x: ChatExtra = {}) {
   if (x.state_word) c.state_word = x.state_word;
   if (x.failure) c.failure = x.failure;
   if (x.agents) c.agents = x.agents;
+  // A live agent's "now" line, flat: what it is doing, its steps, when its task began, its spend, whether it needs the owner.
+  if (x.now) Object.assign(c, { now: x.now.text, now_steps: x.now.steps, now_since: secs(x.now.since), now_usd: Math.round(x.now.usd * 10_000) / 10_000, now_need: x.now.need ? 1 : 0 });
   if (x.preview !== undefined) Object.assign(c, { preview: x.preview?.text ?? "", last_role: x.preview?.role ?? "", preview_id: x.preview?.id ?? null });
   // The row's own mark: the same row, the same mark. A phone that says what it holds by these marks
   // is sent only the rows of the buckets that changed (syncBody's `held`).
@@ -476,7 +479,7 @@ export function mobileApi(ctx: MobileCtx) {
     if (st.watch === "stop") return { st, is: { status: "stopped" } };
     return { st, is: { status: st.watch === "done" ? "done" : "idle" } };
   }
-  const chatFull = (s: Session, u = unread()) => chatOf(s, lastSeq(s.id), { unread: u[s.id] ?? 0, preview: preview(s), ...status(s) });
+  const chatFull = (s: Session, u = unread()) => chatOf(s, lastSeq(s.id), { unread: u[s.id] ?? 0, preview: preview(s), ...status(s), ...(s.parent_id ? { now: nowLineOf(s.id) } : {}) });
 
   // Questions the model asked that wait for the owner, as approval cards. Each
   // pending call is read from its own tool call, however far back it is.
@@ -798,6 +801,13 @@ export function mobileApi(ctx: MobileCtx) {
                   send({ type: "approval", seq: mobile.globalSeq(), approval: q });
                   send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(q) });
                   send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
+                }
+              }
+              else if (f.t === "feature" && f.name === "agents_now") {
+                // What agents are doing now (at most a line every 15 s an agent): their rows follow.
+                for (const l of ((f.data as { lines?: NowLine[] })?.lines ?? [])) {
+                  const s = store.session(l.session_id);
+                  if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
                 }
               }
               else if (f.t === "feature" && f.name === "automation" && f.data?.kind === "agent" && f.data.data?.parent_id) {

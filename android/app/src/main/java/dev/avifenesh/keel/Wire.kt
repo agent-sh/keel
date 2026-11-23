@@ -205,6 +205,12 @@ data class Chat(
     val stateWord: String = "",
     /** The daemon's mark of this row's content: a reconnect says what it holds by these, and only what changed comes. */
     val h: String = "",
+    /** A live agent's line: what it is doing now, its model steps, when its task began, its spend, and whether it waits on the owner. */
+    val now: String = "",
+    val nowSteps: Int = 0,
+    val nowSince: Double = 0.0,
+    val nowUsd: Double = 0.0,
+    val nowNeed: Boolean = false,
 ) {
     companion object {
         fun of(o: JSONObject) = Chat(
@@ -213,6 +219,8 @@ data class Chat(
             archived = o.optInt("archived", 0) != 0, preview = o.str("preview"), lastRole = o.str("last_role"),
             parentId = o.str("parent_id").takeIf { it.isNotBlank() }, failure = o.str("failure"),
             created = o.optDouble("created", 0.0), agents = o.optInt("agents", 0), stateWord = o.str("state_word"), h = o.str("h"),
+            now = o.str("now"), nowSteps = o.optInt("now_steps", 0), nowSince = o.optDouble("now_since", 0.0),
+            nowUsd = o.optDouble("now_usd", 0.0), nowNeed = o.optInt("now_need", 0) != 0,
         )
     }
 }
@@ -586,6 +594,7 @@ private fun JSONObject.opt(k: String, v: String) = apply { if (v.isNotEmpty()) p
 fun Chat.json(): JSONObject = JSONObject().put("id", id).put("title", title).put("status", status).put("updated", updated).put("unread", unread)
     .put("pinned", if (pinned) 1 else 0).put("archived", if (archived) 1 else 0).put("preview", preview).put("last_role", lastRole)
     .put("parent_id", parentId ?: JSONObject.NULL).opt("failure", failure).put("created", created).put("agents", agents).opt("state_word", stateWord).opt("h", h)
+    .apply { if (now.isNotEmpty()) put("now", now).put("now_steps", nowSteps).put("now_since", nowSince).put("now_usd", nowUsd).put("now_need", if (nowNeed) 1 else 0) }
 
 /** FNV-1a, 32 bits, over the UTF-8 bytes: the daemon's number for the same text (v1.ts fnv). */
 fun fnv(s: String): Long {

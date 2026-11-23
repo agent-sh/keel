@@ -13,7 +13,7 @@ import { cn } from "../../lib/utils.ts";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
 import { Markdown } from "../Markdown.tsx";
 import { ChannelEvent } from "../ChannelEvent.tsx";
-import { AgentMark, agentSaid, IconButton, STATE_INK, StopAgent, useAgentSaid, type AgentSaid } from "./bits.tsx";
+import { AgentMark, AgentNow, agentSaid, IconButton, STATE_INK, StopAgent, useAgentSaid, type AgentSaid } from "./bits.tsx";
 
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
 export { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
@@ -348,6 +348,8 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
           </span>
         )}
       </div>
+      {/* What it is doing now, under its line while it is live (at most a line every 15 s). */}
+      {agent && isLive(agent) && <div className="k-under"><AgentNow a={agent} /></div>}
       {/* Why it ended as it did, under its line: a failure's reason in its ink, a stop's quietly. */}
       {agent && !isLive(agent) && why && <div className="k-under"><Under tone={failedAgent ? "fail" : "note"} testid="agent-call-why">{why}</Under></div>}
       {!agent && ended === "error" && <div className="k-under"><Under code tone="fail" testid="agent-call-why">{failureLine(result)}</Under></div>}

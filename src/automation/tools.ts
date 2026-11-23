@@ -11,6 +11,7 @@ import { D, familyOf } from "./core.ts";
 import * as waits from "./waits.ts";
 import { privateHost } from "../tools/web.ts";
 import { heldSays } from "../core/stoppers.ts";
+import { statusText } from "./now.ts";
 
 // Each family gets the names and shapes it was trained on: Claude the Claude
 // Code tools (Agent, SendMessage, TaskStop, Monitor, ScheduleWakeup, Cron*,
@@ -534,9 +535,20 @@ skillRun.fork = async (ctx, skill, prompt) => {
   }
 };
 
+// The parent's read of its agents: one line each, made by the daemon from what each is doing (its
+// thinking, the call it runs, what it waits on) with no model request. Every family has it.
+const keel__agents_now: Tool = {
+  name: "keel__agents_now",
+  readOnly: true,
+  description: "What each live agent of your tree is doing now: one line each, with its steps, minutes and spend, and whether it waits on the owner. Made by the daemon with no model request; use it instead of messaging agents to ask how they are doing. Reports still arrive by themselves.",
+  input_schema: { type: "object", properties: {} },
+  run: (_input, ctx) => guard(() => ok(statusText(ctx.sessionId))),
+};
+
 export const automationTools: Tool[] = [
   Agent, SendMessage, WaitFor, Monitor, ScheduleWakeup, CronCreate, CronList, CronDelete, PushNotification,
   spawn_agent, send_input, wait_agent, close_agent, wait_for, cancel_wait, monitor, schedule_wakeup, schedule_create, schedule_list, schedule_delete, notify,
+  keel__agents_now,
 ];
 
 export const AGENT_TOOL_NAMES = ["Agent", "spawn_agent"];

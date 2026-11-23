@@ -1,5 +1,6 @@
 // Agents, waits, loops and alerts on the client: loaded once, then kept live by
 // the `automation` frames.
+import type { NowLine } from "../../../src/automation/now-line.ts";
 import { useSyncExternalStore } from "react";
 import type { AgentBrief } from "../../../src/automation/agents.ts";
 // An agent as the page holds it: its record without its report, which is read when shown (agentReport).
@@ -40,11 +41,12 @@ type State = {
   goals: Record<string, Goal | null>; // by session, once loaded
   tasks: Record<string, Task[]>;
   goneDests: Record<string, true>; // task destinations their daemon said it no longer has
+  now: Record<string, NowLine>; // each live agent's "now" line, by agent id (src/automation/now.ts)
 };
 
 type Unread = { total: number; sessions: Record<string, number>; children: Record<string, number>; fresh: Record<string, number>; rev: number };
 const NO_UNREAD: Unread = { total: 0, sessions: {}, children: {}, fresh: {}, rev: 0 };
-let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: NO_UNREAD, rev: 0, settings: null, channels: [], snoozes: {}, activityTick: 0, lastActivity: null, goals: {}, tasks: {}, goneDests: {} };
+let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: NO_UNREAD, rev: 0, settings: null, channels: [], snoozes: {}, activityTick: 0, lastActivity: null, goals: {}, tasks: {}, goneDests: {}, now: {} };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => {
   state = { ...state, ...p };
@@ -87,6 +89,7 @@ export const auto = {
   async load() {
     const r = await api<any>("/api/automation");
     set({
+      now: { ...state.now, ...Object.fromEntries((r.agents as AgentRecord[]).filter((a) => a.now).map((a) => [a.id, a.now!])) },
       agents: merge("agent", state.agents, byId(r.agents), r.rev), waits: merge("wait", state.waits, byId(r.waits), r.rev), loops: merge("loop", state.loops, byId(r.loops), r.rev),
       settings: r.settings, channels: r.channels,
       snoozes: Object.fromEntries((r.snoozes as Snooze[]).map((x) => [x.session_id, x])),
@@ -239,6 +242,12 @@ function applyRead(d: ReadFrame): boolean {
 
 onFeature({
   frame: (f) => {
+    // What the agents of a tree this page shows are doing now: one line each, at most every 15 s.
+    if (f.name === "agents_now") {
+      const lines = ((f.data as { lines?: NowLine[] })?.lines ?? []);
+      if (lines.length) set({ now: { ...state.now, ...Object.fromEntries(lines.map((l) => [l.agent_id, l])) } });
+      return;
+    }
     if (f.name !== "automation") return;
     const { kind, data: d, counts } = f.data as { kind: string; data: any; counts?: Unread };
     // Records are ordered by the bus rev: a frame older than what a snapshot already showed is dropped.

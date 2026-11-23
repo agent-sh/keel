@@ -403,6 +403,9 @@
 .k-kids-new { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); color: var(--accent-ink); }
 .k-kids-viewing { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
 .k-child-row { position: relative; container: kid / inline-size; }
+/* Under an agent's row: what it is doing now, a step in from its mark. */
+.k-child-now { padding: 0 0.375rem 0.125rem 1.875rem; font-size: var(--text-micro); }
+.k-child-now .k-agent-now-meta { margin-inline-start: auto; }
 .k-child-session { display: flex; align-items: center; gap: 0.5rem; min-width: 0; height: 1.5rem; padding: 0 0.375rem; border-radius: var(--radius-md); font-size: var(--text-caption); cursor: default; outline: none; }
 .k-child-session:hover, .k-child-session[data-current] { background: var(--raised); }
 .k-child-session[data-current] { box-shadow: var(--shadow-1); }

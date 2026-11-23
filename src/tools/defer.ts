@@ -27,7 +27,7 @@ export const DEFERRED_BUILTINS = new Set([
   "Monitor", "SendMessage", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "PushNotification",
   "request_secret", "advisor",
   "keel__machines_list", "keel__run_on", "keel__sessions_list", "keel__session_send", "keel__send_files",
-  "keel__context_status", "keel__new_context", "keel__session_timeline", "keel__spawn_on_machine",
+  "keel__context_status", "keel__new_context", "keel__session_timeline", "keel__spawn_on_machine", "keel__agents_now",
 ]);
 
 // A wire that answers deferred tools refused them (a model or gateway without

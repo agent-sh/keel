@@ -6,7 +6,8 @@ import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.t
 import { COUNTERS, NEW, agentTally, countName } from "../../../../src/core/state-words.ts";
 import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
-import { AgentMark, agentSaid, ALERT_STATE, StopAgent } from "./bits.tsx";
+import { AgentMark, AgentNow, agentSaid, ALERT_STATE, StopAgent } from "./bits.tsx";
+import { scope } from "../../lib/store.ts";
 import { Mark } from "../Mark.tsx";
 import { useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
@@ -57,6 +58,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   // The list leaves out the sessions of agents at rest: their rows (a title the owner gave one) are read once the agents are opened.
   const left = useStore((s) => s.agentsLeft[parentId] ?? 0);
   useEffect(() => { if (expanded && left) actions.loadAgentsOf(parentId).catch(reportError); }, [expanded, left, parentId]);
+  // While the tree's rows show and an agent of it works, what each is doing comes to this page (lib/scope.ts).
+  const working = liveKids.some(isLive);
+  useEffect(() => (expanded && working ? scope.feed(`tree:${parentId}`) /* the tree feed of src/server/scope.ts (treeFeed) */ : undefined), [expanded, working, parentId]);
   const setOpen = (o: boolean) => {
     setExpanded(o);
     const m = openKept();
@@ -141,6 +145,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
               ) : null}
             </div>
             {isLive(a) && <span className="k-child-stop"><StopAgent a={a} title={title} testid="child-stop" /></span>}
+            <AgentNow a={a} className="k-child-now" />
           </div>
         );
       })}

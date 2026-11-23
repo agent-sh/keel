@@ -21,6 +21,12 @@ export const sessionTopic = (id: string) => `s:${id}`;
 // Frames one view reads, across sessions: the Activity list, a project's files, the daemon panel.
 export const FEEDS = ["activity", "artifacts", "awake"] as const;
 export const feedTopic = (name: string) => `f:${name}`;
+// A feed of one tree of agents: their "now" lines (src/automation/now.ts), named by the tree's root
+// while a view shows the tree's rows (the sidebar's tree under a session).
+export const treeFeed = (root: string) => `tree:${root}`;
+const TREE_FEED = /^tree:[\w-]{1,200}$/;
+export const isFeed = (name: string) => (FEEDS as readonly string[]).includes(name) || TREE_FEED.test(name);
+export const feedNames = (list: unknown, max = 512): string[] => (Array.isArray(list) ? list.filter((x): x is string => typeof x === "string" && isFeed(x)).slice(0, max) : []);
 export const isScoped = (topic: string) => topic === EVERY || topic === ROWS || topic === LIST_ROWS || topic.startsWith("s:") || topic.startsWith("f:");
 // A session of another daemon, as this daemon's pages name it (ui/src/lib/fleet-ids.ts).
 export const farId = (machine: string, id: string) => `${machine}--${id}`;
@@ -59,6 +65,12 @@ export function route(f: Frame): Route {
       if (f.name === "overlap" && f.session_id) return one(f.session_id);
       if (f.name === "artifacts") return { topics: [feedTopic("artifacts"), EVERY, ...(f.session_id ? [sessionTopic(f.session_id)] : [])] };
       if (f.name === "awake") return { topics: [feedTopic("awake"), EVERY] };
+      // What the agents of one tree are doing now: to the views of the sessions that started them
+      // (their agent lines) and to a view of the tree's rows, never to every socket.
+      if (f.name === "agents_now" && f.session_id) {
+        const parents = new Set<string>(((f.data as any)?.lines ?? []).map((l: { parent_id?: unknown }) => l.parent_id).filter((x: unknown): x is string => typeof x === "string"));
+        return { topics: [feedTopic(treeFeed(f.session_id)), EVERY, ...[...parents].map(sessionTopic)] };
+      }
       return { topics: [ALL] };
     }
     default: return { topics: [ALL] };
