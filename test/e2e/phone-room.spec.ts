@@ -662,7 +662,25 @@ test.describe("on a phone, what waits", () => {
       await pane.getByTestId("composer").tap();
       await expect(pane.getByTestId("stop")).toBeVisible();
       await expect(pane.getByTestId("composer-tools")).toBeVisible();
+      // Whole where a finger finds them: inside the window and the pane, above the dock, and the
+      // press at Stop's middle lands on Stop. The cards above give the room and scroll.
+      const reach = () => pane.evaluate((el) => {
+        const p = el.getBoundingClientRect();
+        const dock = document.querySelector(".k-dock")?.getBoundingClientRect();
+        const floor = Math.min(innerHeight, p.bottom, dock && dock.height ? dock.top : Infinity);
+        const inside = (e: Element) => { const r = e.getBoundingClientRect(); return r.height > 0 && r.top >= p.top - 1 && r.left >= -1 && r.right <= innerWidth + 1 && r.bottom <= floor + 1; };
+        const stop = el.querySelector('[data-testid="stop"]')!;
+        const r = stop.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { stop: inside(stop), tools: inside(el.querySelector('[data-testid="composer-tools"]')!), pressed: !!hit && stop.contains(hit) };
+      });
+      await expect.poll(reach, { timeout: 5000 }).toEqual({ stop: true, tools: true, pressed: true });
       await shoot(page, "phone-12b-question-box-open");
+      // A long draft too: it gives way after the cards, never over its own tools.
+      await pane.getByTestId("composer").fill(Array.from({ length: 30 }, (_, i) => `line ${i + 1} of a long steer`).join("\n"));
+      await expect.poll(reach, { timeout: 5000 }).toEqual({ stop: true, tools: true, pressed: true });
+      await expect(pane.getByTestId("composer-tray")).toBeInViewport();
+      await pane.getByTestId("composer").fill("");
     } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
   });
 });

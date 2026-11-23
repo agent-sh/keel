@@ -1070,6 +1070,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
      (its tools, Stop among them, come back with the tap). */
   .k-session:has(.k-tray[data-asking]) > .k-reading-room { min-height: clamp(0px, calc((100% - 24rem) / 2), var(--spacing-tap)); }
   .k-tray[data-asking] + .k-box[data-calm]:not(:focus-within) > .k-compose-tools { display: none; }
+  /* Tapped or holding something, the box keeps its tools row whole above the dock: the cards give way
+     first, down to the room Tray keeps them (they scroll), and a long draft only after them. */
+  .k-tray[data-asking]:has(+ .k-box:is(:focus-within, :not([data-calm]))) { flex-shrink: 100000; }
+  .k-tray[data-asking] + .k-box:is(:focus-within, :not([data-calm])) { flex-shrink: 1; }
   .k-rail-wrap { position: fixed; inset: 0 auto 0 0; transform: translateX(-100%); visibility: hidden; transition: transform var(--dur-move) var(--ease-out), visibility var(--dur-move); box-shadow: var(--shadow-3); }
   .k-rail-wrap[data-drawer] { transform: none; visibility: visible; }
   .k-rail-wrap .k-rail { width: min(86vw, 20rem); }
