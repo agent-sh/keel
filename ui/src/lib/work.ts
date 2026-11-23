@@ -10,6 +10,7 @@ import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { HOOK_BLOCKED, RESTART_CUT, notRun, stopKind, stoppedRunning, turnedAway } from "../../../src/core/stops.ts";
 import { patchFiles, resultText, shellStatus, toolKind, type ToolKind, splitDiagnostics, splitMemory, splitNested } from "./tools.ts";
 import { NEEDS, STATE_WORD, countWord } from "../../../src/core/state-words.ts";
+import { agentTitle } from "../../../src/automation/agent-title.ts";
 
 // `card`: a call with a card of its own (a question, code, readers): always a step by itself, as is a plan update.
 // `agents`: agents started; the ones started one after another are one step, also across the few words
@@ -210,7 +211,8 @@ export function smallChange(use: ToolUseBlock): { t: "+" | "-"; text: string }[]
 }
 
 // What an agent was started for: the first line of its task.
-export const agentTask = (use: ToolUseBlock): string => { const i: any = use.input ?? {}; return String(i.description ?? i.message ?? i.prompt ?? "").split("\n")[0]!.trim(); };
+// The name its agent is listed by (src/automation/agent-title.ts), before the agent is known.
+export const agentTask = (use: ToolUseBlock): string => { const i: any = use.input ?? {}; return agentTitle({ title: typeof i.description === "string" ? i.description : undefined, task_name: typeof i.task_name === "string" ? i.task_name : undefined, prompt: String(i.message ?? i.prompt ?? "") }); };
 
 // What a call was made on, as its line names it: a file, a pattern, a command.
 export function targetOf(use: ToolUseBlock): string {
@@ -342,7 +344,7 @@ export function summarize(step: Step, live: Live = { working: true }): StepSumma
     name(named.filter((c) => toolKind(c.use.name) === "shell").map((c) => { const more = moreLines(c.use); return more ? `${targetOf(c.use)} (+${more} ${more === 1 ? "line" : "lines"})` : targetOf(c.use); }));
     if (commands.length === 1 && work.length === 1 && looks.error) s.exit = shellStatus(resultText(commands[0]!.result)).exit;
   } else if (step.family === "agents") {
-    // Named by their tasks' first lines: what each was started for.
+    // Named by their tasks' titles: what each was started for.
     s.label = "Started";
     s.code = false;
     s.counts = plural(work.length, "agent", "agents");

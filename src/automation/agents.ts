@@ -41,6 +41,7 @@ import { agentMemory, memoryOff, SCOPES, type MemoryScope } from "./agent-memory
 import { canStart, depthOf, levelsLeft, maxDepth, rootOf, treeRows, type TreeRow } from "../core/agent-tree.ts";
 import type { NowLine } from "./now-line.ts";
 import { budgetOfMeta, closingText, endedWords, mergeBudget, parseBudget, spentOn, type Budget, type Limit, type Used } from "./budget.ts";
+import { agentTitle } from "./agent-title.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. The child gets the same system
@@ -689,7 +690,7 @@ function wake(id: string) {
 }
 
 export type SpawnInput = {
-  title?: string; prompt: string; type?: string; model?: string; background?: boolean; fork?: boolean;
+  title?: string; task_name?: string; prompt: string; type?: string; model?: string; background?: boolean; fork?: boolean;
   isolation?: "worktree" | "none"; output_schema?: unknown;
   machine?: string; cwd?: string; // another machine of the fleet, and a directory there
   call_id?: string; // the tool_use id of the spawning call
@@ -820,7 +821,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   if (signal?.aborted) throw new Error("cancelled");
   await checkUsd(mergeBudget(def.budget, parseBudget(input.budget)), model, info);
   const effort = def.effort && info.efforts?.includes(def.effort) ? def.effort : undefined;
-  const title = (input.title || input.prompt.split("\n")[0]!).slice(0, 80);
+  const title = agentTitle(input);
   const id = Bun.randomUUIDv7().slice(-12);
   const mode = modeOfChild(parentId, def);
   const wantWorktree = wantsWorktree(def, input, mode);

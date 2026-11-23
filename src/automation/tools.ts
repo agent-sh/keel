@@ -238,6 +238,7 @@ const spawn_agent: Tool = {
   input_schema: {
     type: "object",
     properties: {
+      task_name: { type: "string", description: "Short name of the task in lowercase words joined by underscores (harness_3_cache_study); the agent is listed by it." },
       message: { type: "string", description: "Initial plain-text task for the new agent." },
       agent_type: { type: "string", description: "Agent type for the new agent: default, worker, explorer, or a listed type. Omit for default." },
       fork_context: { type: "boolean", description: "True starts the agent with a copy of this conversation; false or omitted starts it with only the task." },
@@ -252,7 +253,7 @@ const spawn_agent: Tool = {
   },
   target: (input) => onMachine(input, input.message ?? input.prompt),
   run: (input, ctx) => guard(async () => {
-    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes }, ctx.signal);
+    const a = await agents.spawn(ctx.sessionId, { prompt: input.message ?? input.prompt, task_name: typeof input.task_name === "string" ? input.task_name : undefined, type: input.agent_type, model: input.model, fork: !!input.fork_context, background: true, isolation: input.isolation, output_schema: input.output_schema, budget: input.budget, machine: input.machine, cwd: input.cwd, call_id: ctx.callId, writes: input.writes }, ctx.signal);
     const left = agents.notCarried(a.id).trim();
     return ok(JSON.stringify({ agent_id: a.id, nickname: a.title, ...(agents.queuedForSlot(a) ? { status: "waits_for_slot", note: agents.queuedLine(a) } : {}), ...(left ? { not_carried: left } : {}), ...(agents.scopeNote(a.id) ? { write_scope: agents.scopeNote(a.id) } : {}) }));
   }),

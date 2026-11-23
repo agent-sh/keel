@@ -6,7 +6,7 @@ import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/
 import { machineName } from "../../lib/fleet.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { resultText } from "../../lib/tools.ts";
-import { CALL_FAILED, CALL_STOPPED, callState, failureLine, type CallState } from "../../lib/work.ts";
+import { CALL_FAILED, CALL_STOPPED, agentTask, callState, failureLine, type CallState } from "../../lib/work.ts";
 import { Apart, Under } from "../ToolCall.tsx";
 import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
@@ -316,7 +316,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
   const input: any = use.input ?? {};
   const out = resultText(result);
   const agents = useAuto((s) => s.agents);
-  const title = String(input.description ?? input.message ?? input.prompt ?? "").split("\n")[0]!.slice(0, 80);
+  const title = agentTask(use);
   // The child this call started: the one its result names, or the one recorded
   // with this call's id. Never a guess by title: two agents can share one.
   const agent = useMemo(() => {
