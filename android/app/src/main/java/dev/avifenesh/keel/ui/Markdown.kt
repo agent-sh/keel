@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -128,9 +129,13 @@ fun Markdown(md: String, style: TextStyle = T.body, modifier: Modifier = Modifie
                 BasicText(inline(b.text, code, link), style = base.copy(color = k.muted))
             }
             is Block.Code -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))) {
-                if (b.lang.isNotBlank()) Txt(b.lang, T.label, k.faint, Modifier.padding(start = 12.dp, top = 8.dp))
+                // The language and Copy over the code: a command to run elsewhere is taken whole, not by a selection.
+                Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Txt(b.lang, T.label, k.faint, Modifier.weight(1f))
+                    CopyBtn(b.text, "Copy the code", "copy-code")
+                }
                 BasicText(b.text, style = T.code.copy(color = k.fg), softWrap = false,
-                    modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp))
+                    modifier = Modifier.horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 10.dp))
             }
             is Block.Table -> Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).border(1.dp, k.line, RoundedCornerShape(S.r)).horizontalScroll(rememberScrollState())) {
                 val widths = (0 until (b.rows.maxOfOrNull { it.size } ?: 0)).map { c -> (b.rows.maxOfOrNull { it.getOrNull(c)?.length ?: 0 } ?: 0).coerceIn(4, 28) }

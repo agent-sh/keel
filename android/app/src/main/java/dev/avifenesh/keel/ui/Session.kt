@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -213,12 +214,36 @@ private fun MsgView(act: MainActivity, m: Msg, card: dev.avifenesh.keel.Card?, o
                 }
             }
         }
-        else -> Column(Modifier.fillMaxWidth().padding(horizontal = S.lg, vertical = 8.dp).semantics { contentDescription = "agent-${m.content.take(40)}" }) {
-            if (m.origin.isNotBlank() && m.origin != "agent") Txt(m.origin.uppercase(), T.label, k.faint, Modifier.padding(bottom = 4.dp))
-            Markdown(m.content)
-            if (m.model.isNotBlank()) Txt(m.model.substringAfterLast('/').substringAfter(':'), T.meta, k.faint, Modifier.padding(top = 6.dp))
+        else -> Reply(m)
+    }
+}
+
+/**
+ * The agent's words: who wrote them when not the agent itself, the reply, and under it the model
+ * that answered and Copy (the reply as written, Markdown and all). A long press selects any part.
+ */
+@Composable
+fun Reply(m: Msg) {
+    val k = k()
+    Column(Modifier.fillMaxWidth().padding(horizontal = S.lg, vertical = 8.dp).semantics { contentDescription = "agent-${m.content.take(40)}" }) {
+        if (m.origin.isNotBlank() && m.origin != "agent") Txt(m.origin.uppercase(), T.label, k.faint, Modifier.padding(bottom = 4.dp))
+        SelectionContainer { Markdown(m.content) }
+        Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Txt(m.model.substringAfterLast('/').substringAfter(':'), T.meta, k.faint, Modifier.weight(1f), maxLines = 1)
+            CopyBtn(m.content, "Copy the reply", "copy-reply")
         }
     }
+}
+
+/** Copies `text`; its mark turns to a check for a moment, so the tap is seen. */
+@Composable
+fun CopyBtn(text: String, label: String, tag: String) {
+    val k = k()
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+    var done by remember { mutableStateOf(false) }
+    LaunchedEffect(done) { if (done) { kotlinx.coroutines.delay(1500); done = false } }
+    IconBtn(if (done) Ic.Check else Ic.Copy, label, { clip.setText(androidx.compose.ui.text.AnnotatedString(text)); done = true },
+        tint = if (done) k.done else k.faint, modifier = Modifier.testTag(tag))
 }
 
 /** The tool calls of one reply, folded into one line; open, one row each. */

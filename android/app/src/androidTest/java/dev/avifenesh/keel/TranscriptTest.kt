@@ -65,3 +65,28 @@ class TranscriptTest {
         rule.onNodeWithTag("me7").assertIsDisplayed()
     }
 }
+
+// A reply's words leave the phone: the whole reply by its copy button, a code block by its own.
+class CopyTest {
+    @get:Rule val rule = createComposeRule()
+
+    private fun clip(): String {
+        var text = ""
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val c = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(android.content.ClipboardManager::class.java)
+            text = c.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+        }
+        return text
+    }
+
+    @Test fun aReplyAndItsCodeAreCopied() {
+        val reply = "Run this:\n\n```sh\ngit push origin main\n```\n\nThen check CI."
+        rule.setContent { KeelTheme(1) { dev.avifenesh.keel.ui.Reply(Msg("e-1", "s-1", "agent", "text", reply, 1.0, model = "fx:m")) } }
+        rule.onNodeWithTag("copy-reply").performClick()
+        rule.waitForIdle()
+        org.junit.Assert.assertEquals(reply, clip())
+        rule.onNodeWithTag("copy-code").performClick()
+        rule.waitForIdle()
+        org.junit.Assert.assertEquals("git push origin main", clip())
+    }
+}
