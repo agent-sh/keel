@@ -21,7 +21,9 @@ const obj = (properties: Record<string, unknown>, required: string[]) =>
 
 const Bash: Tool = {
   name: "Bash",
-  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
+  // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts); a background
+  // command's end starts a turn of its idle session, and an agent waits on one it started.
+  urgent: "command-end-wakes",
   readOnly: false,
   kind: "shell",
   cwdOf: shellCwd,
@@ -32,8 +34,9 @@ const Bash: Tool = {
     "between calls when you cd inside the project; environment variables do not. Default timeout 120000 ms, " +
     "max 600000; a command still running at its timeout moves to the background instead of being killed. " +
     "Set run_in_background for servers, watchers and long jobs: you get a task ID and a log file to Read, " +
-    "and a notice when it ends. Stop one with TaskStop. Quote paths with spaces. Prefer the Read, Edit and Write " +
-    "tools for files.",
+    "and its end wakes you with a notice, so do not sleep, poll or wait for it: do other work or end your turn. " +
+    "Stop one with TaskStop once you no longer need it (as an agent, you are not done while one you started runs). " +
+    "Quote paths with spaces. Prefer the Read, Edit and Write tools for files.",
   input_schema: obj({
     command: { type: "string", description: "The command to execute" },
     timeout: { type: "number", description: "Optional timeout in milliseconds (max 600000)" },

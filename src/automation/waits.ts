@@ -208,6 +208,18 @@ function linkJob(w: WaitRecord, now = Date.now()): Job | undefined {
   return found ?? kept;
 }
 
+// Whether the session waits on this command with a wait of its own: on its exit file (src/tools/jobs.ts
+// writes `<log>.exit` at its end), on a file it writes, or on its process. That wait wakes the session at
+// the command's end (a file or log wait whose job ended says so), with what the file gained.
+export function onJob(sessionId: string, job: Job): boolean {
+  const active = D().store.db.query<Row, [string]>("SELECT * FROM waits WHERE status = 'active' AND session_id = ?").all(sessionId).map(toRec);
+  return active.some((w) => {
+    if (w.kind === "process") return (w.spec as { pid?: number }).pid === job.pid;
+    if (w.kind !== "file" && w.kind !== "log") return false;
+    return (w.spec as { path: string }).path === `${job.log}.exit` || linkJob(w)?.id === job.id;
+  });
+}
+
 // What Keel knows of a job, for its line in a wake.
 function factsOf(j: Job, path: string) {
   const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return 0; } };
@@ -469,13 +481,15 @@ export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}
     }
     case "process": {
       const pid = Number(spec.pid);
-      // Models sent pid 0 for a pause, or for a command they started in the background (src/tools/jobs.ts
-      // writes `<log>.exit` when a command ends; its end starts no turn, so a file wait on that is the wake).
+      // Models sent pid 0 for a pause, or for a command they started in the background. Its end starts a
+      // turn of an idle session and rides a turn at work (src/server/routes/tools.ts); a file wait on
+      // `<log>.exit` (src/tools/jobs.ts writes it at the end) waits for it too. A session on another machine
+      // has its commands there: their end does not reach this daemon, and a wait here does not see their files.
       if (!Number.isInteger(pid) || pid <= 1) {
         const woken = o.elsewhere
-          ? "its command runs on the session's machine, whose files and processes a wait here does not see: wait there with a command in the shell tool"
-          : 'to be woken then, wait with kind "file" on its log\'s path plus ".exit", which its end writes';
-        throw new Error(`a process wait needs a running process's id (a number above 1, as \`echo $!\` prints it). A background command you started does not wake this session when it ends (its end is told with the session's next request): ${woken}. For a pause, use kind "timer" with seconds.`);
+          ? "A background command of this session does not wake it when it ends: the command runs on the session's machine, whose files and processes a wait here does not see: wait there with a command in the shell tool"
+          : 'A background command you started wakes this session by itself when it ends (a turn at work reads its end at its next step): it needs no wait. To wait on one all the same, use kind "file" on its log\'s path plus ".exit", which its end writes';
+        throw new Error(`a process wait needs a running process's id (a number above 1, as \`echo $!\` prints it). ${woken}. For a pause, use kind "timer" with seconds.`);
       }
       if (!procAlive(pid)) throw new Error(`process ${pid} has already ended`);
       const start = startTime(pid);

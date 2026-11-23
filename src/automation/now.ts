@@ -64,7 +64,7 @@ function make(sessionId: string, now = Date.now()): NowLine | undefined {
   const l = live.get(sessionId);
   const s = D().store.session(sessionId);
   const used = agents.usedOf(a, now);
-  const waits = a.status === "waiting" ? agents.waitsOn(sessionId) || "a wait" : undefined;
+  const waits = a.status === "waiting" ? agents.waitsOn(a) || "a wait" : undefined;
   const words = seenWords(sessionId, { waits, cwd: s?.workspace });
   return { agent_id: a.id, session_id: sessionId, parent_id: a.parent_id, ...words, steps: used.steps, since: a.task_at ?? a.created, usd: used.usd, ...(used.unpriced ? { unpriced: used.unpriced } : {}), ...(l?.need ? { need: true } : {}), at: now };
 }

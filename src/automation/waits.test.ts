@@ -63,11 +63,11 @@ test("a log wait's pattern may start with an inline flag group", async () => {
 
 // A model that wanted a pause, or the end of a command it started in the
 // background, sent a process wait with pid 0: the refusal says what to use.
-// A background command's end starts no turn (it is told with the next
-// request): agents told it wakes them ended their turn on it and reported.
+// A background command's end wakes its session by itself; a file wait on its
+// exit file waits for it too.
 test("a process wait with no pid says what a pid is and what to use instead", () => {
   for (const pid of [0, undefined, 1]) {
-    expect(() => waits.normalize({ kind: "process", pid, timeout_seconds: 60 }, dir)).toThrow(/a running process's id.*background command.*does not wake.*"file".*\.exit.*"timer"/s);
+    expect(() => waits.normalize({ kind: "process", pid, timeout_seconds: 60 }, dir)).toThrow(/a running process's id.*background command.*wakes this session by itself.*needs no wait.*"file".*\.exit.*"timer"/s);
   }
 });
 

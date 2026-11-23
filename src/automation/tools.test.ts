@@ -33,8 +33,8 @@ test("a wait on a background command's output file that no command of the sessio
   const own = { ...ctx, spillDir: spill };
   const r = await tool("WaitFor").run({ kind: "file", path: join(spill, "jobs", "b1made-up.log"), contains: "done" }, own);
   expect(r.is_error).toBe(true);
-  expect(text(r)).toContain("does not wake this session");
-  expect(text(r)).not.toContain("wakes this session by itself");
+  expect(text(r)).toContain("wakes this session by itself when it ends: it needs no wait");
+  expect(text(r)).toContain('plus ".exit"');
   mkdirSync(join(spill, "jobs"));
   writeFileSync(join(spill, "jobs", "b1real.log"), "");
   const real = await tool("WaitFor").run({ kind: "log", path: join(spill, "jobs", "b1real.log"), match: "^done" }, own);
@@ -58,10 +58,11 @@ test("a session on another machine is not told to wait for a file of its machine
   const own = { ...ctx, sessionId: far.id, spillDir: spill };
   const r = await tool("WaitFor").run({ kind: "process", pid: 0 }, own);
   expect(r.is_error).toBe(true);
-  expect(text(r)).toContain("does not wake this session");
+  expect(text(r)).toContain("does not wake it when it ends");
   expect(text(r)).toContain("runs on the session's machine, whose files and processes a wait here does not see: wait there with a command in the shell tool");
   expect(text(r)).not.toContain(".exit");
   const near = await tool("WaitFor").run({ kind: "process", pid: 0 }, ctx);
+  expect(text(near)).toContain("wakes this session by itself when it ends");
   expect(text(near)).toContain('plus ".exit"');
   // A file wait of such a session is refused for where its files are, not as a command it does not have.
   const there = await tool("WaitFor").run({ kind: "file", path: join(spill, "jobs", "b1there.log.exit") }, own);

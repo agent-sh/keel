@@ -6,14 +6,15 @@ import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
-import { ackNotices, adoptJobs, cutCommand, drainNotices, jobEnded, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
+import { ackNotices, adoptJobs, cutCommand, drainNotices, jobEnded, findJob, hasNotice, jobsChanged, jobsOf, jobView, running, stopJob, type Job } from "../../tools/jobs.ts";
 import { renderForOwner, skillRun } from "../../tools/skills.ts";
 import { hookContext } from "../../integrations/hooks.ts";
 import { promptExpansion } from "./hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
 import { newestTurn } from "../../admin/marks.ts";
-import { deliver } from "../../automation/core.ts";
+import { deliver, withdraw } from "../../automation/core.ts";
+import { onJob as waitsOnJob } from "../../automation/waits.ts";
 import { cutCommandLine, sayAt } from "../../admin/daemon-log.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -29,16 +30,17 @@ export const toolRoutes: RouteModule = (deps) => {
   // It starts no turn where nobody waits for one: a command someone stopped (the owner, an archive,
   // a delete: that is no result the turn waited for) and a session the owner stopped are told with
   // the session's next request, whatever starts it, as a background command's end is.
-  jobEnded.tell = (job, text, { sent, note }) => {
+  jobEnded.tell = (job, text, { sent, note, riding }) => {
     setTimeout(() => {
       try {
         // Its session is gone or archived: nobody to tell, and nothing left to owe.
         const s = deps.store.session(job.sessionId);
-        if (!s || s.archived) return sent();
+        if (!s || s.archived) return riding ? note() : sent();
         // An agent that has ended (it reported, or it was a goal's check or a review that answered at its
         // turn's end) is not started again for a command it left running: nobody reads that turn.
         const agent = deps.store.db.query<{ status: string }, [string]>("SELECT status FROM agents WHERE session_id = ?").get(job.sessionId);
-        if (agent && agent.status !== "running" && agent.status !== "waiting") return sent();
+        if (agent && agent.status !== "running" && agent.status !== "waiting") return riding ? note() : sent();
+        if (riding) return commandEnded(job, text, riding, { sent, note });
         // (An agent parked on the command is the one that still gets its turn after a stop: nothing else ends its wait.)
         if ((job.stopReason && agent?.status !== "waiting") || deps.engine.isHeld(job.sessionId)) return note();
         // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
@@ -48,6 +50,31 @@ export const toolRoutes: RouteModule = (deps) => {
       } catch (e) { deps.errors.capture("tool", e, { at: "a command's end", session: job.sessionId }); }
     }, 0);
   };
+  // A background command the model started has ended (not one a cut call waited on: above). Its note
+  // is lined up for the session's next request already, so a turn at work reads it at its next step;
+  // an idle session is started with it, once: the input is stored under the end's key, in the write
+  // that stores the prompt. It starts no turn where nobody waits for it: a command someone stopped,
+  // a session the owner stopped, and a session with a wait of its own on the command (that wait's
+  // wake says more: what the file gained, and the note rides it).
+  const commandEnded = (job: Job, text: string, key: string, { sent, note }: { sent: () => void; note: () => void }) => {
+    // (Its note is gone already when a request of a turn at work took it, or the result of a cut call told it.)
+    if (!hasNotice(job.sessionId, key) || job.stopReason || deps.engine.isHeld(job.sessionId) || waitsOnJob(job.sessionId, job)) return note();
+    // Told before a restart, and its record did not say so yet.
+    if (deps.engine.hasInput(job.sessionId, key)) return sent();
+    const meta = { kind: "harness", job: job.id };
+    deliver(job.sessionId, text, meta, {
+      // Read with a request of a turn at work meanwhile (src/tools/jobs.ts calls jobEnded.read): nothing left to tell.
+      refresh: () => hasNotice(job.sessionId, key) ? {
+        text, meta,
+        onSent: () => {
+          deps.store.db.query("INSERT OR IGNORE INTO input_keys (session_id, key, ts) VALUES (?, ?, ?)").run(job.sessionId, key, Date.now());
+          sent();
+        },
+      } : undefined,
+    });
+  };
+  // Its note went with a request of the session: the input lined up for it is not sent.
+  jobEnded.read = (job) => void withdraw(job.sessionId, (m) => m.kind === "harness" && m.job === job.id);
   // Background commands a previous daemon started run on; take them back.
   try {
     adoptJobs(join(deps.store.stateDir, "spill"), (file, why) =>
@@ -78,14 +105,18 @@ export const toolRoutes: RouteModule = (deps) => {
       // marking it reported) is not said twice.
       const said = (job: string) => !!deps.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'note' AND data LIKE ? LIMIT 1").get(s.id, `%"jobs":[%"${job}"%`);
       const drained = drainNotices(s.id);
+      const stored = (list: typeof drained) => { for (const x of list) try { x.stored?.(); } catch (e) { deps.errors.capture("server", e, { at: "a note was stored", session: s.id }); } };
+      const before = drained.filter((x) => x.job && said(x.job));
       // A note written when it is sent says what holds now; one that no longer holds is dropped.
-      const n = drained.filter((x) => !x.job || !said(x.job)).flatMap((x) => { if (!x.fresh) return [x]; const now = x.fresh(); return now ? [{ ...x, text: now }] : []; });
+      const n = drained.filter((x) => !before.includes(x)).flatMap((x) => { if (!x.fresh) return [x]; const now = x.fresh(); return now ? [{ ...x, text: now }] : []; });
+      // (One said already is in the history too: what waits for it to be read is told so.)
+      stored(before);
       if (!n.length) { ackNotices(drained); return req; }
       const text = `<system-reminder>\n${n.map((x) => x.text).join("\n")}\n</system-reminder>`;
       const jobs = n.flatMap((x) => (x.job ? [x.job] : []));
       deps.bus.emit({ t: "event", event: deps.store.append(s.id, "note", { text, model: true, ...(jobs.length ? { jobs } : {}) }) });
       ackNotices(drained);
-      for (const x of n) try { x.stored?.(); } catch (e) { deps.errors.capture("server", e, { at: "a note was stored", session: s.id }); }
+      stored(n);
       const messages = req.messages.slice();
       const last = messages[messages.length - 1];
       if (last?.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, { type: "text", text }] };

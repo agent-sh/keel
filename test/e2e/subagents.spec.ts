@@ -187,6 +187,63 @@ test("a parked subagent notifies its busy parent before the final report", async
   }
 });
 
+// Feature: an agent that ends its turn while its own background command runs is
+// waiting on that command, not done. The command's end starts its next turn with
+// what became of it, and the answer it writes then is its report: the parent gets
+// no report before that. The park is a line of the parent's next input and starts
+// no turn of the parent.
+test("an agent waits on its own background command, and reports after its end", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Agent on its own run" } })).json();
+  try {
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+    const run = [{ name: "Bash", input: { command: "sleep 20; echo checks-done", run_in_background: true, description: "Slow check run" } }];
+    // Its first turn ends on "Command running in background"; the input its command's end starts is answered from its words.
+    const calls = [{ name: "spawn_agent", input: { message: `Slow checker\nscript:calls ${JSON.stringify(run)}\nscript:then-find exited`, isolation: "none" } }];
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${session.id}`);
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+    const agent = async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { id: string; session_id: string; status: string; result?: string }[])[0];
+    const events = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as { kind: string; seq: number; data: any }[];
+    await expect.poll(async () => (await agent())?.status, { timeout: 30_000 }).toBe("waiting");
+    const a = (await agent())!;
+    const job = ((await (await request.get(`/api/sessions/${a.session_id}/jobs`)).json()).jobs as { id: string; running: boolean }[])[0]!;
+    expect(job.running).toBe(true);
+    // The parent's turn ended and nothing started another: no report, and no turn for the park.
+    await expect.poll(async () => (await events(session.id)).at(-1)?.kind, { timeout: 30_000 }).toBe("turn_end");
+    const card = page.getByTestId("agent-call").last();
+    await expect(card.getByTestId("agent-call-state")).toHaveText("Working: command in background");
+    await shoot(page, "agents-own-command-01-waiting");
+
+    await expect.poll(async () => (await agent())?.status, { timeout: 60_000 }).toBe("completed");
+    const child = await events(a.session_id);
+    // The command's end was the agent's input, once, and its second turn answered from it.
+    const told = child.filter((e) => e.kind === "user" && e.data.kind === "harness" && e.data.job === job.id);
+    expect(told).toHaveLength(1);
+    expect(told[0]!.data.text).toMatch(new RegExp(`^\\[harness\\] Your background command "Slow check run" \\(ID ${job.id}\\) exited with code 0, after 2\\d s\\. Its output is in \\S+\\.$`));
+    expect(child.filter((e) => e.kind === "turn_start")).toHaveLength(2);
+    const report = (await agent())!.result ?? "";
+    expect(report).toContain(`(ID ${job.id}) exited with code 0`);
+    // The parent: its prompt, then the one report. No park line woke it, and none rode the report.
+    await expect(page.getByTestId("agent-report")).toHaveCount(1, { timeout: 30_000 });
+    const inputs = (await events(session.id)).filter((e) => e.kind === "user");
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]!.data.text).toContain("<subagent_result");
+    expect(inputs[1]!.data.text).toContain("exited with code 0");
+    expect(inputs[1]!.data.text).not.toContain(" is waiting for ");
+    await expect.poll(async () => (await events(session.id)).at(-1)?.kind, { timeout: 30_000 }).toBe("turn_end");
+    await page.getByTestId("agent-report").first().click();
+    await shoot(page, "agents-own-command-02-reported");
+    expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
+  } finally {
+    await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
 // Feature: an agent's own page stops it whole, as its card in the parent
 // does (by the owner, its waits cancelled), and a held Escape on that page
 // goes back to the parent once, stopping nothing there.

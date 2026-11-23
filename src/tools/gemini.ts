@@ -18,7 +18,9 @@ const obj = (properties: Record<string, unknown>, required: string[]) => ({ type
 
 const run_shell_command: Tool = {
   name: "run_shell_command",
-  urgent: "wait-poll", // a wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts)
+  // A wait polled again in a shell gets a line naming the wait tool (src/engine/wait-poll.ts); a background
+  // command's end starts a turn of its idle session, and an agent waits on one it started.
+  urgent: "command-end-wakes",
   readOnly: false,
   kind: "shell",
   cwdOf: (ctx, input) => input?.dir_path ? abs(input.dir_path, ctx) : shellCwd(ctx),
@@ -26,8 +28,8 @@ const run_shell_command: Tool = {
   autoShell: ({ command, ...options }) => typeof command === "string" ? { command, interpreter: "bash -c", options } : undefined,
   description:
     "Executes a given shell command as `bash -c <command>`. Set is_background for servers and watchers; " +
-    "a command still running after 5 minutes moves to the background. The result gives Output, Exit Code and " +
-    "Background PIDs.",
+    "a command still running after 5 minutes moves to the background, and its end wakes you with a notice. " +
+    "The result gives Output, Exit Code and Background PIDs.",
   input_schema: obj({
     command: { type: "string", description: "Exact bash command to execute as `bash -c <command>`" },
     description: { type: "string", description: "Brief description of the command for the user." },

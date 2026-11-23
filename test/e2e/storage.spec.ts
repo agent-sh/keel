@@ -92,10 +92,12 @@ test("storage, cleanup and backups", async ({ page, request }) => {
     await expect.poll(async () => (await (await request.get(`/api/sessions/${kept.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(n);
     return (await (await request.get(`/api/sessions/${kept.id}`)).json()).events.filter((e: any) => e.kind === "tool_result").map((e: any) => e.data.results[0].content as string);
   };
-  const results = await ran([{ name: "Grep", input: { pattern: "parse", path: big, output_mode: "content", head_limit: 5000 } }, { name: "Bash", input: { command: "echo from the command", run_in_background: true } }], 1);
+  const results = await ran([{ name: "Grep", input: { pattern: "parse", path: big, output_mode: "content", head_limit: 5000 } }, { name: "Bash", input: { command: "echo from the command", run_in_background: true } },
+    // (A step after the command's end: the end rides this turn, and starts no turn of its own that would make the session new.)
+    { name: "Bash", input: { command: "sleep 1" } }], 1);
   const oldOut = /saved to (\S+) \.\.\.\]/.exec(results[0]!)![1]!;
   const spill = join(state_dir, "spill", kept.id);
-  const jobLog = join(spill, "jobs", readdirSync(join(spill, "jobs")).find((f) => f.endsWith(".log"))!);
+  const jobLog = /Output is being written to: (\S+)/.exec(results[1]!)![1]!;
   await expect.poll(() => readFileSync(jobLog, "utf8")).toContain("from the command");
   const newOut = join(spill, "2-bash-new.txt");
   writeFileSync(newOut, "y".repeat(100));

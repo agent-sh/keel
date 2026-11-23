@@ -116,7 +116,7 @@ const Agent: Tool = {
     const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
     if (input.run_in_background && agents.queuedForSlot(a)) return ok(agents.queuedLine(a) + agents.notCarried(a.id));
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.${agents.notCarried(a.id)}`);
-    if (a.status === "waiting") return ok(`Agent ${a.id} is waiting for ${agents.waitsOn(a.session_id) || "a scheduled wait"} and goes on in the background; its report arrives later.${agents.notCarried(a.id)}\n\nSo far:\n${a.result ?? ""}`);
+    if (a.status === "waiting") return ok(`Agent ${a.id} is waiting for ${agents.waitsOn(a) || "a scheduled wait"} and goes on in the background; its report arrives later.${agents.notCarried(a.id)}\n\nSo far:\n${a.result ?? ""}`);
     const report = agents.withUnread(agents.reportBlock(a), a.id) + agents.notCarried(a.id);
     return a.status === "completed" ? ok(report) : fail(report);
   }),
@@ -381,7 +381,7 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
   // is written when the command ends, so it is waited for while its log is there.
   const out = spec.kind === "file" || spec.kind === "log" ? spec.path : "";
   if (out && !elsewhere && dirname(out) === join(ctx.spillDir, "jobs") && !existsSync(out) && !(out.endsWith(".exit") && existsSync(out.slice(0, -".exit".length))))
-    return fail(`${basename(out)} is the output file of no background command of this session. A background command you started does not wake this session when it ends (its end is told with the session's next request): to be woken then, wait with kind "file" on its log's path plus ".exit", which its end writes.`);
+    return fail(`${basename(out)} is the output file of no background command of this session. A background command you started wakes this session by itself when it ends: it needs no wait. To wait on one all the same, use kind "file" on its log's path plus ".exit", which its end writes.`);
   // The model's http wait follows web fetch's address rules (the wait tool runs unasked, as a read).
   if (spec.kind === "http" && privateHost(new URL(spec.url).hostname))
     return fail(`${new URL(spec.url).hostname} is a local or private address; watch a local server with the monitor tool and a command such as curl.`);
@@ -391,7 +391,7 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
 const waitDesc =
   "Wait without spending tokens: the daemon checks a condition (a timer, a file appearing or containing text, a new log line matching a pattern, an HTTP status, a process ending, every check of a GitHub pull request finishing) and wakes this session with the result when it holds or the timeout passes. " +
   "A file or log wait's wake carries what the file gained since the wait began (its end, as a tool's output is cut) and what is known of the job that writes it; that job's end without the condition, or a long stretch of it with no output, no processor use and nothing of it waiting, wakes you before the deadline. " +
-  "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents: their reports wake you by themselves.";
+  "Use it instead of sleep or polling loops. It returns at once; end your turn after it unless you have other work. Not for your own agents, nor for a background command you started: their reports and its end wake you by themselves.";
 
 // A pull request wait runs gh with the owner's login against a repository the
 // model names: the gate judges it as its own tool (wait_pr_checks), so it asks

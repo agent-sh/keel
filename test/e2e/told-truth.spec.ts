@@ -337,24 +337,26 @@ test("what a coordinator and the owner are told about agents, restarts and tools
       const j = (await jobsOf(lane(title).session_id)).find((x) => x.running)!;
       expect(coordNow).toContain(`Agent "${title}" is waiting for command ${j.id}`);
     }
+    // Their parks start no turn of the coordinator (a park is a line of the next input lined up for it, and
+    // their reports, which come first, say more).
     for (const title of ["Slow lane 1", "Slow lane 2"]) {
       expect(str((await results(lane(title).session_id)).at(-1))).toContain("The command was not interrupted: it still runs in the background");
-      await expect.poll(async () => inputs(coord), { timeout: 60_000 }).toMatch(new RegExp(`\\[harness\\] Agent "${title}" \\(${lane(title).id}\\) is waiting for command \\w+, which runs on after a daemon restart\\. It has not finished; its report comes when it does\\.`));
       expect(await inputs(coord)).not.toContain(`title="${title}" status="completed"`);
+      expect(await inputs(coord)).not.toContain(`Agent "${title}" (${lane(title).id}) is waiting for`);
     }
+    await idle(coord);
+    await send(coord, "script:say noted");
+    await idle(coord);
     // The coordinator is told which of its agents were cut and what became of each: one line for the restart,
-    // naming both, with a request of its own that came after the last of them was decided (here a turn a parked
-    // notice started). (It was told in a line for each wave of agents that came back.)
-    for (const title of ["Slow lane 1", "Slow lane 2"]) {
-      await expect.poll(async () => count(await notes(coord), `"${title}" (${lane(title).id}) resumed`), { timeout: 60_000 }).toBe(1);
-    }
+    // naming both, with a request of its own that came after the last of them was decided (here the owner's
+    // prompt). (It was told in a line for each wave of agents that came back.)
+    for (const title of ["Slow lane 1", "Slow lane 2"]) expect(count(await notes(coord), `"${title}" (${lane(title).id}) resumed`)).toBe(1);
     expect(await notes(coord)).toMatch(/\[harness\] A daemon restart cut 2 of your agents mid-turn: /);
     expect(count(await notes(coord), "A daemon restart cut ")).toBe(1);
     // The commands end: each agent gets the turn it was owed, and then reports.
     release("slow-1", "slow-2");
     await expect.poll(tally, { timeout: 90_000 }).toEqual({ failed: 4, completed: 7, waiting: 1 });
     await expect.poll(async () => count(await inputs(coord), 'title="Slow lane 1" status="completed"') + count(await inputs(coord), 'title="Slow lane 2" status="completed"'), { timeout: 60_000 }).toBe(2);
-    for (const title of ["Slow lane 1", "Slow lane 2"]) expect(count(await notes(coord), `"${title}" (${lane(title).id}) resumed`)).toBe(1);
 
     // The line goes with the parent's next request of any kind, the owner's own prompt too: this agent went on
     // into its second command and reports nothing, so nothing but the owner asks its parent anything.

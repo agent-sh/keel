@@ -12,7 +12,8 @@ const freePort = () => new Promise<number>((ok, no) => { const s = createServer(
 const answers = (port: number) => new Promise<boolean>((ok) => { const c = connect(port, "127.0.0.1"); c.once("connect", () => { c.destroy(); ok(true); }); c.once("error", () => ok(false)); });
 
 // Feature: what an agent leaves behind. An agent starts a server on a port, a background sleep, a worktree
-// with one commit and a branch with none of its own, then reports. At its end the server and the sleep are
+// with one commit and a branch with none of its own, then ends its turn. It waits on its running commands
+// (their end would start its next turn), so the owner stops it. At its end the server and the sleep are
 // stopped and the port is free. Keel did not make the worktree or the branch (the agent's commands did), so both
 // stay, named in its report with what is in them, and are listed on Settings > Leftovers as found by the agent.
 // Remove says the ignored path goes too, takes the folder away and leaves its branch listed with the commit;
@@ -44,7 +45,9 @@ test("an agent's processes stop when it ends; what its commands made is listed, 
   try {
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
     const agent = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents[0];
-    await expect.poll(async () => (await agent())?.status, { timeout: 60_000 }).toBe("completed");
+    await expect.poll(async () => (await agent())?.status, { timeout: 60_000 }).toBe("waiting");
+    expect((await request.post(`/api/sessions/${session.id}/agents/${(await agent()).id}/stop`)).ok()).toBe(true);
+    await expect.poll(async () => (await agent())?.status, { timeout: 60_000 }).toBe("stopped");
     const a = await agent();
     // The report's one line: both commands stopped (the server by its port); the worktree and the branch listed
     // with what is in them, not removed.

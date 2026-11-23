@@ -624,11 +624,11 @@ test("a report does not restart a parent held after the owner's Stop", async () 
   expect([agents.get(a.id)!.handback, agents.get(b.id)!.handback]).toEqual([false, false]);
 });
 
-// An agent that parks again and again (a timer, its wake, a timer) wakes its
-// parent for the first park of a task only. A later one is a line of the
-// parent's next input, with the latest thing it waits on; its report still
-// wakes the parent.
-test("repeat parks of one agent wake the parent once and then ride its next input", async () => {
+// A park starts no turn of the parent, the first of a task included: it is a
+// line of the parent's next input, with the latest thing the agent waits on,
+// and the agent's report wakes the parent. (A parent woken for a park alone
+// ended that turn with no tool call 92 times in 100.)
+test("a park rides the parent's next input and starts no turn of its own", async () => {
   const p = parentOf("parks");
   const a = await p.start();
   const park = (of = a) => {
@@ -639,56 +639,39 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   };
   const resume = (w: waits.WaitRecord) => { waits.cancel(w.id); agents.onTurnStart(a.session_id); };
   const w1 = park();
-  expect(p.to()).toHaveLength(1);
-  expect(p.to()[0]).toMatch(new RegExp(`^\\[harness\\] Agent "[^"]+" \\(${a.id}\\) is waiting for timer wait ${w1.id}, due in 1 min \\(at \\d\\d:\\d\\d\\)\\. It has not finished; its report comes when it does\\.$`));
-  resume(w1);
-  resume(park());
-  const w3 = park();
-  expect(p.to()).toHaveLength(1); // no turn for the second and the third
+  flush(p.id);
+  expect(p.to()).toEqual([]); // the first park of the task starts no turn either
   expect(agents.get(a.id)!.status).toBe("waiting");
-  // Another agent's report starts the parent's next turn: the park is one line of it.
+  resume(w1);
+  const w2 = park();
+  // Another agent's report starts the parent's next turn: the park is one line of it, as it stands now.
   const b = await p.start();
   end(b, "end_turn", "report of B");
   await settled();
   flush(p.id);
-  expect(p.to()).toHaveLength(2);
-  expect(p.to()[1]).toContain("report of B");
-  expect(p.to()[1]!.split("is waiting for").length - 1).toBe(1);
-  expect(p.to()[1]).toContain(`(${a.id}) is waiting for timer wait ${w3.id}`);
+  expect(p.to()).toHaveLength(1);
+  expect(p.to()[0]).toContain("report of B");
+  expect(p.to()[0]!.split("is waiting for").length - 1).toBe(1);
+  expect(p.to()[0]).toMatch(new RegExp(`\\[harness\\] Agent "[^"]+" \\(${a.id}\\) is waiting for timer wait ${w2.id}, due in 1 min \\(at \\d\\d:\\d\\d\\)\\. It has not finished; its report comes when it does\\.`));
   // It parks again, then finishes: only the report goes, and it starts a turn.
-  resume(w3);
+  resume(w2);
   resume(park());
-  expect(p.to()).toHaveLength(2);
+  expect(p.to()).toHaveLength(1);
   end(a, "end_turn", "final of A");
   await settled();
   flush(p.id);
-  expect(p.to()).toHaveLength(3);
-  expect(p.to()[2]).toContain("final of A");
-  expect(p.to()[2]).not.toContain(" is waiting for ");
-  // A new task is a new run: its first park wakes the parent again.
-  await agents.send(a.id, "task two");
-  const w5 = park();
-  expect(p.to()).toHaveLength(4);
-  expect(p.to()[3]).toContain(`) is waiting for timer wait ${w5.id}`);
-  // A parent held after the owner's Stop is not woken by a first park: it rides too.
+  expect(p.to()).toHaveLength(2);
+  expect(p.to()[1]).toContain("final of A");
+  expect(p.to()[1]).not.toContain(" is waiting for ");
+  // A parent held after the owner's Stop: the park rides too, and the end of the hold sends nothing for it.
   const c = await p.start();
   held.add(p.id);
   const w6 = park(c);
   flush(p.id);
-  expect(p.to()).toHaveLength(4);
-  // The hold ends (the owner's next turn): the park the parent was never told of wakes it now.
   held.delete(p.id);
   agents.onTurnEnd(p.id, "end_turn");
   flush(p.id);
-  expect(p.to()).toHaveLength(5);
-  expect(p.to()[4]).toContain(`(${c.id}) is waiting for timer wait ${w6.id}`);
-  resume(w5);
-  end(a, "end_turn", "second of A");
-  await settled();
-  flush(p.id);
-  expect(p.to()).toHaveLength(6);
-  expect(p.to()[5]).toContain("second of A");
-  expect(p.to()[5]).not.toContain(" is waiting for ");
+  expect(p.to()).toHaveLength(2);
   waits.cancel(w6.id);
 });
 

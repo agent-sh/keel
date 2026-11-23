@@ -50,6 +50,9 @@ export type Job = {
   // Its call was cut by a restart while the command ran in front and the command
   // ran on: the turn was waiting on it, so its end starts a turn (see finish).
   wake?: boolean;
+  // It ran in front of a call a restart cut and was taken back at this start: that call's result says
+  // what became of it (cutCommand), so its end is no input of its own unless the call waits on it (`wake`).
+  front?: boolean;
   owes?: boolean;        // it ended and the input that says so is not stored yet
   swept?: number;        // processes of it that outlived its terminal and were ended at this start
   looked?: number;       // when what a stop left was last looked for
@@ -319,20 +322,30 @@ function alive(m: Meta): boolean {
 export const jobsChanged: { tell?: (sessionId: string) => void } = {};
 export function backgrounded(job: Job) {
   job.background = true;
+  // (Kept in its record: a next daemon tells its end as a background command's, not as a cut call's.)
+  if (!job.pty) try { patchMeta(job.log, { background: true }); } catch {}
   jobsChanged.tell?.(job.sessionId);
 }
 
-// What a command's end wakes: a session whose turn was waiting on it when a restart cut the call
-// (`wake`). The daemon delivers `text` as an input that starts a turn and calls `sent` once it is
-// stored, or calls `note` where the end starts no turn (someone stopped the command, the owner
-// stopped the session): it then goes with the session's next request, as a background command's
-// end does. With nobody to deliver it (no daemon: a test, a probe) the end is that note.
+// What a background command's end wakes: its session, which the daemon starts a turn of with `text`
+// and calls `sent` once that input is stored, or calls `note` where the end starts no turn (someone
+// stopped the command, the owner stopped the session, an agent that has ended): it then goes with the
+// session's next request. A command a restart cut the call of (`wake`) was what that turn waited on.
+// Any other's end is also a note lined up for the next request from the start (`riding`, its key): a
+// turn at work reads it at its next step, and then no turn is started for it (`read` is called, so the
+// daemon takes back the input it lined up). With nobody to deliver it (no daemon: a test, a probe)
+// the end is that note.
 // A job started, and a job ended (its log and status are whole by then): the check ledger
 // (src/checks) records the runs of a repository's checks from these.
 export const jobStarted: { tell?: (job: Job) => void } = {};
 export const jobDone: { tell?: (job: Job) => void } = {};
 
-export const jobEnded: { tell?: (job: Job, text: string, then: { sent: () => void; note: () => void }) => void } = {};
+export const jobEnded: {
+  tell?: (job: Job, text: string, then: { sent: () => void; note: () => void; riding?: string }) => void;
+  read?: (job: Job) => void;
+} = {};
+// The key of a background command's end: of its note, and of the input that tells it (stored once under it).
+export const endKey = (j: Pick<Job, "id">) => `job-end:${j.id}`;
 
 // `at`: when it ended, for one that ended while no daemon watched it (its exit file's time).
 function finish(job: Job, code: number | null, signal: string | null, at?: number) {
@@ -360,19 +373,33 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     // One that ended while no daemon watched it is told now, at this start: it says when it really ended.
     const down = at !== undefined ? whileDown(at, lastDown()) : undefined;
     const when = down ? ` It ended ${down}.` : "";
-    const note = () => {
+    const note = (o: Pick<Notice, "key" | "stored"> = {}) => {
       const list = notices.get(job.sessionId) ?? [];
-      list.push({ text: `Background command ${what} (ID ${job.id}) ${how}.${when} Output: ${job.log}`, job: job.id, log: job.log });
+      list.push({ text: `Background command ${what} (ID ${job.id}) ${how}.${when} Output: ${job.log}`, job: job.id, log: job.log, ...o });
       notices.set(job.sessionId, list);
     };
-    // A command a cut call was waiting on: its end is what that turn waited for, so it starts one.
+    // Named by words of its own that cannot read as a tag or a line of the harness inside an input.
     // What it printed is not part of the input: it is tool output, read from the log with a tool.
+    const named = what.replace(/[<>\[\]]/g, "'").replace(/(?<=.)`(?=.)/g, "'");
+    // A command a cut call was waiting on: its end is what that turn waited for, so it starts one.
     if (job.wake && jobEnded.tell) {
-      // Named by words of its own that cannot read as a tag or a line of the harness inside this input.
-      const named = what.replace(/[<>\[\]]/g, "'").replace(/(?<=.)`(?=.)/g, "'");
       const text = `[harness] The command you were running when the daemon restarted has ended, after ${span(job.ended - job.started)}: ${named} (ID ${job.id}) ${how}.${when} Its output is in ${job.log}.`;
       job.owes = true;
       jobEnded.tell(job, text, { sent: () => { job.owes = false; patchMeta(job.log, { reported: true }); }, note: () => { job.owes = false; note(); } });
+      return;
+    }
+    // Any other the model started: its end starts a turn of its idle session, as Claude Code's
+    // background tasks do, and rides a turn at work. (Not a command the owner ran in the terminal pane.)
+    if (jobEnded.tell && job.by !== "owner" && !job.front) {
+      const key = endKey(job);
+      job.owes = true;
+      note({ key, stored: () => { if (!job.owes) return; job.owes = false; try { jobEnded.read?.(job); } catch {} } });
+      const text = `[harness] Your background command ${named} (ID ${job.id}) ${how}, after ${span(job.ended - job.started)}.${when} Its output is in ${job.log}.`;
+      jobEnded.tell(job, text, {
+        riding: key,
+        sent: () => { job.owes = false; takeNotice(job.sessionId, key); patchMeta(job.log, { reported: true }); },
+        note: () => { job.owes = false; },
+      });
       return;
     }
     note();
@@ -383,6 +410,12 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
 // (the model was told they run on), and their end starts its next one.
 // One that ended counts until the input that says so is stored: its session is still owed that turn.
 export const awaited = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId && j.wake && (running(j) || j.owes));
+
+// The background commands of a session started at `since` or later that it has not been told the end
+// of: they run, or the input that tells their end is on its way. An agent whose turn ends with one
+// waits on it (src/automation/agents.ts). Not one being stopped, a cut call's (awaited) or the owner's.
+export const unfinished = (sessionId: string, since: number) =>
+  [...jobs.values()].filter((j) => j.sessionId === sessionId && j.background && !j.wake && j.by !== "owner" && j.started >= since && ((running(j) && !j.stopping) || j.owes));
 
 // After a restart: take back the jobs a previous daemon started under
 // `spillRoot/<session>/jobs/`. One still running is watched until it ends; one
@@ -507,7 +540,7 @@ export function adoptJobs(spillRoot: string, refused?: (file: string, why: strin
     }
     let resolve!: () => void;
     // A command in front whose stop was under way was told to its call; a background one's end is a note of its own.
-    const job: Job = { ...base, pty: false, wake: m.wake, stopping: !!m.stopping, stopReason: m.stopping ? m.stop_reason : undefined, background: m.background || !m.stopping, exited: new Promise<void>((r) => (resolve = r)) };
+    const job: Job = { ...base, pty: false, wake: m.wake, front: !m.background || undefined, stopping: !!m.stopping, stopReason: m.stopping ? m.stop_reason : undefined, background: m.background || !m.stopping, exited: new Promise<void>((r) => (resolve = r)) };
     jobs.set(job.id, job);
     adopted.set(job.id, { job, meta: m, resolve });
     finishStop(job);
@@ -1021,6 +1054,14 @@ export function addNotice(sessionId: string, text: string, o: Pick<Notice, "key"
   notices.set(sessionId, list);
 }
 export const hasNotice = (sessionId: string, key: string) => !!notices.get(sessionId)?.some((n) => n.key === key);
+// Takes back the note under `key`: what it says was told another way (an input of its own).
+export function takeNotice(sessionId: string, key: string) {
+  const list = notices.get(sessionId);
+  if (!list) return;
+  const keep = list.filter((n) => n.key !== key);
+  if (keep.length) notices.set(sessionId, keep);
+  else notices.delete(sessionId);
+}
 
 export function drainNotices(sessionId: string): Notice[] {
   const n = notices.get(sessionId) ?? [];
