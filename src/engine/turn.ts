@@ -1378,10 +1378,10 @@ export class Engine {
     const extra = await Promise.all(allHooks().map((h) => h.system?.(session, info) ?? ""));
     // Each block as the model is sent it, secrets as placeholders: the kept
     // prompt and its fingerprints never hold a secret's value.
-    const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id), ...(p.data !== undefined && { data: conceal(p.data, session.id) }) });
+    const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id), ...(p.data !== undefined && { data: conceal(p.data, session.id) }), ...(p.same !== undefined && { same: conceal(p.same, session.id) }) });
     // A block of the owner's data keeps its place while it is empty, so its data can be compared (hooks.ts SystemBlock).
     const part = (b: string | SystemBlock, wrap: (t: string) => string): PromptPart[] =>
-      typeof b === "string" ? (b ? [sent({ name: blockName(b), text: wrap(b) })] : []) : [sent({ name: b.name, text: b.text ? wrap(b.text) : "", data: b.data })];
+      typeof b === "string" ? (b ? [sent({ name: blockName(b), text: wrap(b) })] : []) : [sent({ name: b.name, text: b.text ? wrap(b.text) : "", data: b.data, ...(b.same !== undefined && { same: b.same ? wrap(b.same) : "" }) })];
     const shared: PromptPart[] = [sent({ name: "core", text: `${CORE}${testBuild?.core ? `\n${testBuild.core}` : ""}\n\n` }), ...extra.flatMap((b) => part(b, (t) => t + "\n\n"))];
     const own = (await Promise.all(allHooks().map((h) => h.sessionSystem?.(session, info) ?? ""))).flatMap((b) => part(b, (t) => `\n${t}\n`));
     // The place and its instruction files: the same for every session of the

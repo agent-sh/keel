@@ -454,17 +454,18 @@ export function fitListing(entries: ListingEntry[], budget = LISTING_BUDGET): { 
 
 // How often each skill was loaded (the daemon keeps the counts; none: all equal).
 let usage: { uses(): Map<string, number>; record(name: string): void } | null = null;
-export const setSkillUsage = (u: typeof usage) => void (usage = u);
+// (It gives back the counts it replaces.)
+export const setSkillUsage = (u: typeof usage) => { const was = usage; usage = u; return was; };
 
 // `window`: the context window of the session's model, in tokens.
-export function listingOf(cwd: string, window?: number) {
-  const skills = discoverSkills(cwd).filter((s) => s.modelInvocable && s.enabled);
-  const uses = usage?.uses() ?? new Map<string, number>();
+// `byUse` false: cut as if no skill was ever loaded.
+export function listingOf(cwd: string, window?: number, byUse = true, skills = discoverSkills(cwd).filter((s) => s.modelInvocable && s.enabled)) {
+  const uses = (byUse ? usage?.uses() : undefined) ?? new Map<string, number>();
   return fitListing(skills.map((s) => ({ name: s.name, description: s.description, uses: uses.get(s.name) ?? 0 })), listingBudget(window));
 }
 
-export function skillListing(cwd: string, window?: number): string {
-  const { lines, nameOnly } = listingOf(cwd, window);
+export function skillListing(cwd: string, window?: number, byUse = true, skills?: Skill[]): string {
+  const { lines, nameOnly } = listingOf(cwd, window, byUse, skills);
   if (!lines.length) return "";
   const note = nameOnly.length ? `\n(${nameOnly.length} of them are listed by name only, to keep this list short: load one by name to read what it is for.)` : "";
   return `Skills you can load with the skill tool when a task matches one (the body comes back as its result):\n${lines.join("\n")}${note}`;
@@ -472,12 +473,21 @@ export function skillListing(cwd: string, window?: number): string {
 
 // Built with the session's system prompt, which stays frozen: the budget is the window of the model it runs on (made again when the session switches model).
 // The skills themselves are the owner's side of the block (hooks.ts SystemBlock); how the listing was cut to fit is not.
+// Which descriptions a listing past its budget keeps follows how often each skill was loaded: that
+// is no change of the skills, so the block is compared as cut with no use counted, and a kept
+// prompt is not made again because a skill was loaded since (it takes the new cut when it is made
+// again for another reason).
 registerHooks({
-  system: (s, model) => ({
-    name: "Skills you can load with the skill tool when a t",
-    text: skillListing(s.workspace, model && !model.context_assumed ? model.context : undefined),
-    data: JSON.stringify(discoverSkills(s.workspace).filter((k) => k.modelInvocable && k.enabled).map((k) => [k.name, k.description])),
-  }),
+  system: (s, model) => {
+    const window = model && !model.context_assumed ? model.context : undefined;
+    const skills = discoverSkills(s.workspace).filter((k) => k.modelInvocable && k.enabled);
+    return {
+      name: "Skills you can load with the skill tool when a t",
+      text: skillListing(s.workspace, window, true, skills),
+      data: JSON.stringify(skills.map((k) => [k.name, k.description])),
+      same: skillListing(s.workspace, window, false, skills),
+    };
+  },
 });
 
 export const skillTool = (name: string, nameKey: string, argsKey: string | null, description?: string): Tool => ({

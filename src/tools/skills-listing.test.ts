@@ -28,3 +28,47 @@ test("the skill listing's budget follows the model's context window", async () =
   expect(fitListing(entries, listingBudget(200_000)).nameOnly.length).toBeGreaterThan(0);
   expect(fitListing(entries, listingBudget(1_000_000)).nameOnly).toEqual([]);
 });
+
+// A listing past its budget keeps the descriptions of the skills loaded most,
+// so loading one changes its text. That is no change of the skills: the kept
+// prompt's block must compare the same, and only a change of a skill makes
+// the prompt again.
+test("loading a skill does not change the listing block a kept prompt is compared by", async () => {
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { allHooks } = await import("../engine/hooks.ts");
+  const { blocksOf } = await import("../engine/prompt-store.ts");
+  const { setSkillUsage } = await import("./skills.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "skills-cut-"));
+  mkdirSync(join(dir, ".git"));
+  const skill = (n: number, description = `does thing ${n} `.repeat(20)) => {
+    mkdirSync(join(dir, ".claude/skills", `cut-${n}`), { recursive: true });
+    writeFileSync(join(dir, ".claude/skills", `cut-${n}`, "SKILL.md"), `---\nname: cut-${n}\ndescription: ${description}\n---\nbody\n`);
+  };
+  for (let n = 0; n < 30; n++) skill(n);
+  const uses = new Map<string, number>();
+  const was = setSkillUsage({ uses: () => uses, record: () => {} });
+  const hook = allHooks().find((h) => h.system && (h.system({ workspace: dir } as any) as any)?.name?.startsWith("Skills you can load"))!;
+  // A small window: the floor of the budget, so most descriptions are cut.
+  const render = async () => {
+    const b = (await hook.system!({ workspace: dir } as any, { id: "m", context: 16_000 } as any)) as { name: string; text: string; data: string; same?: string };
+    return { text: b.text, block: blocksOf([b])[0]! };
+  };
+  try {
+    const first = await render();
+    expect(first.text).toContain("listed by name only");
+    uses.set("cut-17", 4);
+    const loaded = await render();
+    expect(loaded.text).not.toBe(first.text);
+    expect(loaded.text).toContain("does thing 17");
+    expect(loaded.block).toEqual(first.block);
+    // A skill added is a change, of the block and of the owner's side of it.
+    skill(30);
+    const added = (await render()).block;
+    expect(added.hash).not.toBe(first.block.hash);
+    expect(added.data).not.toBe(first.block.data);
+  } finally {
+    setSkillUsage(was);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -46,7 +46,11 @@ export type ToolGate = void | { deny: string } | { answer: string } | { input?: 
 // a daemon start; a change of the words alone is the build's and waits until
 // the session's cache is cold (src/engine/build-pin.ts). A plain string is the
 // build's own words.
-export type SystemBlock = { name: string; text: string; data: string };
+// `same`: what the block is compared by, when its text also holds what changes
+// with nothing it describes changing (which descriptions a listing cut to fit
+// keeps, by how often each was used): the block is made again only when this,
+// or the data, differs. Absent: its text.
+export type SystemBlock = { name: string; text: string; data: string; same?: string };
 
 // A turn a daemon stop or kill cut, as the next start found it.
 export type CutTurn = {

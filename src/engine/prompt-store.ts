@@ -16,7 +16,8 @@ import type { Store } from "../core/store.ts";
 // for a block that is the build's words alone.
 // `mark`: the build's urgent mark for the block when it was rendered (src/core/build.ts).
 export type PromptBlock = { name: string; hash: string; bytes: number; data?: string; mark?: string };
-export type PromptPart = { name: string; text: string; data?: string };
+// `same`: what the block's fingerprint is taken of, when not its text (hooks.ts SystemBlock).
+export type PromptPart = { name: string; text: string; data?: string; same?: string };
 export type StoredPrompt = {
   text: string;
   split: number;
@@ -45,7 +46,7 @@ export const blockName = (text: string) => text.trimStart().split("\n", 1)[0]!.s
 
 export const blocksOf = (parts: PromptPart[]): PromptBlock[] =>
   parts.map((p) => ({
-    name: p.name, hash: textHash(p.text), bytes: Buffer.byteLength(p.text),
+    name: p.name, hash: textHash(p.same ?? p.text), bytes: Buffer.byteLength(p.text),
     ...(p.data !== undefined && { data: textHash(p.data) }), ...(URGENT.blocks[p.name] && { mark: URGENT.blocks[p.name] }),
   }));
 
