@@ -98,14 +98,21 @@ panels.add({
 });
 
 // /goal <objective> sets the session's goal (it starts a turn); /goal pause,
-// resume or clear; /goal alone opens the panel.
+// resume or clear; /goal alone opens the panel. Typed in the start box, an
+// objective starts a session as a first message does and is its goal there.
 slash.add({
   id: "goal",
   label: "Keep working until a condition holds, checked after each turn",
   hint: "[objective | pause | resume | clear]",
-  run: async (arg, { session }) => {
+  run: async (arg, ctx) => {
     const a = arg.trim();
-    if (!session) throw new Error("Open a session first.");
+    let session = ctx.session;
+    if (!session) {
+      const usage = (m: string) => Object.assign(new Error(m), { usage: true });
+      if (!a || ["pause", "resume", "clear", "stop", "off", "cancel"].includes(a)) throw usage("Type the goal after /goal to start a session that works toward it.");
+      if (!ctx.start) throw usage("A goal is set in its session: start the session on that machine, then type /goal there.");
+      session = await ctx.start();
+    }
     savePref("panel", "tasks");
     if (!a) return;
     if (a === "pause" || a === "resume") return void (await auto.patchGoal(session.id, { status: a === "pause" ? "paused" : "pursuing" }));

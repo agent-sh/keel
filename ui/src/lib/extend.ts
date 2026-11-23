@@ -40,7 +40,10 @@ export type SlashItem = {
   // another branch is previewed, like a typed message.
   sends?: true;
 };
-export type SlashCtx = { session?: Session; setText: (t: string) => void };
+// `start`: in the start box, where no session exists yet, it starts one (in the folder, model
+// and machine picked there) and opens it; a command that can run in a new session calls it.
+// Absent where a session is open, and where the box cannot start one here.
+export type SlashCtx = { session?: Session; setText: (t: string) => void; start?: () => Promise<Session> };
 export const slash = registry<SlashItem>();
 
 // Sections of the settings page. `words` are what the settings search matches.

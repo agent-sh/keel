@@ -1,6 +1,6 @@
 import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
-import type { PromptBlock } from "../../../src/core/types.ts";
+import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
 import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
@@ -80,6 +80,9 @@ type ComposerProps = {
   // after the turn. Tab queues nothing: with a draft it goes to the queue
   // button, so Tab then Enter queues.
   onQueue?: (text: string, images: PromptBlock[], id?: string) => Promise<unknown> | void;
+  // The start box: makes a session with no first message and opens it, for a command typed
+  // where no session exists yet (/goal starts one, as a plain prompt does).
+  onStart?: () => Promise<{ id: string }>;
   onStop?: () => void;
   // What Escape does when no menu is open (default: stop a working turn).
   onEscape?: () => void;
@@ -111,7 +114,7 @@ export function Composer(props: ComposerProps) {
 }
 
 const SessionComposer = memo(function SessionComposer({
-  session, onSend, onQueue, onStop, onEscape, stopLabel, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
+  session, onSend, onQueue, onStart, onStop, onEscape, stopLabel, working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -494,7 +497,11 @@ const SessionComposer = memo(function SessionComposer({
   }, [menu?.kind, menu?.query, workspace]);
 
   // The session as it is when a command asks, not as it was when the box was drawn.
-  const ctx = { get session() { return sid ? getState().sessions[sid] : undefined; }, setText };
+  const ctx = {
+    get session() { return sid ? getState().sessions[sid] : undefined; },
+    setText,
+    start: !sid && onStart ? async () => { const s = await onStart(); return getState().sessions[s.id] ?? (s as Session); } : undefined,
+  };
   const runSlash = async (item: SlashItem, arg: string) => {
     if (!item.run) return setNotice(`/${item.id} is not available yet.`);
     // A command that prompts the model is held like a typed message while another branch is read.

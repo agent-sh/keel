@@ -1,3 +1,4 @@
+import type { PromptBlock } from "../../../src/core/types.ts";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, Fragment } from "react";
 import { actions, api, reportError, useStore, workspaces } from "../lib/store.ts";
 import { savePref, setUI, useUI } from "../lib/ui.ts";
@@ -73,6 +74,19 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
   const rulesKey = useFleet((s) => JSON.stringify(s.rules) + s.machines.map((m) => m.id + m.state).join());
   useEffect(() => { if (machine === "auto") fleet.previewAuto().catch(reportError); }, [machine, rulesKey]);
   const autoThere = machine === "auto" && !!place && place.machine_id !== "local";
+  const start = async (t: string, images: PromptBlock[]) => {
+    const s = machine
+      ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined, sshMachine ? remoteDir || undefined : undefined)
+      : inWorktree && (await isGitFolder(workspace))
+      ? await createInWorktree(t, model || undefined, workspace || undefined, images)
+      : await actions.create(t, model || undefined, workspace || undefined, images, { project: startProject(workspace, newProject) });
+    // The pick was for this conversation: the next New starts on the default
+    // again. A failed create keeps it for the retry.
+    setUI({ newModel: "", newProject: "" });
+    // The session they started is the pane's session: they mean to work in it (lib/looks.ts).
+    openPlaced(s.id);
+    return s;
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -112,18 +126,10 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
               autoFocus
               onEscape={onBack}
               hold={blocked ? "Not sent: the note above the box says why." : undefined}
-              onSend={async (t, images) => {
-                const s = machine
-                  ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined, sshMachine ? remoteDir || undefined : undefined)
-                  : inWorktree && (await isGitFolder(workspace))
-                  ? await createInWorktree(t, model || undefined, workspace || undefined, images)
-                  : await actions.create(t, model || undefined, workspace || undefined, images, { project: startProject(workspace, newProject) });
-                // The pick was for this conversation: the next New starts on the default
-                // again. A failed create keeps it for the retry.
-                setUI({ newModel: "", newProject: "" });
-                // The session they started is the pane's session: they mean to work in it (lib/looks.ts).
-                openPlaced(s.id);
-              }}
+              onSend={(t, images) => start(t, images)}
+              // A command typed here (/goal) starts its session on this machine; one placed on
+              // another is started there with its first message.
+              onStart={blocked || (machine && !(machine === "auto" && !autoThere)) ? undefined : () => start("", [])}
             />
           </div>
           <div className={cn("mt-3 hidden items-center gap-4 text-caption text-faint", !beside && "sm:flex")}>

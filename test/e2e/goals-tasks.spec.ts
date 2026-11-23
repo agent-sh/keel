@@ -143,3 +143,28 @@ test("goal: a claim the files do not back is not met", async ({ page, request })
   await shoot(page, "goals-05-refuted");
   await request.delete(`/api/sessions/${session.id}/goal`);
 });
+
+// A goal typed in the start box, where no session exists yet, starts a session as a
+// first message does and is that session's goal. A session's own command typed
+// there says in place what it needs and is not a failure.
+test("goal: typed in the start box it starts its session", async ({ page, request }) => {
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  await page.goto("/");
+  const box = page.getByTestId("new-composer").getByTestId("composer");
+  await box.fill("/pin");
+  await box.press("Enter");
+  await expect(page.getByTestId("new-composer").getByTestId("composer-notice")).toContainText("session");
+  await expect(box).toHaveValue("/pin");
+  const objective = "script:say done. Reply done once.";
+  await box.fill(`/goal ${objective}`);
+  await box.press("Enter");
+  await expect(page).toHaveURL(/\/s\/[^/]+$/);
+  const id = page.url().split("/s/")[1]!;
+  await expect(page.getByTestId("tasks-panel")).toBeVisible();
+  await expect(page.getByTestId("goal-card")).toBeVisible();
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/goal`)).json()).goal?.objective).toBe(objective);
+  await shoot(page, "goals-06-from-start");
+  await request.delete(`/api/sessions/${id}/goal`);
+  const errors = (await (await request.get("/api/errors")).json()).errors;
+  expect(errors.length, JSON.stringify(errors.slice(0, 3))).toBe(errorsBefore);
+});
