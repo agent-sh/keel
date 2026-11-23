@@ -133,7 +133,8 @@ function ReviewCard({ r, sessionId, lit }: { r: Review; sessionId: string; lit: 
       setPending(false);
     }
   };
-  const what = r.scope === "uncommitted" ? "uncommitted work" : r.scope === "branch" ? `branch over ${r.target}` : `commit ${r.target}`;
+  // Uncommitted work that was committed whole since is that commit now, said with when it was read.
+  const what = r.committed ? `commit ${r.committed}` : r.scope === "uncommitted" ? "uncommitted work" : r.scope === "branch" ? `branch over ${r.target}` : `commit ${r.target}`;
   // Which agent's work, by name and branch (and a short id: two may share a title).
   const agent = r.agent_id ? (r.agent_title ?? "an agent") : null;
   const recipient = agent ?? "the model";
@@ -141,9 +142,14 @@ function ReviewCard({ r, sessionId, lit }: { r: Review; sessionId: string; lit: 
     <div className={cn("k-review rounded-lg border border-line bg-bg transition-shadow", lit && "ring-2 ring-accent/40")} data-testid="review" data-state={r.state} data-review-id={r.id}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-line px-3 py-2 text-caption">
         {r.state === "running" ? <Loader2 className="size-3.5 animate-spin text-accent" /> : r.state === "failed" ? <CircleAlert className="size-3.5 text-danger" /> : r.state === "stopped" ? <CircleStop className="size-3.5 text-faint" /> : <Check className="size-3.5 text-ok" />}
-        <span className="font-medium">
+        <span className="font-medium" data-testid="review-heading">
           {r.kind === "security" ? "Security review" : "Review"} of {agent ? <>{agent}'s </> : ""}{what}
         </span>
+        {r.committed && (
+          <span className="text-micro text-faint" data-testid="review-committed" title={`The uncommitted work this review read was committed as ${r.committed}`}>
+            read before it was committed
+          </span>
+        )}
         {r.agent_id && (
           <span className="font-mono text-micro text-faint" data-testid="review-agent" title={`agent ${r.agent_id}`}>
             {r.agent_branch ? `${r.agent_branch} · ` : ""}{r.agent_id.slice(0, 6)}

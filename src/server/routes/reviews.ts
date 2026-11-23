@@ -94,7 +94,20 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
       },
     },
     "/api/sessions/:id/reviews": {
-      GET: (req: any) => (store.session(req.params.id) ? json({ reviews: all(req.params.id) }) : bad("no such session", 404)),
+      GET: async (req: any) => {
+        const s = store.session(req.params.id);
+        if (!s) return bad("no such session", 404);
+        // A review of uncommitted work that has since been committed whole is tied to that
+        // commit: its findings are about the commit now, not about work still to commit.
+        const list = all(s.id);
+        const open = list.filter((r) => r.scope === "uncommitted" && r.state === "done" && r.from && r.to && !r.committed);
+        for (const r of open) {
+          const of = r.agent_id ? store.session(agents.get(r.agent_id)?.session_id ?? "") : s;
+          const sha = of ? await wts.committedAs(of, r.from!, r.to!).catch(() => null) : null;
+          if (sha) Object.assign(r, save({ ...r, committed: sha.slice(0, 12) }));
+        }
+        return json({ reviews: list });
+      },
       POST: (req: any) => guard(async () => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
@@ -130,7 +143,7 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         gate?.setPerm(child.id, { mode: "read-only", sandbox: sb ? "read-only" : "off", network: !sb });
         const r = save({
           id: Bun.randomUUIDv7(), session_id: s.id, child_id: child.id, kind, scope, target: d.target, focus, model: info.id,
-          diff_sha256: key, files: d.files.length, state: "running", findings: [], created: Date.now(), cut,
+          diff_sha256: key, files: d.files.length, state: "running", findings: [], created: Date.now(), cut, from: d.from, to: d.to,
           ...(agent ? { agent_id: agent.id, agent_title: agent.title, agent_branch: agent.branch ?? undefined } : {}),
         });
         agents.adopt(s.id, child.id, { title: child.title || "Review", type: "reviewer", model: info.id });

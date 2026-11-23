@@ -76,6 +76,9 @@ export class GitError extends Error {
 // repository run one after another.
 const worktreeQueue = new Map<string, Promise<unknown>>();
 
+// The tree of no files, what git compares a first commit with.
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 export function git(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean; fetch?: GitFetch } = {}): Promise<string> {
   if (args[0] !== "worktree") return gitNow(cwd, args, opts);
   const run = (worktreeQueue.get(cwd) ?? Promise.resolve()).then(() => gitNow(cwd, args, opts));
@@ -499,11 +502,11 @@ export class Worktrees {
     const sh = new Shadow("", top, gitDir);
     // The two trees compared name the whole change (a review is keyed on them, not on a preview cut to fit).
     const between = async (from: string, to: string, target: string) => ({ ...(await sh.diff(from, to)), target, from, to });
-    const head = (await git(top, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { ok: true })).trim() || "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const head = (await git(top, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], { ok: true })).trim() || EMPTY_TREE;
     if (scope === "uncommitted") return between(head, await sh.snapshot(), "HEAD");
     if (scope === "commit") {
       const c = (await git(top, ["rev-parse", "--verify", `${ref || "HEAD"}^{commit}`])).trim();
-      const parent = (await git(top, ["rev-parse", "--verify", "--quiet", `${c}^^{tree}`], { ok: true })).trim() || "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+      const parent = (await git(top, ["rev-parse", "--verify", "--quiet", `${c}^^{tree}`], { ok: true })).trim() || EMPTY_TREE;
       return between(parent, (await git(top, ["rev-parse", `${c}^{tree}`])).trim(), c.slice(0, 12));
     }
     const base = ref || this.get(s.id)?.base || (await this.defaultBase(top));
@@ -511,6 +514,24 @@ export class Worktrees {
     const mb = (await git(top, ["merge-base", "HEAD", base], { ok: true })).trim();
     if (!mb) throw new GitError(`no merge base with ${base}`, 400);
     return between((await git(top, ["rev-parse", `${mb}^{tree}`])).trim(), await sh.snapshot(), base);
+  }
+
+  // The commit that took a reviewed change of uncommitted work whole: the newest
+  // hundred commits of HEAD, the oldest whose tree is the reviewed one and whose
+  // parent's is the tree the review compared with. Null when none did (a part of
+  // it committed, more work since, another branch checked out).
+  async committedAs(s: Session, from: string, to: string): Promise<string | null> {
+    if (!existsSync(s.workspace)) return null;
+    const out = await git(s.workspace, ["log", "-n", "100", "--format=%H %T %P", "HEAD"], { ok: true });
+    const rows = out.trim().split("\n").filter(Boolean).map((l) => l.split(" "));
+    const tree = new Map(rows.map((r) => [r[0]!, r[1]!]));
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const [sha, t, parent] = rows[i]!;
+      if (t !== to) continue;
+      const before = !parent ? EMPTY_TREE : tree.get(parent) ?? (await git(s.workspace, ["rev-parse", "--verify", "--quiet", `${parent}^{tree}`], { ok: true })).trim();
+      if (before === from) return sha!;
+    }
+    return null;
   }
 
   async pr(w: Worktree): Promise<{ pr: any; available: boolean; error?: string }> {

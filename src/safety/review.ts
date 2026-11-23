@@ -29,6 +29,9 @@ export type Review = {
   focus?: string;
   model: string;
   diff_sha256: string;
+  from?: string;      // the two trees the review compared
+  to?: string;
+  committed?: string; // a review of uncommitted work: the commit that took that change whole, once one did
   files: number;
   state: "running" | "done" | "failed" | "stopped"; // stopped: the owner's Stop, not a failure
   error?: string;
@@ -150,7 +153,7 @@ export function parseAnswer(text: string): Pick<Review, "findings" | "verdict" |
 export function fixPrompt(r: Review, chosen: Finding[]): string {
   const lines = chosen.map((f) => `- [${priorityLabel(f.priority)}] ${f.file}:${f.line}${f.end_line ? `-${f.end_line}` : ""}: ${f.title}${f.body ? `\n  ${f.body.replace(/\n/g, "\n  ")}` : ""}`);
   return [
-    `An independent ${r.kind === "security" ? "security " : ""}review of ${r.scope === "commit" ? `commit ${r.target}` : r.scope === "branch" ? `the branch over ${r.target}` : "the uncommitted work"} found ${chosen.length === 1 ? "this" : "these"}:`,
+    `An independent ${r.kind === "security" ? "security " : ""}review of ${r.scope === "commit" ? `commit ${r.target}` : r.scope === "branch" ? `the branch over ${r.target}` : r.committed ? `the work since committed as ${r.committed}` : "the uncommitted work"} found ${chosen.length === 1 ? "this" : "these"}:`,
     lines.join("\n"),
     "Check each against the code first: fix the ones that hold, and say in one line why for any you leave.",
   ].join("\n\n");

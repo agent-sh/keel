@@ -91,6 +91,36 @@ test("independent review with findings", async ({ page, request }) => {
   expect(errorsAfter).toBe(errorsBefore);
 });
 
+// A review of uncommitted work whose change was then committed whole heads its
+// findings with that commit, not with "uncommitted work" over an empty diff.
+test("a review of uncommitted work names the commit that took it", async ({ page, request }) => {
+  const ws = repo("review-committed");
+  writeFileSync(join(ws, "calc.py"), "# script:review\ndef div(a, b):\n    return a / b  # BUG: divides by zero when b is 0\n");
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "read-only" } });
+  await page.goto(`/s/${session.id}`);
+  await openPanel(page, "review");
+  const reviewer = page.getByTestId("reviewer");
+  await reviewer.getByTestId("review-start").click();
+  const card = reviewer.getByTestId("review").first();
+  await expect(card).toHaveAttribute("data-state", "done", { timeout: 150_000 });
+  await expect(card.getByTestId("review-heading")).toHaveText("Review of uncommitted work");
+  await expect(card.getByTestId("review-committed")).toHaveCount(0);
+
+  git(ws, "add", "-A");
+  git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "guard div");
+  const sha = git(ws, "rev-parse", "HEAD").trim().slice(0, 12);
+  await page.reload();
+  await openPanel(page, "review");
+  await expect(card.getByTestId("review-heading")).toHaveText(`Review of commit ${sha}`);
+  await expect(card.getByTestId("review-committed")).toHaveText("read before it was committed");
+  await card.scrollIntoViewIfNeeded();
+  await shoot(page, "review-04-committed");
+  // The stored review keeps the commit.
+  const { reviews } = await (await request.get(`/api/sessions/${session.id}/reviews`)).json();
+  expect(reviews[0].committed).toBe(sha);
+});
+
 // Feature: reviewer mode. A call the rules would ask about goes to the
 // reviewer model with the owner's own policy: a plain one runs without a
 // card, one the policy forbids is refused and listed; the owner lets one
