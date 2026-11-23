@@ -1,10 +1,12 @@
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitPullRequest, MoveLeft, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ExternalLink, GitBranch, GitMerge, GitPullRequest, MoveLeft, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { isGitFolder, loadWorktree, setStartInWorktree, useStartInWorktree, useWorktree } from "../lib/worktree.ts";
+import { loadOverlap, mineOf, useOverlap } from "../lib/overlap.ts";
+import { OverlapList } from "./BranchesPanel.tsx";
 import { stoppingShells } from "../lib/shells.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { popupClass } from "./ui.tsx";
@@ -21,6 +23,8 @@ const btn = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-ui hove
 // restore, the pull request, removal.
 export function WorktreeChip({ session }: { session: Session }) {
   const wt = useWorktree(session.id);
+  const overlap = useOverlap(session.id);
+  const clashes = mineOf(overlap);
   const [pr, setPr] = useState<{ pr: Pr | null; available: boolean; error?: string } | null>(null);
   const [form, setForm] = useState<{ title: string; body: string; draft: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,7 +32,11 @@ export function WorktreeChip({ session }: { session: Session }) {
   const [open, setOpen] = useState(false);
 
   // Fresh counts when the popup opens and after each turn.
-  useEffect(() => { if (open || session.phase === "idle") loadWorktree(session.id, true).catch(reportError); }, [open, session.phase]);
+  useEffect(() => {
+    if (!(open || session.phase === "idle")) return;
+    loadWorktree(session.id, true).catch(reportError);
+    loadOverlap(session.id).catch(reportError);
+  }, [open, session.phase]);
   useEffect(() => {
     if (!open || !wt || wt.state !== "active") return;
     api(`/api/sessions/${session.id}/pr`).then(setPr).catch(reportError);
@@ -65,6 +73,12 @@ export function WorktreeChip({ session }: { session: Session }) {
         <GitBranch className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{wt.branch.replace(/^keel\//, "")}</span>
         {wt.state !== "active" && <span className="text-micro">{wt.state}</span>}
+        {clashes.length > 0 && (
+          <span data-testid="overlap-mark" data-count={clashes.length} title={`Would conflict with ${clashes.length === 1 ? "1 branch" : `${clashes.length} branches`} when landing`}
+            className="inline-flex h-[1.125rem] shrink-0 items-center gap-0.5 rounded-md bg-warn/12 px-1 font-mono text-micro font-medium text-warn">
+            <GitMerge className="size-3" />{clashes.length}
+          </span>
+        )}
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner align="end" sideOffset={6} className="z-50">
@@ -80,6 +94,13 @@ export function WorktreeChip({ session }: { session: Session }) {
                 : wt.state === "parked" ? " · parked: the folder is gone, its work saved" : " · removed"}
             </p>
             <p className="mt-1 truncate font-mono text-micro text-faint" title={wt.path}>{wt.path}</p>
+
+            {clashes.length > 0 && overlap?.mine && (
+              <div className="mt-3 rounded-lg border border-warn/35 bg-warn/6 px-2.5 py-2" data-testid="overlap-popup">
+                <p className="flex items-center gap-1.5 text-caption font-medium text-warn"><GitMerge className="size-3.5" /> Would conflict when landing</p>
+                <OverlapList pairs={clashes} mine={overlap.mine} compact />
+              </div>
+            )}
 
             {wt.state === "active" && pr?.pr && (
               <a href={pr.pr.url} target="_blank" rel="noreferrer" data-testid="pr-link" className="mt-3 flex items-center gap-2 rounded-lg border border-line px-2.5 py-2 text-ui hover:bg-hover">

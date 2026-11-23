@@ -55,6 +55,8 @@ export function route(f: Frame): Route {
         return { topics: [feedTopic("activity"), EVERY, ...(typeof sid === "string" ? [sessionTopic(sid)] : [])] };
       }
       if (f.name === "checkpoints" && f.session_id) return one(f.session_id);
+      // A branch of the session conflicts, or no longer does: its chip and its Branches panel read it.
+      if (f.name === "overlap" && f.session_id) return one(f.session_id);
       if (f.name === "artifacts") return { topics: [feedTopic("artifacts"), EVERY, ...(f.session_id ? [sessionTopic(f.session_id)] : [])] };
       if (f.name === "awake") return { topics: [feedTopic("awake"), EVERY] };
       return { topics: [ALL] };

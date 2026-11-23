@@ -37,6 +37,7 @@ import { surfaceRoutes } from "./surfaces.ts";
 import { pluginUnitRoutes } from "./plugin-units.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
+import { overlapRoutes } from "./overlaps.ts";
 import { reviewRoutes } from "./reviews.ts";
 import { prReviewRoutes } from "./pr-reviews.ts";
 import { turnRoutes } from "./turns.ts";
@@ -87,6 +88,7 @@ const modules: Record<string, RouteModule> = {
   providerSetupRoutes,
   profileRoutes,
   worktreeRoutes,
+  overlapRoutes, // after worktrees: it reads the worktrees table
   reviewRoutes,
   prReviewRoutes, // after reviews: it reads the reviewer model they keep; after permissions: its sessions are read-only
   turnRoutes,

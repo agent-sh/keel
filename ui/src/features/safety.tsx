@@ -1,6 +1,6 @@
 // The safety lane's side panels and commands: what the session changed
 // (checkpoints and rewind) and the branch review. Imported once from main.tsx.
-import { FileDiff, FileLock2, GitPullRequestArrow, ShieldCheck } from "lucide-react";
+import { FileDiff, FileLock2, GitMerge, GitPullRequestArrow, ShieldCheck } from "lucide-react";
 import { lazy } from "react";
 import { panels, settingsSections } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
@@ -26,6 +26,13 @@ panels.add(
     icon: <GitPullRequestArrow className="size-4" />,
     order: 30,
     component: lazy(() => import("../components/BranchReview.tsx").then((m) => ({ default: m.BranchReview }))),
+  },
+  {
+    id: "branches",
+    label: "Branches",
+    icon: <GitMerge className="size-4" />,
+    order: 35,
+    component: lazy(() => import("../components/BranchesPanel.tsx").then((m) => ({ default: m.BranchesPanel }))),
   },
   {
     id: "trust",
@@ -55,6 +62,7 @@ registerCommand(
   { id: "panel-changes", label: "Changes panel: diffs, rewind and revert", group: "View", keys: "mod+shift+d", inInput: true, words: "checkpoint undo rewind revert diff", when: inSession, run: () => toggle("changes") },
   { id: "panel-trust", label: "Trust panel: repository files, hooks and quarantine", group: "View", words: "trust hooks quarantine agents instructions skills", when: inSession, run: () => toggle("trust") },
   { id: "panel-review", label: "Review the branch", group: "View", words: "pull request comment worktree", when: inSession, run: () => toggle("review") },
+  { id: "panel-branches", label: "Branches: which live branches would conflict", group: "View", words: "overlap conflict merge worktree landing rebase", when: inSession, run: () => toggle("branches") },
 );
 
 const current = () => {
