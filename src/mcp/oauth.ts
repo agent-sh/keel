@@ -6,8 +6,9 @@
 // parameter (RFC 8707), and the iss check on the redirect (RFC 9207).
 // Client ID metadata documents need a public HTTPS URL, which a local daemon
 // does not have, so registration is the path for servers we have no client for.
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeOwnFile } from "../core/ownfile.ts";
 
 type Client = { client_id: string; client_secret?: string; redirect_uri: string };
 type Tokens = { access_token: string; refresh_token?: string; expires_at?: number; scope?: string; token_type?: string };
@@ -19,6 +20,10 @@ export type OAuthConfig = { client_id?: string; client_secret_env?: string; scop
 
 const b64url = (b: ArrayBuffer | Uint8Array) => Buffer.from(b instanceof Uint8Array ? b : new Uint8Array(b)).toString("base64url");
 const rand = (n = 32) => b64url(crypto.getRandomValues(new Uint8Array(n)));
+
+// The refresh under way per token file and server, shared by every store of
+// the same file.
+const refreshing = new Map<string, Promise<string | undefined>>();
 
 export class OAuthStore {
   private path: string;
@@ -35,10 +40,11 @@ export class OAuthStore {
     }
   }
 
+  // Whole or not at all (a temp file renamed over it): a crash mid-write
+  // leaves the old file, not one that reads as no server signed in. No .prev:
+  // a second copy of a token would outlive a sign-out.
   private write(f: File) {
-    mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(f, null, 2), { mode: 0o600 });
-    chmodSync(this.path, 0o600);
+    writeOwnFile(this.path, JSON.stringify(f, null, 2), { mode: 0o600, prev: false });
   }
 
   signedIn(server: string) {
@@ -61,26 +67,45 @@ export class OAuthStore {
     this.write(f);
   }
 
-  // A valid access token, refreshed when it is about to expire.
+  // A valid access token, refreshed when it is about to expire. One refresh
+  // runs at a time per server: callers that arrive while it is out wait for
+  // it, so a rotating refresh token is never sent twice. What the refresh
+  // brings is written only if the server still holds the tokens it was made
+  // from: a sign-out, a removal or a newer sign-in while it was out wins.
   async token(server: string): Promise<string | undefined> {
-    const f = this.read();
-    const a = f.servers[server];
+    const a = this.read().servers[server];
     if (!a?.tokens) return undefined;
     if (!a.tokens.expires_at || a.tokens.expires_at - Date.now() > 60_000) return a.tokens.access_token;
     if (!a.tokens.refresh_token) return a.tokens.access_token;
+    const key = `${this.path}\0${server}`;
+    let p = refreshing.get(key);
+    if (!p) {
+      p = this.refresh(server, a, a.tokens).finally(() => refreshing.delete(key));
+      refreshing.set(key, p);
+    }
+    return p;
+  }
+
+  private async refresh(server: string, a: ServerAuth, from: Tokens): Promise<string | undefined> {
+    let t: Tokens;
     try {
-      const t = await tokenRequest(a.token_endpoint, a.client, {
+      t = await tokenRequest(a.token_endpoint, a.client, {
         grant_type: "refresh_token",
-        refresh_token: a.tokens.refresh_token,
+        refresh_token: from.refresh_token!,
         resource: a.resource,
       });
-      a.tokens = { ...t, refresh_token: t.refresh_token ?? a.tokens.refresh_token };
-      this.write(f);
-      return a.tokens.access_token;
     } catch {
       // A refused refresh means a new sign-in; the 401 that follows says so.
-      return a.tokens.access_token;
+      return this.read().servers[server]?.tokens?.access_token;
     }
+    const f = this.read();
+    const now = f.servers[server];
+    const same = now?.tokens && now.token_endpoint === a.token_endpoint
+      && now.tokens.access_token === from.access_token && now.tokens.refresh_token === from.refresh_token;
+    if (!same) return now?.tokens?.access_token;
+    now.tokens = { ...t, refresh_token: t.refresh_token ?? from.refresh_token };
+    this.write(f);
+    return now.tokens.access_token;
   }
 
   // Start a sign-in: discovery, a client, and the URL to open.
