@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { bodyOf, IncidentBook, lineOf, owesAlert, QUIET_MS, radiusOf, titleOf, wentDownByItself, type Hit } from "./incident-book.ts";
+import { bodyOf, IncidentBook, lineOf, owesAlert, QUIET_MS, radiusOf, titleOf, wentDownByItself, type Hit, WINDOW_MS } from "./incident-book.ts";
 
 const T0 = 1_800_000_000_000;
 let n = 0;
@@ -107,3 +107,22 @@ test("only a stop nobody chose is an incident: a signal (systemd's stop or resta
   expect(wentDownByItself("crash")).toBe(true);
   for (const how of ["signal", "stop", "restart", undefined]) expect(wentDownByItself(how)).toBe(false);
 });
+
+// The review's flapping provider: one answer between each pair of failures ended the incident and the
+// next pair opened a new one, one alert each. An answer ends it only when nothing of it came in the window.
+test("a provider that answers once between failures stays one incident", () => {
+  const b = book();
+  let first: string | undefined;
+  for (let r = 0; r < 5; r++) {
+    const at = T0 + r * 60_000;
+    b.hit(fail(at, `s${r}a`, null));
+    const i = b.hit(fail(at + 5_000, `s${r}b`, null));
+    first ??= i?.id;
+    if (i) expect(i.id).toBe(first!);
+    expect(b.answered("provider:p", "it answers again", at + 20_000)).toBeUndefined();
+  }
+  expect(b.list()).toHaveLength(1);
+  // Quiet for the window, then an answer: it ends.
+  expect(b.answered("provider:p", "it answers again", T0 + 4 * 60_000 + 5_000 + WINDOW_MS + 1)?.id).toBe(first);
+});
+

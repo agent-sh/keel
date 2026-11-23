@@ -123,8 +123,8 @@ export function onTurnEnd(sessionId: string, reason: string) {
       return;
     }
     if (reason !== "end_turn" && reason !== "max_tokens") return;
-    changed(book().clear(`provider:${pid}`, "it answers again", at));
-    changed(book().clear(`account:${pid}`, "a turn on it went through", at));
+    changed(book().answered(`provider:${pid}`, "it answers again", at));
+    changed(book().answered(`account:${pid}`, "a turn on it went through", at));
   } catch (e) { capture(e, { at: "incident turn end", session: sessionId }); }
 }
 

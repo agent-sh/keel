@@ -59,7 +59,7 @@ export type Hit = {
   now?: boolean;
 };
 
-// The numbers, from the failed turns of the daemon's history (20 to 23 Nov: 110 failed turns, 46
+// The numbers, from the failed turns of the daemon's history (20 to 23 Nov: 110 failed turns, 45
 // of a provider's or account's class): every storm began with failures 0 to 12 s apart (once 62 s,
 // a rate limit), and a session that repeats its own failure does so 160 to 370 s apart. A window of
 // two minutes takes every storm from its second session and leaves one session's repeats its own;
@@ -271,6 +271,15 @@ export class IncidentBook {
     this.open.delete(key);
     this.recent = [i, ...this.recent.filter((x) => x.key !== key || x.id !== i.id)].slice(0, 20);
     return i;
+  }
+
+  // A turn on it went through. A provider that keeps failing between its answers is not back: the
+  // incident ends at an answer only when nothing of it came in the window, else it ends when it goes
+  // quiet or at a later answer (one alert an episode, not one each time it answers once).
+  answered(key: string, how: string, at: number): Incident | undefined {
+    const i = this.open.get(key);
+    if (i && !i.held && at - i.last <= WINDOW_MS) return undefined;
+    return this.clear(key, how, at);
   }
 
   // The held wait is over (the provider answered, or nobody waits any more).
