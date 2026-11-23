@@ -379,9 +379,12 @@ export class Overlaps {
       const mine: Side = { branch: mb, tip: mt, who: this.who(sessionId, owners.get(mb)) };
       const other: Side = { branch: ob, tip: ot, who: p.base ? "the base" : this.who(sessionId, owners.get(ob)) };
       const files = (JSON.parse(p.files) as ConflictFile[]).map((f) => f.path);
-      if (row.owed === "conflict" && p.conflict) {
-        const before = row.told ? (JSON.parse(row.told) as string[]) : [];
-        told.push({ mine, other, files: files.filter((f) => !before.includes(f)), all: files.length, base: !!p.base });
+      const before = row.told ? (JSON.parse(row.told) as string[]) : [];
+      const fresh = files.filter((f) => !before.includes(f));
+      // Owed for a file that left the conflict before the note was written: every file left was told.
+      const stale = files.length > 0 && !fresh.length;
+      if (row.owed === "conflict" && p.conflict && !stale) {
+        told.push({ mine, other, files: fresh, all: files.length, base: !!p.base });
         conflicts++;
         settled.push(() => this.store.db.query("UPDATE overlap_told SET told = ?, owed = NULL WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(JSON.stringify(files), ...where));
       } else if (row.owed === "cleared" && !p.conflict && !p.error) {

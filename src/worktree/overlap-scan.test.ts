@@ -132,6 +132,16 @@ test("a branch whose change the base took and reverted is forecast again", async
   expect(ov.view(b).pairs.filter((p) => !p.base).map((p) => [p.a, p.b])).toEqual([["keel/a", "keel/b"]]);
 });
 
+// Owed for a file that has since left the conflict, with every file now in it
+// told before: there is nothing new to tell, and no note says "no file".
+test("a conflict owed whose files were all told before writes no note", async () => {
+  const { repo, store, ov, a } = setup();
+  await ov.scan(repo);
+  ov.noteFor(a)!.settle();
+  store.db.run("UPDATE overlap_told SET owed = 'conflict' WHERE session_id = ?", [a]);
+  expect(ov.noteFor(a)).toBeUndefined();
+});
+
 // Attributes a session can write name a driver of the owner's config, or a
 // union merge that hides the conflict: the merge reads none of them.
 const plain = (repo: string) => { try { g(repo, "merge-tree", "--write-tree", "keel/a", "keel/b"); return 0; } catch (e: any) { return e.status as number; } };
