@@ -5,7 +5,7 @@
 // (search-fill.ts).
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
-import { searchLimits } from "../search-query.ts";
+import { holdsWord, searchLimits, searchTerms } from "../search-query.ts";
 import { board } from "./state.ts";
 import { initSearchIndex, keepIndexed } from "./search-index.ts";
 import { startFill } from "./search-fill.ts";
@@ -16,6 +16,7 @@ export { TOOL_EXCERPT, initSearchIndex, keepIndexed } from "./search-index.ts";
 type Hit = {
   session_id: string; session_title: string; event_id?: string; kind: string; ts: number; snippet: string; cwd: string; archived: boolean;
   parent_id?: string | null; ref?: string; partial?: boolean;
+  missing?: string[]; // the words of the query this hit does not hold (it holds the others)
 };
 
 // Case and accents fold the way the transcript index folds them (é = e = É),
@@ -36,11 +37,11 @@ export function titleRank(title: string, words: string[]): number {
   return hay.includes(phrase) ? 1 : 2;
 }
 
-// Every word must match, the last one as a prefix ("deb func" finds "debounce function").
+// Every word, by its stem (search-query.ts): the rows that hold them all. The ones that hold
+// fewer come after them (search-content.ts reads `terms`).
 export function ftsQuery(q: string): string | null {
-  const words = q.normalize("NFKC").split(/\s+/).map((w) => w.replace(/"/g, "")).filter(Boolean);
-  if (!words.length) return null;
-  return words.map((w, i) => `"${w}"${i === words.length - 1 ? "*" : ""}`).join(" ");
+  const terms = searchTerms(q);
+  return terms.length ? terms.join(" ") : null;
 }
 
 // The fill waits for the start's own work to be over: its passes write the store too (the
@@ -84,6 +85,9 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         if (lim.error) return Response.json({ error: lim.error, limit: true }, { status: 400 });
         const q = lim.words;
         const match = ftsQuery(q);
+        const terms = searchTerms(q);
+        // The words as typed, by the place of their terms: what a hit that lacks some says it lacks.
+        const typed = q.normalize("NFKC").split(/\s+/).map((w) => w.replace(/"/g, "")).filter(Boolean);
         // Limits with no words list what they allow, newest first: the sessions in a state, the commands, a day's work.
         if (!match && !lim.said.length) return Response.json({ query: q, hits: [] });
         const roots = u.searchParams.get("roots") === "1";
@@ -108,14 +112,14 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         // What limits the rows of the index: their kind (a command is a call of a shell tool) and their time.
         const rows = { ...(lim.kinds ? { kinds: lim.kinds } : {}), ...(lim.commands ? { commands: true } : {}), ...(lim.since !== undefined ? { since: lim.since } : {}), ...(lim.until !== undefined ? { until: lim.until } : {}) };
         const limited = Object.keys(rows).length > 0;
-        // Every word matches the title or folder; matched over all eligible sessions, then ranked and cut.
-        const words = fold(q).split(/\s+/).filter(Boolean);
+        // Every word matches the title or folder, by its stem as in the index; matched over all eligible sessions, then ranked and cut.
+        const words = fold(q).split(/\s+/).map((w) => w.replace(/"/g, "")).filter(Boolean);
         // A title is no command and has no time of its own: a search limited to a kind of row or a time lists none.
         // With no words, every session in the scope is a title hit, newest first (a state alone lists its sessions).
         const titles = limited ? [] : store.db
           .prepare<any, (string | number)[]>(`SELECT s.id, s.title, s.workspace, s.updated, s.archived, ${pid} AS parent_id FROM sessions s WHERE 1 ${where} ORDER BY s.archived, s.updated DESC`)
           .all(...args)
-          .filter((t) => { const hay = fold(`${t.title ?? ""} ${t.workspace}`); return words.every((w) => hay.includes(w)); })
+          .filter((t) => { const hay = fold(`${t.title ?? ""} ${t.workspace}`); return words.every((w) => holdsWord(hay, w)); })
           // The titles that hold the words as they were typed come first, the ones that hold them as
           // whole words before those: among hundreds of agents named alike, the one asked for is not
           // cut off behind the newest dozen that share its words.
@@ -126,7 +130,7 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         // The index is read off the loop: one word can match most of a long history.
         // With no words and no limit on the rows (a state alone), the sessions are the answer: no row of theirs is listed.
         const content = !match && !limited ? [] : await readsOf(store).run("search.content", {
-          match, where, args, rows, limit, perSession, pid, newest: u.searchParams.get("newest") === "1",
+          match, terms, where, args, rows, limit, perSession, pid, newest: u.searchParams.get("newest") === "1",
         });
         const hits: Hit[] = [
           ...titles.map((t) => ({ session_id: t.id, session_title: t.title, kind: "title", ts: t.updated, snippet: t.title, cwd: t.workspace, archived: !!t.archived, parent_id: t.parent_id ?? null })),
@@ -136,10 +140,11 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
               session_id: c.session_id, session_title: c.title, event_id: c.event_id,
               kind: c.kind, ts: c.ts, snippet: c.snippet, cwd: c.workspace, archived: !!c.archived, parent_id: c.parent_id ?? null,
               ...(tool && c.ref ? { ref: c.ref } : {}), ...(c.cut ? { partial: true } : {}),
+              ...(c.missing?.length ? { missing: c.missing.map((i) => typed[i]!).filter(Boolean) } : {}),
             };
           }),
         ];
-        return Response.json({ query: q, hits, ...(lim.said.length ? { limits: lim.said } : {}) });
+        return Response.json({ query: q, hits, ...(lim.said.length ? { limits: lim.said } : {}), ...(lim.dates?.length ? { dates: lim.dates } : {}) });
       },
     },
   };

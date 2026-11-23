@@ -30,9 +30,13 @@ const SEARCH_USAGE = `keel search QUERY [options]
     in:prompts | in:replies | in:output | in:summaries (--in KIND)
     since:1h | since:2d | since:yesterday | since:2026-11-20 (--since)   from then on
     until:... (--until)                                                 up to then
-    on:yesterday | on:today | on:2026-11-20 (--on)                      that day alone
+    on:yesterday | on:today | on:monday | on:2026-11-20 (--on)          that day alone
+    yesterday, monday, last monday, this week, last week, last month   plain date words are the same limits
+                                                                        ("yesterday" in quotes is searched)
     state:failed | state:done | state:working | state:needs-you (--state)   the session's state now
   A limit that is not understood is refused with what it takes, never searched as a word.
+  Words match by their stem (compressed finds compression); hits with every word come first,
+  then the ones with fewer, each saying which words it lacks.
   keel search "git push" --commands --on yesterday      which session ran git push yesterday
 
   -a, --all          archived sessions too
@@ -61,11 +65,16 @@ const search = command("search", SEARCH_USAGE, {
   const z = zoned();
   const said = r.limits?.length ? `, limited to ${r.limits.join(", ")}` : "";
   if (!hits.length) return (console.error(`nothing matches ${JSON.stringify(r.query)}${said}`), EXIT.ok);
-  console.log(`${hits.length} ${hits.length === 1 ? "hit" : "hits"} for ${JSON.stringify(r.query)}${said}, ${v.best ? "the best" : "the newest"} first. ${z.note}.`);
+  // The hits that hold every word come first; the ones that hold some of them follow and say what they lack.
+  const all = hits.filter((h) => !h.missing?.length), some = hits.filter((h) => h.missing?.length);
+  const order = `${v.best ? "the best" : "the newest"} first`;
+  console.log(all.length
+    ? `${all.length} ${all.length === 1 ? "hit" : "hits"} for ${JSON.stringify(r.query)}${said}, ${order}${some.length ? `, then ${some.length} with some of the words` : ""}. ${z.note}.`
+    : `No hit holds every word of ${JSON.stringify(r.query)}${said}; ${some.length} ${some.length === 1 ? "holds" : "hold"} some of them, the most words first, then ${order}. ${z.note}.`);
   const mark = (k: string) => (k === "user" ? ">" : k === "tool_use" ? "$" : k === "tool_result" ? "=" : k === "summary" ? "~" : " ");
-  for (const h of hits) {
+  for (const h of [...all, ...some]) {
     console.log(`${z.stamp(h.ts)}  ${mark(h.kind)} ${line(h.snippet.replace(/[\u0001\u0002]/g, "")).slice(0, 110)}`);
-    console.log(`                       ${line(h.session_title) || "(untitled)"}${h.archived ? "  [archived]" : ""}  [session=${h.session_id.slice(-12)}]`);
+    console.log(`                       ${line(h.session_title) || "(untitled)"}${h.archived ? "  [archived]" : ""}  [session=${h.session_id.slice(-12)}]${h.missing?.length ? `  missing ${h.missing.map((w: string) => JSON.stringify(w)).join(", ")}` : ""}`);
   }
   return EXIT.ok;
 });

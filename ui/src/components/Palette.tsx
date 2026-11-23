@@ -24,7 +24,7 @@ import { openImport } from "../lib/integrations-ui.ts";
 import { Kbd } from "./Kbd.tsx";
 import { Mark } from "./Mark.tsx";
 
-type Hit = { session_id: string; session_title: string; event_id?: string; kind: string; snippet: string; cwd: string; archived: boolean; ts: number; ref?: string; partial?: boolean };
+type Hit = { session_id: string; session_title: string; event_id?: string; kind: string; snippet: string; cwd: string; archived: boolean; ts: number; ref?: string; partial?: boolean; missing?: string[] };
 // A session of another harness on this machine (Claude Code, Codex...) that the search found, not imported yet.
 type Elsewhere = { harness: string; id: string; path: string; title: string; cwd?: string; updated_ms: number; in_text?: true; imported?: unknown };
 // `stay`: picking it keeps the palette open (it adds rows to it).
@@ -71,7 +71,8 @@ export function Palette() {
   // or opened under a newer one.
   // `limits`: what the daemon limited the search to, in words (in:commands, since:yesterday, state:failed in the query).
   // `refused`: a limit in the query was not understood; the daemon's words say what its name takes.
-  const [search, setSearch] = useState<{ q: string; hits: Hit[]; failed?: string; refused?: string; limits?: string[] }>({ q: "", hits: [] });
+  // `dates`: plain words of the query the daemon read as a time (yesterday, last week); in quotes they are searched.
+  const [search, setSearch] = useState<{ q: string; hits: Hit[]; failed?: string; refused?: string; limits?: string[]; dates?: string[] }>({ q: "", hits: [] });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => { if (open) { setQ(""); setSelKey(null); setSearch({ q: "", hits: [] }); } }, [open]);
   const wantsSearch = q.trim().length >= 2;
@@ -86,7 +87,7 @@ export function Palette() {
           // A limit that is half typed or misspelled is a hint to the person typing, not a failure.
           if (r.status === 400 && body.limit) return setSearch({ q, hits: [], refused: String(body.error ?? "") });
           if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
-          setSearch({ q, hits: body.hits ?? [], limits: body.limits });
+          setSearch({ q, hits: body.hits ?? [], limits: body.limits, dates: body.dates });
         })
         .catch((e) => {
           if (e.name === "AbortError") return;
@@ -101,6 +102,7 @@ export function Palette() {
   const searchFailed = wantsSearch && search.q === q ? search.failed : undefined;
   const searchRefused = wantsSearch && search.q === q ? search.refused : undefined;
   const limits = wantsSearch && search.q === q ? search.limits : undefined;
+  const dates = wantsSearch && search.q === q ? search.dates : undefined;
 
   // This daemon's own rows: its sessions, what was said in them, its actions and models.
   const local = useMemo(() => {
@@ -159,7 +161,8 @@ export function Palette() {
       out.push({
         key, group: "In conversations",
         // When it happened first: a hit is a moment of a session.
-        detail: `${clock(h.ts, { date: true })} · ${h.archived ? "Archived · " : ""}${tool ? (h.kind === "tool_use" ? "Command · " : "Tool output · ") : h.kind === "summary" ? "Summary · " : ""}${where}${h.partial ? " · first part searched" : ""}`,
+        // A hit that holds only some of the words says which it lacks (it comes after the ones that hold them all).
+        detail: `${clock(h.ts, { date: true })} · ${h.missing?.length ? `missing ${h.missing.map((w) => `"${w}"`).join(", ")} · ` : ""}${h.archived ? "Archived · " : ""}${tool ? (h.kind === "tool_use" ? "Command · " : "Tool output · ") : h.kind === "summary" ? "Summary · " : ""}${where}${h.partial ? " · first part searched" : ""}`,
         label: <><Snippet text={h.snippet} />{h.archived && <Archived />}</>, icon: tool ? <SquareTerminal className="size-4" /> : <TextSearch className="size-4" />, score: 50 - i,
         // Read it where it is: another branch is previewed, the session's own branch stays; a tool hit opens its card.
         run: () => { setUI({ focusEvent: h.event_id!, focusCall: tool ? h.ref ?? null : null, preview: { session: h.session_id, event: h.event_id! } }); navigate({ name: "session", id: h.session_id }); },
@@ -313,12 +316,15 @@ export function Palette() {
                   aria-selected={i === sel}
                   onMouseMove={() => sel !== i && setSelKey(e.key)}
                   onClick={() => pick(e)}
-                  className={cn("flex h-9 items-center gap-3 rounded-md px-2.5 text-ui", i === sel ? "bg-hover text-fg" : "text-muted")}
+                  className={cn("flex min-h-9 items-center gap-3 rounded-md px-2.5 text-ui", i === sel ? "bg-hover text-fg" : "text-muted")}
                 >
                   <span className={i === sel ? "text-accent" : "text-faint"}>{e.icon}</span>
-                  {/* The label and its detail share the row by what each needs: a short label leaves its room to the detail. */}
-                  <span className="min-w-0 flex-[0_1_auto] truncate text-fg">{e.label}</span>
-                  {e.detail && <span className="min-w-[6rem] flex-[0_1_auto] truncate text-caption text-faint">{e.detail}</span>}
+                  {/* The label and its detail share the row by what each needs: a short label leaves its room to the detail.
+                      On a phone's width the detail is a line under the label: side by side, both were cut to a word. */}
+                  <span className="flex min-w-0 flex-1 flex-col py-1 sm:flex-row sm:items-center sm:gap-3 sm:py-0">
+                    <span className="min-w-0 flex-[0_1_auto] truncate text-fg">{e.label}</span>
+                    {e.detail && <span className="min-w-0 flex-[0_1_auto] truncate text-caption text-faint sm:min-w-[6rem]">{e.detail}</span>}
+                  </span>
                   <span className="ml-auto flex shrink-0 items-center">
                     {e.keys ? <Kbd keys={e.keys} /> : i === sel ? <CornerDownLeft className="size-3.5 text-faint" /> : null}
                   </span>
@@ -346,7 +352,10 @@ export function Palette() {
           </div>
           {/* What the search was limited to, in full: a time with its zone is not cut for the key hints. */}
           {wantsSearch && !!limits?.length && (
-            <p className="border-t border-line px-4 py-1.5 text-micro text-faint" data-testid="palette-limits">Limited to <span className="text-muted">{limits.join(", ")}</span></p>
+            <p className="border-t border-line px-4 py-1.5 text-micro text-faint" data-testid="palette-limits">
+              Limited to <span className="text-muted">{limits.join(", ")}</span>
+              {!!dates?.length && <> · {dates.map((d) => `"${d}"`).join(", ")} in quotes searches the {dates.length > 1 ? "words" : "word"}</>}
+            </p>
           )}
           <div className="hidden items-center gap-4 border-t border-line px-4 py-2 text-micro text-faint sm:flex">
             <span className="flex items-center gap-1.5"><Kbd keys="↑" /><Kbd keys="↓" /> move</span>
@@ -354,7 +363,7 @@ export function Palette() {
             <span className="flex items-center gap-1.5"><Kbd keys="escape" /> close</span>
             {/* What a search can be limited to, said where a search is typed; once it is, what it was limited to. */}
             {wantsSearch && !limits?.length && (
-              <span className="ml-auto min-w-0 truncate" data-testid="palette-limit-hint">Limit a search: <span className="font-mono">in:commands on:yesterday state:failed</span></span>
+              <span className="ml-auto min-w-0 truncate" data-testid="palette-limit-hint">Limit a search: <span className="font-mono">yesterday · in:commands · state:failed</span></span>
             )}
           </div>
         </Dialog.Popup>

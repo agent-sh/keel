@@ -185,6 +185,50 @@ test("search: limits alone list what they allow", async ({ page, request }) => {
   expect(errorsAfter).toBe(errorsBefore);
 });
 
+// Words are found by their stem and in any order, the hits that hold every word first, then the
+// ones with fewer, each saying what it lacks; a plain date word limits the time and the palette
+// says it read it so, and how to search the word instead.
+test("search: other forms of the words, partial matches and date words", async ({ page, request }) => {
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const tag = `st${Date.now().toString(36)}`;
+  const M = "scripted:stand-in";
+  const s = (await (await request.post("/api/sessions", { data: { model: M, text: `Plan the compression export ${tag}` } })).json()).session;
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+  const api = async (q: string) => (await (await request.get(`/api/search?q=${encodeURIComponent(q)}&limit=50`)).json());
+  const mine = (hs: any[]) => hs.filter((h) => h.session_id === s.id && h.kind === "user");
+  await expect.poll(async () => mine((await api(`compressed exports ${tag}`)).hits)).toHaveLength(1);
+  expect(mine((await api(`${tag} exported compressing`)).hits)).toHaveLength(1);
+  // A word it does not hold: found after the hits with every word, saying what it lacks.
+  expect(mine((await api(`compressed exports zebra ${tag}`)).hits)).toMatchObject([{ missing: ["zebra"] }]);
+  // Yesterday: nothing (the session is today's); today: found, the limit naming the word.
+  const y = await api(`compression export yesterday ${tag}`);
+  expect([mine(y.hits).length, y.dates, y.limits[0]]).toEqual([0, ["yesterday"], expect.stringMatching(/^yesterday, \d{4}-\d\d-\d\d$/)]);
+  expect(mine((await api(`compression export today ${tag}`)).hits)).toHaveLength(1);
+
+  const input = page.getByTestId("palette-input");
+  for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(size);
+    const narrow = size.width < 600 ? "-phone" : "";
+    await page.goto("/");
+    await page.keyboard.press("Control+k");
+    await input.fill(`compressed exports zebra ${tag}`);
+    const hit = page.getByTestId("palette").getByRole("option").filter({ hasText: "Plan the compression export" });
+    await expect(hit.first()).toContainText('missing "zebra"');
+    await shoot(page, `search-09-stems-partial${narrow}`);
+    await input.fill(`compression export today ${tag}`);
+    await expect(page.getByTestId("palette-limits")).toContainText(/Limited to today, \d{4}-\d\d-\d\d/);
+    await expect(page.getByTestId("palette-limits")).toContainText('"today" in quotes searches the word');
+    await expect(hit.first()).toBeVisible();
+    await shoot(page, `search-10-date-word${narrow}`);
+    await input.fill(`compression export yesterday ${tag}`);
+    await expect(page.getByTestId("palette")).toContainText(/Nothing matches .* \(yesterday, \d{4}-\d\d-\d\d\)/);
+    await page.keyboard.press("Escape");
+  }
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
+});
+
 test("previous and next prompt walk the conversation by keyboard", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in-strict"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");

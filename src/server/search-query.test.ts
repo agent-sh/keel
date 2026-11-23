@@ -1,7 +1,7 @@
 // The limits a search carries in its own words.
 import { expect, test } from "bun:test";
 import { zoneLabel } from "../core/clock.ts";
-import { limitTime, searchLimits } from "./search-query.ts";
+import { dateWords, limitTime, searchLimits, searchTerms, stem } from "./search-query.ts";
 
 const NOW = new Date(2026, 10, 22, 7, 30, 0).getTime();
 const at = (y: number, m: number, d: number, h = 0) => new Date(y, m - 1, d, h).getTime();
@@ -34,7 +34,7 @@ test("the order of the limits does not change the search", () => {
 });
 
 test("a limit that is not understood is refused with what its name takes, and never searched as a word", () => {
-  for (const [q, takes] of [["x since:lastweek", "since: and until: take"], ["x until:soon", "since: and until: take"], ["x state:bogus", "state: takes need, needs-you, work"], ["x in:nowhere", "in: takes commands, prompts"], ["x on:1h", "on: takes today, yesterday or a date"], ["x on:2026-02-31", "on: takes"]] as const) {
+  for (const [q, takes] of [["x since:lastweek", "since: and until: take"], ["x until:soon", "since: and until: take"], ["x state:bogus", "state: takes need, needs-you, work"], ["x in:nowhere", "in: takes commands, prompts"], ["x on:1h", "on: takes today, yesterday, a weekday (monday) or a date"], ["x on:2026-02-31", "on: takes"]] as const) {
     const r = searchLimits(q, NOW);
     expect(`${q}: ${r.error}`).toContain(takes);
     expect(r.words).toBe("x");
@@ -60,4 +60,37 @@ test("a limit's time is a span back, a day's local midnight, or an ISO time", ()
   expect([limitTime("2026-11-20", NOW), limitTime("2026-11-20", NOW, true)]).toEqual([at(2026, 11, 20), at(2026, 11, 21)]);
   expect(limitTime("2026-11-20T05:00:00Z", NOW)).toBe(Date.UTC(2026, 10, 20, 5));
   expect([limitTime("soon", NOW), limitTime("2026", NOW), limitTime("1e400d", NOW)]).toEqual([null, null, null]);
+});
+
+test("a word is searched by its stem: other forms of it find it, a short or foreign word as typed", () => {
+  for (const [w, s] of [["compressed", "compress"], ["compression", "compress"], ["compressing", "compress"], ["exports", "export"], ["exported", "export"],
+    ["used", "use"], ["fixes", "fix"], ["files", "file"], ["status", "status"], ["class", "class"], ["running", "run"], ["stopped", "stop"],
+    ["string", "string"], ["speed", "speed"], ["sessions", "sess"], ["queries", "quer"], ["deployments", "deploy"], ["configuration", "configur"]] as const) expect(`${w} ${stem(w)}`).toBe(`${w} ${s}`);
+  expect(searchTerms("compressed exports")).toEqual(['"compress"*', '"export"*']);
+  // A number, a short word and a word of another script are as typed, the last one as a prefix.
+  expect(searchTerms('agent 17 a.ts "fix" שלום')).toEqual(['"agent"*', '"17"', '"a.ts"', '"fix"', '"שלום"*']);
+});
+
+test("plain date words are read as a time limit and said back with the word", () => {
+  // NOW is a Sunday.
+  expect(new Date(NOW).getDay()).toBe(0);
+  const y = searchLimits("compression export yesterday", NOW);
+  expect(y).toEqual({ words: "compression export", since: at(2026, 11, 21), until: at(2026, 11, 22), dates: ["yesterday"], said: ["yesterday, 2026-11-21"] });
+  // A range of days by its words says its times.
+  expect(searchLimits("x last week", NOW).said).toEqual([`last week: from 2026-11-09 00:00 to 2026-11-22 00:00 ${Z}`]);
+  expect(searchLimits("Today deploy", NOW)).toMatchObject({ words: "deploy", since: at(2026, 11, 22), until: at(2026, 11, 23), dates: ["today"] });
+  // A weekday is its latest day, today included; "last" one is before today.
+  expect(dateWords(["friday"], NOW)).toEqual({ since: at(2026, 11, 20), until: at(2026, 11, 21), took: 1 });
+  expect(dateWords(["sunday"], NOW)).toMatchObject({ since: at(2026, 11, 22) });
+  expect(dateWords(["last", "sunday"], NOW)).toMatchObject({ since: at(2026, 11, 15), until: at(2026, 11, 16), took: 2 });
+  // This week is the last seven days; last week the seven before them and up to today: the previous week wherever a week starts.
+  expect(searchLimits("x this week", NOW)).toMatchObject({ words: "x", since: at(2026, 11, 16), dates: ["this week"] });
+  expect(searchLimits("last week x", NOW)).toMatchObject({ words: "x", since: at(2026, 11, 9), until: at(2026, 11, 22) });
+  expect(searchLimits("x last month", NOW)).toMatchObject({ since: at(2026, 10, 1), until: at(2026, 11, 1) });
+  expect(searchLimits("x this month", NOW)).toMatchObject({ since: at(2026, 11, 1) });
+  expect(searchLimits("x on:monday", NOW)).toMatchObject({ since: at(2026, 11, 16), until: at(2026, 11, 17) });
+  // A limit written as one wins over a date word; quoted, or "last" before no date, they are words.
+  expect(searchLimits("x yesterday on:2026-11-20", NOW)).toMatchObject({ since: at(2026, 11, 20), until: at(2026, 11, 21) });
+  expect(searchLimits("x yesterday on:2026-11-20", NOW).said[0]).toStartWith("from ");
+  expect(searchLimits('"yesterday" last error', NOW)).toEqual({ words: '"yesterday" last error', said: [] });
 });

@@ -263,7 +263,8 @@ test("the fill thread fills a store's index off the loop and drops the old one",
   expect(next.store.db.query("SELECT name FROM sqlite_master WHERE name IN ('search_idx', 'search_docs')").all()).toEqual([]);
   const get = searchRoutes({ store: next.store } as any)["/api/search"].GET as (req: Request) => Promise<Response>;
   expect((await next.hits(get, "numbat")).map((h) => h.session_id)).toEqual(Array(6).fill(s));
-  expect((await next.hits(get, "filler 399")).length).toBe(1);
+  // (The rows that hold both words; the ones with "filler" alone follow them.)
+  expect((await next.hits(get, "filler 399")).filter((h) => !h.missing).length).toBe(1);
   intact(next.store);
   next.store.db.close();
 });
@@ -436,4 +437,37 @@ test("limits alone list the rows they allow, newest first, from either layout", 
   const since = searchContent(db, { match: null, where: "", args: [], rows: { since: 0 }, limit: 100, perSession: true, pid: "NULL" });
   expect(sessions(since).sort()).toEqual([a, b].sort());
   next.store.db.close();
+});
+
+// The words are matched by their stem, wherever they stand, and the rows that hold every word come
+// first; the ones that hold fewer follow (one word fewer first) and say which words they lack. A
+// plain date word is a time limit, said back as read.
+test("search words match by stem, the rows with more of them first, and a date word limits the time", async () => {
+  const { store, start, hits } = open();
+  const get = start();
+  const both = store.createSession({ model: "m", workspace: "/", title: "Compression export" });
+  store.append(both.id, "user", { text: "the compression export of the archive" });
+  const one = store.createSession({ model: "m", workspace: "/" });
+  store.append(one.id, "user", { text: "an export of the ledger" });
+  const none = store.createSession({ model: "m", workspace: "/" });
+  store.append(none.id, "user", { text: "nothing to see" });
+  store.side.flush();
+  const of = (hs: any[]) => hs.map((h) => [h.session_id, h.missing ?? []]);
+  // Other forms of the same words, in another order: the session is found, first.
+  for (const q of ["compressed exports", "exports compressed", "compressing exported"]) expect(of(await hits(get, q))).toEqual([[both.id, []], [one.id, [q.split(" ").find((w) => w.startsWith("compress"))]]]);
+  // Three words, two held: the rows that hold two come before the rows that hold one, each saying what it lacks.
+  expect(of(await hits(get, "compressed exports zebra"))).toEqual([[both.id, ["zebra"]], [one.id, ["compressed", "zebra"]]]);
+  // A title is matched by its stems too.
+  const titles = (await (await get(new Request(`http://keel/api/search?q=${encodeURIComponent("compressed exports")}`))).json()).hits.filter((h: any) => h.kind === "title");
+  expect(titles.map((h: any) => h.session_id)).toEqual([both.id]);
+  // A date word: the words are searched on that day, and the limit names the word.
+  const today = await (await get(new Request(`http://keel/api/search?q=${encodeURIComponent("compression export today")}&limit=100`))).json();
+  expect(today.hits[0]).toMatchObject({ session_id: both.id, kind: "user" });
+  expect(today.limits[0]).toMatch(/^today, \d{4}-\d\d-\d\d$/);
+  expect(today.dates).toEqual(["today"]);
+  const yesterday = await (await get(new Request(`http://keel/api/search?q=${encodeURIComponent("compression export yesterday")}&limit=100`))).json();
+  expect(yesterday.hits).toEqual([]);
+  // In quotes the word is searched: nothing says "today".
+  expect(await hits(get, 'compression "today"')).toMatchObject([{ session_id: both.id, missing: ["today"] }]);
+  store.db.close();
 });
