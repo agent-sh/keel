@@ -25,11 +25,11 @@ const say = (request: APIRequestContext, id: string, text: string) => request.po
 const incidents = async (request: APIRequestContext) => (await (await request.get("/api/incidents")).json()) as { open: any[]; cleared: any[] };
 const outageAlerts = async (request: APIRequestContext, id: string) => ((await (await request.get("/api/alerts")).json()).alerts as any[]).filter((a) => a.kind === "outage" && a.data?.incident === id);
 // Text the owner reads is not cut at either width: each of these shows whole.
+// (Read in one pass of the page: a row the band draws again between two reads is not waited for.)
 const whole = async (page: Page, ids: string[]) => {
-  for (const id of ids) for (const el of await page.getByTestId(id).all()) {
-    if (!(await el.isVisible())) continue;
-    expect(await el.evaluate((e) => e.scrollWidth <= e.clientWidth + 1), `${id}: "${await el.textContent()}" is cut`).toBe(true);
-  }
+  const cut = await page.evaluate((ids) => ids.flatMap((id) => [...document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`)]
+    .filter((e) => e.offsetParent !== null && e.scrollWidth > e.clientWidth + 1).map((e) => `${id}: "${e.textContent}" is cut`)), ids);
+  expect(cut).toEqual([]);
 };
 const WHOLE = ["incident-title", "incident-head", "incident-row-title"];
 const both = async (page: Page, name: string) => {
