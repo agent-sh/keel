@@ -145,6 +145,9 @@ class WireTest {
         assertEquals(Block.Para("A **bold** line wrapped."), b[1])
         assertEquals(Block.Item("•", "two", 0), b[3])
         assertEquals(Block.Code("kotlin", "val x = 1"), b[4])
+        // A fence inside a list item: the code is copied without the item's indent, its own kept.
+        val nested = blocks("1. Run this:\n\n   ```sh\n   git push origin main\n     --force-with-lease\n   ```")
+        assertEquals(Block.Code("sh", "git push origin main\n  --force-with-lease"), nested.last())
         assertEquals(Block.Table(listOf(listOf("a", "b"), listOf("1", "2"))), b[5])
     }
 

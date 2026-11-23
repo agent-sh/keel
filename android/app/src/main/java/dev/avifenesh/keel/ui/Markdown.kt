@@ -58,7 +58,13 @@ fun blocks(md: String): List<Block> {
                 flush()
                 val lang = t.removePrefix("```").trim()
                 val body = StringBuilder(); i++
-                while (i < lines.size && !lines[i].trimStart().startsWith("```")) { body.append(lines[i]).append('\n'); i++ }
+                // A fence inside a list item is indented with it: the code is taken without that indent.
+                val indent = l.length - t.length
+                while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+                    val line = lines[i]
+                    val lead = line.length - line.trimStart().length
+                    body.append(line.substring(minOf(indent, lead))).append('\n'); i++
+                }
                 out += Block.Code(lang, body.toString().trimEnd('\n'))
             }
             Regex("^#{1,6} ").containsMatchIn(t) -> { flush(); out += Block.Heading(t.takeWhile { it == '#' }.length, t.dropWhile { it == '#' }.trim()) }
