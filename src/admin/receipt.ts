@@ -13,9 +13,20 @@ const reasons = new Set(["end_turn", "error", "interrupted", "restart", "max_ste
 const label = (value: unknown, allowed: Set<string>) => typeof value === "string" && allowed.has(value) ? value : "other";
 const id = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) ? value : null;
 const purposes = new Set(["turn", "summary", "reader"]);
+// What an input is says more than how it arrived: a loop run, another
+// session's message or a pushed event read at the next step (origin steer)
+// or after a Resume (origin queued) is that input, never the owner's. A
+// parent's message to its agent is stored as kind "steer": it is the parent's.
+// A restart note stays one, whatever it carries.
+export function inputOrigin(d: { origin?: unknown; kind?: unknown } | undefined): unknown {
+  if (d?.origin === "restart") return "restart";
+  const kind = d?.kind === "steer" ? "parent" : d?.kind;
+  if (typeof kind === "string" && origins.has(kind)) return kind;
+  return d?.origin ?? d?.kind ?? "owner";
+}
 const input = (e: StoredEvent) => {
   const d = e.data;
-  return { event_id: e.id, origin: label(d?.origin ?? d?.kind ?? "owner", origins), queue_id: id(d?.queue_id) };
+  return { event_id: e.id, origin: label(inputOrigin(d), origins), queue_id: id(d?.queue_id) };
 };
 
 // `name`: the tool the call named (from its span: a call that never ran has

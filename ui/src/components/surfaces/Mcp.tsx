@@ -9,6 +9,7 @@ import type { ImportableServer } from "../../../../src/mcp/config.ts";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
 import { api, reportError, failed, useStore } from "../../lib/store.ts";
 import type { Outcome } from "../../../../src/mcp/channel.ts";
+import { ownerStop } from "../../../../src/core/stoppers.ts";
 import { Select } from "../Select.tsx";
 import { ago, cn, when } from "../../lib/utils.ts";
 import { Connect } from "./McpConnect.tsx";
@@ -108,6 +109,11 @@ const OUTCOME: Record<Outcome["state"], string> = {
   duplicate: "a resend: not taken twice", refused: "not delivered",
 };
 
+// A held event says whose stop it waits behind: yours, or another's (its parent's, a move).
+const outcomeWords = (o: Outcome) =>
+  o.state === "held" ? (ownerStop(o.by) ? OUTCOME.held : o.reason ? `waits: ${o.reason}` : "waits behind a stop")
+  : `${OUTCOME[o.state]}${o.reason && o.state === "refused" ? ` (${o.reason})` : ""}`;
+
 // Events the server pushes into sessions (src/mcp/channel.ts). Off by
 // default: the switch says whether its events are taken at all, the list
 // which sessions take them (an editor's own server is for its own session).
@@ -151,7 +157,7 @@ function ChannelSection({ s, base, act }: { s: McpServerState; base: string; act
             <li key={`${p.at}-${i}`} className="flex flex-wrap items-baseline gap-x-2" data-testid="mcp-channel-event">
               <span className="text-faint tabular-nums" title={when(p.at)}>{ago(p.at)}</span>
               {p.event_id && <span className="font-mono text-micro text-faint">{p.event_id}</span>}
-              <span className="text-muted">{p.outcomes.map((o) => `${o.session ? `${title(o.session)}: ` : ""}${OUTCOME[o.state]}${o.reason && o.state === "refused" ? ` (${o.reason})` : ""}`).join(" · ")}</span>
+              <span className="text-muted">{p.outcomes.map((o) => `${o.session ? `${title(o.session)}: ` : ""}${outcomeWords(o)}`).join(" · ")}</span>
             </li>
           ))}
         </ul>

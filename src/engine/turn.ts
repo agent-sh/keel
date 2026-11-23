@@ -793,6 +793,12 @@ export class Engine {
     return false;
   }
 
+  // The input stored under this key: undefined when none was, and its words'
+  // fingerprint (claim) when the sender gave one.
+  inputUnder(id: string, key: string): { fp: string | null } | undefined {
+    return this.store.db.query<{ fp: string | null }, [string, string]>("SELECT fp FROM input_keys WHERE session_id = ? AND key = ?").get(id, key) ?? undefined;
+  }
+
   // Whether an input was stored for the session under this key.
   hasInput(id: string, key: string): boolean {
     return !!this.store.db.query("SELECT 1 FROM input_keys WHERE session_id = ? AND key = ?").get(id, key);

@@ -128,6 +128,14 @@ test("channels: a server's events reach a working, an idle and a stopped session
   expect(listed.stdout).toMatch(new RegExp(`^${NAME} .*declares a channel.*channel off$`, "m"));
   await push("After the switch went off.", { event_id: "late-1" });
   await expect.poll(async () => (await told()).find((t) => t.event_id === "late-1")?.outcomes[0]?.reason, { timeout: 10_000 }).toBe("the owner does not take its events");
+
+  // Another server under the same name (another program) takes no session named for the one before.
+  expect((await request.post("/api/mcp/servers", { data: { name: NAME, command: "bun", args: [FIXTURE, "--another"], env: { CHANNEL_PORT_FILE: `${portFile}-2` } } })).ok()).toBe(true);
+  expect((await server()).channel.sessions).toEqual([]);
+  // And the same program again, after it was removed, starts with none either.
+  await request.delete(`/api/mcp/servers/${NAME}`);
+  expect((await request.post("/api/mcp/servers", { data: { name: NAME, command: "bun", args: [FIXTURE], env: { CHANNEL_PORT_FILE: portFile } } })).ok()).toBe(true);
+  expect((await server()).channel).toMatchObject({ on: false, sessions: [] });
 });
 
 // A webhook loop that pushes: each request is an event in the loop's

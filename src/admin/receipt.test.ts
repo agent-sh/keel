@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
-import { turnReceipt } from "./receipt.ts";
+import { inputOrigin, turnReceipt } from "./receipt.ts";
 import { type Span, type Tracer, traceIdOf, turnSpanId } from "./trace.ts";
 
 const setup = () => {
@@ -133,4 +133,19 @@ test("a failed call is named by its tool, with the exit code a shell result give
   } finally {
     t.close();
   }
+});
+
+test("an input is named by what it is, not by how it arrived: never the owner's when it is another's", () => {
+  // Read at the working turn's next step (steer) or after a Resume (queued).
+  expect(inputOrigin({ kind: "channel", origin: "steer" })).toBe("channel");
+  expect(inputOrigin({ kind: "channel", origin: "queued" })).toBe("channel");
+  expect(inputOrigin({ kind: "loop", origin: "steer" })).toBe("loop");
+  expect(inputOrigin({ kind: "peer", origin: "queued" })).toBe("peer");
+  // A parent's message to its agent is stored as kind "steer": it is the parent's.
+  expect(inputOrigin({ kind: "steer", origin: "steer" })).toBe("parent");
+  // The owner's own steer and queued prompt stay theirs, and a restart note stays one.
+  expect(inputOrigin({ origin: "steer" })).toBe("steer");
+  expect(inputOrigin({ origin: "queued" })).toBe("queued");
+  expect(inputOrigin({ origin: "restart", kind: "harness" })).toBe("restart");
+  expect(inputOrigin(undefined)).toBe("owner");
 });

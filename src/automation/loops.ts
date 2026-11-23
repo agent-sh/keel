@@ -726,7 +726,7 @@ function pushEvent(l: LoopRecord, body: string, delivery?: string): Promise<chan
     if (o && o.state !== "refused" && o.state !== "duplicate") {
       const cur = get(l.id);
       patch(l.id, { runs: (cur?.runs ?? 0) + 1, last_ms: Date.now(), last_status: "pushed" });
-      activity.record("loop", "push", l.session_id, `Loop "${l.name}" pushed an event into the session${o.state === "held" ? ", where it waits behind the owner's stop" : ""}`, { loop_id: l.id });
+      activity.record("loop", "push", l.session_id, `Loop "${l.name}" pushed an event into the session${o.state === "held" ? `, where it waits (${o.reason ?? "the session's queue is held"})` : ""}`, { loop_id: l.id });
     } else if (o?.state === "refused") skip(l, p.at, `its event was not delivered: ${o.reason}`);
     return p;
   });

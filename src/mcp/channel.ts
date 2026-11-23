@@ -45,7 +45,8 @@ export const WAITING_MAX = 50;
 // daemon is stopping and the next one starts it; held: the owner stopped the
 // session, and it waits there for the owner; duplicate: its key was taken
 // before; refused: never stored, with the reason.
-export type Outcome = { session?: string; state: "started" | "next_step" | "waiting" | "held" | "duplicate" | "refused"; reason?: string };
+// `by`: of a held one, who made the hold (a word of src/core/stoppers.ts); `reason` then says it.
+export type Outcome = { session?: string; state: "started" | "next_step" | "waiting" | "held" | "duplicate" | "refused"; reason?: string; by?: string };
 export type Pushed = { at: number; event_id?: string; chars: number; outcomes: Outcome[] };
 
 export type ChannelEvent = { content: string; attrs: Record<string, string>; event_id?: string; cut: number; dropped: string[] };

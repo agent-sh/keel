@@ -3,7 +3,7 @@
 // Servers connect in the background after startup and on first use; a reload
 // restarts only the servers whose config changed, and never touches a session's
 // request prefix (MCP tools are deferred, so the eager tool list is fixed).
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { basename, dirname, join } from "node:path";
@@ -118,7 +118,8 @@ export type McpServerState = {
 
 // Where a pushed event came from: the server's name as sessions know it, its
 // entry, the one session it is for (an editor's own), and whether the owner takes its events.
-export type ChannelFrom = { server: string; entry: string; session?: string; on: boolean };
+// `ident`: what the server is, whatever it is called (a hash of its endpoint), so a later server under the name is not taken for it.
+export type ChannelFrom = { server: string; entry: string; session?: string; on: boolean; ident: string };
 
 // One item of a resources/read result, as the server gave it (a body is never fetched beyond it).
 export type ResourceItem = { uri: string; mimeType?: string; text?: string; bytes?: number };
@@ -1112,7 +1113,7 @@ export class McpManager {
     return e.session ? !!e.channel : e.plugin ? this.pluginChannels().has(e.name) : !!e.config.channel;
   }
   private channelFrom(e: Entry): ChannelFrom {
-    return { server: e.label ?? e.name, entry: e.name, ...(e.session ? { session: e.session } : {}), on: this.channelOn(e) };
+    return { server: e.label ?? e.name, entry: e.name, ...(e.session ? { session: e.session } : {}), on: this.channelOn(e), ident: createHash("sha256").update(endpoint(e.config)).digest("hex").slice(0, 16) };
   }
   // The entry a name means: the owner's server, else the session's own under that name.
   private named(name: string, session?: string): Entry | undefined {
@@ -1188,7 +1189,19 @@ export class McpManager {
     e.abort?.abort();
     if (c) c.retire();
     if (e.ran) this.told(e, "ended");
+    // Gone, not replaced (a change of its config adds it again at once): whatever named it for its events goes.
+    if (!e.session && !e.bundled) queueMicrotask(() => {
+      if (this.entries.has(name) || this.disposed) return;
+      if (this.pluginChannels().has(name)) {
+        const set = new Set(this.pluginChannels());
+        set.delete(name);
+        try { writeFileSync(this.pluginChannelsPath(), JSON.stringify([...set])); this.pluginOn = set; } catch (err) { this.errors.capture("server", err, { mcp: name, at: "mcp channel forget" }); }
+      }
+      try { this.onServerGone?.(name); } catch (err) { this.errors.capture("server", err, { mcp: name, at: "mcp server gone" }); }
+    });
   }
+  // A server of the owner's or of a plugin that is gone (not one replaced by its new config).
+  onServerGone?: (name: string) => void;
 
   toggle(name: string, enabled: boolean) {
     const e = this.entries.get(name)!;

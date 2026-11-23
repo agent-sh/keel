@@ -109,15 +109,16 @@ export const mcpRoutes: RouteModule = (deps) => {
   // editor's own server is for, or those the owner named for one of theirs.
   // The server is told what became of each, when it asked to be (STATUS_CAP).
   m.onChannel = (from, params) => {
-    const targets = !from.on ? null : from.session ? [from.session] : channels.sessionsOf(from.server).map((x) => x.id);
+    const targets = !from.on ? null : from.session ? [from.session] : channels.sessionsOf(from.server, from.ident).map((x) => x.id);
     void channels.push({ key: `mcp:${from.entry}`, name: from.server, via: "mcp" }, targets, params)
       .then((p) => m.tellChannel(from.entry, { ...(p.event_id ? { event_id: p.event_id } : {}), outcomes: p.outcomes }))
       .catch((e) => deps.errors.capture("server", e, { at: "mcp channel", mcp: from.entry }));
   };
   // Each server with where its events go and what became of the latest ones.
+  m.onServerGone = (name) => channels.forget(name);
   const withChannels = (list: ReturnType<typeof m.list>) => list.map((x) => x.bundled ? x : ({
     ...x,
-    channel: { ...x.channel, sessions: x.session ? [] : channels.sessionsOf(x.name), recent: channels.recentOf(`mcp:${x.session ? `${x.name}@${x.session}` : x.name}`) },
+    channel: { ...x.channel, sessions: x.session ? [] : channels.sessionsOf(x.name, m.channelOf(x.name)?.ident ?? ""), recent: channels.recentOf(`mcp:${x.session ? `${x.name}@${x.session}` : x.name}`) },
   }));
   const servers = () => json({ servers: withChannels(m.list()) });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
@@ -188,7 +189,7 @@ export const mcpRoutes: RouteModule = (deps) => {
     },
     "/api/mcp/servers/:name": {
       DELETE: (req: any) =>
-        known(req.params.name) ?? plugins(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), channels.forget(req.params.name), servers())),
+        known(req.params.name) ?? plugins(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), servers())),
     },
     // Whether a server's pushed events are taken (src/mcp/channel.ts), off by default.
     // { on } alone: the server's switch (off keeps the sessions named, so on again
@@ -207,7 +208,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         try {
           if (from.session || !session) m.setChannel(req.params.name, b.on, from.session);
           else {
-            channels.listen(req.params.name, session, b.on);
+            channels.listen(req.params.name, from.ident, session, b.on);
             if (b.on && !from.on) m.setChannel(req.params.name, true);
           }
         } catch (e) {
