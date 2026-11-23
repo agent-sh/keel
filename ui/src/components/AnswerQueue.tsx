@@ -37,6 +37,12 @@
 // selection in it, typing in its message box, or ten seconds spent there after
 // the cards could be answered. Then they stay. And not in a layout of one pane,
 // where opening a session turns the page: they turn it back.
+//
+// A phone is where the owner answers on the way: there an answer given in a
+// session they came to goes on to the next session that waits, as a sequence
+// would, and the last answer leads back where they came from. Time spent on a
+// card does not make it reading there (a phone has no pane to read beside);
+// a press outside what it asks, typing or a selection still does.
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { announce } from "../lib/announce.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
@@ -57,6 +63,8 @@ import { useSessionStates } from "../lib/watch.ts";
 import { Kbd } from "./Kbd.tsx";
 
 const KEYS = "alt+a";
+// A phone: one page at a time, answered on the way (see the head of the file).
+const phone = () => matchMedia("(max-width: 767px)").matches;
 // How long in a session that waits, once its cards can be answered, before the owner is taken to be reading it.
 const READING_MS = 10_000;
 // What a session asks: a press or a key there is on the way to an answer, not reading.
@@ -106,9 +114,10 @@ const putAway = (id: string) => { const st = getStations(); const i = st.over.in
 // keyboard, once it shows and nothing lies over it. Its message box takes
 // none on the way (a session with no card to answer, only a message that did
 // not go, is opened as any other: there the box is where the keyboard goes).
-function go(id: string) {
+// `from`: where a sequence that begins here began, when that is not the page on screen.
+function go(id: string, from?: { route: Route; slot: number }) {
   const began = !state.on;
-  if (began) origin = { route: getUI().route, slot: getStations().active };
+  if (began) origin = from ?? { route: getUI().route, slot: getStations().active };
   // Where it goes is known before the page moves: the move is the sequence's own.
   state = { ...state, on: true, at: id };
   setSequence(state.card[id] === false ? null : id);
@@ -192,6 +201,9 @@ export function AnswerQueue() {
       if (cur && visit?.id === cur && gone.length && !ids.length && gone.every(answeredHere)) {
         const { from, slot } = visit;
         visit = null;
+        // On a phone the answers go on: the next session that waits, as a sequence that began where they came from.
+        const next = phone() ? order.find((id) => id !== cur) : undefined;
+        if (next) { putAway(cur); return go(next, { route: from, slot }); }
         if (!leaveLook(cur, true)) backTo(from, slot);
       }
       return;
@@ -222,7 +234,7 @@ export function AnswerQueue() {
     if (visit?.id === cur || (from.name === "session" && from.id === cur)) return;
     const st = opened(getStations(), cur);
     // A look, or a move between panes at a desk. (One pane is a page that is turned: the owner turns it back.)
-    const leaves = st.over.includes(cur) || (st.slots.length > 1 && !movedTo(cur) && matchMedia("(min-width: 768px)").matches);
+    const leaves = st.over.includes(cur) || (st.slots.length > 1 && !movedTo(cur) && matchMedia("(min-width: 768px)").matches) || phone();
     visit = order.includes(cur) && leaves ? { id: cur, from, slot: getStations().active } : null;
   }, [route]);
   // The owner began to read or work in the session they went to: they stay (see the head of the file).
@@ -253,7 +265,7 @@ export function AnswerQueue() {
   // And so does time: ten seconds there once its cards could be answered.
   useEffect(() => {
     const v = visit;
-    if (!v || v.id !== cur) return;
+    if (!v || v.id !== cur || phone()) return;
     const t = window.setTimeout(() => { if (visit === v) visit = null; }, SETTLE_MS + READING_MS);
     return () => window.clearTimeout(t);
   }, [route, cur]);

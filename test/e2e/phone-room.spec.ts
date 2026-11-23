@@ -309,10 +309,12 @@ test.describe("on a phone's home", () => {
 
 // Feature: on a phone, what waits on the owner is answered one card after another. The dock's
 // count of what needs them is a button in a slot of its own: a tap goes to the card that has
-// waited longest (the phone's Alt+A).
+// waited longest (the phone's Alt+A). An answer given on the phone goes on to the next session's
+// card, however the owner came to the first, and the last answer leads back where they began.
 test.describe("on a phone, what waits", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const bash = (command: string) => `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`;
+  const question = `script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Scope", question: "Fix only cart.js or the whole module?", options: [{ label: "Only cart.js" }, { label: "Whole module" }], multiSelect: false }] } }])}`;
   // Sessions made in order (the first has waited longest), each sent its prompt; resolves once each waits.
   async function waiting(request: import("@playwright/test").APIRequestContext, tag: string, prompts: { title: string; mode: string; text: string }[]) {
     const ids: string[] = [];
@@ -328,6 +330,12 @@ test.describe("on a phone, what waits", () => {
     }
     return ids;
   }
+  // Taps what the card asks once it can be pressed, and counts the tap.
+  const tapWhenReady = async (loc: import("@playwright/test").Locator) => {
+    await expect(loc).toBeVisible();
+    await expect(loc).not.toHaveAttribute("aria-disabled", /./);
+    await loc.tap();
+  };
 
   test("the dock's count is a button of its own that goes to the card that waited longest", async ({ page, request }) => {
     const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
@@ -361,6 +369,60 @@ test.describe("on a phone, what waits", () => {
       // (Once the page has glided into place.)
       await expect(pane).toBeInViewport({ ratio: 1 });
       await shoot(page, "phone-08-dock-need-went");
+    } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  });
+
+  test("three approvals and a question are answered with six taps from one dock mark, and the last answer leads back", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const made: string[] = [];
+    try {
+      const { session: home } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Desk ${tag}` } })).json();
+      made.push(home.id);
+      await request.post(`/api/sessions/${home.id}/messages`, { data: { text: "script:say ready" } });
+      const ids = await waiting(request, tag, [
+        { title: "Ask one", mode: "ask", text: bash("touch one.txt") },
+        { title: "Ask two", mode: "ask", text: bash("touch two.txt") },
+        { title: "Ask three", mode: "ask", text: bash("touch three.txt") },
+        { title: "Ask scope", mode: "full-auto", text: question },
+      ]);
+      made.push(...ids);
+      // What still waits in these sessions, as the daemon tells it.
+      const left = async () => {
+        let n = 0;
+        for (const id of ids.slice(0, 3)) n += ((await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals ?? []).length;
+        return n + ((await (await request.get(`/api/sessions/${ids[3]}/questions`)).json()).pending ?? []).length;
+      };
+      await expect.poll(left, { timeout: 30_000 }).toBe(4);
+      await page.goto(`/s/${home.id}`);
+      const pane = page.locator(".k-station[data-helm]");
+      await expect(pane.getByTestId("assistant-text").last()).toBeVisible();
+      let taps = 0;
+      // The owner goes to the first by its mark in the dock, as from any list.
+      const mark = page.locator(`.k-dock-mark[aria-label^="Ask one ${tag},"]`);
+      await mark.scrollIntoViewIfNeeded();
+      await mark.tap(); taps++;
+      for (let k = 0; k < 3; k++) {
+        await expect(page).toHaveURL(new RegExp(`/s/${ids[k]}$`));
+        await tapWhenReady(pane.getByTestId("allow-once")); taps++;
+        if (k === 0) {
+          // The next waiting card shows: the page went on by itself.
+          await expect(page).toHaveURL(new RegExp(`/s/${ids[1]}$`));
+          await expect(pane).toBeInViewport({ ratio: 1 });
+          // And the dock's mark of it is in view.
+          await expect(page.locator(".k-dock-mark[aria-current]")).toBeInViewport({ ratio: 1 });
+          await shoot(page, "phone-09-answer-went-on");
+        }
+      }
+      await expect(page).toHaveURL(new RegExp(`/s/${ids[3]}$`));
+      await tapWhenReady(pane.getByTestId("question-option").first()); taps++;
+      await tapWhenReady(pane.getByTestId("question-submit")); taps++;
+      // Nothing is left: back where the owner began.
+      await expect(page).toHaveURL(new RegExp(`/s/${home.id}$`));
+      expect(taps).toBe(6);
+      console.log(`taps to answer three approvals and a question: ${taps}`);
+      await expect.poll(left, { timeout: 15_000 }).toBe(0);
     } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
   });
 });

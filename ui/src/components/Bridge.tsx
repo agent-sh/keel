@@ -466,10 +466,19 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   // Each mark carries the session's short code, the one the folded rail gives it.
   const sessions = useStore((x) => x.sessions);
   const codes = useMemo(() => callsigns(Object.values(sessions).filter((s) => !s.archived && !s.settings.helper)), [sessions]);
+  // The mark of the session on screen is in view: the dock's row scrolls sideways to it (only the row).
+  const row = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    const l = row.current, m = l?.querySelector<HTMLElement>(".k-dock-mark[aria-current]");
+    if (!l || !m) return;
+    const lb = l.getBoundingClientRect(), mb = m.getBoundingClientRect();
+    const by = mb.left < lb.left ? mb.left - lb.left : mb.right > lb.right ? mb.right - lb.right : 0;
+    if (by) l.scrollBy({ left: by, behavior: scrollMotion() });
+  }, [helm, list.length]);
   return (
     <nav className="k-dock" aria-label="Panes">
       <button type="button" className="k-dock-btn" aria-label="All sessions" onClick={() => savePref("sidebar", true)}><ListTree /></button>
-      <ol className="k-dock-list">
+      <ol className="k-dock-list" ref={row}>
         {list.map((s) => (
           <li key={s.id}>
             <button type="button" className="k-dock-mark" data-watch={watches[s.id]} aria-current={helm === s.id ? "page" : undefined} aria-label={`${s.title || "New session"}, ${label(s.id, watches[s.id]!)}${whereWords(s)}`} onClick={() => navigate({ name: "session", id: s.id })}>
