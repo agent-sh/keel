@@ -19,7 +19,8 @@ import { Seg, tabId } from "./Seg.tsx";
 import { OwnerWords } from "./Words.tsx";
 
 // `original`, `wait`: on a machine reached over ssh, what the harness that still runs it does, and a resume waiting for it.
-type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean }; original?: Original; wait?: Wait };
+// `in_text`: only a search inside what the transcript says found it (its title, folder and prompts do not hold the words).
+type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean }; original?: Original; wait?: Wait; in_text?: true };
 type HarnessState = { harness: Harness; label: string; store: string; installed: boolean; total: number; interactive: number };
 type Preview = {
   session: Found & { cwd_exists: boolean };
@@ -234,6 +235,11 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [all, setAll] = useState(false);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
+  // The search inside what the transcripts say (a second request once the typing pauses): under way, or
+  // done for the query shown, with the harnesses whose text it could not read.
+  const [inside, setInside] = useState<{ q: string; running: boolean; not: Harness[] }>({ q: "", running: false, not: [] });
+  const insideShown = useRef(-1); // the listing (seq) whose search inside is on show: a quick answer for it comes too late
+  const shownInside = useRef(false); // the list on show came from a search inside (its next pages are read the same way)
   const [next, setNext] = useState<string | undefined>();
   const [sel, setSel] = useState<Row | null>(null);
   const [building, setBuilding] = useState(false);
@@ -259,7 +265,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     }
   };
   // The filter the shown rows and count came from.
-  const [shownFor, setShownFor] = useState<{ q: string; all: boolean }>({ q: "", all: false });
+  const [shownFor, setShownFor] = useState<{ q: string; all: boolean; inside?: boolean }>({ q: "", all: false });
   const [from, setFrom] = useState("");
   const [intent, setIntent] = useState<Intent>(null);
   const machines = useFleet((s) => s.machines);
@@ -277,6 +283,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     const u = new URLSearchParams({ harness, limit: "500" });
     if (shownFor.q) u.set("q", shownFor.q);
     if (shownFor.all) u.set("show", "all");
+    if (shownFor.inside) u.set("inside", "1");
     // Read to the end; a list that changed above a page while it was read is read again whole.
     let items: Item[] = [];
     for (let tries = 0, cursor: string | undefined, done = false; !done; ) {
@@ -309,16 +316,25 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     load();
   };
 
-  const load = useCallback(async (cursor?: string, refresh = false, want = 60): Promise<void> => {
-    const n = ++seq.current;
+  // `deep`: the words are looked for in what the transcripts say too (this machine's stores only). A
+  // page after the first (`cursor`) is read as the list on show was.
+  const load = useCallback(async (cursor?: string, refresh = false, want = 60, deep = false): Promise<void> => {
+    // (A search inside answers the listing it was asked for, not a newer one.)
+    const n = deep ? seq.current : ++seq.current;
+    const inText = !from && !!q.trim() && (deep || (!!cursor && shownInside.current));
     const u = new URLSearchParams({ harness, limit: String(Math.min(want, 500)) });
     if (cursor) u.set("cursor", cursor);
     if (q.trim()) u.set("q", q.trim());
     if (all) u.set("show", "all");
     if (refresh) u.set("refresh", "1");
+    if (inText) u.set("inside", "1");
+    if (deep) setInside({ q: q.trim(), running: true, not: [] });
     try {
-      const r = await api<{ sessions: Row[]; total: number; next_cursor?: string; changed?: boolean; harnesses: HarnessState[]; index: { building: boolean } }>(`${paths(from).list}?${u}`);
+      const r = await api<{ sessions: Row[]; total: number; next_cursor?: string; changed?: boolean; harnesses: HarnessState[]; index: { building: boolean }; inside?: { searched: Harness[]; not: Harness[] } }>(`${paths(from).list}?${u}`);
       if (n !== seq.current) return;
+      if (deep) { insideShown.current = n; setInside({ q: q.trim(), running: false, not: r.inside?.not ?? [] }); }
+      // The quick answer of a listing whose search inside is already on show adds nothing.
+      else if (!cursor && insideShown.current === n) return;
       // A session arrived, left or moved above this page since the pages before
       // it were read: the list is read again from the top, as far as it was shown.
       if (cursor && r.changed) return load(undefined, false, shown.current + 60);
@@ -332,8 +348,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
       // again (a copy made since the last listing shows) even when it was
       // picked from the listing before this one.
       if (!cursor) setSel((cur) => (cur && r.sessions.find((x) => x.harness === cur.harness && x.id === cur.id && x.path === cur.path)) || cur);
-      if (!cursor) setShownFor({ q: q.trim(), all });
+      if (!cursor) { shownInside.current = inText; setShownFor({ q: q.trim(), all, inside: inText }); }
     } catch (e) {
+      if (deep && n === seq.current) setInside({ q: q.trim(), running: false, not: [] });
       // A cursor the daemon does not take (one a page of an older build held
       // through an upgrade): the list is read again from the top, as far as it was shown.
       if (cursor && (e as { status?: number }).status === 400) return load(undefined, false, shown.current + 60);
@@ -344,7 +361,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   useEffect(() => {
     if (!open) return;
     const t = setTimeout(() => load(), q ? 180 : 0);
-    return () => clearTimeout(t);
+    // Once the typing pauses, the words are looked for in what was said too (a read of the transcripts).
+    const deep = q.trim().length >= 3 && !from ? setTimeout(() => load(undefined, false, 60, true), 450) : undefined;
+    return () => { clearTimeout(t); clearTimeout(deep); };
   }, [open, load, q]);
   // The first listing of a large store goes on in the background: look again until it is whole.
   useEffect(() => {
@@ -438,7 +457,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             <div className="flex w-[26rem] shrink-0 flex-col border-r border-line">
               <div className="flex items-center gap-2 border-b border-line px-3 py-2">
                 <Search className="size-4 shrink-0 text-faint" />
-                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, folder or prompt" className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
+                <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, folder, prompt or reply" className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
                 <label className="flex shrink-0 items-center gap-1.5 text-caption text-faint" title="Also subagents and sessions nobody sat at (headless, loops)">
                   All
                   <Switch.Root checked={all} onCheckedChange={setAll} className="k-switch">
@@ -449,6 +468,12 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               {!from && <Running onDone={() => onOpenChange(false)} />}
               <div className="flex items-center gap-2 px-3 py-1.5 text-micro text-faint tabular-nums">
                 <span className="min-w-0 flex-1 truncate" data-testid="import-total">{bulk || (rows ? `${total.toLocaleString()} session${total === 1 ? "" : "s"}${building ? " · reading the store" : ""}` : "Reading")}</span>
+                {/* What the search read: the conversations too, under way or not possible for this store. */}
+                {!bulk && inside.q === q.trim() && q.trim() && (inside.running || inside.not.includes(harness)) && (
+                  <span className="shrink-0 text-faint" data-testid="import-inside" data-state={inside.running ? "running" : "not"}>
+                    {inside.running ? "Searching the conversations" : "Titles and prompts only: this store's conversations are not searched"}
+                  </span>
+                )}
                 {rows && total > 0 && !building && !from && !confirm && (
                   <button type="button" data-testid="import-all" disabled={bulk.startsWith("Importing") || shownFor.q !== q.trim() || shownFor.all !== all} onClick={() => collect().catch((e) => { setBulk(""); reportError(e); })} className="shrink-0 rounded-sm px-1.5 py-0.5 text-accent hover:bg-accent-soft disabled:opacity-50" title="Import every session this list shows; ones imported before stay as they are">
                     Import all
@@ -489,6 +514,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                     >
                       <div className="flex items-center gap-2">
                         <span className="min-w-0 flex-1 truncate text-ui font-medium">{r.title}</span>
+                        {r.in_text && <span className="shrink-0 rounded-xs bg-accent-soft px-1.5 text-micro text-accent-ink" data-testid="import-in-text" title="The words are in what was said, not in the title or prompts">in the conversation</span>}
                         {r.imported && <span className="shrink-0 rounded-xs bg-ok/15 px-1.5 text-micro font-medium text-ok" data-testid="import-imported">{r.imported.grew ? "imported · grew" : "imported"}</span>}
                         {r.kind !== "interactive" && <span className="shrink-0 rounded-xs bg-sunken px-1.5 text-micro text-muted">{r.kind}</span>}
                       </div>

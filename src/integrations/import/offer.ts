@@ -7,7 +7,9 @@ import { redact } from "../redact.ts";
 import type { Found, Harness } from "./types.ts";
 
 // `cursor`: the `next_cursor` of the page before, as it was given; none (or "0") starts the list.
-export type ListQuery = { harness?: Harness; q?: string; cwd?: string; show?: string; sort?: "updated" | "size" | "title"; limit?: number; cursor?: string };
+// `inside`: the files a search inside the transcripts found holding every word (inside.ts): such a row
+// matches too, though its title, folder and prompts do not hold the words.
+export type ListQuery = { harness?: Harness; q?: string; cwd?: string; show?: string; sort?: "updated" | "size" | "title"; limit?: number; cursor?: string; inside?: ReadonlySet<string> };
 
 // The index keeps the answer of `offered` with each file's row (import_index.offered):
 // a change of this pattern needs a new READER_V there, so every row is read again.
@@ -51,7 +53,7 @@ export function kindsOf(show?: string): Found["kind"][] | undefined {
 }
 
 // The rows a listing shows, in its order: interactive sessions unless more
-// are asked for, every word of the search in the title, folder, prompts or id.
+// are asked for, every word of the search in the title, folder, prompts or id (or, with `inside`, in what was said).
 export function select(rows: Found[], q: ListQuery): Found[] {
   const words = wordsOf(q.q);
   const kinds = kindsOf(q.show);
@@ -59,7 +61,7 @@ export function select(rows: Found[], q: ListQuery): Found[] {
     if (q.harness && f.harness !== q.harness) return false;
     if (kinds && !kinds.includes(f.kind)) return false;
     if (q.cwd && f.cwd !== q.cwd) return false;
-    if (words.length) {
+    if (words.length && !q.inside?.has(f.path)) {
       const hay = haystack(f);
       if (!words.every((w) => hay.includes(w))) return false;
     }

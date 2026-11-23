@@ -18,6 +18,7 @@ import { inDatabase, storedData, type Found, type Harness, type Read } from "./t
 import { hasAttachmentsRoot, saveAttachment } from "../../engine/attachments.ts";
 import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
+import { filesWithAll } from "./inside.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
   { harness: "claude", label: "Claude Code", store: claudeRoot },
@@ -367,7 +368,13 @@ export class Imports {
     const kinds = kindsOf(q.show);
     if (kinds) { where.push(`kind IN (${kinds.map(() => "?").join(", ")})`); args.push(...kinds); }
     if (q.cwd) { where.push("cwd = ?"); args.push(q.cwd); }
-    for (const w of wordsOf(q.q)) { where.push("instr(hay, ?) > 0"); args.push(w); }
+    const words = wordsOf(q.q);
+    if (words.length) {
+      // Every word in what the index keeps of the row, or the row's file among those a search inside found.
+      const hay = words.map(() => "instr(hay, ?) > 0").join(" AND ");
+      where.push(q.inside ? `((${hay}) OR path IN (SELECT value FROM json_each(?)))` : `(${hay})`);
+      args.push(...words, ...(q.inside ? [JSON.stringify([...q.inside])] : []));
+    }
     if (q.offered) where.push("offered = 1");
     const W = where.join(" AND ");
     const KEY = "rowid, path, harness, sid AS id, updated_ms, size_bytes, title";
@@ -424,13 +431,59 @@ export class Imports {
     // Only now are the page's rows decoded.
     const take = merged.flatMap((m) => (m.f ? [] : [(m.k as IndexKey).rowid]));
     const found = new Map(take.length ? db.query<{ rowid: number; found: string }, any[]>(`SELECT rowid, found FROM import_index WHERE rowid IN (${take.map(() => "?").join(", ")})`).all(...take).map((r) => [r.rowid, r.found]) : []);
-    const sessions = merged.flatMap((m) => { const f = m.f ?? (found.has((m.k as IndexKey).rowid) ? this.decode(found.get((m.k as IndexKey).rowid)!) : undefined); return f ? [{ ...f, imported: this.importedAs(f) }] : []; });
+    // A row only a search inside found says so: what matched is not in what the row shows.
+    const inText = (f: Found) => !!q.inside?.has(f.path) && !words.every((w) => haystack(f).includes(w));
+    const sessions = merged.flatMap((m) => { const f = m.f ?? (found.has((m.k as IndexKey).rowid) ? this.decode(found.get((m.k as IndexKey).rowid)!) : undefined); return f ? [{ ...f, imported: this.importedAs(f), ...(inText(f) ? { in_text: true as const } : {}) }] : []; });
     return {
       sessions, total,
       ...(more && merged.length ? { next_cursor: writeCursor(q, merged.at(-1)!.k, before + merged.length, sum, scope) } : {}),
       ...(changed ? { changed: true as const } : {}),
       index,
     };
+  }
+
+  // The files of the stores kept as files (Claude Code, Codex, Antigravity, Gemini CLI) whose
+  // transcripts hold every word of `q`, read by a search process (inside.ts), and the harnesses whose
+  // text was searched and was not (a store of one database: the Rust Keel, Hermes, OpenCode).
+  // The answer for one query is kept for a moment: the next page, and the same query typed again.
+  // Told of a search inside that failed (the daemon's error tracker).
+  insideFailed?: (e: unknown) => void;
+  private insideCache = new Map<string, { at: number; done: Promise<Set<string> | null>; settled: boolean; waiting: number; stop: AbortController }>();
+  async inside(q: string, o: { harness?: Harness; show?: string; signal?: AbortSignal } = {}): Promise<{ paths: Set<string> | null; searched: Harness[]; not: Harness[] }> {
+    const words = wordsOf(q);
+    const kinds = kindsOf(o.show);
+    const want = (h: Harness) => !o.harness || o.harness === h;
+    const fileStores = HARNESSES.map((h) => h.harness).filter((h) => !inDatabase(h) && want(h));
+    const not = HARNESSES.map((h) => h.harness).filter((h) => inDatabase(h) && want(h));
+    if (!words.length) return { paths: new Set(), searched: fileStores, not };
+    const key = JSON.stringify([words, o.harness ?? "", kinds ?? "all"]);
+    const now = Date.now();
+    for (const [k, v] of this.insideCache) if (v.settled && now - v.at > REFRESH_MS) this.insideCache.delete(k);
+    let hit = this.insideCache.get(key);
+    if (!hit) {
+      const indexed = fileStores.filter(isIndexed);
+      const where = ["found IS NOT NULL", `harness IN (${indexed.map(() => "?").join(", ") || "NULL"})`];
+      const args: string[] = [...indexed];
+      if (kinds) { where.push(`kind IN (${kinds.map(() => "?").join(", ")})`); args.push(...kinds); }
+      const files = this.store.db.query<{ path: string }, string[]>(`SELECT path FROM import_index WHERE ${where.join(" AND ")}`).all(...args).map((r) => r.path);
+      for (const f of this.side(o.harness)) if (!inDatabase(f.harness) && (!kinds || kinds.includes(f.kind))) files.push(f.path);
+      // One search for everyone who asks the same meanwhile; stopped when nobody waits for it any more
+      // (a query typed on: its search is no longer read).
+      const stop = new AbortController();
+      const entry = { at: now, done: filesWithAll(words, files, stop.signal), settled: false, waiting: 0, stop };
+      entry.done.then(() => { entry.settled = true; entry.at = Date.now(); }, () => { if (this.insideCache.get(key) === entry) this.insideCache.delete(key); });
+      this.insideCache.set(key, hit = entry);
+    }
+    const h = hit;
+    h.waiting++;
+    try {
+      const asked = o.signal ? Promise.race([h.done, new Promise<never>((_, no) => o.signal!.addEventListener("abort", () => no(o.signal!.reason ?? new Error("aborted")), { once: true }))]) : h.done;
+      // A search that could not read the files is a search that did not happen: said as such, not as no match.
+      const paths = await asked.catch((e) => { if (o.signal?.aborted) throw e; this.insideFailed?.(e); return null; });
+      return { paths, searched: paths ? fileStores : [], not: paths ? not : [...fileStores, ...not] };
+    } finally {
+      if (--h.waiting === 0 && !h.settled) { h.stop.abort(); if (this.insideCache.get(key) === h) this.insideCache.delete(key); }
+    }
   }
 
   find(harness: Harness, id: string): Found | undefined {

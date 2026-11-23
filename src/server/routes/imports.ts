@@ -27,6 +27,7 @@ export const importRoutes: RouteModule = (deps) => {
   // The index is built on first use (the import sheet), not at start: walking
   // tens of thousands of other harnesses' files costs every start CPU and memory.
   const imports = sharedImports(store);
+  imports.insideFailed ??= (e) => deps.errors.capture("server", e, { at: "import search inside" });
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
   // The source's model when this daemon lists it, else the default one.
   const modelFor = (f: Found) => pickModel(providers, f);
@@ -224,9 +225,13 @@ export const importRoutes: RouteModule = (deps) => {
         await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || (!u.get("q") && !cursor));
         const limit = u.get("limit") ? Number(u.get("limit")) : undefined;
         if (limit !== undefined && !(limit > 0)) return bad("limit must be a number above 0");
-        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q: u.get("q") ?? undefined, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor }));
+        // `inside`: the words are looked for in what the transcripts say too, not only in their titles,
+        // folders and prompts. The answer says which harnesses' text was searched and which was not.
+        const q = u.get("q") ?? undefined;
+        const found = u.has("inside") && q?.trim() ? await imports.inside(q, { harness: harness as Harness | undefined, show: u.get("show") ?? undefined, signal: req.signal }) : undefined;
+        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor, inside: found?.paths ?? undefined }));
         if (r instanceof Response) return r;
-        return json({ ...r, harnesses: imports.harnesses() });
+        return json({ ...r, harnesses: imports.harnesses(), ...(found ? { inside: { searched: found.searched, not: found.not } } : {}) });
       },
     },
     "/api/import/index": {
