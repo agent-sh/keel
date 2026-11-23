@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { folderIndex } from "./folder-index.ts";
+import { findRoots, folderIndex } from "./folder-index.ts";
 
 // A session working in another folder changes which used folder is newest, not
 // what the index walks: the walk is not made again for it.
@@ -17,4 +17,11 @@ test("the index is reused when only the order of the used folders or roots chang
   const more = folderIndex([{ path: a, depth: 2 }, { path: b, depth: 2 }], [join(a, "one")]);
   expect(more).not.toBe(first);
   await more;
+});
+
+// A session that worked under a dot-folder of the home (~/.config/x) lists that folder, not the
+// names beside it: its parent is no root. The owner's repo roots stay roots wherever they are.
+test("a used folder under a dot-folder of the home makes no root of its parent", () => {
+  const roots = findRoots("/h", ["/h/.config/tool", "/h/projects/app", "/h/.cache/run/ws", "/elsewhere/x"], ["/h/.cache/dev"]);
+  expect(roots).toEqual([{ path: "/h", depth: 3 }, { path: "/h/projects", depth: 2 }, { path: "/h/.cache/dev", depth: 2 }]);
 });

@@ -7,7 +7,8 @@
 // At most MAX_FOLDERS are kept, and the index is reused for INDEX_MS: a
 // picker asks once per pause in typing.
 import { readdir } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { contains } from "../core/paths.ts";
 import type { FolderHit } from "../core/folder-match.ts";
 
 export const MAX_FOLDERS = 20_000;
@@ -69,6 +70,20 @@ export async function indexFolders(roots: Root[], used: string[] = [], cap = MAX
     batch.forEach((p, k) => { if (!got[k]!.ok) return; if (out.size < cap) out.set(p, { name: basename(p), path: p, is_git: !!got[k]!.git, ...(got[k]!.git === "file" ? { linked_worktree: true } : {}), used: true }); else partial = true; });
   }
   return { folders: [...out.values()], partial };
+}
+
+// Where the walk starts: the home three levels down, and two levels under the parent of each used
+// folder and under each repo root (the owner's KEEL_REPO_ROOTS, else the daemon's folder's parent),
+// inside the home. The parent of a used folder under a dot-folder of the home (its settings, caches
+// and tools, such as ~/.config) is never a root: a session that worked there lists that folder, not
+// its neighbours.
+export function findRoots(home: string, used: string[], repos: string[]): Root[] {
+  const hidden = (p: string) => relative(home, p).split(sep).some((part) => part.startsWith("."));
+  const roots: Root[] = [{ path: home, depth: 3 }];
+  const add = (p: string) => { if (p !== home && contains(home, p) && !roots.some((r) => r.path === p)) roots.push({ path: p, depth: 2 }); };
+  for (const u of used) if (!hidden(dirname(u))) add(dirname(u));
+  for (const r of repos) add(r);
+  return roots;
 }
 
 // What an index is of: its roots and the set of used folders, each sorted. The order of the used

@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: the folder a new session works in, found by name. A name typed in
@@ -11,8 +11,13 @@ import { HAIKU, shoot } from "./shots.ts";
 // say why in the picker.
 test("the folder picker finds a folder by name, Enter takes it, and what cannot open says why", async ({ page, request }) => {
   const word = `fp${Date.now().toString(36)}`;
-  const { home } = (await (await request.get("/api/workspaces")).json()) as { home: string };
-  const root = join(home, ".cache/keel-work/bun/e2e-ws", word);
+  const { home, default: deflt } = (await (await request.get("/api/workspaces")).json()) as { home: string; default: string };
+  // The folders are made where the picker looks and nothing of the owner's is: in a home of the
+  // run's own (scripts/smoke.sh and the scratch daemons make one under a cache folder), else beside
+  // the daemon's default folder, which is a repo root. Not under a dot-folder: no root is there.
+  const own = home.includes("/.cache/");
+  test.skip(!own && relative(home, dirname(deflt)).startsWith(".."), "needs a home of the run's own or a default folder inside the home: the folders it makes must not land in the owner's home");
+  const root = own ? join(home, "keel-e2e", word) : join(dirname(deflt), word);
   const used = join(root, "base"), repo = join(root, `${word}-api`), plain = join(root, `${word}-notes`);
   for (const d of [used, repo, plain]) mkdirSync(d, { recursive: true });
   expect(spawnSync("git", ["init", "-q"], { cwd: repo }).status).toBe(0);
@@ -68,6 +73,23 @@ test("the folder picker finds a folder by name, Enter takes it, and what cannot 
     await expect(page.getByTestId("folder-error")).toContainText(`No folder named \u201czq${word}x\u201d`);
     await page.keyboard.press("Escape");
     await expect(picker).toContainText(`${word}-notes`);
+
+    // A session that worked under a dot-folder of the home lists that folder, not the names beside it.
+    if (own) {
+      const dot = join(home, ".keel-e2e", word), there = join(dot, "tool"), beside = join(dot, `${word}-hidden`);
+      for (const d of [there, beside]) mkdirSync(d, { recursive: true });
+      const { session: s2 } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: `Dot ${word}`, workspace: there } })).json();
+      try {
+        await picker.click();
+        await field.fill(`${word}-hid`);
+        await field.press("Enter");
+        await expect(page.getByTestId("folder-error")).toContainText(`No folder named`);
+        await page.keyboard.press("Escape");
+      } finally {
+        await request.delete(`/api/sessions/${s2.id}`);
+        rmSync(dot, { recursive: true, force: true });
+      }
+    }
 
     // On a phone.
     await page.setViewportSize({ width: 390, height: 844 });

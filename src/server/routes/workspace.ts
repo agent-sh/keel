@@ -9,7 +9,7 @@ import { heldFile } from "../../core/store-files.ts";
 import { git } from "../../core/git.ts";
 import { contains } from "../../core/paths.ts";
 import { rankFolders } from "../../core/folder-match.ts";
-import { folderIndex, type Root } from "../folder-index.ts";
+import { findRoots, folderIndex } from "../folder-index.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -106,13 +106,8 @@ export const workspaceRoutes: RouteModule = ({ store, workspace }) => {
       GET: async (req: Request) => {
         const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
         const used = usedFolders(400).filter((p) => readable(p)).slice(0, 200);
-        const roots: Root[] = [{ path: HOME, depth: 3 }];
-        for (const p of used) if (dirname(p) !== p && contains(HOME, dirname(p)) && dirname(p) !== HOME) roots.push({ path: dirname(p), depth: 2 });
-        for (const r of (process.env.KEEL_REPO_ROOTS ?? dirname(resolve(workspace))).split(":").filter(Boolean)) {
-          const p = resolve(r.replace(/^~(?=$|\/)/, HOME));
-          if (contains(HOME, p) && p !== HOME) roots.push({ path: p, depth: 2 });
-        }
-        const { folders, partial } = await folderIndex(roots, used);
+        const repos = (process.env.KEEL_REPO_ROOTS ?? dirname(resolve(workspace))).split(":").filter(Boolean).map((r) => resolve(r.replace(/^~(?=$|\/)/, HOME)));
+        const { folders, partial } = await folderIndex(findRoots(HOME, used, repos), used);
         return json({ hits: q ? rankFolders(q, folders, 20) : [], partial, folders: folders.length });
       },
     },
