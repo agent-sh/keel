@@ -7,9 +7,10 @@
 // kernel records with every socket the cgroup of the process that made it.
 // The daemon asks the kernel for the client socket's record by its two ends
 // (sockdiag.ts) and looks the cgroup up among the sessions' scopes. A peer in a
-// session's scope has that session's authority only: it reads its own session,
-// nothing else, with or without the access token (a command outside the
-// sandbox can read the token's file).
+// session's scope has that session's authority only: it reads its own session
+// (and, for a top-level session, the daemon's read-only lists), changes
+// nothing, with or without the access token (a command outside the sandbox
+// can read the token's file).
 //
 // The record is the socket's, not a process's: a process that ends after it
 // sent its request, a pid used again, a child that took the socket over, none
@@ -38,7 +39,7 @@ export type Authority =
   | { kind: "session"; session: string; by: "cgroup" | "process" }
   // No process holds the socket: refused.
   | { kind: "ended" }
-  // The kernel gave no record while sessions have processes alive: the access token decides.
+  // The kernel gave no record while sessions have processes alive: refused (peerVerdict).
   | { kind: "unknown" };
 
 export type PeerFacts = {
@@ -75,18 +76,45 @@ export function peerAuthority(p: PeerFacts): Authority | Promise<Authority> {
 
 // What a session's command may ask of the API: its own session, read (its events, its plan, its files), and
 // whether the daemon is up. Not its secrets' list, and nothing that changes anything: an approval, a mode, a
-// message, a stop are the owner's, for its own session too.
-export function sessionMay(method: string, path: string, session: string): boolean {
+// message, a stop are the owner's, for its own session too. A top-level session's command (one whose session
+// has no parent in the daemon's table: never anything the command says of itself) may also read what the
+// daemon's lists show of every session: the list, a session's events, timeline and hours, the agents, the
+// errors, telemetry, resources and the daemon's state. Never a secret, the vault, the access token, the
+// settings or the socket. An agent's command keeps its own session only.
+const TOP_READS = [
+  /^\/api\/sessions$/,
+  /^\/api\/sessions\/[^/]+(\/(events|timeline|hours|agents|agents\/[^/]+\/report))?$/,
+  /^\/api\/(errors|resources|daemon|automation|automation\/now|telemetry)$/,
+  /^\/api\/telemetry\/(compactions|compare|examples|memory|prompt|slowest|tokens|turns|vocabulary)$/,
+];
+export function sessionMay(method: string, path: string, session: string, top = false): boolean {
   if (method !== "GET" && method !== "HEAD") return false;
   if (path === "/api/health") return true;
   if (path.includes("%") || path.includes("//")) return false;
   const m = /^\/api\/sessions\/([^/]+)(\/.*)?$/.exec(path);
-  if (!m || m[1] !== session) return false;
-  return !/^\/secrets(\/|$)/.test(m[2] ?? "");
+  if (m && m[1] === session) return !/^\/secrets(\/|$)/.test(m[2] ?? "");
+  return top && TOP_READS.some((r) => r.test(path));
 }
 
-export const sessionRefusal = (session: string, method: string, path: string) =>
-  `a command of session ${session} acts with that session's authority only: it may read its own session (GET /api/sessions/${session}), not ${method} ${path}, which is the owner's`;
+export const sessionRefusal = (session: string, method: string, path: string, top = false) =>
+  `a command of session ${session} acts with that session's authority only: it may read its own session (GET /api/sessions/${session})${top ? " and the daemon's read-only lists" : ""}, not ${method} ${path}, which is the owner's`;
+
+// What the door does with a loopback request once its maker is known. `ownAuth`: a path with an
+// authentication of its own (the phone's signed API, health); `open`: one a session's command may reach
+// (the portal, under its capability key); `top`: whether a session is top-level. "account": the account
+// and token checks decide, as for any of the owner's requests.
+export type PeerVerdict = { pass: true } | { account: true } | { refuse: string };
+export function peerVerdict(a: Authority, req: { method: string; path: string; ownAuth: boolean; open: boolean }, top: (session: string) => boolean): PeerVerdict {
+  if (a.kind === "session") {
+    const t = top(a.session);
+    return sessionMay(req.method, req.path, a.session, t) || req.open ? { pass: true } : { refuse: sessionRefusal(a.session, req.method, req.path, t) };
+  }
+  if (a.kind === "ended") return { refuse: "the process that made this connection closed it or ended before it was answered, so who made it cannot be told" };
+  // No record of the socket while sessions run commands: it may be one of theirs, and the token does not
+  // tell (a command can read it). The owner's clients hold their connection until they have the answer.
+  if (a.kind === "unknown" && !req.ownAuth) return { refuse: "the kernel names no maker of this connection while sessions' commands run, so who made it cannot be told" };
+  return { account: true };
+}
 
 // The ids of cgroup folders: the inode of each, as the kernel numbers the cgroup. A folder that is gone is left out.
 const ids = new Map<string, bigint>();

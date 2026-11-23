@@ -39,9 +39,12 @@ function freshPids(): Promise<Map<number, string>> {
   return (after ??= looking.then(next, next));
 }
 
-// The admission check learns where sessions' commands run from the jobs code.
-export function watchSessionCallers() {
+// The admission check learns where sessions' commands run from the jobs code, and from the
+// session table whether a session is top-level (`parentOf`: its parent's id, null for none, undefined
+// for a session the table does not hold).
+export function watchSessionCallers(parentOf: (session: string) => string | null | undefined) {
   useSessionScopes({
+    topLevel: (session) => parentOf(session) === null,
     cgroups: sessionCgroups,
     loose: sessionLooseProcesses,
     // Among the processes the daemon holds first, then among every process that is a session's

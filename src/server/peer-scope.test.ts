@@ -2,7 +2,7 @@
 // The e2e (test/e2e/session-authority.spec.ts) shows a command refused; these are the cases it cannot
 // stage: a process that ended, a pid used again, a kernel that does not say.
 import { expect, test } from "bun:test";
-import { peerAuthority, sessionMay, type Authority, type PeerFacts } from "./peer-scope.ts";
+import { peerAuthority, peerVerdict, sessionMay, type Authority, type PeerFacts } from "./peer-scope.ts";
 
 const scopes = new Map<bigint, string>([[101n, "s-a"], [102n, "s-b"]]);
 const of = (o: Partial<PeerFacts>): PeerFacts => ({ facts: { uid: 1000, inode: 55, cgroup: 9n }, linux: true, cgroups: scopes, loose: false, holder: () => null, ...o });
@@ -37,7 +37,7 @@ test("without cgroups the socket is found by its open file among the sessions' p
   expect(await peerAuthority(of({ loose: true, holder: async () => null }))).toEqual({ kind: "owner" });
 });
 
-test("no record of the socket: the token decides while sessions run, and elsewhere than Linux nothing changes", () => {
+test("no record of the socket: unknown while sessions run, and elsewhere than Linux nothing changes", () => {
   expect(peerAuthority(of({ facts: null }))).toEqual({ kind: "unknown" });
   expect(peerAuthority(of({ facts: null, cgroups: new Map(), loose: true }))).toEqual({ kind: "unknown" });
   expect(peerAuthority(of({ facts: null, cgroups: new Map() }))).toEqual({ kind: "owner" });
@@ -51,4 +51,32 @@ test("a session's command reads its own session and nothing else, and changes no
   for (const [m, p] of [["GET", "/api/sessions/s-b"], ["GET", "/api/sessions"], ["GET", "/api/sessions/s-a/secrets"], ["POST", "/api/sessions/s-a/approvals/x"],
     ["PUT", "/api/sessions/s-a/permissions"], ["GET", "/api/remote-access"], ["PUT", "/api/settings"], ["GET", "/ws"], ["GET", "/api/sessions/s-a%2F..%2Fs-b"], ["GET", "/api/sessions/s-a//x"], ["GET", "/api/sessions/s-ab"]])
     expect({ m, p, ok: may(m!, p!) }).toEqual({ m, p, ok: false });
+});
+
+test("a top-level session's command reads the daemon's lists too, never a secret and never a write", () => {
+  const top = (m: string, p: string) => sessionMay(m, p, "s-a", true);
+  for (const p of ["/api/sessions", "/api/sessions/s-b", "/api/sessions/s-b/events", "/api/sessions/s-b/timeline", "/api/sessions/s-b/hours", "/api/sessions/s-b/agents",
+    "/api/sessions/s-b/agents/a1/report", "/api/errors", "/api/telemetry", "/api/telemetry/tokens", "/api/resources", "/api/daemon", "/api/health", "/api/automation", "/api/automation/now"])
+    expect({ p, ok: top("GET", p) }).toEqual({ p, ok: true });
+  for (const [m, p] of [["GET", "/api/sessions/s-b/secrets"], ["GET", "/api/sessions/s-a/secrets"], ["GET", "/api/secrets"], ["GET", "/api/remote-access"], ["GET", "/api/settings"],
+    ["GET", "/ws"], ["GET", "/api/sessions/s-b/permissions"], ["GET", "/api/sessions/s-b/queue"], ["GET", "/api/telemetry/x"], ["GET", "/api/sessions/s-b%2Fsecrets"],
+    ["POST", "/api/sessions"], ["PUT", "/api/sessions/s-b/permissions"], ["POST", "/api/sessions/s-b/interrupt"], ["POST", "/api/errors/read-all"], ["DELETE", "/api/sessions/s-b"]])
+    expect({ m, p, ok: top(m!, p!) }).toEqual({ m, p, ok: false });
+  // An agent's command (not top-level) keeps its own session only.
+  for (const p of ["/api/sessions", "/api/sessions/s-b", "/api/errors", "/api/daemon", "/api/automation"]) expect({ p, ok: sessionMay("GET", p, "s-a", false) }).toEqual({ p, ok: false });
+});
+
+test("the door: a session by its standing, a socket of no maker refused, the token never deciding for one", () => {
+  const req = (method: string, path: string, o: Partial<{ ownAuth: boolean; open: boolean }> = {}) => ({ method, path, ownAuth: false, open: false, ...o });
+  const s: Authority = { kind: "session", session: "s-a", by: "cgroup" };
+  const tops = (id: string) => id === "s-a";
+  expect(peerVerdict(s, req("GET", "/api/sessions"), tops)).toEqual({ pass: true });
+  expect(peerVerdict(s, req("GET", "/api/sessions"), () => false)).toMatchObject({ refuse: expect.stringContaining("authority only") });
+  expect(peerVerdict(s, req("GET", "/api/remote-access"), tops)).toMatchObject({ refuse: expect.stringContaining("read-only lists") });
+  expect(peerVerdict(s, req("GET", "/portal/k/x", { open: true }), () => false)).toEqual({ pass: true });
+  // The kernel names no maker while sessions run: refused, whatever the request carries, except where a path authenticates itself.
+  expect(peerVerdict({ kind: "unknown" }, req("GET", "/api/sessions"), tops)).toMatchObject({ refuse: expect.stringContaining("cannot be told") });
+  expect(peerVerdict({ kind: "unknown" }, req("GET", "/api/health", { ownAuth: true }), tops)).toEqual({ account: true });
+  expect(peerVerdict({ kind: "ended" }, req("GET", "/api/health", { ownAuth: true }), tops)).toMatchObject({ refuse: expect.any(String) });
+  expect(peerVerdict({ kind: "owner" }, req("PUT", "/api/settings"), tops)).toEqual({ account: true });
 });
