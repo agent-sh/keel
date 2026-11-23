@@ -770,6 +770,10 @@ export class Engine {
   // again (a request a turn after another would fail the same way).
   private titling = new Set<string>();
   private untitled = new Set<string>();
+  // Bumped when the session's task changes under a title request (an edit of
+  // the first prompt): that request's title is not saved, and one is asked
+  // for the new prompt once its reply is in.
+  private titleGen = new Map<string, number>();
 
   // After a turn's end: the title a small model writes, when one is owed
   // (src/engine/title.ts). Off the turn: nothing waits for it, it is no part of
@@ -781,15 +785,20 @@ export class Engine {
     const line = this.lineage(id);
     if (!titleOwed(s.title_by, line)) return;
     this.titling.add(id);
-    void this.writeTitle(id, s, line)
+    const gen = this.titleGen.get(id) ?? 0;
+    void this.writeTitle(id, s, line, gen)
       .catch((e) => { this.untitled.add(id); this.errors.capture("provider", e, { session: id, at: "title" }); })
-      .finally(() => this.titling.delete(id));
+      .finally(() => {
+        this.titling.delete(id);
+        // The task changed meanwhile and its reply may be in already: its title is owed now.
+        if ((this.titleGen.get(id) ?? 0) !== gen && !this.running.has(id)) this.retitle(id);
+      });
   }
 
   // One request for the title, through the owner's small models in order (the
   // readers' choices: src/engine/reader.ts), each at its lowest effort. The
   // title is saved only if nobody renamed the session meanwhile.
-  private async writeTitle(id: string, s: Session, line: readonly StoredEvent[]) {
+  private async writeTitle(id: string, s: Session, line: readonly StoredEvent[], gen: number) {
     const prompts = ownerPrompts(line);
     const prompt = conceal(titlePrompt(prompts, firstReply(line)), id);
     const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(s.model).then((r) => r.info)]);
@@ -810,7 +819,7 @@ export class Engine {
         const title = cleanTitle(res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n"));
         if (!title || res.stop === "refusal") throw new Error(`the title model (${info.name}) ${res.stop === "refusal" ? "refused" : "gave no title"}`);
         const now = this.store.session(id);
-        if (!now || now.title !== s.title || now.title_by !== s.title_by) return;
+        if (!now || now.title !== s.title || now.title_by !== s.title_by || (this.titleGen.get(id) ?? 0) !== gen) return;
         const by = s.title_by === "prompt" && weakStart(prompts[0] ?? "") ? "start" : "model";
         this.bus.emit({ t: "session", session: this.store.updateSession(id, { title, title_by: by }) });
         return;
@@ -957,7 +966,10 @@ export class Engine {
       // until the next reply makes one again. A title the owner gave stays.
       const s = this.store.session(id);
       const first = ownerPrompts(this.lineage(id)).length === 1 && !old.data.kind;
-      if (s && first && s.title_by && text.trim()) this.store.updateSession(id, { title: firstLineTitle(text), title_by: "prompt" });
+      if (s && first && s.title_by && text.trim()) {
+        this.titleGen.set(id, (this.titleGen.get(id) ?? 0) + 1);
+        this.store.updateSession(id, { title: firstLineTitle(text), title_by: "prompt" });
+      }
       this.emitSession(id);
       this.start(id);
       this.emitQueue(id);

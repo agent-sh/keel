@@ -63,3 +63,21 @@ test("with no model cheaper than the session's own, no title is asked for", asyn
   expect(asked.filter((r) => r.purpose === "title")).toEqual([]);
   expect(store.session(s.id)!.title).toBe("Fix the cart discount rounding");
 });
+
+test("a first prompt edited while its title is out is titled from the new prompt", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const { engine, s, store, titled } = rig([BIG, SMALL], async (req, n) => {
+    if (n === 0) { await held; return said("Old task"); }
+    return said(JSON.stringify(req.messages).includes("Count the items") ? "Count cart items" : "Wrong one");
+  });
+  engine.send(s.id, "Fix the cart discount rounding");
+  await engine.idle(s.id);
+  await waitFor(() => (engine as any).titling.has(s.id));
+  const first = store.events(s.id).find((e) => e.kind === "user")!;
+  await engine.edit(s.id, first.id, "Count the items in the cart");
+  await engine.idle(s.id);
+  release();
+  await titled("Count cart items");
+  expect(store.session(s.id)!.title_by).toBe("model");
+});
