@@ -81,6 +81,8 @@ if (scenario === "recover") {
     await Promise.resolve();
     at("waiting");
   });
+  // The continued turns run on after the recovery returns (none waits for another).
+  await Promise.all(store.sessions().map((x) => engine.idle(x.id)));
   survived();
 }
 

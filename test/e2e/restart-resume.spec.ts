@@ -356,6 +356,43 @@ test("continued turns after a restart take turns", async () => {
   }
 });
 
+// Every cut turn continues at once: they were all running when the daemon
+// went down, so going on with all of them asks the providers for no more than
+// they had. A continued turn that keeps working holds back no other.
+test("every turn a restart cut continues at once", async () => {
+  const state = join(ROOT, `restart-all-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  let d = await daemon(state);
+  const gate = join(state, "release");
+  spawnSync("mkfifo", [gate]);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const hold = { name: "Bash", input: { command: `timeout 90 cat ${gate} > /dev/null; echo released` } };
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: `Working ${i}` });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+      await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([hold, hold])}` });
+      ids.push(session.id);
+    }
+    const events = async (id: string) => (await call(`/api/sessions/${id}`, undefined, "GET")).events as any[];
+    const holds = async () => (await Promise.all(ids.map(events))).map((ev) => ev.filter((e) => e.kind === "assistant" && e.data.blocks?.some((b: any) => b.type === "tool_use")).length);
+    await expect.poll(holds, { timeout: 15_000 }).toEqual([1, 1, 1, 1, 1]);
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state);
+    const up = Date.now();
+    // Each continued turn is at its second held call, all five of them, well before a turn could end.
+    await expect.poll(holds, { timeout: 12_000 }).toEqual([2, 2, 2, 2, 2]);
+    console.log(`five cut turns continued within ${Date.now() - up} ms of the daemon being up`);
+  } finally {
+    spawn("timeout", ["5", "sh", "-c", `echo > ${gate}`], { stdio: "ignore" });
+    d.proc.kill("SIGKILL");
+  }
+});
+
 // Feature: an owner's session goes on through any number of restarts by
 // itself. Only a turn continued three times in a row with the daemon down
 // again before a tool call finished is held: the session says why and offers

@@ -46,9 +46,9 @@ export function cutAgentsLine(fates: Fate[], earlier = false): string | undefine
   return `[harness] ${earlier ? "An earlier daemon restart" : "A daemon restart"} cut ${said.length === 1 ? "1 of your agents" : `${said.length} of your agents`} mid-turn: ${said.join("; ")}.${on ? " A resumed agent reports as before: nothing to send it." : ""}`;
 }
 
-// How long after a start the line waits for the last cut agent to be decided. Three turns are
-// resumed at a time, a second apart (src/engine/turn.ts), so a dozen agents are decided within
-// seconds; one that is not by now waits on something that may take minutes.
+// How long after a start the line waits for the last cut agent to be decided. Every cut turn is
+// resumed at once (src/engine/turn.ts), so a dozen agents are decided within seconds; one that is
+// not by now waits on something that may take minutes.
 export const SETTLE_MS = 60_000;
 
 // The cut agents of a parent that it is told of, each with what became of it. `skip`: agents another

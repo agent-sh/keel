@@ -3059,10 +3059,13 @@ export class Engine {
 
   private async continueCut(waitModel: (model: string) => Promise<void>) {
     // Each session on its own: a provider still starting holds only its sessions.
-    // The continued turns start a few at a time, the newest first, spaced out,
-    // so a restart with many open sessions does not send every replayed context
-    // to the providers in the same second.
-    const slots = new Slots(RESUME_AT_ONCE, RESUME_GAP_MS);
+    // Every cut turn goes on at once: they were all running when the daemon went
+    // down, so continuing them asks the providers for no more than they already
+    // had. A provider that cannot be reached holds its turns in the shared
+    // outage wait (src/providers/outage.ts), and one that limits requests says
+    // so with its own answer, which the turn's retries follow. A limit set for
+    // the daemon (KEEL_RESUME_AT_ONCE, KEEL_RESUME_GAP_MS) queues them instead.
+    const slots = new Slots(resumeAtOnce(), resumeGapMs());
     // Only the sessions whose branch ends in a turn a restart cut are read:
     // the store finds them from each session's last event.
     const sessions = this.store.cutSessions();
@@ -3116,7 +3119,7 @@ export class Engine {
         this.tellCut(s, cut, "continued");
         // Held until the turn ends or its first steps had time to run: a turn that
         // then waits on the owner (an approval) does not hold back the others.
-        if (!cards) await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS), ...(owed ? [this.untilOnOwner(s.id, RESUME_HOLD_MS)] : [])]);
+        if (!cards && slots.limited) await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS), ...(owed ? [this.untilOnOwner(s.id, RESUME_HOLD_MS)] : [])]);
       } finally {
         if (!cards) slots.give();
       }
@@ -3331,15 +3334,16 @@ export function stalledContinuations(line: readonly StoredEvent[]): number {
   return n;
 }
 
-// Continued turns after a restart: this many run at once, each start at least
-// this far after the previous one. Three covers the usual one to three open
-// sessions with no wait; more queue behind them.
 // How long a sender's key is kept: as long as the owner's send ids (30 days).
 const KEYS_KEPT_MS = 30 * 86_400_000;
 // How long until a queue owed a start is tried again while its model is not listed.
 const queuedRetryMs = () => Number(process.env.KEEL_QUEUED_RETRY_MS ?? 30_000);
-const RESUME_AT_ONCE = Number(process.env.KEEL_RESUME_AT_ONCE || 3);
-const RESUME_GAP_MS = Number(process.env.KEEL_RESUME_GAP_MS ?? 1000);
+// Continued turns after a restart: all at once and with no gap, unless the
+// daemon is given a limit: then this many run at once, each start at least
+// this far after the previous one, and a turn holds its place until it ends,
+// waits on the owner or has run for RESUME_HOLD_MS.
+const resumeAtOnce = () => Number(process.env.KEEL_RESUME_AT_ONCE || Infinity);
+const resumeGapMs = () => Number(process.env.KEEL_RESUME_GAP_MS || 0);
 const RESUME_HOLD_MS = 30_000;
 // How often a drain looks again at which running turns only wait on the owner.
 const SETTLE_CHECK_MS = 250;
@@ -3348,6 +3352,7 @@ class Slots {
   private waiting: (() => void)[] = [];
   private last = 0;
   constructor(private free: number, private gapMs: number) {}
+  get limited() { return Number.isFinite(this.free) || this.gapMs > 0; }
   async take() {
     while (this.free <= 0) await new Promise<void>((r) => this.waiting.push(r));
     this.free--;
