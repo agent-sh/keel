@@ -183,3 +183,55 @@ test("a session's last mark is kept with it", () => {
   keepMark(store, a, { repo, branch: "keel/a", tip: "def", base: "123" });
   expect(lastMark(store, a)).toEqual({ repo, branch: "keel/a", tip: "def", base: "123" });
 });
+
+// A branch that conflicts with the base is told once to rebase; its conflicts
+// with other branches wait until it did, and are told then if still real.
+test("a branch that conflicts with the base is told to rebase; its pair conflicts wait for the rebase", async () => {
+  const dir = join(root, `case-${++n}`);
+  const repo = join(dir, "repo");
+  mkdirSync(repo, { recursive: true });
+  g(repo, "init", "-q", "-b", "main");
+  const file = join(repo, "notes.md");
+  writeFileSync(file, Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  g(repo, "add", "-A");
+  g(repo, "commit", "-qm", "init");
+  const edit = (branch: string, from: string, lines: Record<number, string>) => {
+    g(repo, "checkout", "-q", "-B", branch, from);
+    let text = readFileSync(file, "utf8");
+    for (const [n, to] of Object.entries(lines)) text = text.replace(`line ${n}\n`, `${to}\n`);
+    writeFileSync(file, text);
+    g(repo, "commit", "-qam", branch);
+  };
+  edit("keel/x", "main", { 3: "x three", 5: "x five", 7: "x seven" });
+  edit("keel/y", "main", { 3: "y three" });
+  edit("keel/z", "main", { 7: "z seven" });
+  g(repo, "checkout", "-q", "main");
+  writeFileSync(file, readFileSync(file, "utf8").replace("line 5\n", "main five\n"));
+  g(repo, "commit", "-qam", "main moves");
+  const store = new Store(join(dir, "state"));
+  const ov = new Overlaps(store, { changed: () => {}, failed: (e: unknown) => { throw e; } });
+  const ids: Record<string, string> = {};
+  for (const b of ["x", "y", "z"]) { ids[b] = store.createSession({ model: "scripted:stand-in", workspace: repo, title: b }).id; ov.committed(repo, `keel/${b}`, ids[b]!); }
+  await ov.scan(repo);
+  expect(ov.noteFor(ids.y!)).toBeUndefined();
+  expect(ov.noteFor(ids.z!)).toBeUndefined();
+  const x = ov.noteFor(ids.x!)!;
+  expect(x.text).toContain("Your branch keel/x would conflict with the base main: notes.md (rebase onto it first: its conflicts with 2 other branches wait until then).");
+  expect(x.text).not.toContain("keel/y");
+  x.settle();
+  expect(ov.noteFor(ids.x!)).toBeUndefined();
+  expect(ov.view(ids.y!).pairs.filter((p) => !p.base).map((p) => [p.a, p.b, p.waits])).toEqual([["keel/x", "keel/y", true], ["keel/x", "keel/z", true]]);
+  // A pass that changes nothing tells nothing.
+  await ov.scan(repo);
+  expect(ov.noteFor(ids.y!)).toBeUndefined();
+  // X rebases onto the base, keeping the base's line 5: its conflicts with Y and Z are real, and told now.
+  g(repo, "checkout", "-q", "keel/x");
+  g(repo, "rebase", "-q", "-X", "ours", "main");
+  g(repo, "checkout", "-q", "main");
+  await ov.scan(repo);
+  expect(ov.noteFor(ids.y!)?.text).toContain("Your branch keel/y would conflict with keel/x");
+  expect(ov.noteFor(ids.z!)?.text).toContain("Your branch keel/z would conflict with keel/x");
+  const after = ov.noteFor(ids.x!)!.text;
+  expect(after).toContain("would conflict with keel/y");
+  expect(after).toContain("No longer conflicting: keel/x with the base main.");
+});

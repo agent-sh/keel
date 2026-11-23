@@ -30,7 +30,7 @@ import { dirname, join } from "node:path";
 import { git, locate, type Where } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
-import { clashes, decide, forecastNote, pairsOf, parseHunks, parseMergeTree, splitDiff, type ConflictFile, type Gone, type Result, type Side, type Told } from "./overlap.ts";
+import { clashes, decide, forecastNote, pairKey, pairsOf, parseHunks, parseMergeTree, splitDiff, waiting, type ConflictFile, type Gone, type Result, type Side, type Told } from "./overlap.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS overlap_branches (repo TEXT NOT NULL, branch TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, seen INTEGER NOT NULL, PRIMARY KEY (repo, branch));
@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS overlap_marks (session_id TEXT PRIMARY KEY REFERENCES
 
 type PairRow = { repo: string; a: string; b: string; base: number; a_tip: string; b_tip: string; conflict: number; error: string | null; files: string; checked: number };
 type ToldRow = { session_id: string; repo: string; a: string; b: string; told: string | null; owed: "conflict" | "cleared" | null };
-export type Pair = { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error?: string; files: ConflictFile[]; checked: number; a_session?: string; b_session?: string };
+// `waits`: a conflict between two branches that is not told while one side conflicts with the base (overlap.ts waiting).
+export type Pair = { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error?: string; files: ConflictFile[]; checked: number; a_session?: string; b_session?: string; waits?: true };
 // `checked`: it has commits of its own and its pairs were checked (a branch with none has nothing to land).
 export type Branch = { branch: string; tip: string; session_id: string; title: string; managed: boolean; checked: boolean };
 export type View = { repo: string | null; base: string | null; base_tip: string | null; mine: string | null; branches: Branch[]; pairs: Pair[]; clean: number; checked: number | null; last?: Pass };
@@ -366,11 +367,20 @@ export class Overlaps {
     let conflicts = 0, cleared = 0;
     const told: Told[] = [], gone: Gone[] = [];
     const held = new Map<string, Map<string, string>>(); // repo → its branches' holders, read once a note
+    // repo → the pairs that wait for a side to rebase onto the base (overlap.ts waiting), read once a note
+    const waits = new Map<string, Set<string>>();
+    const waitsIn = (repo: string) => {
+      let w = waits.get(repo);
+      if (!w) waits.set(repo, (w = waiting(this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND conflict = 1").all(repo).map((r) => ({ a: r.a, b: r.b, base: !!r.base, conflict: true })))));
+      return w;
+    };
     const settled: (() => void)[] = [], pairs: string[] = [];
     for (const row of rows) {
       const p = this.store.db.query<PairRow, [string, string, string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND a = ? AND b = ?").get(row.repo, row.a, row.b);
       const where = [sessionId, row.repo, row.a, row.b] as const;
       if (!p) { settled.push(() => this.store.db.query("DELETE FROM overlap_told WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(...where)); continue; }
+      // A conflict that waits for a side's rebase stays owed, and is told as it is once that side rebased.
+      if (row.owed === "conflict" && waitsIn(row.repo).has(pairKey(p.a, p.b))) continue;
       let owners = held.get(row.repo);
       if (!owners) held.set(row.repo, (owners = this.owners(row.repo)));
       // The recipient's own side comes first; a parent reads the pair as it is ordered.
@@ -384,7 +394,8 @@ export class Overlaps {
       // Owed for a file that left the conflict before the note was written: every file left was told.
       const stale = files.length > 0 && !fresh.length;
       if (row.owed === "conflict" && p.conflict && !stale) {
-        told.push({ mine, other, files: fresh, all: files.length, base: !!p.base });
+        const wait = p.base ? [...waitsIn(row.repo)].filter((k) => k.split("\0").includes(p.a)).length : 0;
+        told.push({ mine, other, files: fresh, all: files.length, base: !!p.base, ...(wait ? { held: wait } : {}) });
         conflicts++;
         settled.push(() => this.store.db.query("UPDATE overlap_told SET told = ?, owed = NULL WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(JSON.stringify(files), ...where));
       } else if (row.owed === "cleared" && !p.conflict && !p.error) {
@@ -416,7 +427,9 @@ export class Overlaps {
     for (const r of rows) { tipOf.set(r.a, r.a_tip); if (!r.base) tipOf.set(r.b, r.b_tip); }
     const managed = this.managedBranches(repo);
     const branches: Branch[] = [...owners].map(([b, id]) => ({ branch: b, tip: tipOf.get(b) ?? "", session_id: id, title: this.store.session(id)?.title ?? "", managed: managed.has(b), checked: tipOf.has(b) }));
+    const waits = waiting(rows.map((r) => ({ a: r.a, b: r.b, base: !!r.base, conflict: !!r.conflict })));
     const pairs: Pair[] = rows.filter((r) => r.conflict || r.error).map((r) => ({
+      ...(waits.has(pairKey(r.a, r.b)) ? { waits: true as const } : {}),
       a: r.a, b: r.b, base: !!r.base, a_tip: r.a_tip, b_tip: r.b_tip, conflict: !!r.conflict, ...(r.error ? { error: r.error } : {}), files: JSON.parse(r.files), checked: r.checked,
       ...(owners.get(r.a) ? { a_session: owners.get(r.a) } : {}), ...(!r.base && owners.get(r.b) ? { b_session: owners.get(r.b) } : {}),
     }));

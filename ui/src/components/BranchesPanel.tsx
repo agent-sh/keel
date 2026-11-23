@@ -41,6 +41,7 @@ export function OverlapList({ pairs, mine, compact }: { pairs: Pair[]; mine?: st
                   {p.base && <span className="text-faint">the base</span>}
                 </>
               )}
+              {p.waits && <span className="text-faint" data-testid="overlap-waits" title="Not told yet: one side conflicts with the base, and a rebase onto it may change this conflict">· told after a rebase onto the base</span>}
             </div>
             {p.error ? <p className="text-micro text-danger">git could not check it: {p.error}</p> : (
               <ul className="flex flex-col gap-0.5 border-l border-line pl-2">

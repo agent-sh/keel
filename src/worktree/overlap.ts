@@ -97,7 +97,8 @@ export function linesSay([first, last]: [number, number]): string {
 // gets one short note, not a note a pair: pairs past the budget are a count.
 // `who`: how the recipient stands to a side, in its words.
 export type Side = { branch: string; tip: string; who: string };
-export type Told = { mine: Side; other: Side; files: string[]; all: number; base: boolean };
+// `held`: for a conflict with the base, how many conflicts of the branch with other branches wait until it is rebased.
+export type Told = { mine: Side; other: Side; files: string[]; all: number; base: boolean; held?: number };
 export type Gone = { mine: Side; other: Side; base: boolean };
 export const FILES_TOLD = 4; // files named a pair; the rest is a count
 // The budget of a session's failure notice (src/automation/failures.ts), for the same reason:
@@ -122,7 +123,7 @@ export function forecastNote(conflicts: Told[], gone: Gone[]): string {
   const groups = new Map<string, { mine: Side; parts: string[] }>();
   for (const t of [...conflicts].sort((a, b) => Number(b.base) - Number(a.base))) {
     const g = groups.get(t.mine.branch) ?? { mine: t.mine, parts: [] };
-    g.parts.push(`with ${against(t)}: ${filesSay(t)}`);
+    g.parts.push(`with ${against(t)}: ${filesSay(t)}${t.held ? ` (rebase onto it first: ${t.held === 1 ? "its conflict with another branch waits" : `its conflicts with ${t.held} other branches wait`} until then)` : ""}`);
     groups.set(t.mine.branch, g);
   }
   const lines: string[] = [];
@@ -159,6 +160,19 @@ export function decide(told: string[] | undefined, now: Result): { notice?: "con
   // A conflict with no file named counts once, as itself.
   if (!now.files.length) return told === undefined ? { notice: "conflict", fresh: [] } : { fresh: [] };
   return fresh.length ? { notice: "conflict", fresh } : { fresh: [] };
+}
+
+// Which conflicts between two branches wait. A branch that conflicts with the
+// base is told once to rebase onto it; until it does, its conflicts with
+// other branches are not told to anyone: a rebase may remove them or change
+// their files, and most pair conflicts in a busy repository come from such a
+// branch. A pair waits while either side conflicts with the base; once that
+// conflict is gone the pair is told as it is then (still real or gone).
+export type PairState = { a: string; b: string; base: boolean; conflict: boolean };
+export const pairKey = (a: string, b: string) => `${a}\0${b}`;
+export function waiting(pairs: readonly PairState[]): Set<string> {
+  const stale = new Set(pairs.filter((p) => p.base && p.conflict).map((p) => p.a));
+  return new Set(pairs.filter((p) => !p.base && p.conflict && (stale.has(p.a) || stale.has(p.b))).map((p) => pairKey(p.a, p.b)));
 }
 
 // The pairs of branches to check: every two of them, in a stable order, and

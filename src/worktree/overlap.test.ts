@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clashes, decide, forecastNote, linesSay, NOTE_CHARS, pairsOf, parseHunks, parseMergeTree, splitDiff } from "./overlap.ts";
+import { clashes, decide, forecastNote, linesSay, NOTE_CHARS, pairKey, pairsOf, parseHunks, parseMergeTree, splitDiff, waiting } from "./overlap.ts";
 
 describe("merge-tree output", () => {
   test("clean, conflicted, and git failing", () => {
@@ -129,4 +129,13 @@ test("a diff of several files is cut by file", () => {
   expect([...parts.keys()]).toEqual(["src/a b.ts", "notes.md"]);
   expect(parseHunks(parts.get("notes.md")!)).toEqual([{ old: 5, oldN: 0, new: 6, newN: 1 }]);
   expect(splitDiff('diff --git "a/q\\"x" "b/q\\"x"\n@@ -1 +1 @@\n').size).toBe(0);
+});
+
+test("a pair conflict waits while one of its sides conflicts with the base", () => {
+  const base = (a: string, conflict: boolean) => ({ a, b: "main", base: true, conflict });
+  const pair = (a: string, b: string, conflict = true) => ({ a, b, base: false, conflict });
+  const before = waiting([base("x", true), base("y", false), base("z", false), pair("x", "y"), pair("x", "z"), pair("y", "z", false)]);
+  expect([...before]).toEqual([pairKey("x", "y"), pairKey("x", "z")]);
+  // X rebased: its pairs are told as they are.
+  expect(waiting([base("x", false), pair("x", "y"), pair("x", "z", false)]).size).toBe(0);
 });
