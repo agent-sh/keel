@@ -146,7 +146,7 @@ test("mixed attachments keep their order and need no caption", async ({ page, re
   const stored = ev.data.images.map((b: any) => (b.type === "attachment" ? b.name : "image"));
   expect(stored).toEqual(["image", "b.txt", "image", "d.txt"]);
   const row = page.getByTestId("user-message").first();
-  const shown = await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/\d+ KB$/, "").trim())));
+  const shown = await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/[\d.]+ (bytes?|KB|MB)$/, "").trim())));
   expect(shown).toEqual(stored);
   // A sent image is a control of its own: Tab reaches it by name, Enter and
   // Space change its size and say so, the focus stays, the order is the same.
@@ -180,7 +180,7 @@ test("mixed attachments keep their order and need no caption", async ({ page, re
   // Back at its small size, to within half a pixel: the box is measured in fractions of one.
   await expect.poll(async () => Math.abs((await height()) - small)).toBeLessThan(0.5);
   await expect(preview).toHaveCSS("cursor", "zoom-in");
-  expect(await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/\d+ KB$/, "").trim())))).toEqual(stored);
+  expect(await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/[\d.]+ (bytes?|KB|MB)$/, "").trim())))).toEqual(stored);
   // No caption, no bubble; a caption that reads like a placeholder is the owner's and shows.
   await expect(row.locator(".bg-accent-soft")).toHaveCount(0);
   await page.getByTestId("attach-input").setInputFiles([{ name: "e.png", mimeType: "image/png", buffer: png(40, 200, 40) }]);

@@ -16,7 +16,7 @@ import { announce } from "../lib/announce.ts";
 import { useAgentCount, useToldState } from "../lib/watch.ts";
 import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
-import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
+import { clock, cn, fmtCost, fmtSize, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { every } from "../lib/clock.ts";
 import { flushPlaces, isLater, newAfter, offsetAt, placeOf, putPlace, WRITE_MS, type Place } from "../lib/place.ts";
 import { auto, autoState, presentAt } from "../lib/automation.ts";
@@ -122,7 +122,7 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
               className="flex h-10 max-w-64 items-center gap-2 rounded-lg border border-line bg-raised px-3 text-ui shadow-1 hover:border-line-strong">
               <FileText className="size-4 shrink-0 text-muted" />
               <span className="min-w-0 truncate">{f.name}</span>
-              <span className="shrink-0 text-micro tabular-nums text-faint">{f.size < 1024 * 1024 ? `${Math.max(1, Math.round(f.size / 1024))} KB` : `${(f.size / 1024 / 1024).toFixed(1)} MB`}</span>
+              <span className="shrink-0 text-micro tabular-nums text-faint">{fmtSize(f.size)}</span>
             </a>
           );
         }

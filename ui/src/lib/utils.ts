@@ -20,6 +20,13 @@ export function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+// A file's size: bytes under 1 KB (a 16-byte note is not "1 KB"), whole KB, then MB with one decimal.
+export function fmtSize(n: number): string {
+  if (n < 1024) return n === 1 ? "1 byte" : `${n} bytes`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function ago(ts: number): string {
   const s = Math.round((Date.now() - ts) / 1000);
   if (s < 60) return "now";

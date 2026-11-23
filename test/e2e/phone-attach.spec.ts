@@ -54,6 +54,8 @@ for (const size of [{ width: 390, height: 844 }, { width: 412, height: 915 }]) {
         await expect.poll(() => image.first().evaluate((el) => { const i = el.querySelector("img") ?? (el as HTMLImageElement); return i.naturalWidth; })).toBe(48);
         await expect(pane.getByTestId("message-file")).toHaveCount(1);
         await expect(pane.getByTestId("message-file")).toContainText("notes.txt");
+        // A file under 1 KB says its bytes: 16, not "1 KB".
+        await expect(pane.getByTestId("message-file")).toContainText("16 bytes");
         await expect(tray).toHaveCount(0);
         // The picture fits the phone's width.
         const box = (await image.first().boundingBox())!;

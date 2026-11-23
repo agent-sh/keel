@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError } from "../lib/store.ts";
 import { seedComposer, setUI, useUI } from "../lib/ui.ts";
-import { cn } from "../lib/utils.ts";
+import { cn, fmtSize } from "../lib/utils.ts";
 
 type Hit = { path: string; dir: boolean };
 type Opened = { path: string; size: number; text?: string; binary?: boolean; truncated?: boolean };
@@ -137,8 +137,8 @@ export function FilesPanel({ session }: { session: Session }) {
         <div className="min-h-0 flex-1 overflow-auto bg-raised" data-file-scroll>
           {open.binary && IMAGE.test(open.path) && !session.machine
             ? <img src={rawFile(session.id, open.path)} alt={open.path} data-testid="file-image" className="m-4 max-w-[calc(100%-2rem)] rounded-md border border-line" />
-            : open.binary ? <p className="p-6 text-ui text-faint">A binary file, {Math.round(open.size / 1024)} KB.</p> : <CodeView file={open} line={at.line} end={at.end} />}
-          {open.truncated && <p className="border-t border-line p-3 text-caption text-faint">Showing the first 512 KB of {Math.round(open.size / 1024)} KB.</p>}
+            : open.binary ? <p className="p-6 text-ui text-faint">A binary file, {fmtSize(open.size)}.</p> : <CodeView file={open} line={at.line} end={at.end} />}
+          {open.truncated && <p className="border-t border-line p-3 text-caption text-faint">Showing the first 512 KB of {fmtSize(open.size)}.</p>}
         </div>
       </div>
     );

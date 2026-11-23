@@ -21,7 +21,7 @@ import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
-import { cn, scrollMotion } from "../lib/utils.ts";
+import { cn, fmtSize, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
@@ -905,7 +905,7 @@ const SessionComposer = memo(function SessionComposer({
       {images.length > 0 && (
         <div className="flex max-h-[9.25rem] shrink-0 flex-wrap gap-2 overflow-y-auto px-3 pt-3" data-testid="attachments">
           {images.map((a) => (
-            <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${Math.round(a.bytes / 1024)} KB`}>
+            <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${fmtSize(a.bytes)}`}>
               {a.file ? (
                 <div className="flex size-full flex-col items-center justify-center gap-0.5 px-1 text-center" data-testid="attached-file">
                   <FileText className="size-5 text-muted" />
