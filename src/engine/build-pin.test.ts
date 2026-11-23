@@ -10,6 +10,7 @@ import { URGENT } from "../core/build.ts";
 import { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
 import type { Tool } from "../tools/types.ts";
+import { pinOf } from "../tools/pin.ts";
 import { loadSettings, patchSettings } from "../admin/settings.ts";
 import { adoptionBetween, BuildPins, coldReason } from "./build-pin.ts";
 import { blocksOf } from "./prompt-store.ts";
@@ -230,12 +231,14 @@ test("a deferred tool the conversation loaded keeps its definition until it take
 test("a loaded tool whose server is not connected is declared as it was loaded, not as a stand-in", () => withPins((pins, _store, s) => {
   const schema = { type: "object", properties: { text: { type: "string" } } };
   const names = new Set(["mcp__echo__echo"]);
-  const live = { ...tool("mcp__echo__echo", "Echo."), input_schema: schema, defer: true, catalog: "echo__echo" } as Tool;
+  const live = { ...tool("mcp__echo__echo", "Echo."), input_schema: schema, defer: true, namespace: "mcp__echo", catalog: "echo__echo" } as Tool;
   pins.loaded(s.id, [live], names);
   // After a start the server is still connecting: the catalog has no tool, and a stand-in is declared for the reference.
   const standIn = { ...tool("mcp__echo__echo", "No longer available."), defer: true, catalog: "mcp__echo__echo", left: true } as Tool;
   const sent = pins.loaded(s.id, [standIn], names)[0]!;
   expect([sent.description, sent.input_schema]).toEqual(["Echo.", schema]);
+  // Every field a request sends is the loaded one's, the namespace too (the Responses wire nests by it).
+  expect(pinOf(sent)).toEqual(pinOf(live));
   // Its run is still the stand-in's: a call gets the plain reason.
   expect(sent.run).toBe(standIn.run);
   // Connected again: the same definition, so the request's bytes never changed.

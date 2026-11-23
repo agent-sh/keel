@@ -344,7 +344,8 @@ export class BuildPins {
       // A built-in the list defers is pinned with the list.
       if (!t.defer || !names.has(t.name) || !(t as { catalog?: string }).catalog) return t;
       const was = kept.get(t.name);
-      if ((t as { left?: boolean }).left) return was ? { ...t, description: was.description, input_schema: was.input_schema } : t;
+      // (Every field the request sends, the namespace too: the Responses wire nests an MCP tool in its server's.)
+      if ((t as { left?: boolean }).left) return was ? { ...t, ...pinOf(was) } : t;
       if (was && servable(was, t)) return { ...t, description: was.description, input_schema: was.input_schema, built: t.input_schema };
       this.store.db.query("INSERT INTO session_loaded (session_id, name, def) VALUES (?, ?, ?) ON CONFLICT(session_id, name) DO UPDATE SET def = excluded.def").run(id, t.name, JSON.stringify(pinOf(t)));
       return t;
