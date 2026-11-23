@@ -7,6 +7,7 @@
 import type { AssistantBlock, Message, PromptBlock, StoredEvent, Usage } from "../core/types.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { imageTokens } from "./images.ts";
+import { fileTexts, type FileText } from "./work-calls.ts";
 
 // Share of the model's window at which a turn compacts before its next call.
 export const COMPACT_SHARE = 0.85;
@@ -141,7 +142,7 @@ export function preparedHolds(lineage: readonly StoredEvent[], covered: string, 
 export const STATEMENTS_FORMAT = [
   "Write it in two parts. Statements are quoted, never retold; only the story is in your own words.",
   "## Statements",
-  "Every rule, constraint, decision, preference and requirement that still stands: how to work, what not to do or touch, what to build, what was settled. One per line, as `- owner: \"...\"` for the owner's words or `- work: \"...\"` for a decision the work settled, quoted character for character from the conversation, in whole sentences. Never reword, soften, merge or cut one: what you cannot quote exactly, leave out. Keep earlier statements unless lifted. Quote only the conversation: the system prompt and instruction files reach you unchanged after the compaction.",
+  "Every rule, constraint, decision, preference and requirement that still stands: how to work, what not to do or touch, what to build, what was settled. One per line, as `- owner: \"...\"` for the owner's words or `- work: \"...\"` for a decision the work settled, quoted character for character from the conversation, in whole sentences; a rule of a file you read with a file tool (a brief, a task file) as `- file: \"<its path>\": \"...\"`, quoted from the file. Never reword, soften, merge or cut one: what you cannot quote exactly, leave out. Keep earlier statements unless lifted. Quote only the conversation and the files you read: the system prompt and instruction files reach you unchanged after the compaction.",
   "## Requests",
   "One-off requests not done yet, in the same quote format. If a quote also sets a rule or constraint, or you are unsure, keep it under Statements. Do not move earlier Statements here.",
   "## Lifted",
@@ -165,9 +166,17 @@ export function summaryPrompt(focus?: string): string {
   ].join("\n");
 }
 
-export type Statement = { by: "owner" | "work"; text: string; kind: "standing" | "request" };
+// `file`: words of a file the work read with a file tool (`path`: the path it read), not the owner's.
+export type Statement = { by: "owner" | "work" | "file"; text: string; kind: "standing" | "request"; path?: string };
 export type StoredStatement = Omit<Statement, "kind"> & { kind?: Statement["kind"] };
-export type Settled = { summary: string; statements?: Statement[]; statements_dropped?: string[]; statements_lifted?: { text: string; by: string }[]; statements_done?: string[] };
+export type Settled = { summary: string; statements?: Statement[]; statements_dropped?: string[]; statements_lifted?: { text: string; by: string }[]; statements_done?: string[]; file_statements_left?: number };
+
+// The most bytes of file statements a summary carries. The rules a session
+// read only in a file and lost at a compaction were at most a few hundred
+// bytes each and a few kilobytes a compaction; this holds three times the
+// most seen, about 3,000 tokens. Earlier ones are kept first; newer ones past
+// it are left out and counted (the file still holds them).
+export const FILE_STATEMENTS_BYTES = 8_000;
 
 // Formatting the model may add or leave out around quoted words.
 const norm = (s: string) => s.replace(/[`*]/g, "").replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
@@ -179,7 +188,8 @@ const words = (s: string) => new Set(norm(s).toLowerCase().match(/[\p{L}\p{N}_./
 // its sentence back), else the one sentence that has nearly all of its words
 // and little else (the model retold it: the speaker's own words replace it).
 // null: nothing said it.
-export function sourceOf(quote: string, texts: string[]): string | null {
+// `retold`: false when only the exact words count.
+export function sourceOf(quote: string, texts: string[], retold = true): string | null {
   const q = norm(quote);
   if (!q) return null;
   for (const t of texts) {
@@ -195,6 +205,7 @@ export function sourceOf(quote: string, texts: string[]): string | null {
     }
     return q; // the quote spans what the split cannot rejoin (a code block): its own words are the conversation's
   }
+  if (!retold) return null;
   const qw = words(quote);
   if (qw.size < 3) return null;
   let best: { s: string; score: number } | null = null;
@@ -227,10 +238,36 @@ const quoted = (s: string) => {
 // itself holds a backslash before a quote (a shell line) is matched as written.
 const unescaped = (q: string) => q.replace(/\\(["\\])/g, "$1");
 const forms = (q: string) => (/\\["\\]/.test(q) ? [unescaped(q), q] : [q]);
-function sourceOfQuote(q: string, texts: string[]): string | null {
-  for (const f of forms(q)) { const src = sourceOf(f, texts); if (src !== null) return src; }
+function sourceOfQuote(q: string, texts: string[], retold = true): string | null {
+  for (const f of forms(q)) { const src = sourceOf(f, texts, retold); if (src !== null) return src; }
   return null;
 }
+
+// A statements line: who said it, the path a file line names, and its quote.
+function statementLine(l: string): { by: Statement["by"]; path?: string; q: string } | null {
+  const m = l.match(/^\s*[-*]\s*(owner|work|file)\s*:\s*(.+)$/i);
+  if (!m) return null;
+  const by = m[1]!.toLowerCase() as Statement["by"];
+  if (by !== "file") { const q = quoted(m[2]!); return q === null ? null : { by, q }; }
+  const f = m[2]!.match(/^[`"\u201c]?([^`"\u201d\s]+?)[`"\u201d]?\s*:\s*(["\u201c].*)$/);
+  const q = quoted(f ? f[2]! : m[2]!);
+  return q === null ? null : { by, path: f?.[1], q };
+}
+
+// Every quote a summary's Statements and Requests lines hold, in each form it
+// may be matched in, as norm() makes it: what a read of the files needs to keep.
+export function quotesOf(text: string): string[] {
+  const out = new Set<string>();
+  for (const l of [...(section(text, "Statements") ?? []), ...(section(text, "Requests") ?? [])]) {
+    const s = statementLine(l);
+    if (s) for (const f of forms(s.q)) { const n = norm(f); if (n) out.add(n); }
+  }
+  return [...out];
+}
+// A read's text holds one of the quotes (the test fileTexts is given).
+export const holdsQuote = (quotes: string[]) => (text: string) => { if (!quotes.length) return false; const n = norm(text); return quotes.some((q) => n.includes(q)); };
+
+const samePath = (a: string, b: string) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
 
 // The summary as it is stored: the statements the model quoted, each checked
 // against the conversation (the owner's words for an owner statement, any
@@ -241,7 +278,11 @@ function sourceOfQuote(q: string, texts: string[]): string | null {
 // that retold a rule into something else must not stand as the rule); then
 // the story. A summary with no statements part (a handoff note) is kept as
 // written, the earlier statements before it.
-export function settle(lineage: readonly StoredEvent[], text: string, stored: StoredStatement[] = []): Settled {
+// A quote the conversation never said but a file the session read holds word
+// for word (a rule of a brief) is kept as the file's, with the path read;
+// only local file reads count (work-calls.ts). `reads`: those reads, newest
+// first, when the caller has them (else they are read from `lineage`).
+export function settle(lineage: readonly StoredEvent[], text: string, stored: StoredStatement[] = [], reads?: FileText[]): Settled {
   // Legacy checkpoints did not distinguish requests from rules. Keep their
   // quotes as standing statements rather than letting the model retype them.
   const prior: Statement[] = stored.map((s) => ({ ...s, kind: s.kind === "request" ? "request" : "standing" }));
@@ -258,6 +299,18 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
     }
     return (texts = { owner, all });
   };
+  let files = reads;
+  const inFile = (q: string, named?: string): { path: string; text: string } | null => {
+    files ??= fileTexts(lineage, holdsQuote(quotesOf(text)));
+    const order = named ? [...files.filter((r) => r.paths.some((p) => samePath(p, named))), ...files] : files;
+    for (const r of order) {
+      const src = sourceOfQuote(q, [r.text], false);
+      if (src === null) continue;
+      const path = (named && r.paths.find((p) => samePath(p, named))) || (r.paths.length === 1 ? r.paths[0]! : r.paths.join(", "));
+      return { path, text: src };
+    }
+    return null;
+  };
   const statements = section(text, "Statements");
   const requests = section(text, "Requests");
   const structured = statements !== null || requests !== null;
@@ -266,12 +319,18 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
   const said: Statement[] = [], dropped: string[] = [];
   for (const [kind, lines] of [["standing", statements], ["request", requests]] as const) {
     for (const l of lines ?? []) {
-      const m = l.match(/^\s*[-*]\s*(owner|work)\s*:\s*(.+)$/i);
-      const q = m ? quoted(m[2]!) : null;
+      const m = statementLine(l);
       // The harness's own request (its text, the owner's focus line) is not the conversation.
-      if (!m || q === null || /^\s*(\[harness\]|Keep above all:)/.test(q)) continue;
-      const mine = m[1]!.toLowerCase() === "owner" ? sourceOfQuote(q, said_().owner) : null;
-      const src = mine ?? sourceOfQuote(q, said_().all);
+      if (!m || /^\s*(\[harness\]|Keep above all:)/.test(m.q)) continue;
+      const q = m.q;
+      // A file's words where the summary says so; else the conversation's exact words, then a file's, then a retelling's sentence.
+      const file = m.by === "file" ? inFile(q, m.path) : null;
+      if (file) { said.push({ by: "file", path: file.path, text: file.text, kind }); continue; }
+      const mine = m.by === "owner" ? sourceOfQuote(q, said_().owner) : null;
+      const exact = mine ?? sourceOfQuote(q, said_().all, false);
+      const read = exact === null && m.by !== "file" ? inFile(q, m.path) : null;
+      if (read) { said.push({ by: "file", path: read.path, text: read.text, kind }); continue; }
+      const src = exact ?? sourceOfQuote(q, said_().all);
       if (src === null) { dropped.push(forms(q)[0]!); continue; }
       said.push({ by: mine !== null ? "owner" : "work", text: src, kind });
     }
@@ -294,8 +353,14 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
     const x = norm(a.text), y = norm(b.text);
     return x === y || (a.kind === "standing" && b.kind === "standing" && (x.includes(y) || y.includes(x)));
   };
+  let fileBytes = 0, fileLeft = 0;
   for (const s of [...prior.filter((p) => !gone.has(p.text)), ...said]) {
     const k = out.findIndex((o) => same(o, s));
+    if (k < 0 && s.by === "file") {
+      const n = utf8Bytes(s.text) + utf8Bytes(s.path ?? "");
+      if (fileBytes + n > FILE_STATEMENTS_BYTES) { fileLeft++; continue; }
+      fileBytes += n;
+    }
     if (k < 0) out.push(s);
     else if (s.kind === "standing") {
       const old = out[k]!;
@@ -308,16 +373,18 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
   const markedDone = new Set((section(text, "Done") ?? []).filter((l) => /^\s*[-*]/.test(l)).flatMap((l) => { const q = quoted(l); return q === null ? [] : forms(q); }));
   const done = out.filter((s) => s.kind === "request" && eligible.has(s.text) && markedDone.has(s.text)).map((s) => s.text);
   const active = out.filter((s) => s.kind !== "request" || !done.includes(s.text));
-  if (!active.length && !dropped.length && !lifted.length && !done.length) return { summary: structured ? story : text.trim() };
+  if (!active.length && !dropped.length && !lifted.length && !done.length && !fileLeft) return { summary: structured ? story : text.trim() };
   const q = (t: string) => `"${t}"`;
-  const entries = (kind: Statement["kind"]) => active.filter((s) => s.kind === kind).map((s) => `- ${s.by}: ${q(s.text)}`);
+  const entries = (kind: Statement["kind"]) => active.filter((s) => s.kind === kind).map((s) => `- ${s.by === "file" ? `file: ${q(s.path ?? "")}` : s.by}: ${q(s.text)}`);
   const open = entries("request");
   const head = [
     "## Statements",
     "The conversation's own words, carried through every compaction until lifted:",
+    ...(active.some((s) => s.by === "file") ? ["(A `file` line holds the words of a file the work read, with the path it read: the file's words, not the owner's.)"] : []),
     ...entries("standing"),
     ...(open.length ? ["", "## Requests", ...open] : []),
     ...(dropped.length ? ["", `(${dropped.length} statement${dropped.length > 1 ? "s" : ""} the summary did not quote word for word ${dropped.length > 1 ? "were" : "was"} left out; the stored history keeps the original words.)`] : []),
+    ...(fileLeft ? ["", `(${fileLeft} line${fileLeft > 1 ? "s" : ""} of files read past the ${FILE_STATEMENTS_BYTES}-byte bound for file statements ${fileLeft > 1 ? "were" : "was"} left out; the files keep them.)`] : []),
     ...(done.length ? ["", `(${done.length} earlier request${done.length > 1 ? "s" : ""} the summary marked done ${done.length > 1 ? "were" : "was"} left out.)`] : []),
     ...(lifted.length ? ["", "## Lifted", ...lifted.map((l) => `- ${q(l.text)} lifted by: ${q(l.by)}`)] : []),
   ];
@@ -327,6 +394,7 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
     ...(dropped.length ? { statements_dropped: dropped } : {}),
     ...(lifted.length ? { statements_lifted: lifted } : {}),
     ...(done.length ? { statements_done: done } : {}),
+    ...(fileLeft ? { file_statements_left: fileLeft } : {}),
   };
 }
 

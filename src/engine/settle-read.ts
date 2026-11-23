@@ -10,7 +10,8 @@
 import type { Database } from "bun:sqlite";
 import { bareBy } from "../core/bare-index.ts";
 import type { StoredEvent } from "../core/types.ts";
-import { settle, type SettleAsk, type Settled } from "./compact.ts";
+import { holdsQuote, quotesOf, settle, type SettleAsk, type Settled } from "./compact.ts";
+import { fileTexts } from "./work-calls.ts";
 
 export function settleStored(db: Database, a: SettleAsk): Settled {
   // The branch that ends at `upto`: walked back over the session's rows without their bodies.
@@ -20,17 +21,32 @@ export function settleStored(db: Database, a: SettleAsk): Settled {
   let want: string | null = a.upto.id;
   for (const r of rows) {
     if (r.id !== want) continue;
-    if (r.kind === "user" || r.kind === "assistant") on.add(r.seq);
+    if (r.kind === "user" || r.kind === "assistant" || r.kind === "tool_result") on.add(r.seq);
     want = r.parent;
     if (!want) break;
   }
-  // What settle() reads of a branch: its prompts and replies, in order.
+  // What settle() reads of a branch: its prompts and replies, in order, and
+  // the outputs of its file reads that hold a quote of the summary (only
+  // those are kept: a long session read thousands of files).
   const said: StoredEvent[] = [];
-  const bodies = db.prepare<{ seq: number; kind: string; data: string }, [string, number]>("SELECT seq, kind, data FROM events WHERE session_id = ? AND seq <= ? AND kind IN ('user', 'assistant') ORDER BY seq");
+  const quotes = quotesOf(a.text);
+  const holds = holdsQuote(quotes);
+  const reads: ReturnType<typeof fileTexts> = [];
+  const bodies = db.prepare<{ seq: number; kind: string; data: string }, [string, number]>(
+    `SELECT seq, kind, data FROM events WHERE session_id = ? AND seq <= ? AND kind IN ('user', 'assistant'${quotes.length ? ", 'tool_result'" : ""}) ORDER BY seq`);
   try {
-    for (const r of bodies.iterate(a.session, a.upto.seq)) if (on.has(r.seq)) said.push({ kind: r.kind, data: JSON.parse(r.data) } as StoredEvent);
+    let calls: StoredEvent[] = [];
+    for (const r of bodies.iterate(a.session, a.upto.seq)) {
+      if (!on.has(r.seq)) continue;
+      const e = { kind: r.kind, data: JSON.parse(r.data) } as StoredEvent;
+      if (r.kind !== "tool_result") said.push(e);
+      if (!quotes.length) continue;
+      // A round's results follow the reply that holds its calls.
+      if (r.kind === "assistant") calls = [e];
+      else if (r.kind === "tool_result" && calls.length) reads.unshift(...fileTexts([...calls, e], holds));
+    }
   } finally {
     bodies.finalize();
   }
-  return settle(said, a.text, a.stored);
+  return settle(said, a.text, a.stored, reads);
 }

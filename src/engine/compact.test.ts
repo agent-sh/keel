@@ -6,7 +6,7 @@
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../core/types.ts";
-import { BYTES_PER_TOKEN, countPaced, contextBytes, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
+import { FILE_STATEMENTS_BYTES, BYTES_PER_TOKEN, countPaced, contextBytes, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
 const ev = (kind: string, data: any) => ({ id: `e${++seq}`, session_id: "s", seq, ts: seq, kind, data }) as any;
@@ -553,4 +553,61 @@ test("a quote whose inner quotes the model escaped is the conversation's own wor
   ].join("\n"), s.statements);
   expect(later.statements!.map((x) => x.text)).not.toContain('Run "bun test" before you push.');
   expect(later.statements_lifted).toEqual([{ text: 'Run "bun test" before you push.', by: "Pushing without the tests is fine today." }]);
+});
+
+// A rule the session read in a file (a brief) is said only in a tool's
+// output: it is kept as the file's words, with the path read, through every
+// compaction. A page fetched from the web, a search, an MCP tool or a command
+// that reaches another machine is never a file of the work.
+test("a rule read from a local file is kept as a file statement; one from the web is not", () => {
+  const rule = "Never rebase, amend or force-push the branch.";
+  const call = (id: string, name: string, input: any) => ev("assistant", { blocks: [{ type: "tool_use", id, name, input }], stop: "tool_use" });
+  const out = (id: string, content: any, is_error = false) => ev("tool_result", { results: [{ type: "tool_result", tool_use_id: id, content, is_error }] });
+  const line = [
+    ev("user", { text: "Start on the brief." }),
+    call("r1", "Read", { file_path: "/work/lane/BRIEF.md" }),
+    out("r1", `1\t# Brief\n2\tWork in your own worktree. ${rule}\n3\tScratch goes under the task folder.`),
+    call("b1", "Bash", { command: "cat /work/lane/TASK.md; echo ----; ./row.sh T-12" }),
+    out("b1", "Exit code 1\nRun the focused tests only.\n----\nrow not found", true),
+    call("w1", "WebFetch", { url: "https://example.com/rules" }),
+    out("w1", "Always commit straight to main."),
+    call("m1", "mcp__docs__read", { path: "/work/lane/OTHER.md" }),
+    out("m1", "Ship on Fridays."),
+    call("s1", "Bash", { command: "ssh build-box cat /srv/RULES.md" }),
+    out("s1", "Deploy without review."),
+    call("x1", "exec_command", { cmd: "sed -n '1,40p' docs/RULES.md" }),
+    out("x1", "Chunk ID: 1\nProcess exited with code 0\nOutput:\nKeep the lockfile as it is."),
+  ];
+  const first = settle(line, [
+    "## Statements",
+    `- file: "BRIEF.md": "${rule}"`,
+    '- work: "Run the focused tests only."', // in a file the shell printed, though the summary called it the work's
+    '- work: "Always commit straight to main."', // a web page
+    '- file: "/work/lane/OTHER.md": "Ship on Fridays."', // an MCP tool
+    '- work: "Deploy without review."', // another machine
+    '- file: "docs/RULES.md": "Keep the lockfile as it is."',
+    "## Story", "x",
+  ].join("\n"));
+  expect(first.statements).toEqual([
+    { by: "file", path: "/work/lane/BRIEF.md", text: rule, kind: "standing" },
+    { by: "file", path: "/work/lane/TASK.md", text: "Run the focused tests only.", kind: "standing" },
+    { by: "file", path: "docs/RULES.md", text: "Keep the lockfile as it is.", kind: "standing" },
+  ]);
+  expect(first.statements_dropped).toEqual(["Always commit straight to main.", "Ship on Fridays.", "Deploy without review."]);
+  expect(first.summary).toContain(`- file: "/work/lane/BRIEF.md": "${rule}"`);
+  expect(first.summary).toContain("the file's words, not the owner's");
+  // A second compaction carries it, whether or not the model quotes it again.
+  const cp = ev("compaction", { mode: "summary", ...checkpointData(line, first.summary) });
+  const second = checkpointData([...line, cp, ev("user", { text: "Go on." })], ["## Statements", "## Story", "y"].join("\n"));
+  expect(second.statements!.filter((x) => x.by === "file").map((x) => x.path)).toEqual(["/work/lane/BRIEF.md", "/work/lane/TASK.md", "docs/RULES.md"]);
+  expect(second.summary).toContain(`- file: "/work/lane/BRIEF.md": "${rule}"`);
+  // Bounded: new file lines past FILE_STATEMENTS_BYTES are left out and counted; earlier ones stay.
+  const big = Array.from({ length: 40 }, (_, k) => `Rule ${k}: ${"keep this line whole ".repeat(12)}.`);
+  const long = [...line, cp, call("r2", "Read", { file_path: "/work/lane/RULES.md" }), out("r2", big.join("\n"))];
+  const over = checkpointData(long, ["## Statements", ...big.map((b) => `- file: "RULES.md": "${b}"`), "## Story", "z"].join("\n"));
+  const fileBytes = over.statements!.filter((x) => x.by === "file").reduce((n, x) => n + Buffer.byteLength(x.text) + Buffer.byteLength(x.path!), 0);
+  expect(fileBytes).toBeLessThanOrEqual(FILE_STATEMENTS_BYTES);
+  expect(over.statements!.filter((x) => x.by === "file").slice(0, 3).map((x) => x.path)).toEqual(["/work/lane/BRIEF.md", "/work/lane/TASK.md", "docs/RULES.md"]);
+  expect(over.file_statements_left).toBeGreaterThan(0);
+  expect(over.summary).toContain(`past the ${FILE_STATEMENTS_BYTES}-byte bound`);
 });
