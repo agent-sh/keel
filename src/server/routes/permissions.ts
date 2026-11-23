@@ -22,6 +22,7 @@ import { readsOf } from "../reads.ts";
 import { Gate, type SandboxProfile } from "../../safety/gate.ts";
 import { asksLess, isMode, MODE_GROUPS, MODES } from "../../safety/policy.ts";
 import { makeJudge } from "../../safety/judge.ts";
+import { PRECISION_SQL, precisionOf, type VerdictCount } from "../../safety/precision.ts";
 import { forwardedPeer, isLocal, Presence } from "../../safety/presence.ts";
 import { CLIENTS, type AnsweredBy } from "../../safety/card.ts";
 import { sandboxStatus } from "../../safety/sandbox.ts";
@@ -51,6 +52,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   const needs = (req: Request, action: string) => (pk.allows(req, action) ? null : json({ error: "this needs your passkey from a remote device", presence: { action } }, 428));
   g.judge = makeJudge(store, deps.providers, () => g.setting("reviewer_model"), () => g.setting("reviewer_policy"));
   g.webUse = webUse;
+  // The gate's reads of a session's stored words (the folders named as its own) run on the read thread.
+  g.readSql = (sql, params) => readsOf(store).sql(sql, params);
   const sb = sandboxStatus();
   // (Whether the package caches can be layered here is asked now, off the loop: src/safety/sandbox-view.ts.)
   if (sb.available) void warmOverlays(sb.bwrap);
@@ -234,6 +237,14 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       },
     },
     // What the judge refused without the owner (reviewer mode, full auto), newest first; the owner can let one retry through.
+    // How often the owner took back the judge's and the rules' verdicts, per day and per class (Settings > Safety).
+    "/api/permissions/judge": {
+      GET: async (req: any) => {
+        const days = Math.min(Math.max(Number(new URL(req.url).searchParams.get("days")) || 7, 1), 90);
+        const since = Date.now() - days * 86_400_000;
+        return json(precisionOf(await readsOf(store).sql<VerdictCount>(PRECISION_SQL, [since]), since));
+      },
+    },
     "/api/sessions/:id/blocked": {
       GET: (req: any) => (store.session(req.params.id) ? json({ blocked: g.blocked(req.params.id), reviewer_model: g.setting("reviewer_model") ?? null }) : bad("no such session", 404)),
     },

@@ -943,14 +943,34 @@ const RUNNERS = /^(sh|bash|zsh|dash|ksh|fish|python3?|perl|ruby|node|bun|deno)$/
 // What makes the whole line high risk beyond its parts: a script fetched from
 // the network and run by a shell or interpreter that reads it from a pipe or
 // a substitution (curl URL | sh, bash <(curl URL), sh -c "$(curl URL)").
-export function lineRisk(parts: Simple[]): string | null {
+// A runner that reads its program from its input reads the fetch only when
+// that input can carry it: a pipe, a redirect, or a group or subshell whose
+// input the rules do not follow. A here-document is text in the command
+// (`curl -o f URL; python3 - <<'EOF'`), and an input nothing feeds is the
+// tool's own, which no fetch reaches.
+// A here-document's lines are read as commands only when a shell is fed one:
+// given to cat, tee or an interpreter they are a file's text or code of
+// another language, and neither a fetch nor a run of the line.
+const HEREDOC = /(^|[^<])<<-?\s*["'\\]?[A-Za-z_]/;
+const SHELL_PROGRAMS = /^(sh|bash|zsh|dash|ksh|fish)$/;
+export function lineRisk(all: Simple[]): string | null {
+  const shellDoc = all.some((p) => !p.heredoc && HEREDOC.test(p.text) && SHELL_PROGRAMS.test(body(p.words).words[0] ?? ""));
+  const parts = shellDoc ? all : all.filter((p) => !p.heredoc);
   const fetches = parts.some((p) => FETCHERS.has(body(p.words).words[0] ?? ""));
   if (!fetches) return null;
-  const runs = parts.some((p) => {
+  const runs = parts.some((p, i) => {
     const [prog, ...args] = body(p.words).words;
     if (!prog || !RUNNERS.test(prog)) return false;
+    // The program it runs comes from a substitution: the text after -c or -e, or its first operand (bash <(curl URL)).
+    // A substitution among the arguments of a script it names is only an argument (python3 x.py $(cat pid)).
+    const c = args.findIndex((a) => /^(-[a-zA-Z]*[ce]|--eval)$/.test(a));
+    const program = c >= 0 ? args[c + 1] : args.find((a) => !a.startsWith("-"));
+    if (program !== undefined && (program.includes("$(...)") || program.includes("`...`"))) return true;
     const operands = args.filter((a) => !a.startsWith("-") || a === "-");
-    return !operands.length || operands.includes("-") || args.includes("-s") || args.some((a) => a.includes("$(...)") || a.includes("`...`"));
+    if (!(!operands.length || operands.includes("-") || args.includes("-s"))) return false;
+    if (HEREDOC.test(p.text)) return false;
+    const piped = i > 0 && (parts[i - 1]!.sep === "|" || parts[i - 1]!.sep === "|&");
+    return piped || !!p.inputs?.length || p.text.includes("<<<") || !!p.nested;
   });
   return runs ? "runs a downloaded script" : null;
 }

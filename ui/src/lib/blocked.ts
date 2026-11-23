@@ -34,4 +34,4 @@ export function useBlocked(sessionId: string | undefined): Blocked[] {
 export const allowRetry = (sessionId: string, id: string) => api(`/api/sessions/${sessionId}/blocked/${id}`, { method: "POST" }).catch(reportError);
 
 export const refusedBy = (b: Blocked) =>
-  b.by === "reviewer" ? "The reviewer refused a call" : b.by === "unavailable" ? "Refused: the judge could not review it" : b.by === "streak" ? "Refused after repeated refusals" : "The judge refused a call";
+  b.by === "reviewer" ? "The reviewer refused a call" : b.by === "unavailable" ? "Refused: the judge could not review it" : b.by === "streak" ? "Refused after repeated refusals" : b.by === "rule" ? "Refused: it would discard uncommitted work" : "The judge refused a call";

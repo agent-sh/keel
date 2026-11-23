@@ -59,6 +59,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
           </div>
         </SettingRow>
       </Card>
+      <JudgePrecisionCard />
       <SandboxReadsCard />
       <PasskeysCard />
       <RemoteAccessCard />
@@ -83,6 +84,91 @@ function PolicyBox({ value, onSave }: { value: string; onSave: (v: string) => vo
         className="k-field h-auto w-full resize-y py-2"
       />
       <button data-testid="reviewer-policy-save" disabled={v === value} onClick={() => onSave(v)} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">Save policy</button>
+    </div>
+  );
+}
+
+type PrecisionRow = { key: string; reviewed: number; allowed: number; refused: number; taken_back: number; precision: number | null };
+type Precision = { since: number; days: PrecisionRow[]; classes: PrecisionRow[]; total: PrecisionRow };
+
+// A verdict's class in words: who decided, what the rules flagged, and where (precision.ts classKey).
+const DECIDER: Record<string, string> = { judge: "Judge", rule: "Keel's rules", reviewer: "Reviewer" };
+const FLAGGED: Record<string, string> = {
+  ordinary: "ordinary calls", destroys: "destroys work or data", remote: "changes another machine or a service", exposes: "sends credentials out",
+  hidden: "runs code not in the command", machine: "reaches past the session", owner: "yours alone to allow", flagged: "flagged calls",
+};
+const PLACE: Record<string, string> = { own: "in the session's own folders", outside: "outside them", unknown: "" };
+function classWords(key: string): { who: string; what: string } {
+  const [by = "", flag = "", place = ""] = key.split(":");
+  return { who: DECIDER[by] ?? by, what: [FLAGGED[flag] ?? flag, PLACE[place] ?? place].filter(Boolean).join(", ") };
+}
+const pct = (p: number | null) => (p === null ? "none" : `${Math.round(p * 100)}%`);
+
+// How often you took back what the judge or Keel's rules decided without you: a refusal you let one retry of
+// through, or the same call you allowed later on a card. Per class and per day, the last seven days.
+function JudgePrecisionCard() {
+  const [p, setP] = useState<Precision | null>(null);
+  useEffect(() => { api<Precision>("/api/permissions/judge?days=7").then(setP).catch(reportError); }, []);
+  const th = "px-2 py-1.5 font-normal", td = "px-2 py-1.5 tabular-nums";
+  const counts = (r: PrecisionRow) => (
+    <>
+      <td className={`${td} text-right`}>{r.reviewed}</td>
+      <td className={`${td} text-right`}>{r.refused}</td>
+      <td className={`${td} text-right ${r.taken_back ? "text-warn" : "text-muted"}`}>{r.taken_back}</td>
+      <td className={`${td} text-right font-medium`}>{pct(r.precision)}</td>
+    </>
+  );
+  // (One set of column widths for both tables, so their numbers line up.)
+  const cols = <colgroup><col /><col className="w-24" /><col className="w-24" /><col className="w-32" /><col className="w-24" /></colgroup>;
+  const head = (first: string) => (
+    <thead>
+      <tr className="border-b border-line text-left text-caption text-faint">
+        <th className={th}>{first}</th><th className={`${th} text-right`}>Reviewed</th><th className={`${th} text-right`}>Refused</th>
+        <th className={`${th} text-right`}>You took back</th><th className={`${th} text-right`}>Precision</th>
+      </tr>
+    </thead>
+  );
+  return (
+    <div className="k-after-card flex flex-col gap-2">
+      <h3 className="px-1 text-ui font-medium text-muted">Judge precision</h3>
+      <Card>
+        <div className="py-4" data-testid="judge-precision">
+          <p className="text-ui text-muted">Calls the judge or Keel's rules decided without you in the last seven days. A refusal counts as taken back when you let one retry of it through, or allow the same call later. Precision is the share of refusals you left standing.</p>
+          {!p ? null : p.total.reviewed === 0 ? <p className="k-empty mt-3">No verdicts in the last seven days.</p> : (
+            <div className="mt-3 flex flex-col gap-4">
+              <table className="w-full table-fixed text-ui" data-testid="judge-precision-classes">
+                {cols}{head("Class")}
+                <tbody>
+                  {p.classes.map((r) => {
+                    const w = classWords(r.key);
+                    return (
+                      <tr key={r.key} className="border-b border-line/60 last:border-0" data-testid="judge-precision-class" data-key={r.key}>
+                        <td className="px-2 py-1.5"><span className="font-medium">{w.who}</span> <span className="text-muted">{w.what}</span></td>
+                        {counts(r)}
+                      </tr>
+                    );
+                  })}
+                  <tr className="border-t border-line" data-testid="judge-precision-total">
+                    <td className="px-2 py-1.5 font-medium">All</td>
+                    {counts(p.total)}
+                  </tr>
+                </tbody>
+              </table>
+              <table className="w-full table-fixed text-ui" data-testid="judge-precision-days">
+                {cols}{head("Day")}
+                <tbody>
+                  {p.days.map((r) => (
+                    <tr key={r.key} className="border-b border-line/60 last:border-0" data-testid="judge-precision-day">
+                      <td className="px-2 py-1.5 tabular-nums text-muted">{r.key}</td>
+                      {counts(r)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }

@@ -4,7 +4,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import type { Looked } from "./looked.ts";
-import { RULE_WORDS, codeGiven, laid, risksOf } from "./risk.ts";
+import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
+import type { PartRisk } from "./own-places.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains } from "../core/paths.ts";
@@ -114,7 +115,9 @@ export type CallClass =
 // A high-risk command's class is one of five (risk.ts RULE_WORDS).
 // `settles`: every reason it is high risk is one of git's own forms, which the full-auto rules can settle from
 // the repository's state before a judge is asked.
-export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string; settles?: true };
+// `risks`: each reason a high-risk command is high risk, with the part of the line it was found in (what Keel's
+// facts can settle of one part, own-places.ts).
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string; settles?: true; risks?: PartRisk[] };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
@@ -783,14 +786,14 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       if (code) for (const m of code.matchAll(/"([^"]*)"|'([^']*)'/g)) { const t = m[1] ?? m[2]!; const o = t.length >= 3 && t.length <= 300 && !/\s/.test(t) && /[\/.]/.test(t) ? here(t) : null; if (o) return owners(o); }
     }
   }
-  const risks = risksOf(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)) }, pre);
+  const risks = risksAt(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)) }, pre);
   if (risks.length) {
     if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]!.why}.` };
     // (The rule is the first reason in a few words: its own when it is that short, else its class's. A line of
     // several says how many more.)
     const classes = [...new Set(risks.map((r) => (r.said ? r.why : RULE_WORDS[r.rule])))];
     return uncovered({ ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${classes[0]}, and ${classes.length - 1} more` : classes[0], suggest: [],
-      ...(risks.every((r) => r.git) ? { settles: true as const } : {}) } }, risks[0]!.why);
+      ...(risks.every((r) => r.git) ? { settles: true as const } : {}), risks: risks.map((r) => ({ at: r.at, rule: r.rule, why: r.why })) } }, risks[0]!.why);
   }
   if (f.mode === "full-auto") return { allow: true };
   // A variable the line's first words give a value is read as that value.

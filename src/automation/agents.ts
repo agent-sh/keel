@@ -876,8 +876,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   const task = [
     preamble(depth, max), def.body, memory?.block ?? "", ...preloaded,
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
-    iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Edit only there and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
-    placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Edit only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
+    iso ? `You work in your own git worktree at ${iso.cwd} on branch ${iso.wt.branch}, made from your parent's ${iso.wt.base}. Change the repository only there (a scratch folder your task names is yours too) and commit your work on that branch; your parent merges it. Leave nothing uncommitted you want kept.` : "",
+    placed ? `You run on the machine ${placed.name}: your tools work there, in ${placed.cwd}.${placed.worktree ? ` That is your own git worktree on branch ${placed.branch}, made from ${placed.base}. Change the repository only there and commit your work on that branch. Leave nothing uncommitted you want kept.` : ""}` : "",
     schema ? `Your final message must be only one JSON value that matches this JSON schema, with no other text:\n${schema}` : "",
     `Task:\n${input.prompt}`,
   ].filter(Boolean).join("\n\n");

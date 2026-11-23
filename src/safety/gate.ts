@@ -13,6 +13,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
+import { namedPlaces, ownFacts, placeOf as ownPlaceOf, settleOwn, shapeOf, type OwnPlace } from "./own-places.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { looking, type Looked } from "./looked.ts";
 import { confine } from "./sandbox.ts";
@@ -150,6 +151,10 @@ CREATE INDEX IF NOT EXISTS approvals_session ON approvals(session_id, created);
 CREATE TABLE IF NOT EXISTS perm_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS perm_blocked (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, created);
+CREATE TABLE IF NOT EXISTS judge_verdicts (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, created INTEGER NOT NULL, by TEXT NOT NULL, decision TEXT NOT NULL, class TEXT NOT NULL, place TEXT NOT NULL, risk TEXT, model TEXT, tool TEXT NOT NULL, shape TEXT NOT NULL, blocked_id TEXT, overridden INTEGER, override TEXT);
+CREATE INDEX IF NOT EXISTS judge_verdicts_created ON judge_verdicts(created);
+CREATE INDEX IF NOT EXISTS judge_verdicts_shape ON judge_verdicts(session_id, shape);
+CREATE INDEX IF NOT EXISTS judge_verdicts_blocked ON judge_verdicts(blocked_id) WHERE blocked_id IS NOT NULL;
 `;
 
 // What the judge is asked (reviewer mode's calls, and full auto's high-risk
@@ -157,15 +162,23 @@ CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, crea
 // and what it answers.
 export const REVIEW_SUMMARY_LIMIT = 4000;
 export const REVIEW_INPUT_LIMIT = 2000;
-export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; interpreter?: string; high?: { why: string; facts?: string } };
+// `own`: the session's own folders as the judge reads them (own-places.ts); `settled`: what Keel's facts settled of
+// why the rules flagged the call, when it is judged as an ordinary call after that.
+export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; interpreter?: string; high?: { why: string; facts?: string }; own?: string; settled?: string };
 export type Verdict = { allow: boolean; risk: string; reason: string; model: string; ms?: number } | { unavailable: string };
 // A call refused without the owner (the judge's refusal, a judge that could
 // not answer, a repeat); the owner can let one retry of it through.
 // `by`: who refused it; `count`: how often this exact call was refused.
 export type Blocked = {
   id: string; session_id: string; calls?: string[]; tool: string; summary: string; reason: string; risk: string; model: string; key: string;
-  by?: "reviewer" | "judge" | "unavailable" | "streak"; count?: number; retry?: boolean; created: number; last?: number;
+  by?: "reviewer" | "judge" | "unavailable" | "streak" | "rule"; count?: number; retry?: boolean; created: number; last?: number;
 };
+// One verdict on a call without the owner: the judge's (Auto, Reviewer) or Keel's rules' (a discard settled by its
+// facts). `class`: what the rules flagged it for (a RiskRule), or "ordinary"; `place`: whether what it changes is
+// in the session's own folders; `shape`: the call with what changes between runs folded (own-places.ts shapeOf).
+export type VerdictRow = { session_id: string; by: "judge" | "reviewer" | "rule"; decision: "allow" | "deny"; class: string; place: "own" | "outside" | "unknown"; risk?: string; model?: string; tool: string; shape: string; blocked_id?: string };
+// How long after a refusal an owner's allow of the same call counts as taking it back.
+export const OVERRIDE_DAYS = 7;
 // How a full-auto high-risk call was settled, for the activity list and alerts.
 export type Judged = { session_id: string; call_id: string; tool: string; summary: string; outcome: "rule" | "judge" | "retry" | "refused" | "repeat" | "unavailable" | "streak" | "unreviewed"; reason: string; model?: string; ms?: number; blocked_id?: string };
 
@@ -179,7 +192,10 @@ type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: 
 // name is the program itself, and what this machine's disk says of the paths a command names (looked.ts). A card
 // that waits is judged again with the same answers. `settles`: every reason the call is high risk is one of git's
 // own forms, which the full-auto rules can settle.
-type CallFacts = { real?: (program: string) => boolean; looked?: Looked; settles?: boolean };
+// `own`: in Auto, the session's own folders (own-places.ts): the ones its parent's task or the owner named are read as
+// its scratch, and the judge is told all of them.
+type CallFacts = { real?: (program: string) => boolean; looked?: Looked; settles?: boolean; own?: OwnPlace[] };
+const FROM_PARENT = "Message from the session that started you:\n";
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
 type AutoShell = { path: string; identity: string; interpreter: string };
@@ -443,6 +459,7 @@ export class Gate {
     this.retries.add(`${sessionId}\u0000${b.key}`);
     this.streak.delete(sessionId);
     this.store.db.query("UPDATE perm_blocked SET data = ? WHERE id = ?").run(JSON.stringify(b), id);
+    this.overridden("retry", { blocked_id: id });
     this.bus.emit({ t: "feature", name: "blocked", session_id: sessionId, data: b });
     return b;
   }
@@ -487,6 +504,53 @@ export class Gate {
     this.trees.set(sessionId, { at: Date.now(), list });
     return list;
   }
+  // A read of the store off the loop (the permission routes give the read thread; a test reads on the loop).
+  readSql: (sql: string, params: (string | number | null)[]) => Promise<unknown[]> = async (sql, params) => this.store.db.query(sql).all(...params);
+  // The folders that are a session's own (own-places.ts), read at most every 30 seconds per session: its folder,
+  // the worktree Keel made for it, its scratch, and the folders its parent's task, its parent's messages or the
+  // owner's messages name as its own. Only Keel's stored words count: a task Keel stored from the parent's call, a
+  // message it stored from the parent, the owner's prompts. Never one of Keel's own folders.
+  private placesKept = new Map<string, { at: number; list: OwnPlace[] }>();
+  async places(session: Session): Promise<OwnPlace[]> {
+    const have = this.placesKept.get(session.id);
+    if (have && Date.now() - have.at < 30_000) return have.list;
+    const list: OwnPlace[] = [{ path: realOf(session.workspace), from: "folder" }];
+    try {
+      const wt = this.store.db.query<{ path: string }, [string]>("SELECT path FROM worktrees WHERE session_id = ? AND state = 'active'").get(session.id)?.path;
+      if (wt && realOf(wt) !== list[0]!.path) list.push({ path: realOf(wt), from: "worktree" });
+    } catch {} // no worktree was ever made here
+    for (const d of this.scope(session).scratch) list.push({ path: d, from: "scratch" });
+    const home = realOf(homedir());
+    const keel = ownFolders();
+    for (const w of await this.placeWords(session)) for (const p of namedPlaces(w.text, home)) {
+      const real = realOf(p);
+      if (keel.some((k) => contains(k, real) || contains(real, k)) || list.some((x) => x.path === real)) continue;
+      list.push({ path: real, from: w.from });
+    }
+    if (this.placesKept.size > 512) this.placesKept.clear();
+    this.placesKept.set(session.id, { at: Date.now(), list });
+    return list;
+  }
+  // The stored words that may name a session's own folders, newest first: its tasks and its parent's messages (an
+  // agent's), and the owner's own prompts. Read on the read thread: a long session's rows are not read on the loop.
+  private async placeWords(session: Session): Promise<{ text: string; from: "parent" | "owner" }[]> {
+    let rows: { data: string }[] = [];
+    try {
+      rows = await this.readSql("SELECT data FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 200", [session.id]) as { data: string }[];
+    } catch { return []; }
+    const out: { text: string; from: "parent" | "owner" }[] = [];
+    for (const r of rows) {
+      let d: any;
+      try { d = JSON.parse(r.data); } catch { continue; }
+      const text = typeof d?.text === "string" ? d.text : "";
+      if (!text) continue;
+      if (session.parent_id && d.kind === "task") out.push({ text: text.replace(/^[\s\S]*?\nTask:\n/, ""), from: "parent" });
+      else if (session.parent_id && d.kind === "steer" && !d.from_agent && text.startsWith(FROM_PARENT)) out.push({ text, from: "parent" });
+      else if (!d.kind && !["harness", "restart"].includes(d.origin) && !text.startsWith("[harness]")) out.push({ text, from: "owner" });
+    }
+    return out;
+  }
+
   // The outputs kept for a session and for the sessions it started or was started by (an agent's report names its files).
   private spills(session: Session): string[] {
     const ids = new Set([session.id]);
@@ -737,10 +801,12 @@ export class Gate {
   private evaluate(session: Session, name: string, cls: CallClass, bind?: string, facts?: CallFacts, before?: number, mode?: Mode): Decision {
     const p = mode ? { ...this.perm(session.id), mode } : this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
+    // (Folders named as the session's own are its scratch to the rules; Keel's own files are judged by its own scratch alone.)
+    const named = facts?.own?.filter((x) => x.from === "parent" || x.from === "owner").map((x) => x.path) ?? [];
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real: facts?.real, looked: facts?.looked,
+      mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch: named.length ? [...scratch, ...named] : scratch, real: facts?.real, looked: facts?.looked,
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
       ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, workspace, this.readOpts(session, "read-only"), this.spills(session), true) }),
       ...(session.machine || cls.kind === "read" ? {} : {
@@ -964,6 +1030,20 @@ export class Gate {
         if (this.asking.get(session.id) === mine) this.asking.delete(session.id);
       }
     }
+    // A call Auto sends to the judge: the session's own folders, for the judge and for the rules. A folder its
+    // parent's task or the owner named as its own is its scratch to the rules, so the call is decided again with it.
+    if (mode === "auto" && !session.machine && "ask" in dNow && !dNow.ask.ownerOnly) {
+      facts.own = await this.places(session);
+      if (facts.own.some((x) => x.from === "parent" || x.from === "owner")) {
+        asked = new Map();
+        dNow = this.evaluate(session, name, judged, target?.source, l ? { ...facts, looked: l.view(asked) } : facts);
+        for (let pass = 0; l && asked.size && !l.over() && pass < 3; pass++) {
+          await l.answer(asked);
+          asked = new Map();
+          dNow = this.evaluate(session, name, judged, target?.source, { ...facts, looked: l.view(asked) });
+        }
+      }
+    }
     if (l) facts.looked = l.view();
     facts.settles = "ask" in dNow && !!dNow.ask.settles;
     this.checking.set(callKey(session.id, call.id), facts);
@@ -1030,10 +1110,13 @@ export class Gate {
     else if (mode === "reviewer" && d.ask.risk === "low") {
       if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
       const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
+      const record = (decision: "allow" | "deny", blocked_id?: string) => "unavailable" in v ? undefined
+        : this.verdict({ session_id: session.id, tool: name, by: "reviewer", decision, class: "ordinary", place: "unknown", risk: v.risk, model: v.model, shape: this.shapeIn(name, summary, []), blocked_id });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
-      else if (v.allow) return { cls };
+      else if (v.allow) return record("allow"), { cls };
       else {
-        this.block({ session_id: session.id, calls: [call.id], tool: name, summary, reason: v.reason, risk: v.risk, model: v.model, key, by: "reviewer" });
+        const b = this.block({ session_id: session.id, calls: [call.id], tool: name, summary, reason: v.reason, risk: v.risk, model: v.model, key, by: "reviewer" });
+        record("deny", b.id);
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
@@ -1140,7 +1223,8 @@ export class Gate {
     };
     const again = this.store.db.query<{ data: string }, [string, string]>("SELECT data FROM perm_blocked WHERE session_id = ? AND json_extract(data, '$.key') = ? ORDER BY created DESC LIMIT 1").get(session.id, key);
     const prev = again ? (JSON.parse(again.data) as Blocked) : undefined;
-    if (prev && !prev.retry && prev.by !== "unavailable" && prev.by !== "streak") {
+    // (Not a refusal of Keel's rules: what they read of the disk can change, a commit made since among it.)
+    if (prev && !prev.retry && prev.by !== "unavailable" && prev.by !== "streak" && prev.by !== "rule") {
       const b: Blocked = { ...prev, calls: [...(prev.calls ?? []), call.id].slice(-20), count: (prev.count ?? 1) + 1, last: Date.now() };
       this.store.db.query("UPDATE perm_blocked SET data = ? WHERE id = ?").run(JSON.stringify(this.redactAny(b)), b.id);
       this.bus.emit({ t: "feature", name: "blocked", session_id: session.id, data: this.redactAny(b) });
@@ -1151,17 +1235,66 @@ export class Gate {
       const b = this.block({ ...base, calls: [call.id], reason: `${STREAK} ${calls} in a row were refused in this turn, so this one was refused without review`, risk: "unknown", model: "", key, by: "streak" });
       return refuse(b, "streak", `Refused without review: ${STREAK} ${calls} in a row were refused in this turn. Stop trying these actions now: finish what you can without them, then report to the owner what was refused and why you needed it.`);
     }
-    const high = !auto || auto.ask.risk === "high";
-    const facts = high && cls.kind === "shell" ? repoContext(cls.command, auto?.cwd ?? cls.cwd ?? session.workspace, homedir(), session) : undefined;
-    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined });
+    let high = !auto || auto.ask.risk === "high";
+    const cwd = auto?.cwd ?? (cls.kind === "shell" ? cls.cwd : undefined) ?? session.workspace;
+    const places = this.checking.get(callKey(session.id, call.id))?.own ?? [];
+    const sort = this.sortOf(cls, auto?.ask, places, cwd);
+    const record = (v: Omit<VerdictRow, "session_id" | "tool" | "class" | "place" | "shape">) => this.verdict({ session_id: session.id, tool: name, class: sort.class, place: sort.place, shape: this.shapeIn(name, summary, places), ...v });
+    // What Keel's facts settle of a high-risk command inside the session's own folders: a discard of git work with
+    // nothing there to lose is judged as the ordinary call it then is; one that would lose uncommitted work is refused
+    // here, with the way to do it safely (own-places.ts).
+    let settled: string | undefined;
+    if (auto && high && cls.kind === "shell" && auto.ask.risks?.length && places.length) {
+      const parts = splitCommand(cls.command);
+      const s = parts ? settleOwn({ parts, risks: auto.ask.risks, cwd, home: homedir(), places, look: lookRepo }) : null;
+      if (s && "deny" in s) {
+        const b = this.block({ ...base, calls: [call.id], reason: s.deny, risk: "high", model: "", key, by: "rule" });
+        record({ by: "rule", decision: "deny", blocked_id: b.id });
+        return refuse(b, "refused", s.deny);
+      }
+      if (s) { high = false; settled = `${s.allow} The rules flagged it because the command ${why.replace(/^the command /, "")}.`; }
+    }
+    const facts = high && cls.kind === "shell" ? repoContext(cls.command, cwd, homedir(), session, places) : undefined;
+    const own = places.length ? ownFacts(places) : undefined;
+    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined, own, settled });
     if (auto && !await auto.valid()) return changedReview;
     if ("unavailable" in v) {
       const b = this.block({ ...base, calls: [call.id], reason: `The judge could not review it: ${v.unavailable}`, risk: "unknown", model: "", key, by: "unavailable" });
       return refuse(b, "unavailable", `Refused: this ${high ? "high-risk " : ""}call (${why}) needs the judge's review, and the judge could not give one (${reasonOf(v.unavailable)}). That is not proof it is unsafe. Take another way if there is one, or go on with the rest and report it; the owner can let one retry through.`);
     }
-    if (v.allow) return ran("judge", v.reason, { model: v.model, ms: v.ms }), { cls };
+    if (v.allow) return record({ by: "judge", decision: "allow", risk: v.risk, model: v.model }), ran("judge", v.reason, { model: v.model, ms: v.ms }), { cls };
     const b = this.block({ ...base, calls: [call.id], reason: v.reason, risk: v.risk, model: v.model, key, by: "judge" });
+    record({ by: "judge", decision: "deny", risk: v.risk, model: v.model, blocked_id: b.id });
     return refuse(b, "refused", `Refused by the judge (risk ${v.risk}): ${reasonOf(v.reason)}. Do not retry it as it is or work around it: take a safer way, or finish the rest and tell the owner what you could not do. The owner can let one retry through.`);
+  }
+
+  // The class a verdict is counted under: what the rules flagged (the first reason's class), or an ordinary call;
+  // and whether every path the call names to change is in the session's own folders.
+  private sortOf(cls: CallClass, ask: Ask | undefined, places: OwnPlace[], cwd: string): { class: string; place: "own" | "outside" } {
+    const rule = ask?.risk === "high" ? ask.risks?.[0]?.rule ?? (ask.ownerOnly ? "owner" : "flagged") : "ordinary";
+    const paths = cls.kind === "edit" ? cls.paths : cls.kind === "shell" ? [cwd] : [];
+    const allOwn = places.length > 0 && paths.length > 0 && paths.every((p) => !!ownPlaceOf(realOf(p), places));
+    return { class: rule, place: allOwn ? "own" : "outside" };
+  }
+  private shapeIn(tool: string, summary: string, places: OwnPlace[]): string {
+    return shapeOf(tool, summary, places.map((p) => p.path));
+  }
+
+  // One verdict on a call, kept to count how often the owner later takes it back (judgeStats).
+  private verdict(v: VerdictRow) {
+    try {
+      this.store.db.query("INSERT INTO judge_verdicts (id, session_id, created, by, decision, class, place, risk, model, tool, shape, blocked_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(crypto.randomUUID(), v.session_id, Date.now(), v.by, v.decision, v.class, v.place, v.risk ?? null, v.model ?? null, v.tool, v.shape, v.blocked_id ?? null);
+    } catch {} // a store that takes no writes now: the verdict stands, uncounted (the store says why it takes none)
+  }
+  // The owner took a refusal back: one retry of it, or an allow of the same call on a card later.
+  private overridden(how: "retry" | "card", where: { blocked_id: string } | { session_id: string; shape: string }) {
+    const now = Date.now();
+    // (Counting never stands in the way of the owner's answer: a store that takes no writes now counts nothing.)
+    try {
+      if ("blocked_id" in where) this.store.db.query("UPDATE judge_verdicts SET overridden = ?, override = ? WHERE blocked_id = ? AND overridden IS NULL").run(now, how, where.blocked_id);
+      else this.store.db.query("UPDATE judge_verdicts SET overridden = ?, override = ? WHERE session_id = ? AND shape = ? AND decision = 'deny' AND overridden IS NULL AND created > ?").run(now, how, where.session_id, where.shape, now - OVERRIDE_DAYS * 86_400_000);
+    } catch {} // counted by none
   }
 
   // A refusal stored for the owner's list (secrets kept out of it).
@@ -1372,6 +1505,8 @@ export class Gate {
       for (const r of rules) this.addRule(session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined));
     }
     this.finish(a, { state: "allowed", choice: c.choice, by });
+    // (An allow of a call the judge or the rules refused in this session before: the owner took that refusal back.)
+    this.overridden("card", { session_id: a.session_id, shape: this.shapeIn(a.tool, a.summary, this.placesKept.get(a.session_id)?.list ?? []) });
     w?.resolve({ allow: true });
     // A new grant may settle other open cards it covers: the ones a line shows
     // whole. A card that is read first stays open for its own answer.

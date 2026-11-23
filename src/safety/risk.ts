@@ -892,7 +892,9 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
       const o = args.findIndex((a) => /^(--output|--output-document|-[a-zA-Z]*[oO])$/.test(a));
       const to = redirected(s)[0]?.to ?? (o < 0 ? (p === "wget" ? url : undefined) : /O$/.test(args[o]!) && p === "curl" ? url : args[o + 1]);
       const file = name(to);
+      // (Not a here-document's lines: they are what a program reads, and a path among them is not a program run.)
       if (file && file !== "null") for (let k = i + 1; k < n && k < i + 64; k++) {
+        if (parts[k]!.heredoc) continue;
         const r = runs[k]!.words;
         const q = name(r[0]);
         if (q === file || ((SHELLS.test(q) || INTERPRETERS.test(q) || q === "source" || q === ".") && !(SHELLS.test(q) && r.includes("-n")) && r.slice(1).some((a) => name(a) === file))) { line.push({ rule: "hidden", why: `runs ${file}, a script the same line downloads` }); break; }
@@ -992,10 +994,14 @@ const OLD = (why: string): RiskRule => (/^runs as root|^stops the machine/.test(
 
 // Every reason the line is high risk, each once.
 export function risksOf(parts: Simple[], w: Where, pre?: Laid): Risk[] {
+  return risksAt(parts, w, pre).map(({ at: _, ...r }) => r);
+}
+// The same, each with the part it was found in (null: the line as a whole), for what Keel's facts can settle of one part.
+export function risksAt(parts: Simple[], w: Where, pre?: Laid): (Risk & { at: number | null })[] {
   const { per, line } = analyse(parts, w, 0, pre);
   const seen = new Set<string>();
-  const out: Risk[] = [];
-  for (const i of [...per.keys()].sort((a, b) => a - b)) for (const r of per.get(i)!) if (!seen.has(r.why)) { seen.add(r.why); out.push(r); }
-  for (const r of line) if (!seen.has(r.why)) { seen.add(r.why); out.push(r); }
+  const out: (Risk & { at: number | null })[] = [];
+  for (const i of [...per.keys()].sort((a, b) => a - b)) for (const r of per.get(i)!) if (!seen.has(r.why)) { seen.add(r.why); out.push({ ...r, at: i }); }
+  for (const r of line) if (!seen.has(r.why)) { seen.add(r.why); out.push({ ...r, at: null }); }
   return out;
 }

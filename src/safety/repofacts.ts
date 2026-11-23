@@ -8,6 +8,7 @@ import type { Session } from "../core/types.ts";
 import { gitCall, located, protectedBranch, pushPlan, type RepoFacts } from "./autonomy.ts";
 import { analyse } from "./risk.ts";
 import { splitCommand } from "./shell.ts";
+import { placeOf, type OwnPlace } from "./own-places.ts";
 import { timed } from "../admin/stall.ts";
 
 const KEEP_MS = 5_000;
@@ -97,8 +98,9 @@ export function branchCreated(dir: string, b: string): number | null {
 // The facts the judge gets about a high-risk command: where each risky part
 // runs, that repository's branch, upstream, remotes and their default
 // branches, uncommitted work, and for a push what it changes and whose
-// branch that is. Every line is something git says locally, never a guess.
-export function repoContext(command: string, cwd: string, home: string, session: Pick<Session, "workspace" | "created">): string {
+// branch that is, and whether it runs in one of the session's own folders. Every line is something git says
+// locally or Keel's records say, never a guess. A hard reset keeps untracked files: the count says what it meets.
+export function repoContext(command: string, cwd: string, home: string, session: Pick<Session, "workspace" | "created">, places: OwnPlace[] = []): string {
   const parts = splitCommand(command);
   if (!parts) return "The command could not be split into its parts.";
   const out: string[] = [];
@@ -110,14 +112,15 @@ export function repoContext(command: string, cwd: string, home: string, session:
     if (!risk) return;
     const g = gitCall(s.words, dir, home);
     const at = g?.dir ?? dir;
-    out.push(`- \`${s.text.slice(0, 300)}\` ${risk}; it runs in ${at ?? "a folder the rules cannot follow (a cd through a variable or a subshell)"}${at ? ` (inside the session folder: ${yes(contains(session.workspace, at))})` : ""}.`);
+    const own = at ? placeOf(at, places) : null;
+    out.push(`- \`${s.text.slice(0, 300)}\` ${risk}; it runs in ${at ?? "a folder the rules cannot follow (a cd through a variable or a subshell)"}${at ? ` (inside the session folder: ${yes(contains(session.workspace, at))}${places.length ? `; inside this session's own folders: ${own ? `yes, ${own.path}` : "no"}` : ""})` : ""}.`);
     const f = at ? lookRepo(at) : null;
     if (!at || !f) return;
     if (!seen.has(f.root)) {
       seen.add(f.root);
       const created = f.branch ? branchCreated(f.root, f.branch) : null;
       const remotes = Object.entries(f.remotes).map(([n, u]) => `${n} ${u} (default branch ${f.defaultOf(n) ?? "unknown"})`);
-      out.push(`  Repository ${f.root}: branch ${f.branch ?? "(detached)"}${f.branch ? ` (created in this session: ${created === null ? "unknown" : yes(created >= session.created)})` : ""}, upstream ${f.upstream ?? "none"}; remotes: ${remotes.join("; ") || "none"}; uncommitted: ${f.dirty() ?? "unknown"} tracked changes, ${f.untracked() ?? "unknown"} untracked files.`);
+      out.push(`  Repository ${f.root}: branch ${f.branch ?? "(detached)"}${f.branch ? ` (created in this session: ${created === null ? "unknown" : yes(created >= session.created)})` : ""}, upstream ${f.upstream ?? "none"}; remotes: ${remotes.join("; ") || "none"}; uncommitted: ${f.dirty() ?? "unknown"} tracked changes, ${f.untracked() ?? "unknown"} untracked files${g?.sub === "reset" ? " (a hard reset discards the tracked changes and leaves untracked files)" : ""}.`);
     }
     if (g?.sub === "push") {
       const plan = pushPlan(g.args, f);
