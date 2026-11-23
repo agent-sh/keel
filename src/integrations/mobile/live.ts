@@ -122,9 +122,11 @@ export class LiveTicker {
       try { this.keep?.set(now); } catch (e) { this.failed(e); }
       return;
     }
-    // Not told: tried again after a longer hold, unless a change already set one.
+    // Not told: tried again after a longer hold. A change that set a shorter
+    // one while this send was out gives way to it, so a busy daemon backs off too.
     this.fails = Math.min(this.fails + 1, MAX_BACKOFF);
-    if (!this.timer) this.later(this.quietMs * 2 ** this.fails);
+    if (this.timer) clearTimeout(this.timer);
+    this.later(this.quietMs * 2 ** this.fails);
   }
 
   stop() { if (this.timer) clearTimeout(this.timer); this.timer = null; }

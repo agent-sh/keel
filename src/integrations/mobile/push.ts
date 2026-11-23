@@ -140,7 +140,11 @@ export async function send(mobile: MobileStore, seq: number, msg: PushMessage, d
     const data = pushData(msg, seq, id);
     // Fifteen minutes: an alert is stale after that and the app syncs when it
     // opens. Only the live status collapses; alerts are each their own news.
-    const android: any = { priority: msg.high ? "HIGH" : "NORMAL", ttl: "900s" };
+    // The live status keeps a day: a phone offline past fifteen minutes would
+    // otherwise miss the "nothing runs" that takes its notification down, and
+    // the daemon, told it was sent, would not send it again. (The collapse key
+    // keeps only the newest, so nothing piles up.)
+    const android: any = { priority: msg.high ? "HIGH" : "NORMAL", ttl: msg.kind === "live" ? "86400s" : "900s" };
     if (msg.kind === "live") android.collapse_key = "live";
     const rec: PushRecord = { id, device_id: t.device_id, kind: msg.kind, session_id: msg.session_id ?? null, sent_ms: Date.now(), ok: false, error: "sending", acked_ms: null, token_hash: sha256Hex(t.token) };
     mobile.recordPush(rec);

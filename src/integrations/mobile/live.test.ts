@@ -99,3 +99,22 @@ test("the status is read from what runs and waits, never a whole table, and each
   expect(asked.length).toBeGreaterThan(0);
   expect({ lists, unindexed: asked.filter((sql) => !plan(sql).includes("events_turn_marks")) }).toEqual({ lists: 0, unindexed: [] });
 });
+
+test("a change during a send that then fails waits the longer hold, not its own", async () => {
+  const now: LiveStatus = { working: 1, needs: 0, titles: ["A"], since: 1 };
+  let tries = 0;
+  let release: (ok: boolean) => void = () => {};
+  const t = new LiveTicker(() => now, () => { tries++; return tries === 1 ? new Promise<boolean>((r) => (release = r)) : true; }, 50, () => true);
+  const out = t.flush();
+  await Bun.sleep(5);
+  t.poke(); // a change while the first send is out: a plain hold of 50 ms
+  await Bun.sleep(5);
+  release(false);
+  await out;
+  // The plain hold would try again at about 50 ms; the failure's hold is 100 ms from the failure.
+  await Bun.sleep(75);
+  expect(tries).toBe(1);
+  await Bun.sleep(60);
+  expect(tries).toBe(2);
+  t.stop();
+});
