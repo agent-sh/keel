@@ -25,7 +25,7 @@ export function ContentFrame({ what, frameRef, className, ...rest }: IframeHTMLA
     return (
       <div role="status" data-testid="frame-stopped" className={cn(className, "flex flex-col items-start gap-2 bg-bg p-4 text-ui text-muted")}>
         <p>This {what} took the keyboard by itself and was stopped.</p>
-        <button type="button" data-testid="frame-show-again" onClick={() => setStopped(false)} className="h-8 rounded-lg border border-line bg-raised px-3 text-ui text-fg hover:bg-hover">Show it again</button>
+        <button type="button" data-testid="frame-show-again" onClick={() => setStopped(false)} className="k-btn k-btn-lg">Show it again</button>
       </div>
     );
   }

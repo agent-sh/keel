@@ -135,7 +135,7 @@ export function AdminBand() {
       <div role="status" data-testid="shell-note" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-line bg-raised px-4 text-ui animate-in">
         <RotateCw className="size-3.5 shrink-0 text-brass" />
         <span className="truncate">{shellNote}</span>
-        <button type="button" onClick={() => setUI({ shellNote: null })} className="h-7 shrink-0 rounded-md border border-line px-3 text-caption text-fg hover:bg-hover">OK</button>
+        <button type="button" onClick={() => setUI({ shellNote: null })} className="k-btn shrink-0">OK</button>
       </div>
     );
   }

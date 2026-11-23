@@ -6,7 +6,7 @@ import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, use
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { settingsFind } from "../lib/settings-find.macro.ts" with { type: "macro" };
 import { findSettings } from "../lib/settings-match.ts";
-import { everyCommand } from "../lib/keys.ts";
+import { everyCommand, composing } from "../lib/keys.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
 import { SmallModels } from "./SmallModels.tsx";
 import { Seg } from "./Seg.tsx";
@@ -239,6 +239,7 @@ export function Settings({ section }: { section: string }) {
   // From the field: Enter opens the first result (a row found, else its section), Down goes into the list, and on a wide page Escape
   // clears what was typed (on a narrow one it closes the list, as before: the rail's own key).
   const findKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (composing(e)) return; // an input method's Enter confirms its word, its Escape drops it
     // (The first section's first row when the words named one: it is the closer answer.)
     if (e.key === "Enter" && q.trim()) { e.preventDefault(); const [a, b] = results(); (b?.matches(".k-settings-hit") ? b : a)?.click(); }
     else if (e.key === "ArrowDown") { e.preventDefault(); results()[0]?.focus(); }
