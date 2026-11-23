@@ -13,9 +13,10 @@ import { diskFull, refusedWrite, type Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { ownerPrompt } from "../core/owner.ts";
-import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
+import { blockName, blocksOf, changedBlocks, ownChanges, PromptStore, urgentBlock, type PromptBlock, type PromptPart, type StoredPrompt } from "./prompt-store.ts";
+import { NOTE_KIND, promptNote, toldOf, type Rendered } from "./prompt-note.ts";
 import { testBuild } from "../core/build.ts";
-import { BuildPins, coldReason } from "./build-pin.ts";
+import { BuildPins, coldReason, pinAged } from "./build-pin.ts";
 import type { AssistantBlock, ErrorRecord, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
@@ -34,7 +35,7 @@ import { readBudget, readMaterial, readSource, smallModels, type ReaderHost, typ
 import { cleanTitle, firstReply, ownerPrompts, TITLE_OUTPUT, TITLE_SYSTEM, titleOwed, titlePrompt, weakStart } from "./title.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, countPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, idleMinTokens, type IdleFacts, checkpointData, settle, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
-import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
+import { effectiveEffort, LONGEST_KEEP_MS, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { CachePlans, marginOf } from "./cache-plans.ts";
 import { cacheState, capsuleText, decideFollowUp, isWay, missingFrom, rereadBytes, storyOf, taskShape, type FollowUpPlan, type Way } from "./follow-up.ts";
@@ -346,8 +347,9 @@ const NOT_SENT = new Set([...SUMMARY_GAVE_UP, "context_over_window"]);
 
 type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; systemOwn?: number; effort?: string; native?: boolean };
 // A session's system prompt as a request carries it: the text, where the part
-// its folder's sessions share starts (`split`) and where its own part starts (`own`).
-type System = { text: string; split: number; own?: number };
+// its folder's sessions share starts (`split`) and where its own part starts
+// (`own`), and the blocks it is made of (absent for one kept before they were).
+type System = { text: string; split: number; own?: number; blocks?: PromptBlock[] };
 
 // What the caller counted for a request before it is built: the tokens of the
 // request that carries its context (Engine.whole), and the messages that
@@ -443,6 +445,16 @@ export class Engine {
   // and sessions that moved (their next request renders for the new place).
   private checked = new Set<string>();
   private moved = new Set<string>();
+  // The newest render of a session's prompt while its kept one stays sent: a
+  // change of the owner's side is told at the tail until it is folded in
+  // (src/engine/prompt-note.ts).
+  private fresh = new SessionMap<Rendered>(256);
+  // Subagents on this machine that send their own copy of their parent's
+  // earlier prompt, while their own cache holds it: when the copy was made.
+  private diverged = new Map<string, number>();
+  // Sessions whose prompt is made again because they take this build's at a
+  // cold moment, not because they moved.
+  private adopting = new Set<string>();
 
   constructor(
     private store: Store,
@@ -671,11 +683,15 @@ export class Engine {
     }
   }
 
-  // The session's frozen system prompt is made again at its next turn (it moved
-  // to another directory or machine; the cache prefix is rebuilt once).
-  forgetSystem(id: string) {
+  // The session's frozen system prompt is made again at its next turn. It
+  // moved to another directory or machine: the cache prefix is rebuilt once.
+  // Not moved (`moved` false: its project's instructions changed): it is
+  // compared again, and a change of the owner's side is told at the tail.
+  forgetSystem(id: string, moved = true) {
     this.systems.delete(id);
-    this.moved.add(id);
+    this.adopting.delete(id);
+    if (moved) this.moved.add(id);
+    else this.checked.delete(id);
   }
 
   // The branch the session shows, oldest first. The store keeps it (walked
@@ -1344,7 +1360,12 @@ export class Engine {
     const own = info.id === session.model;
     const to = { model: info.id, native, own: info.tools === false ? "no tools" : sessionToolsKey(info.family, session.id) };
     const why = own ? this.pins.due(session, to, built, () => this.coldWhy(session.id, provider, info)) : undefined;
-    if (why && !(session.parent_id && !session.machine)) this.forgetSystem(session.id);
+    const local = !!session.parent_id && !session.machine;
+    // (Made again for this build at a cold moment: not a move, so its subagents may keep their copies.)
+    if (why && !local) { this.forgetSystem(session.id); this.adopting.add(session.id); }
+    // A subagent that kept its parent's earlier prompt rides the parent's again once its cache is cold.
+    const copy = local ? this.diverged.get(session.id) : undefined;
+    if (own && copy !== undefined && (pinAged(copy) || this.coldWhy(session.id, provider, info))) this.systems.delete(session.id);
     this.pins.begin(session.id, why);
     try {
       const system = await this.systemOf(session, info);
@@ -1441,8 +1462,22 @@ export class Engine {
   private async loadSystem(session: Session, info?: ModelInfo): Promise<System> {
     const parent = session.parent_id && !session.machine ? this.store.session(session.parent_id) : undefined;
     let system: System;
-    if (parent) system = await this.systemOf(parent, info, false);
-    else {
+    if (parent) {
+      // Its own copy of the parent's earlier prompt (kept when the parent's
+      // changed while this cache was warm) until its cache is cold, the
+      // pin's age passes, or the parent's has a block this build marks urgent.
+      const theirs = await this.systemOf(parent, info, false);
+      const mine = this.prompts.get(session.id);
+      const keep = mine && mine.text !== theirs.text && !pinAged(mine.rendered) && !urgentBlock(mine.blocks, changedBlocks(mine.blocks, theirs.blocks ?? []));
+      if (mine && keep && !(await this.coldOf(session))) {
+        system = mine;
+        this.diverged.set(session.id, mine.rendered);
+      } else {
+        if (mine) this.prompts.drop(session.id);
+        this.diverged.delete(session.id);
+        system = theirs;
+      }
+    } else {
       const kept = this.prompts.get(session.id);
       const moved = this.moved.has(session.id);
       if (kept && this.checked.has(session.id) && !moved) system = kept;
@@ -1456,23 +1491,116 @@ export class Engine {
         // A kept prompt whose blocks differ stays as it was sent while a warm
         // cache holds the context, unless a changed block must not wait: the
         // pins decide, and remember what waits (src/engine/build-pin.ts).
-        const taken = this.pins.prompt(session.id, kept?.blocks, made.blocks, changed, moved);
+        // A change of the owner's side is taken now when no warm cache holds the kept one.
+        const own = kept ? ownChanges(kept.blocks, made.blocks, changed) : [];
+        const taken = this.pins.prompt(session.id, kept?.blocks, made.blocks, changed, moved, own.length ? await this.coldOf(session) : undefined);
         // A prompt made again for a new model is kept as made for it, so the
         // next run compares it against that model.
         if (kept && !taken) {
           system = kept;
+          // A change of the owner's side is told at the tail meanwhile (tellPrompt).
+          if (own.length) this.fresh.set(session.id, made);
+          else this.fresh.delete(session.id);
           // (Its blocks stay cut as the kept one's were sent.)
           if (moved && !changed.length && forModel && kept.model !== forModel.id) this.prompts.put(session.id, { ...made, own: kept.own });
         } else {
+          // A change that must not wait (an urgent block, a move) reaches its subagents too.
+          if (kept && changed.length) {
+            if ((moved && !this.adopting.has(session.id)) || urgentBlock(kept.blocks, changed)) this.unshelter(session.id);
+            else this.shelter(session.id, kept);
+          }
           this.prompts.put(session.id, made, changed);
+          this.fresh.delete(session.id);
           system = made;
         }
         this.checked.add(session.id);
         this.moved.delete(session.id);
+        this.adopting.delete(session.id);
       }
     }
-    this.systems.set(session.id, { text: system.text, split: system.split, own: system.own, model: parent ? undefined : this.prompts.get(session.id)?.model ?? undefined });
+    this.systems.set(session.id, { text: system.text, split: system.split, own: system.own, blocks: system.blocks, model: parent ? undefined : this.prompts.get(session.id)?.model ?? undefined });
     return system;
+  }
+
+  // Why no warm cache holds the session's context on its own model, if none
+  // may; a model that does not resolve has no cache to keep.
+  private async coldOf(session: Session): Promise<string | undefined> {
+    const r = await this.providers.resolve(session.model).catch(() => undefined);
+    // (Read off the loop first: the session in hand may be another's parent, not in memory.)
+    if (r) await this.store.warm(session.id);
+    return r ? this.coldWhy(session.id, r.provider, r.info) : "the model is not available";
+  }
+
+  // The session's prompt is replaced (`kept` was sent until now). Its
+  // subagents on this machine ride it byte for byte; one that may still hold
+  // a warm cache of the earlier prompt keeps that as its own copy, so its next
+  // request reads its cache instead of writing its context again, and rides
+  // the new one once its cache is cold (loadSystem). One idle for longer than
+  // any route keeps a prefix has nothing left to keep.
+  private shelter(id: string, kept: StoredPrompt) {
+    const since = Date.now() - LONGEST_KEEP_MS;
+    // Copies of subagents idle past any cache's life keep nothing: they go.
+    this.prompts.dropCopies(since);
+    for (const d of this.store.descendants(id)) {
+      const s = this.store.session(d);
+      if (!s || s.machine || s.archived || s.updated < since || !this.ridesOn(s, id)) continue;
+      this.prompts.put(d, { text: kept.text, split: kept.split, own: kept.own, blocks: kept.blocks, model: kept.model });
+      this.diverged.set(d, Date.now());
+    }
+  }
+
+  // The session took a prompt that must not wait: its subagents on this
+  // machine drop the copies they kept and the prompt they hold in memory, so
+  // their next request carries the new one.
+  private unshelter(id: string) {
+    for (const d of this.store.descendants(id)) {
+      const s = this.store.session(d);
+      if (!s || s.machine) continue;
+      if (this.diverged.delete(d) || this.prompts.get(d)) this.prompts.drop(d);
+      this.systems.delete(d);
+    }
+  }
+
+  // Whether a subagent's requests carry `root`'s prompt: every session between
+  // them is on this machine and sends no copy of its own.
+  private ridesOn(s: Session, root: string): boolean {
+    for (let x: Session | undefined = s, hops = 0; x && hops < 32; hops++) {
+      if (!x.parent_id || x.machine || (x !== s && this.prompts.get(x.id))) return false;
+      if (x.parent_id === root) return !this.prompts.get(s.id);
+      x = this.store.session(x.parent_id);
+    }
+    return false;
+  }
+
+  // The newest render of the prompt a session's requests are made from: the
+  // session's own, or for a subagent on this machine its top session's.
+  private latestPrompt(session: Session): Rendered | undefined {
+    for (let x: Session | undefined = session, hops = 0; x && hops < 32; hops++) {
+      if (!x.parent_id || x.machine) {
+        // A render that waits but is no longer in memory: unknown until it is made again (a revert would be claimed).
+        const fresh = this.fresh.get(x.id);
+        if (!fresh && this.pins.telling(x.id)) return undefined;
+        const p = fresh ?? this.systems.get(x.id) ?? this.prompts.get(x.id);
+        return p?.blocks ? { text: p.text, blocks: p.blocks } : undefined;
+      }
+      x = this.store.session(x.parent_id);
+    }
+    return undefined;
+  }
+
+  // A change of the owner's side of the prompt that the model does not hold
+  // yet is told at the tail of the history, once (src/engine/prompt-note.ts).
+  // Stored as a note for the model, so later requests carry the same bytes.
+  private tellPrompt(session: Session, events: readonly StoredEvent[]): boolean {
+    const sent = this.systems.get(session.id);
+    const latest = sent?.blocks ? this.latestPrompt(session) : undefined;
+    if (!sent?.blocks || !latest) return false;
+    const told = toldOf(events, checkpointAt(events).keepFrom);
+    if (latest.text === sent.text && !told.size) return false;
+    const note = promptNote({ text: sent.text, blocks: sent.blocks }, latest, told);
+    if (!note) return false;
+    this.append(session.id, "note", { kind: NOTE_KIND, model: true, short: note.short, blocks: note.blocks, text: note.text });
+    return true;
   }
 
   private async renderSystem(session: Session, info?: ModelInfo) {
@@ -2132,6 +2260,7 @@ export class Engine {
         const waits = st.info.id === session.model ? this.pins.waits(id) : undefined;
         if (waits === "now" || (waits && this.coldWhy(id, st.provider, st.info, events))) st = await this.step(session, session.model);
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
+        if (st.info.id === session.model && this.tellPrompt(session, events)) events = this.lineage(id);
         const messages = toMessages(events);
         let res: ProviderResult;
         let sentAt = 0;
@@ -2514,6 +2643,8 @@ export class Engine {
   // timer fires, for the sessions it fires for.
   async resumeIdle() {
     const since = Date.now() - 60 * 60_000;
+    // Subagents' copies of a parent's earlier prompt that no cache holds any more (Engine.shelter).
+    this.prompts.dropCopies(Date.now() - LONGEST_KEEP_MS);
     const routes = new Map<string, Promise<{ provider: Provider; info: ModelInfo }>>();
     const route = (model: string) => routes.get(model) ?? routes.set(model, this.providers.resolve(model)).get(model)!;
     for (const { id } of this.store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated > ? AND archived = 0").all(since)) {

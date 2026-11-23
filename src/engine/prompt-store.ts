@@ -116,6 +116,19 @@ export class PromptStore {
     return readPrompt(this.store, id);
   }
 
+  // A subagent's own copy of its parent's earlier prompt, once it rides the parent's again (Engine.loadSystem).
+  drop(id: string) {
+    this.store.db.query("DELETE FROM session_prompts WHERE session_id = ?").run(id);
+  }
+
+  // The copies of subagents on this machine idle since before `before`: no cache holds them any more.
+  dropCopies(before: number) {
+    // (A store with no agents has no parent column; one with no fleet no machine column: every subagent is on this machine.)
+    if (!this.store.columnExists("sessions", "parent_id")) return;
+    const here = this.store.columnExists("sessions", "machine") ? " AND machine IS NULL" : "";
+    this.store.db.query(`DELETE FROM session_prompts WHERE session_id IN (SELECT id FROM sessions WHERE parent_id IS NOT NULL${here} AND updated < ?)`).run(before);
+  }
+
   // `changed`: the blocks that differ from the row this one replaces (none for a first render).
   put(id: string, p: { text: string; split: number; own?: number; blocks: PromptBlock[]; model: string | null }, changed?: string[]) {
     const now = Date.now();
@@ -128,7 +141,8 @@ export class PromptStore {
 }
 
 // The prompt a session's requests carry: its own, or for a subagent on this
-// machine its parent's (it runs on the parent's prompt byte for byte).
+// machine its parent's (it runs on the parent's prompt byte for byte), unless
+// it keeps a copy of the parent's earlier one while its own cache holds it.
 export function promptOf(store: Store, id: string): StoredPrompt | undefined {
   for (let s = store.session(id), hops = 0; s && hops < 32; s = s.parent_id && !s.machine ? store.session(s.parent_id) : undefined, hops++) {
     const p = readPrompt(store, s.id);

@@ -634,7 +634,8 @@ export const workspaces = <T = Workspaces>(): Promise<T> => (workspacesOut ??= a
 export type BuildState = {
   build: string;
   pinned: { build: string | null; since: number } | null;
-  waiting: { blocks: string[]; tools: string[] };
+  // `told`: blocks of the owner's side, told to the model at the tail until the prompt takes them.
+  waiting: { blocks: string[]; tools: string[]; told?: string[] };
   known: boolean;
   behind_since: number | null;
   takes_at: number | null;

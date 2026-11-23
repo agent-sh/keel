@@ -23,7 +23,8 @@ under `~/.cache/keel-work/bun/research/`.
   daemon upgrade and taken from the new build when the session's cache is cold
   anyway (`src/engine/build-pin.ts`; a change that must not wait is marked in
   `src/core/build.ts`, and a prompt block of the owner's data says so with a
-  `SystemBlock`), long tool output spilled to a
+  `SystemBlock`; a change of that data reaches a warm session as a note at the
+  tail of its history, `src/engine/prompt-note.ts`), long tool output spilled to a
   file (`src/tools/spill.ts`), long material (pages, files, logs, a saved output)
   read in parts by cheaper reader models and compiled into one answer
   (`src/engine/reader.ts`, `src/engine/readers.ts`), idle compaction before a long context's cache

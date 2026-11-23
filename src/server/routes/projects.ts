@@ -100,9 +100,10 @@ export const projectRoutes: RouteModule = ({ store, bus, engine, providers }) =>
     const ids = new Set(forget);
     for (const id of new Set([...Object.keys(known), ...Object.keys(now)])) if (known[id] !== now[id]) ids.add(id);
     known = now;
+    // Not a move: the project block is the owner's side, told at the tail while a cache is warm.
     for (const id of ids) {
-      engine.forgetSystem(id);
-      for (const d of store.descendants(id)) engine.forgetSystem(d);
+      engine.forgetSystem(id, false);
+      for (const d of store.descendants(id)) engine.forgetSystem(d, false);
     }
     changed();
   };

@@ -73,31 +73,45 @@ test("a reworded tool and prompt block wait while the cache is warm and are take
   expect(new BuildPins(store).tools(s, at, v2).map((t) => t.description)).toEqual(["Reads, in parts.", "Runs."]);
 }));
 
-test("the owner's side of the prompt, an urgent block, the session's own tools and the owner's request do not wait", () => withPins((pins, _store, s) => {
+test("the owner's side of the prompt waits while the cache may be warm, told at the tail, and is taken when it is cold", () => withPins((pins, _store, s) => {
   const v1 = [tool("Read", "Reads.")];
   const kept = blocks("one");
   pins.prompt(s.id, undefined, kept, [], false);
   pins.tools(s, at, v1);
-  // The owner's files changed: the prompt is taken at once and the tools follow at the same request.
-  expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], false)).toBe(true);
-  expect(pins.due(s, at, v1, never)).toBe("the owner's side changed (instruction files)");
+  // The owner's files changed, the cache may be warm: the kept prompt stays, the change is told.
+  expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], false)).toBe(false);
   pins.tools(s, at, v1);
-  expect(pins.state(s.id).adoptions[0]).toMatchObject({ reason: "the owner's side changed (instruction files)", blocks: ["instruction files"], tools: [] });
-  // A block of the owner's data: the build's other words around the same data wait, other data does not.
+  expect(pins.state(s.id)).toMatchObject({ waiting: { blocks: ["instruction files"], tools: [], told: ["instruction files"] }, adoptions: [] });
+  expect(pins.waits(s.id)).toBe("behind");
+  // No warm cache holds the kept one: taken now, and the tools follow at the same request.
+  expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], false, "the cache expired")).toBe(true);
+  expect(pins.due(s, at, v1, never)).toBe("the cache expired");
+  pins.tools(s, at, v1);
+  expect(pins.state(s.id)).toMatchObject({ waiting: { blocks: [], tools: [] }, adoptions: [{ reason: "the cache expired", blocks: ["instruction files"], tools: [] }] });
+  // A block of the owner's data: the build's other words around the same data are not told, other data is.
   const servers = "MCP servers are connected";
   expect(pins.prompt(s.id, kept, blocks("one", "rules", { text: "Connected servers: a", data: "a" }), [servers], false)).toBe(false);
-  expect(pins.prompt(s.id, kept, blocks("one", "rules", { text: "Servers: a, b", data: "a, b" }), [servers], false)).toBe(true);
   pins.tools(s, at, v1);
-  // The last server went: the block is empty, its data changed.
-  expect(pins.prompt(s.id, kept, blocks("one", "rules", { text: "", data: "" }), [servers], false)).toBe(true);
+  expect(pins.state(s.id).waiting).toEqual({ blocks: [servers], tools: [] });
+  expect(pins.prompt(s.id, kept, blocks("one", "rules", { text: "Servers: a, b", data: "a, b" }), [servers], false)).toBe(false);
   pins.tools(s, at, v1);
+  expect(pins.state(s.id).waiting).toEqual({ blocks: [servers], tools: [], told: [servers] });
   // A prompt kept from before data was fingerprinted: a changed data block counts as the owner's.
   const before = kept.map(({ data: _, ...b }) => b);
-  expect(pins.prompt(s.id, before, blocks("one", "rules", { text: "Connected servers: a", data: "a" }), [servers], false)).toBe(true);
+  expect(pins.prompt(s.id, before, blocks("one", "rules", { text: "Connected servers: a", data: "a" }), [servers], false)).toBe(false);
   pins.tools(s, at, v1);
-  expect(pins.prompt(s.id, before, blocks("two"), ["core"], false)).toBe(false);
-  // A data block new to the prompt is the build's: it waits.
+  expect(pins.state(s.id).waiting.told).toEqual([servers]);
+  // A data block new to the prompt is the build's: it waits, untold.
   expect(pins.prompt(s.id, kept.filter((b) => b.name !== servers), kept, [servers], false)).toBe(false);
+  pins.tools(s, at, v1);
+  expect(pins.state(s.id).waiting.told).toBeUndefined();
+}));
+
+test("an urgent block, the session's own tools and the owner's request do not wait", () => withPins((pins, _store, s) => {
+  const v1 = [tool("Read", "Reads.")];
+  const kept = blocks("one");
+  pins.prompt(s.id, undefined, kept, [], false);
+  pins.tools(s, at, v1);
   // A block this build marks urgent with a mark the kept copy does not carry.
   expect(pins.prompt(s.id, kept, blocks("two"), ["core"], false)).toBe(false);
   URGENT.blocks.core = "no-force-push";
@@ -127,16 +141,16 @@ test("a subagent on this machine starts on its parent's pinned list", () => with
   expect(pins.tools(other, { ...at, model: "p:n" }, v2).map((t) => t.description)).toEqual(["Reads, in parts."]);
 }));
 
-test("a project's instructions edited are the owner's change, also when the session was told to render again", () => withPins((pins, _store, s) => {
+test("a session that moved takes its prompt at once; one with no pin takes the owner's change at once", () => withPins((pins, store, s) => {
   const kept = blocks("one");
   pins.prompt(s.id, undefined, kept, [], false);
   pins.tools(s, at, [tool("Read", "Reads.")]);
   expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], true)).toBe(true);
-  expect(pins.due(s, at, [tool("Read", "Reads.")], never)).toBe("the owner's side changed (instruction files)");
-  // Only the words differ on a session that moved: it moved.
-  pins.tools(s, at, [tool("Read", "Reads.")]);
-  expect(pins.prompt(s.id, kept, blocks("two"), ["core"], true)).toBe(true);
   expect(pins.due(s, at, [tool("Read", "Reads.")], never)).toBe("the session moved");
+  pins.tools(s, at, [tool("Read", "Reads.")]);
+  // Nothing pinned to fold the change into later.
+  const bare = store.createSession({ model: "p:m", workspace: "/" });
+  expect(pins.prompt(bare.id, kept, blocks("one", "rules, edited"), ["instruction files"], false)).toBe(true);
 }));
 
 test("a prompt taken before a restart still brings the tools along after it", () => withPins((pins, store, s) => {
@@ -144,11 +158,11 @@ test("a prompt taken before a restart still brings the tools along after it", ()
   const kept = blocks("one");
   pins.prompt(s.id, undefined, kept, [], false);
   pins.tools(s, at, v1);
-  // The prompt is taken (the owner's files changed) and the daemon stops before the session's own step.
-  expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], false)).toBe(true);
+  // The prompt is taken (the owner's files changed on a cold cache) and the daemon stops before the session's own step.
+  expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], false, "the cache expired")).toBe(true);
   const next = new BuildPins(store);
   expect(next.waits(s.id)).toBe("now");
-  expect(next.due(s, at, v2, never)).toBe("the owner's side changed (instruction files)");
+  expect(next.due(s, at, v2, never)).toBe("the cache expired");
   expect(next.tools(s, at, v2).map((t) => t.description)).toEqual(["Reads, in parts."]);
   expect(next.state(s.id).adoptions[0]).toMatchObject({ blocks: ["instruction files"], tools: ["Read"] });
   expect(next.waits(s.id)).toBeUndefined();

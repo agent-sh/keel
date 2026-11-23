@@ -9,7 +9,9 @@ import { join, resolve } from "node:path";
 // a session that starts with the daemon waits for a server it has never seen,
 // so its prompt has that server's instructions; a session that dropped out of
 // the daemon's memory keeps its prompt; and when an input really changed, the
-// next daemon start renders the prompt again and says which block differed.
+// next daemon start renders the prompt again, tells the change at the tail
+// while the cache is warm, and the prompt takes it at a compaction, naming the
+// block that differed.
 // The spec runs its own daemons on a scratch state folder, on the scripted
 // stand-in, which writes each request it gets to a file.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
@@ -101,13 +103,23 @@ test("a restart sends the same system prompt, with a slow MCP server's instructi
     await ended(id, 3);
     expect.soft(sent(id).at(-1)!.system === first.system, "a session that dropped out of memory keeps its prompt").toBe(true);
 
-    // The next daemon start sees the changed input: the prompt is rendered
-    // again, once, and the kept prompt names the block that differed.
+    // The next daemon start sees the changed input. The cache is warm, so the
+    // prompt stays as it was sent and the change is told at the tail of the
+    // history instead (src/engine/prompt-note.ts); a compaction folds it in.
     d.proc.kill("SIGTERM");
     await exited(d.proc);
     d = await daemon(state);
     await call(`/api/sessions/${id}/messages`, { text: "and again" });
     await ended(id, 4);
+    expect.soft(sent(id).at(-1)!.system === first.system, "a warm session keeps its prompt when an input changed").toBe(true);
+    const told = (await call(`/api/sessions/${id}`)).events.filter((e: any) => e.kind === "note" && e.data.kind === "prompt_update");
+    expect.soft(told.map((e: any) => Object.keys(e.data.blocks))).toEqual([["MCP servers are connected"]]);
+    // What the block says now: the server's instructions are gone from it.
+    expect.soft(told[0]?.data.text).toContain('<changed block="MCP servers are connected">');
+    expect.soft(told[0]?.data.blocks["MCP servers are connected"].text).not.toContain(GUIDANCE);
+    await call(`/api/sessions/${id}/compact`, {});
+    await call(`/api/sessions/${id}/messages`, { text: "after the compaction" });
+    await ended(id, 5);
     expect.soft(sent(id).at(-1)!.system).not.toContain(GUIDANCE);
     const now = await call(`/api/telemetry/prompt?session_id=${id}`);
     expect.soft(now.changed?.blocks).toEqual(["MCP servers are connected"]);

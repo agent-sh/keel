@@ -290,3 +290,87 @@ test("a deferred tool the conversation loaded keeps its definition across an upg
     fake.server.close();
   }
 });
+
+// An instruction file edited while a session's cache is warm: the session
+// keeps the prompt it was sent, byte for byte, and its next request carries
+// the change as a note at the tail of its history. A subagent riding its
+// parent's prompt is told the same way. The prompt takes the change when the
+// cache is cold anyway (a compaction here), and no note is needed after it.
+test("an edited instruction file reaches a warm session at its tail and is folded in at a compaction", async ({ page }) => {
+  test.setTimeout(240_000);
+  const RULE = "Never touch the live daemon.";
+  const r = await rig("build-told", {}, (state) => writeFileSync(join(state, "work", "AGENTS.md"), "# Rules\n\nAlways answer in one line.\nKeep it lean.\n"));
+  const { call, turn, sent, open, restart } = r;
+  const notes = async (id: string) => ((await call(`/api/sessions/${id}`)).events as any[]).filter((e) => e.kind === "note" && e.data.kind === "prompt_update");
+  try {
+    const id = await open();
+    // An agent of the session, on this machine: it rides the session's prompt.
+    // (Its report wakes the session for a turn of its own after the one that started it.)
+    const ends = async () => ((await call(`/api/sessions/${id}`)).events as any[]).filter((e) => e.kind === "turn_end").length;
+    const n = await ends();
+    await call(`/api/sessions/${id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "Helper\nhello" } }])}` });
+    await expect.poll(async () => ((await call(`/api/sessions/${id}/agents`)).agents as any[]).find((a) => a.title === "Helper")?.status, { timeout: 30_000 }).toBe("completed");
+    await expect.poll(ends, { timeout: 30_000 }).toBe(n + 2);
+    const child = ((await call(`/api/sessions/${id}/agents`)).agents as any[]).find((a) => a.title === "Helper").session_id as string;
+    const before = sent(id).at(-1)!;
+    expect(before.system).toContain("Always answer in one line.");
+    expect(sent(child).at(-1)!.system).toBe(before.system);
+
+    // The owner adds a rule, and the daemon starts again (the prompt is compared once a run).
+    writeFileSync(join(r.state, "work", "AGENTS.md"), `# Rules\n\nAlways answer in one line.\n${RULE}\nKeep it lean.\n`);
+    await restart(undefined);
+    await turn(id, "hello after the edit");
+    expect(sent(id).at(-1)!.system, "the prompt after the edit is the one before it").toBe(before.system);
+    const told = await notes(id);
+    expect(told).toHaveLength(1);
+    expect(told[0].data.text).toContain(`+${RULE}`);
+    expect(told[0].data.text).toContain(" Always answer in one line.");
+    expect((await call(`/api/telemetry?session_id=${id}`)).breaks, "no cache break for the edit").toEqual([]);
+    expect(await call(`/api/sessions/${id}/build`)).toMatchObject({ waiting: { blocks: ["instruction files"], tools: [], told: ["instruction files"] }, adoptions: [] });
+    // Once: the next request carries the same note, not another.
+    await turn(id, "and again");
+    expect(await notes(id)).toHaveLength(1);
+    // The agent is told too, on its parent's earlier prompt.
+    await turn(child, "hello to the helper");
+    expect(sent(child).at(-1)!.system).toBe(before.system);
+    expect((await notes(child)).map((n) => n.data.text.includes(`+${RULE}`))).toEqual([true]);
+
+    // The owner sees the note in the conversation and the state in the context popup.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${r.url()}/s/${id}`);
+    await expect(page.getByTestId("note").filter({ hasText: "Told the model what changed in its prompt (instruction files)" })).toBeVisible();
+    await page.getByTestId("context-meter").click();
+    await expect(page.getByTestId("build-pin-told")).toContainText("Your change to the prompt (instruction files) was told to the model at the end of its context, so it applies now.");
+    await shoot(page, "build-pin-told");
+    await page.keyboard.press("Escape");
+
+    // A compaction rewrites the prefix anyway: the prompt takes the edit, and nothing more is told.
+    await call(`/api/sessions/${id}/compact`, {});
+    await turn(id, "after the compaction");
+    expect(sent(id).at(-1)!.system).toContain(RULE);
+    expect(await notes(id)).toHaveLength(1);
+    expect(await call(`/api/sessions/${id}/build`)).toMatchObject({ waiting: { blocks: [], tools: [] }, adoptions: [{ reason: "a compaction", blocks: ["instruction files"] }] });
+    // Its agent, warm, keeps the prompt it was sent: it was told the edit already.
+    await turn(child, "the helper again");
+    expect(sent(child).at(-1)!.system).toBe(before.system);
+    expect(await notes(child)).toHaveLength(1);
+
+    // A build that marks a block urgent (a safety line): the session and its agent both take it at their next request.
+    const SAFETY = "Safety: never force-push a shared branch.";
+    // (The agent's turns above report to the session, which wakes for a turn of its own: let it end first.)
+    const settled = async (sid: string) => {
+      const ends = async () => ((await call(`/api/sessions/${sid}`)).events as any[]).filter((e) => e.kind === "turn_end").length;
+      let last = -1;
+      await expect.poll(async () => { const n = await ends(); const same = n === last && (await call(`/api/sessions/${sid}`)).session.phase === "idle"; last = n; return same; }, { timeout: 30_000, intervals: [1_000] }).toBe(true);
+    };
+    await settled(id);
+    await restart({ id: "build-safety", core: SAFETY, urgent: { blocks: { core: "safety-1" } } });
+    await settled(id);
+    await turn(id, "on the safety build");
+    expect(sent(id).at(-1)!.system).toContain(SAFETY);
+    await turn(child, "the helper on the safety build");
+    expect(sent(child).at(-1)!.system, "the agent sends its session's prompt with the urgent line").toBe(sent(id).at(-1)!.system);
+  } finally {
+    await r.close();
+  }
+});

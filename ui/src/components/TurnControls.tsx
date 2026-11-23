@@ -369,19 +369,33 @@ function BuildPin({ build, used, busy, disabled, onAdopt }: { build: BuildState;
     return <p className="mt-2 text-caption text-faint" data-testid="build-pin-taken">Now on this build's tools and prompt ({last.reason}).</p>;
   }
   const from = p.build && p.build !== build.build ? `build ${p.build}` : "an earlier build";
-  const what = [blocks.length ? `the prompt (${some(blocks)})` : "", tools.length ? `the tools (${some(tools)})` : ""].filter(Boolean).join(" and ");
+  // The owner's side (an instruction file, a skill) is told at the tail: in force already, folded in later.
+  const told = build.waiting.told ?? [];
+  const built = blocks.filter((b) => !told.includes(b));
+  const what = [built.length ? `the prompt (${some(built)})` : "", tools.length ? `the tools (${some(tools)})` : ""].filter(Boolean).join(" and ");
+  const next = `at the next compaction or clear, on another model, once the cache has expired${build.takes_at ? `, or on ${when(build.takes_at)} at the latest` : ""}`;
+  const later = `taken ${next}`;
   return (
     <div className="mt-3 border-t border-line pt-3" data-testid="build-pin">
       <p className="text-caption text-muted" title={`Since ${when(p.since)}`}>
-        Tools and prompt are from <span className="text-fg">{from}</span>, so the cached context is not written again.
+        {behind && !what && !build.asked
+          ? "The prompt is the one sent before your change, so the cached context is not written again."
+          : <>Tools and prompt are from <span className="text-fg">{from}</span>, so the cached context is not written again.</>}
       </p>
-      <p className="mt-1 text-caption text-faint" data-testid="build-pin-waiting">
-        {build.asked
-          ? `This build's are taken at the next request, which rewrites about ${fmtTokens(used)} tokens.`
-          : behind
-            ? `This build (${build.build}) changed ${what}. They are taken at the next compaction or clear, on another model, once the cache has expired${build.takes_at ? `, or on ${when(build.takes_at)} at the latest` : ""}.`
-            : `They are compared with this build's (${build.build}) at the session's next request.`}
-      </p>
+      {(build.asked || !behind || what) && (
+        <p className="mt-1 text-caption text-faint" data-testid="build-pin-waiting">
+          {build.asked
+            ? `This build's are taken at the next request, which rewrites about ${fmtTokens(used)} tokens.`
+            : behind
+              ? `This build (${build.build}) changed ${what}. They are ${later}.`
+              : `They are compared with this build's (${build.build}) at the session's next request.`}
+        </p>
+      )}
+      {told.length > 0 && !build.asked && (
+        <p className="mt-1 text-caption text-faint" data-testid="build-pin-told">
+          {`Your change to the prompt (${some(told)}) was told to the model at the end of its context, so it applies now. The prompt itself takes it ${next}.`}
+        </p>
+      )}
       {!build.asked && (
         <>
           <button

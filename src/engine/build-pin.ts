@@ -18,12 +18,14 @@
 // - a pinned tool in the prompt that the build removed or can no longer serve
 //   (src/tools/pin.ts): a call to it would fail;
 // - a tool or prompt block the build marks urgent (src/core/build.ts);
-// - the owner's or the machine's own side of the prompt changed (an
-//   instruction file was edited, an MCP server was added or turned off, a
-//   skill was installed): taken at the first request after a daemon start, as
-//   before. A block says which part of it is that data (hooks.ts
-//   SystemBlock), so a build that only rewords the block still waits;
 // - the owner asked (the context popup, or the command).
+// The owner's or the machine's own side of the prompt changing (an
+// instruction file was edited, an MCP server was added or turned off, a skill
+// was installed) does not wait to be in force: the engine tells the change at
+// the tail of the history at the next request (src/engine/prompt-note.ts),
+// and the prompt takes it at the next cold moment like any other block. A
+// block says which part of it is that data (hooks.ts SystemBlock), so a build
+// that only rewords the block is not told, it waits.
 // Deferred tools and every MCP or catalog tool are not part of the cached
 // prefix; they follow the build and the servers per request, as before.
 //
@@ -58,6 +60,8 @@ export const EXPIRED = "the cache expired";
 registerSettings("build_pin", { max_age_hours: 24 }, (v) =>
   typeof v.max_age_hours === "number" && Number.isFinite(v.max_age_hours) && v.max_age_hours >= 0 ? undefined : "max_age_hours is a number of hours, or 0 for no limit");
 const maxAgeMs = () => Number(settings().build_pin?.max_age_hours ?? 0) * 3_600_000;
+// A copy kept since `since` (a pin, a subagent's copy of its parent's prompt) is past the age the owner allows.
+export const pinAged = (since: number, now = Date.now()) => maxAgeMs() > 0 && now - since > maxAgeMs();
 const agedWhy = () => `its tools and prompt were more than ${settings().build_pin.max_age_hours} hours behind`;
 
 // Why no warm cache holds this context on `model`, or undefined when one may:
@@ -74,7 +78,8 @@ export function coldReason(lineage: readonly StoredEvent[], model: string, keepM
   return reply.data.model !== model ? "a model switch" : "no cached prefix";
 }
 
-export type Waiting = { blocks: string[]; tools: string[] };
+// `told`: of the blocks, those of the owner's side, told at the tail of the history until they are folded in.
+export type Waiting = { blocks: string[]; tools: string[]; told?: string[] };
 export type Adoption = { ts: number; reason: string; from_build: string | null; to_build: string; blocks: string[]; tools: string[] };
 export type PinState = {
   // The build that runs now.
@@ -132,6 +137,8 @@ export class BuildPins {
   // The blocks of each session's prompt that wait, as this run compared them
   // (a session that dropped out reads them back from its row).
   private blocks = new SessionMap<string[]>(256);
+  // Of those, the owner's side: told at the tail until they are folded in.
+  private told = new SessionMap<string[]>(256);
   // Tool lists by fingerprint: sessions of one build, family and wire share one.
   private lists = new Map<string, PinnedTool[]>();
 
@@ -232,21 +239,30 @@ export class BuildPins {
   // taken: there is no kept one, the step in hand has a reason, a changed
   // block is urgent, the change is the owner's or the machine's own (the
   // data a block renders, not the build's words), or the session moved.
-  // Otherwise the kept prompt stays and the changed blocks wait.
-  prompt(id: string, kept: PromptBlock[] | undefined, made: PromptBlock[], changed: string[], moved: boolean): boolean {
+  // Otherwise the kept prompt stays and the changed blocks wait. A change of
+  // the owner's side waits too while the cache may be warm: the engine tells
+  // it at the tail of the history meanwhile (src/engine/prompt-note.ts), so it
+  // is in force at once without rewriting the prefix. A session with no pin
+  // to fold it in later takes it now.
+  // `cold`: why no warm cache holds the kept prompt, when the caller knows.
+  prompt(id: string, kept: PromptBlock[] | undefined, made: PromptBlock[], changed: string[], moved: boolean, cold?: string): boolean {
     if (!kept || !changed.length) {
       this.blocks.set(id, []);
+      this.told.delete(id);
       return !kept;
     }
     const urgent = urgentBlock(kept, changed);
     const own = ownChanges(kept, made, changed);
-    const why = this.why.get(id) ?? this.row(id)?.took?.why
-      ?? (urgent ? `the ${urgent} block has an urgent change` : own.length ? `the owner's side changed (${own.join(", ")})` : moved ? "the session moved" : undefined);
+    const row = this.row(id);
+    const why = this.why.get(id) ?? row?.took?.why
+      ?? (urgent ? `the ${urgent} block has an urgent change` : moved ? "the session moved" : own.length && cold ? cold : own.length && !row ? `the owner's side changed (${own.join(", ")})` : undefined);
     if (!why) {
       this.blocks.set(id, changed);
+      this.told.set(id, own);
       return false;
     }
     this.blocks.set(id, []);
+    this.told.delete(id);
     // Kept in the row until the tools follow (a session with no pin yet takes the build's list anyway).
     this.store.db.query("UPDATE session_pins SET took = ? WHERE session_id = ?").run(JSON.stringify({ why, blocks: changed }), id);
     return true;
@@ -263,6 +279,7 @@ export class BuildPins {
     // A subagent on this machine has no prompt of its own to compare: it runs on its parent's.
     if (session.parent_id && !session.machine) this.blocks.set(id, []);
     const blocks = this.blocks.get(id) ?? (row?.checked === build ? row.waiting.blocks : []);
+    const told = (this.told.get(id) ?? (row?.checked === build ? row.waiting.told : undefined) ?? []).filter((n) => blocks.includes(n));
     let reason = took?.why ?? this.why.get(id);
     // A subagent on this machine starts on its parent's list (and prompt), so
     // its first request reads the prefix the parent cached.
@@ -273,7 +290,7 @@ export class BuildPins {
     if (from && !reason) {
       const m = mergeTools(from, current, toolMarks(current));
       if (!m.urgent) {
-        const waiting = { blocks, tools: m.waiting };
+        const waiting: Waiting = { blocks, tools: m.waiting, ...(told.length && { told }) };
         const behind = m.waiting.length + blocks.length > 0;
         // Nothing of this build is missing: the session is on it.
         const on = behind ? base!.build : build;
@@ -302,7 +319,7 @@ export class BuildPins {
     const on = blocks.length ? row?.build ?? null : build;
     const same = !!row && on === row.build && !tools.length && !took?.blocks.length;
     this.save(id, row, {
-      build: on, ts: same ? row.ts : Date.now(), model, native, own, tools: pin, waiting: { blocks, tools: [] }, checked: build,
+      build: on, ts: same ? row.ts : Date.now(), model, native, own, tools: pin, waiting: { blocks, tools: [], ...(told.length && { told }) }, checked: build,
       asked: false, stale: blocks.length ? row?.stale ?? Date.now() : null, took: null, gone,
     });
     return current;
@@ -340,6 +357,11 @@ export class BuildPins {
   // Whether a tool the session no longer has was taken away by a build it adopted.
   removed(id: string, name: string): boolean {
     return !!this.row(id)?.gone.includes(name);
+  }
+
+  // Whether a change of the owner's side waits in the session's prompt, told at the tail meanwhile.
+  telling(id: string): boolean {
+    return !!(this.told.get(id) ?? this.row(id)?.waiting.told)?.length;
   }
 
   // The owner asked for this build's tools and prompt: the session's next request takes them.

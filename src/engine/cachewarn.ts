@@ -43,6 +43,9 @@ export function retention(wire: Wire | undefined, prior: readonly StoredEvent[],
   return { sure: 0, max: 5 * MIN };
 }
 
+// The longest any route may keep a prefix: the largest max retention() gives.
+export const LONGEST_KEEP_MS = 60 * MIN;
+
 // The longest lifetime any answer on this wire can show for sure: what
 // retention() gives at most. A wire below a use's need is skipped without
 // reading a session's events.
