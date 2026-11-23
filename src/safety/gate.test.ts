@@ -640,3 +640,23 @@ test("a grant for this session covers the session's whole agent tree, and no oth
     expect("deny" in r ? r.deny : "").toContain("outside the paths this agent may write");
   } finally { Object.assign(scopes, before); }
 });
+
+// A session's grants go with it: a grant for this session stays in perm_rules no longer than its session (a later
+// test, or another session of the same tree, must not find it), and rows a delete left before are dropped at start.
+test("a deleted session's grants are deleted with it", async () => {
+  const { store, g, make, call, opened } = treeGate();
+  const root = make("root"), child = make("child", root);
+  for (const s of [root, child]) g.setPerm(s.id, { mode: "ask", sandbox: "off", network: true });
+  const asking = g.check(child, call(child, "touch a.txt"));
+  const card = await opened(child);
+  expect(g.resolve(card.id, child.id, { choice: "session", rules: [{ kind: "shell", pattern: "touch *" }] })).toEqual({ ok: true });
+  await asking;
+  expect(g.rules().filter((r) => r.session_id === child.id)).toHaveLength(1);
+  store.deleteSession(child.id);
+  expect(g.rules().filter((r) => r.session_id === child.id)).toHaveLength(0);
+  // A row left by a delete from before the trigger: gone at the start that makes it.
+  store.db.query("DROP TRIGGER perm_rules_gone").run();
+  store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created) VALUES ('left', 'shell', 'touch *', '/', 'session', 'gone-session', 0)").run();
+  new Gate(store, new Bus());
+  expect(g.rules().map((r) => r.id)).not.toContain("left");
+});

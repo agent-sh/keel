@@ -77,6 +77,10 @@ test("a grant for this session on an agent's card covers the root", async ({ pag
     expect(cards.filter((a) => a.session_id === id)).toEqual([]);
   } finally {
     await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } });
+    // The grant made here goes (a later spec's card must not find it), and so would it with its session.
+    const tree = new Set([id, ...((await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as { session_id: string }[]).map((a) => a.session_id)]);
+    for (const r of (await (await request.get("/api/permissions/grants")).json()).grants as { id: string; session_id?: string }[])
+      if (r.session_id && tree.has(r.session_id)) await request.delete(`/api/permissions/grants/${r.id}`);
     await request.delete(`/api/sessions/${id}`);
   }
 });

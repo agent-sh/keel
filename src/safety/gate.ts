@@ -419,6 +419,19 @@ export class Gate {
     store.migrate("CREATE TABLE IF NOT EXISTS session_roots (session_id TEXT NOT NULL, workspace TEXT NOT NULL, real TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (session_id, workspace))");
     // (Pinned when the session is made; one made before this was here, at its first sight.)
     store.onCreated((s) => void this.rootMoved(s));
+    // A session's grants go with it, however it is deleted (a grant for this session covers its tree only while
+    // the session is there to make it one; rules() reads every row). Those a delete before this left go once,
+    // when the trigger is made.
+    if (!store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'perm_rules_gone'").get()) {
+      store.migrate("CREATE TRIGGER perm_rules_gone AFTER DELETE ON sessions BEGIN DELETE FROM perm_rules WHERE session_id = old.id; END");
+      store.db.query("DELETE FROM perm_rules WHERE session_id IS NOT NULL AND session_id NOT IN (SELECT id FROM sessions)").run();
+    }
+    bus.on((f) => {
+      if (f.t !== "session" || !f.deleted) return;
+      this.turnGrants.delete(f.session.id);
+      this.invalidateReview();
+      this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
+    });
     if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
     // How an agent's settings stand to its parent's (setPerm). A row from before this follows nothing: it is capped only.
     if (!store.columnExists("perm_sessions", "follows")) store.migrate("ALTER TABLE perm_sessions ADD COLUMN follows INTEGER NOT NULL DEFAULT 0; ALTER TABLE perm_sessions ADD COLUMN want TEXT");
