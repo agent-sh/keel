@@ -8,6 +8,21 @@ lines() { wc -l < "$D/shell.out"; }
 under() { local p; for p in $(pgrep -P "$1" 2> /dev/null); do echo "$p"; under "$p"; done; }
 # the pages' own processes
 renderers() { local p; for p in $(under "$(win_pid)"); do tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null | grep -q -- '--type=renderer' && echo "$p"; done; }
+# --- two windows whose pages' processes end at the same moment both come back as the app's
+# (The engine left one of two such pages without the app's script in it, every time, when the
+# page was only loaded again: drawn and working, and cut off from the app.)
+if [ "$ENGINE" = qt ] && [ "$(windows)" = 2 ]; then
+  mark=$(lines); stops=$(logged page-stopped)
+  for p in $(renderers); do sig -KILL "$p"; done
+  wait_for 15 "[ \"\$(logged page-stopped)\" -ge $((stops + 2)) ]" || true
+  back() { since "$mark" | grep -a '^PROBE AT ' | grep ' shell=object ' | grep ' note=true' | grep -c " win=$1 " || true; }
+  if wait_for 30 '[ "$(back main)" -gt 0 ] && [ "$(back session)" -gt 0 ]'; then ok "two windows whose pages' processes ended together both come back as the app's, each with its word"; else fail "of two windows whose pages' processes ended together, not both came back as the app's (main said $(back main) lines, the session's $(back session))"; fi
+  # (The word is read and put away in the main window: it would lie over what the next cases press.)
+  sleep 1
+elif [ "$ENGINE" = qt ]; then
+  fail "the session's own window is not there for the case of two pages"
+fi
+
 # The session's own window of the section before is closed: what follows is typed into the main one.
 for id in $($A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
 ws=sorted(json.load(sys.stdin).get("windows", []), key=lambda w: -w["geometry"]["width"]*w["geometry"]["height"])

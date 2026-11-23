@@ -647,6 +647,8 @@ public:
     QTimer sized;
     Bridge *bridge = nullptr;
     std::unique_ptr<QWebEngineView> inspector;
+    QWebEngineProfile *profile;
+    bool devtools, probing;
     // What the page in the window does with the app (../src/said.rs `Can`): it pastes where the
     // owner is when handed the paste keys, and it announces a file before it offers one. Both
     // are said off by the app's own script as a document starts, and on by the page itself.
@@ -655,7 +657,7 @@ public:
     QUrl saving;
     qint64 savingUntil = 0;
 
-    Win(int number, QWebEngineProfile *profile, const Look *colors, bool devtools, bool probing) : id(number), look(colors)
+    Win(int number, QWebEngineProfile *ofProfile, const Look *colors, bool inspected, bool measured) : id(number), look(colors), profile(ofProfile), devtools(inspected), probing(measured)
     {
         setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
         setWindowTitle("Keel");
@@ -665,12 +667,28 @@ public:
         bar = new Bar(look, this);
         view = new View(this);
         view->devtools = devtools;
-        page = new Page(profile, id, devtools, probing, view);
-        view->setPage(page);
         col->addWidget(bar);
         col->addWidget(view, 1);
         frame();
 
+        if (devtools) {
+            inspector = std::make_unique<QWebEngineView>();
+            inspector->setWindowTitle("Keel inspector");
+            inspector->resize(1100, 700);
+        }
+        makePage();
+        connect(bar, &Bar::startAsked, this, [this] { say({{"t", "start"}, {"win", id}}); });
+        sized.setSingleShot(true);
+        sized.setInterval(250);
+        connect(&sized, &QTimer::timeout, this, [this] { tellSize(); });
+    }
+    // The window's page: what it may do, its channel to the app, and what it tells the app. Made
+    // with the window, and made anew when its process ended (`renew`).
+    void makePage()
+    {
+        // (The page before it, a child of the view, goes with this: its channel and its object too.)
+        page = new Page(profile, id, devtools, probing, view);
+        view->setPage(page);
         QWebEngineSettings *s = page->settings();
         using S = QWebEngineSettings;
         // No frame reads or writes the clipboard through the engine: the app does it for the
@@ -717,22 +735,25 @@ public:
             forget();
             say({{"t", "crashed"}, {"win", id}, {"status", names[std::clamp(int(status), 0, 3)]}, {"code", code}});
         });
-        connect(bar, &Bar::startAsked, this, [this] { say({{"t", "start"}, {"win", id}}); });
-        if (devtools) {
-            inspector = std::make_unique<QWebEngineView>();
-            inspector->setWindowTitle("Keel inspector");
-            inspector->resize(1100, 700);
+        if (inspector) {
             page->setDevToolsPage(inspector->page());
             connect(page->action(QWebEnginePage::InspectElement), &QAction::triggered, inspector.get(), &QWidget::show);
         }
-        sized.setSingleShot(true);
-        sized.setInterval(250);
-        connect(&sized, &QTimer::timeout, this, [this] { tellSize(); });
+    }
+    // A new page in the window, in the place of one whose process ended. The engine does not
+    // always put the app's script into such a page again, however it is loaded (of two windows
+    // whose pages ended together, one came back drawn and working and cut off from the app more
+    // often than not): a page of its own, new, has it. The window stays as it is.
+    void renew()
+    {
+        forget();
+        makePage();
+        page->setBackgroundColor(QColor(look->bg));
     }
     // What the page said it does with the app went with the page: the one that comes next says
-    // so itself, or says nothing. A page that came back with none of the app's script in it (see
-    // the README's limits) is then a page like a browser tab's: its paste keys are the engine's,
-    // and its files are kept by the rule for a page that announces none.
+    // so itself, or says nothing (a page with none of the app's script in it is a page like a
+    // browser tab's: its paste keys are the engine's, and its files are kept by the rule for a
+    // page that announces none).
     void forget()
     {
         pastes = announces = false;
@@ -1034,11 +1055,10 @@ public:
             script(w, senderScript());
             w->bar->title->setText("Keel");
             w->view->setHtml(m["html"].toString(), QUrl("about:blank"));
-        } else if (t == "reload") {
-            w->forget();
+        } else if (t == "renew") {
             if (heldFor == w->id)
                 heldKey.reset();
-            w->view->reload();
+            w->renew();
         } else if (t == "js") {
             w->page->runJavaScript(m["src"].toString());
         } else if (t == "pill") {

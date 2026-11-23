@@ -191,7 +191,10 @@ decisions between them (`main.rs`). The engine sits behind two traits in
   start it came from, so a program that was replaced is heard no more. A
   program that stops before it drew anything cannot draw here: the app draws
   its windows itself for the rest of the run, and says so once. A page whose
-  own process ends is loaded again and says so; one that ends four times in
+  own process ends is made anew in its window and loaded where it was, and
+  says so (a new page of the engine's, not the old one loaded again: the
+  engine does not always put the app's script back into a page whose process
+  went, and such a page would be cut off from the app); one that ends four times in
   a minute is left, with a button in the bar.
 
 Another engine implements `Engine` and `View`. What that takes:
@@ -329,17 +332,6 @@ names the Qt engine's program when it is not beside the app.
   yourself). Where Vulkan cannot start, or the card has no memory left, the
   program stops before it drew and the app draws its windows itself. The
   app's log says what draws (`"what":"qt"`: `draws`, `gl`).
-- Known, not fixed: when the page processes of two windows of the Qt engine
-  end at the same moment, one of the windows often comes back drawn and
-  working but with none of the app's own script in it. It then behaves as a
-  browser tab does: its title bar keeps the colors it had, and it shows no
-  word that it was loaded again. What the page before it had told the app is
-  forgotten when its process ends, so the paste keys are the engine's again
-  (text and a copied picture paste as in a tab) and a file is kept by the
-  rule for a page that announces none (the daemon's own, within ten seconds
-  of your press in that window). Loading it again does not bring the script
-  back; closing that window and opening it again does. A page whose process ends by itself (the bound on its script
-  heap) is one page, and comes back whole.
 - A window of the Qt engine draws its own bar and has no frame of the
   desktop's: floating, it has a line around it and no shadow; it is resized
   from its edges.

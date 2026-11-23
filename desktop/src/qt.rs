@@ -19,7 +19,8 @@
 //!   {t:"html", win, html}                         the app's own page for a daemon that is away
 //!   {t:"js", win, src}                            run in the top frame (the app's events, the away page's state)
 //!   {t:"pill", win, show, text, dot, start, label, tip}  the daemon's state beside the window's controls
-//!   {t:"present", win, token} {t:"hide", win} {t:"close", win} {t:"reload", win}
+//!   {t:"present", win, token} {t:"hide", win} {t:"close", win}
+//!   {t:"renew", win}                              a new page in the window, in the place of one whose process ended
 //!   {t:"clip-read", win, id, edge} {t:"clip-write", text}
 //!   {t:"can", win, paste, saving}                 what the page in the window does with the app (said off
 //!                                                 by the app's own script as a document starts, then by the page)
@@ -388,8 +389,7 @@ fn heard(start: u64, line: &str) {
                 (win.ask)(&win, Ask::Lost);
             } else if again {
                 win.say_stopped.set(true);
-                win.loading.set(true);
-                inner.send(&json!({ "t": "reload", "win": win.id }));
+                win.renew();
             } else {
                 win.stopped.set(true);
                 win.pill_now();
@@ -399,8 +399,7 @@ fn heard(start: u64, line: &str) {
             // The same button, in a window whose page kept ending: it loads the page again.
             if win.stopped.replace(false) {
                 win.stops.borrow_mut().clear();
-                win.loading.set(true);
-                inner.send(&json!({ "t": "reload", "win": win.id }));
+                win.renew();
                 win.pill_now();
             } else {
                 (win.ask)(&win, Ask::Start);
@@ -663,6 +662,15 @@ impl Win {
 
     fn tell(&self, detail: &Value) {
         self.js(&format!("window.dispatchEvent(new CustomEvent('keel-shell', {{ detail: {detail} }}))"));
+    }
+
+    /// The window's page is made anew and loaded where the window was, after its process ended:
+    /// a new page in the engine, with the app's script, not the old one loaded again (see `renew`
+    /// in ../qt/main.cpp).
+    fn renew(self: &Rc<Self>) {
+        self.inner.send(&json!({ "t": "renew", "win": self.id }));
+        self.showing.set(Showing::Nothing);
+        (self.ask)(self, Ask::Lost);
     }
 
     /// What the page says to the app: only with this window's key.
