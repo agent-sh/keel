@@ -213,10 +213,13 @@ test("the answering sequence ends where it began", async ({ page, request }) => 
   for (const id of [a, q, b]) await expect(row(page, id)).toHaveAttribute("data-watch", "need");
 
   // Only the keyboard from here. One key goes to the one that waited longest; each answer opens the next.
+  // (A number answers the question by itself: the card after it keeps the keyboard off its answer, so an
+  // Enter meant for the number allows nothing there. Down, then Enter: one key more.)
   let keys = 0;
   const press = async (k: string) => { keys++; await page.keyboard.press(k); };
   const t0 = Date.now();
   await press("Alt+a");
+  let afterNumber = false;
   for (const id of [a, q, b]) {
     await expect(page).toHaveURL(new RegExp(`/s/${id}$`));
     // Each is a look over the pane the sequence began in; the coordinator keeps its pane.
@@ -228,8 +231,14 @@ test("the answering sequence ends where it began", async ({ page, request }) => 
       await expect(card).toBeFocused();
       await expect(card).toHaveAttribute("data-keys", "ready");
       await press("2");
+      afterNumber = true;
     } else {
       const card = cardIn(page, id, "approval");
+      if (afterNumber) {
+        await expect(card).toBeFocused();
+        await expect(card.getByTestId("approval-arming")).toHaveText("Down, then Enter allows once");
+        await press("ArrowDown");
+      }
       await expect(card.getByTestId("allow-once")).toBeFocused();
       // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
       await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
@@ -242,7 +251,7 @@ test("the answering sequence ends where it began", async ({ page, request }) => 
   const ms = Date.now() - t0;
   const shown = (await look(page)).panes.map((p) => p.shows);
   console.log(`TRIAGE keys: 3 items, ${keys} keys, ${ms} ms; panes show [${shown.map((x) => (x === reader ? "reader" : x === coord ? "coordinator" : "another session")).join(", ")}]`);
-  expect(keys).toBe(4);
+  expect(keys).toBe(5);
 
   // Where it began: the same panes, the place in each conversation, the draft, and the keyboard in the reader's box.
   await same(page, before);
