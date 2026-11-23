@@ -606,6 +606,25 @@ export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}
   }
 }
 
+// The active wait of the session on the same condition, when the model asks
+// for it again before it fired: that one stands, with the later of the two
+// deadlines, and no second wait is set (a second would only wake the session
+// again for the same thing). Not a timer, a monitor or a socket: two of those
+// are two wakes.
+export function twin(sessionId: string, spec: WaitSpec, opts: { timeout_seconds?: number } = {}): WaitRecord | undefined {
+  if (spec.kind === "timer" || isMonitor(spec.kind)) return undefined;
+  const key = JSON.stringify(spec);
+  const w = list(sessionId, 0).find((x) => x.status === "active" && x.kind === spec.kind && JSON.stringify(x.spec) === key);
+  if (!w) return undefined;
+  const timeout = Number(opts.timeout_seconds ?? DEFAULT_TIMEOUT);
+  const deadline = Date.now() + Math.min(Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT, MAX_TIMEOUT) * 1000;
+  if (deadline > w.deadline) {
+    D().store.db.query("UPDATE waits SET deadline = ? WHERE id = ? AND status = 'active'").run(deadline, w.id);
+    emit("wait", get(w.id));
+  }
+  return get(w.id);
+}
+
 export function create(sessionId: string, spec: WaitSpec, opts: { timeout_seconds?: number; note?: string; by?: "owner" } = {}): WaitRecord {
   const s = D().store.session(sessionId);
   if (!s) throw new Error("no such session");

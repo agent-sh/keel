@@ -40,9 +40,9 @@ function agentLine(a: agents.AgentRecord) {
   return `${a.id} · ${a.status} · ${a.type} · ${a.title}`;
 }
 
-function waitResult(w: waits.WaitRecord, extra = "") {
+function waitResult(w: waits.WaitRecord, extra = "", again = false) {
   const when = w.kind === "timer" ? `at ${localTime((w.spec as any).at_ms)} ${zoneLabel((w.spec as any).at_ms)}` : `deadline in ${Math.round((w.deadline - Date.now()) / 1000)} s`;
-  return ok(`Scheduled ${w.kind} wait ${w.id} (${when}). It costs no tokens while it waits; the session is woken when it fires, times out or is cancelled.${waits.carries(w)} End your turn now unless you have other work.${extra}`);
+  return ok(`${again ? `This ${w.kind} wait was set already: wait ${w.id} (${when}) waits for it, and no second one was set` : `Scheduled ${w.kind} wait ${w.id} (${when})`}. It costs no tokens while it waits; the session is woken when it fires, times out or is cancelled.${waits.carries(w)} End your turn now unless you have other work.${extra}`);
 }
 
 // --- subagents ---------------------------------------------------------------
@@ -388,6 +388,9 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
   // The model's http wait follows web fetch's address rules (the wait tool runs unasked, as a read).
   if (spec.kind === "http" && privateHost(new URL(spec.url).hostname))
     return fail(`${new URL(spec.url).hostname} is a local or private address; watch a local server with the monitor tool and a command such as curl.`);
+  // The same condition again before it fired: the wait already set stands (its deadline the later one).
+  const same = waits.twin(ctx.sessionId, spec, { timeout_seconds: input.timeout_seconds });
+  if (same) return waitResult(same, "", true);
   return waitResult(waits.create(ctx.sessionId, spec, { timeout_seconds: input.timeout_seconds, note: input.note }));
 });
 

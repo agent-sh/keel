@@ -49,6 +49,26 @@ test("a wait on a background command's output file that no command of the sessio
   for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
 });
 
+test("the same wait asked again before it fired is the one already set, with the later deadline", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-twin-"));
+  const log = join(dir, "rv.log");
+  writeFileSync(log, "");
+  const first = await tool("WaitFor").run({ kind: "log", path: log, match: "Summary:", timeout_seconds: 600 }, ctx);
+  const again = await tool("WaitFor").run({ kind: "log", path: log, match: "Summary:", timeout_seconds: 1800 }, ctx);
+  const active = waits.list(s.id, 0).filter((w) => w.status === "active");
+  expect(active.length).toBe(1);
+  expect(text(again)).toContain(`wait ${active[0]!.id}`);
+  expect(text(again)).toContain("no second one was set");
+  expect(text(first)).toContain(active[0]!.id);
+  expect(active[0]!.deadline - Date.now()).toBeGreaterThan(1700_000);
+  // Another condition, or a timer, is a wait of its own.
+  await tool("WaitFor").run({ kind: "log", path: log, match: "FAILED" }, ctx);
+  await tool("WaitFor").run({ kind: "timer", seconds: 60 }, ctx);
+  await tool("WaitFor").run({ kind: "timer", seconds: 60 }, ctx);
+  expect(waits.list(s.id, 0).filter((w) => w.status === "active").length).toBe(4);
+  for (const w of waits.list(s.id)) waits.cancel(w.id, s.id);
+});
+
 // A session whose commands run on another machine: its jobs and their exit files are there, and a wait
 // here checks this disk. It is not told to wait on an exit file, nor refused by what this disk lacks.
 test("a session on another machine is not told to wait for a file of its machine here", async () => {
