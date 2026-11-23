@@ -6,7 +6,8 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { registerCatalog } from "./catalog.ts";
+import { registerCatalog, type CatalogTool } from "./catalog.ts";
+import { sendShown } from "../safety/addresses.ts";
 import { spill } from "./spill.ts";
 import type { ToolContext } from "./types.ts";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
@@ -171,7 +172,9 @@ export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal): Pr
   if (res.status >= 300 && res.status < 400) {
     const to = new URL(res.headers.get("location") ?? "", u).href;
     if (new URL(to).host !== u.host) return { text: `${u.href} redirects to another host: ${to}\nFetch that URL in a call of its own if it is needed.` };
-    return webFetch(to, o, signal);
+    // Where it ended is said, as the fetch CLI says it: the page there is the page fetched.
+    const r = await webFetch(to, o, signal);
+    return /^Final URL: /.test(r.text) ? r : { ...r, text: `Final URL: ${to}\n\n${r.text}` };
   }
   const type = res.headers.get("content-type") ?? "";
   const markup = /html/.test(type) && o.extract !== "raw";
@@ -242,21 +245,26 @@ export function htmlToText(html: string, cut = false): string {
 
 // The same two tools in the deferred catalog, for families whose own set has
 // no web tool (search_tools finds them, mcp_call runs them).
-registerCatalog({
-  name: "web",
-  except: ["claude", "gemini"],
-  tools: async () => [
-    {
-      server: "web", name: "websearch", qualified: "web__websearch", readOnly: true,
-      description: "Search the public web; returns ranked results with title, url and snippet. Read one with web__webfetch.",
-      input_schema: { type: "object", properties: { query: { type: "string" }, count: { type: "integer" }, time_range: { type: "string", enum: ["all", "day", "week", "month", "year"] } }, required: ["query"] },
-      run: async (i, ctx) => { const r = await webSearch(String(i.query ?? ""), { count: i.count, time_range: i.time_range }, ctx.signal); return { content: r.text, is_error: r.error }; },
-    },
-    {
-      server: "web", name: "webfetch", qualified: "web__webfetch", readOnly: true,
-      description: "Fetch an http(s) URL and return it as markdown (PDFs as text); long pages are saved to a file.",
-      input_schema: { type: "object", properties: { url: { type: "string" }, method: { type: "string" }, body: { type: "string" }, headers: { type: "object" }, extract: { type: "string", enum: ["markdown", "raw", "both"] } }, required: ["url"] },
-      run: async (i, ctx) => { const r = await webFetch(String(i.url ?? ""), { method: i.method, body: i.body, headers: i.headers, extract: i.extract, spillDir: ctx.spillDir }, ctx.signal); return { content: r.text, is_error: r.error }; },
-    },
-  ],
-});
+export const webSearchTool: CatalogTool = {
+  server: "web", name: "websearch", qualified: "web__websearch", readOnly: true, web: { search: true },
+  description: "Search the public web; returns ranked results with title, url and snippet. Read one with web__webfetch.",
+  input_schema: { type: "object", properties: { query: { type: "string" }, count: { type: "integer" }, time_range: { type: "string", enum: ["all", "day", "week", "month", "year"] } }, required: ["query"] },
+  run: async (i, ctx) => { const r = await webSearch(String(i.query ?? ""), { count: i.count, time_range: i.time_range }, ctx.signal); return { content: r.text, is_error: r.error }; },
+};
+export const webFetchTool: CatalogTool = {
+  server: "web", name: "webfetch", qualified: "web__webfetch", readOnly: true, web: { fetches: (i) => [String(i?.url ?? "")], links: true },
+  description: "Fetch an http(s) URL and return it as markdown (PDFs as text); long pages are saved to a file.",
+  input_schema: { type: "object", properties: { url: { type: "string" }, method: { type: "string" }, body: { type: "string" }, headers: { type: "object" }, extract: { type: "string", enum: ["markdown", "raw", "both"] } }, required: ["url"] },
+  // A request with a body, headers of its own or a method other than GET or HEAD sends what it carries to any
+  // address, one the session has seen too; a plain one is a read of its page (src/safety/addresses.ts).
+  judge: async (i) => {
+    const url = String(i?.url ?? "");
+    const method = typeof i?.method === "string" && i.method.trim() ? i.method.trim() : "GET";
+    const headers = i?.headers && typeof i.headers === "object" && Object.keys(i.headers).length ? i.headers : undefined;
+    const body = typeof i?.body === "string" && i.body ? i.body : undefined;
+    if (!/^(GET|HEAD)$/i.test(method) || headers || body) return { kind: "send", to: [url], shown: sendShown([url], { method, headers, body }), carries: true };
+    return { kind: "read", fetches: [url] };
+  },
+  run: async (i, ctx) => { const r = await webFetch(String(i.url ?? ""), { method: i.method, body: i.body, headers: i.headers, extract: i.extract, spillDir: ctx.spillDir }, ctx.signal); return { content: r.text, is_error: r.error }; },
+};
+registerCatalog({ name: "web", except: ["claude", "gemini"], tools: async () => [webSearchTool, webFetchTool] });

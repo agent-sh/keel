@@ -5,7 +5,8 @@ import { claudeTools } from "./claude.ts";
 import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
 import { DEFERRED_BUILTINS, gptToolSearch, toolSearch } from "./defer.ts";
-import "./web.ts";
+import { webFetchTool, webSearchTool } from "./web.ts";
+import type { WebUse } from "../safety/addresses.ts";
 import { AskReaders, ask_readers } from "./readers.ts";
 import type { Tool } from "./types.ts";
 
@@ -62,6 +63,13 @@ export function toolFacts(): MarkTool[] {
   }
   facts = { n: all.length, list: [...by.values()] };
   return facts.list;
+}
+
+// What a tool of any family, or the web catalog's, does on the web, by the name a call gives it.
+export function webUse(name: string): WebUse | undefined {
+  for (const t of [...byFamily.values(), shared].flat()) if (t.name === name && t.web) return t.web;
+  for (const t of [webSearchTool, webFetchTool]) if (t.qualified === name) return t.web;
+  return undefined;
 }
 
 // A tool of any family that only waits on the owner's answer.

@@ -7,7 +7,7 @@
 export const SUMMARY_LIMIT = 400;
 
 // The kinds whose summary is the whole of what they do (the command, the paths, the message).
-const WHOLE = ["shell", "edit", "drive"];
+const WHOLE = ["shell", "edit", "drive", "send"];
 
 // The card shows only the start of its input: it says so, opens to all the
 // daemon kept, and is answered alone. A card written before cards were marked

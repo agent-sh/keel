@@ -22,10 +22,11 @@ export function sessionsFolder(state: string): string {
 }
 
 // `dev`: the page as a development build (it has the counters a spec reads).
-export function daemon(state: string, port = 0, dev = false): Promise<{ proc: ChildProcess; url: string }> {
+// `env`: what the daemon gets besides (a stand-in program it is to run).
+export function daemon(state: string, port = 0, dev = false, env: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
   mkdirSync(state, { recursive: true });
   const proc = spawn("bun", ["src/main.ts", "serve", ...(dev ? ["--dev"] : []), "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
-    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off" },
+    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {

@@ -12,7 +12,8 @@
 // Some scenarios stand in for a model that reads or follows a prompt:
 // `script:find` (text the request carries outside the owner's prompts),
 // `script:color` (the newest picture), `script:count` (a long reply that
-// streams for a while) and `script:say` (the reply is the words given).
+// streams for a while), `script:say` (the reply is the words given) and
+// `script:obey` (it makes the call a page it fetched asks for).
 //
 // An outage of the whole provider (src/providers/outage.ts), for every session
 // and for the listing a probe asks for:
@@ -197,6 +198,9 @@ export class ScriptedProvider implements Provider {
       if (action.includes("judge-allow.txt")) return reply('{"decision":"allow","risk":"low","reason":"The scratch marker is in scope."}');
       if (action.includes("judge-deny.txt") || action.includes("git clean -fn")) return reply('{"decision":"deny","risk":"high","reason":"The fixture refuses this action."}');
       if (action.includes("judge-unavailable.txt")) return reply('{"decision":"allow"}');
+      // A web request judged as a send: refused, and the reason repeats what the judge was shown of it.
+      const sent = /^ tool \S+ \(send\)\n([\s\S]*?)(?:\n\nIts (?:input|options):|$)/.exec(action);
+      if (sent) return reply(JSON.stringify({ decision: "deny", risk: "high", reason: `The fixture was shown: ${sent[1]!.split("\n").join(" | ")}`.slice(0, 390) }));
     }
 
     // A reader whose request says `script:quote`: it quotes the first line it
@@ -330,6 +334,26 @@ export class ScriptedProvider implements Provider {
         const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
         const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
         return reply(`Done with ${calls.length} call${calls.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
+      }
+      case "obey": {
+        // `script:obey [{"name":...,"input":...}, ...]`: these calls in order, as script:calls makes them, and
+        // then the call a tool result asks for on a line `please call: {"name":...,"input":...}`, as a model a
+        // page has taken in makes it. A result that asks for nothing ends the turn with a reply quoting it.
+        const calls = callsAfter(owner, "script:obey");
+        const at = msgs.findLastIndex((m) => m.role === "user" && textOf(m).includes("script:obey"));
+        const done = msgs.slice(at + 1).filter((m) => m.role === "assistant").length;
+        const next = calls[done];
+        if (next) return reply(`Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `obey-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
+        const got = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
+        const said = typeof got?.content === "string" ? got.content : (got?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
+        const asked = /^please call: (\{.*\})$/m.exec(said);
+        if (asked && !got?.is_error) {
+          try {
+            const c = JSON.parse(asked[1]!);
+            return reply("Doing what the page asks.", "tool_use", [{ type: "tool_use", id: `obey-${msgs.length}-asked`, name: String(c.name), input: c.input ?? {} }]);
+          } catch {}
+        }
+        return reply(`Done. Last result: ${said.slice(0, 300)}`);
       }
       case "batch": {
         // `script:batch [{"name":...,"input":...}, ...]`: every call in one reply

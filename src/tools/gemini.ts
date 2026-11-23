@@ -247,6 +247,7 @@ const write_todos: Tool = {
 const google_web_search: Tool = {
   name: "google_web_search",
   readOnly: true,
+  web: { search: true },
   description: "Searches the web and returns results with titles, URLs and snippets. Follow up with 'web_fetch' to read a result.",
   input_schema: obj({ query: { type: "string", description: "The search query to find information on the web." } }, ["query"]),
   async run(input, ctx) {
@@ -255,15 +256,19 @@ const google_web_search: Tool = {
   },
 };
 
+// The URLs a web_fetch prompt names, as the tool fetches them.
+const promptUrls = (prompt: unknown) => [...new Set(String(prompt ?? "").match(/https?:\/\/[^\s<>"')\]]+/g) ?? [])].slice(0, 20);
+
 const web_fetch: Tool = {
   name: "web_fetch",
   readOnly: true,
+  web: { fetches: (input) => promptUrls(input?.prompt), links: true },
   description: "Fetches up to 20 URLs named in the prompt (http/https) and answers the prompt from their content.",
   input_schema: obj({
     prompt: { type: "string", description: "A prompt that includes the URL(s) (up to 20) to fetch and what to look for." },
   }, ["prompt"]),
   async run(input, ctx) {
-    const urls = [...new Set(String(input.prompt ?? "").match(/https?:\/\/[^\s<>"')\]]+/g) ?? [])].slice(0, 20);
+    const urls = promptUrls(input.prompt);
     if (!urls.length) return fail("The prompt must contain at least one URL starting with http:// or https://.");
     const parts = await Promise.all(urls.map(async (u) => {
       const r = await fetchFor(u, String(input.prompt), ctx).catch((e) => ({ text: String(e.message), error: true }));

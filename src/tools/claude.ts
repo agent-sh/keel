@@ -271,6 +271,7 @@ const Grep: Tool = {
 const WebFetch: Tool = {
   name: "WebFetch",
   readOnly: true,
+  web: { fetches: (input) => [String(input?.url ?? "")], links: true },
   description:
     "Fetch a URL (http is upgraded to https) and answer prompt from the page: a long page is read by a smaller, faster " +
     "model that returns what the prompt asks for, and the whole page is saved to a file you can Read; a short page " +
@@ -289,6 +290,7 @@ const WebFetch: Tool = {
 const WebSearch: Tool = {
   name: "WebSearch",
   readOnly: true,
+  web: { search: true },
   description:
     "Search the web for current information and return result titles, URLs and snippets. Read a result with " +
     "WebFetch. Scope with allowed_domains or blocked_domains (not both).",

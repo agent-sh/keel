@@ -1,5 +1,5 @@
 import { Popover } from "@base-ui/react/popover";
-import { Check, CheckCheck, ChevronDown, FilePen, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
+import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type Stand } from "../lib/approvals.ts";
@@ -27,9 +27,10 @@ const TITLE: Record<Approval["kind"], string> = {
   other: "Use this tool?",
   read: "Read this?",
   drive: "Drive a session?",
+  send: "Send to this address?",
   refused: "Refused",
 };
-const ICON = { shell: SquareTerminal, edit: FilePen, other: Wrench, read: Wrench, drive: MessageSquareShare, refused: X };
+const ICON = { shell: SquareTerminal, edit: FilePen, other: Wrench, read: Wrench, drive: MessageSquareShare, send: Globe, refused: X };
 const EMPTY: Approval[] = [];
 
 // What the list knows of its cards from where they stand on screen.

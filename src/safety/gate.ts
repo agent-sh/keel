@@ -25,6 +25,8 @@ import { artifactsDir, atCwd, contains, realOf } from "../core/paths.ts";
 import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
+import { AddressBook, dataIn, sendShown, wholeOf, type WebUse } from "./addresses.ts";
+import { ownerPrompt } from "../core/owner.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
@@ -283,6 +285,47 @@ export class Gate {
   private parking = new Set<string>();
   // Reviewer mode's judge (set by the permission routes, which hold the providers).
   judge: (a: ReviewAsk) => Promise<Verdict> = async () => ({ unavailable: "no reviewer is set up" });
+  // What a tool of any family does on the web, by its name (set by the permission routes, which see the tools):
+  // how a stored call is read for the addresses a session has seen (src/safety/addresses.ts).
+  webUse: (name: string) => WebUse | undefined = () => undefined;
+  // The addresses each session has seen, read from its events as they come (one book a session, kept while the daemon runs).
+  private books = new Map<string, AddressBook>();
+
+  // What a session has seen of the web: whether it has seen an address (in its own events or a parent session's: the
+  // owner's words reach an agent through its parent) and what an unseen one carries. Each book reads only the
+  // events after the last it read.
+  private async seen(session: Session): Promise<{ has(address: string): boolean; carries(address: string): string | null }> {
+    const chain: string[] = [session.id];
+    for (let up = session, n = 0; up.parent_id && n < 32; n++) { chain.push(up.parent_id); up = this.store.session(up.parent_id) ?? up; }
+    const books: AddressBook[] = [];
+    for (const id of chain) {
+      let b = this.books.get(id);
+      if (!b) {
+        if (this.books.size >= 1024) this.books.delete(this.books.keys().next().value!);
+        this.books.set(id, (b = new AddressBook((name, input) => this.webCall(name, input), ownerPrompt)));
+      }
+      // A session not in memory is brought in off the loop before its events are read (a parent at rest).
+      if (!this.store.isKept(id) && this.store.session(id)) await this.store.warm(id);
+      const book = b;
+      timed(() => `reading the web addresses session ${id} has seen`, () => book.take(this.store.events(id, book.seq)));
+      books.push(b);
+    }
+    // A secret in a path: a known value or one shaped like a key (nothing is added to the vault), or a placeholder.
+    const secret = (text: string) => placeholdersIn(text).length > 0 || detect(text).length > 0 || vault.pairs().some(([v]) => v.length >= 8 && text.includes(v));
+    return {
+      has: (address) => books.some((b) => b.has(address)),
+      carries: (address) => timed(() => "reading an unseen address for the data it carries", () => dataIn(address, (f) => books.some((b) => b.inResults(f)), secret)),
+    };
+  }
+  // A stored call as the web tool it is: a dispatcher's call (mcp_call) is its tool's.
+  private webCall(name: string, input: any): { use: WebUse; input: any } | undefined {
+    if (name === "mcp_call") {
+      const use = this.webUse(String(input?.tool ?? ""));
+      return use ? { use, input: input?.arguments ?? {} } : undefined;
+    }
+    const use = this.webUse(name);
+    return use ? { use, input: input ?? {} } : undefined;
+  }
 
   constructor(private store: Store, private bus: Bus, private sandboxed: (s: Session, p: SessionPerm) => boolean = () => false) {
     store.migrate(SCHEMA);
@@ -765,7 +808,11 @@ export class Gate {
     if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
     const name = target?.name ?? call.tool.name;
-    const cls = callClass(call, target);
+    // A page fetch to an address the session has not seen is judged as the send it is (src/safety/addresses.ts).
+    const raw = callClass(call, target);
+    const fresh = raw.kind === "read" && raw.fetches?.length ? await this.seen(session).then((web) => new Map(raw.fetches!.filter((a) => !web.has(a)).flatMap((a) => { const why = web.carries(a); return why ? [[a, why] as const] : []; }))) : undefined;
+    const asJudged = (c: CallClass) => sentAs(c, fresh);
+    const cls = asJudged(raw);
     const mode = this.perm(session.id).mode;
     const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;
     // Nothing is waited for unless the line names such a program.
@@ -832,7 +879,7 @@ export class Gate {
     if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))
       return { deny: 'Refused: Auto cannot verify this shell invocation. Use a supported local non-login Bash command (for exec_command, shell: "bash" and login: false), or use Ask.' };
     const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
-    if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation).authorization } : {}) };
+    if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation, asJudged).authorization } : {}) };
     if (cls.kind === "control") return { cls };
     // A hook's allow (the owner's own hooks file, or a repository's they read
     // and pinned) answers the card this call would open, and nothing more
@@ -850,7 +897,7 @@ export class Gate {
       const input = shell ? shell.options : target ? target.input : call.input;
       if ((!d.ask.ownerOnly || checkShell) && (summary.length > REVIEW_SUMMARY_LIMIT || JSON.stringify(input ?? {}).length > REVIEW_INPUT_LIMIT))
         return { deny: "Refused: the complete action does not fit in Auto review. Break it into smaller actions or use Ask for owner approval." };
-      return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, invocation, cut);
+      return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, invocation, cut, asJudged);
     }
     // Full auto: nothing waits on the owner. What would ask is high risk; it
     // goes to the rules, then the judge, and is run or refused at once.
@@ -872,7 +919,8 @@ export class Gate {
     return (await this.card(session, call, name, cls, summary, { ...d.ask, notice: notice ?? d.ask.notice, bind: target?.source, cut })) ?? { cls };
   }
 
-  private autoAuthorization(session: Session, call: ToolCall, target: Target, cls: CallClass, exactDispatch: boolean, invocation?: AutoShell) {
+  // `asJudged`: what the gate made of the call's class when it judged it (a fetch judged as a send), made again of the class now.
+  private autoAuthorization(session: Session, call: ToolCall, target: Target, cls: CallClass, exactDispatch: boolean, invocation?: AutoShell, asJudged: (c: CallClass) => CallClass = (c) => c) {
     const revision = this.reviewVersion;
     const originalInput = JSON.stringify(call.input);
     const { tool, ctx: { dispatch, signal, cwd, sessionId, spillDir } } = call;
@@ -894,7 +942,7 @@ export class Gate {
         if (!active() || now.tool !== tool || now.ctx.signal !== signal || now.ctx.cwd !== cwd ||
             now.ctx.sessionId !== sessionId || now.ctx.spillDir !== spillDir ||
             ((exactDispatch || invocation) && now.ctx.dispatch !== dispatch) || JSON.stringify(input) !== originalInput) return false;
-        const c = callClass(now, currentTarget);
+        const c = asJudged(callClass(now, currentTarget));
         const dir = invocation ? localShellDir(session, now, currentTarget, c) : undefined;
         const shell = invocation ? tool.autoShell?.(now.input ?? {}) : undefined;
         return before === signature(now, currentTarget, c,
@@ -904,8 +952,8 @@ export class Gate {
     return { authorization, before };
   }
 
-  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask, input: unknown, invocation?: AutoShell, cut?: true): Promise<CheckResult> {
-    const { authorization, before } = this.autoAuthorization(session, call, target, cls, !ask.ownerOnly, invocation);
+  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask, input: unknown, invocation?: AutoShell, cut?: true, asJudged?: (c: CallClass) => CallClass): Promise<CheckResult> {
+    const { authorization, before } = this.autoAuthorization(session, call, target, cls, !ask.ownerOnly, invocation, asJudged);
     const valid = async () => {
       await authorization.refresh?.(call);
       return authorization.valid(call, call.input);
@@ -1271,6 +1319,16 @@ export class Gate {
 
 const callKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
 
+// A page fetch with addresses the session has not seen that carry data (`fresh`: each with what it carries, as the
+// gate found them) as the send it is: those addresses, each whole with its query. Any other class as it is.
+function sentAs(c: CallClass, fresh: Map<string, string> | undefined): CallClass {
+  if (c.kind !== "read" || !c.fetches?.length || !fresh?.size) return c;
+  const held = c.fetches.filter((a) => fresh.has(a));
+  const to = [...new Set(held.map(wholeOf))];
+  const because = [...new Set(held.map((a) => fresh.get(a)!))].join(" and ");
+  return to.length ? { kind: "send", to, shown: sendShown(to), because } : c;
+}
+
 // A refused call as judged: its tool on that source in that shape, and its input.
 const keyOf = (name: string, target: { source?: string; shape?: string } | null, cls: CallClass, call: ToolCall, summary: string) =>
   new Bun.CryptoHasher("sha256").update(JSON.stringify([name, target?.source ?? null, target?.shape ?? null, cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary])).digest("hex").slice(0, 32);
@@ -1295,7 +1353,7 @@ export function closedWhy(a: Approval, now = Date.now()): string {
 function inShort(cls: CallClass, input: unknown): { summary: string; cut?: true } {
   if (cls.kind === "shell") return { summary: cls.command };
   if (cls.kind === "edit") return { summary: cls.paths.join("\n") };
-  if (cls.kind === "drive") return { summary: cls.shown };
+  if (cls.kind === "drive" || cls.kind === "send") return { summary: cls.shown };
   const whole = JSON.stringify(input ?? {});
   return whole.length > SUMMARY_LIMIT ? { summary: whole.slice(0, SUMMARY_LIMIT), cut: true } : { summary: whole };
 }
@@ -1304,7 +1362,7 @@ function inShort(cls: CallClass, input: unknown): { summary: string; cut?: true 
 // prompt holds the start of it (REVIEW_SUMMARY_LIMIT), and for a tool that
 // is neither a command nor an edit its input in the same bound.
 function readWhole(cls: CallClass, input: unknown, summary = ""): boolean {
-  const judged = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(input ?? {});
+  const judged = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" || cls.kind === "send" ? cls.shown : JSON.stringify(input ?? {});
   return Math.max(judged.length, summary.length) <= REVIEW_SUMMARY_LIMIT;
 }
 

@@ -9,6 +9,7 @@ import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, ty
 import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
+import type { WebUse } from "./addresses.ts";
 import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
 
 // Who decides what a mode lets run: the owner, a model, or nobody because
@@ -27,8 +28,8 @@ export const MODES = [
   { id: "auto-edits", name: "Auto edits", group: "you", summary: "Folder edits run; commands ask unless read-only or sandboxed", description: "Edits inside the folder run. Commands ask, except read-only ones and sandboxed ones." },
   { id: "auto", name: "Auto", group: "model", summary: "A judge reviews what no rule covers", description: "Reads, edits inside the folder, read-only or sandboxed commands, and standing grants run as usual. The judge reviews other calls and refuses them if it cannot approve. Actions requiring your consent still ask." },
   { id: "full-auto", name: "Full auto", group: "model", summary: "Runs everything; nothing is checked", description: "Every call runs without review, high-risk ones too; the activity list names what was flagged. Use Auto for a judge model. Tools that explicitly require your confirmation still ask." },
-  { id: "read-only", name: "Read only", group: "none", summary: "Reads and read-only commands; the rest is refused", description: "Reads and read-only commands run. Everything else is refused." },
-  { id: "plan", name: "Plan", group: "none", summary: "Plans first; you approve the plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
+  { id: "read-only", name: "Read only", group: "none", summary: "Reads and read-only commands; the rest is refused", description: "Reads and read-only commands run. A web fetch to an address the session has not seen that carries data asks you. Everything else is refused." },
+  { id: "plan", name: "Plan", group: "none", summary: "Plans first; you approve the plan", description: "Reads and read-only commands run; a web fetch to an address the session has not seen that carries data asks you. The model plans, and you approve the plan before anything changes." },
   { id: "reviewer", name: "Reviewer", group: "model", summary: "A reviewer model answers; high risk asks you", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
 ] as const;
 export type Mode = (typeof MODES)[number]["id"];
@@ -54,7 +55,9 @@ export type CallClass =
   // thing a read is held to: in a sandboxed session it asks before it reads
   // where the owner's credentials or Keel's own files are kept.
   // `unnamed`: a reading tool known only by its flag (an MCP server's) whose input names no file.
-  | { kind: "read"; paths?: string[]; unnamed?: true }
+  // `fetches`: the web addresses a page fetch goes to (its tool's `web`). The gate
+  // judges a fetch to an address the session has not seen as the send it is.
+  | { kind: "read"; paths?: string[]; unnamed?: true; fetches?: string[] }
   // `interpreter`: the program that runs the command when it is not bash. The
   // rules read a command as bash does, so none of it is then taken for a read.
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
@@ -71,6 +74,12 @@ export type CallClass =
   // the tool and the target (keel__session_message:claude:abc); `owner` says why
   // only the owner may allow it.
   | { kind: "drive"; target: string; resource: string; shown: string; owner?: string }
+  // A web request that sends what it carries: a page fetch to addresses the
+  // session has not seen that carry data (src/safety/addresses.ts), each in `to`,
+  // with what it carries in `because` (a query string, a secret in its path...);
+  // `carries`: a request with a body, headers or a method of its own, to any address.
+  // `shown`: the addresses whole with their query parameters, for the card and the judge.
+  | { kind: "send"; to: string[]; shown: string; because?: string; carries?: true }
   // A call its tool refused before it was judged (the reason is the result).
   | { kind: "refused"; why: string };
 
@@ -91,10 +100,11 @@ const onlyOwner = (why: string, rule = "yours alone to allow"): Decision => ({ a
 // What a call does. The tool's own definition says which kind of call it is
 // (its read flag and its kind); the input only supplies the command or the
 // paths of that kind, so no key a model puts in a call changes how it is judged.
-export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any; interpreter?(input: any): string; appliesPatch?: true }, input: any, cwd: string): CallClass {
+export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any; interpreter?(input: any): string; appliesPatch?: true; web?: WebUse }, input: any, cwd: string): CallClass {
   if (tool.readOnly) {
     const paths = readPaths(input, cwd);
-    return paths.length ? { kind: "read", paths } : { kind: "read" };
+    const fetches = tool.web && "fetches" in tool.web ? tool.web.fetches(input ?? {}) : undefined;
+    return { kind: "read", ...(paths.length ? { paths } : {}), ...(fetches ? { fetches } : {}) };
   }
   switch (tool.kind) {
     case "control":
@@ -482,6 +492,17 @@ export type Facts = {
 export const ESCALATES = "asks to leave the sandbox";
 
 export function decide(c: CallClass, f: Facts): Decision {
+  // A web request that sends (a page fetch to an unseen address that carries data, or a request with a body):
+  // high risk in every mode, never refused for it. The asking modes show the owner the
+  // card (Reviewer too: its reviewer answers low risk only), Auto's judge reviews it, and Full auto, which checks
+  // nothing, runs it and names it in the activity list. Read only and Plan ask too: a fetch changes nothing here.
+  if (c.kind === "send") {
+    // (The addresses themselves are the card's text, `shown`.)
+    const why = c.carries
+      ? "it sends a request with a body, headers or a method of its own"
+      : `it fetches ${c.to.length === 1 ? "an address" : "addresses"} this session has not seen (not in your messages, a search result or a page fetched before) with ${c.because ?? "data"}`;
+    return { ask: { risk: "high", why, rule: c.carries ? "sends a request of its own" : "an address the session has not seen, with data", suggest: [] } };
+  }
   if (c.kind === "read") {
     // A sandboxed session's file tools run outside the sandbox: they read
     // what its commands read (the sandbox's view) and nothing else without

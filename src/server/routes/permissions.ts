@@ -12,7 +12,7 @@ import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
 import { stopKind } from "../../core/stops.ts";
 import { registerHooks } from "../../engine/hooks.ts";
-import { toolFacts } from "../../tools/registry.ts";
+import { toolFacts, webUse } from "../../tools/registry.ts";
 import { catalogReady } from "../../tools/catalog.ts";
 import { RUN_CODE } from "../../tools/codemode.ts";
 import { EVENTS_MAX } from "../../safety/marks.ts";
@@ -46,6 +46,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   // 428 tells the page which action to get a passkey assertion for, then retry once.
   const needs = (req: Request, action: string) => (pk.allows(req, action) ? null : json({ error: "this needs your passkey from a remote device", presence: { action } }, 428));
   g.judge = makeJudge(store, deps.providers, () => g.setting("reviewer_model"), () => g.setting("reviewer_policy"));
+  g.webUse = webUse;
   const sb = sandboxStatus();
   // (Whether the package caches can be layered here is asked now, off the loop: src/safety/sandbox-view.ts.)
   if (sb.available) void warmOverlays(sb.bwrap);

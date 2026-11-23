@@ -108,8 +108,10 @@ export type GatherOpts = { budget?: number; atOnce?: number; fetch?: (url: strin
 // they are then charged in the order named, so which page is cut does not
 // depend on which came back first (a body that streams as it is, under a
 // budget shorter than the bodies in flight, is the one case that can).
+// A list the input gives as an array or as one string.
+const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === "string" && v ? [v] : []).map(String).map((s) => s.trim()).filter(Boolean);
+
 export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: ToolContext, o: GatherOpts = {}): Promise<{ items: Material[]; skipped: string[]; saved?: string }> {
-  const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === "string" && v ? [v] : []).map(String).map((s) => s.trim()).filter(Boolean);
   const stop = () => { if (ctx.signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" }); };
   const items: Material[] = [];
   const skipped: string[] = [];
@@ -309,6 +311,8 @@ const schema = {
   additionalProperties: false,
 };
 
-export const AskReaders: Tool = { name: "AskReaders", families: ["claude"], readOnly: true, description: DESCRIPTION, input_schema: schema, run };
-export const ask_readers: Tool = { name: "ask_readers", families: ["gpt", "gemini", "other"], readOnly: true, description: DESCRIPTION, input_schema: schema, run };
+// Its pages are fetched; what comes back is the readers' answer, not a page.
+const web = { fetches: (input: any) => list(input?.urls), links: false };
+export const AskReaders: Tool = { name: "AskReaders", families: ["claude"], readOnly: true, web, description: DESCRIPTION, input_schema: schema, run };
+export const ask_readers: Tool = { name: "ask_readers", families: ["gpt", "gemini", "other"], readOnly: true, web, description: DESCRIPTION, input_schema: schema, run };
 export const READER_TOOLS = new Set([AskReaders.name, ask_readers.name]);

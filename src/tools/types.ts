@@ -3,6 +3,7 @@ import type { ToolSpec } from "../providers/types.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { Material } from "../engine/reader.ts";
 import type { ReadOutcome } from "../engine/readers.ts";
+import type { WebUse } from "../safety/addresses.ts";
 
 export type ToolContext = {
   sessionId: string;
@@ -102,6 +103,11 @@ export type Tool = ToolSpec & {
   // carries is one the session was sent before (src/tools/pin.ts): what the
   // permission gate reads, never the pinned one.
   built?: Record<string, unknown>;
+  // What it does on the web (src/safety/addresses.ts): a search, whose results
+  // name addresses a fetch may then go to unasked, or a fetch, which goes
+  // unasked only to an address the session has seen and is judged as a send
+  // to any other.
+  web?: WebUse;
   // A shared tool offered only to these families (default: every family).
   families?: string[];
   // It only waits on the owner's answer (a question, a plan to approve): a
