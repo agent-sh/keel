@@ -11,6 +11,8 @@
 // assistant message with `summary` true is a compaction's summary) and `part`
 // (text, reasoning, tool with callID, tool and state, file); a database
 // migrated to 2 holds both, and a session is read from the newer tables.
+// OpenCode 2.3 can keep an assistant message's items in `session_part`
+// instead of its content (by ordinal, one row an item).
 // Opened read-only; nothing here writes.
 import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
@@ -136,9 +138,18 @@ export async function readOpencode(f: Found, path = opencodeDb()): Promise<Read>
   let compactions = 0;
   const v2 = has(d, "session_v2") && !!d.query("SELECT 1 FROM session_v2 WHERE id = ?").get(f.id);
   if (v2) {
-    const rows = d.query<{ type: string; data: string; time_created: number }, [string]>("SELECT type, data, time_created FROM session_message WHERE session_id = ? ORDER BY seq").all(f.id);
+    const rows = d.query<{ id: string; type: string; data: string; time_created: number }, [string]>("SELECT id, type, data, time_created FROM session_message WHERE session_id = ? ORDER BY seq").all(f.id);
+    // OpenCode can keep an assistant message's items as rows of their own
+    // (session_part, by ordinal; its data with the type in a column), the
+    // message's content then empty; read as OpenCode's history.ts does: the
+    // parts in order, then any content kept inline.
+    const parts = has(d, "session_part") ? d.query<{ type: string; data: string }, [string]>("SELECT type, data FROM session_part WHERE message_id = ? ORDER BY ordinal") : null;
     for (const row of rows) {
       const m = json(row.data) ?? {};
+      if (row.type === "assistant" && parts) {
+        const own = parts.all(row.id).map((p) => ({ ...(json(p.data) ?? {}), type: p.type }));
+        if (own.length) m.content = [...own, ...(Array.isArray(m.content) ? m.content : [])];
+      }
       const ts = Number(m.time?.created ?? row.time_created) || f.updated_ms;
       switch (row.type) {
         case "user":

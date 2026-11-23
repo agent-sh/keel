@@ -228,3 +228,22 @@ test("an OpenCode session: calls with their results in place, a failed call, the
   expect(r.counts).toMatchObject({ tool_calls: 2, thoughts_dropped: 1 });
   expect(wire(r.events)).not.toContain("the Faros lantern");
 });
+
+test("an OpenCode session whose reply keeps its items as rows of their own reads the same", async () => {
+  const { opencodeSession } = await import("../../../test/e2e/fixtures/import-stores.ts");
+  const { opencodeSessions, readOpencode } = await import("./opencode.ts");
+  const inline = opencodeSession(join(dir, "oc-inline", "opencode.db"), dir, "ses_2", "Faros");
+  const p = opencodeSession(join(dir, "oc-parts", "opencode.db"), dir, "ses_2", "Faros");
+  // As OpenCode 2.3 writes with part rows on: the items in session_part by ordinal, the content empty.
+  const db = new Database(p);
+  db.exec("CREATE TABLE `session_part` (`message_id` text NOT NULL, `session_id` text NOT NULL, `ordinal` integer NOT NULL, `type` text NOT NULL, `call_id` text, `time_created` integer NOT NULL, `time_updated` integer NOT NULL, `data` text NOT NULL, PRIMARY KEY(`message_id`, `ordinal`))");
+  for (const r of db.query<{ id: string; data: string }, []>("SELECT id, data FROM session_message WHERE type = 'assistant'").all()) {
+    const m = JSON.parse(r.data);
+    m.content.forEach((it: any, i: number) => { const { type, ...rest } = it; db.query("INSERT INTO session_part VALUES (?, 'ses_2', ?, ?, ?, 0, 0, ?)").run(r.id, i, type, it.id ?? null, JSON.stringify(rest)); });
+    db.query("UPDATE session_message SET data = ? WHERE id = ?").run(JSON.stringify({ ...m, content: [] }), r.id);
+  }
+  db.close();
+  const a = await readOpencode(opencodeSessions(inline)[0]!, inline), b = await readOpencode(opencodeSessions(p)[0]!, p);
+  expect(b.counts).toMatchObject({ tool_calls: 2 });
+  expect(b.events.map((e) => [e.kind, e.data])).toEqual(a.events.map((e) => [e.kind, e.data]));
+});
