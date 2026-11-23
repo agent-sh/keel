@@ -48,7 +48,7 @@ test("two worktrees that would conflict are told once, and a rebase clears it", 
   // With the base, both merge clean: main did not move.
   expect((await view(a.id)).pairs.filter((p: any) => p.base)).toEqual([]);
 
-  // Each is told at its next turn, once: the other branch, its session, the file and the line.
+  // Each is told at its next turn, once: the other branch, its session and the file (the lines are the view's).
   const notes = async (id: string, words = "would conflict") => {
     const d = await (await request.get(`/api/sessions/${id}`)).json();
     return d.events.filter((e: any) => e.kind === "note" && e.data.kind === "overlap" && e.data.model && String(e.data.text).includes(words)).map((e: any) => String(e.data.text));
@@ -61,11 +61,10 @@ test("two worktrees that would conflict are told once, and a rebase clears it", 
   await say(b.id);
   const told = await notes(a.id);
   expect(told).toHaveLength(1);
-  expect(told[0]).toContain(`Your branch ${a.branch} would conflict with ${b.branch}`);
-  expect(told[0]).toContain(`"Lane beta" (${b.id})`);
-  expect(told[0]).toContain("notes.md (your line 3 against its line 3)");
+  expect(told[0]).toContain(`- Your branch ${a.branch} would conflict with ${b.branch} (session "Lane beta" ${b.id}): notes.md.`);
+  expect(told[0]).not.toContain("line 3");
   expect(await notes(b.id)).toHaveLength(1);
-  expect((await notes(b.id))[0]).toContain(`"Lane alpha" (${a.id})`);
+  expect((await notes(b.id))[0]).toContain(`"Lane alpha" ${a.id}`);
 
   // The chip shows it, and its popup says with what and where.
   await page.goto(`/s/${a.id}`);
@@ -104,9 +103,9 @@ test("two worktrees that would conflict are told once, and a rebase clears it", 
   await shoot(page, "overlap-03-cleared");
   // Alpha, told of the conflict, hears once that it is gone.
   await say(a.id);
-  const gone = await notes(a.id, "no longer conflicts");
+  const gone = await notes(a.id, "No longer conflicting");
   expect(gone).toHaveLength(1);
-  expect(gone[0]).toContain(`your branch ${a.branch} no longer conflicts with ${b.branch}`);
+  expect(gone[0]).toContain(`No longer conflicting: ${a.branch} with ${b.branch}.`);
   expect(await notes(a.id)).toHaveLength(1);
 
   // The main checkout never moved and holds no change.

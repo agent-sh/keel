@@ -62,7 +62,8 @@ test("a pass while both sessions' turns run queues nothing; each turn's next req
   expect(store.queue(b)).toEqual([]);
   const na = ov.noteFor(a)!;
   expect(na.text).toContain("Your branch keel/a would conflict with keel/b");
-  expect(na.text).toContain("notes.md (your line 3 against its line 3)");
+  expect(na.text).toContain("): notes.md.");
+  expect(na.text).not.toContain("line 3");
   na.settle();
   expect(ov.noteFor(a)).toBeUndefined();
   // B's was not settled by A's note.
@@ -73,10 +74,32 @@ test("a pass while both sessions' turns run queues nothing; each turn's next req
   g(repo, "checkout", "-q", "main");
   await ov.scan(repo);
   expect(steered).toEqual([]);
-  expect(ov.noteFor(a)?.text).toContain("no longer conflicts with keel/b");
+  expect(ov.noteFor(a)?.text).toContain("No longer conflicting: keel/a with keel/b.");
   ov.noteFor(a)!.settle();
   expect(ov.noteFor(a)).toBeUndefined();
   expect(ov.noteFor(b)).toBeUndefined();
+});
+
+// An agent that ended no longer holds its branch: its pairs go, with what was
+// owed of them, and nobody hears of it again (a coordinator's ended agents'
+// branches were forecast against every other branch, every pass).
+test("an ended agent's branch is not forecast", async () => {
+  const { repo, store, ov, a, b } = setup();
+  const lead = store.createSession({ model: "scripted:stand-in", workspace: repo, title: "Lead" });
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+  store.db.run("UPDATE sessions SET parent_id = ? WHERE id IN (?, ?)", [lead.id, a, b]);
+  store.db.run("CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, parent_id TEXT, session_id TEXT, status TEXT, created INTEGER, ended INTEGER)");
+  store.db.run("INSERT INTO agents VALUES ('ag-a', ?, ?, 'running', 1, NULL), ('ag-b', ?, ?, 'running', 1, NULL)", [lead.id, a, lead.id, b]);
+  await ov.scan(repo);
+  const told = ov.noteFor(lead.id)!;
+  expect(told.text.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(1);
+  expect(ov.view(a).pairs).toHaveLength(1);
+  store.db.run("UPDATE agents SET status = 'done', ended = 2 WHERE id = 'ag-b'");
+  await ov.scan(repo);
+  expect(ov.view(a).pairs).toEqual([]);
+  expect(ov.noteFor(a)).toBeUndefined();
+  expect(ov.noteFor(b)).toBeUndefined();
+  expect(ov.noteFor(lead.id)).toBeUndefined();
 });
 
 // Attributes a session can write name a driver of the owner's config, or a

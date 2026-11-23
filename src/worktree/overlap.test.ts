@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clashes, clearedNote, conflictNote, decide, linesSay, pairsOf, parseHunks, parseMergeTree, splitDiff } from "./overlap.ts";
+import { clashes, decide, forecastNote, linesSay, NOTE_CHARS, pairsOf, parseHunks, parseMergeTree, splitDiff } from "./overlap.ts";
 
 describe("merge-tree output", () => {
   test("clean, conflicted, and git failing", () => {
@@ -77,32 +77,32 @@ describe("what a check changes for a recipient", () => {
 
 describe("the note", () => {
   const mine = { branch: "keel/a", tip: "1111111111111111", who: "your branch" };
-  const other = { branch: "keel/b", tip: "2222222222222222", who: 'the branch of session "Fix it" (s2)' };
-  test("names the other branch, its session, the files and the lines", () => {
-    const t = conflictNote(mine, other, [{ path: "src/x.ts", clashes: [{ a: [10, 14], b: [10, 16] }] }, { path: "img.png", clashes: [] }], 2, false);
-    expect(t).toStartWith("[harness] Overlap forecast: Your branch keel/a would conflict with keel/b, the branch of session \"Fix it\" (s2), in src/x.ts (your lines 10-14 against its lines 10-16), img.png (both changed it;");
-    expect(t).toContain("keel/a 111111111 and keel/b 222222222");
-    expect(t).toContain("neither branch was touched");
+  const other = { branch: "keel/b", tip: "2222222222222222", who: 'session "Fix it" s2' };
+  const base = { branch: "main", tip: "3333333333", who: "the base" };
+  test("one line a branch: each other branch and the files, never the lines", () => {
+    const t = forecastNote([{ mine, other, files: ["src/x.ts", "img.png"], all: 2, base: false }, { mine, other: base, files: ["f"], all: 1, base: true }], []);
+    expect(t).toContain('- Your branch keel/a would conflict with the base main: f; with keel/b (session "Fix it" s2): src/x.ts, img.png.');
+    expect(t).toStartWith("[harness] Overlap forecast (git merge-tree; no branch was touched).");
+    expect(t).not.toMatch(/line \d/);
   });
-  test("with the base", () => {
-    const t = conflictNote(mine, { branch: "main", tip: "3333333333", who: "the base" }, [{ path: "f", clashes: [{ a: [1, 1], b: [1, 2] }] }], 1, true);
-    expect(t).toContain("would conflict with the base main, in f (your line 1 against main's lines 1-2)");
-    expect(t).toContain("Rebase onto main before landing.");
+  test("a parent hears of its agents' branches, grouped", () => {
+    const lane = { ...mine, who: 'your agent "Lane" s1' };
+    const t = forecastNote([{ mine: lane, other, files: ["f"], all: 1, base: false }, { mine: lane, other: base, files: ["g"], all: 1, base: true }], []);
+    expect(t.split("\n").filter((l) => l.startsWith("- "))).toEqual(['- keel/a (your agent "Lane" s1) would conflict with the base main: g; with keel/b (session "Fix it" s2): f.']);
   });
-  test("a parent hears of its agent's branch", () => {
-    const t = conflictNote({ ...mine, who: 'the branch of your agent "Lane" (s1)' }, other, [{ path: "f", clashes: [{ a: [1, 1], b: [1, 1] }] }], 1, false);
-    expect(t).toContain('The branch of your agent "Lane" (s1) keel/a would conflict');
-    expect(t).toContain("keel/a's line 1 against its line 1");
+  test("files past a few, and files told before, are counts", () => {
+    const files = Array.from({ length: 7 }, (_, i) => `f${i}`);
+    expect(forecastNote([{ mine, other, files, all: 9, base: false }], [])).toContain("f0, f1, f2, f3 (+3 more, 2 told before)");
   });
-  test("a long list is cut to a count", () => {
-    const files = Array.from({ length: 15 }, (_, i) => ({ path: `f${i}`, clashes: [] }));
-    expect(conflictNote(mine, other, files, 15, false)).toContain(", and 3 more.");
-  });
-  test("files told before are counted, not named again", () => {
-    expect(conflictNote(mine, other, [{ path: "new.ts", clashes: [] }], 3, false)).toContain("2 more files were told before.");
+  test("many agents' pairs stay within the budget and are counted", () => {
+    const told = Array.from({ length: 300 }, (_, i) => ({ mine: { branch: `keel/lane-${i % 25}`, tip: "1", who: `your agent "Lane ${i % 25}" s${i % 25}` }, other: { branch: `keel/other-${i}`, tip: "2", who: `your agent "Other ${i}" o${i}` }, files: ["src/engine/turn.ts", "ui/src/bridge.css"], all: 2, base: false }));
+    const t = forecastNote(told, []);
+    expect(t.length).toBeLessThanOrEqual(NOTE_CHARS);
+    expect(t).toMatch(/\d+ more pairs are not listed here; the session's Branches view lists every pair/);
   });
   test("gone", () => {
-    expect(clearedNote(mine, other, false)).toBe("[harness] Overlap forecast: your branch keel/a no longer conflicts with keel/b (checked at 111111111 and 222222222).");
+    const t = forecastNote([], [{ mine, other, base: false }]);
+    expect(t).toBe("[harness] Overlap forecast (git merge-tree; no branch was touched).\n- No longer conflicting: keel/a with keel/b.");
   });
 });
 

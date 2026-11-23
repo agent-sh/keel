@@ -30,7 +30,7 @@ import { dirname, join } from "node:path";
 import { git, locate, type Where } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
-import { clashes, clearedNote, conflictNote, decide, pairsOf, parseHunks, parseMergeTree, splitDiff, type ConflictFile, type Result, type Side } from "./overlap.ts";
+import { clashes, decide, forecastNote, pairsOf, parseHunks, parseMergeTree, splitDiff, type ConflictFile, type Gone, type Result, type Side, type Told } from "./overlap.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS overlap_branches (repo TEXT NOT NULL, branch TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, seen INTEGER NOT NULL, PRIMARY KEY (repo, branch));
@@ -105,7 +105,10 @@ export class Overlaps {
   // active worktree Keel made, else a branch a session committed to.
   owners(repo: string): Map<string, string> {
     const out = new Map<string, string>();
-    const live = (id: string) => { const s = this.store.session(id); return !!s && !s.archived; };
+    // A branch is held while its session is: not archived, and for an agent's
+    // session, while the agent has not ended (an ended agent's branch waits
+    // for whoever lands it; forecasting it against every other is noise).
+    const live = (id: string) => { const s = this.store.session(id); return !!s && !s.archived && !this.agentEnded(id); };
     let managed: { branch: string; session_id: string }[] = [];
     try { managed = this.store.db.query<{ branch: string; session_id: string }, [string]>("SELECT branch, session_id FROM worktrees WHERE repo_root = ? AND state = 'active' ORDER BY created").all(repo); } catch {} // no worktree was ever made
     for (const r of managed) if (live(r.session_id)) out.set(r.branch, r.session_id);
@@ -113,6 +116,12 @@ export class Overlaps {
       if (!out.has(r.branch) && live(r.session_id)) out.set(r.branch, r.session_id);
     }
     return out;
+  }
+  private agentEnded(sessionId: string): boolean {
+    try {
+      const r = this.store.db.query<{ n: number; open: number }, [string]>("SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE ended IS NULL) AS open FROM agents WHERE session_id = ?").get(sessionId);
+      return !!r && r.n > 0 && r.open === 0;
+    } catch { return false; } // no agent was ever started
   }
   private managedBranches(repo: string): Set<string> {
     try { return new Set(this.store.db.query<{ branch: string }, [string]>("SELECT branch FROM worktrees WHERE repo_root = ? AND state = 'active'").all(repo).map((r) => r.branch)); } catch { return new Set(); }
@@ -321,11 +330,11 @@ export class Overlaps {
 
   // How a recipient stands to a side.
   private who(recipient: string, owner: string | undefined): string {
-    if (!owner) return "a branch no session holds now";
+    if (!owner) return "no session holds it now";
     if (owner === recipient) return "your branch";
     const s = this.store.session(owner);
-    const name = s?.title ? `"${s.title.replace(/["\n]/g, " ").slice(0, 80)}" ` : "";
-    return s?.parent_id === recipient ? `the branch of your agent ${name}(${owner})` : `the branch of session ${name}(${owner})`;
+    const name = s?.title ? `"${s.title.replace(/["\n]/g, " ").slice(0, 50)}" ` : "";
+    return s?.parent_id === recipient ? `your agent ${name}${owner}` : `session ${name}${owner}`;
   }
 
   // What is owed to a session, as the words of one note for its model, and
@@ -336,7 +345,8 @@ export class Overlaps {
     const rows = this.store.db.query<ToldRow, [string]>("SELECT * FROM overlap_told WHERE session_id = ? AND owed IS NOT NULL").all(sessionId);
     if (!rows.length) return undefined;
     let conflicts = 0, cleared = 0;
-    const parts: string[] = [], settled: (() => void)[] = [], pairs: string[] = [];
+    const told: Told[] = [], gone: Gone[] = [];
+    const settled: (() => void)[] = [], pairs: string[] = [];
     for (const row of rows) {
       const p = this.store.db.query<PairRow, [string, string, string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND a = ? AND b = ?").get(row.repo, row.a, row.b);
       const where = [sessionId, row.repo, row.a, row.b] as const;
@@ -347,14 +357,14 @@ export class Overlaps {
       const [mb, ob, mt, ot] = flip ? [p.b, p.a, p.b_tip, p.a_tip] : [p.a, p.b, p.a_tip, p.b_tip];
       const mine: Side = { branch: mb, tip: mt, who: this.who(sessionId, owners.get(mb)) };
       const other: Side = { branch: ob, tip: ot, who: p.base ? "the base" : this.who(sessionId, owners.get(ob)) };
-      const files = (JSON.parse(p.files) as ConflictFile[]).map((f) => (flip ? { ...f, clashes: f.clashes.map((c) => ({ a: c.b, b: c.a })) } : f));
+      const files = (JSON.parse(p.files) as ConflictFile[]).map((f) => f.path);
       if (row.owed === "conflict" && p.conflict) {
-        const told = row.told ? (JSON.parse(row.told) as string[]) : [];
-        parts.push(conflictNote(mine, other, files.filter((f) => !told.includes(f.path)), files.length, !!p.base));
+        const before = row.told ? (JSON.parse(row.told) as string[]) : [];
+        told.push({ mine, other, files: files.filter((f) => !before.includes(f)), all: files.length, base: !!p.base });
         conflicts++;
-        settled.push(() => this.store.db.query("UPDATE overlap_told SET told = ?, owed = NULL WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(JSON.stringify(files.map((f) => f.path)), ...where));
+        settled.push(() => this.store.db.query("UPDATE overlap_told SET told = ?, owed = NULL WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(JSON.stringify(files), ...where));
       } else if (row.owed === "cleared" && !p.conflict && !p.error) {
-        parts.push(clearedNote(mine, other, !!p.base));
+        gone.push({ mine, other, base: !!p.base });
         cleared++;
         settled.push(() => this.store.db.query("DELETE FROM overlap_told WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(...where));
       } else {
@@ -364,9 +374,9 @@ export class Overlaps {
     }
     const settle = () => { for (const f of settled) f(); };
     // Rows that owed nothing any more are settled at once; there is no note to write.
-    if (!parts.length) return void this.store.db.transaction(settle)();
+    if (!told.length && !gone.length) return void this.store.db.transaction(settle)();
     const said = [conflicts ? `${conflicts === 1 ? "a branch that would conflict" : `${conflicts} branches that would conflict`} when landing` : "", cleared ? `${cleared === 1 ? "a conflict" : `${cleared} conflicts`} gone` : ""].filter(Boolean).join(", and ");
-    return { text: parts.join("\n\n"), short: `Overlap forecast: ${said}.`, pairs, settle };
+    return { text: forecastNote(told, gone), short: `Overlap forecast: ${said}.`, pairs, settle };
   }
 
   // ---- what the page reads ----

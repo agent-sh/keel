@@ -91,27 +91,57 @@ export function linesSay([first, last]: [number, number]): string {
   return first === last ? `line ${first}` : `lines ${first}-${last}`;
 }
 
-// What a recipient is told of a pair that newly conflicts. `files` are the
-// files not told before (with where they meet when git's diff could say);
-// `all` how many files conflict now. `you`: how the recipient stands to each
-// side, said in its words.
+// What a session is told, as one note a request: each branch once, the
+// files where it meets each other branch (never the lines: the Branches view
+// has them), within NOTE_CHARS. A coordinator holding many agents' branches
+// gets one short note, not a note a pair: pairs past the budget are a count.
+// `who`: how the recipient stands to a side, in its words.
 export type Side = { branch: string; tip: string; who: string };
-export const FILES_TOLD = 12; // a note names this many files; the rest is a count (the Branches view has them all)
-export function conflictNote(mine: Side, other: Side, files: ConflictFile[], all: number, base: boolean): string {
-  const shown = files.slice(0, FILES_TOLD).map((f) => {
-    if (!f.clashes.length) return `${f.path} (both changed it; git's line diff cannot place it: a deletion, a rename or a binary file)`;
-    return `${f.path} (${f.clashes.map((c) => `${mine.who === "your branch" ? "your" : `${mine.branch}'s`} ${linesSay(c.a)} against ${base ? `${other.branch}'s` : "its"} ${linesSay(c.b)}`).join("; ")})`;
-  });
-  const more = files.length > shown.length ? `, and ${files.length - shown.length} more` : "";
-  const noFile = !files.length ? " (a conflict git names no file for, such as a directory renamed on one side)" : "";
-  const older = all > files.length && files.length ? ` ${all - files.length} more ${all - files.length === 1 ? "file was" : "files were"} told before.` : "";
-  const subject = mine.who === "your branch" ? `Your branch ${mine.branch}` : `${cap(mine.who)} ${mine.branch}`;
-  const against = base ? `the base ${other.branch}` : `${other.branch}, ${other.who}`;
-  const tail = base ? `Rebase onto ${other.branch} before landing.` : "Agree who lands first; the second rebases onto the first.";
-  return `[harness] Overlap forecast: ${subject} would conflict with ${against}, in ${shown.join(", ")}${more}${noFile}.${older} Checked with git merge-tree at ${mine.branch} ${mine.tip.slice(0, 9)} and ${other.branch} ${other.tip.slice(0, 9)}; neither branch was touched. ${tail}`;
+export type Told = { mine: Side; other: Side; files: string[]; all: number; base: boolean };
+export type Gone = { mine: Side; other: Side; base: boolean };
+export const FILES_TOLD = 4; // files named a pair; the rest is a count
+// The budget of a session's failure notice (src/automation/failures.ts), for the same reason:
+// what the harness adds to a request is read by the model at every later step.
+export const NOTE_CHARS = 2_500;
+const side = (s: Side) => (s.who === "your branch" ? `your branch ${s.branch}` : `${s.branch} (${s.who})`);
+const lead = (s: Side) => (s.who === "your branch" ? `Your branch ${s.branch}` : side(s));
+const against = (t: { other: Side; base: boolean }) => (t.base ? `the base ${t.other.branch}` : side(t.other));
+function filesSay(t: Told): string {
+  const shown = t.files.slice(0, FILES_TOLD);
+  const more = t.files.length - shown.length;
+  const before = t.all - t.files.length;
+  const extra = [more > 0 ? `${more} more` : "", before > 0 && t.files.length ? `${before} told before` : ""].filter(Boolean).join(", ");
+  const names = shown.length ? shown.join(", ") : "a conflict git names no file for (a directory renamed on one side)";
+  return extra ? `${names} (+${extra})` : names;
 }
-export const clearedNote = (mine: Side, other: Side, base: boolean) =>
-  `[harness] Overlap forecast: ${mine.who === "your branch" ? `your branch ${mine.branch}` : `${mine.who} ${mine.branch}`} no longer conflicts with ${base ? "the base " : ""}${other.branch} (checked at ${mine.tip.slice(0, 9)} and ${other.tip.slice(0, 9)}).`;
+export function forecastNote(conflicts: Told[], gone: Gone[]): string {
+  const head = "[harness] Overlap forecast (git merge-tree; no branch was touched).";
+  const tail = conflicts.length ? "Agree who lands first; the second rebases onto the first. A branch that conflicts with the base rebases onto it before landing." : "";
+  const groups = new Map<string, { mine: Side; parts: string[] }>();
+  for (const t of [...conflicts].sort((a, b) => Number(b.base) - Number(a.base))) {
+    const g = groups.get(t.mine.branch) ?? { mine: t.mine, parts: [] };
+    g.parts.push(`with ${against(t)}: ${filesSay(t)}`);
+    groups.set(t.mine.branch, g);
+  }
+  const lines: string[] = [];
+  let used = head.length + tail.length + 120, left = 0;
+  const add = (line: string, pairs: number) => {
+    if (used + line.length + 1 > NOTE_CHARS) { left += pairs; return; }
+    lines.push(line);
+    used += line.length + 1;
+  };
+  for (const g of groups.values()) {
+    const line = `- ${lead(g.mine)} would conflict ${g.parts.join("; ")}.`;
+    if (used + line.length + 1 <= NOTE_CHARS) { add(line, g.parts.length); continue; }
+    // A branch with many pairs: as many as fit, the rest counted.
+    let part = `- ${lead(g.mine)} would conflict`, n = 0;
+    for (const p of g.parts) { if (used + part.length + p.length + 3 > NOTE_CHARS) break; part += `${n ? ";" : ""} ${p}`; n++; }
+    if (n) { add(part + ` (and ${g.parts.length - n} more).`, 0); left += g.parts.length - n; } else left += g.parts.length;
+  }
+  if (gone.length) add(`- No longer conflicting: ${gone.map((c) => `${c.mine.branch} with ${c.base ? "the base " : ""}${c.other.branch}`).join("; ")}.`, gone.length);
+  if (left) lines.push(`${left} more ${left === 1 ? "pair is" : "pairs are"} not listed here; the session's Branches view lists every pair with the lines where they meet.`);
+  return [head, ...lines, tail].filter(Boolean).join("\n");
+}
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // What a check changes for one recipient of a pair. `told`: the files it was
