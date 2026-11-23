@@ -424,6 +424,22 @@ test("a plan is approved by a key on Approve only once it was read to its end", 
   await page.keyboard.press("Enter");
   await expect.poll(() => open1(short)).toBe(0);
   await drop(request, short);
+  // A plan that becomes whole in view only later (the window grows): Approve waits out the settle time
+  // from then, not from the keyboard's arrival.
+  const late = await create(request, "Plan the index, seen late", folder("plan"));
+  await ask(request, late, "plan");
+  await page.setViewportSize({ width: 1920, height: 420 });
+  await page.goto(`/s/${late}`);
+  const two = cardIn(page, late, "plan");
+  await expect(two.getByTestId("plan-text")).toBeFocused();
+  await expect(two).toHaveAttribute("data-keys", "ready");
+  await expect(two).not.toHaveAttribute("data-read", "true");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await expect(two).toHaveAttribute("data-read", "true");
+  await page.waitForTimeout(400);
+  await expect(two.getByTestId("plan-text")).toBeFocused();
+  await expect(two.getByTestId("plan-approve")).toBeFocused({ timeout: 4000 });
+  await drop(request, late);
   // (A plan that fits its box is walked with the other kinds above: the key that answers waits out the arrival.)
   // A plan longer than its box: a key on Approve does nothing until the text was scrolled to its end.
   const long = await create(request, "Plan the migration", folder("plan"));

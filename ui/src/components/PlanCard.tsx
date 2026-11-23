@@ -92,6 +92,11 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const queued = useRef(0); // presses made meanwhile, to make after it (Infinity: an End)
   const reader = useRef<PaintedReader | null>(null);
   const [fits, setFits] = useState(false); // the whole plan stands in view, none of it scrolled out or under the foot
+  // Since when it has stood so (null: not now): Approve takes the keyboard only once it stood whole for the settle time.
+  const fitsAt = useRef<number | null>(null);
+  if (!fits) fitsAt.current = null;
+  else fitsAt.current ??= performance.now();
+  const [woke, wake] = useState(0);
   useEffect(() => {
     const el = text.current;
     if (!el) return;
@@ -179,10 +184,13 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const comes = hold.take && moved.current !== hold.at && at === "text" && read && fits && !editing && !wasBrought();
   useEffect(() => {
     if (hold.keys !== "ready" || !hold.take || moved.current === hold.at || !read) return;
+    // Whole in view for the settle time first: asked again when that time is up (it may change meanwhile).
+    const wait = fits && fitsAt.current !== null ? fitsAt.current + SETTLE_MS - performance.now() : 0;
+    if (wait > 0) { const t = window.setTimeout(() => wake((n) => n + 1), wait + 1); return () => window.clearTimeout(t); }
     moved.current = hold.at;
     if (document.activeElement !== text.current || !fits || editing || wasBrought() || !approve.current || approve.current.disabled) return;
     approve.current.focus({ preventScroll: true });
-  }, [hold.keys, hold.take, hold.at, read, fits]);
+  }, [hold.keys, hold.take, hold.at, read, fits, fitsAt.current, woke]);
   const [nudge, setNudge] = useState("");
   useEffect(() => {
     if (!nudge) return;
