@@ -4,9 +4,10 @@
 // wide as the room beside the panes, down to the narrowest the list is
 // dragged to. With less room than that it is still a list of titles, one
 // line a session (the mark and the title, cut), down to a width where a
-// title can be read. Only below that (many panes, a side panel beside the
-// helm, a narrow window), or when the list was folded by choice, is it the
-// column of marks; the list is then one press away, laid over the panes
+// title can be read. More panes than the window holds (they scroll sideways)
+// keep the list the panes that fit leave it, and the panes' map stands at the
+// row's edge (PaneMap.tsx): the panes that fit give it its width. Only below that (a side panel beside the helm, a narrow
+// window), or when the list was folded by choice, is it the column of marks; the list is then one press away, laid over the panes
 // until a session is picked. Every measure is a rem, so it follows the text size.
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { getStations, MAX_PANES, useStations } from "./stations.ts";
@@ -30,6 +31,8 @@ export const railWidth = () => rem(64); // the marks
 export const paneMin = () => rem(416); // matches .k-station's min-width (26rem)
 // NARROW: the least a list of titles is worth: a dozen letters of a title beside its mark.
 const LIST = 300, LIST_MIN = 232, LIST_MAX = 560, NARROW = 120;
+// The panes' map at the row's edge (bridge.css: .k-pane-map).
+export const mapWidth = () => rem(32);
 export const listBounds = () => ({ min: rem(LIST_MIN), max: Math.max(rem(LIST_MIN), Math.min(rem(LIST_MAX), innerWidth - paneMin())), base: rem(LIST) });
 // The list's width: the dragged one within what fits, else the default.
 export function listWidth() {
@@ -74,13 +77,30 @@ function needed(width: number): number {
 
 // The room the list has beside the panes at their narrowest (a pixel for each pane's divider).
 const listRoom = (width: number) => Math.floor(width - needed(width)) - panes();
+// More panes than the window holds beside the folded rail: the row scrolls sideways whatever the list does.
+export const panesOver = (width = innerWidth) => !phone() && panes() > panesMax(width);
 // The list beside the panes: at the owner's width or what the room gives, while
 // that is a width the list is dragged to; with less, the narrow list of titles.
+// With more panes than fit, the room is what the panes that fit leave: the list
+// is as it would be with only those open.
 function beside(width: number): { width: number; narrow: boolean } | null {
+  if (panesOver(width)) {
+    const fit = panesMax(width), room = Math.floor(width - fit * paneMin() - fit);
+    if (room >= Math.floor(rem(LIST_MIN))) return { width: Math.min(listWidth(), room), narrow: false };
+    return room >= rem(NARROW) ? { width: room, narrow: true } : null;
+  }
   const room = listRoom(width);
   const full = Math.min(listWidth(), room);
   if (full >= Math.floor(rem(LIST_MIN))) return { width: full, narrow: false };
   return room >= rem(NARROW) ? { width: room, narrow: true } : null;
+}
+
+// More panes than fit: the width of each pane that fits, so that they, the list and the panes'
+// map share the window (the map's width comes off the panes, a few pixels each, never off the list).
+export function paneOver(width = innerWidth): number | null {
+  if (!panesOver(width)) return null;
+  const fit = panesMax(width);
+  return Math.min(paneMin(), Math.floor((width - railForm(width).width - mapWidth() - fit) / fit));
 }
 
 // No room for a list of titles beside the panes.

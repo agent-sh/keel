@@ -38,6 +38,7 @@ import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { soloWindow } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
+import { PaneMap } from "./PaneMap.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
 import { elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
@@ -760,6 +761,7 @@ export function Bridge() {
         })]}
         {phone && (fresh || (!helm && pages.length === 0)) && <NewStation />}
       </main>
+      {!phone && <PaneMap track={track} />}
       {phone && <PhoneDock list={pages} helm={helm} />}
       {!phone && <AimSays track={track} />}
     </>
