@@ -394,10 +394,16 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    WCAG 2.5.5 give a finger. The control's box grows, centered on what it shows; a link among
    words keeps its line (WCAG leaves those out). A floor, so it wins over a control's own size. */
 @media (pointer: coarse) and (max-width: 767px) {
-  :where(button, [role="button"], [role="link"], [role="tab"], [role="switch"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="radio"], select, summary, input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"]), a[href]):not(.prose-keel *, [data-inline-target], [hidden]) {
+  :where(button, [role="button"], [role="link"], [role="tab"], [role="switch"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="radio"], select, summary, input:not([type="checkbox"], [type="radio"], [type="range"], [type="hidden"]), a[href]):not(.prose-keel *, [data-inline-target], [hidden], .k-diff-no > [data-line]) {
     min-height: var(--spacing-tap) !important;
     min-width: var(--spacing-tap) !important;
   }
+  /* A diff line's comment mark is a target's width beside the line's number, never over its
+     digits: the number keeps the room for it. It is as tall as its line (a mark a row, rows
+     touching), the one target here under the floor's height: lines a target tall would make a
+     diff three times as long. */
+  .k-diff-no:has(> [data-line]) { padding-right: calc(var(--spacing-tap) + 0.25rem); }
+  .k-diff-no > [data-line] { width: var(--spacing-tap); }
 }
 /* Phone: inputs at 16 px so iOS does not zoom on focus. */
 @media (max-width: 640px) {
