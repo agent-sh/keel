@@ -748,7 +748,10 @@ async function restartable(state: string, more: Record<string, string> = {}) {
     graceful: async () => { const old = now; drained = await api("/api/drain", { timeout_seconds: 1, restart: true }); now = await up(old); },
     // Started again as soon as the port is closed: the killed daemon's pid may still be there.
     killed: async () => { drained = undefined; process.kill(now, "SIGKILL"); await down(now); now = await start(); },
-    stop: async () => { try { process.kill(now, "SIGTERM"); await down(now); } catch {} },
+    // Gone when its process is: the port closes before the store's files do, and a test that opens the
+    // store right after must not find the last checkpoint still writing (SQLITE_BUSY). (A process this
+    // test started is gone when it exited: its pid stands until it is reaped.)
+    stop: async () => { try { process.kill(now, "SIGTERM"); await down(now); const t0 = Date.now(); const alive = () => (child?.pid === now ? child.code === null : exists(now)); while (alive() && Date.now() - t0 < 60_000) await Bun.sleep(25); } catch {} },
   };
 }
 const isResult = (l: any) => l.type === "result";
