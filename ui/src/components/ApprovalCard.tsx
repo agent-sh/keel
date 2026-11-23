@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
-import { batches, batchName, coverName, hold, nextAction, paintedReader, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
+import { batches, batchName, coverName, hold, nextAction, paintedReader, pressable, readOnSteps, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
 import { editBody, type EditBody } from "../lib/edit-body.ts";
@@ -314,6 +314,9 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     setHot: (tool: string, on: boolean) => { if (on) st.current.hot.add(tool); else st.current.hot.delete(tool); tick(); },
     // The owner's key moves the region (End, Space): read as their own scroll, step by step.
     own: () => { st.current.input = true; st.current.inputAt = performance.now(); },
+    // The reader that takes the readings after a paint, and the newest reading (not the drawn one).
+    reader: () => st.current.reader,
+    latest: () => st.current.view,
     // The action answered these: they wait no more, and it starts again from what is ready, after a beat.
     spend: (tool: string, ids: string[]) => {
       for (const id of ids) st.current.spent.add(id);
@@ -338,7 +341,9 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
 export function Approvals({ sessionId, asker }: { sessionId: string; asker?: string }) {
   const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
   const list = useRef<HTMLDivElement>(null);
-  const { view, tick, waiting, setHot, spend, own } = useReadings(list, cards);
+  const { view, tick, waiting, setHot, spend, own, reader, latest } = useReadings(list, cards);
+  // A reading on by keys under way (End, Space): one at a time, and a press meanwhile joins it.
+  const steps = useRef<{ on: boolean; more: number; end: boolean }>({ on: false, more: 0, end: false });
   // How the list holds the keyboard (lib/asks.ts): said on it for the page and its tests.
   const hold = useHold(list);
   const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => shownOf(c).flagged).map((c) => c.id)]));
@@ -454,42 +459,49 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   // (on the list itself: the first card with lines not seen), a step at a time, each step read as
   // the owner's own scroll. A step is the height the text can be read in, less a line (with the
   // fades at both edges and the card's foot counted out), so two views always share a line and
-  // none is jumped over. Each view stands for a painted frame before it is read and before the
-  // next step: a step is made two frames after the one before it, never in the frame of it, and
-  // the reading that counts it is made after it was painted. `end`: on to the card's end, else
-  // one step. Not for a card whose text must be opened first (Enter opens it).
+  // none is jumped over. The steps are lib/approvals.ts's readOnSteps on the list's painted reader:
+  // a step is made two frames after the key or after the reading of the step before, never in the
+  // frame of either, and its view counts once it was painted. One run of steps at a time: a press
+  // while one is under way joins it (Space is one step more, End goes on to the end), and so does a
+  // key the browser repeats. It goes on while the card has lines not seen and the region can move.
+  // `end`: on to the card's end, else one step. Not for a card whose text must be opened first.
   const readOn = (from: HTMLElement, end: boolean): boolean => {
     const el = list.current, tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
-    if (!el || !tray) return false;
-    const unread = (c: HTMLElement) => (view.unseen.get(c.dataset.approvalId!)?.n ?? 0) > 0 && !shut.some((x) => x.id === c.dataset.approvalId);
+    const r = reader();
+    if (!el || !tray || !r) return false;
+    const unread = (c: HTMLElement) => (latest().unseen.get(c.dataset.approvalId!)?.n ?? 0) > 0 && !shut.some((x) => x.id === c.dataset.approvalId);
     const own_ = from.closest<HTMLElement>('[data-testid="approval"]');
     const card = own_ ? (unread(own_) ? own_ : null) : [...el.querySelectorAll<HTMLElement>(':scope > [data-testid="approval"]')].find(unread);
     const text = card?.querySelector<HTMLElement>('[data-testid="approval-summary"]');
+    const run = steps.current;
+    if (run.on) { if (end) run.end = true; else run.more++; return true; }
     if (!card || !text) return false;
+    const id = card.dataset.approvalId!;
+    const rem = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     const foot = () => (card.hasAttribute("data-foot") ? card.querySelector<HTMLElement>(":scope > .k-ask-foot")?.offsetHeight ?? 0 : 0);
-    const left = () => text.getBoundingClientRect().bottom - (tray.getBoundingClientRect().bottom - foot());
+    const canMove = () => tray.scrollTop + tray.clientHeight < tray.scrollHeight - 1;
+    // What of the text is still under the readable frame's foot (the fade and the card's foot counted out).
+    const rest = () => text.getBoundingClientRect().bottom - (tray.getBoundingClientRect().bottom - foot() - 1.25 * rem());
     const stepBy = () => {
-      const r = tray.getBoundingClientRect(), rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const b = tray.getBoundingClientRect(), fade = 1.25 * rem(); // the region's fades (styles.css), counted whether they show or not
       const bar = el.hasAttribute("data-bar-stays") ? el.querySelector<HTMLElement>(":scope > .k-ask-bar")?.getBoundingClientRect().bottom ?? 0 : 0;
-      const fade = 1.25 * rem; // the region's fades (styles.css), counted whether they show or not
-      const top = Math.max(r.top + fade, bar), bottom = r.bottom - foot() - fade;
-      const line = parseFloat(getComputedStyle(text).lineHeight) || 1.5 * rem;
+      const top = Math.max(b.top + fade, bar), bottom = b.bottom - foot() - fade;
+      const line = parseFloat(getComputedStyle(text).lineHeight) || 1.5 * rem();
       return Math.max(line, Math.floor(bottom - top - line));
     };
-    const more = () => left() > 1 && tray.scrollTop + tray.clientHeight < tray.scrollHeight - 1;
+    const left = () => (latest().unseen.get(id)?.n ?? 0) > 0 && canMove() && rest() > -1.25 * rem();
+    if (!left()) return false;
+    run.on = true; run.more = end ? 0 : 1; run.end = end;
     const go = () => {
-      if (!more()) return false;
+      // (Each step is the run's: an End, or a press of Space not yet made.)
+      if (!run.end && run.more <= 0) return false;
+      if (!left()) return false;
+      if (!run.end) run.more--;
       own();
-      tray.scrollTop += Math.min(stepBy(), Math.ceil(left()) + 1);
+      tray.scrollTop += Math.min(stepBy(), Math.max(1, Math.ceil(rest()) + 1));
       return true;
     };
-    // Two frames on: the view the step made has been painted. It is read then, and the next step made.
-    const later = (f: () => void) => requestAnimationFrame(() => requestAnimationFrame(f));
-    const after = () => later(() => { own(); tick(); if (end && go()) after(); });
-    if (!more()) return false;
-    // Not even the first step in the frame of the key: the view the key found (the page may have just
-    // moved it, opening the text) is painted and read first, then left.
-    later(() => { tick(); if (go()) after(); });
+    readOnSteps(go, r, true, () => { run.on = false; run.more = 0; run.end = false; });
     return true;
   };
   const onFocus = (e: ReactFocusEvent<HTMLDivElement>) => {
