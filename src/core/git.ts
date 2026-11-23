@@ -484,7 +484,11 @@ const LIST_ADMIN = new Set(["add", "remove", "prune", "list", "repair", "move", 
 const ADD_VALUES = new Set(["-b", "-B", "--reason", "--orphan"]);
 
 // `refused`: why this call fetches nothing on demand. `intoFolder`: a push into a repository that is a folder on this machine.
-type Plan = { argv: string[]; env: Record<string, string>; cwd: string; after?: { dir: string; branch?: string }; refused?: string; intoFolder?: true } | { fail: string };
+type Plan = { argv: string[]; env: Record<string, string>; cwd: string; after?: { dir: string; branch?: string }; refused?: string; intoFolder?: true; pushTo?: string } | { fail: string };
+// Told of each push the daemon's git made to an address off this machine, when it ended (the outward ledger,
+// src/safety/egress.ts, wires it): called where the push was asked for, so it is that call's.
+let pushed: ((p: { to: string; ok: boolean; err: string }) => void) | undefined;
+export const onGitPush = (f: typeof pushed) => void (pushed = f);
 // The keys of a call's environment, set again for what it may reach.
 function setKeys(env: Record<string, string>, file: "never" | "user", fetches: boolean) {
   for (const k of Object.keys(env)) if (/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k)) delete env[k];
@@ -589,6 +593,9 @@ function plan(dir: string, args: string[], o: GitOpts): Plan {
     const url = sub === "push" ? named?.pushurl ?? named?.url : named?.url;
     intoFolder = url !== undefined && localPath(url);
     if (intoFolder || sub === "fetch") setKeys(env, intoFolder ? "user" : "never", sub === "fetch");
+    // (A push names its remote, or an address in its place.)
+    const to = sub === "push" ? url ?? (remote !== undefined && !localPath(remote) ? remote : undefined) : undefined;
+    if (to !== undefined && !localPath(to)) return { argv, env, cwd: dir, ...(refused ? { refused } : {}), pushTo: to };
   }
   return { argv, env, cwd: dir, ...(refused ? { refused } : {}), ...(intoFolder && sub === "push" ? { intoFolder: true as const } : {}) };
 }
@@ -612,6 +619,7 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
     return { code: 127, out: "", err: `git could not start: ${(e as Error).message}` };
   }
   const [out, err, code] = await Promise.all([readText(proc.stdout as ReadableStream<Uint8Array>), readText(proc.stderr as ReadableStream<Uint8Array>), proc.exited]);
+  if (p.pushTo) try { pushed?.({ to: p.pushTo, ok: code === 0, err }); } catch {} // a ledger row never fails the push
   if (code === 0 && p.after) {
     // The new worktree's files, as `git worktree add` itself puts them there.
     const filled = await git(p.after.dir, ["reset", "-q", "--hard", "--no-recurse-submodules"], { env: o.env, timeout: o.timeout, signal: o.signal, fetch: o.fetch });

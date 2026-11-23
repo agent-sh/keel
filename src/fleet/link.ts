@@ -5,6 +5,7 @@
 // A daemon that answers without the right proof, or with another id, is not taken.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { outward } from "../safety/egress.ts";
 
 export const CONNECT_MS = 5_000; // a link that does not connect in 5 s is down
 export const READ_MS = 10_000; // a stalled answer: the bound a machine gets to answer a ping
@@ -52,7 +53,7 @@ export async function linkFetch(p: Peer, path: string, init: RequestInit & { tim
   const signal = init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(init.timeout ?? READ_MS)]) : AbortSignal.timeout(init.timeout ?? READ_MS);
   let r: Response;
   try {
-    r = await fetch(p.url.replace(/\/$/, "") + path, { ...init, headers, signal, redirect: "manual" });
+    r = await outward({ via: "fleet" }, () => fetch(p.url.replace(/\/$/, "") + path, { ...init, headers, signal, redirect: "manual" }));
   } catch (e) {
     throw new LinkError(`cannot reach ${p.url}: ${whyUnreached(e, init.timeout ?? READ_MS)}`);
   }

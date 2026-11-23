@@ -18,6 +18,7 @@ import { readText } from "../core/proc.ts";
 import type { Facts } from "./db.ts";
 import { LinkError } from "./link.ts";
 import { sshProgram } from "./sshconfig.ts";
+import { outward } from "../safety/egress.ts";
 
 declare const __KEEL_HANDS_JS__: string | undefined;
 
@@ -227,7 +228,8 @@ export class SshLink {
         const headers = new Headers(init.headers);
         if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
         sent = true;
-        const r = await fetch(`http://keel${path}`, { ...init, headers, unix: sock, signal } as RequestInit);
+        // (Over ssh to the machine: the outward ledger names the ssh host it goes to, src/safety/egress.ts.)
+        const r = await outward({ via: "fleet over ssh", host: this.route ?? this.routes()[0] ?? this.id, port: 22 }, () => fetch(`http://keel${path}`, { ...init, headers, unix: sock, signal } as RequestInit));
         // Read here: a body cut by a dropped link is a failed attempt, not a short answer.
         const buf = await r.arrayBuffer();
         return new Response(buf, { status: r.status, headers: r.headers });

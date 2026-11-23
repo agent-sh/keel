@@ -7,6 +7,7 @@
 // opt-in): a failed span goes out as status code 2 with its error.type class.
 import type { KeySource } from "../providers/creds.ts";
 import type { Span } from "./trace.ts";
+import { outward } from "../safety/egress.ts";
 
 type AnyValue = { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean } | { arrayValue: { values: AnyValue[] } };
 type KV = { key: string; value: AnyValue };
@@ -238,7 +239,7 @@ export class OtlpExporter<T = Span> {
     try {
       const headers = await this.headers();
       if (!current()) return;
-      const r = await fetch(t.url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(this.encode(batch, this.resource)), signal: AbortSignal.any([t.cancel.signal, AbortSignal.timeout(10_000)]) });
+      const r = await outward({ tool: "OTLP export", via: this.what }, () => fetch(t.url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(this.encode(batch, this.resource)), signal: AbortSignal.any([t.cancel.signal, AbortSignal.timeout(10_000)]) }));
       if (!r.ok) throw new Error(`${this.what} to ${t.url}: HTTP ${r.status}: ${(await r.text().catch(() => "")).slice(0, 300)}`);
       if (!current()) return;
       this.state.sent += batch.length;

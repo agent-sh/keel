@@ -13,6 +13,8 @@ import type { ToolContext } from "./types.ts";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { chunks, readText } from "../core/proc.ts";
 import { privateHost } from "../core/hosts.ts";
+import { noteOutward } from "../safety/egress.ts";
+import { endpointOf, requestBytes } from "../safety/egress-count.ts";
 
 const HOME = homedir();
 const findBin = (name: string, env?: string) =>
@@ -68,6 +70,11 @@ export async function webSearch(query: string, o: SearchOpts = {}, signal?: Abor
     const params: any = { query: q, count: o.count ?? 8 };
     if (o.time_range && o.time_range !== "all") params.time_range = o.time_range;
     const r = await rpc(bin, "websearch", params, session, signal);
+    // The helper program connects by itself: the ledger's row is the backend it says it asked, and the query it sent.
+    const backend = typeof r.meta?.backend_host === "string" ? r.meta.backend_host : undefined;
+    const searx = session.searxng_url ? endpointOf(session.searxng_url) : null;
+    noteOutward({ via: `search helper${r.meta?.engine ? ` (${r.meta.engine})` : ""}`, host: backend ?? (r.meta?.engine ? String(r.meta.engine) : "a search engine"), port: searx && backend && searx.host === backend.toLowerCase() ? searx.port : null,
+      bytes: requestBytes({ url: `https://${backend ?? "search"}/search?q=${encodeURIComponent(q)}` }), outcome: r.kind === "error" ? "failed" : "sent", ...(r.kind === "error" ? { why: String(r.error?.message ?? "the search failed") } : {}) });
     if (r.kind === "error") return { text: String(r.error?.message ?? JSON.stringify(r.error)), error: true };
     return { text: String(r.output ?? JSON.stringify(r.results ?? r)) };
   }
@@ -138,6 +145,8 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
   if (u.protocol === "http:") u.protocol = "https:";
   if (u.protocol !== "https:") return { text: `Only http(s) URLs can be fetched. Read local files with the file tool.`, error: true };
   if (privateHost(u.hostname)) {
+    // (Refused before anything left: a row that says it was asked for.)
+    noteOutward({ via: "web fetch", host: u.hostname, port: Number(u.port) || 443, bytes: 0, outcome: "refused", why: "a local or private address" });
     return { text: `${u.hostname} is a local or private address; reach local servers with curl in the shell.`, error: true };
   }
   if (/\.pdf($|\?)/i.test(u.pathname) && Bun.which("pdftotext")) return pdfText(u.href, o, signal);
@@ -148,6 +157,11 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     if (o.body) params.body = o.body;
     if (o.headers) params.headers = o.headers;
     const r = await rpc(bin, "webfetch", params, { unsafe_allow_fetch_without_hook: true, spill_dir: join(o.spillDir, "web") }, signal);
+    // The helper program connects by itself: the ledger's row is the address it was given, and where it ended when that is another host.
+    const end = endpointOf(u.href)!;
+    noteOutward({ via: "fetch helper", host: end.host, port: end.port, bytes: requestBytes({ method: o.method, url: u.href, headers: o.headers, body: o.body }), outcome: r.kind === "error" && !r.meta?.status ? "failed" : "sent", ...(typeof r.meta?.status === "number" ? { status: r.meta.status } : {}) });
+    const last = typeof r.meta?.final_url === "string" ? endpointOf(r.meta.final_url) : null;
+    if (last && last.host !== end.host) noteOutward({ via: "fetch helper (redirected)", host: last.host, port: last.port, bytes: null });
     if (r.kind === "error") return { text: String(r.error?.message ?? JSON.stringify(r.error)), error: true };
     // The page itself, without the request echo: the model knows the URL. A
     // page with an error status comes as the echo and the raw markup: it gets

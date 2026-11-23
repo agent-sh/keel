@@ -17,6 +17,7 @@ import { readHours, type HoursAsk } from "../admin/hours-read.ts";
 import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.ts";
 import { boardChecks, boardFacts } from "../board/facts.ts";
 import { priceFactsRead } from "../engine/price-facts.ts";
+import { egressReport, type EgressAsk } from "../safety/egress-report.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -54,6 +55,8 @@ export const tasks = {
   // and the check runs on their heads' trees.
   "board.facts": (db: Database, a: { root: string }) => boardFacts(db, a),
   "board.checks": (db: Database, a: { trees: string[] }) => boardChecks(db, a),
+  // What left the daemon in a range, by host and session (src/safety/egress-report.ts).
+  "egress.report": (db: Database, a: EgressAsk) => egressReport(db, a),
 };
 
 export type Tasks = typeof tasks;

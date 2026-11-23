@@ -6,6 +6,7 @@ import { readsOf } from "../reads.ts";
 import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
+import { noteOutward } from "../../safety/egress.ts";
 import { exportTo, KeelFileTooLarge, parseKeelJsonl, redact, redactDeep, rowsOf, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
 import { KEEL_FILE_MAX } from "../../core/keel-file.ts";
 import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON } from "../../integrations/import/service.ts";
@@ -374,9 +375,15 @@ export const importRoutes: RouteModule = (deps) => {
       },
     },
     "/api/sessions/:id/export": {
-      GET: (req: any) => {
+      GET: (req: any, srv?: { requestIP?: (r: Request) => { address: string; port: number } | null }) => {
         const s = store.session(req.params.id);
         if (!s) return bad("no such session", 404);
+        // A session's whole text leaves the daemon for whoever asked: a row of the outward ledger, by their address.
+        const sent = (text: string) => {
+          const to = srv?.requestIP?.(req);
+          noteOutward({ tool: "export", via: format, session: s.id, host: to?.address ?? "the page", bytes: Buffer.byteLength(text) });
+          return text;
+        };
         const u = new URL(req.url).searchParams;
         const format = u.get("format") ?? "md";
         const include = new Set((u.get("include") ?? "").split(",").filter(Boolean));
@@ -409,7 +416,7 @@ export const importRoutes: RouteModule = (deps) => {
         const shown = events(s.id);
         const leaves = all.filter((e) => !all.some((x) => x.parent === e.id)).length;
         const otherBranches = Math.max(0, leaves - 1);
-        if (format === "md") return new Response(redact(toMarkdown(s, shown, include, { otherBranches })), { headers: headers("text/markdown; charset=utf-8", "md") });
+        if (format === "md") return new Response(sent(redact(toMarkdown(s, shown, include, { otherBranches }))), { headers: headers("text/markdown; charset=utf-8", "md") });
         if (format === "jsonl") {
           // The Keel file is whole, for another Keel to continue: there is no part to choose.
           if (include.size) return bad("the Keel file always holds every part of the branch; include applies to Markdown");
@@ -424,7 +431,7 @@ export const importRoutes: RouteModule = (deps) => {
             if (e instanceof KeelFileTooLarge) return json({ error: e.message, bytes: e.bytes, files_bytes: e.files_bytes, max: e.max }, 413);
             throw e;
           }
-          return new Response(file, { headers: headers("application/x-ndjson", "jsonl") });
+          return new Response(sent(file), { headers: headers("application/x-ndjson", "jsonl") });
         }
         return bad(`unknown format ${format}`);
       },

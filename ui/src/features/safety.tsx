@@ -1,6 +1,6 @@
 // The safety lane's side panels and commands: what the session changed
 // (checkpoints and rewind) and the branch review. Imported once from main.tsx.
-import { FileDiff, FileLock2, GitMerge, GitPullRequestArrow, ShieldCheck } from "lucide-react";
+import { FileDiff, FileLock2, GitMerge, GitPullRequestArrow, Network, ShieldCheck } from "lucide-react";
 import { lazy } from "react";
 import { panels, settingsSections } from "../lib/extend.ts";
 import { registerCommand } from "../lib/keys.ts";
@@ -50,6 +50,16 @@ settingsSections.add({
   icon: <ShieldCheck className="size-4" />,
   order: 20,
   component: lazy(() => import("../components/SafetySettings.tsx").then((m) => ({ default: () => <m.SafetySettings /> }))),
+});
+
+// What left this machine: the outward ledger by host and session (src/safety/egress.ts).
+settingsSections.add({
+  id: "network",
+  label: "Network",
+  words: "network egress outward sent left hosts bytes proxy connections refused upload transfers new host",
+  icon: <Network className="size-4" />,
+  order: 21,
+  component: lazy(() => import("../components/NetworkPanel.tsx").then((m) => ({ default: m.NetworkPanel }))),
 });
 
 const inSession = () => {

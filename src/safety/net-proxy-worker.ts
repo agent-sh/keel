@@ -4,8 +4,8 @@
 // at once). A session's read view is made again here too, when the one the
 // loop keeps has aged (a few hundred names on disk are read for it). The
 // main thread says which sockets to listen on, which ports are the daemon's
-// own and which views to make; this thread says what it refused and gives
-// the views back.
+// own and which views to make; this thread says what it refused, what it carried and
+// gives the views back.
 import { setGitViews } from "../core/git.ts";
 import { ownPort, startProxy, type FromProxy, type ToProxy } from "./net-proxy.ts";
 import { readView } from "./sandbox-view.ts";
@@ -27,7 +27,10 @@ self.onmessage = (ev: MessageEvent<ToProxy>) => {
   }
   if (m.t !== "listen" || listening.has(m.path)) return;
   try {
-    const server = startProxy(m.path, { refused: (r) => self.postMessage({ t: "refused", path: m.path, r } satisfies FromProxy) });
+    const server = startProxy(m.path, {
+      refused: (r) => self.postMessage({ t: "refused", path: m.path, r } satisfies FromProxy),
+      seen: (c) => self.postMessage({ t: "conn", path: m.path, c } satisfies FromProxy),
+    });
     listening.add(m.path);
     server.on("error", (e) => { listening.delete(m.path); self.postMessage({ t: "failed", path: m.path, error: String((e as Error).message) } satisfies FromProxy); });
     self.postMessage({ t: "listening", path: m.path } satisfies FromProxy);

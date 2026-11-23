@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { configDir } from "../../providers/config.ts";
 import { sha256Hex } from "./sig.ts";
+import { outward } from "../../safety/egress.ts";
 import type { MobileStore, PushRecord } from "./store.ts";
 
 const FILE = "fcm-service-account.json";
@@ -99,12 +100,12 @@ async function accessToken(a: Account): Promise<string> {
   const jwt = await assertion(a, Math.floor(Date.now() / 1000));
   let res: Response;
   try {
-    res = await fetch(a.token_uri, {
+    res = await outward({ tool: "phone push", via: "token" }, () => fetch(a.token_uri, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }),
       signal: AbortSignal.timeout(20_000),
-    });
+    }));
   } catch (e) {
     throw new Error(`the push service's token endpoint was not reached: ${(e as Error).message}`);
   }
@@ -150,12 +151,12 @@ export async function send(mobile: MobileStore, seq: number, msg: PushMessage, d
     mobile.recordPush(rec);
     let ok = false, error: string | undefined;
     try {
-      const res = await fetch(url, {
+      const res = await outward({ tool: "phone push", via: msg.kind, ...(msg.session_id ? { session: msg.session_id } : {}) }, () => fetch(url, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify({ message: { token: t.token, data, android } }),
         signal: AbortSignal.timeout(20_000),
-      });
+      }));
       ok = res.ok;
       if (!ok) {
         const d: any = await res.json().catch(() => ({}));

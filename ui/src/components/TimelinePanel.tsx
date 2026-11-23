@@ -25,7 +25,7 @@ import {
   type Held, type Only, type Receipt, type TimelineKind, type TimelineNow, type TimelineRow,
 } from "../lib/timeline.ts";
 import { savePref, setUI } from "../lib/ui.ts";
-import { clock, cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
+import { clock, cn, fmtCost, fmtSize, fmtTokens, when } from "../lib/utils.ts";
 import { Seg } from "./Seg.tsx";
 
 const MARK: Record<Exclude<TimelineKind, "turn">, LucideIcon> = {
@@ -617,6 +617,24 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
             </>
           ) : <span className="text-muted">No tool call</span>}
         </li>
+        {/* (A daemon before the outward ledger sends no hosts.) */}
+        {r.hosts && (
+          <li className={link} data-testid="receipt-hosts">
+            {r.hosts.length ? (() => {
+              const host = (h: (typeof r.hosts)[number]) => (
+                <span key={h.host} className={cn("font-mono", h.refused === h.rows && "text-st-fail")} title={`${count(h.rows, "transfer")}, ${fmtSize(h.bytes)} out${h.refused ? `, ${h.refused} refused` : ""} (${h.tools})`} data-testid="receipt-host">{h.host}</span>
+              );
+              // A host every transfer to was refused received nothing: it is named as refused.
+              const went = r.hosts.filter((h) => h.refused < h.rows), refused = r.hosts.filter((h) => h.refused === h.rows);
+              return (
+                <>
+                  {went.length ? <>Sent to {commas(went.map(host))}<span className="text-muted">, {fmtSize(went.reduce((n, h) => n + h.bytes, 0))} out</span></> : <span className="text-muted">Nothing left the machine</span>}
+                  {refused.length > 0 && <>{went.length ? "; " : <span className="text-muted">: </span>}refused {commas(refused.map(host))}</>}
+                </>
+              );
+            })() : <span className="text-muted">Nothing left the machine</span>}
+          </li>
+        )}
         <li className={link} data-testid="receipt-end">
           {r.end ? <>{ENDED[r.end.reason] ?? "Ended"}{r.end.end_ms > r.start_ms && <span className="text-muted"> after {dur(r.end.end_ms - r.start_ms)}</span>}</> : <span className="text-st-work">Still running</span>}
         </li>

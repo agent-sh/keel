@@ -1,4 +1,5 @@
 import { type Wire, wireOf, wireScope } from "../providers/wiretap.ts";
+import { outward } from "../safety/egress.ts";
 import { timed } from "../admin/stall.ts";
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -2047,7 +2048,8 @@ export class Engine {
         if (!quiet) this.wires.set(id, tap);
         // (The hooks that time a stream's pieces, looked up once a request, not at every piece.)
         const timing = allHooks().filter((h) => h.requestDelta);
-        const res = await wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders, connectWaitMs: outages?.active(st.provider.id) ? OUTAGE.probeMs : undefined }, (d) => {
+        // (Its transfers are the model's, in the outward ledger: src/safety/egress.ts.)
+        const res = await outward({ tool: "model", via: st.provider.id, session: id }, () => wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders, connectWaitMs: outages?.active(st.provider.id) ? OUTAGE.probeMs : undefined }, (d) => {
           if ((first || silent) && !quiet) { first = silent = false; this.status(id, { kind: "idle" }); }
           last = Date.now();
           if (!quiet) this.outputs.set(id, last);
@@ -2056,7 +2058,7 @@ export class Engine {
           partial.set(d.index, p);
           for (const h of timing) try { h.requestDelta!(session, req, d); } catch (e) { this.errors.capture("server", e, { hook: "measure", session: id }); }
           if (!quiet) this.deltas.push(id, d);
-        })).finally(() => { if (!quiet) this.deltas.end(id); });
+        }))).finally(() => { if (!quiet) this.deltas.end(id); });
         clearInterval(hush);
         if (!quiet) { this.outputs.delete(id); this.wires.delete(id); }
         if ((!quiet || attempt) && shown) this.status(id, { kind: "idle" });
@@ -2899,7 +2901,8 @@ export class Engine {
       const runCtx = authorizationError ? { ...call.ctx, authorizationError } : call.ctx;
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       t0 = Date.now();
-      const run = runCtx.dispatch ? runCtx.dispatch(tool, input, runCtx) : tool.run(input, runCtx);
+      // What the call sends out is the call's, in the outward ledger (src/safety/egress.ts).
+      const run = outward({ tool: u.name, call: u.id, session: session.id }, () => (runCtx.dispatch ? runCtx.dispatch(tool, input, runCtx) : tool.run(input, runCtx)));
       dispatched = run;
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});

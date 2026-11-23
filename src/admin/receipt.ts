@@ -4,6 +4,7 @@ import type { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { isNoSuchTool, isStopResult } from "../engine/turn.ts";
 import { exitOf } from "./reason.ts";
+import { turnHosts } from "../safety/egress-report.ts";
 import { traceIdOf, turnSpanId, type SpanStatus, type Tracer } from "./trace.ts";
 
 const origins = new Set(["owner", "queued", "steer", "harness", "restart", "voice", "hook", "momentum",
@@ -110,10 +111,12 @@ export function turnReceipt(store: Store, tracer: Tracer, turnEvent: string) {
   }
   // Nested tools and parked calls can have a span but no result event.
   for (const span of dispatched.values()) tools.push({ result_event_id: null, span_id: span.span_id, status: span.status, name: toolName(span.attrs.tool) });
+  // Where the turn's transfers went (the outward ledger, src/safety/egress.ts): hosts, never what was sent.
+  const hosts = turnHosts(store.db, { session: sid, turn: start.id, from: start.ts, to: end?.ts ?? Date.now() });
   return {
     session_id: sid, turn_event: start.id, start_ms: start.ts,
     trace_id: turn?.trace_id ?? null, span_id: turn?.span_id ?? null,
-    inputs, requests, tools,
+    inputs, requests, tools, hosts,
     end: end ? { event_id: end.id, reason: label(end.data?.reason, reasons), end_ms: end.ts, ...(typeof end.data?.provider_wait_ms === "number" ? { provider_wait_ms: end.data.provider_wait_ms, active_ms: end.data.ms } : {}) } : null,
   };
 }

@@ -176,6 +176,13 @@ under `~/.cache/keel-work/bun/research/`.
   provider, a provider whose outage is open, or a wait the provider asked for
   past a turn's. What the task used (steps, dollars, the agents under it) is
   counted over every context it had (`usedOf`).
+- Everything that leaves is a row of the `egress` table (`src/safety/egress.ts`):
+  each transfer the daemon makes or carries, with its session, call, tool,
+  host, port and bytes sent. A fetch of the daemon is recorded by the tap; code
+  that sends another way (a helper program, a spawned git, the sandbox's proxy)
+  calls `noteOutward`, and new code that sends runs inside an `outward` label
+  that names what sends. The rows wait with the side writes; the day's report
+  (Settings > Network) runs on the read thread.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

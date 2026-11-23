@@ -66,6 +66,7 @@ import { overviewRoutes } from "./overview.ts";
 import { stateRoutes } from "./state.ts";
 import { shellRoutes } from "./shell.ts";
 import { checkRoutes } from "./checks.ts";
+import { egressRoutes } from "./egress.ts";
 
 // Each feature module adds one line here.
 // Each is listed under its name: a built binary's functions lose theirs, and a start says by name which module took its time (src/core/start-trace.ts).
@@ -130,6 +131,7 @@ const modules: Record<string, RouteModule> = {
   pluginUnitRoutes, // after mcp and hooks: plugins installed as one unit start their servers
   runRoutes, // the command line: keel run, keel send
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
+  egressRoutes, // after the gates: a shell call that runs carries its tag to the sandbox proxy
   telemetryRoutes, // its tool timing starts after every gate
   experimentRoutes, // after telemetry: a turn's row reads the calls telemetry wrote
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry

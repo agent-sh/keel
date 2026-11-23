@@ -29,6 +29,7 @@ import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { addressBytes, addressText, carried, internalBytes } from "../core/hosts.ts";
 import { chunks } from "../core/proc.ts";
+import { takeTag } from "./egress-count.ts";
 import type { ReadOpts, View } from "./sandbox-view.ts";
 
 // ---- the relay: the program that runs inside the sandbox ----
@@ -44,6 +45,9 @@ function relay() {
   // (No import here: the function's own text is the program.)
   const net = process.getBuiltinModule("node:net") as typeof import("node:net");
   const [mode, sock, host, port] = process.argv.slice(2) as [string, string, string?, string?];
+  // The call the command runs for (KEEL_EGRESS_TAG, set by the daemon): said before each connection, so the
+  // proxy's ledger names the call (src/safety/egress.ts).
+  const tag = /^[0-9a-z]{1,40}$/.test(process.env.KEEL_EGRESS_TAG ?? "") ? `KEEL-TAG ${process.env.KEEL_EGRESS_TAG}\r\n` : "";
   // The proxy's socket is made a moment after the daemon is asked for it: tried again for a short while.
   const dial = (then: (s: import("node:net").Socket) => void, fail: (e: Error) => void, tries = 40) => {
     const s = net.createConnection(sock);
@@ -62,6 +66,7 @@ function relay() {
         c.on("error", () => s.destroy());
         c.on("close", () => s.destroy());
         s.on("close", () => c.destroy());
+        if (tag) s.write(tag);
         c.pipe(s);
         s.pipe(c);
       }, () => c.destroy());
@@ -73,7 +78,7 @@ function relay() {
   }
   if (mode === "connect" && host && port) {
     dial((s) => {
-      s.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
+      s.write(`${tag}CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
       let head = Buffer.alloc(0);
       const onData = (d: Buffer) => {
         head = Buffer.concat([head, d]);
@@ -179,6 +184,9 @@ export const publicOnly: Policy = (_host, address, port) => {
 // ---- the proxy ----
 
 export type Refusal = { host: string; port: number; why: string; at: number };
+// One connection the proxy judged, for the outward ledger (src/safety/egress.ts): said when it is refused, and
+// when one it carried ends, with the bytes the command sent through it. `tag`: the call its relay named.
+export type Conn = { host: string; port: number; at: number; tag?: string; bytes: number | null; outcome: "sent" | "refused" | "failed"; why?: string };
 const HEAD_MAX = 64 * 1024;
 const HEAD_MS = 30_000;
 // How long a destination has to take the connection.
@@ -204,7 +212,7 @@ function refuse(c: Socket, status: string, text: string) {
 
 // One proxy on one unix socket. `policy` is asked once per connection, with
 // the address the connection is then made to (no second resolution).
-export function startProxy(path: string, o: { policy?: () => Policy; refused?: (r: Refusal) => void; resolve?: (host: string) => Promise<string[]>; headMs?: number; max?: number } = {}): Server {
+export function startProxy(path: string, o: { policy?: () => Policy; refused?: (r: Refusal) => void; seen?: (c: Conn) => void; resolve?: (host: string) => Promise<string[]>; headMs?: number; max?: number } = {}): Server {
   const live = new Map<Socket, number>();
   const touch = (c: Socket) => { if (live.has(c)) live.set(c, Date.now()); };
   // (IPv4 first: the address connected to is the first, and a machine without an IPv6 route has many names with both.)
@@ -221,20 +229,29 @@ export function startProxy(path: string, o: { policy?: () => Policy; refused?: (
     live.set(c, Date.now());
     c.on("close", () => live.delete(c));
     let head: Buffer = Buffer.alloc(0);
+    // The relay's tag line comes first, when there is one (egress-count.ts takeTag).
+    let tag: string | undefined, tagRead = false;
     const timer = setTimeout(() => c.destroy(), o.headMs ?? HEAD_MS);
     const onData = (d: Buffer) => {
       head = head.length ? Buffer.concat([head, d]) : d;
+      if (!tagRead) {
+        const t = takeTag(head);
+        if (t === "need") return;
+        tagRead = true;
+        tag = t.tag;
+        head = Buffer.from(t.rest.buffer, t.rest.byteOffset, t.rest.byteLength);
+      }
       const end = head.indexOf("\r\n\r\n");
       if (end < 0) { if (head.length > HEAD_MAX) { clearTimeout(timer); refuse(c, "431 Request Header Fields Too Large", "The request's headers are too long for Keel's sandbox proxy."); } return; }
       clearTimeout(timer);
       c.off("data", onData);
       c.pause();
-      void serve(c, head.subarray(0, end).toString("latin1"), head.subarray(end + 4));
+      void serve(c, head.subarray(0, end).toString("latin1"), head.subarray(end + 4), tag);
     };
     c.on("data", onData);
     c.on("close", () => clearTimeout(timer));
   });
-  const serve = async (c: Socket, text: string, rest: Buffer) => {
+  const serve = async (c: Socket, text: string, rest: Buffer, tag: string | undefined) => {
     const lines = text.split("\r\n");
     const m = /^([A-Z]+) (\S+) HTTP\/1\.[01]$/.exec(lines[0] ?? "");
     if (!m) return refuse(c, "400 Bad Request", "Keel's sandbox proxy takes HTTP requests and CONNECT.");
@@ -259,6 +276,8 @@ export function startProxy(path: string, o: { policy?: () => Policy; refused?: (
     if (!(port > 0 && port < 65536)) return refuse(c, "400 Bad Request", "The port is not one.");
     const no = (why: string) => {
       o.refused?.({ host, port, why, at: Date.now() });
+      // (Nothing of it left: no bytes went out.)
+      o.seen?.({ host, port, at: Date.now(), ...(tag ? { tag } : {}), bytes: 0, outcome: "refused", why });
       refuse(c, "403 Forbidden", refusalText(host, port, why));
     };
     // A host that is an address, however it is written (hex, octal, one number, IPv6 written out, an IPv4 address
@@ -276,12 +295,20 @@ export function startProxy(path: string, o: { policy?: () => Policy; refused?: (
     if (c.destroyed) return;
     const up = createConnection({ host: addresses[0]!, port });
     let connected = false;
+    // What the command sent: its request's head and body as they reach the host (a CONNECT's own line is not sent on).
+    const at = Date.now();
+    let sent = (first ? first.length : 0) + rest.length, said = false;
+    const ended = (outcome: Conn["outcome"], why?: string) => {
+      if (said) return;
+      said = true;
+      o.seen?.({ host, port, at, ...(tag ? { tag } : {}), bytes: connected ? sent : 0, outcome, ...(why ? { why } : {}) });
+    };
     const slow = setTimeout(() => { if (!connected) { up.destroy(); if (!c.destroyed && c.writable) refuse(c, "504 Gateway Timeout", `Keel's sandbox proxy got no answer from ${host}:${port} in ${CONNECT_MS / 1000} s.`); } }, CONNECT_MS);
     up.once("connect", () => {
       connected = true;
       clearTimeout(slow);
       up.setNoDelay(true);
-      c.on("data", () => touch(c));
+      c.on("data", (d: Buffer) => { sent += d.length; touch(c); });
       up.on("data", () => touch(c));
       if (method === "CONNECT") c.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       else up.write(first!);
@@ -290,11 +317,12 @@ export function startProxy(path: string, o: { policy?: () => Policy; refused?: (
       up.pipe(c);
     });
     up.on("error", (e: NodeJS.ErrnoException) => {
+      if (!connected) ended("failed", `could not connect${e.code ? ` (${e.code})` : ""}`);
       if (connected) return void c.destroy();
       if (!c.destroyed && c.writable) refuse(c, "502 Bad Gateway", `Keel's sandbox proxy could not connect to ${host}:${port}${e.code ? ` (${e.code})` : ""}.`);
     });
-    up.on("close", () => { clearTimeout(slow); c.destroy(); });
-    c.on("close", () => { clearTimeout(slow); up.destroy(); });
+    up.on("close", () => { clearTimeout(slow); c.destroy(); ended(connected ? "sent" : "failed", connected ? undefined : "no answer"); });
+    c.on("close", () => { clearTimeout(slow); up.destroy(); ended(connected ? "sent" : "failed", connected ? undefined : "the command left first"); });
   };
   rmSync(path, { force: true });
   server.listen(path);
@@ -310,7 +338,7 @@ export function startProxy(path: string, o: { policy?: () => Policy; refused?: (
 declare const __KEEL_NETPROXY_JS__: string | undefined;
 export type ViewAsk = { workspace: string; profile: "workspace-write" | "read-only"; read: ReadOpts; env: Record<string, string | undefined>; layered: boolean; offers: string[]; state: string };
 export type ToProxy = { t: "listen"; path: string } | { t: "own"; port: number } | ({ t: "view"; id: number } & ViewAsk);
-export type FromProxy = { t: "listening"; path: string } | { t: "refused"; path: string; r: Refusal } | { t: "failed"; path: string; error: string } | { t: "view"; id: number; view?: View; error?: string };
+export type FromProxy = { t: "listening"; path: string } | { t: "refused"; path: string; r: Refusal } | { t: "conn"; path: string; c: Conn } | { t: "failed"; path: string; error: string } | { t: "view"; id: number; view?: View; error?: string };
 // A view made on the sandboxes' thread: nothing when there is no thread (the caller makes it itself).
 const views = new Map<number, (v: View | undefined) => void>();
 let viewId = 0;
@@ -336,6 +364,9 @@ const noted = (path: string, r: Refusal) => {
 // The thread's troubles are said once each in the daemon's Errors (the server wires `trouble`).
 let trouble: ((e: Error, at: string) => void) | undefined;
 export const onProxyTrouble = (f: typeof trouble) => void (trouble = f);
+// Every connection a proxy judged goes to the outward ledger (the server wires it).
+let connSeen: ((c: Conn) => void) | undefined;
+export const onProxyConn = (f: typeof connSeen) => void (connSeen = f);
 let thread: Worker | null | undefined;
 // When the thread failed (the last minute's): after RESTARTS_MAX it is not started again and the proxies are closed.
 let failures: number[] = [];
@@ -353,6 +384,7 @@ function startThread(): Worker {
     const m = ev.data;
     if (m.t === "view") { const done = views.get(m.id); views.delete(m.id); done?.(m.view); }
     else if (m.t === "refused") noted(m.path, m.r);
+    else if (m.t === "conn") connSeen?.(m.c);
     else if (m.t === "failed") trouble?.(new Error(`the sandbox proxy for ${m.path} could not listen: ${m.error}`), "sandbox proxy");
   };
   w.onerror = (ev) => threadFailed(w, String((ev as ErrorEvent)?.message ?? "an error in the thread"));
@@ -397,7 +429,7 @@ export const failProxyThread = (why = "a test") => { if (thread) threadFailed(th
 export const reopenProxies = () => { closed = false; failures = []; if (thread === null) thread = undefined; asked.clear(); };
 function here(path: string) {
   if (local.has(path) || closed) return;
-  try { local.set(path, startProxy(path, { refused: (r) => noted(path, r) })); } catch {} // the next command asks again
+  try { local.set(path, startProxy(path, { refused: (r) => noted(path, r), seen: (c) => connSeen?.(c) })); } catch {} // the next command asks again
 }
 // The folder a sandbox scope's proxy socket is in (bound into its sandboxes),
 // with the proxy asked for when it is not there yet (the socket appears a

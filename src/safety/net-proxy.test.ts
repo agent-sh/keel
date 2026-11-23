@@ -10,7 +10,7 @@ import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { addressBytes, addressText, internalAddress, privateHost } from "../core/hosts.ts";
 import { sessionPorts, forgetOwnership } from "../fleet/portal.ts";
-import { failProxyThread, onProxyTrouble, ownPort, proxiesClosed, proxyDir, publicOnly, reopenProxies, reachInto, RELAY_JS, setInterfaces, startProxy, type Policy, type Refusal } from "./net-proxy.ts";
+import { failProxyThread, onProxyTrouble, ownPort, proxiesClosed, proxyDir, publicOnly, reopenProxies, reachInto, RELAY_JS, setInterfaces, startProxy, type Conn, type Policy, type Refusal } from "./net-proxy.ts";
 import { sandboxScope, scopeDir } from "./sandbox-scope.ts";
 import { sandboxSaid } from "./refwatch.ts";
 import { confine, sandboxStatus } from "./sandbox.ts";
@@ -219,6 +219,46 @@ test("an allowed destination is carried: CONNECT as a tunnel, a plain request as
     expect(hits.slice(-2)).toEqual(["GET /through-tunnel", "POST /plain"]);
   } finally {
     server.close();
+  }
+});
+
+test("every connection the proxy judges is said for the outward ledger: its call's tag from the relay, the host, the port and the bytes sent", async () => {
+  const sock = join(root, "tag.sock");
+  // (A listener of its own: what reaches the shared stand-in is checked by the tests after this one.)
+  const own = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (req) => new Response(`own saw body=${req.body ? await req.text() : ""}\n`) });
+  const port = own.port!;
+  const seen: Conn[] = [];
+  const only: Policy = (_h, _a, p) => (p === port ? { allow: true } : { allow: false, why: "it is not listed" });
+  const server = startProxy(sock, { policy: () => only, seen: (c) => seen.push(c) });
+  mkdirSync(join(root, "relay"), { recursive: true });
+  writeFileSync(join(root, "relay/relay.js"), RELAY_JS);
+  // The relay as a sandboxed command's shell starts it, with its call's tag.
+  const relay = Bun.spawn([process.execPath, join(root, "relay/relay.js"), "listen", sock], { stdout: "pipe", env: { ...process.env, BUN_BE_BUN: "1", KEEL_EGRESS_TAG: "call42" } as Record<string, string> });
+  try {
+    const relayPort = Number((await relay.stdout.getReader().read().then((r) => new TextDecoder().decode(r.value))).trim());
+    const body = "x".repeat(1000);
+    const curl = (url: string, ...more: string[]) => Bun.spawn(["curl", "-s", "--noproxy", "", "-x", `http://127.0.0.1:${relayPort}`, ...more, url], { stdout: "pipe", stderr: "pipe" });
+    const sent = curl(`http://127.0.0.1:${port}/upload`, "--data-binary", body);
+    expect(await new Response(sent.stdout).text()).toContain(`body=${body}`);
+    const refused = curl(`http://127.0.0.1:${port + 1}/nope`);
+    expect(await new Response(refused.stdout).text()).toContain("it is not listed");
+    // (The carried one is said when it closes.)
+    for (let i = 0; i < 100 && seen.length < 2; i++) await Bun.sleep(20);
+    const ok = seen.find((c) => c.outcome === "sent")!, no = seen.find((c) => c.outcome === "refused")!;
+    expect(ok).toMatchObject({ host: "127.0.0.1", port, tag: "call42" });
+    // What curl sent: its request's head and the thousand bytes of its body.
+    expect(ok.bytes!).toBeGreaterThan(1000);
+    expect(ok.bytes!).toBeLessThan(1300);
+    expect(no).toMatchObject({ host: "127.0.0.1", port: port + 1, tag: "call42", bytes: 0, why: "it is not listed" });
+    // A connection with no relay in front of it names no call.
+    await ask(sock, `GET http://127.0.0.1:${port}/bare HTTP/1.1\r\n\r\n`);
+    for (let i = 0; i < 100 && seen.length < 3; i++) await Bun.sleep(20);
+    expect(seen[2]).toMatchObject({ host: "127.0.0.1", port, outcome: "sent" });
+    expect(seen[2]!.tag).toBeUndefined();
+  } finally {
+    relay.kill();
+    server.close();
+    own.stop(true);
   }
 });
 
