@@ -384,7 +384,8 @@ export const automationRoutes: RouteModule = (deps) => {
         // The agents every count names (src/core/agent-count.ts): live, or of the last day.
         const agentRows = db.query<{ id: string }, [number]>(`SELECT id FROM agents WHERE ${countedSql("agents", "?1")} ORDER BY created`).all(countedSince());
         return json({
-          agents: agentRows.map((r) => agents.get(r.id)),
+          // Without their reports: a card that opens reads its agent's (/api/sessions/:id/agents/:agent_id/report).
+          agents: agentRows.map((r) => agents.get(r.id)).filter((a) => !!a).map(agents.brief),
           waits: waits.list(undefined, 30),
           loops: loops.list(),
           unread: alerts.unreadCounts(),
@@ -422,6 +423,14 @@ export const automationRoutes: RouteModule = (deps) => {
         if (s.parent_id) return bad("an agent's limit is its root session's: change it there", 409);
         agents.setLimit(s.id, limit);
         return json({ limit: agents.limitOf(s.id), own_limit: agents.ownLimit(s.id), slots: agents.slotsOf(s.id) });
+      },
+    },
+    // One agent's report, read when its card is opened (the list and the frames leave it out).
+    "/api/sessions/:id/agents/:agent_id/report": {
+      GET: (req: any) => {
+        const a = agents.get(req.params.agent_id);
+        if (!a || a.parent_id !== req.params.id) return bad("the session has no such agent", 404);
+        return json({ id: a.id, status: a.status, report: a.result ?? null });
       },
     },
     "/api/sessions/:id/agents/:agent_id/stop": {

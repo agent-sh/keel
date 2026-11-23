@@ -1,7 +1,9 @@
 // Agents, waits, loops and alerts on the client: loaded once, then kept live by
 // the `automation` frames.
 import { useSyncExternalStore } from "react";
-import type { AgentRecord } from "../../../src/automation/agents.ts";
+import type { AgentBrief } from "../../../src/automation/agents.ts";
+// An agent as the page holds it: its record without its report, which is read when shown (agentReport).
+type AgentRecord = AgentBrief;
 import type { Alert, AlertSettings } from "../../../src/automation/alerts.ts";
 import type { LoopRecord, RunRecord } from "../../../src/automation/loops.ts";
 import type { WaitRecord } from "../../../src/automation/waits.ts";
@@ -97,6 +99,8 @@ export const auto = {
     applyInbox(r.unread, r.alerts);
   },
   reviewAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/reviews`, { method: "POST", body: JSON.stringify({ agent_id: a.id }) }),
+  // An agent's report, read when its card opens: the list and the frames leave it out.
+  agentReport: (a: AgentRecord) => api<{ report: string | null }>(`/api/sessions/${a.parent_id}/agents/${a.id}/report`).then((r) => r.report),
   stopAgent: (a: AgentRecord) => api(`/api/sessions/${a.parent_id}/agents/${a.id}/stop`, { method: "POST" }),
   // From the agent's own session: the whole agent, as its parent's card stops it.
   stopAgentSession: (sessionId: string) => api(`/api/sessions/${sessionId}/as-agent/stop`, { method: "POST" }),

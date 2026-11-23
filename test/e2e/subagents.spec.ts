@@ -363,6 +363,14 @@ test("agents started together are one line, and the parent's row moves once for 
     await step.locator("button.k-line").first().click();
     await expect(step.getByTestId("agent-call")).toHaveCount(6);
     await expect(step.getByTestId("agent-call").filter({ hasText: "Lane three" }).getByTestId("agent-call-state")).toHaveText("Working");
+    // The page's list of agents carries no report (a coordinator's day of them was most of a page load):
+    // an agent's card reads its report when it opens.
+    const listed = ((await (await request.get("/api/automation")).json()).agents as Record<string, unknown>[]).find((a) => a.parent_id === session.id && a.title === "Quick report")!;
+    expect(listed).not.toHaveProperty("result");
+    expect(listed.report_chars).toBeGreaterThan(0);
+    const quick = step.getByTestId("agent-call").filter({ hasText: "Quick report" });
+    await quick.locator("button.k-line").first().click();
+    await expect(quick.getByTestId("agent-call-report")).toContainText("Report: nothing to change.");
     await shoot(page, "agents-batch-02-open");
     // An agent that fails is on its parent's line at once, as soon as the page hears of it: it calls the owner.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: "Fetch the export\nscript:billing", isolation: "none" } }])}` } });

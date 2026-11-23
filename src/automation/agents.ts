@@ -195,6 +195,12 @@ export const get = (id: string) => {
   const r = D().store.db.query<Row, [string]>("SELECT * FROM agents WHERE id = ?").get(id);
   return r ? toRec(r) : undefined;
 };
+// What the page's list and a frame carry of an agent: all but its report, which can be long
+// (a coordinator's day of agents was 88% reports) and is shown only when its card is opened:
+// read then with report(). `report_chars`: how long it is (0 for none yet).
+export type AgentBrief = Omit<AgentRecord, "result"> & { report_chars: number };
+export const brief = ({ result, ...rest }: AgentRecord): AgentBrief => ({ ...rest, report_chars: result?.length ?? 0 });
+export const report = (id: string) => D().store.db.query<{ result: string | null }, [string]>("SELECT result FROM agents WHERE id = ?").get(id)?.result ?? null;
 export const byChild = (sessionId: string) => {
   const r = D().store.db.query<Row, [string]>("SELECT * FROM agents WHERE session_id = ?").get(sessionId);
   return r ? toRec(r) : undefined;
@@ -219,7 +225,7 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>, quiet = fal
   const rec = get(id);
   // An agent that ends or parks gives its slot back: the first in line takes it.
   if (rec && patch.status && rec.status !== "running") wakeSlots(rec.parent_id);
-  if (rec && !quiet) emit("agent", rec);
+  if (rec && !quiet) emit("agent", brief(rec));
   return rec;
 }
 
@@ -845,7 +851,7 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
     .run(id, parentId, childId, o.title.slice(0, 80), o.type, o.model, Date.now(), JSON.stringify(def));
   activity.record("agent", "started", parentId, `Started ${o.type} "${o.title}" on ${o.model}`, { agent_id: id, child_session: childId });
   const rec = get(id)!;
-  emit("agent", rec);
+  emit("agent", brief(rec));
   return rec;
 }
 
@@ -1165,7 +1171,7 @@ export function onSessionDeleted(sessionId: string) {
 export function onQueue(f: { session_id: string; held: boolean }) {
   // An agent's queue changed: its parent's list says how many messages wait for it.
   const a = byChild(f.session_id);
-  if (a) emit("agent", a);
+  if (a) emit("agent", brief(a));
   if (f.held || D().engine.isRunning(f.session_id)) return;
   releaseOwed(f.session_id);
   failures.wake(f.session_id);
@@ -1341,7 +1347,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
     if (status === "failed") grouped = failures.agentFailed({ ...a, report: reportId(a) }, cls, cause || got.error || how.note || result, !!cause && !blocked);
     return update(a.id, { status, ended: Date.now(), result: lines ? `${result}${result ? "\n\n" : ""}${lines}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
   })();
-  emit("agent", rec);
+  emit("agent", brief(rec));
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);

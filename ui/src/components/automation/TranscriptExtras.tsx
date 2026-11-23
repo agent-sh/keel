@@ -1,6 +1,6 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { AlertTriangle, Bot, ChevronRight, CornerDownRight, ExternalLink, Flag, GitBranch, Mail, Network, Radio, ScanSearch, Repeat, Timer, Zap } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../../src/core/types.ts";
 import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/automation.ts";
 import { machineName } from "../../lib/fleet.ts";
@@ -284,7 +284,6 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
     return Object.values(agents).find((a) => a.call_id === use.id);
   }, [agents, out, use.id]);
   const type = input.subagent_type ?? input.agent_type ?? "general-purpose";
-  const report = agent && !isLive(agent) ? agent.result : undefined;
   // Its state in the word its tree row and the background list use (src/core/state-words.ts).
   const st = useAgentSaid(agent);
   const asking = st?.watch === "need";
@@ -355,19 +354,38 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
       <Collapsible.Panel className="k-tool-panel overflow-hidden">
         <div className="k-label px-3 pt-2.5">Task</div>
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
-        {(report || out) && (
-          <>
-            <div className="k-label px-3 pt-3">Report</div>
-            <div className="px-3 pt-1 pb-3 text-ui">
-              {agent?.structured && report && agent.status === "completed"
-                ? <pre data-testid="agent-call-json" className="overflow-x-auto rounded-md bg-code px-3 py-2 font-mono text-caption">{report.split("\n\n")[0]}</pre>
-                : <Markdown text={report ?? out} />}
-              {agent?.structured && report && agent.status === "completed" && report.includes("\n\n") && <p className="pt-2 text-caption text-muted">{report.slice(report.indexOf("\n\n") + 2)}</p>}
-            </div>
-          </>
-        )}
-        {!report && !out && <div className="h-2.5" />}
+        <AgentReport agent={agent} out={out} />
       </Collapsible.Panel>
     </Collapsible.Root>
+  );
+}
+
+// An ended agent's report, read when its card is opened (the panel is not there while it is closed):
+// the page's list of agents leaves the reports out. Kept per agent and end, so opening again reads nothing.
+const readReports = new Map<string, string | null>();
+const reportKey = (a: AgentRecord) => `${a.id}:${a.ended ?? 0}:${a.tasks}:${a.report_chars}`;
+function AgentReport({ agent, out }: { agent?: AgentRecord; out: string }) {
+  const ended = !!agent && !isLive(agent) && agent.report_chars > 0;
+  const key = ended ? reportKey(agent) : "";
+  const [, loaded] = useState(0);
+  useEffect(() => {
+    if (!ended || readReports.has(key)) return;
+    let on = true;
+    auto.agentReport(agent!).then((r) => { readReports.set(key, r); if (on) loaded((n) => n + 1); }).catch(reportError);
+    return () => { on = false; };
+  }, [key]);
+  const report = ended ? readReports.get(key) ?? undefined : undefined;
+  // (Until it is read, the call's own result says what it can: a foreground agent's report is in it.)
+  if (!report && !out) return <div className="h-2.5" />;
+  return (
+    <>
+      <div className="k-label px-3 pt-3">Report</div>
+      <div className="px-3 pt-1 pb-3 text-ui" data-testid="agent-call-report">
+        {agent?.structured && report && agent.status === "completed"
+          ? <pre data-testid="agent-call-json" className="overflow-x-auto rounded-md bg-code px-3 py-2 font-mono text-caption">{report.split("\n\n")[0]}</pre>
+          : <Markdown text={report ?? out} />}
+        {agent?.structured && report && agent.status === "completed" && report.includes("\n\n") && <p className="pt-2 text-caption text-muted">{report.slice(report.indexOf("\n\n") + 2)}</p>}
+      </div>
+    </>
   );
 }
