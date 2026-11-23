@@ -17,11 +17,17 @@ test("Claude Code allow rules map only where the meaning is the same", () => {
     ["Edit(//srv/app/**)", { kind: "edit", pattern: "/srv/app" }],
     ["Edit(~/notes/**)", { kind: "edit", pattern: `${homedir()}/notes` }],
     ["mcp__github__get_issue", { kind: "tool", pattern: "github__get_issue" }],
+    // INT-S12: a whole server, and a glob of its tools after its literal name.
+    ["mcp__github", { kind: "tool", pattern: "github__*" }],
+    ["mcp__github__*", { kind: "tool", pattern: "github__*" }],
+    ["mcp__github__get_*", { kind: "tool", pattern: "github__get_*" }],
+    // Claude Code writes `_` for a dot in a server's name: the rule names Keel's my.server.
+    ["mcp__my_server__*", { kind: "tool", pattern: "my.server__*" }],
   ];
-  for (const [rule, want] of cases) expect({ rule, m: claudeAllow(rule) }).toEqual({ rule, m: want as any });
+  for (const [rule, want] of cases) expect({ rule, m: claudeAllow(rule, undefined, ["my.server", "github"]) }).toEqual({ rule, m: want as any });
   for (const rule of ["Read(//home/**)", "WebFetch", "WebFetch(domain:example.com)", "Grep"]) expect(claudeAllow(rule)).toHaveProperty("done");
   for (const rule of ["Bash(cat x | wc -l)", "Bash(ls ~/p/*/ 2>/dev/null | head *)", "Bash(echo hi > out.txt)", 'Bash(grep "a*b" f)', "Edit(/src/**/*.ts)", "Edit(src/**)",
-    "Write", "mcp__github", "mcp__github__get_*", "Agent", "bash /x/run.sh"]) expect({ rule, m: claudeAllow(rule) }).toEqual({ rule, m: { skip: expect.any(String) } as any });
+    "Write", "mcp__*", "mcp__gi*__x", "mcp__github(x)", "mcp__keel", "mcp__tacit__*", "Agent", "bash /x/run.sh"]) expect({ rule, m: claudeAllow(rule) }).toEqual({ rule, m: { skip: expect.any(String) } as any });
 });
 
 test("Rust Keel stored answers map by kind", () => {
@@ -41,6 +47,8 @@ test("a deny or ask holds an allow only where it can hold what the allow lets th
     ["Edit(//srv/app/**)", "Edit(//srv/other/**)"],
     ["Bash(git log:*)", "Edit(//srv/**)"],
     ["mcp__github__get_issue", "mcp__slack"],
+    ["mcp__github", "mcp__slack__post"],
+    ["mcp__github__get_*", "mcp__github__delete_repo"],
   ];
   const held: [string, string][] = [
     ["Bash(git status:*)", "Bash"],
@@ -52,6 +60,12 @@ test("a deny or ask holds an allow only where it can hold what the allow lets th
     ["Edit(//srv/app/**)", "Edit(*.env)"],
     ["mcp__github__get_issue", "mcp__github"],
     ["mcp__github__get_issue", "mcp__github__get_issue"],
+    // A whole-server allow is held by a deny of any of its tools, or of every MCP tool.
+    ["mcp__github", "mcp__github__delete_repo"],
+    ["mcp__github__*", "mcp__github__delete_repo"],
+    ["mcp__github__get_*", "mcp__github__get_secret"],
+    ["mcp__github", "mcp__*"],
+    ["mcp__github", "*"],
     // A command that runs another: Claude Code strips the wrapper before it matches the deny.
     ["Bash(timeout:*)", "Bash(curl:*)"],
     ["Bash(nice:*)", "Bash(curl:*)"],

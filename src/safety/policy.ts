@@ -8,6 +8,7 @@ import { RULE_WORDS, codeGiven, laid, risksOf } from "./risk.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains } from "../core/paths.ts";
+import { RESERVED } from "../mcp/config.ts";
 import type { ToolKind } from "../tools/types.ts";
 import type { WebUse } from "./addresses.ts";
 import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
@@ -49,6 +50,24 @@ export type RuleKind = "shell" | "edit" | "tool";
 // binding): the same name on another source is not covered.
 export type Rule = { id: string; kind: RuleKind; pattern: string; scope: string; lifetime: "always" | "session"; session_id?: string | null; created: number; bind?: string | null };
 export type Suggest = { kind: RuleKind; pattern: string; bind?: string };
+
+// Whether a tool rule covers a tool: it names the tool, or it is a glob of an
+// MCP server's tools after the server's literal name (`github__*`, `github__get_*`,
+// carried from Claude Code's whole-server rules). A server's name holds no `__`,
+// so the first one ends it. A server Keel brings itself has no glob rule (its
+// tools ask by Keel's own rules), and a tool whose name holds `*` is never
+// offered a rule of its own, so a stored `*` is always a glob.
+export function toolCovers(pattern: string, tool: string): boolean {
+  if (pattern === tool) return true;
+  const cut = pattern.indexOf("__");
+  if (cut <= 0 || !pattern.includes("*", cut)) return false;
+  const server = pattern.slice(0, cut + 2);
+  if (server.includes("*") || !tool.startsWith(server) || RESERVED.has(server.slice(0, -2).toLowerCase())) return false;
+  const glob = pattern.slice(server.length).split("*").map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp(`^${glob}$`, "s").test(tool.slice(server.length));
+}
+const toolRule = (f: Facts, tool: string) => f.rules.some((r) => r.kind === "tool" && toolCovers(r.pattern, tool) && (!r.bind || r.bind === f.bind));
+const toolSuggest = (f: Facts, tool: string): Suggest[] => (tool.includes("*") ? [] : [{ kind: "tool", pattern: tool, ...(f.bind ? { bind: f.bind } : {}) }]);
 
 export type CallClass =
   // `paths`: the files and folders a read names (readPaths), for the one
@@ -513,8 +532,8 @@ export function decide(c: CallClass, f: Facts): Decision {
     // what. The owner is asked once (the answer stands for the tool, as for any tool known by its name). In Full
     // auto it runs, as every tool that is not a file tool does there: no sandbox holds such a tool.
     if (f.sandboxed && c.unnamed && f.mode !== "read-only" && f.mode !== "plan" && f.mode !== "full-auto") {
-      if (f.rules.some((r) => r.kind === "tool" && r.pattern === f.tool && (!r.bind || r.bind === f.bind))) return { allow: true };
-      return { ask: { risk: "low", why: `${f.tool} is a reading tool that names no file: it runs outside this session's sandbox and reads where it chooses`, rule: "reads where it chooses", suggest: [{ kind: "tool", pattern: f.tool, ...(f.bind ? { bind: f.bind } : {}) }] } };
+      if (toolRule(f, f.tool)) return { allow: true };
+      return { ask: { risk: "low", why: `${f.tool} is a reading tool that names no file: it runs outside this session's sandbox and reads where it chooses`, rule: "reads where it chooses", suggest: toolSuggest(f, f.tool) } };
     }
     if (f.sandboxed && f.shown) for (const p of c.paths ?? []) {
       const v = f.shown(p);
@@ -598,8 +617,8 @@ export function decide(c: CallClass, f: Facts): Decision {
     if (o) return onlyOwner(o.why, o.rule);
   }
   const grant = (c.kind === "other" && c.grant) || f.tool;
-  if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
-  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
+  if (toolRule(f, grant)) return { allow: true };
+  return { ask: { risk: "low", suggest: toolSuggest(f, grant) } };
 }
 
 // (Said in every mode, Full auto too: it is not a review of the work.)

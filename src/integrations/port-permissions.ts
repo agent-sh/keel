@@ -10,12 +10,15 @@
 // `Bash(x:*)` match x and x followed by a space; `*` anywhere stands in for any
 // text; compound commands match only part by part; Read and Edit paths are
 // gitignore patterns anchored by `//` (root), `~/` (home), `/` (the settings
-// file's folder) or nothing (relative); MCP allows are `mcp__server__tool`, or
-// a glob after a literal `mcp__server__` prefix.
+// file's folder) or nothing (relative); MCP allows are `mcp__server__tool`, a
+// whole server (`mcp__server`, `mcp__server__*`), or a glob of its tools after
+// a literal `mcp__server__` prefix; a server's name there has `_` for every
+// character other than a letter, digit, `_` or `-`.
 import { homedir } from "node:os";
 import type { RuleKind } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { WRAPPERS } from "../safety/risk-words.ts";
+import { RESERVED } from "../mcp/config.ts";
 
 export type Mapped = { kind: RuleKind; pattern: string } | { done: string } | { skip: string };
 
@@ -66,17 +69,35 @@ function edit(spec: string | undefined, base?: string): Mapped {
   return { kind: "edit", pattern: dir.replace(/\/+$/, "") || "/" };
 }
 
-// One allow rule of Claude Code; `base`, for a project's settings, is its root.
-export function claudeAllow(rule: string, base?: string): Mapped {
+// The server a Claude Code MCP rule names, as Keel names it: Claude Code
+// writes `_` for each character a tool name cannot hold, so a server Keel has
+// as `my.server` is `my_server` in a rule. `servers`: the names Keel knows.
+function serverOf(written: string, servers: Iterable<string>): string {
+  const all = [...servers];
+  if (all.includes(written)) return written;
+  return all.find((n) => n.replace(/[^\w-]/g, "_") === written) ?? written;
+}
+
+// One allow rule of Claude Code; `base`, for a project's settings, is its root;
+// `servers`, the MCP server names Keel knows (to read a rule's server name).
+export function claudeAllow(rule: string, base?: string, servers: Iterable<string> = []): Mapped {
   const p = parseRule(rule);
   if (!p) return { skip: "not a rule Claude Code reads" };
   if (p.tool === "Bash") return shell(p.spec);
   if (p.tool === "Edit") return edit(p.spec, base);
   if (p.tool === "Write" || p.tool === "NotebookEdit" || p.tool === "MultiEdit") return { skip: `${p.tool} has no rule of its own in Keel: an edit rule would also allow every other edit tool` };
   if (READS.has(p.tool)) return { done: "Keel runs reads and web lookups without asking" };
-  const mcp = p.tool.match(/^mcp__([^_*][^*]*?)__([^*]+)$/);
-  if (mcp && p.spec === undefined) return { kind: "tool", pattern: `${mcp[1]}__${mcp[2]}` };
-  if (p.tool.startsWith("mcp__")) return { skip: "a whole server or a pattern of its tools: Keel's tool rules name one tool" };
+  if (p.tool.startsWith("mcp__")) {
+    // A specifier never matches an MCP call in Claude Code, so the rule allowed nothing.
+    if (p.spec !== undefined) return { skip: "an MCP rule with a specifier: Claude Code matches no call with it" };
+    // `mcp__server` (the whole server), `mcp__server__tool`, or a glob of its tools after a literal server.
+    const m = p.tool.match(/^mcp__([^*]+?)(?:__(.+))?$/);
+    if (!m || !/^[\w-]+$/.test(m[1]!) || m[1]!.startsWith("_") || m[1]!.endsWith("_")) return { skip: "the server's name is not written out: Claude Code reads an allow only after a literal mcp__server__" };
+    const server = serverOf(m[1]!, servers);
+    const tools = m[2] ?? "*";
+    if (tools.includes("*") && RESERVED.has(server.toLowerCase())) return { skip: `${server} is a server Keel brings itself: its tools ask by Keel's own rules` };
+    return { kind: "tool", pattern: `${server}__${tools}` };
+  }
   return { skip: `Keel has no rule for ${p.tool}` };
 }
 
@@ -92,6 +113,7 @@ export function overlaps(allow: string, held: string, allowBase?: string, heldBa
   if (!a || !h0) return true;
   // A write tool's deny holds every edit (Keel has one edit rule for all of them).
   const h = EDITS.has(h0.tool) && a.tool === "Edit" ? { ...h0, tool: "Edit" } : h0;
+  if (a.tool.startsWith("mcp__")) return mcpOverlaps(a.tool, h.tool);
   const sameTool = a.tool === h.tool || (h.tool.endsWith("*") && a.tool.startsWith(h.tool.slice(0, -1))) || (h.tool.startsWith("mcp__") && a.tool.startsWith(`${h.tool}__`));
   if (!sameTool) return false;
   if (h.spec === undefined || h.spec.trim() === "*" || a.spec === undefined || a.spec.trim() === "*") return true;
@@ -120,6 +142,21 @@ export function overlaps(allow: string, held: string, allowBase?: string, heldBa
 }
 
 const EDITS = new Set(["Write", "MultiEdit", "NotebookEdit"]);
+
+// Whether two tool names with globs can name one tool: their fixed starts
+// (before any `*`) are equal when neither has a glob, else one begins the other.
+function globsMeet(x: string, y: string): boolean {
+  if (!x.includes("*") && !y.includes("*")) return x === y;
+  const fx = x.split("*")[0]!, fy = y.split("*")[0]!;
+  return fx.startsWith(fy) || fy.startsWith(fx);
+}
+
+// An MCP allow (`mcp__server`, `mcp__server__tool`, `mcp__server__glob`) and a
+// deny or ask of any tool name: a bare `mcp__server` stands for all its tools.
+function mcpOverlaps(allow: string, held: string): boolean {
+  const whole = (t: string) => (/^mcp__[^*]+$/.test(t) && !t.slice(5).includes("__") ? `${t}__*` : t);
+  return globsMeet(whole(allow), whole(held));
+}
 
 // A rule the Rust Keel stored (its "always" answers: kind, pattern, scope folder).
 export function rustRule(kind: string, pattern: string): Mapped {

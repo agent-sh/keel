@@ -247,3 +247,21 @@ test("a Read only session and the owner's card are told the form of a command th
   const card = ask("sort -o out $f");
   expect("ask" in card && card.ask.notice).toBeUndefined();
 });
+
+// INT-S12: a whole-server allow carried from Claude Code (mcp__github, mcp__github__*, mcp__github__get_*).
+test("a tool rule for a server's tools covers its tools and no other server's", () => {
+  const call = (name: string, rules: Rule[], bind?: string) => kind(decide({ kind: "other" }, facts("ask", { tool: name, rules, bind })));
+  expect(call("github__create_issue", [rule("tool", "github__*")])).toBe("allow");
+  expect(call("github__get_issue", [rule("tool", "github__get_*")])).toBe("allow");
+  expect(call("github__create_issue", [rule("tool", "github__get_*")])).toBe("ask-low");
+  expect(call("githubx__create_issue", [rule("tool", "github__*")])).toBe("ask-low");
+  expect(call("other__x", [rule("tool", "github__*")])).toBe("ask-low");
+  // Keel's own servers ask by its own rules; a glob in the server's place names no server.
+  expect(call("keel__session_send", [rule("tool", "keel__*")])).toBe("ask-low");
+  expect(call("github__x", [rule("tool", "git*__*")])).toBe("ask-low");
+  // A rule granted for one source does not cover the same name on another.
+  expect(call("github__x", [{ ...rule("tool", "github__*"), bind: "a" }], "b")).toBe("ask-low");
+  // A tool whose name holds a star is offered no rule (a stored star is a glob).
+  const d = decide({ kind: "other" }, facts("ask", { tool: "srv__*" }));
+  expect("ask" in d && d.ask.suggest).toEqual([]);
+});

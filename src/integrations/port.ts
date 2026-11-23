@@ -711,6 +711,10 @@ function planPermissions(items: Planned[], deps: PortDeps) {
   // Only a deny or ask that can hold what the allow lets through keeps it out (overlaps).
   const holds = (held: { rule: string; root?: string; where: string }[], allow: string, base?: string) => held.find((h) => overlaps(allow, h.rule, base, h.root));
   const userHeld = heldIn(user);
+  // The MCP server names Keel has or brings, to read the server a rule names.
+  const servers = new Set<string>();
+  try { for (const n of Object.keys(readConfig(configPath()).servers)) servers.add(n); } catch {}
+  try { for (const c of importable(portHome(), {}, [])) servers.add(c.name); } catch {}
   for (const f of [...user, ...projects]) {
     const scope = f.root ?? "/";
     const source = f.root ? "Claude Code (project)" : "Claude Code";
@@ -722,7 +726,7 @@ function planPermissions(items: Planned[], deps: PortDeps) {
       add(`permissions:${key}:${kind}:${hash(r)}`, source, `${kind} ${r}${where}`, { skip: kind === "deny" ? "Keel's rules only allow: a call no rule allows asks, and its own checks ask for risky ones whatever the rules say" : "Keel's rules only allow: a call no rule allows asks already" }, scope);
     for (const r of rulesOf(f.permissions, "allow")) {
       const h = holds(held, r, f.root);
-      const m: Mapped = h ? { skip: `${h.rule} (a deny or ask rule${h.where === (f.root ? tilde(f.root) : "your user settings") ? " there" : ` in ${h.where}`}) can hold what it allows, which Keel could not keep` } : claudeAllow(r, f.root);
+      const m: Mapped = h ? { skip: `${h.rule} (a deny or ask rule${h.where === (f.root ? tilde(f.root) : "your user settings") ? " there" : ` in ${h.where}`}) can hold what it allows, which Keel could not keep` } : claudeAllow(r, f.root, servers);
       add(`permissions:${key}:allow:${hash(r)}`, source, `${r}${where}`, m, scope);
     }
   }
