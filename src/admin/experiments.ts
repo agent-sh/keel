@@ -100,6 +100,11 @@ export const METRICS = {
   tool_errors: { label: "failed tool calls", better: "lower", unit: "count" },
   thumbs_down: { label: "replies rated down", better: "lower", unit: "share" },
   requests: { label: "model requests", better: "lower", unit: "count" },
+  stopped_by_owner: { label: "turns the owner stopped", better: "lower", unit: "share" },
+  // An agent's last turn before a fresh context took its task up (src/automation/successor.ts).
+  successor: { label: "agent contexts lost to a successor", better: "lower", unit: "share" },
+  // How far a compaction by price's estimate of what its summary keeps was from what the next step read (|read / kept - 1|).
+  keep_miss: { label: "miss of a priced summary's kept size", better: "lower", unit: "share" },
 } as const;
 export type Metric = keyof typeof METRICS;
 
@@ -232,7 +237,10 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
     make: () => ({ name: "Compaction by price", mode: "live", template: "compact_price",
       hypothesis: "Agents that compact when a summary costs less than reading their context over the steps ahead cost less per turn, without more errors or failed tool calls.",
       arms: [{ name: "window" }, { name: "price", settings: { compact_by_price: true } }], primary: "cost_usd",
-      guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
+      // What a summary that lost the work would show: a turn that fails, more failed calls, a context lost to a
+      // successor, the owner's Stop, a reply rated down. (keep_miss is reported: only the price arm has it.)
+      guards: [{ metric: "error", mde: 0.1 }, { metric: "tool_errors", mde: 0.25, relative: true }, { metric: "successor", mde: 0.05 },
+        { metric: "stopped_by_owner", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
     id: "speed", label: "Speed tier",
@@ -696,8 +704,9 @@ export class Experiments {
     // Turns of the experiment's sessions while it ran, each in its family's
     // cluster and arm (the assignment, not the row's own tag).
     const by = ended ? "t.ts + COALESCE(t.ms, 0)" : "t.ts";
-    return this.store.db.query<any, [string, number, number]>(
-      `SELECT t.*, x.arm AS family_arm, x.root AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND ${by} <= ?`).all(e.id, e.started_ms ?? 0, until)
+    const rows = this.store.db.query<any, [string, number, number]>(
+      `SELECT t.*, x.arm AS family_arm, x.root AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND ${by} <= ?`).all(e.id, e.started_ms ?? 0, until);
+    return withSuccessors(this.store.db, rows, e.started_ms ?? 0)
       .map((t) => ({ arm: t.family_arm, cluster: t.family, m: turnMetrics(t) }));
   }
 
@@ -723,7 +732,7 @@ export class Experiments {
       `SELECT t.* FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id
        WHERE x.exp_id = ? AND x.root = ? AND t.ts >= ? ORDER BY t.ts + COALESCE(t.ms, 0), t.id`);
     const due = open.flatMap((f) => {
-      const o = familyObs(turns.all(e.id, f.root, e.started_ms ?? 0).map((t) => ({ end: t.ts + (t.ms ?? 0), m: turnMetrics(t) })), f.ts, now, k, window);
+      const o = familyObs(withSuccessors(db, turns.all(e.id, f.root, e.started_ms ?? 0), e.started_ms ?? 0).map((t) => ({ end: t.ts + (t.ms ?? 0), m: turnMetrics(t) })), f.ts, now, k, window);
       return o ? [{ ...f, ...o }] : [];
     }).sort((a, b) => a.at - b.at);
     const add = db.query("INSERT OR IGNORE INTO experiment_obs (exp_id, root, arm, ts, turns, metrics) VALUES (?, ?, ?, ?, ?, ?)");
@@ -770,6 +779,23 @@ export class Experiments {
   }
 }
 
+// Turn rows with `successor` set: 1 on the last turn of a session whose agent
+// lost that context and had a successor take its task up (the activity row the
+// start of a successor writes), 0 on the others.
+function withSuccessors<T extends { session_id: string; ts: number; id: number }>(db: Store["db"], rows: T[], since: number): (T & { successor: number })[] {
+  const lost = new Set<string>();
+  if (rows.length && db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'activity'").get()) {
+    for (const r of db.query<{ s: string | null }, [number]>("SELECT json_extract(data, '$.lost_session') AS s FROM activity WHERE ts >= ? AND kind = 'agent' AND sub = 'successor'").all(since)) if (r.s) lost.add(r.s);
+  }
+  const last = new Map<string, T>();
+  for (const r of rows) if (lost.has(r.session_id)) {
+    const was = last.get(r.session_id);
+    if (!was || r.ts > was.ts || (r.ts === was.ts && r.id > was.id)) last.set(r.session_id, r);
+  }
+  const ends = new Set(last.values());
+  return rows.map((r) => ({ ...r, successor: ends.has(r) ? 1 : 0 }));
+}
+
 // A turn row's metric values.
 export function turnMetrics(t: any): Partial<Record<Metric, number>> {
   const prompt = (t.input ?? 0) + (t.cache_read ?? 0) + (t.cache_write ?? 0);
@@ -779,5 +805,8 @@ export function turnMetrics(t: any): Partial<Record<Metric, number>> {
     ...(prompt ? { cache_read_share: (t.cache_read ?? 0) / prompt } : {}),
     ms: t.ms ?? 0, ok: t.outcome === "ok" ? 1 : 0, error: t.outcome === "error" ? 1 : 0,
     tool_errors: t.tool_errors ?? 0, thumbs_down: t.rating === -1 ? 1 : 0, requests: t.requests ?? 0,
+    stopped_by_owner: t.outcome === "stopped_by_owner" ? 1 : 0,
+    ...(typeof t.successor === "number" ? { successor: t.successor } : {}),
+    ...(typeof t.keep_miss === "number" ? { keep_miss: t.keep_miss } : {}),
   };
 }

@@ -30,8 +30,8 @@ export const RUN_SCOPE = "every model request of the run's turn: the working mod
 export function runMetrics(turn: Record<string, any> | undefined, run: { ok: boolean; ms: number }): Record<string, number> {
   const seen = { ok: run.ok ? 1 : 0, ms: run.ms };
   if (!turn) return seen;
-  // No reply is rated in a run.
-  const { thumbs_down: _none, ...m } = turnMetrics(turn);
+  // No reply is rated in a run, and nobody stops one.
+  const { thumbs_down: _none, stopped_by_owner: _stop, ...m } = turnMetrics(turn);
   return { ...m, ...seen };
 }
 

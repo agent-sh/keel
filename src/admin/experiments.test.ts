@@ -138,6 +138,39 @@ function release(store: Store, o: Outcomes, x: Experiments, sessionId: string, c
   return end.id;
 }
 
+// The compaction-by-price trial reads what a summary that lost the work would
+// show: an agent context a successor had to take up, a turn the owner stopped,
+// a reply rated down; and, in the price arm, how far the summary's kept size
+// was from what the next step read.
+test("the compaction-by-price trial counts lost contexts, the owner's stops and the kept size's miss", () => {
+  const d = daemon();
+  try {
+    const { store, x, o } = d.open();
+    const e = x.start(x.create({ template: "compact_price", name: "by price" }).id);
+    expect(e.guards.map((g) => g.metric)).toEqual(["error", "tool_errors", "successor", "stopped_by_owner", "thumbs_down"]);
+    // The price arm: an agent compacted by price, its summary said to keep 20,000 tokens and the next step read 25,000.
+    const top = root(store, x, e, "price");
+    const sub = child(store, x, top);
+    start(store, sub);
+    store.append(sub, "compaction", { mode: "summary", summary: "s", auto: true, trigger: "price", price: { keep_tokens: 20_000 } });
+    store.append(sub, "assistant", { blocks: [{ type: "text", text: "on" }], model: "p:m", usage: { input: 1_000, output: 10, cache_read: 24_000, cache_write: 0 }, stop: "end_turn" });
+    release(store, o, x, sub, 0.01);
+    // That agent then lost its context and a successor took its task up.
+    store.migrate("CREATE TABLE IF NOT EXISTS activity (id TEXT PRIMARY KEY, ts INTEGER NOT NULL, kind TEXT NOT NULL, sub TEXT NOT NULL DEFAULT '', session_id TEXT, text TEXT NOT NULL, data TEXT)");
+    store.db.query("INSERT INTO activity (id, ts, kind, sub, session_id, text, data) VALUES ('a1', ?, 'agent', 'successor', ?, 'successor', ?)").run(Date.now(), top, JSON.stringify({ lost_session: sub }));
+    // Another family of the price arm: the owner stopped its turn.
+    turn(store, root(store, x, e, "price"), { outcome: "stopped_by_owner" });
+    turn(store, root(store, x, e, "window"));
+    const arms = x.report(x.get(e.id)!, closed()).arms;
+    const price = arms.find((a) => a.arm === "price")!.metrics, window = arms.find((a) => a.arm === "window")!.metrics;
+    expect(price.keep_miss?.estimate).toBeCloseTo(0.25, 6);
+    // Two families of the price arm (an arm's mean is over its families): one lost a context to a successor, the other was stopped.
+    expect(price.successor?.estimate).toBeCloseTo(0.5, 6);
+    expect(price.stopped_by_owner?.estimate).toBeCloseTo(0.5, 6);
+    expect([window.successor?.estimate, window.stopped_by_owner?.estimate, window.keep_miss]).toEqual([0, 0, undefined]);
+  } finally { d.close(); }
+});
+
 test("a stopped experiment's report is frozen with its decision", async () => {
   const d = daemon();
   try {

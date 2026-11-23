@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS telemetry_turns (
   toolset TEXT,
   exp_id TEXT,
   arm TEXT,
-  rating INTEGER
+  rating INTEGER,
+  keep_miss REAL
 );
 CREATE INDEX IF NOT EXISTS telemetry_turns_ts ON telemetry_turns(ts);
 CREATE INDEX IF NOT EXISTS telemetry_turns_session ON telemetry_turns(session_id, ts);
@@ -77,12 +78,31 @@ export function outcomeOf(reason: string, stoppedBy?: string | null): string {
 export const OUTCOMES = ["ok", "error", "refusal", "stopped_by_owner", "stopped_by_parent", "stopped", "cut", "budget"] as const;
 
 type Turn = Record<string, any>;
+
+// How far each compaction by price of a turn estimated what its summary keeps
+// (`price.keep_tokens`, src/engine/price-compact.ts) from what the next step
+// read (its prompt: input, cache read and cache write): the mean of
+// |read / kept - 1| over the turn's priced compactions with a step after them.
+export function keepMiss(span: readonly StoredEvent[]): number | null {
+  const miss: number[] = [];
+  for (let i = 0; i < span.length; i++) {
+    const kept = span[i]!.kind === "compaction" && span[i]!.data?.trigger === "price" ? span[i]!.data?.price?.keep_tokens : undefined;
+    if (!(typeof kept === "number" && kept > 0)) continue;
+    let next: StoredEvent | undefined;
+    for (let k = i + 1; k < span.length && span[k]!.kind !== "compaction" && !next; k++) if (span[k]!.kind === "assistant" && span[k]!.data?.usage) next = span[k];
+    if (!next) continue;
+    const u = next.data.usage;
+    miss.push(Math.abs(((u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0)) / kept - 1));
+  }
+  return miss.length ? miss.reduce((a, v) => a + v, 0) / miss.length : null;
+}
 export type Filter = { since?: number; until?: number };
 const DAY = 86_400_000;
 
 export class Outcomes {
   constructor(private store: Store, private experiments?: Experiments) {
     store.migrate(SCHEMA);
+    if (!store.columnExists("telemetry_turns", "keep_miss")) store.migrate("ALTER TABLE telemetry_turns ADD COLUMN keep_miss REAL");
     this.backfill();
     registerHooks({
       turnEnd: (s, reason) => {
@@ -180,6 +200,7 @@ export class Outcomes {
       cache_ms: last?.cache_ms ?? null, speed: last?.speed ?? null, effort: last?.effort ?? start.data?.effort ?? null, toolset: turnCalls[0]?.toolset ?? null,
       exp_id: tag?.exp_id ?? null, arm: tag?.arm ?? null,
       rating: db.query<{ v: number | null }, [string]>("SELECT MIN(value) AS v FROM reply_ratings WHERE turn_event = ?").get(start.id)?.v ?? null,
+      keep_miss: keepMiss(span),
     };
     const cols = Object.keys(row);
     // (Written with the next commit, src/core/side.ts: a reader of the table has it written first.)

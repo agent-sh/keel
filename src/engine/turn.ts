@@ -441,6 +441,12 @@ const priceData = (p: PriceVerdict & { ahead: Residual; delay: number; keep: num
 const SUMMARY_RETRIES = 2;
 // What the owner can do when a summary cannot be written whole.
 const SUMMARY_REMEDIES = "compact with a focus that asks for less, switch to a model that writes longer replies, or clear the context";
+// The model's steps since the branch's last checkpoint (a summary's backoff counts in them).
+const stepsSince = (events: readonly StoredEvent[]): number => {
+  let n = 0;
+  for (let i = events.length - 1; i >= 0 && events[i]!.kind !== "compaction"; i--) if (events[i]!.kind === "assistant") n++;
+  return n;
+};
 // The failures of a summary that end the same way on the same context: remembered (Engine.gaveUp).
 const SUMMARY_GAVE_UP = new Set(["summary_truncated", "summary_too_long", "summary_no_room"]);
 // A turn that ended with one of these before any request did so because its
@@ -2962,6 +2968,23 @@ export class Engine {
     const g = this.gaveUpFor(id, events, st);
     return g?.tried.has(over ? "window" : "line") ? g.error : undefined;
   }
+  // A summary written ahead that failed for another cause (refused, empty, a
+  // provider error past the driver's retries) may come out the next time, but
+  // each try reads the whole context: tried again on the same context (the
+  // same checkpoint and model) only after 2^k of its steps, k the failures so
+  // far (2, 4, 8, ...). The tries over S steps are then about log2(S), not S,
+  // and a failure that passes (an overload) is tried again two steps later.
+  // Kept in memory: a restart tries again at once, once.
+  private summaryBackoff = new SessionMap<{ key: string; at: number; fails: number }>(256);
+  private summaryHeld(id: string, events: readonly StoredEvent[], st: Step): boolean {
+    const b = this.summaryBackoff.get(id);
+    return !!b && b.key === this.gaveUpKey(events, st) && stepsSince(events) < b.at + 2 ** b.fails;
+  }
+  private summaryMissed(id: string, events: readonly StoredEvent[], st: Step) {
+    const key = this.gaveUpKey(events, st);
+    const b = this.summaryBackoff.get(id);
+    this.summaryBackoff.set(id, { key, at: stepsSince(events), fails: b?.key === key ? b.fails + 1 : 1 });
+  }
   private giveUp(id: string, events: readonly StoredEvent[], st: Step, covered: StoredEvent | undefined, over: boolean, e: unknown) {
     if (!covered || !SUMMARY_GAVE_UP.has((e as any)?.code)) return;
     const had = this.gaveUpFor(id, events, st);
@@ -3163,7 +3186,7 @@ export class Engine {
     if (this.draining || (current && !current.abort.signal.aborted)) return;
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
-    if (!covered || !worthSummarizing(events) || this.summaryGaveUp(id, events, st, false)) return;
+    if (!covered || !worthSummarizing(events) || this.summaryGaveUp(id, events, st, false) || this.summaryHeld(id, events, st)) return;
     const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data))) return;
     const abort = new AbortController();
@@ -3175,7 +3198,11 @@ export class Engine {
       .then(async (res) => {
         this.emitSession(id);
         const summary = res.summary;
-        if (!summary) return;
+        if (!summary) {
+          if (!abort.signal.aborted) this.summaryMissed(id, events, st);
+          return;
+        }
+        this.summaryBackoff.delete(id);
         const settled = await this.settled(events, summary);
         const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...timed(() => "making a compaction's checkpoint (its kept messages, trail and probe)", () => checkpointData(events, summary, this.wordsBudget(st), settled)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         if (abort.signal.aborted || !this.preparationHolds(id, covered.id, data)) return;
@@ -3184,6 +3211,7 @@ export class Engine {
       .catch((e) => {
         if (abort.signal.aborted) return;
         this.giveUp(id, events, st, covered, false, e);
+        this.summaryMissed(id, events, st);
         // A summary made ahead that could not reach the provider is made again later: nothing failed that anyone needs to read.
         if (unreachable(e)) return;
         this.errors.capture("provider", e, { session: id, at: "preparing a summary" });
@@ -3232,7 +3260,8 @@ export class Engine {
     const stepMs = gaps.length ? gaps[Math.floor(gaps.length / 2)]! : 0;
     // The steps the summary takes to be written while the agent works: it is in place at the next one at the earliest.
     const delay = Math.max(1, sum?.ms && stepMs ? Math.ceil(sum.ms / stepMs) : 1);
-    if (!this.agentKinds.has(session.id)) this.agentKinds.set(session.id, this.store.db.query<{ type: string }, [string]>("SELECT type FROM agents WHERE session_id = ? LIMIT 1").get(session.id)?.type);
+    // (The agents table is made by the automation: an engine without it prices the agent as of no kind.)
+    if (!this.agentKinds.has(session.id)) this.agentKinds.set(session.id, this.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agents'").get() ? this.store.db.query<{ type: string }, [string]>("SELECT type FROM agents WHERE session_id = ? LIMIT 1").get(session.id)?.type : undefined);
     const ahead = residual(done, delay, { type: this.agentKinds.get(session.id), model: st.info.id }, facts?.lives ?? []);
     const ask = { used, prefix, growth, summaryIn: tokens(utf8Bytes(summaryPrompt())), summaryOut: out, ahead, price, long: this.asksLong(session.id, st) };
     // A bound first: even a summary that kept nothing but the prefix would not pay.

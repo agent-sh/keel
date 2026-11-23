@@ -575,6 +575,92 @@ test("threshold compaction: nothing new is not summarized, an empty summary does
   expect(line.findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
 });
 
+// A summary written ahead that comes back empty or refused, or fails, is
+// tried again on the same context only after 2, 4, 8, ... steps: each try reads
+// the whole context. The window rule's preparation at 70% and compaction by
+// price share it (Engine.prepare).
+test("a summary prepared ahead that fails is tried again after a growing number of steps, not at every step", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "backoff-"));
+  const store = new Store(dir);
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+  const usage = { input: 6_100, output: 1, cache_read: 0, cache_write: 0 };
+  const STEPS = 16;
+  const run = async (summary: (req: any) => any) => {
+    const asked: string[] = [];
+    let steps = 0;
+    const provider = {
+      id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+      stream: async (req: any) => {
+        asked.push(req.purpose);
+        if (req.purpose === "summary") return summary(req);
+        // Each step a tool call (one that fails at once), until the last.
+        if (++steps < STEPS) return { blocks: [{ type: "tool_use", id: `t${steps}`, name: "Read", input: {} }], usage, stop: "tool_use", model: "m" };
+        return { blocks: [{ type: "text", text: "done" }], usage, stop: "end_turn", model: "m" };
+      },
+    };
+    const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+    const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String((e as Error).message) }) } as any, join(dir, "spill"));
+    const s = store.createSession({ title: "Fixture", model: "p:m", workspace: dir });
+    // The window's line at 7,000 tokens: a context of about 6,100 is past the 70% where a summary is prepared ahead, and under the line.
+    store.updateSession(s.id, { settings: { compact_at: 7_000 } });
+    store.append(s.id, "user", { text: "go" });
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(20_000) }], model: "p:m", stop: "end_turn", usage });
+    engine.send(s.id, "next");
+    await engine.idle(s.id);
+    expect(store.events(s.id).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+    expect(asked.filter((p) => p === "turn")).toHaveLength(STEPS);
+    return asked.filter((p) => p === "summary").length;
+  };
+  // An answer with no summary in it (a tool call instead), a refusal, a failed request: over 16 steps,
+  // tries at about the 1st, 3rd, 7th and 15th, never one at every step.
+  for (const summary of [
+    () => ({ blocks: [{ type: "tool_use", id: "s", name: "Read", input: {} }], usage, stop: "tool_use", model: "m" }),
+    () => ({ blocks: [{ type: "text", text: "I can't help with that." }], usage, stop: "refusal", model: "m" }),
+    () => { throw Object.assign(new Error("fixture: the summary request failed"), { status: 400 }); },
+  ]) {
+    const n = await run(summary);
+    expect(n).toBeGreaterThan(0);
+    expect(n).toBeLessThanOrEqual(5);
+  }
+});
+
+// Compaction by price reads an agent's kind from the agents table, which the
+// automation makes: a store without it prices the agent as of no kind, and its
+// turn goes on.
+test("an agent priced for compaction in a store with no agents table still takes its step", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "noagents-"));
+  const store = new Store(dir);
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 1_000_000, output: 1_000, efforts: [], billing: "per_token", price: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 } };
+  const usage = { input: 60_000, output: 1, cache_read: 0, cache_write: 0 };
+  const provider = {
+    id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async () => ({ blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "m" }),
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+  const engine = new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String((e as Error).message) }) } as any, join(dir, "spill"));
+  // An agent (a parent of its own) whose tree compacts by price.
+  if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+  const root = store.createSession({ title: "Root", model: "p:m", workspace: dir, settings: { compact_by_price: true } });
+  const s = store.createSession({ title: "Agent", model: "p:m", workspace: dir });
+  store.db.run("UPDATE sessions SET parent_id = ? WHERE id = ?", [root.id, s.id]);
+  expect(store.session(s.id)?.parent_id).toBe(root.id);
+  store.append(s.id, "user", { text: "go" });
+  store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(250_000) }], model: "p:m", stop: "end_turn", usage });
+  engine.send(s.id, "next");
+  await engine.idle(s.id);
+  expect(store.events(s.id).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+});
+
 // Input that is not the owner's, sent while a turn runs, keeps who sent it
 // through the queue: a steer and a queued prompt are not the owner's words.
 test("a steer or queued prompt from momentum or a hook keeps its origin", async () => {
