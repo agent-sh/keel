@@ -830,7 +830,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     : null;
   const iso = placed ? null : await isolate(parent, def, input, title, id, mode);
   // Where it may write, when its spawn says or its task is to review: an agent on another machine has none here.
-  const scope = placed || (mode && writesNothing(mode)) ? { json: null, left: [] } : await writeAsks.forSpawn(parent, input.writes, { type: def.name, title, cwd: iso?.cwd ?? parent.workspace });
+  const scope = placed || (mode && writesNothing(mode)) ? { json: null, left: [] } : await writeAsks.forSpawn(parent, input.writes, { type: def.name, cwd: iso?.cwd ?? parent.workspace });
   const settings = { ...(effort ? { effort } : {}), ...(def.maxTurns ? { max_steps: def.maxTurns } : {}) };
   const child = store.createSession({ model, workspace: placed?.cwd ?? iso?.cwd ?? parent.workspace, title, settings: Object.keys(settings).length ? settings : undefined });
   store.db.query("UPDATE sessions SET parent_id = ?, machine = ? WHERE id = ?").run(parentId, placed?.machine ?? null, child.id);
@@ -892,6 +892,7 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   for (const name of def.mcpServers ?? []) if (!have.includes(name)) left.push(`the MCP server ${name}: Keel has no server of that name`);
   if (def.effort && !effort && def.format !== "codex") left.push(`the effort ${def.effort}: ${model} does not list it`);
   if (left.length) leftOut.set(id, left);
+  if (scope.json && scope.why) scopeOut.set(id, writeAsks.spawnLine(store.session(child.id) ?? child, scope.json, scope.why));
   const task = [
     preamble(depth, max), def.body, memory?.block ?? "", ...preloaded,
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
@@ -987,6 +988,14 @@ const leftLine = (id: string) => { const l = leftOut.get(id); return l?.length ?
 export function notCarried(id: string): string {
   const l = leftOut.get(id);
   return l?.length ? `\n\nIts definition asks for what Keel does not give it: ${l.join("; ")}.` : "";
+}
+// Where an agent with a write scope may write and why it has one, by agent id, for the spawn's result to say.
+const scopeOut = new Map<string, string>();
+export const scopeNote = (id: string) => scopeOut.get(id) ?? "";
+// What the spawn's result says past the start: what was not carried, and the agent's write scope.
+export function spawnNotes(id: string): string {
+  const s = scopeOut.get(id);
+  return notCarried(id) + (s ? `\n\n${s}` : "");
 }
 
 // The agent's first prompt goes into its session, once: from the start that

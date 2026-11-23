@@ -63,6 +63,11 @@ test("the writes a command's words show, and the branches it moves", () => {
   expect(w("git status && git log").paths).toEqual([]);
   expect(w("git commit -am x").paths).toEqual(["/w"]);
   expect(w("cd $D && echo > f").paths).toEqual([]);
+  // A here-document's lines and a quoted argument are text, not redirects; a quoted target loses its quotes.
+  expect(w("cat > mk.sh <<'EOS'\necho h > /o/h.txt\nEOS").paths).toEqual(["/w/mk.sh"]);
+  expect(w("cat > mk.sh <<EOS\necho h > /o/h.txt\nEOS").paths).toEqual(["/w/mk.sh"]);
+  expect(w("printf 'echo s > /o/s.txt\\n' > run.sh").paths).toEqual(["/w/run.sh"]);
+  expect(w(`echo "a \\" > /o/no" > '/o/a b' 1>&2 &>> /o/c >&/o/d`).paths).toEqual(["/o/a b", "/o/c", "/o/d"]);
   expect(w("git branch -f main HEAD").refs).toEqual(["main"]);
   expect(w("git branch -D old main").refs).toEqual(["old", "main"]);
   expect(w("git branch topic").refs).toEqual([]);
@@ -90,13 +95,13 @@ test("the paths a sandbox refused to write, from what the command printed", () =
   ]);
 });
 
-test("a reviewer by its type or its title", () => {
-  expect(isReviewer("gishra-reviewer", "x")).toBe(true);
-  expect(isReviewer("general-purpose", "Verify lane T1")).toBe(true);
-  expect(isReviewer("general-purpose", "Review FIND-M29")).toBe(true);
-  expect(isReviewer("general-purpose", "Build the preview pane")).toBe(false);
-  expect(isReviewer("general-purpose", "Fix reviews list")).toBe(true);
-  expect(isReviewer(undefined, undefined)).toBe(false);
+test("a reviewer by its type, not its title", () => {
+  expect(isReviewer("gishra-reviewer")).toBe(true);
+  expect(isReviewer("code-review")).toBe(true);
+  expect(isReviewer("verifier")).toBe(true);
+  expect(isReviewer("general-purpose")).toBe(false);
+  expect(isReviewer("previewer")).toBe(false);
+  expect(isReviewer(undefined)).toBe(false);
 });
 
 test("the owner's words open the checkout's files by its name, its git directory only by a name inside it", () => {

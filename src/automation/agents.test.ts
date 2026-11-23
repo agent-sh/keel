@@ -1,5 +1,5 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -1551,13 +1551,26 @@ test("a run whose start is slow does not hold the report, and its answers follow
 
 // A spawn's writes, a reviewer's own folders, and the parent's yes as the agents keep them (the gate's decision is
 // write-scope.test.ts; the whole path is test/e2e/write-scope.spec.ts).
-test("a spawn's write scope: its writes, a reviewer's default, one question a path, and only its parent's yes", async () => {
+test("a spawn's write scope: its writes, a reviewer's default, a scoped agent's agents, one question a path, and only its parent's yes", async () => {
   writeAsks.init();
+  const folder = join(dir, ".claude", "agents");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "code-review.md"), ["---", "name: code-review", "description: Reviews a change", "---", "Review the change."].join("\n"));
   try {
     const plain = await spawn({ title: "Build the thing" });
     expect(writeAsks.given(plain.session_id)).toBeUndefined();
-    const review = await spawn({ title: "Review the patch" });
+    // A title that says verify is no reviewer: a builder may be titled so, and it is not scoped in silence.
+    const titled = await spawn({ title: "Verify the build and fix what fails" });
+    expect(writeAsks.given(titled.session_id)).toBeUndefined();
+    const review = await spawn({ title: "Look at the patch", type: "code-review" });
     expect(writeAsks.given(review.session_id)).toEqual({ places: [] });
+    // The parent is told why it is scoped and where it writes.
+    const said = await tool("Agent").run({ description: "Look again", prompt: "look", subagent_type: "code-review", run_in_background: true, isolation: "none" }, ctx as any);
+    expect(String(said.content)).toContain("It may write only in");
+    expect(String(said.content)).toContain("its type, code-review, is one that reviews or verifies");
+    // An agent of a scoped agent is scoped, given nothing: its own folders only.
+    const kid = await agents.spawn(review.session_id, { prompt: "do it", isolation: "none", background: true, title: "Kid" });
+    expect(writeAsks.given(kid.session_id)).toEqual({ places: [] });
     const given = await spawn({ title: "Write the logs", writes: ["out", "/abs/logs/*.txt"] });
     expect(writeAsks.given(given.session_id)!.places).toEqual([{ path: join(dir, "out") }, { path: "/abs/logs/*.txt", glob: true }]);
     await expect(spawn({ writes: ["/"] })).rejects.toThrow("the whole file system");
@@ -1573,9 +1586,10 @@ test("a spawn's write scope: its writes, a reviewer's default, one question a pa
     expect(writeAsks.given(review.session_id)!.places.map((x) => x.path).sort()).toEqual(["/elsewhere", "/elsewhere/x"]);
     // The question under the folder given is answered, and nothing is owed to the parent any more.
     expect(store.db.query("SELECT state FROM agent_write_asks WHERE agent_session = ? AND path = '/elsewhere/x'").get(review.session_id)).toEqual({ state: "allowed" });
-    for (const x of [plain, review, given]) agents.stop(x.id);
+    for (const x of [plain, titled, review, given, kid, ...agents.list(parent.id).filter((x) => x.title === "Look again")]) agents.stop(x.id);
     await settled();
   } finally {
+    rmSync(join(folder, "code-review.md"), { force: true });
     scopes.of = undefined;
     scopes.ask = undefined;
   }

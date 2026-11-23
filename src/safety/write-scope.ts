@@ -5,9 +5,11 @@
 // gathers the places and the repository's layout, the automation asks the
 // parent and keeps its answers (src/automation/write-asks.ts).
 //
-// An agent has a scope when its spawn named one (`writes`), or when its task
-// is to review or verify (its type or its title says so): its own worktree
-// and its scratch, nothing more. An agent with neither writes as it always did.
+// An agent has a scope when its spawn named one (`writes`), when its type is
+// one that reviews or verifies, or when the session that starts it has a
+// scope itself (a scoped agent never starts an unscoped one): its own
+// worktree and its scratch, plus what it was given. An agent with none of
+// these writes as it always did.
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { atCwd, contains } from "../core/paths.ts";
@@ -79,9 +81,10 @@ export function parseWrites(list: unknown, cwd: string, home: string): { places:
   return { places: out };
 }
 
-// Whether an agent's task is to review or verify: its type or its title says so.
+// Whether an agent is of a kind that reviews or verifies: its type says so. Its title does not: a task titled
+// "Verify the build and fix it" may be a builder's, and the scope would stop it writing what its task needs.
 const REVIEWS = /(?:^|[^a-z])(review|reviewer|reviewing|reviews|verify|verifier|verifying|verification|audit|auditor)(?:$|[^a-z])/i;
-export const isReviewer = (type: string | undefined, title: string | undefined) => REVIEWS.test(type ?? "") || REVIEWS.test(title ?? "");
+export const isReviewer = (type: string | undefined) => REVIEWS.test(type ?? "");
 
 // The writes of a shell command that can be read from its words: a redirect's target, what a writer program is
 // given (policy.ts writesOf), and the folder a git command that changes something runs in. `refs`: the local
@@ -100,7 +103,10 @@ export function shellWrites(command: string, cwd: string, home: string): { paths
     paths.add(isAbsolute(named) ? resolve(named) : atCwd(dir!, named));
   };
   for (const { s, dir } of located(parts, cwd, home)) {
-    for (const w of writesOf(s)) add(dir, w);
+    // (A line of a here-document is text the command is given, not a command: what runs it is judged.)
+    if (s.heredoc) continue;
+    if (s.redirects) for (const w of redirectTargets(s.text)) add(dir, w);
+    for (const w of writesOf({ ...s, redirects: false })) add(dir, w);
     // (And what makes a file or a folder by its name, which policy.ts leaves to the folder's rules.)
     const prog = s.words.findIndex((x) => MAKERS.test(x));
     if (prog >= 0 && prog === s.words.findIndex((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x))) for (const a of s.words.slice(prog + 1)) if (!a.startsWith("-")) add(dir, a);
@@ -112,6 +118,40 @@ export function shellWrites(command: string, cwd: string, home: string): { paths
   return { paths: [...paths], refs: [...refs] };
 }
 const MAKERS = /^(?:.*\/)?(?:touch|mkdir|rmdir|mkfifo|unlink)$/;
+
+// The files a command part's redirects write, read from its text outside quotes: `>`, `>>`, `>|`, `&>`, `&>>`,
+// `<>` and `>&` to a file (not to a descriptor). A `>` inside a quoted argument is text (printf 'a > b'), and a
+// quoted target loses its quotes. A target that expands is kept as written (the caller leaves it out).
+export function redirectTargets(text: string): string[] {
+  const out: string[] = [];
+  let i = 0, q: "'" | '"' | null = null;
+  const end = /[\s;|&<>()]/;
+  while (i < text.length) {
+    const c = text[i]!;
+    if (q) { if (c === "\\" && q === '"') i++; else if (c === q) q = null; i++; continue; }
+    if (c === "\\") { i += 2; continue; }
+    if (c === "'" || c === '"') { q = c; i++; continue; }
+    const amp = c === "&" && text[i + 1] === ">";
+    if (!(c === ">" || amp || (c === "<" && text[i + 1] === ">"))) { i++; continue; }
+    let j = i + (amp || c === "<" ? 2 : 1);
+    let dup = false;
+    if (!amp && c === ">") { if (text[j] === ">" || text[j] === "|") j++; else if (text[j] === "&") { j++; dup = true; } }
+    else if (amp && text[j] === ">") j++;
+    while (text[j] === " " || text[j] === "\t") j++;
+    let w = "", wq: "'" | '"' | null = null;
+    for (; j < text.length; j++) {
+      const d = text[j]!;
+      if (wq) { if (d === wq) wq = null; else if (d === "\\" && wq === '"' && j + 1 < text.length) w += text[++j]; else w += d; continue; }
+      if (d === "'" || d === '"') { wq = d; continue; }
+      if (d === "\\" && j + 1 < text.length) { w += text[++j]; continue; }
+      if (end.test(d)) break;
+      w += d;
+    }
+    if (w && !(dup && /^(\d+-?|-)$/.test(w))) out.push(w);
+    i = Math.max(j, i + 1);
+  }
+  return out;
+}
 // git subcommands that write nothing in the folder they run in (a fetch or a push writes refs, read by refsMoved).
 const GIT_READS = /^(status|log|show|diff|blame|grep|rev-parse|rev-list|ls-files|ls-tree|cat-file|describe|for-each-ref|merge-base|shortlog|reflog|config|remote|help|version|fetch|push|worktree|branch|tag|update-ref|symbolic-ref)$/;
 

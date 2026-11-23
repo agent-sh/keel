@@ -38,6 +38,8 @@ for (const sandbox of ["off", "workspace-write"] as const) {
       { name: "Bash", input: { command: `echo again > ${out}/x.txt` } },
       { name: "Bash", input: { command: `echo bad > ${repo}/.git/probe` } },
       { name: "Bash", input: { command: "git commit --allow-empty -qm mine && git update-ref refs/heads/main HEAD" } },
+      // (A here-document's lines are text the file is given: no write outside, and nothing asked.)
+      { name: "Bash", input: { command: `cat > mk.sh <<'EOS'\necho h > ${out}/h.txt\nEOS` } },
       ...(sandbox === "off" ? [] : [{ name: "Bash", input: { command: hidden } }]),
     ];
     const spawn = [{ name: "spawn_agent", input: { message: `Scoped writer\nscript:calls ${JSON.stringify(child)}`, writes: ["."] } }];
@@ -59,13 +61,19 @@ for (const sandbox of ["off", "workspace-write"] as const) {
     expect(said[3]).toContain("git directory of the owner's checkout");
     expect(said[3]).not.toContain("parent session was asked");
     expect(said[4]).toContain("another checkout of the repository has out");
-    if (sandbox !== "off") expect(said[5]).toContain("The sandbox refused a write outside the paths this agent may write");
+    expect(said[5]).not.toContain("Refused");
+    expect(existsSync(join(a.worktree, "mk.sh"))).toBe(true);
+    if (sandbox !== "off") expect(said[6]).toContain("The sandbox refused a write outside the paths this agent may write");
     expect(existsSync(join(out, "x.txt"))).toBe(false);
     expect(existsSync(join(out, "hidden.txt"))).toBe(false);
     expect(existsSync(join(repo, ".git", "probe"))).toBe(false);
     expect(git(repo, "rev-parse", "main")).toBe(mainBefore);
     const x = join(out, "x.txt");
     await expect.poll(async () => (await asks()).filter((e) => String(e.data.text).includes(x)).length, { timeout: 30_000 }).toBe(1);
+    expect((await asks()).some((e) => String(e.data.text).includes("h.txt"))).toBe(false);
+    // The spawn's result told the parent where the agent writes and why.
+    const spawned = (await events()).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => String(typeof r.content === "string" ? r.content : r.content.map((b: any) => b.text ?? "").join("\n")));
+    expect(spawned.some((t) => t.includes("write_scope") && t.includes("its spawn named the paths it may write"))).toBe(true);
     const notice = page.getByTestId("write-ask-notice").first();
     await expect(notice).toContainText("asks to write outside the paths it was given", { timeout: 30_000 });
     await expect(notice).toContainText(x);

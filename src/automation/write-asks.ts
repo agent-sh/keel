@@ -50,21 +50,39 @@ export function given(sessionId: string): Given | undefined {
   return { places: [...(spawned.places ?? []), ...allowed.map((a) => (a.glob ? { path: a.path, glob: true as const } : { path: a.path }))] };
 }
 
-// The scope a spawn gives its agent, as stored with its record, and what of `writes` was not taken (told to the
-// parent with the rest of what the agent starts without). Null: no scope (no writes, and no review task).
-// `cwd`: the agent's folder, where a relative path is read from.
-export async function forSpawn(parent: Session, writes: unknown, a: { type?: string; title?: string; cwd: string }): Promise<{ json: string | null; left: string[] }> {
-  if (writes === undefined && !isReviewer(a.type, a.title)) return { json: null, left: [] };
+// The scope a spawn gives its agent, as stored with its record, what of `writes` was not taken (told to the parent
+// with the rest of what the agent starts without), and why it has one (told to the parent with the spawn's result).
+// Null: no scope. An agent has one when its spawn names writes, when its type reviews or verifies, or when its parent
+// has a scope itself: a scoped agent never starts one that writes as it likes. `cwd`: the agent's folder, where a
+// relative path is read from.
+export async function forSpawn(parent: Session, writes: unknown, a: { type?: string; cwd: string }): Promise<{ json: string | null; left: string[]; why?: string }> {
+  const why = writes !== undefined ? "its spawn named the paths it may write"
+    : isReviewer(a.type) ? `its type, ${a.type}, is one that reviews or verifies, so it writes only its own folders unless its spawn names more`
+    : given(parent.id) ? "this session has a write scope of its own, and an agent it starts writes no more than it may"
+    : undefined;
+  if (!why) return { json: null, left: [] };
   const parsed = parseWrites(writes ?? [], a.cwd, realOf(homedir()));
   if ("error" in parsed) throw new Error(parsed.error);
   const left: string[] = [];
   const places: Spawned["places"] = [];
   for (const p of parsed.places) {
-    const why = await refusedGift(parent, a.cwd, p.path);
-    if (why) left.push(`writes ${p.path}: ${why}`);
+    const no = await refusedGift(parent, a.cwd, p.path);
+    if (no) left.push(`writes ${p.path}: ${no}`);
     else places.push(p);
   }
-  return { json: JSON.stringify({ places }), left };
+  return { json: JSON.stringify({ places }), left, why };
+}
+
+// What the parent is told of an agent's scope with the spawn's result: where it may write and why.
+export function spawnLine(child: Session, json: string, why: string): string {
+  return `It may write only in ${placesSaid(child, json)} (and temporary files), because ${why}. A write elsewhere is refused and asks you once; to let it, send it a message whose writes names the path.`;
+}
+
+function placesSaid(child: Session, json: string): string {
+  let spawned: Spawned = { places: [] };
+  try { spawned = JSON.parse(json); } catch {} // stored by forSpawn: always this shape
+  const own = perm.gate ? perm.gate.placesFor(child).filter((p) => p.from !== "writes").map((p) => p.path) : [child.workspace];
+  return [...new Set([...own, ...spawned.places.map((p) => p.path)])].join(", ");
 }
 
 // Why a parent cannot give a path: it is in the owner's checkout or its git directory, or the parent has a scope of
@@ -108,11 +126,7 @@ function scopeLine(sessionId: string): string {
 
 // What an agent with a scope is told with its task: where it may write, and what happens elsewhere.
 export function taskLine(child: Session, json: string): string {
-  let spawned: Spawned = { places: [] };
-  try { spawned = JSON.parse(json); } catch {} // stored by forSpawn: always this shape
-  const own = perm.gate ? perm.gate.placesFor(child).filter((p) => p.from !== "writes").map((p) => p.path) : [child.workspace];
-  const all = [...new Set([...own, ...spawned.places.map((p) => p.path)])];
-  return `You may write only in: ${all.join(", ")} (and temporary files). A write anywhere else is refused, and your parent is asked once whether you may write that path; its answer comes as a message. The owner's own checkout and its git directory are never yours to write.`;
+  return `You may write only in: ${placesSaid(child, json)} (and temporary files). A write anywhere else is refused, and your parent is asked once whether you may write that path; its answer comes as a message. The owner's own checkout and its git directory are never yours to write.`;
 }
 
 // The questions owed to a parent go out as one input; each is settled when its prompt is stored.
@@ -151,7 +165,7 @@ export async function allow(fromSessionId: string, agentSessionId: string, write
   if (!s) throw new Error("no such agent");
   if (s.parent_id !== fromSessionId) throw new Error("writes widens the scope of an agent you started; this agent was started by another session");
   const from = store.session(fromSessionId)!;
-  if (!given(agentSessionId)) throw new Error("this agent has no write scope (its spawn named no writes and it is no reviewer): it writes wherever its permissions let it. Send the message without writes");
+  if (!given(agentSessionId)) throw new Error("this agent has no write scope (its spawn named no writes, its type is no reviewer's and you have no scope yourself): it writes wherever its permissions let it. Send the message without writes");
   const parsed = parseWrites(writes, s.workspace, realOf(homedir()));
   if ("error" in parsed) throw new Error(parsed.error);
   if (!parsed.places.length) return "";
