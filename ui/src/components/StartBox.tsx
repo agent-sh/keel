@@ -133,11 +133,13 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
               onStart={blocked || (machine && !(machine === "auto" && !autoThere)) ? undefined : () => start("", [])}
             />
           </div>
-          <div className={cn("mt-3 hidden items-center gap-4 text-caption text-faint", !beside && "sm:flex")}>
+          {/* The keys to know, while there is nothing else here: once the owner has sessions, the
+              palette, the list's rows and the shortcut sheet say them where they are used. */}
+          {firstRun && <div className={cn("mt-3 hidden items-center gap-4 text-caption text-faint", !beside && "sm:flex")} data-testid="home-keys">
             <span className="flex items-center gap-1.5"><Kbd keys="mod+k" /> search and commands</span>
             <span className="flex items-center gap-1.5"><Kbd keys="alt+m" /> model</span>
             <span className="flex items-center gap-1.5"><Kbd keys="mod+/" /> all shortcuts</span>
-          </div>
+          </div>}
           {firstRun && <FirstSteps />}
         </div>
         {!autoThere && !beside && <WatchLists className="min-w-0 @[74rem]:col-start-2 @[74rem]:row-span-2 @[74rem]:row-start-1 @[74rem]:[&>section:first-child]:mt-[4.25rem]" />}

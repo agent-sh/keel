@@ -77,3 +77,12 @@ test("an agent's line names its type only when the call picked one", async ({ pa
   await expect(page.getByTestId("agent-call").filter({ hasText: "general-purpose" })).toHaveCount(0);
   await shoot(page, "quiet-04-agent-lines");
 });
+
+test("the start page says the keys to know only while there are no sessions", async ({ page, request }) => {
+  // A session of this test's own, so the daemon has one whatever ran before.
+  await request.post("/api/sessions", { data: { model: HAIKU, title: "Keys to know" } });
+  await page.goto("/");
+  await expect(page.getByTestId("new-composer")).toBeVisible();
+  await expect(page.getByTestId("home-start")).not.toContainText("all shortcuts");
+  await shoot(page, "quiet-05-home");
+});
