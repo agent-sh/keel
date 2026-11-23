@@ -723,12 +723,8 @@ impl Win {
         self.pill_start.set_visible(over_page && link == Link::Down);
         self.dot.set_visible(link == Link::Restarting || coming);
         self.pill.set_tooltip_text(if coming { None } else { Some("What the sessions were doing is not known until Keel is back. Messages you send wait and go out then.") });
-        let text = match link {
-            Link::Restarting => "Reconnecting",
-            Link::Down => "Keel is not running",
-            Link::Up if coming => "Opening",
-            Link::Up => "",
-        };
+        // The daemon's state in the words the tray, the calm page and the page inside say it.
+        let text = if coming { "Opening" } else { link.said() };
         self.pill_text.set_label(text);
         self.bar_said(if show { text } else { "" });
     }
@@ -812,8 +808,8 @@ impl View for Win {
         self.tell(&serde_json::json!({ "daemon": "up" }));
     }
 
-    fn daemon_away(&self) {
-        self.tell(&serde_json::json!({ "daemon": "away" }));
+    fn daemon_away(&self, link: &Link) {
+        self.tell(&serde_json::json!({ "daemon": "away", "says": link.said() }));
     }
 
     fn away(&self, look: &Look, state: &Away) {

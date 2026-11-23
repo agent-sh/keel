@@ -21,6 +21,7 @@ import { promptToEdit } from "../lib/edit-last.ts";
 import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { PASTED } from "../lib/paste-key.ts";
 import { pastedFiles, shell, shellPaste, type Pasted } from "../lib/shell.ts";
+import { appSaysNow, useAppSays } from "./Stale.tsx";
 import { cn, fmtSize, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -182,6 +183,8 @@ const SessionComposer = memo(function SessionComposer({
   }, [effortSignal]);
   const seed = useUI((s) => (s.composerSeed && s.composerSeed.session === session?.id ? s.composerSeed : null)); // only this box's
   const connected = useStore((s) => s.connected);
+  // The desktop app's words for the daemon away, where its title bar says them (Stale.tsx).
+  const appSays = useAppSays();
   const synced = useStore((s) => s.synced);
   const slashItems = useSlashItems();
   const [switching, setSwitching] = useState(false);
@@ -690,7 +693,7 @@ const SessionComposer = memo(function SessionComposer({
   const blocked = (attachments: Attachment[]) => {
     if (offBranch) return OFF_BRANCH;
     // A message this page cannot send again by itself (a new session, a session of another machine) is not sent into a link that is down.
-    if (!named && !getState().connected) return "Not sent: Keel is not reachable. Send it again when it is back.";
+    if (!named && !getState().connected) return `Not sent: ${appSaysNow() ?? "Keel is not reachable"}. Send it again when it is back.`;
     if (switching) return "The model switch is not confirmed yet: nothing was sent.";
     if (hold) return hold;
     // A new screenshot for a model that says it reads none: nothing starts until
@@ -824,7 +827,7 @@ const SessionComposer = memo(function SessionComposer({
   // above a one-row toolbar. Cut where the room ends, whole in its tip.
   const status = notice
     ? <span className={cn("min-w-0 truncate text-caption text-warn animate-in", short ? "block shrink-0 px-4 pb-1" : "ml-1")} title={notice} role="status" data-testid="composer-notice">{notice}</span>
-    : !synced ? <span className={cn("truncate text-caption text-faint", short ? "block shrink-0 px-4 pb-1" : "ml-1")} role="status" data-testid="sync-state">{connected ? "Catching up" : "Reconnecting"}</span> : null;
+    : !synced ? <span className={cn("truncate text-caption text-faint", short ? "block shrink-0 px-4 pb-1" : "ml-1")} role="status" data-testid="sync-state">{connected ? "Catching up" : appSays ?? "Reconnecting"}</span> : null;
 
   return (
     <>
@@ -843,7 +846,7 @@ const SessionComposer = memo(function SessionComposer({
                   {!!d.images.length && <p className="truncate text-muted" title={d.images.map((a) => a.name).join(", ")}>{d.images.map((a) => a.name).join(", ")}</p>}
                   {!!d.lost?.length && <p className="break-words text-warn" data-testid="saved-lost">Not kept across the reload: {d.lost.join(", ")}</p>}
                   {d.state !== "parked" && d.error && <p className="break-words text-muted" data-testid="saved-reason">{d.error}</p>}
-                  {d.state === "waiting" && <p className="text-muted" data-testid="saved-waiting">{connected ? "Keel takes no new work right now. This goes out by itself, once, when it does." : "Keel is not reachable. This goes out by itself, once, when it is back."}</p>}
+                  {d.state === "waiting" && <p className="text-muted" data-testid="saved-waiting">{connected ? "Keel takes no new work right now. This goes out by itself, once, when it does." : `${appSays ?? "Keel is not reachable"}. This goes out by itself, once, when it is back.`}</p>}
                   {d.state === "unconfirmed" && <p className="text-muted">{named ? "It may have arrived. Sending it again is safe: Keel takes it once." : sid ? "It may have arrived. Check before sending again." : "The session may have been made. Check the list before sending again."}</p>}
                 </div>
                 <div className="flex flex-wrap gap-1">

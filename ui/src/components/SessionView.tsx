@@ -20,6 +20,7 @@ import { useAgentCount } from "../lib/watch.ts";
 import { whenIdle } from "../lib/utils.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import "../lib/gutter.ts";
+import { useAppSays } from "./Stale.tsx";
 
 // The conversation (Markdown, tool rows) is its own chunk: the start page does
 // not need it, and a session link starts loading it with the page.
@@ -186,11 +187,12 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
 // The session's row is known (from the list) but its history could not be
 // fetched: said, not shown as an empty conversation.
 function Unreached() {
+  const said = useAppSays() ?? "Keel is not reachable";
   return (
     <div className="k-notice mb-2" data-testid="session-unreached" role="status">
       <WifiOff className="size-4 shrink-0 text-warn" aria-hidden="true" />
       <p className="min-w-0 flex-1">
-        <span className="text-fg">Keel is not reachable.</span>{" "}
+        <span className="text-fg">{said}.</span>{" "}
         <span className="text-muted">The conversation loads when the connection is back.</span>
       </p>
     </div>

@@ -820,12 +820,8 @@ impl Win {
             return self.inner.send(&json!({ "t": "pill", "win": self.id, "show": true, "text": "This page keeps stopping", "dot": false, "start": true, "label": "Load again", "tip": "The page of this window ended several times in a minute, perhaps for want of memory, and was left. Your sessions go on in Keel." }));
         }
         let coming = over_page && link == Link::Up && self.loading.get() && self.slow.get();
-        let text = match link {
-            Link::Restarting => "Reconnecting",
-            Link::Down => "Keel is not running",
-            Link::Up if coming => "Opening",
-            Link::Up => "",
-        };
+        // The daemon's state in the words the tray, the calm page and the page inside say it.
+        let text = if coming { "Opening" } else { link.said() };
         let tip = if coming { "" } else { "What the sessions were doing is not known until Keel is back. Messages you send wait and go out then." };
         let show = over_page && (link != Link::Up || coming);
         self.bar_said(if show { text } else { "" }, over_page && link == Link::Down);
@@ -905,8 +901,8 @@ impl View for Win {
         self.tell(&json!({ "daemon": "up" }));
     }
 
-    fn daemon_away(&self) {
-        self.tell(&json!({ "daemon": "away" }));
+    fn daemon_away(&self, link: &Link) {
+        self.tell(&json!({ "daemon": "away", "says": link.said() }));
     }
 
     fn away(&self, look: &Look, state: &Away) {

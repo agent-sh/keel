@@ -80,8 +80,7 @@ pub struct Shown {
 /// The first line of the menu and the mark's tooltip.
 pub fn headline(s: &Shown) -> String {
     match s.link {
-        Link::Down => "Keel is not running".into(),
-        Link::Restarting => "Keel is restarting".into(),
+        Link::Down | Link::Restarting => s.link.said().into(),
         Link::Up if s.needs == 0 => "Nothing needs you".into(),
         Link::Up if s.needs == 1 => "1 needs you".into(),
         Link::Up => format!("{} need you", s.needs),

@@ -271,6 +271,8 @@ daemon_down
 check "the shell says the daemon is restarting" "wait_for 10 'last link | grep -q Restarting'"
 sleep 4; shot 02-restarting-light
 check "the tray says so too" "tray ToolTip | grep -q 'Keel is restarting'"
+# One state, one word: the title bar over the page says what the tray and the calm page say.
+check "the title bar says Keel is restarting, as the tray does" "wait_for 5 \"last bar | grep -q '\\\"text\\\":\\\"Keel is restarting\\\"'\""
 daemon_up
 check "the shell sees it back" "wait_for 20 'last link | grep -q Up'"
 sleep 3; shot 03-back-light

@@ -70,7 +70,7 @@ export function hexOf(color: string, ctx: Pick<CanvasRenderingContext2D, "fillSt
 //   saving: the app's answer to a file the page announced: kept or not.
 // (`failed`: the clipboard held a picture the app could not make ready.)
 export type Pasted = { id: number; text?: string | null; images: { type: string; data: string }[]; refused?: boolean; failed?: boolean };
-export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean }; saving?: { id: number; ok: boolean }; paste?: boolean; reloaded?: "stopped" };
+export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; says?: string; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean }; saving?: { id: number; ok: boolean }; paste?: boolean; reloaded?: "stopped" };
 
 // The clipboard in the app. The app's web view gives a page no clipboard of its own (no frame
 // in it may read or write one), so the page asks the app, which answers only at the owner's own

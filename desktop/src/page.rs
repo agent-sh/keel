@@ -58,9 +58,9 @@ pub fn words(a: &Away) -> (&'static str, &'static str, bool, bool) {
         return ("Keel's page does not open", "Keel answers, but its page fails to load. The app keeps trying.", false, true);
     }
     match (&a.link, a.starting) {
-        (Link::Restarting, _) => ("Keel is restarting", "Your sessions carry on where they were. This window comes back by itself.", false, true),
+        (Link::Restarting, _) => (Link::Restarting.said(), "Your sessions carry on where they were. This window comes back by itself.", false, true),
         (_, true) => ("Starting Keel", "The daemon is coming up. This takes a moment.", false, true),
-        (Link::Down, _) => ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true, false),
+        (Link::Down, _) => (Link::Down.said(), "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true, false),
         (Link::Up, _) => ("Opening Keel", "", false, true),
     }
 }
@@ -145,6 +145,16 @@ mod tests {
         let failing = words(&Away { failing: true, ..state(Link::Up, false, false) });
         assert_eq!((failing.0, failing.2, failing.3), ("Keel's page does not open", false, true));
         assert_eq!(words(&state(Link::Down, true, false)).0, "Starting Keel");
+    }
+
+    // One state, one word: the calm page heads a daemon that is away with the words the title bar,
+    // the tray and the page inside the window say (Link::said); the bar once said "Reconnecting".
+    #[test]
+    fn the_away_page_says_the_state_in_the_words_of_the_bar() {
+        for link in [Link::Down, Link::Restarting] {
+            assert_eq!(words(&state(link.clone(), false, false)).0, link.said());
+        }
+        assert_eq!((Link::Restarting.said(), Link::Down.said(), Link::Up.said()), ("Keel is restarting", "Keel is not running", ""));
     }
 
     // The review's case: with an address that is not this machine's, the first page offered Start.

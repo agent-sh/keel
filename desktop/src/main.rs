@@ -237,7 +237,7 @@ impl Shell {
             win.away(&self.prefs.borrow().look, &state);
         } else {
             // The page stays as it is, and is told the title bar says the daemon is away.
-            win.daemon_away();
+            win.daemon_away(&link);
         }
         win.link(&link);
     }

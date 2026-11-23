@@ -48,6 +48,18 @@ pub enum Link {
     Down,
 }
 
+impl Link {
+    /// The state in the words every place of the app says it: the title bar, the tray, the
+    /// calm page, and the page inside the window, which is told them. Nothing for `Up`.
+    pub fn said(&self) -> &'static str {
+        match self {
+            Link::Up => "",
+            Link::Restarting => "Keel is restarting",
+            Link::Down => "Keel is not running",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Link { link: Link, url: String },

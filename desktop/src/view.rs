@@ -331,8 +331,9 @@ pub trait View {
     /// Tells the loaded page the daemon answers again, so it joins it at once.
     fn daemon_back(&self);
     /// Tells the loaded page the app itself shows that the daemon is away (the
-    /// page then leaves that to the title bar; any other loss it shows itself).
-    fn daemon_away(&self);
+    /// page then leaves that to the title bar; any other loss it shows itself), and in
+    /// which words, so the page says the state as the title bar does.
+    fn daemon_away(&self, link: &Link);
     /// Shows the calm page for a daemon that is away; one already showing changes its words in place.
     fn away(&self, look: &Look, state: &Away);
     /// The daemon's state beside the window's controls, while the page is up without its daemon.

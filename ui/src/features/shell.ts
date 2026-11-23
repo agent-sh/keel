@@ -67,8 +67,9 @@ if (host) {
   addEventListener("keel-shell", (e) => {
     const detail = (e as CustomEvent<ShellTold>).detail;
     // The app saw the daemon come back: the page joins it now, not when its own wait ends.
-    if (detail?.daemon === "up") { setUI({ shellAway: false }); reconnectNow(); }
-    if (detail?.daemon === "away") setUI({ shellAway: true });
+    if (detail?.daemon === "up") { setUI({ shellAway: null }); reconnectNow(); }
+    // In the title bar's own words (desktop/src/daemon.rs, Link::said): an older app names none.
+    if (detail?.daemon === "away") setUI({ shellAway: detail.says || "Keel is not reachable" });
     // The page's own process ended (a crash, or more memory than the app gives a page) and the
     // app loaded the page again: said once, so a window that blinked is not a mystery.
     if (detail?.reloaded === "stopped") setUI({ shellNote: "This window stopped and was loaded again. It may have run out of memory. Your sessions went on in Keel." });

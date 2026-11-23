@@ -18,7 +18,9 @@
 import { useEffect, useState } from "react";
 import { drainWords, useDrain } from "../lib/drain.ts";
 import { useReach } from "../lib/reach.ts";
-import { useStaleSince, useStore } from "../lib/store.ts";
+import { shell } from "../lib/shell.ts";
+import { getState, useStaleSince, useStore } from "../lib/store.ts";
+import { getUI, useUI } from "../lib/ui.ts";
 import { clock } from "../lib/utils.ts";
 import { useStatesSince, useToldSince } from "../lib/watch.ts";
 
@@ -37,13 +39,22 @@ export function useAway(): number | null {
   return away;
 }
 
+// In the desktop app, while its title bar says the daemon is away and the page does not hear it
+// either: the title bar's words (desktop/src/daemon.rs, Link::said), which every place of the page
+// that speaks of the loss says too, so one state has one word ("Keel is not running", not that
+// and "Reconnecting"). Null anywhere else: a tab, or a loss the app does not see.
+const appSays = (away: string | null, connected: boolean) => (shell?.can.titlebar && away && !connected ? away : null);
+export const useAppSays = () => appSays(useUI((s) => s.shellAway), useStore((s) => s.connected));
+export const appSaysNow = () => appSays(getUI().shellAway, getState().connected);
+
 // The link in a word, for the logo's tip; `live`: the page hears the daemon and what it shows is current.
 export function useLink(): { live: boolean; word: string } {
   const connected = useStore((s) => s.connected);
   const synced = useStore((s) => s.synced);
   const slow = useStore((s) => s.slow);
   const drain = useDrain();
-  if (!connected) return { live: false, word: "Reconnecting to the daemon" };
+  const app = useAppSays();
+  if (!connected) return { live: false, word: app ?? "Reconnecting to the daemon" };
   if (!synced) return { live: false, word: "Catching up with the daemon" };
   if (slow) return { live: true, word: "Keel is slow to answer" };
   // A daemon that is going is heard, and still is not simply connected: it takes no new work.
@@ -72,6 +83,11 @@ export function StaleMarks() {
       `:is(${row}, ${station}) .k-mark { opacity: 0.45; animation-play-state: paused; }`,
       `:is(${row}, ${station}) .k-mark::before, :is(${row}, ${station}) .k-mark::after { animation-play-state: paused; }`,
       `:is(${row} .k-row-time[data-live], ${station} .k-station-clock) { color: var(--faint); }`,
+      // The list's counts are as old as its rows: they pale with them, and say nothing as current
+      // the title bar of the desktop app (or the band of a tab) says cannot be known.
+      `.k-sum .k-mark { opacity: 0.45; animation-play-state: paused; }`,
+      `.k-sum .k-mark::before, .k-sum .k-mark::after { animation-play-state: paused; }`,
+      `.k-sum .k-sum-chip[data-kind] :is(.k-sum-n, .k-sum-word) { color: var(--muted); }`,
     ].join("\n")
     : Object.values(unheard).filter((m) => plain(m.id) && m.since > 0)
       .map((m) => `.k-station[data-station^="${m.id}--"] .k-station-word::after { ${said(`as of ${clock(m.since)}`)} }\n.k-station[data-station^="${m.id}--"] .k-mark { opacity: 0.45; animation-play-state: paused; }`).join("\n");

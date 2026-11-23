@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { shoot } from "./shots.ts";
+import { ask, create, folder } from "./answering.ts";
 
 // Feature: the page inside the desktop shell (desktop/). The shell puts one
 // small object on the window before the page's scripts run; the page reads
@@ -164,10 +165,13 @@ test("shell: a link or a launch never lands the keyboard on an answer; a notific
 
 // The review's case: the band was hidden whenever the app has a title bar, so a loss only the
 // page sees (its socket cut while the daemon answers) was said nowhere.
-test("shell: the page says the daemon is away unless the app's title bar does, and the text size keys are the page's setting", async ({ page, request }) => {
+test("shell: the page says the daemon is away unless the app's title bar does, in the bar's words, and the text size keys are the page's setting", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const a = await make(request, "Shell: the socket is cut");
   await expect.poll(() => ended(request, a.id), { timeout: 60_000 }).toBe(true);
+  // A session that needs the owner, so the list counts one.
+  const q = await create(request, "Shell: a question waits", folder("shell-away"));
+  await ask(request, q, "question");
   const live: { ws?: import("@playwright/test").WebSocketRoute; cut: boolean } = { cut: false };
   await page.routeWebSocket(/\/ws$/, (ws) => {
     if (live.cut) return void ws.close({ code: 4000, reason: "cut by the test" });
@@ -186,9 +190,18 @@ test("shell: the page says the daemon is away unless the app's title bar does, a
     // The app sees the daemon answer, so its title bar says nothing: the page must.
     await expect(band).toBeVisible({ timeout: 10_000 });
     await shoot(page, "shell-04-socket-cut");
+    await expect(page.getByTestId("sync-state")).toHaveText("Reconnecting");
     // The app's title bar says it: one place, not two.
-    await tell(page, { daemon: "away" });
+    await tell(page, { daemon: "away", says: "Keel is not running" });
     await expect(band).toHaveCount(0);
+    // And the rest of the page says the state in the bar's words, not a word of its own.
+    await expect(page.getByTestId("sync-state")).toHaveText("Keel is not running");
+    await expect(page.locator(".k-logo")).toHaveAttribute("title", "Keel is not running");
+    // The list's count of what needs the owner is as old as its rows: it pales with them.
+    const need = page.getByTestId("sum-need");
+    await expect(need).toBeVisible();
+    await expect.poll(() => need.locator(".k-mark").evaluate((m) => Number(getComputedStyle(m).opacity))).toBeLessThan(0.5);
+    await shoot(page, "shell-05-app-says-not-running");
     // The app sees the daemon back while the page is still cut off: the page says so again.
     await tell(page, { daemon: "up" });
     await expect(band).toBeVisible({ timeout: 10_000 });
@@ -208,7 +221,7 @@ test("shell: the page says the daemon is away unless the app's title bar does, a
     await tell(page, { scale: "reset" });
     await expect.poll(scale).toBe("1");
   } finally {
-    await request.delete(`/api/sessions/${a.id}`).catch(() => {});
+    for (const id of [a.id, q]) await request.delete(`/api/sessions/${id}`).catch(() => {});
   }
 });
 
