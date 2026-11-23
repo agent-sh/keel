@@ -2313,14 +2313,13 @@ export class Engine {
   // them: the shown branch from its last checkpoint on (and that checkpoint's own event, which
   // says where it keeps from). A session at rest gives its bodies back after two minutes, and a
   // turn that starts then read them back a run at a time, on the loop, from the disk.
-  private async warmContext(id: string) {
+  // `line`: the branch as the caller read it (the same events: their bodies are read through them).
+  private async warmContext(id: string, line: readonly StoredEvent[] = this.lineage(id)) {
     try {
-      const line = this.lineage(id);
       let at = line.length - 1;
       while (at >= 0 && line[at]!.kind !== "compaction") at--;
       if (at >= 0) await this.store.warmBodies(id, line[at]!.seq, line[at]!.seq);
-      const now = this.lineage(id);
-      const from = now[checkpointAt(now).keepFrom]?.seq;
+      const from = line[checkpointAt(line).keepFrom]?.seq;
       if (from !== undefined) await this.store.warmBodies(id, from);
     } catch {
       // What could not be read ahead is read by the turn, as it was.
@@ -3010,7 +3009,11 @@ export class Engine {
             await this.store.warm(id, false);
             if (this.running.has(id) || this.store.session(id)?.head !== s.head) continue;
           }
-          facts = this.readIdleFacts(s, provider.wire, info.id);
+          // And the bodies its count reads (its context from the last checkpoint on), off the loop too.
+          const line = this.lineage(id);
+          await this.warmContext(id, line);
+          if (this.running.has(id) || this.store.session(id)?.head !== s.head) continue;
+          facts = this.readIdleFacts(s, provider.wire, info.id, line);
           // One session's events were read: the loop is given back before the next.
           await new Promise<void>((r) => setImmediate(r));
           if (this.running.has(id) || this.store.session(id)?.head !== facts.head) continue;
@@ -3026,8 +3029,7 @@ export class Engine {
 
   // What idle compaction needs to know of the context the session shows, read
   // from its events and kept with it.
-  private readIdleFacts(session: Session, wire: Provider["wire"], model: string): IdleFacts {
-    const events = this.lineage(session.id);
+  private readIdleFacts(session: Session, wire: Provider["wire"], model: string, events: readonly StoredEvent[] = this.lineage(session.id)): IdleFacts {
     const keep = retention(wire, events, model);
     const facts: IdleFacts = { head: session.head, model, wire: wire ?? "", used: contextTokens(events, model).used, warm: lastWarm(events, model), sure: keep.sure, max: keep.max };
     // (Kept so a start reads no events for it; one that is lost is read again: written with the next commit, src/core/side.ts.)
@@ -3113,6 +3115,11 @@ export class Engine {
       const idle = () => { const now = this.store.session(id); return !this.running.has(id) && !this.draining && !!now && !now.archived; };
       if (!idle()) return;
       try {
+        // The timer fires when the session has been idle for minutes, so its bodies were given back:
+        // they are read off the loop first (the summary's count and checks read every one of them).
+        await this.store.warm(id, false);
+        await this.warmContext(id);
+        if (!idle()) return;
         const st = await step();
         if (idle()) this.prepare(id, st, true);
       } catch (e) { this.errors.capture("provider", e, { session: id, at: "idle compaction" }); }
