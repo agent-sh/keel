@@ -29,6 +29,19 @@ export const stoppedBefore = (by?: string): string => (by === undefined || owner
 export const stoppedWhile = (by?: string): string => (by === undefined || ownerStop(by) ? STOPPED_WHILE : `${WHILE}${stopSays(by)}.`);
 // Whether the words are the user's own stop (the owner's Stop, or a stop from before stops were named).
 export const stoppedByUser = (content: unknown): boolean => content === STOPPED_BEFORE || content === STOPPED_WHILE;
+// Who stopped a call, as a line under it says it: "you" for the owner's own
+// stop (and one from before stops were named), else what the turn's stop
+// was ("stopped by its parent"). Nothing for a result that is not a stop.
+export const stoppedByWords = (content: unknown): string | undefined =>
+  stoppedByUser(content) ? "you"
+    : typeof content === "string" && (content.startsWith(BEFORE) || content.startsWith(WHILE)) ? content.slice((content.startsWith(BEFORE) ? BEFORE : WHILE).length).replace(/\.$/, "") : undefined;
+// What a command's output pane says when the command printed nothing and its
+// call has ended: who stopped it or that a restart cut it, else that it printed nothing.
+export const quietEnd = (content: unknown): string => {
+  if (stopKind(content) === "cut") return "Nothing printed before a daemon restart cut it.";
+  const by = stoppedByWords(content);
+  return by === "you" ? "Nothing printed before you stopped the turn." : by ? `Nothing printed before the stop: the turn ${by}.` : "No output.";
+};
 // Whether a stop reached the call while it ran (it may have partly run), whoever stopped it.
 export const stoppedRunning = (content: unknown): boolean => content === STOPPED_WHILE || (typeof content === "string" && content.startsWith(WHILE));
 

@@ -17,7 +17,7 @@ import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { ThoughtMark } from "./Work.tsx";
 import { CallDiff, type CallFile } from "./DiffView.tsx";
-import { denialReason, notRun, stopKind, stoppedByUser } from "../../../src/core/stops.ts";
+import { RESTART_RAN, denialReason, notRun, quietEnd, stopKind, stoppedByUser } from "../../../src/core/stops.ts";
 import { allowRetry, useBlocked } from "../lib/blocked.ts";
 import {
   patchFiles, planItems, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind, type PlanItem,
@@ -319,7 +319,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
         <div className="k-tool-body">
           {marks.length > 0 && <p className="k-mark-why" data-testid="mark-why">{marks.map((m) => m.why).join(" ")}</p>}
           {lead}
-          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={out} running={state === "running"} held={held && picked === null && !shell.background} sessionId={sessionId} callId={use.id} />}
+          {/* (A stop's or a restart's words are written for the model, not printed by the command.) */}
+          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={ended && !String(result?.content ?? "").startsWith(RESTART_RAN) ? "" : out} running={state === "running"} held={held && picked === null && !shell.background} sessionId={sessionId} callId={use.id} quiet={result ? quietEnd(result.content) : undefined} />}
           {plan && plan.length > 0 && <div className={rejected ? "opacity-60" : undefined}><PlanCard items={plan} explanation={input.explanation} /></div>}
           {files && (
             <CallDiff files={files} actions={(f) => (
@@ -430,7 +431,8 @@ const CUT = /\n\n\[\.\.\. (\d+) (?:characters|chars) cut[^\]]*\]\n\n/;
 // cannot hold it (several lines, or a long one); `whole`: the line shows all of it already.
 // `held`: the command has ended and its card stays as it stood: the tail of the output it was following.
 // (Not a command that was moved to the background: its result says so, and that is what its card shows.)
-function Terminal({ name, input, command, whole: onLine, out, running, held, sessionId, callId }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; held?: boolean; sessionId?: string; callId?: string }) {
+// `quiet`: what the output says when the call has ended and printed nothing (who stopped it, if anyone did).
+function Terminal({ name, input, command, whole: onLine, out, running, held, sessionId, callId, quiet = "No output." }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; held?: boolean; sessionId?: string; callId?: string; quiet?: string }) {
   const body = shellBody(name, out).trimEnd();
   const big = TOO_LARGE.exec(body);
   const cut = big ? null : CUT.exec(body);
@@ -447,7 +449,8 @@ function Terminal({ name, input, command, whole: onLine, out, running, held, ses
         </Copyable>
       )}
       {name === "write_stdin" && input.chars && <pre className="border-b border-line px-2.5 py-1.5 text-accent-ink">{JSON.stringify(input.chars)}</pre>}
-      {(running || held) && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} follow ended={!running} />
+      {/* A held call goes on showing what its follower showed; one whose follower never got a line shows its result. */}
+      {(running || (held && !!callId && !!tails.get(callId)?.text)) && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} follow ended={!running} quiet={quiet} />
         : whole && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} onLeave={() => setWhole(false)} />
         : shown ? (
           <Copyable text={() => stripAnsiText(shown)} label="Copy the output" testid="copy-output">
@@ -459,7 +462,7 @@ function Terminal({ name, input, command, whole: onLine, out, running, held, ses
               </pre>
             ) : <pre className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted"><Ansi text={shown} /></pre>}
           </Copyable>
-        ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">No output.</p>}
+        ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">{quiet}</p>}
       {/* The command is on the call's line: its copy button stands with the output's. */}
       {!above && command && <CopyButton text={command} label="Copy the command" testid="copy-command" icon={<SquareTerminal />} className="k-copy-corner k-copy-second" />}
       {(big || cut) && !whole && !running && !held && (
@@ -484,7 +487,8 @@ const POLL_MS = 1000, POLL_MAX_MS = 15_000;
 // What a follower has shown of a call's output, and how far it has read, by call.
 const tails = new Map<string, { text: string; at: number }>();
 // `ended`: the command a follower follows has ended: it reads what is left once and asks no more.
-function CallLog({ sessionId, callId, follow, ended, onLeave }: { sessionId: string; callId: string; follow?: boolean; ended?: boolean; onLeave?: () => void }) {
+// `quiet`: what a follower says once the command has ended with nothing printed.
+function CallLog({ sessionId, callId, follow, ended, onLeave, quiet }: { sessionId: string; callId: string; follow?: boolean; ended?: boolean; onLeave?: () => void; quiet?: string }) {
   const over = useRef(false);
   over.current = !!ended;
   // (A follower starts from what was followed of this call before: the call is drawn by more than one
@@ -549,7 +553,7 @@ function CallLog({ sessionId, callId, follow, ended, onLeave }: { sessionId: str
         </div>
       )}
       <pre ref={pre} data-testid={follow ? "live-output" : "whole-output"} aria-live={follow ? "off" : undefined} className={cn("overflow-auto px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-muted", follow ? "max-h-56" : "max-h-96")}>
-        {text ? <Ansi text={text} /> : <span className="text-faint">{follow ? "No output yet." : part ? "Nothing here." : "Reading the log."}</span>}
+        {text ? <Ansi text={text} /> : <span className="text-faint">{follow ? (ended ? quiet ?? "No output." : "No output yet.") : part ? "Nothing here." : "Reading the log."}</span>}
       </pre>
     </>
   );
