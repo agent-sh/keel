@@ -358,7 +358,9 @@ test("what a call's hooks left is kept for its session: two sessions with one ca
   expect((await run(b, "echo from-b", "same-id").result).content).toStartWith("ran: echo from-b");
   for (let i = 0; i < 300 && !gate.approvals({ session: a.id, pending: true }).length; i++) await Bun.sleep(10);
   const [card] = gate.approvals({ session: a.id, pending: true });
-  expect(card).toMatchObject({ once: true, why: "a hook asks: look at this one" });
+  // The card's risk is the call's own (an echo, low); the hook's reason stands apart, in its words.
+  expect(card).toMatchObject({ once: true, risk: "low", notice: "A hook of yours asks: look at this one" });
+  expect(card!.why).toBeUndefined();
   gate.resolve(card!.id, a.id, { choice: "once", seen: "whole" });
   expect((await first.result).content).toStartWith("ran: echo w-slow-ask from-a");
   // Each session's PostToolUse hook got its own command.

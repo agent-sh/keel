@@ -184,7 +184,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const ask = c.ask;
       c.ask = undefined;
       if (!gate) return { deny: `A hook asks the owner about this call (${ask}), and no one can be asked here.` };
-      const d = await gate.askOnce(s, call, c.name, `a hook asks: ${ask}`);
+      const d = await gate.askForHook(s, call, c.name, ask);
       if (d) return d;
     },
     toolRan(s, call, _result, ran) {

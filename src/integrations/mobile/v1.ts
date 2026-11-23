@@ -265,7 +265,7 @@ export function approvalOf(a: Approval, form?: CardForm) {
   actions.push(["Deny", "deny", "danger"]);
   return {
     id: a.id, chat_id: a.session_id, session_key: a.session_id, kind: "permission",
-    command: spelled(a.summary), description: a.why ? `${spelled(a.tool, "")}: ${a.why}` : spelled(a.tool, ""),
+    command: spelled(a.summary), description: [a.why, a.notice].filter(Boolean).length ? `${spelled(a.tool, "")}: ${[a.why, a.notice].filter(Boolean).join(". ")}` : spelled(a.tool, ""),
     actions, state: STATE[a.state] ?? a.state, choice: a.choice ?? null, ts: secs(a.created),
     ...(a.by ? { from: fromSaid(a.by) } : {}),
     ...(form && l ? {

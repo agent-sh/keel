@@ -68,7 +68,7 @@ test("hooks", async ({ page, request }) => {
   await page.keyboard.press("Enter");
   const card = page.getByTestId("approval");
   await expect(card).toBeVisible({ timeout: 60_000 });
-  await expect(card).toContainText("a hook asks: askme commands need the owner");
+  await expect(card).toContainText("A hook of yours asks: askme commands need the owner");
   await expect(card.getByTestId("allow-always")).toHaveCount(0);
   await shoot(page, "hooks-02-ask");
   await card.getByTestId("deny").click();

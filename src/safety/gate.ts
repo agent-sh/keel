@@ -30,6 +30,8 @@ import { ownerPrompt } from "../core/owner.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
+// What a card a hook asked for says before the hook's reason.
+export const HOOK_ASKS = "A hook of yours asks";
 import { landing, type MarkArgs } from "./marks.ts";
 import { readOptsFor } from "./sandbox-config.ts";
 import { ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
@@ -693,8 +695,9 @@ export class Gate {
   // `real`: for a command that names a program a version manager may stand in for, whether each such name is
   // the program itself here (see `shimmed`). Without it those forms ask.
   // `before`: only the standing rules that are not younger than this time (a held card's own).
-  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, facts?: CallFacts, before?: number): Decision {
-    const p = this.perm(session.id);
+  // `mode`: decided as in that mode, not the session's (what Ask would make of the call: its own risk).
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, facts?: CallFacts, before?: number, mode?: Mode): Decision {
+    const p = mode ? { ...this.perm(session.id), mode } : this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
@@ -1129,6 +1132,19 @@ export class Gate {
     return this.card(session, call, name, cls, shown ?? short.summary, { risk: "high", why, suggest: [], cut: shown === undefined ? short.cut : undefined }, true);
   }
 
+  // A hook of the owner's asks about a call the gate let through. The card is answered once, as askOnce's,
+  // and says two things apart: the call's own risk and reason, what Ask would make of it whatever the
+  // session's mode, and the hook's reason, in the hook's words.
+  async askForHook(session: Session, call: ToolCall, name: string, reason: string): Promise<{ deny: string } | void> {
+    const c = landing(classifyCall(call));
+    const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
+    const short = inShort(cls, call.input);
+    const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
+    const d = this.evaluate(session, target?.name ?? call.tool.name, callClass(call, target), target?.source, undefined, undefined, "ask");
+    const own = "ask" in d ? { risk: d.ask.risk, why: d.ask.why } : "deny" in d ? { risk: "high" as const, why: d.deny } : { risk: "low" as const };
+    return this.card(session, call, name, cls, short.summary, { ...own, notice: `${HOOK_ASKS}: ${reason.replace(/\s+$/, "")}`, suggest: [], cut: short.cut }, true);
+  }
+
   // Set by the hooks module: what the owner's PermissionRequest hooks answer for a card about to open.
   requestHook?: (session: Session, call: ToolCall, name: string, ask: { risk: "high" | "low"; why?: string; rule?: string }) => Promise<{ allow: true } | { deny: string } | void>;
 
@@ -1279,7 +1295,7 @@ export class Gate {
     if ((c.choice === "session" || c.choice === "always") && this.store.refusing)
       return { error: "the daemon's store takes no writes right now, and a standing answer cannot be kept: allow this once, or deny it", status: 503 };
     if ((c.choice === "session" || c.choice === "always") && a.risk === "high")
-      return { error: `this card covers its one call only (${a.why}): answer once or deny`, status: 400 };
+      return { error: `this card covers its one call only (${a.why ?? a.notice ?? "it is asked about once"}): answer once or deny`, status: 400 };
     // Its turn was just parked and this daemon is on its way out: an answer
     // taken now would be lost with it (the card would read answered, the call
     // would never run, a denial would lose its reason). The card stays open

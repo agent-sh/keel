@@ -84,6 +84,38 @@ test("a hook changes a call's input and allows it", async ({ page, request }) =>
   expect(await results()).toContain("It did not run. The input that was judged:");
 });
 
+// Feature: a hook that asks the owner about a call. The card says the call's
+// own risk, what Ask makes of it whatever the session's mode, and the hook's
+// reason apart, in the hook's words: a hook's reason is not a risk.
+test("a hook that asks: its reason stands apart from the call's risk", async ({ page, request }) => {
+  test.skip(!scripted, "needs the scripted model: the calls are given exactly");
+  const { id } = await pinned(page, request, { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `${HOOK} pre` }] }] });
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await page.goto(`/s/${id}`);
+  const card = page.getByTestId("approval");
+  // A call with nothing risky in it: the card names no risk, only what the hook asks.
+  await page.getByTestId("composer").fill(calls("echo askme"));
+  await page.keyboard.press("Enter");
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  await expect(card.getByTestId("approval-notice")).toHaveText("A hook of yours asks: askme commands need the owner");
+  await expect(card.getByTestId("approval-risk")).toHaveCount(0);
+  await expect(card.getByTestId("allow-always")).toHaveCount(0);
+  await shoot(page, "hook-events-06-hook-asks");
+  await card.getByTestId("allow-once").click();
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  // A call that is high risk of its own: the risk is the call's, the hook's reason is still its own.
+  await page.getByTestId("composer").fill(calls("git clean -fn; echo askme"));
+  await page.keyboard.press("Enter");
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  await expect(card.getByTestId("approval-risk")).toContainText("High risk: ");
+  await expect(card.getByTestId("approval-risk")).not.toContainText("hook");
+  await expect(card.getByTestId("approval-notice")).toHaveText("A hook of yours asks: askme commands need the owner");
+  await shoot(page, "hook-events-07-hook-asks-high-risk");
+  await card.getByTestId("deny").click();
+  await page.getByTestId("deny-send").click();
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+});
+
 // Feature: a hook that runs into its time limit is the hook's, not the tool's.
 // The call runs and passes; under it the transcript says the hook timed out,
 // and the timeline's row says so in the same words (it read "Tool error").
