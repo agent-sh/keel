@@ -11,6 +11,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
@@ -18,6 +19,7 @@ import dev.avifenesh.keel.ui.CardView
 import dev.avifenesh.keel.ui.KeelTheme
 import org.junit.Rule
 import org.junit.Test
+import kotlinx.coroutines.launch
 
 // A request or a plan is allowed only once every line of it was on the screen. A short one that
 // fits its box is not read by fitting: in the transcript (a list opened at its end) a card taller
@@ -56,6 +58,41 @@ class ReadFirstTest {
         rule.onNodeWithTag("list").performTouchInput { swipeDown() }
         rule.waitForIdle()
         rule.onNodeWithContentDescription(allow).assertIsEnabled()
+    }
+
+    // The keyboard open: a list of 150 dp under the rest of the screen, a plan of 60 lines in its box.
+    @Test fun aJumpPastTheMiddleOfAPlanLeavesItUnread() {
+        val long = plan.copy(id = "plan-s-1.c2", text = (1..60).joinToString("\n") { "$it. Step $it of the work." }, lines = 60)
+        val state = androidx.compose.foundation.lazy.LazyListState()
+        lateinit var scope: kotlinx.coroutines.CoroutineScope
+        Prefs.init(rule.activity)
+        rule.setContent {
+            scope = androidx.compose.runtime.rememberCoroutineScope()
+            KeelTheme(1) {
+                androidx.compose.foundation.layout.Column {
+                    androidx.compose.foundation.layout.Spacer(Modifier.height(320.dp))
+                    LazyColumn(Modifier.fillMaxWidth().height(150.dp).testTag("list"), state = state, reverseLayout = true) {
+                        item { CardView(rule.activity, long) }
+                    }
+                }
+            }
+        }
+        val box = rule.onNodeWithContentDescription("plan-${long.id}")
+        val card = rule.onNodeWithContentDescription("card-${long.id}").fetchSemanticsNode()
+        // Where the box's top sits in the card, and how far the list must go to show just that.
+        val top = box.fetchSemanticsNode().positionInRoot.y - card.positionInRoot.y
+        val list = rule.onNodeWithTag("list").fetchSemanticsNode().size.height
+        val off = (card.size.height - top - list).toInt()
+        // Up to the box's first lines in one move, then back to the end at a send, in one move.
+        rule.runOnIdle { scope.launch { state.scrollToItem(0, off) } }
+        rule.waitForIdle()
+        rule.runOnIdle { scope.launch { state.scrollToItem(0) } }
+        rule.waitForIdle()
+        // The box's last lines show: dragged to its end, what was jumped over is still owed.
+        box.performTouchInput { repeat(12) { val x = width / 2f; val y = height - 12f; swipe(androidx.compose.ui.geometry.Offset(x, y), androidx.compose.ui.geometry.Offset(x, y - 600f), 400) } }
+        rule.waitForIdle()
+        rule.onNodeWithContentDescription("read-first-${long.id}").assertExists()
+        rule.onNodeWithContentDescription("once-${long.id}").assertIsNotEnabled()
     }
 
     @Test fun aShortPlanWhoseFirstLinesWereNeverShownIsNotApproved() = check(plan, "once-${plan.id}")

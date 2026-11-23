@@ -20,8 +20,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
@@ -39,6 +37,7 @@ import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.Approvals
 import dev.avifenesh.keel.Card
+import dev.avifenesh.keel.Seen
 import dev.avifenesh.keel.MainActivity
 import dev.avifenesh.keel.Prefs
 import dev.avifenesh.keel.Question
@@ -59,34 +58,29 @@ private fun closedWords(c: Card): Pair<State, String> = when (c.state) {
 }
 
 /**
- * Whether every line of a card's text has been on the screen. Its box's first line was in the window
- * (its top edge not cut by the list or the window) while the box was scrolled to its start, and its last
- * line while scrolled to its end, each at some moment: the lines between passed through the screen.
- * Fitting its box is not enough: in the transcript (a list opened at its end) a card taller than the
- * list shows its last lines and its buttons while its first lines sit above the top (the keyboard open,
- * landscape, a split screen, large text).
+ * Whether every line of a card's text has been on the screen. Each time the box's content is placed
+ * (the list moves, the box scrolls, the keyboard opens) the part of it drawn in the window, cut by the
+ * box, the list and the window, is added to what was seen; the text is read once those parts cover all
+ * of it. A jump (the list sent to its end at a send, a fling) draws nothing between where it left and
+ * where it lands, so what it skipped is still owed. Fitting its box is not enough either: in the
+ * transcript (a list opened at its end) a card taller than the list shows its last lines and its
+ * buttons while its first lines sit above the top.
  */
-class Reading(private val scroll: androidx.compose.foundation.ScrollState) {
+class Reading {
     var read by mutableStateOf(false)
         private set
-    private var top = false
-    private var bottom = false
-    private var at: androidx.compose.ui.layout.LayoutCoordinates? = null
+    private val seen = Seen()
 
-    fun place(c: androidx.compose.ui.layout.LayoutCoordinates) { at = c; check() }
-
-    fun check() {
-        val c = at ?: return
+    /** The box's scrolled content was placed: `c` is its coordinates (the modifier after verticalScroll). */
+    fun saw(c: androidx.compose.ui.layout.LayoutCoordinates) {
         if (read || !c.isAttached) return
-        val max = scroll.maxValue
-        if (max == Int.MAX_VALUE) return
-        // The box as drawn (cut by every parent and the window), and where its edges are.
+        val height = c.size.height.toFloat()
+        if (height <= 0f) return
         val shown = c.boundsInWindow()
         if (shown.height <= 0f) return
         val y = c.positionInWindow().y
-        if (scroll.value == 0 && shown.top <= y + 1f) top = true
-        if (scroll.value >= max && shown.bottom >= y + c.size.height - 1f) bottom = true
-        if (top && bottom) read = true
+        seen.add(shown.top - y, shown.bottom - y)
+        if (seen.covers(height)) read = true
     }
 }
 
@@ -103,8 +97,7 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
     // the screen (Reading). The daemon holds an allow without that word.
     // (Remembered for this text of this card: another text under the same id was not read.)
     val scroll = rememberScrollState()
-    val reading = remember(c.id, c.shown) { Reading(scroll) }
-    LaunchedEffect(reading) { snapshotFlow { scroll.value to scroll.maxValue }.collect { reading.check() } }
+    val reading = remember(c.id, c.shown) { Reading() }
     val read = reading.read
     // A plan sent back: what to change, written under it.
     var back by remember(c.id) { mutableStateOf(false) }
@@ -138,7 +131,7 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
                 Spacer(Modifier.height(8.dp))
                 Box(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.sunken).border(1.dp, k.line, RoundedCornerShape(S.r))
-                        .heightIn(max = if (c.pending) 420.dp else 160.dp).onGloballyPositioned { reading.place(it) }.verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .heightIn(max = if (c.pending) 420.dp else 160.dp).verticalScroll(scroll).onGloballyPositioned { reading.saw(it) }.padding(horizontal = 12.dp, vertical = 10.dp)
                         .semantics { contentDescription = "plan-${c.id}" },
                 ) { Markdown(c.text.ifBlank { c.command }, T.ui) }
                 if (c.pending && !c.mayAllow(read)) { Spacer(Modifier.height(8.dp)); Txt(c.readFirst, T.small, k.muted, Modifier.semantics { contentDescription = "read-first-${c.id}" }) }
@@ -150,7 +143,7 @@ fun CardView(act: androidx.fragment.app.FragmentActivity, c: Card, title: String
                 // The whole request, drawn left to right in the order it is written. A held one gets more room to read in.
                 if (c.shown.isNotBlank()) Box(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))
-                        .heightIn(max = if (c.held) 360.dp else 180.dp).onGloballyPositioned { reading.place(it) }.verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .heightIn(max = if (c.held) 360.dp else 180.dp).verticalScroll(scroll).onGloballyPositioned { reading.saw(it) }.padding(horizontal = 12.dp, vertical = 10.dp)
                         .semantics { contentDescription = "request-${c.id}" },
                 ) { Txt(c.shown, T.code.copy(textDirection = TextDirection.Ltr), k.fg) }
                 if (c.pending && !c.mayAllow(read)) { Spacer(Modifier.height(8.dp)); Txt(c.readFirst, T.small, k.muted, Modifier.semantics { contentDescription = "read-first-${c.id}" }) }

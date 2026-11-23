@@ -342,6 +342,25 @@ data class Card(
     }
 }
 
+/**
+ * The parts of a text that were drawn, as ranges along its height, merged as they come. A part
+ * that touches or overlaps another joins it; what lies between two parts was not drawn.
+ */
+class Seen {
+    private val parts = ArrayList<Pair<Float, Float>>()
+    fun add(top: Float, bottom: Float) {
+        if (bottom <= top) return
+        var lo = top; var hi = bottom
+        val keep = ArrayList<Pair<Float, Float>>()
+        for ((a, b) in parts) if (b < lo - SLACK || a > hi + SLACK) keep += a to b else { lo = minOf(lo, a); hi = maxOf(hi, b) }
+        keep += lo to hi
+        parts.clear(); parts += keep.sortedBy { it.first }
+    }
+    /** All of [0, height] was drawn, within a pixel at each edge and between parts. */
+    fun covers(height: Float): Boolean = parts.any { (a, b) -> a <= SLACK && b >= height - SLACK }
+    companion object { const val SLACK = 1f }
+}
+
 /** How an unpairing ended: whether the daemon revoked this phone, and what the owner is told. */
 data class Unpaired(val revoked: Boolean, val note: String)
 

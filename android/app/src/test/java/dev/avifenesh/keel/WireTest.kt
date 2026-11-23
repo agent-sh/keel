@@ -93,6 +93,19 @@ class WireTest {
         assertEquals(false, Wire.answerBody("session", null, seen = true, feedback = "x").has("feedback"))
     }
 
+    @Test fun aTextIsReadOnlyWhenWhatWasDrawnCoversAllOfIt() {
+        // The top, then a jump to the end: the middle was never drawn.
+        val jump = Seen().apply { add(0f, 450f); add(1100f, 1600f) }
+        assertEquals(false, jump.covers(1600f))
+        // The middle passes through as the list or the box moves: read.
+        jump.add(400f, 1150f)
+        assertEquals(true, jump.covers(1600f))
+        // One pixel of the top edge is not the top of the text.
+        assertEquals(false, Seen().apply { add(0f, 1f); add(1f, 300f) }.covers(1600f))
+        // Parts that meet within a pixel join.
+        assertEquals(true, Seen().apply { add(0.5f, 800f); add(800.6f, 1599.4f) }.covers(1600f))
+    }
+
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))
