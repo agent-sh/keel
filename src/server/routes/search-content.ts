@@ -7,7 +7,8 @@ import { KIND_OF, PART_BITS, SEARCH_TABLE, searchTable } from "./search-index.ts
 import { SHELL_TOOLS } from "../search-query.ts";
 
 export type ContentQuery = {
-  match: string;
+  // The words to match (FTS5), or null for a search of limits alone: every row they allow, newest first.
+  match: string | null;
   // The session filter of the request: its SQL (starting with AND, or empty, over `s`, the sessions table) and its values.
   where: string;
   args: (string | number)[];
@@ -45,7 +46,7 @@ export function searchContent(db: Database, q: ContentQuery): ContentHit[] {
   if (!T) return [];
   let content: ContentHit[];
   try {
-    content = T === SEARCH_TABLE ? ranked(db, q) : rankedOld(db, q);
+    content = q.match === null ? (T === SEARCH_TABLE ? listed(db, q) : listedOld(db, q)) : T === SEARCH_TABLE ? ranked(db, q as ContentQuery & { match: string }) : rankedOld(db, q as ContentQuery & { match: string });
   } catch (e) {
     // A query FTS cannot parse matches nothing (a word of control characters); anything else is a
     // failure of the search, said as one (the page offers Retry) and kept in Errors.
@@ -62,7 +63,7 @@ export function searchContent(db: Database, q: ContentQuery): ContentHit[] {
 // say (each match is one look-up of its event by row number), and only the
 // hits kept read their text, for the snippet and what a hit says of its call:
 // a row's text is read from its event's body.
-function ranked(db: Database, q: ContentQuery): ContentHit[] {
+function ranked(db: Database, q: ContentQuery & { match: string }): ContentHit[] {
   const P = `(w.rowid & ${(1 << PART_BITS) - 1})`;
   // A row of the index as the filters and the ranking see it.
   const f = `SELECT w.rowid AS doc, e.id AS event_id, e.session_id AS session_id, ${KIND_OF("e", P)} AS kind, e.ts AS ts, bm25(${SEARCH_TABLE}) AS rank,
@@ -90,7 +91,7 @@ function ranked(db: Database, q: ContentQuery): ContentHit[] {
 }
 
 // The index of the layout before (search_idx), read while the new one is filled: its rows hold their own text.
-function rankedOld(db: Database, q: ContentQuery): ContentHit[] {
+function rankedOld(db: Database, q: ContentQuery & { match: string }): ContentHit[] {
   const rows = rowsWhere(q, "f.text");
   const inner = `SELECT f.event_id, f.session_id, f.kind, f.ts, f.ref, f.cut, snippet(search_idx, 0, char(1), char(2), '…', 14) AS snippet, bm25(search_idx) AS rank,
        s.title, s.workspace, s.archived, ${q.pid} AS parent_id
@@ -100,4 +101,46 @@ function rankedOld(db: Database, q: ContentQuery): ContentHit[] {
   return q.perSession
     ? db.prepare<ContentHit, (string | number)[]>(`SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ${order}) AS n FROM (${inner})) WHERE n = 1 ORDER BY archived, ${order} LIMIT ?`).all(q.match, ...q.args, ...rows.args, q.limit)
     : db.prepare<ContentHit, (string | number)[]>(`${inner} ORDER BY s.archived, ${q.newest ? "CAST(f.ts AS INTEGER) DESC" : "rank"} LIMIT ?`).all(q.match, ...q.args, ...rows.args, q.limit);
+}
+
+// How much of a row's text a hit of limits alone shows: there is no match to cut a snippet around.
+const START = 160;
+
+// A search of limits alone (in:commands, on:today, a state with a kind): the rows of the index the
+// limits allow, newest first. No word, so no MATCH and no rank: the rows are read from the index's
+// row list and their events' own columns, then the hits kept read the start of their text, their
+// call and whether they were cut from the content view.
+function listed(db: Database, q: ContentQuery): ContentHit[] {
+  const P = `(d.doc & ${(1 << PART_BITS) - 1})`;
+  const f = `SELECT d.doc AS doc, e.id AS event_id, e.session_id AS session_id, ${KIND_OF("e", P)} AS kind, e.ts AS ts,
+      CASE WHEN e.kind = 'assistant' AND ${P} > 0 THEN json_extract(e.data, '$.blocks[' || (${P} - 1) || '].name') || ' ' END AS call
+    FROM search_rows d JOIN events e ON e.rowid = (d.doc >> ${PART_BITS})`;
+  const rows = rowsWhere(q, "f.call");
+  const inner = `SELECT f.doc, f.event_id, f.session_id, f.kind, f.ts, s.title, s.workspace, s.archived, ${q.pid} AS parent_id
+    FROM (${f}) f JOIN sessions s ON s.id = f.session_id WHERE 1 ${q.where}${rows.sql}`;
+  // (Rows of one time in the order they were stored, the later first.)
+  const order = "CAST(ts AS INTEGER) DESC, doc DESC";
+  const top = q.perSession
+    ? `SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ${order}) AS n FROM (${inner})) WHERE n = 1 ORDER BY archived, ${order} LIMIT ?`
+    : `${inner} ORDER BY archived, ${order} LIMIT ?`;
+  const hits = db.prepare<Omit<ContentHit, "ref" | "cut" | "snippet"> & { doc: number }, (string | number)[]>(top).all(...q.args, ...rows.args, q.limit);
+  if (!hits.length) return [];
+  const told = new Map(db.query<{ doc: number; ref: string | null; cut: number; snippet: string }, [string]>(
+    `WITH top AS MATERIALIZED (SELECT value AS doc FROM json_each(?1))
+     SELECT t.doc, t.ref, t.cut, substr(t.text, 1, ${START}) AS snippet FROM top CROSS JOIN search_text t ON t.doc = top.doc`,
+  ).all(JSON.stringify(hits.map((h) => h.doc))).map((t) => [t.doc, t] as const));
+  return hits.map(({ doc, ...h }) => ({ ...h, ref: told.get(doc)?.ref ?? null, cut: told.get(doc)?.cut ?? 0, snippet: told.get(doc)?.snippet ?? "" }));
+}
+
+// The same over the layout before, while the new one is filled: its rows hold their own text.
+function listedOld(db: Database, q: ContentQuery): ContentHit[] {
+  const rows = rowsWhere(q, "f.text");
+  const inner = `SELECT f.rowid AS doc, f.event_id, f.session_id, f.kind, f.ts, f.ref, f.cut, substr(f.text, 1, ${START}) AS snippet,
+       s.title, s.workspace, s.archived, ${q.pid} AS parent_id
+     FROM search_idx f JOIN sessions s ON s.id = f.session_id WHERE 1 ${q.where}${rows.sql}`;
+  const order = "CAST(ts AS INTEGER) DESC, doc DESC";
+  const out = q.perSession
+    ? db.prepare<ContentHit & { doc?: number; n?: number }, (string | number)[]>(`SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ${order}) AS n FROM (${inner})) WHERE n = 1 ORDER BY archived, ${order} LIMIT ?`).all(...q.args, ...rows.args, q.limit)
+    : db.prepare<ContentHit & { doc?: number }, (string | number)[]>(`SELECT * FROM (${inner}) ORDER BY archived, ${order} LIMIT ?`).all(...q.args, ...rows.args, q.limit);
+  return out.map(({ doc: _d, n: _n, ...h }: ContentHit & { doc?: number; n?: number }) => h);
 }

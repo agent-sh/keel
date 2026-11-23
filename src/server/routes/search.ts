@@ -79,7 +79,8 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         if (lim.error) return Response.json({ error: lim.error, limit: true }, { status: 400 });
         const q = lim.words;
         const match = ftsQuery(q);
-        if (!match) return Response.json({ query: q, hits: [], ...(lim.said.length ? { limits: lim.said } : {}) });
+        // Limits with no words list what they allow, newest first: the sessions in a state, the commands, a day's work.
+        if (!match && !lim.said.length) return Response.json({ query: q, hits: [] });
         const roots = u.searchParams.get("roots") === "1";
         // Subagent sessions name their parent (the agents module adds the column).
         const pid = store.columnExists("sessions", "parent_id") ? "s.parent_id" : "NULL";
@@ -105,6 +106,7 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         // Every word matches the title or folder; matched over all eligible sessions, then ranked and cut.
         const words = fold(q).split(/\s+/).filter(Boolean);
         // A title is no command and has no time of its own: a search limited to a kind of row or a time lists none.
+        // With no words, every session in the scope is a title hit, newest first (a state alone lists its sessions).
         const titles = limited ? [] : store.db
           .prepare<any, (string | number)[]>(`SELECT s.id, s.title, s.workspace, s.updated, s.archived, ${pid} AS parent_id FROM sessions s WHERE 1 ${where} ORDER BY s.archived, s.updated DESC`)
           .all(...args)
@@ -117,7 +119,8 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
           .map((x) => x.t)
           .slice(0, limit);
         // The index is read off the loop: one word can match most of a long history.
-        const content = await readsOf(store).run("search.content", {
+        // With no words and no limit on the rows (a state alone), the sessions are the answer: no row of theirs is listed.
+        const content = !match && !limited ? [] : await readsOf(store).run("search.content", {
           match, where, args, rows, limit, perSession, pid, newest: u.searchParams.get("newest") === "1",
         });
         const hits: Hit[] = [

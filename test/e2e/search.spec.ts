@@ -144,6 +144,47 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
 // and the shortcut sheet) move the keyboard through the prompts of the branch
 // on screen, one at a time, back to one that was not among the rows rendered
 // first. The branch and the draft stay as they were, and each end says so.
+// A search of limits alone (state:declined, in:commands, on:today) lists what they allow, newest
+// first, as the palette's hint offers them; a word added narrows it as before.
+test("search: limits alone list what they allow", async ({ page, request }) => {
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const tag = `lm${Date.now().toString(36)}`;
+  const M = "scripted:stand-in";
+  const idle = (id: string) => expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+  const declined = (await (await request.post("/api/sessions", { data: { model: M, text: `script:refuse no${tag}` } })).json()).session;
+  await idle(declined.id);
+  await request.patch(`/api/sessions/${declined.id}`, { data: { title: `Declined ${tag}` } });
+  const run = (await (await request.post("/api/sessions", { data: { model: M, text: `script:calls [{"name":"Bash","input":{"command":"echo limits-${tag}"}}]` } })).json()).session;
+  await idle(run.id);
+  await request.patch(`/api/sessions/${run.id}`, { data: { title: `Ran ${tag}` } });
+
+  const api = async (q: string) => (await (await request.get(`/api/search?q=${encodeURIComponent(q)}&limit=50`)).json()).hits as any[];
+  // A state alone: its sessions, no other.
+  await expect.poll(async () => (await api("state:declined")).map((h) => h.session_id)).toContain(declined.id);
+  expect((await api("state:declined")).every((h) => h.kind === "title")).toBe(true);
+  expect((await api("state:declined")).map((h) => h.session_id)).not.toContain(run.id);
+  // A kind of row alone: the commands, newest first.
+  const cmds = await api("in:commands");
+  expect(cmds[0]).toMatchObject({ session_id: run.id, kind: "tool_use" });
+  expect(cmds[0].snippet).toContain(`limits-${tag}`);
+  // A day alone: what was done that day, newest first.
+  const day = await api("on:today");
+  expect(day.map((h) => h.session_id)).toEqual(expect.arrayContaining([run.id, declined.id]));
+  expect(day.map((h) => h.ts)).toEqual([...day.map((h) => h.ts)].sort((a, b) => b - a));
+
+  await page.goto("/");
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("state:declined");
+  await expect(page.getByTestId("palette").getByRole("option").filter({ hasText: `Declined ${tag}` })).not.toHaveCount(0);
+  await expect(page.getByTestId("palette")).not.toContainText("Nothing matches");
+  await shoot(page, "search-06-limits-alone");
+  await page.getByTestId("palette-input").fill("in:commands");
+  await expect(page.getByTestId("palette").getByRole("option").filter({ hasText: `limits-${tag}` })).not.toHaveCount(0);
+
+  const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
+  expect(errorsAfter).toBe(errorsBefore);
+});
+
 test("previous and next prompt walk the conversation by keyboard", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in-strict"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");

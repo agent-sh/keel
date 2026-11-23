@@ -391,3 +391,37 @@ test("a title that holds the words as typed, as whole words, comes before one th
   expect(titleRank("Ağent 17", ["agent", "17"])).toBe(0);
   expect(titleRank("anything", [])).toBe(2);
 });
+
+// A search of limits alone (no words) lists the rows the limits allow, newest first, from the
+// layout before while the new one fills and from the new one after, the same rows from both.
+test("limits alone list the rows they allow, newest first, from either layout", async () => {
+  const first = open();
+  first.start();
+  const a = talk(first.store, "wombat");
+  const b = talk(first.store, "numbat");
+  first.store.side.flush();
+  asV4(first.store);
+  first.store.db.close();
+  const next = open(first.dir);
+  const db = next.store.db;
+  initSearchIndex(db);
+  keepIndexed(next.store);
+  expect(searchTable(db)).toBe("search_idx");
+  const commands = () => searchContent(db, { match: null, where: "", args: [], rows: { commands: true }, limit: 100, perSession: false, pid: "NULL" });
+  const sessions = (hs: { session_id: string }[]) => hs.map((h) => h.session_id);
+  const old = commands();
+  // Two calls of a shell tool in each session, the later session's first.
+  expect(old.map((h) => h.kind)).toEqual(["tool_use", "tool_use", "tool_use", "tool_use"]);
+  expect(sessions(old)).toEqual([b, b, a, a]);
+  expect(old[0]!.snippet).toStartWith("Bash grep numbat");
+  for (let i = 0; i < 1000 && searchMeta(db)?.fill_below !== null; i++) fillStep(db, 2000);
+  expect(searchTable(db)).toBe("search_words");
+  const now = commands();
+  expect(sessions(now)).toEqual(sessions(old));
+  expect(now.map((h) => h.snippet).sort()).toEqual(old.map((h) => h.snippet).sort());
+  expect(now.map((h) => h.ref).sort()).toEqual(old.map((h) => h.ref).sort());
+  // A time alone: every row since then, one per session when asked so.
+  const since = searchContent(db, { match: null, where: "", args: [], rows: { since: 0 }, limit: 100, perSession: true, pid: "NULL" });
+  expect(sessions(since).sort()).toEqual([a, b].sort());
+  next.store.db.close();
+});
