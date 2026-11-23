@@ -30,6 +30,9 @@
 import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
+import { driversAtStart } from "../drivers-start.ts";
+import { checkpointerOf } from "../../core/checkpoint.ts";
+import { rewriteUsd, USAGE_ROLLUP_TRIGGER, type DriversRead } from "../../admin/cost-drivers.ts";
 
 const GROUPS = new Set(["model", "session", "tree", "day", "provider"]);
 const SORTS = new Set(["total", "fresh", "cost"]);
@@ -123,7 +126,7 @@ const ledger = (r = "") => [
 // The triggers' name carries the version of what they write: when it changes,
 // the rollup is made again from the ledger (a rollup of another shape gets
 // another table).
-const TRIGGER = "usage_rollup_v1";
+const TRIGGER = USAGE_ROLLUP_TRIGGER;
 
 const has = (db: Database, type: "table" | "trigger", name: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
 
@@ -149,8 +152,8 @@ export type RollupCheck = { ok: boolean; rollup_calls: number; ledger_calls: num
 export function checkRollup(db: Database, repair = true): RollupCheck {
   if (!has(db, "table", "telemetry_calls")) return { ok: true, rollup_calls: 0, ledger_calls: 0 };
   const count = (): RollupCheck => {
-    const ledger_calls = db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM telemetry_calls WHERE ${counted()}`).get()!.n;
-    const rollup_calls = has(db, "table", "usage_rollup") ? db.query<{ n: number }, []>("SELECT COALESCE(SUM(calls), 0) AS n FROM usage_rollup").get()!.n : 0;
+    const { ledger_calls, rollup_calls } = db.query<{ ledger_calls: number; rollup_calls: number }, []>(`SELECT (SELECT COUNT(*) FROM telemetry_calls WHERE ${counted()}) AS ledger_calls,
+      ${has(db, "table", "usage_rollup") ? "(SELECT COALESCE(SUM(calls), 0) FROM usage_rollup)" : "0"} AS rollup_calls`).get()!;
     return { ok: has(db, "trigger", `${TRIGGER}_add`) && rollup_calls === ledger_calls, rollup_calls, ledger_calls };
   };
   const c = count();
@@ -188,7 +191,7 @@ export function rebuildRollup(db: Database) {
   })();
 }
 
-export const usageRoutes: RouteModule = ({ store, errors }) => {
+export const usageRoutes: RouteModule = ({ store, errors, providers }) => {
   // At the daemon's start, once every route module has made its tables and
   // off any request: the rollup is made if this is the first build with it,
   // and held against the ledger. One that differs is made again and said so.
@@ -197,23 +200,34 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
   // The two counts read every row of the ledger and of the rollup: they are
   // made on the read thread, and the loop only compares them. A rollup that
   // is not there yet, or differs, is then made on the loop as before (once).
-  const atStart = setTimeout(async () => {
+  const usageAtStart = async () => {
     try {
       const had = has(store.db, "trigger", `${TRIGGER}_add`);
       if (had && has(store.db, "table", "usage_rollup")) {
-        const reads = readsOf(store);
-        const [ledger, rollup] = await Promise.all([
-          reads.sql<{ n: number }>(`SELECT COUNT(*) AS n FROM telemetry_calls WHERE ${counted()}`),
-          reads.sql<{ n: number }>("SELECT COALESCE(SUM(calls), 0) AS n FROM usage_rollup"),
-        ]);
-        if (ledger[0]?.n === rollup[0]?.n) return;
+        // (One statement, so one snapshot: a request written between two reads is no mismatch.)
+        const [c] = await readsOf(store).sql<{ l: number; r: number }>(`SELECT (SELECT COUNT(*) FROM telemetry_calls WHERE ${counted()}) AS l, (SELECT COALESCE(SUM(calls), 0) FROM usage_rollup) AS r`);
+        if (c && c.l === c.r) return;
       }
       const c = checkRollup(store.db);
       if (c.rebuilt && had) errors?.capture("server", new Error(`The usage rollup did not match the ledger and was made again from it (${c.ledger_calls} requests).`), { at: "usage rollup" });
     } catch (e) {
       errors?.capture("server", e, { at: "usage rollup" });
     }
-  }, 0);
+  };
+  // The cost drivers' rollup (src/admin/cost-drivers.ts): counted on the read thread, made
+  // again by the checkpoint thread only when it is not there or differs (src/server/drivers-start.ts).
+  const driversStart = async () => {
+    try {
+      const reads = readsOf(store);
+      const d = await driversAtStart(store.db, () => reads.run("usage.driversCheck", {}), () => checkpointerOf(store));
+      if (d.where === "none") return;
+      if (d.had) errors?.capture("server", new Error(`The cost drivers' rollup did not match the ledger and was made again from it (${d.before.ledger_calls} requests, ${d.before.ledger_turns} turns).`), { at: "cost drivers rollup" });
+      if (d.after && !d.after.ok) errors?.capture("server", new Error(`The cost drivers' rollup still differs from the ledger after it was made again (${d.after.rollup_calls} of ${d.after.ledger_calls} requests).`), { at: "cost drivers rollup" });
+    } catch (e) {
+      errors?.capture("server", e, { at: "cost drivers rollup" });
+    }
+  };
+  const atStart = setTimeout(async () => { await usageAtStart(); await driversStart(); }, 0);
   atStart.unref?.();
   return {
   // GET: the rollup against the ledger (the counts, and whether they agree).
@@ -224,6 +238,24 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
       if (!has(store.db, "table", "telemetry_calls")) return Response.json(checkRollup(store.db, false));
       rebuildRollup(store.db);
       return Response.json({ ...checkRollup(store.db, false), rebuilt: true });
+    },
+  },
+  // GET /api/usage/drivers?since_ms=&until_ms=: why the range cost what it did (src/admin/cost-drivers.ts):
+  // turn steps by prompt size, cache rewrites by cause (with `rewrite_usd`: an estimate of the part of their cost that
+  // wrote the prompt again, priced at each model's own rates; null when a price is not known), agents
+  // against the sessions above them, steps per turn and the dearest trees. Read on the read thread.
+  "/api/usage/drivers": {
+    GET: async (req: Request) => {
+      const q = new URL(req.url).searchParams;
+      const num = (k: string) => (q.has(k) ? Number(q.get(k)) : undefined);
+      const since = num("since_ms"), until = num("until_ms");
+      if ([since, until].some((v) => v !== undefined && !Number.isFinite(v))) return Response.json({ error: "a bound is not a number" }, { status: 400 });
+      const t0 = performance.now();
+      const d: DriversRead = await readsOf(store).run("usage.drivers", { ...(since !== undefined ? { since } : {}), ...(until !== undefined ? { until } : {}) });
+      const rates = (model: string) => providers.cachedModel(model)?.price;
+      return Response.json({
+        ...d, breaks: d.breaks.map(({ models, ...b }) => ({ ...b, rewrite_usd: rewriteUsd(models, rates), models: models.length })), took_ms: Math.round(performance.now() - t0),
+      }, { headers: { "cache-control": "no-store" } });
     },
   },
   "/api/usage": {

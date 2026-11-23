@@ -39,6 +39,39 @@ test("usage dashboard", async ({ page, request }) => {
   const name = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === HAIKU).name as string;
   await expect(panel.getByTestId("usage-models")).toContainText(name);
   await shoot(page, "usage-01-dashboard");
+  // Why it cost this: each cause with its lever, from kept sums that match the ledger.
+  const since = Date.now() - 7 * 86_400_000;
+  const [d, u] = await Promise.all([
+    (await request.get(`/api/usage/drivers?since_ms=${since}`)).json(),
+    (await request.get(`/api/usage?group=model&since_ms=${since}`)).json(),
+  ]);
+  expect(d.total.calls).toBe(u.total.calls);
+  expect(d.total.cost).toBeCloseTo(u.total.priced_cost_usd, 9);
+  expect(d.bands.reduce((n: number, b: any) => n + b.calls, 0)).toBe(u.by_purpose.find((x: any) => x.purpose === "turn")?.calls ?? 0);
+  expect(d.turns.turns).toBeGreaterThanOrEqual(1);
+  expect(d.took_ms).toBeLessThan(300);
+  await panel.getByTestId("usage-go-causes").click();
+  const card = panel.getByTestId("usage-drivers-card");
+  await expect(card.getByTestId("driver-turns")).toContainText(`${d.turns.turns.toLocaleString("en-US")} turn`);
+  await expect(card.getByTestId("driver-turns").getByTestId("driver-lever")).not.toBeEmpty();
+  await expect(card.getByTestId("drivers-bands").locator("tbody tr")).toHaveCount(d.bands.length);
+  await expect(card.getByTestId("drivers-trees")).toContainText(s.title || "");
+  // A rewrite's dollars are an estimate from the models' rates, and say so.
+  for (const b of d.breaks) if (b.rewrite_usd !== null) await expect(card.getByTestId("driver-rewrite").filter({ hasText: `${b.calls.toLocaleString("en-US")} request` }).first()).toContainText("about $");
+  await card.scrollIntoViewIfNeeded();
+  // Every cause and both tables fit the width, on a desk and on a phone: no sideways scroll.
+  const fits = async () => {
+    expect(await card.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    for (const id of ["drivers-bands", "drivers-trees"]) expect(await card.getByTestId(id).locator("table").evaluate((el) => el.parentElement!.scrollWidth - el.parentElement!.clientWidth), id).toBeLessThanOrEqual(1);
+  };
+  await fits();
+  await shoot(page, "usage-01b-drivers");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await card.scrollIntoViewIfNeeded();
+  await fits();
+  await shoot(page, "usage-01c-drivers-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await panel.getByRole("radio", { name: "Overview" }).click();
   // How fast the calls were has a view of its own: a whole reply through its retries, beside one try.
   await panel.getByTestId("usage-go-calls").click();
   await expect(panel.getByTestId("tile-step")).toContainText("without retries");
@@ -233,7 +266,7 @@ test("usage: the answer first, one stat component, one bucket reads as a value",
   await shoot(page, "usage-08-answer");
   await page.setViewportSize({ width: 390, height: 844 });
   await answer.scrollIntoViewIfNeeded();
-  // On a phone the eight views go on to a second line, none cut, and the two lists show the money with no sideways scroll.
+  // On a phone the nine views go on to a second line, none cut, and the two lists show the money with no sideways scroll.
   const strip = panel.getByRole("radiogroup", { name: "View" });
   expect(await strip.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   for (const name of ["Overview", "Compare"]) await expect(strip.getByRole("radio", { name })).toBeInViewport({ ratio: 1 });

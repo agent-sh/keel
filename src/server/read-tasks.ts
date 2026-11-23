@@ -12,6 +12,7 @@ import { sessionWhole, type WholeAsk } from "./routes/session-read.ts";
 import { settleStored } from "../engine/settle-read.ts";
 import { claudeMcpChoices } from "../mcp/claude-choices.ts";
 import type { SettleAsk } from "../engine/compact.ts";
+import { checkDrivers, driversOf, type DriversAsk } from "../admin/cost-drivers.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -36,6 +37,9 @@ export const tasks = {
   "claude.mcpChoices": (_db: Database, a: { files: string[]; roots: string[] }) => claudeMcpChoices(a.files, a.roots),
   // A summary checked against every message of its branch (a compaction).
   "compact.settle": (db: Database, a: SettleAsk) => settleStored(db, a),
+  // Why a range cost what it did, from the cost drivers' rollup; and that rollup held against the ledger (no repair: the thread reads only).
+  "usage.drivers": (db: Database, a: DriversAsk) => driversOf(db, a),
+  "usage.driversCheck": (db: Database, _a: Record<string, never>) => checkDrivers(db, false),
 };
 
 export type Tasks = typeof tasks;

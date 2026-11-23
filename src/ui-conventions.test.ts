@@ -569,6 +569,17 @@ function shoutedStates(list: Src[]): string[] {
 
 // ---------- Over the tree ----------
 
+// What the page does on a beat runs on its one clock (lib/clock.ts), which
+// stops while the page is hidden. The files that still keep a timer of their
+// own are named here, to be moved to the clock; a file not named keeps none.
+const OWN_TIMERS = new Set(["lib/clock.ts", "lib/drafts.ts", "lib/hotui.ts", "lib/store.ts",
+  ...["ApprovalCard", "Attention", "DaemonPanel", "ElsewherePanel", "ExperimentsPanel", "HomeWatch", "ImportSheet", "LogsSettings", "ObservabilityPanel", "PhonePanel", "PlanCard",
+    "PreviewPanel", "ProvidersPanel", "ResourcesPanel", "ResumeFrom", "surfaces/Mcp", "surfaces/Plugins", "TimelinePanel", "TracesPanel", "UsagePanel", "UsagePast", "UsageViews"].map((n) => `components/${n}.tsx`)]);
+function ownTimers(list: Src[]): string[] {
+  return list.filter((s) => !/\.test\.tsx?$/.test(s.file) && !OWN_TIMERS.has(s.file))
+    .flatMap((s) => calls(s.text, /(?<![\w.])setInterval/).map((c) => at(s, c.line, "a timer of its own: use every() of lib/clock.ts")));
+}
+
 test("the type scale has eight sizes, written once", () => {
   const theme = rules(sheets.find((s) => s.file === "styles.css")!.text).flatMap((r) => r.decls).filter((d) => /^--text-[a-z]+$/.test(d.prop));
   expect(theme.map((d) => d.prop.slice(7))).toEqual(["micro", "caption", "ui", "base", "read", "head", "title", "display"]);
@@ -590,6 +601,7 @@ test("the instrument face is named by its five roles and nowhere else", () => ex
 test("a choice of a few is the one segmented control", () => expect(segmented(page, sheets)).toEqual([]));
 test("steel is the frame and nothing else", () => expect(steel(page, sheets)).toEqual([]));
 test("nothing to show is said one way", () => expect(empties(page, sheets)).toEqual([]));
+test("a beat of the page runs on its one clock", () => expect(ownTimers(page)).toEqual([]));
 test("every time is on the 24-hour clock", () => {
   expect(pageTimes(page)).toEqual([]);
   expect(daemonTimes(daemon)).toEqual([]);
