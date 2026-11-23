@@ -1031,6 +1031,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* The read-first latch arming: a line fills under Allow once for what is left of the settle
    time, and stays full until Enter allows (the card's hint says "in a moment" meanwhile). */
 .k-allow { position: relative; }
+/* Ready for Enter (data-ready) while a pointer's press does not count yet (the page moved the keyboard
+   here, and the control has not stood its second): drawn whole, as the key it answers, with no hover and
+   the plain cursor until a press would count. A press before then is refused and says why. */
+.k-allow[aria-disabled="true"][data-ready]:not(:disabled) { opacity: 1; }
 .k-allow > .k-arm { position: absolute; inset: auto 0.5rem 0.25rem; height: 2px; border-radius: 1px; background: currentColor; opacity: 0.6; transform-origin: left center; animation: k-arm var(--k-arm, 1000ms) linear both; pointer-events: none; }
 @keyframes k-arm { from { transform: scaleX(0); } }
 @media (prefers-reduced-motion: reduce) { .k-allow > .k-arm { animation: none; opacity: 0.35; } }

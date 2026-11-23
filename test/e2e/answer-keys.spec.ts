@@ -1466,6 +1466,34 @@ test("a click on an Allow the owner's arrow reached waits for the keys to be rea
   await drop(request, id);
 });
 
+// The page brings the keyboard onto Allow once by itself: from when the card says Enter allows it (its keys
+// are ready) to when a pointer's press counts (it stood its second), it is drawn whole, as the key it
+// answers, not dimmed as if nothing worked. A press meanwhile is refused and says why; a press after counts.
+test("an Allow once ready for Enter is drawn whole while a press does not count yet, and says so when pressed", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const id = await create(request, "Ready look", folder("ready-look"));
+  await page.goto(`/s/${id}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await page.waitForTimeout(800);
+  await ask(request, id, "approval", "look");
+  const list = cardIn(page, id, "approval"), allow = list.getByTestId("allow-once");
+  await expect(allow).toBeFocused({ timeout: 8000 });
+  await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 5000 });
+  const look = await allow.evaluate((b) => ({ disabled: b.getAttribute("aria-disabled"), opacity: getComputedStyle(b).opacity, cursor: getComputedStyle(b).cursor }));
+  const at = (await allow.boundingBox())!;
+  await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+  // (Only a look taken while a press did not count yet proves anything.)
+  expect(look.disabled, "a press counted already").toBe("true");
+  expect(look, "ready for Enter, a press not yet").toEqual({ disabled: "true", opacity: "1", cursor: "default" });
+  await expect(allow).toHaveAttribute("data-nudge", "true");
+  expect((await approvals(request, id))[0], "a press before it stood its second").toMatchObject({ state: "pending" });
+  await expect(allow).not.toHaveAttribute("aria-disabled", "true", { timeout: 5000 });
+  await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+  await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  await drop(request, id);
+});
+
 // End pressed at once after Enter opened a long command reads it to its end. The opened view may not have
 // been read after a paint yet when End comes: a step then would carry its lines out of view unread, and
 // End would stop short ("7 lines not seen yet"). The step waits for that view to count. Six times each
