@@ -103,6 +103,8 @@ export const FILES_TOLD = 4; // files named a pair; the rest is a count
 // The budget of a session's failure notice (src/automation/failures.ts), for the same reason:
 // what the harness adds to a request is read by the model at every later step.
 export const NOTE_CHARS = 2_500;
+// Other branches named on one branch's line, so a coordinator's note reaches its other branches too.
+export const PER_BRANCH = 4;
 const side = (s: Side) => (s.who === "your branch" ? `your branch ${s.branch}` : `${s.branch} (${s.who})`);
 const lead = (s: Side) => (s.who === "your branch" ? `Your branch ${s.branch}` : side(s));
 const against = (t: { other: Side; base: boolean }) => (t.base ? `the base ${t.other.branch}` : side(t.other));
@@ -132,14 +134,16 @@ export function forecastNote(conflicts: Told[], gone: Gone[]): string {
   };
   for (const g of groups.values()) {
     const line = `- ${lead(g.mine)} would conflict ${g.parts.join("; ")}.`;
-    if (used + line.length + 1 <= NOTE_CHARS) { add(line, g.parts.length); continue; }
-    // A branch with many pairs: as many as fit, the rest counted.
+    if (g.parts.length <= PER_BRANCH && used + line.length + 1 <= NOTE_CHARS) { add(line, g.parts.length); continue; }
+    // A branch with many pairs: a few, as many as fit, the rest counted (every branch gets its line first).
+    // (Room is kept for the count that ends the line.)
     let part = `- ${lead(g.mine)} would conflict`, n = 0;
-    for (const p of g.parts) { if (used + part.length + p.length + 3 > NOTE_CHARS) break; part += `${n ? ";" : ""} ${p}`; n++; }
-    if (n) { add(part + ` (and ${g.parts.length - n} more).`, 0); left += g.parts.length - n; } else left += g.parts.length;
+    for (const p of g.parts) { if (n === PER_BRANCH || used + part.length + p.length + 32 > NOTE_CHARS) break; part += `${n ? ";" : ""} ${p}`; n++; }
+    const cut = part + ` (and ${g.parts.length - n} more).`;
+    if (n && used + cut.length + 1 <= NOTE_CHARS) add(cut, 0); else left += g.parts.length;
   }
   if (gone.length) add(`- No longer conflicting: ${gone.map((c) => `${c.mine.branch} with ${c.base ? "the base " : ""}${c.other.branch}`).join("; ")}.`, gone.length);
-  if (left) lines.push(`${left} more ${left === 1 ? "pair is" : "pairs are"} not listed here; the session's Branches view lists every pair with the lines where they meet.`);
+  if (left) lines.push(`${left} more ${left === 1 ? "pair is" : "pairs are"} not listed here; check one with git merge-tree --write-tree --name-only A B (the owner's Branches view lists them all).`);
   return [head, ...lines, tail].filter(Boolean).join("\n");
 }
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

@@ -108,10 +108,28 @@ test("an ended agent's branch is not forecast", async () => {
 test("a branch whose commits the base holds as patches is not forecast", async () => {
   const { repo, ov, b } = setup();
   g(repo, "checkout", "-q", "main");
+  // (main moves first, so the pick is a commit of its own, not the branch's.)
+  writeFileSync(join(repo, "other.txt"), "x\n");
+  g(repo, "add", "other.txt");
+  g(repo, "commit", "-qm", "other");
   g(repo, "cherry-pick", "keel/a");
   await ov.scan(repo);
   const pairs = ov.view(b).pairs;
   expect(pairs.map((p) => [p.a, p.b, p.base])).toEqual([["keel/b", "main", true]]);
+});
+
+// The base took the change and then reverted it: landing the branch brings it
+// back, so the branch has something to land again.
+test("a branch whose change the base took and reverted is forecast again", async () => {
+  const { repo, ov, b } = setup();
+  g(repo, "checkout", "-q", "main");
+  writeFileSync(join(repo, "other.txt"), "x\n");
+  g(repo, "add", "other.txt");
+  g(repo, "commit", "-qm", "other");
+  g(repo, "cherry-pick", "keel/a");
+  g(repo, "revert", "--no-edit", "HEAD");
+  await ov.scan(repo);
+  expect(ov.view(b).pairs.filter((p) => !p.base).map((p) => [p.a, p.b])).toEqual([["keel/a", "keel/b"]]);
 });
 
 // Attributes a session can write name a driver of the owner's config, or a

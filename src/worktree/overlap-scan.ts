@@ -86,7 +86,7 @@ export function headBranch(w: Where): string | undefined {
 
 export class Overlaps {
   private bases = new Map<string, string | null>(); // repo → the base's full ref name
-  private aheadOf = new Map<string, number>(); // `${tip} ${baseTip}` → commits over the base
+  private lands = new Map<string, boolean>(); // `${tip} ${baseTip}` → landing it changes the base
   private passes = new Map<string, Pass>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private scanning = new Map<string, Promise<void>>();
@@ -188,31 +188,37 @@ export class Overlaps {
     const baseTip = base ? tips.get(base) : undefined;
     // A branch that is gone, and one a session committed to that landed, is no longer held.
     const managed = this.managedBranches(repo);
+    // The merges' objects: a folder of the pass's own, made at the first merge.
+    let objects: string | undefined;
+    const envOf = () => {
+      if (!objects) {
+        const dir = join(this.store.stateDir, "overlap-objects");
+        mkdirSync(dir, { recursive: true });
+        objects = mkdtempSync(join(dir, "pass-"));
+        mkdirSync(join(objects, "info"), { recursive: true });
+      }
+      return { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(w.common, "objects") };
+    };
+    const changed = new Set<string>();
+    let keep = new Set<string>();
+    let old = new Map<string, PairRow>();
+    try {
     const live: string[] = [];
     for (const b of names) {
       const tip = tips.get(`refs/heads/${b}`);
       if (!tip) { if (!managed.has(b)) this.store.db.query("DELETE FROM overlap_branches WHERE repo = ? AND branch = ?").run(repo, b); continue; }
-      if (baseTip && (await this.ahead(repo, tip, baseTip)) === 0) continue; // nothing of its own to land
+      if (baseTip && !(await this.lands_(repo, tip, baseTip, envOf, stat))) continue; // nothing of its own to land
       live.push(b);
     }
     const shortBase = base?.replace(/^refs\/(heads|remotes)\//, "") ?? null;
     const want: { a: string; b: string; base: boolean; ta: string; tb: string }[] = pairsOf(live).map(([a, b]) => ({ a, b, base: false, ta: tips.get(`refs/heads/${a}`)!, tb: tips.get(`refs/heads/${b}`)! }));
     if (shortBase && baseTip) for (const a of live) want.push({ a, b: shortBase, base: true, ta: tips.get(`refs/heads/${a}`)!, tb: baseTip });
-    const keep = new Set(want.map((p) => `${p.a}\0${p.b}`));
-    const old = new Map(this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ?").all(repo).map((r) => [`${r.a}\0${r.b}`, r]));
-    let objects: string | undefined;
-    const changed = new Set<string>();
-    try {
+    keep = new Set(want.map((p) => `${p.a}\0${p.b}`));
+    old = new Map(this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ?").all(repo).map((r) => [`${r.a}\0${r.b}`, r]));
       for (const p of want) {
         const row = old.get(`${p.a}\0${p.b}`);
         if (row && row.a_tip === p.ta && row.b_tip === p.tb && !row.error) { stat.reused++; continue; }
-        if (!objects) {
-          const dir = join(this.store.stateDir, "overlap-objects");
-          mkdirSync(dir, { recursive: true });
-          objects = mkdtempSync(join(dir, "pass-"));
-          mkdirSync(join(objects, "info"), { recursive: true });
-        }
-        const env = { GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(w.common, "objects") };
+        const env = envOf();
         const mt = await git(repo, [...(await this.noAttrs(repo)), "merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", p.ta, p.tb], { read: true, env });
         stat.merges++;
         const r = parseMergeTree(mt.out, mt.code, mt.err);
@@ -261,17 +267,28 @@ export class Overlaps {
     return ["--attr-source", tree, "-c", "core.attributesFile=/dev/null"];
   }
 
-  private async ahead(repo: string, tip: string, baseTip: string): Promise<number> {
+  // Whether landing `tip` changes the base: its merge with the base is
+  // not the base's own tree. A branch landed by cherry-pick, rebase or squash
+  // has nothing left to land though its commits differ; one whose change the
+  // base took and then reverted has. A merge that conflicts or fails counts
+  // as a change (the safe side).
+  private async lands_(repo: string, tip: string, baseTip: string, envOf: () => Record<string, string>, stat: Pass): Promise<boolean> {
     const key = `${tip} ${baseTip}`;
-    const known = this.aheadOf.get(key);
+    const known = this.lands.get(key);
     if (known !== undefined) return known;
-    // Commits the base holds as patches count as landed: a branch landed by
-    // cherry-pick or rebase has nothing of its own left, though its commits differ.
-    const r = await git(repo, ["rev-list", "--count", "--cherry-pick", "--right-only", "--no-merges", `${baseTip}...${tip}`], { read: true });
-    const n = r.code === 0 ? Number(r.out.trim()) || 0 : 1;
-    if (this.aheadOf.size > 4096) this.aheadOf.clear();
-    this.aheadOf.set(key, n);
-    return n;
+    let yes = true;
+    if (tip === baseTip) yes = false;
+    else {
+      const [mt, bt] = await Promise.all([
+        git(repo, [...(await this.noAttrs(repo)), "merge-tree", "--write-tree", "--no-messages", baseTip, tip], { read: true, env: envOf() }),
+        git(repo, ["rev-parse", `${baseTip}^{tree}`], { read: true }),
+      ]);
+      stat.merges++;
+      if (mt.code === 0 && bt.code === 0) yes = mt.out.trim().split("\n")[0] !== bt.out.trim();
+    }
+    if (this.lands.size > 4096) this.lands.clear();
+    this.lands.set(key, yes);
+    return yes;
   }
 
   // Where the two sides' changes of each conflicted file meet: each side's
@@ -348,12 +365,14 @@ export class Overlaps {
     if (!rows.length) return undefined;
     let conflicts = 0, cleared = 0;
     const told: Told[] = [], gone: Gone[] = [];
+    const held = new Map<string, Map<string, string>>(); // repo → its branches' holders, read once a note
     const settled: (() => void)[] = [], pairs: string[] = [];
     for (const row of rows) {
       const p = this.store.db.query<PairRow, [string, string, string]>("SELECT * FROM overlap_pairs WHERE repo = ? AND a = ? AND b = ?").get(row.repo, row.a, row.b);
       const where = [sessionId, row.repo, row.a, row.b] as const;
       if (!p) { settled.push(() => this.store.db.query("DELETE FROM overlap_told WHERE session_id = ? AND repo = ? AND a = ? AND b = ?").run(...where)); continue; }
-      const owners = this.owners(row.repo);
+      let owners = held.get(row.repo);
+      if (!owners) held.set(row.repo, (owners = this.owners(row.repo)));
       // The recipient's own side comes first; a parent reads the pair as it is ordered.
       const flip = !p.base && owners.get(p.b) === sessionId && owners.get(p.a) !== sessionId;
       const [mb, ob, mt, ot] = flip ? [p.b, p.a, p.b_tip, p.a_tip] : [p.a, p.b, p.a_tip, p.b_tip];
@@ -377,7 +396,7 @@ export class Overlaps {
     const settle = () => { for (const f of settled) f(); };
     // Rows that owed nothing any more are settled at once; there is no note to write.
     if (!told.length && !gone.length) return void this.store.db.transaction(settle)();
-    const said = [conflicts ? `${conflicts === 1 ? "a branch that would conflict" : `${conflicts} branches that would conflict`} when landing` : "", cleared ? `${cleared === 1 ? "a conflict" : `${cleared} conflicts`} gone` : ""].filter(Boolean).join(", and ");
+    const said = [conflicts ? `${conflicts === 1 ? "a pair of branches that would conflict" : `${conflicts} pairs of branches that would conflict`} when landing` : "", cleared ? `${cleared === 1 ? "a conflict" : `${cleared} conflicts`} gone` : ""].filter(Boolean).join(", and ");
     return { text: forecastNote(told, gone), short: `Overlap forecast: ${said}.`, pairs, settle };
   }
 

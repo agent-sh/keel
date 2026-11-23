@@ -98,7 +98,18 @@ describe("the note", () => {
     const told = Array.from({ length: 300 }, (_, i) => ({ mine: { branch: `keel/lane-${i % 25}`, tip: "1", who: `your agent "Lane ${i % 25}" s${i % 25}` }, other: { branch: `keel/other-${i}`, tip: "2", who: `your agent "Other ${i}" o${i}` }, files: ["src/engine/turn.ts", "ui/src/bridge.css"], all: 2, base: false }));
     const t = forecastNote(told, []);
     expect(t.length).toBeLessThanOrEqual(NOTE_CHARS);
-    expect(t).toMatch(/\d+ more pairs are not listed here; the session's Branches view lists every pair/);
+    expect(t).toMatch(/\d+ more pairs are not listed here; check one with git merge-tree/);
+  });
+  test("every pair is named or counted, also on a branch too long for its line", () => {
+    for (const len of [5, 40, 120, 300]) for (const n of [3, 10, 100]) {
+      const lane = { branch: `keel/${"x".repeat(len)}`, tip: "1", who: 'your agent "Lane" s1' };
+      const told = Array.from({ length: n }, (_, i) => ({ mine: lane, other: { branch: `keel/o${i}-${"y".repeat(len)}`, tip: "2", who: `session "O${i}" o${i}` }, files: ["src/a.ts"], all: 1, base: false }));
+      const t = forecastNote(told, []);
+      const named = (t.match(/with keel\//g) ?? []).length;
+      const more = Number(/\(and (\d+) more\)/.exec(t)?.[1] ?? 0) + Number(/(\d+) more pairs? (is|are) not listed/.exec(t)?.[1] ?? 0);
+      expect(named + more).toBe(n);
+      expect(t.length).toBeLessThanOrEqual(NOTE_CHARS);
+    }
   });
   test("gone", () => {
     const t = forecastNote([], [{ mine, other, base: false }]);
