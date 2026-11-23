@@ -7,7 +7,7 @@ import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
 import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
-import { dropRepeats, keyRefused, keyTried, keysArrived, keysSettled, mayTake, noteAnswer, pageFocus, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, keyTried, keysArrived, keysSettled, mayTake, noteAnswer, owned, pageFocus, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
@@ -451,11 +451,18 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     // Reading on through a long text by keys, while some of it was never in view: End reads to the
     // end of the card, Space a page on. (Once all of it was in view they are what they always are.)
     if ((e.key === "End" || e.key === " ") && !e.shiftKey && readOn(t, e.key === "End")) { e.preventDefault(); return; }
-    // The answers' own numbers (drawn on them while the keyboard is on the card or its list): 1 Allow once,
-    // 2 Always allow, 3 Deny, of the card the keyboard is on (on the list itself, its first card). Each is
-    // that answer's own press by a key, under the same rule (an Allow of a text not read, or pressed too
-    // soon after it showed, does nothing and says why); a number no answer has types nothing anywhere.
-    if (/^[1-3]$/.test(e.key) && !e.shiftKey) {
+    // The answers' own numbers: 1 Allow once, 2 Always allow, 3 Deny, of the card the keyboard is on (on
+    // the list itself, its first card). Only once the owner put the keyboard there (Alt A, Tab, an arrow,
+    // a press on the card): a card that took it by itself from an empty message box was not looked at,
+    // and a number then was meant for the box; it goes on as any key typed at such a card does (typeToBox).
+    // The numbers are drawn exactly while they answer. Each is that answer's own press by a key, under
+    // the same rule (an Allow of a text not read, or pressed too soon after it showed, does nothing and
+    // says why); a number no answer has types nothing anywhere.
+    // On the list, the first card is the one named at the press. When it goes (answered elsewhere), the
+    // next becomes first and moves up into its place: a 1 then is refused while that card's Allow once
+    // has not stood still a key's settle time where it is now (about 300 ms, "it moved a moment ago"),
+    // and taken after it.
+    if (/^[1-3]$/.test(e.key) && !e.shiftKey && owned(t)) {
       e.preventDefault();
       const card = t.closest<HTMLElement>('[data-testid="approval"]') ?? e.currentTarget.querySelector<HTMLElement>(':scope > [data-testid="approval"]');
       const answer = card?.querySelector<HTMLElement>(`:scope [data-testid="${ANSWER_KEYS[Number(e.key) - 1]}"]:not(:disabled)`);
@@ -1047,8 +1054,12 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // What the hint line may say (see where it is drawn): `ready` exactly when Enter on its Allow
   // would answer; `arming` while the page is about to make that so, or how to get there.
   const ready = keysOn === "once" && keyLive && !mustOpenKey && hold.keys === "ready";
-  // The answers' numbers are drawn while the keyboard is on this card, or on the list it leads (not on a finger's screen).
-  const digits = !touch && (keysOn === "once" || keysOn === "card" || (keysOn === "list" && first));
+  // The answers' numbers are drawn exactly while they answer (the list's keys, Approvals' onKeyDown): the
+  // keyboard is on this card or on the list it leads, the owner put it there, and it has settled (not on a
+  // finger's screen). Each one besides only while its own answer would take it: 1 and 2 once the text
+  // was read as a key reads it, 2 once Always allow is drawn live, 3 always (a denial costs nothing).
+  const numbers = !touch && hold.own && hold.keys === "ready" && !busy && (keysOn === "once" || keysOn === "card" || (keysOn === "list" && first));
+  const digits = { once: numbers && keyLive && !mustOpenKey, always: numbers && keyLive && !mustOpenKey && grant && !mustOpen, deny: numbers };
   const coming = keysOn === "card" || (keysOn === "list" && first);
   const heldLine = heldWhy ? `${heldWhy}: Down, then Enter allows once` : "";
   const arming = ready || shut || left > 0 ? ""
@@ -1344,19 +1355,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
               shut ? "border border-line text-fg" : "bg-accent text-accent-fg hover:opacity-90",
             )}
           >
-            Allow once{!touch && <Digit n={1} on={digits} />}
+            Allow once{!touch && <Digit n={1} on={digits.once} />}
             {/* (Drawn anew with each arrival of the keyboard, so it fills for that arrival's settle time.) */}
             {armingNow && <span key={hold.at + hold.key} className="k-arm" aria-hidden="true" data-testid="allow-arming" style={{ "--k-arm": `${armFor}ms` } as CSSProperties} />}
           </button>
           {nudge.line}
-          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} digits={touch ? null : digits} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}
+          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} digits={touch ? null : digits.always} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}
           <button
             disabled={busy}
             data-testid="deny"
             onClick={() => setDenying(true)}
-            className="relative h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+            className="h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
           >
-            Deny{!touch && <Digit n={3} on={digits} />}
+            Deny{!touch && <Digit n={3} on={digits.deny} />}
           </button>
           {err ? <span className={cn("ml-auto min-w-0 basis-full text-micro text-danger", !dense && "sm:basis-auto sm:truncate")} role="alert" title={err} data-testid="approval-error">{err}</span>
             // Why the answers wait, beside them, before anything was pressed: the text is to be opened
@@ -1395,11 +1406,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   );
 }
 
-// An answer's number, drawn on its corner while the keyboard is on the card (bridge.css: .k-digit). It
-// takes no room: a button that grew as the keyboard came would move under a pointer pressing it (the
-// press goes down as the click moves the keyboard there, and the answer has not stood still).
+// An answer's number, after its label, shown while the number answers (bridge.css: .k-digit). Its room
+// is always there on a keyboard's screen: a control that grew as the numbers came would move under a
+// pointer pressing it (and a control that moved waits again before a press counts).
 function Digit({ n, on }: { n: number; on: boolean }) {
-  return on ? <kbd aria-hidden="true" className="k-digit" data-testid="approval-digit">{n}</kbd> : null;
+  return <kbd aria-hidden="true" className="k-digit" data-on={on || undefined} data-testid={on ? "approval-digit" : undefined}>{n}</kbd>;
 }
 // The answers a number names on an approval card, in their order on it.
 const ANSWER_KEYS = ["allow-once", "allow-always", "deny"] as const;
@@ -1429,7 +1440,9 @@ function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }
     <Popover.Root open={open} onOpenChange={(o, d) => {
       if (!o) return setOpen(o);
       const detail = (d.event as { detail?: number }).detail ?? 0;
-      const why = refusal(pressed.said({ detail }), detail === 0 ? document.activeElement : null);
+      // A key opens the choices only while they are drawn live, as a pointer's press does: its number
+      // is drawn on it only then (the choices grant nothing by themselves, a second press does).
+      const why = refusal(pressed.said({ detail }), detail === 0 ? document.activeElement : null) || (detail === 0 && !live ? refusal(false, null) : "");
       if (why) nudge.refuse(why, trigger.current);
       else setOpen(o);
     }}>
@@ -1441,7 +1454,7 @@ function AlwaysButton({ a, digits, busy, live, armed, refusal, unread, onGrant }
         onMouseDown={pressed.onMouseDown}
         aria-disabled={!live || undefined}
         data-testid="allow-always"
-        className="k-btn k-btn-lg k-grant relative shrink-0 gap-1 whitespace-nowrap data-popup-open:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+        className="k-btn k-btn-lg k-grant shrink-0 gap-1 whitespace-nowrap data-popup-open:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
       >
         Always allow <ChevronDown className="size-3.5 text-faint" />{digits !== null && <Digit n={2} on={digits} />}
       </Popover.Trigger>
