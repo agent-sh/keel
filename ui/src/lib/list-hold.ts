@@ -119,7 +119,13 @@ export function useHand() {
     onPointerDown: stir,
     onWheel: stir,
     onPointerLeave: rest,
-    onFocus: (e: FocusEvent<HTMLElement>) => { at.current.rows = e.currentTarget; set({ focus: true }); },
+    // On a phone the drawer puts the keyboard on the open session's row as it opens (App.tsx), with no
+    // keyboard there: that is no hand, or the list and what it names at its foot would stand still for
+    // as long as the drawer is open. Keys that move it there (a keyboard on the phone) are one.
+    onFocus: (e: FocusEvent<HTMLElement>) => {
+      if (matchMedia("(max-width: 767px)").matches && e.target instanceof Element && !e.target.matches(":focus-visible")) return;
+      at.current.rows = e.currentTarget; set({ focus: true });
+    },
     onBlur: (e: FocusEvent<HTMLElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) set({ focus: false }); },
   });
   // The list was drawn anew in another form (folded, unfolded): the hand is where the next event says.

@@ -12,7 +12,7 @@
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
 import { Archive, ArchiveRestore, ArrowDown, Bug, Columns2, Folder, Layers2, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, PinOff, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag, X } from "lucide-react";
-import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
 import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
@@ -462,13 +462,28 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
 // or goes: what shrinks is the room under them. A press opens the session, as its row does.
 // Another machine's part of the list, when it begins below what the list shows: its name and count at
 // the list's foot, a press away (a long list of this machine's sessions hid that there are others).
-// What the list scrolls in: the list itself, or on a phone the rail's body, where the list scrolls
-// with what stands above it (bridge.css, .k-rail-body). The observers that say what is out of view watch that.
-const scrollerOf = (nav: HTMLElement | null) => (nav && getComputedStyle(nav).overflowY === "visible" ? nav.closest<HTMLElement>(".k-rail-body") ?? nav : nav);
+// What the list scrolls in: the list itself, or on a phone the box above the list's foot, where the
+// list scrolls with what stands above it (bridge.css, .k-list-scroll). The observers that say what is
+// out of view watch that, and look again when the screen crosses the phone's width.
+const PHONE = "(max-width: 767px)";
+const scrollerOf = (nav: HTMLElement | null) => (nav && getComputedStyle(nav).overflowY === "visible" ? nav.closest<HTMLElement>(".k-list-scroll") ?? nav : nav);
+// What stands over the top of that box: on a phone the find stays there as the rows scroll under it
+// (bridge.css), so a row behind it is out of view. Its height and the room around it, as a root margin.
+const coverOf = (root: HTMLElement) => {
+  const find = root.querySelector<HTMLElement>(":scope > .k-find");
+  if (!find || getComputedStyle(find).position !== "sticky") return "0px";
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  return `${-Math.ceil(find.offsetHeight + 0.5 * rem)}px 0px 0px 0px`;
+};
+const usePhoneWidth = () => useSyncExternalStore(
+  (f) => { const m = matchMedia(PHONE); m.addEventListener("change", f); return () => m.removeEventListener("change", f); },
+  () => matchMedia(PHONE).matches,
+);
 
 function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }; machines: { machine: string; count: number }[] }) {
   const key = machines.map((m) => `${m.machine}:${m.count}`).join(" ");
   const [below, setBelow] = useState<string[]>([]);
+  const narrowScreen = usePhoneWidth();
   useEffect(() => {
     const root = scrollerOf(nav.current);
     if (!root || !machines.length) return setBelow([]);
@@ -480,7 +495,7 @@ function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }
     }, { root });
     for (const m of machines) { const el = root.querySelector(`[data-testid="machine-sep"][data-machine="${CSS.escape(m.machine)}"]`); if (el) io.observe(el); }
     return () => io.disconnect();
-  }, [key, nav]);
+  }, [key, nav, narrowScreen]);
   if (!below.length) return null;
   return (
     <div className="k-machines-below" data-testid="machines-below">
@@ -502,6 +517,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   const title = (id: string) => titles.split("\u0000")[ids.indexOf(id)] ?? "New session";
   const key = ids.join(" ");
   const [found, setOut] = useState<string[]>([]);
+  const narrowScreen = usePhoneWidth();
   useEffect(() => {
     const root = scrollerOf(nav.current);
     if (!root || !ids.length) return setOut([]);
@@ -511,7 +527,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     const seen = new Map<Element, boolean>();
     let at: (Element | null)[] = [], frame = 0;
     const say = () => { const next = ids.filter((_, i) => (at[i] ? seen.get(at[i]!) === false : true)); setOut((was) => (was.join(" ") === next.join(" ") ? was : next)); };
-    const io = new IntersectionObserver((es) => { for (const e of es) seen.set(e.target, e.intersectionRatio > 0.99); say(); }, { root, threshold: [0, 1] });
+    const io = new IntersectionObserver((es) => { for (const e of es) seen.set(e.target, e.intersectionRatio > 0.99); say(); }, { root, rootMargin: coverOf(root), threshold: [0, 1] });
     // The rows are looked for again when the list draws others (a fold, a group, a row that came).
     const watch = () => {
       frame = 0;
@@ -526,7 +542,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
     const mo = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(watch); });
     mo.observe(root, { childList: true, subtree: true });
     return () => { io.disconnect(); mo.disconnect(); cancelAnimationFrame(frame); };
-  }, [key, nav]);
+  }, [key, nav, narrowScreen]);
   // While the hand is on the list the strip stands as it was: it never grows over the row under the pointer.
   const held = useContext(HandCtx).held;
   const kept = useRef(found);
@@ -1018,13 +1034,14 @@ function Index({ current }: { current: string | null }) {
   const lateBox = useRef<HTMLElement>(null);
   const [lateSeen, setLateSeen] = useState(true);
   const waits = late.length > 0;
+  const narrowScreen = usePhoneWidth();
   useEffect(() => {
     const el = lateBox.current;
     if (!waits || !el || !nav.current) return setLateSeen(true);
     const io = new IntersectionObserver(([e]) => setLateSeen(!!e?.isIntersecting), { root: scrollerOf(nav.current) });
     io.observe(el);
     return () => io.disconnect();
-  }, [waits]);
+  }, [waits, narrowScreen]);
   // By project or by their folders, the archive is one list (a project's archived sessions are on its page).
   const flat = arr.group === "flat" || ((arr.group === "project" || arr.group === "mine") && tab !== "active") ? [...rest].sort(cmp) : [];
   // Same-named folders read apart (beta/api, alpha/api); a machine's folders are named among its own.
@@ -1038,6 +1055,9 @@ function Index({ current }: { current: string | null }) {
   const sections = useMemo(() => machineRuns(rest), [rest]);
   return (
     <>
+      {/* What scrolls: on a phone the tabs, the tags and the counts go with the rows (the find stays),
+          and below it the list's foot, which never covers a row it names. Elsewhere both are no box. */}
+      <div className="k-list-scroll">
       <Seg kind="tabs" panel={panel} fill className="k-list-tabs mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
       <Find q={q} setQ={setQ} narrow={narrow} />
       {tags.length > 0 && !narrow && (
@@ -1111,11 +1131,14 @@ function Index({ current }: { current: string | null }) {
           </section>
         )}
       </nav>
-      {sections.length > 1 && <MachinesBelow nav={nav} machines={sections.filter((x) => x.machine).map((x) => ({ machine: x.machine!, count: x.list.length }))} />}
-      <NeedStrip nav={nav} open={(id) => { navigate({ name: "session", id }); if (getStations().shown.includes(id)) intoBox(id); }} />
-      {/* They are below what the list shows: said at its foot, and a press goes to them. */}
-      {waits && !lateSeen && <LateLine n={late.length} to={lateBox} />}
       </ListCtx.Provider>
+      </div>
+      </div>
+      <div className="k-list-foot" data-testid="list-foot">
+        {sections.length > 1 && <MachinesBelow nav={nav} machines={sections.filter((x) => x.machine).map((x) => ({ machine: x.machine!, count: x.list.length }))} />}
+        <NeedStrip nav={nav} open={(id) => { navigate({ name: "session", id }); if (getStations().shown.includes(id)) intoBox(id); }} />
+        {/* They are below what the list shows: said at its foot, and a press goes to them. */}
+        {waits && !lateSeen && <LateLine n={late.length} to={lateBox} />}
       </div>
     </>
   );

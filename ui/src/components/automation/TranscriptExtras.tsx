@@ -127,9 +127,10 @@ export function toolSummary(name: string, input: any): string | undefined {
   }
 }
 
-function Shell({ icon: Icon, label, sub, children, testid, defaultOpen, tone }: { icon: typeof Bot; label: string; sub?: string; children?: React.ReactNode; testid: string; defaultOpen?: boolean; tone?: "danger" }) {
+// `kind` gives the line's glyph its ink (transcript.css): a wake, a goal and a loop read apart at a glance.
+function Shell({ icon: Icon, label, sub, children, testid, defaultOpen, tone, kind }: { icon: typeof Bot; label: string; sub?: string; children?: React.ReactNode; testid: string; defaultOpen?: boolean; tone?: "danger"; kind?: "wake" | "goal" | "loop" }) {
   return (
-    <Collapsible.Root defaultOpen={defaultOpen} className="k-heard group/in animate-in" data-tone={tone} data-testid={testid}>
+    <Collapsible.Root defaultOpen={defaultOpen} className="k-heard group/in animate-in" data-tone={tone} data-kind={kind} data-testid={testid}>
       <Collapsible.Trigger className="k-heard-line">
         <Icon />
         <span className="k-heard-who">{label}</span>
@@ -163,7 +164,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
             {/* The agent by its title; its id is on hover. */}
             <span className="k-heard-who min-w-[3rem] shrink truncate" title={`${r.title} (agent ${r.id})`}>{r.title}</span>
             {/* The word first and whole: what gives way in a narrow pane is the rest of the line. */}
-            <span className="shrink-0 whitespace-nowrap" data-testid="agent-report-state">{r.said.phrase}</span>
+            <span className={cn("shrink-0 whitespace-nowrap", STATE_INK[r.said.watch])} data-testid="agent-report-state">{r.said.phrase}</span>
             {/* The rest gives way: cut at its end while "· reported" has room, and gone whole where it has not. */}
             <span className="k-report-rest text-faint"><span data-testid="agent-report-status">· reported{r.task ? ` · ${r.task}` : ""}{r.said.why ? ` · ${r.said.why}` : ""}</span></span>
             <ChevronRight className="k-heard-chev group-data-[open]/rep:rotate-90" />
@@ -174,7 +175,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     </div>
   );
   const wakeCard = (kind === "wait" || (kind === "wake" && ws.length > 0)) && (
-    <Shell icon={kind === "wait" && e.data.outcome === "event" ? Radio : Timer} label={`Woken: ${ws.map((w) => w.label).join(", ") || "a wait ended"}`} testid="wake-notice">
+    <Shell icon={kind === "wait" && e.data.outcome === "event" ? Radio : Timer} label={`Woken: ${ws.map((w) => w.label).join(", ") || "a wait ended"}`} testid="wake-notice" kind="wake">
       <div className="flex max-h-60 flex-col gap-2 overflow-auto rounded-md bg-code p-2.5 font-mono text-caption text-muted">
         {ws.length ? ws.map((w, i) => (
           <div key={i} data-testid="wake-part">
@@ -228,7 +229,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   }
   if (kind === "loop") {
     return (
-      <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice">
+      <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice" kind="loop">
         <p className="whitespace-pre-wrap text-ui text-muted">{text}</p>
       </Shell>
     );
@@ -236,7 +237,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   if (kind === "goal") {
     const label = e.data.goal === "start" ? "Goal set" : e.data.goal === "resume" ? "Goal resumed" : "Goal not met yet: next turn";
     return (
-      <Shell icon={Flag} label={label} testid="goal-notice" defaultOpen={e.data.goal === "start"}>
+      <Shell icon={Flag} label={label} testid="goal-notice" kind="goal" defaultOpen={e.data.goal === "start"}>
         <p className="whitespace-pre-wrap text-ui text-muted">{text.replace(/^\[harness\]\s*/, "")}</p>
       </Shell>
     );

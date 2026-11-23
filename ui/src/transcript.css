@@ -15,9 +15,12 @@
 .k-owner-words {
   display: flex; flex-direction: column; gap: 0.5rem; padding: 0.625rem 0.875rem;
   border-radius: var(--radius-md);
-  background: color-mix(in oklab, var(--accent-soft) 55%, transparent);
+  background: color-mix(in oklab, var(--accent-soft) 75%, transparent);
   font-size: var(--text-read); line-height: 1.6; color: var(--fg);
 }
+/* A step off the page, and a step from a code box in Keel's notices (bg-code), which sits just
+   under the page: the two never read as one grey. At night the whole tint. */
+.dark .k-owner-words { background: var(--accent-soft); }
 /* In a preview (an imported conversation) the same block, at the interface size. */
 .k-owner-words.k-owner-small { font-size: var(--text-ui); line-height: 1.5; padding: 0.4375rem 0.625rem; }
 .k-owner-attached { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.5rem; }
@@ -46,8 +49,14 @@
 .k-heard-line:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 button.k-heard-line:hover { color: var(--fg); }
 .k-heard-line > svg:first-child { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
+/* Each kind its own ink, so a wake, a goal and a loop read apart before their words do: a wake is the
+   wait that ended (steel blue), a goal is the owner's aim (Keel's ink), a loop a run on a schedule (green). */
+.k-heard[data-kind="wake"] .k-heard-line > svg:first-child { color: var(--st-wait-ink); }
+.k-heard[data-kind="goal"] .k-heard-line > svg:first-child { color: var(--accent-ink); }
+.k-heard[data-kind="loop"] .k-heard-line > svg:first-child { color: var(--ok-ink); }
 .k-heard[data-tone="danger"] .k-heard-line > svg:first-child { color: var(--st-fail); }
 .k-heard-who { flex-shrink: 0; font-weight: 600; color: var(--fg); }
+.k-heard[data-tone="danger"] .k-heard-who { color: var(--danger-ink); }
 .k-heard-what { min-width: 0; color: var(--faint); }
 .k-heard-chev { flex-shrink: 0; width: 0.75rem; height: 0.75rem; margin-left: auto; color: var(--faint); transition: transform var(--dur-move) var(--ease-out); }
 .k-heard-body { margin: 0.25rem 0 0.375rem 0.4375rem; padding-left: 0.75rem; border-left: 1px solid var(--line-strong); }

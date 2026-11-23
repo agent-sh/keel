@@ -260,14 +260,47 @@ function handMade(list: Src[]): string[] {
 // The conversation has one strong rule, the rail of work (.k-step): the owner's words are a tint,
 // Keel's own lines a hairline. Code in a sentence is a tint, not a box. What the harness brings in
 // (TranscriptExtras.tsx, Words.tsx) is a line, never a card: no shadow, no dashed box.
+// A rule is wide when it is over 2px, by any spelling: a left or inline-start border, an inset shadow,
+// a Tailwind left border. Only the step itself draws one: a selector whose last compound is .k-step,
+// with or without a state (`.k-step[data-x]`, `.k-step:hover`), never `.k-step-foo` or `.k-step .x`.
+const REM_PX = 16;
+const KEYWORD_PX: Record<string, number> = { thin: 1, medium: 3, thick: 5 };
+// The lengths of a value in px, in their order: what a function holds (a color, a var()) is not a length.
+function lengthsPx(v: string): number[] {
+  let bare = v;
+  for (let was = ""; was !== bare;) { was = bare; bare = bare.replace(/[\w-]*\([^()]*\)/g, " "); }
+  const out: number[] = [];
+  for (const m of bare.matchAll(/(?<![\w.-])(-?\d*\.?\d+)(px|rem|em)?(?![\w%.-])|\b(thin|medium|thick)\b/g)) {
+    if (m[3]) { out.push(KEYWORD_PX[m[3]]!); continue; }
+    const n = Math.abs(Number(m[1]));
+    if (!m[2] && n !== 0) continue;
+    out.push(m[2] === "px" ? n : n * REM_PX);
+  }
+  return out;
+}
+const lastCompound = (sel: string) => sel.trim().split(/\s*[\s>+~]\s*/).at(-1) ?? "";
+const theStep = (selector: string) => selector.split(",").every((part) => /^\.k-step(?=[[:]|$)/.test(lastCompound(part)));
+function wideRule(prop: string, value: string): boolean {
+  if (/^border-(left|inline-start)(-width)?$/.test(prop)) return lengthsPx(value).some((n) => n > 2);
+  // An inset shadow is a rule when an offset stands for it (inset 3px 0 0 ...): its offsets, not its blur.
+  if (prop === "box-shadow") return value.split(/,(?![^(]*\))/).some((sh) => /\binset\b/.test(sh) && lengthsPx(sh.replace(/\binset\b/, "")).slice(0, 2).some((n) => n > 2));
+  return false;
+}
+const twWide = (c: string) => {
+  const m = /^border-(?:l|s)(?:-(\d+)|-\[([^\]]+)\])?$/.exec(c);
+  if (!m) return false;
+  return m[1] ? Number(m[1]) > 2 : m[2] ? lengthsPx(m[2]).some((n) => n > 2) : false;
+};
 function voices(sheets: Src[], page: Src[]): string[] {
   const out: string[] = [];
   for (const s of sheets) for (const r of rules(s.text)) for (const d of r.decls) {
-    const wide = (v: string) => /(^|\s)(0\.[1-9]\d*rem|[2-9]px|[1-9]\d*\.?\d*rem)\b/.test(v);
-    if (s.file === "transcript.css" && /^border-left(-width)?$/.test(d.prop) && wide(d.value) && !/^\.k-step\b/.test(r.selector)) out.push(at(s, d.line, `${r.selector} { ${d.prop}: ${d.value} }`));
+    if (s.file === "transcript.css" && wideRule(d.prop, d.value) && !theStep(r.selector)) out.push(at(s, d.line, `${r.selector} { ${d.prop}: ${d.value} }`));
     if (/\.prose-keel :not\(pre\) > code$/.test(r.selector) && /^border(-(top|right|bottom|left))?(-(width|style))?$/.test(d.prop) && !/^(0|none)$/.test(d.value)) out.push(at(s, d.line, `${r.selector} { ${d.prop} }`));
   }
-  for (const s of page) if (/^components\/(automation\/TranscriptExtras|Words)\.tsx$/.test(s.file)) for (const { c, line } of classes(s.text)) if (/^(shadow-[1-3]|border-dashed)$/.test(c.split(":").at(-1)!)) out.push(at(s, line, c));
+  for (const s of page) if (/^components\/(automation\/TranscriptExtras|Words)\.tsx$/.test(s.file)) for (const { c, line } of classes(s.text)) {
+    const bare = c.split(":").at(-1)!;
+    if (/^(shadow-[1-3]|border-dashed)$/.test(bare) || twWide(bare)) out.push(at(s, line, c));
+  }
   return out;
 }
 
@@ -574,6 +607,13 @@ test("each check refuses what it is for", () => {
   expect(handMade(tsx('const SEL = "h-8 rounded-md border px-2";\nconst W = "w-40";\nexport const A = () => <><Select value={v} className={cn(SEL, "w-80")} /><Select value={v} className={cn(W, on && "max-w-full")} /></>;'))).toHaveLength(1);
   expect(pageCorners(tsx('<div className="rounded rounded-t-md rounded-3xl md:rounded-[0.4rem] rounded-[var(--radius-xl)]" />'))).toHaveLength(2);
   expect(voices([...css(".k-owner-words { border-left: 0.1875rem solid var(--fg); }\n.k-step { border-left: 0.1875rem solid red; }\n.k-told-words { border-left: 1px solid var(--line); }", "transcript.css"), ...css(".prose-keel :not(pre) > code { border: 1px solid var(--line); }", "styles.css")], tsx('<div className="rounded-lg border border-line shadow-1" />', "components/automation/TranscriptExtras.tsx"))).toHaveLength(3);
+  // Every spelling of a wide rule is refused, and a hairline or the step's own is not.
+  expect(voices(css([
+    ".k-a { border-inline-start: 3px solid red; }", ".k-b { box-shadow: inset 0.25rem 0 0 var(--fg); }", ".k-c { border-left-width: medium; }",
+    ".k-step-head { border-left: 3px solid red; }", ".k-step .k-x { border-left: 4px solid red; }", ".k-step, .k-y { border-left: 4px solid red; }",
+    ".k-d { border-left: 2px solid red; }", ".k-e { box-shadow: inset 0 0 0 1px var(--line), 0 4px 14px red; }", ".k-f { border-left: 0.125rem solid red; }",
+    ".k-g .k-step { border-left: 3px solid red; }", ".k-step[data-state=fail] { border-left-width: 0.1875rem; }", ".k-step:hover { box-shadow: inset 3px 0 0 red; }",
+  ].join("\n"), "transcript.css"), tsx('<div className="border-l-[3px] border-l-4 md:border-s-[0.25rem] border-l-2 border-l border-l-[1px]" />', "components/Words.tsx"))).toHaveLength(9);
   expect(twiceDrawn([...css(".k-dock { display: none; }"), ...css(".k-dock { display: flex; }\n.k-dock, .k-other { gap: 0; }\n@media (max-width: 767px) { .k-dock { gap: 0; } }", "styles.css")])).toEqual(["styles.css:1: .k-dock (also in bridge.css)"]);
   expect(pageMotion(tsx('<div className="fixed inset-0 bg-black/20 duration-(--dur-move) bg-white" />'))).toHaveLength(1);
   expect(pageSizes(tsx('<p className="[font-size:1.1rem] font-semibold" />'))).toHaveLength(1);

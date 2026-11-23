@@ -258,6 +258,99 @@ test.describe("on a phone", () => {
       console.log(`targets measured: ${seen.join(", ")}`);
     } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
   });
+
+  // Feature: on a phone the session list has the screen. The tabs and the counts scroll away with the
+  // rows; the find stays at the top, also when the list opens on a session far down it. What failed and
+  // is out of view is named at the list's foot, which stands under the rows and never over one: at every
+  // place of the scroll, a failed row is either seen whole or named.
+  test("the list has the screen: the find stays, and a failed row is seen or named", async ({ page, request }) => {
+    test.setTimeout(180_000);
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const made: string[] = [];
+    const make = async (title: string, text?: string) => {
+      const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title } })).json();
+      made.push(session.id);
+      if (text) await request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+      return session.id as string;
+    };
+    const ended = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "turn_end");
+    try {
+      // Failures every few rows of a list longer than the screen: as the list scrolls, one is out of
+      // view (so the foot names something) while another stands where the foot is.
+      const failed: string[] = [];
+      for (let i = 1; i <= 20; i++) {
+        if (i % 4 === 1) failed.push(await make(`List ${tag} failed ${i}`, "script:billing"));
+        else await make(`List ${tag} filler ${i}`, "script:say Done.");
+      }
+      for (const id of made) await expect.poll(() => ended(id), { timeout: 60_000 }).toBe(true);
+      // Opened from the session lowest in the list: its row in view, and the find above it. (A filler:
+      // a failure looked at is not news, and not named.)
+      const fillers = made.filter((id) => !failed.includes(id));
+      const rows = page.getByTestId("session-list").locator('[data-testid="session-row"]');
+      await page.goto(`/s/${fillers[0]}`);
+      await page.getByRole("button", { name: "All sessions" }).first().tap();
+      await expect(rows.first()).toBeVisible();
+      const lowest = await page.evaluate((ids) => {
+        const all = [...document.querySelectorAll<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"]')].map((r) => r.dataset.session!);
+        return ids.map((id) => [id, all.indexOf(id)] as const).filter(([, i]) => i >= 0).sort((a, b) => b[1] - a[1])[0]![0];
+      }, fillers);
+      await page.goto(`/s/${lowest}`);
+      await page.getByRole("button", { name: "All sessions" }).first().tap();
+      const current = page.locator(`[data-testid="session-list"] [data-testid="session-row"][data-session="${lowest}"]`);
+      await expect(current).toBeInViewport();
+      const find = page.getByTestId("list-find");
+      await expect(find).toBeInViewport();
+      const [f, c] = [(await find.boundingBox())!, (await current.boundingBox())!];
+      expect(c.y, "the open session's row stands under the find, not behind it").toBeGreaterThanOrEqual(f.y + f.height - 0.5);
+      await shoot(page, "phone-list-open");
+
+      // Step through the whole scroll: at each place a failed row is seen whole (nothing over it)
+      // or named at the foot, and named only then.
+      const scroller = () => current.evaluate((r) => {
+        let el: HTMLElement | null = r.parentElement;
+        while (el && !(/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight)) el = el.parentElement;
+        return el ? { max: el.scrollHeight - el.clientHeight } : { max: 0 };
+      });
+      const { max } = await scroller();
+      expect(max, "the list is longer than the screen").toBeGreaterThan(200);
+      const unseen = () => page.evaluate((ids) => {
+        const shown = new Set([...document.querySelectorAll<HTMLElement>('[data-testid="need-strip"] [data-session]')].map((b) => b.dataset.session));
+        // Past the strip's first names the rest are behind its "+N", by their titles.
+        const more = document.querySelector<HTMLElement>('[data-testid="need-strip-more"]')?.title.split(", ") ?? [];
+        const out: string[] = [];
+        for (const id of ids) {
+          const r = document.querySelector<HTMLElement>(`[data-testid="session-list"] [data-testid="session-row"][data-session="${id}"]`);
+          const named = { has: (x: string) => shown.has(x) || (!!r && more.includes(r.querySelector(".k-row-title")?.textContent ?? "")) };
+          if (!r) { if (!named.has(id)) out.push(`${id} not drawn and not named`); continue; }
+          let box: HTMLElement | null = r.parentElement;
+          while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+          const b = r.getBoundingClientRect(), v = box!.getBoundingClientRect();
+          const inside = b.top >= v.top - 0.5 && b.bottom <= v.bottom + 0.5;
+          const hit = [b.top + 2, (b.top + b.bottom) / 2, b.bottom - 2].every((y) => r.contains(document.elementFromPoint(b.left + b.width / 2, y)));
+          const where = `${r.querySelector(".k-row-title")?.textContent} at ${Math.round(b.top)}..${Math.round(b.bottom)} in ${Math.round(v.top)}..${Math.round(v.bottom)}`;
+          if (!(inside && hit) && !named.has(id)) out.push(`${where}: out of view, not named`);
+          // And the foot follows the scroll: a row clearly in view is not named (a pixel's slack at the
+          // box's edges, and half a rem under the find, whose edge is a shadow no point hits).
+          const under = document.elementFromPoint(b.left + b.width / 2, b.top - 8)?.closest(".k-find");
+          const clear = b.top >= v.top + 1 && b.bottom <= v.bottom - 1 && hit && !under;
+          if (clear && named.has(id)) out.push(`${where}: in view, named`);
+        }
+        return out;
+      }, failed);
+      for (let y = 0; y <= max + 40; y += 40) {
+        await current.evaluate((r, y) => {
+          let el: HTMLElement | null = r.parentElement;
+          while (el && !(/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight)) el = el.parentElement;
+          el!.scrollTop = y;
+        }, y);
+        await expect.poll(unseen, { timeout: 3000, message: `at ${y} px of the scroll` }).toEqual([]);
+      }
+      await expect(page.getByTestId("need-strip")).toBeVisible();
+      await shoot(page, "phone-list-foot");
+    } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  });
 });
 
 // Feature: on a phone's home, requests are answered one after another at a finger's pace. An
