@@ -166,13 +166,18 @@ export class AnthropicProvider implements Provider {
     req = { ...req, extraHeaders: req.extraHeaders ? headers : undefined };
     const sent = { ...this.headers(), accept: "application/vnd.amazon.eventstream" };
     return runEvents(codec, req, ctx, onDelta, httpEvents({
-      label: this.label, url, secrets: this.secrets, headers: sent, sign: this.signer(),
+      label: this.label, url, secrets: this.secrets, headers: sent, sign: this.signer(), maxBodyBytes: BEDROCK_MAX_BODY,
       // A broker that signs for us renews an expired credential itself: the request goes once more after it had time to.
       ...(this.auth.kind === "none" ? { onAuthFailure: async (err: ProviderError) => (EXPIRED.test(err.message) ? (await Bun.sleep(BROKER_RENEW_MS), sent) : null) } : {}),
     }, req));
   }
 }
 
+// Bedrock limits a request to 20 MB, and answers a larger one with an HTTP 500
+// ("The system encountered an unexpected error"), not a 413: every retry
+// fails the same. Read as decimal megabytes, the lower of the two readings.
+// https://platform.claude.com/docs/en/api/overview#request-size-limits
+const BEDROCK_MAX_BODY = 20_000_000;
 // A credential the broker's own source says has expired, and how long the broker gets to renew it.
 const EXPIRED = /expired/i;
 const BROKER_RENEW_MS = 1_000;

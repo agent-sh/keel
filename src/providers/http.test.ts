@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { allPages, classify, getJson, MAX_PAGES, ProviderError, streamEvents } from "./http.ts";
 import { type Wire, wireScope } from "./wiretap.ts";
+import { requestTooLarge } from "./image-limits.ts";
 
 // A stream that sends one event and then nothing is cut after the idle
 // timeout as a retryable network failure, not left hanging.
@@ -37,6 +38,26 @@ test("the wire record counts the request body in bytes", async () => {
     });
     expect(got).toBe(JSON.stringify({ text: "hello E" }).length + 3);
     expect(tap.body_bytes).toBe(got);
+  } finally {
+    server.stop(true);
+  }
+});
+
+// A host with a request size limit answers a larger request with a server
+// error, not a 413: it is refused before it is sent, as too large, so the turn
+// leaves its images out instead of sending it ten times.
+test("a request over the host's size limit is not sent and reads as too large", async () => {
+  let got = 0;
+  const server = Bun.serve({ port: 0, fetch: () => { got++; return new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }); } });
+  try {
+    const open = (maxBodyBytes: number) => (async () => { for await (const _ of streamEvents({ label: "Host", url: `http://127.0.0.1:${server.port}/`, headers: {}, body: { text: "x".repeat(2000) }, signal: new AbortController().signal, maxBodyBytes })) {} })();
+    const e = await open(1000).then(() => null, (x) => x);
+    expect(e).toBeInstanceOf(ProviderError);
+    expect(e).toMatchObject({ kind: "invalid", status: 413 });
+    expect(requestTooLarge(e)).toBe(true);
+    expect(got).toBe(0);
+    await open(10_000);
+    expect(got).toBe(1);
   } finally {
     server.stop(true);
   }

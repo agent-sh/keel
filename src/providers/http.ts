@@ -171,6 +171,10 @@ export type StreamOpts = {
   onAuthFailure?: (err: ProviderError) => Promise<Record<string, string> | null>;
   // Headers that depend on the exact body bytes and the time (AWS SigV4), made per attempt.
   sign?: (body: string, url: string) => Record<string, string>;
+  // The most bytes a request body may be on this host. A larger one is not
+  // sent: it is refused here as too large (a 413), as the host would answer it
+  // if it said so (some answer a server error instead, every time).
+  maxBodyBytes?: number;
 };
 
 // Opens the stream: one attempt. Retries belong to the engine, which reads
@@ -192,8 +196,13 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   for (let renewed = false; ; renewed = true) {
     const t0 = Date.now();
     const body = JSON.stringify(o.body);
+    const bytes = Buffer.byteLength(body);
+    if (o.maxBodyBytes && bytes > o.maxBodyBytes) {
+      const mb = (n: number) => `${Math.round(n / 100_000) / 10} MB`;
+      throw new ProviderError("invalid", `${o.label}: request_too_large: the request is ${mb(bytes)}, over the ${mb(o.maxBodyBytes)} this host takes; it was not sent`, 413);
+    }
     const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers };
-    if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: Buffer.byteLength(body), transport: "http", resent_after_auth: renewed || undefined });
+    if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: bytes, transport: "http", resent_after_auth: renewed || undefined });
     const headersMs = o.connectWaitMs && Math.min(o.connectWaitMs, streamIdleMs(o.idleMs));
     if (headersMs) guard.touch(headersMs);
     try {
