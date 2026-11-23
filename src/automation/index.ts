@@ -1,4 +1,7 @@
 import { zoned } from "../core/clock.ts";
+import { existsSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+import { asksLess, isMode } from "../safety/policy.ts";
 import { parseSince } from "../admin/timeline.ts";
 import { sessionRef } from "../admin/session-ref.ts";
 import { readsOf } from "../server/reads.ts";
@@ -496,12 +499,23 @@ export const automationRoutes: RouteModule = (deps) => {
         const b = await body(req);
         let sid = b.session_id ? String(b.session_id) : "";
         if (sid && !session(sid)) return bad("no such session", 404);
+        if (b.mode !== undefined && !isMode(b.mode)) return bad(`unknown mode: ${b.mode}`);
+        if (b.mode !== undefined && sid) return bad("mode is for a loop of its own: a session's loop runs in the session's mode");
         if (!sid) {
-          // A loop of its own: its runs go to a session made for it.
+          // A loop of its own: its runs go to a session made for it, in the folder and the
+          // permission mode it is made with (the owner's default mode when none is named).
+          const workspace = resolve(String(b.cwd || deps.workspace));
+          if (!existsSync(workspace) || !statSync(workspace).isDirectory()) return bad(`not a directory: ${workspace}`);
+          const def = perm.gate?.defaultMode();
+          // A mode that asks less than the default is a loosening: from a remote device it needs the owner's passkey.
+          if (b.mode && def && asksLess(b.mode, def) && perm.presence && !perm.presence.allows(req, "perm:new-loop")) {
+            return json({ error: "this needs your passkey from a remote device", presence: { action: "perm:new-loop" } }, 428);
+          }
           const model = b.model || (await providers.defaultModel());
           if (!model) return bad("no model is available", 409);
           await providers.resolve(model);
-          const s = store.createSession({ model, workspace: b.cwd || deps.workspace, title: `Loop: ${String(b.name || b.prompt || "").slice(0, 60)}` });
+          const s = store.createSession({ model, workspace, title: `Loop: ${String(b.name || b.prompt || "").slice(0, 60)}` });
+          if (b.mode && perm.gate) perm.gate.setPerm(s.id, { mode: b.mode });
           deps.bus.emit({ t: "session", session: s });
           sid = s.id;
         }

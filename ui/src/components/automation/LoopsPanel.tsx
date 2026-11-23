@@ -3,7 +3,12 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Check, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Copy, ExternalLink, KeyRound, Pause, Play, Plus, Repeat, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunRecord } from "../../lib/automation.ts";
-import { reportError, useStore, failed } from "../../lib/store.ts";
+import { api, reportError, useStore, failed, workspaces } from "../../lib/store.ts";
+import { useSessionState } from "../../lib/watch.ts";
+import { NEEDS } from "../../../../src/core/state-words.ts";
+import { Mark } from "../Mark.tsx";
+import { Select } from "../Select.tsx";
+import { WorkspacePicker } from "../WorkspacePicker.tsx";
 import { ago, clock, cn, fmtTokens } from "../../lib/utils.ts";
 import { Empty, IconButton } from "./bits.tsx";
 import { QUEUED, STATE_WORD } from "../../../../src/core/state-words.ts";
@@ -16,6 +21,16 @@ function RunIcon({ r }: { r: RunRecord }) {
   if (r.outcome === "incomplete") return <CircleDashed className="size-3.5 shrink-0 text-warn" aria-label="Did not finish" />;
   return <CircleAlert className="size-3.5 shrink-0 text-danger" aria-label={STATE_WORD.fail} />;
 }
+
+// What a loop's run in progress waits on from the owner (an approval, a question), in words; "" when nothing.
+// The run goes on only when they answer, so its row says so instead of "running".
+function useWaitsOnOwner(loop: LoopRecord): string {
+  const session = useStore((s) => s.sessions[loop.session_id]);
+  const st = useSessionState(session);
+  return loop.last_status === "running" && st.watch === "need" ? `waits for ${NEEDS[st.why ?? ""] ?? "an answer"} from you` : "";
+}
+
+const MODE_NAME: Record<string, string> = { ask: "Ask", "auto-edits": "Auto edits", auto: "Auto", "full-auto": "Full auto", "read-only": "Read only", plan: "Plan", reviewer: "Reviewer" };
 
 const OUTCOME: Record<string, string> = { ok: "finished", failed: "failed", incomplete: "did not finish", stopped: "stopped" };
 
@@ -77,7 +92,7 @@ function WebhookBox({ loop }: { loop: LoopRecord }) {
 
 function History({ loop }: { loop: LoopRecord }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
-  // The record changes with every run: read the history again then. An answer
+  // The record is told again with every run and every skip: read the history again then. An answer
   // to an earlier read (a slow one a newer read overtook) is not shown.
   useEffect(() => {
     let stale = false;
@@ -86,8 +101,9 @@ function History({ loop }: { loop: LoopRecord }) {
       if (!stale && autoState().loops[loop.id]) reportError(e);
     });
     return () => void (stale = true);
-  }, [loop.id, loop.runs, loop.last_status, loop.next_ms]);
+  }, [loop]);
   const session = useStore((s) => s.sessions[loop.session_id]);
+  const waits = useWaitsOnOwner(loop);
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="loop-history">
       <div className="border-b border-line px-5 py-4">
@@ -109,19 +125,26 @@ function History({ loop }: { loop: LoopRecord }) {
           {loop.max_runs ? ` · at most ${loop.max_runs} runs` : ""}
           {loop.until_ms ? ` · until ${new Date(loop.until_ms).toLocaleDateString()}` : ""}
         </p>
+        <p className="mt-0.5 flex min-w-0 gap-1.5 text-caption text-faint" data-testid="loop-where">
+          {loop.mode && <span className="shrink-0 text-muted" data-testid="loop-mode">{MODE_NAME[loop.mode] ?? loop.mode}</span>}
+          {loop.mode && session?.workspace && <span aria-hidden>·</span>}
+          {session?.workspace && <span className="truncate font-mono text-micro leading-[inherit]" title={session.workspace}>{session.workspace}</span>}
+        </p>
         <p className="mt-2 line-clamp-3 rounded-lg bg-code px-3 py-2 font-mono text-caption text-muted whitespace-pre-wrap">{loop.prompt}</p>
         {loop.kind === "webhook" && <WebhookBox loop={loop} />}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {runs?.length === 0 && <Empty>No runs yet.</Empty>}
-        {runs?.map((r) => (
-          <div key={r.id} className="flex items-start gap-2.5 rounded-lg px-3 py-2 text-ui hover:bg-hover" data-testid="loop-run">
-            <span className="mt-0.5"><RunIcon r={r} /></span>
+        {runs?.map((r) => {
+          const waiting = !!waits && !r.skip_reason && !!r.started_ms && !r.ended_ms;
+          return (
+          <div key={r.id} className="flex items-start gap-2.5 rounded-lg px-3 py-2 text-ui hover:bg-hover" data-testid="loop-run" data-waits={waiting || undefined}>
+            <span className="mt-0.5">{waiting ? <span className="grid size-3.5 place-items-center"><Mark w="need" /></span> : <RunIcon r={r} />}</span>
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
                 <span>{clock(r.started_ms ?? r.due_ms, { date: true, seconds: true })}</span>
-                <span className="text-caption text-faint">
-                  {r.skip_reason ? "not run" : r.ended_ms && r.started_ms ? `${r.outcome ? `${OUTCOME[r.outcome]} · ` : ""}${((r.ended_ms - r.started_ms) / 1000).toFixed(1)}s` : r.started_ms ? "running" : `${QUEUED.toLowerCase()} behind the session's turn`}
+                <span className={cn("text-caption", waiting ? "font-medium text-accent" : "text-faint")}>
+                  {waiting ? waits : r.skip_reason ? "not run" : r.ended_ms && r.started_ms ? `${r.outcome ? `${OUTCOME[r.outcome]} · ` : ""}${((r.ended_ms - r.started_ms) / 1000).toFixed(1)}s` : r.started_ms ? "running" : `${QUEUED.toLowerCase()} behind the session's turn`}
                 </span>
                 {r.usage && r.usage.calls > 0 && (
                   <span className="ml-auto text-micro text-faint tabular-nums">
@@ -136,7 +159,8 @@ function History({ loop }: { loop: LoopRecord }) {
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -150,6 +174,18 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
   const [signed, setSigned] = useState(true);
   const [push, setPush] = useState(false);
   const [keys, setKeys] = useState<{ hook_key: string; hook_secret?: string } | null>(null);
+  // Where its runs work and what they may do without asking, said before it is made: a run
+  // that asks waits for the owner, and the next runs are skipped until they answer.
+  const [cwd, setCwd] = useState("");
+  const [mode, setMode] = useState("");
+  const [modes, setModes] = useState<{ id: string; name: string; summary?: string }[]>([]);
+  useEffect(() => {
+    workspaces().then((r) => setCwd((c) => c || (r.recent[0]?.path ?? r.default))).catch(reportError);
+    api<{ default_mode: string; modes: { id: string; name: string; summary?: string }[] }>("/api/permissions/settings")
+      .then((r) => { setModes(r.modes); setMode((m) => m || r.default_mode); })
+      .catch(reportError);
+  }, []);
+  const asks = mode === "ask" || mode === "auto-edits" || mode === "plan";
   const isHook = schedule.trim().toLowerCase() === "webhook";
   const field = "w-full rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none focus:border-line-strong placeholder:text-faint";
   return (
@@ -158,9 +194,11 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
       data-testid="new-loop"
       onSubmit={async (e) => {
         e.preventDefault();
+        // The folder picker's path box is a form of its own, in a portal: its Enter is not this form's.
+        if (e.target !== e.currentTarget) return;
         setErr("");
         try {
-          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(isHook ? { signed, ...(push ? { push } : {}) } : {}) });
+          const l = await auto.createLoop({ name: name || undefined, schedule, prompt, ...(cwd ? { cwd } : {}), ...(mode ? { mode } : {}), ...(isHook ? { signed, ...(push ? { push } : {}) } : {}) });
           if (l.hook_key) setKeys({ hook_key: l.hook_key, hook_secret: l.hook_secret });
           else onDone(l.id);
         } catch (x) {
@@ -170,6 +208,13 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
     >
       <h3 className="text-base font-semibold">New loop</h3>
       <p className="-mt-2 text-caption text-muted">Runs in a session of its own on the default model. Use /loop in a session's composer to loop there.</p>
+      <div className="flex flex-wrap items-center gap-2" data-testid="new-loop-where">
+        <WorkspacePicker value={cwd} onChange={setCwd} />
+        <Select data-testid="new-loop-mode" aria-label="Permission mode" value={mode} onChange={(e) => setMode(e.target.value)} className="h-8 w-40 rounded-lg border border-line bg-bg px-2.5 text-caption text-fg outline-none focus:border-line-strong">
+          {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </Select>
+      </div>
+      {asks && <p className="-mt-1 text-caption text-faint" data-testid="new-loop-asks">In this mode a run that edits or runs a command waits for your approval, and the runs due meanwhile are skipped.</p>}
       <input className={field} placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
       <input className={cn(field, "font-mono")} placeholder="5m, 2h, daily, weekdays 09:30, 0 9 * * 1-5, auto, webhook" value={schedule} onChange={(e) => setSchedule(e.target.value)} data-testid="new-loop-schedule" />
       <textarea className={cn(field, "min-h-28 resize-y")} placeholder="What to do each run" value={prompt} onChange={(e) => setPrompt(e.target.value)} data-testid="new-loop-prompt" />
@@ -191,6 +236,39 @@ function NewLoop({ onDone }: { onDone: (id: string) => void }) {
         Create loop
       </button>
     </form>
+  );
+}
+
+function LoopItem({ l, picked, onPick }: { l: LoopRecord; picked: boolean; onPick: () => void }) {
+  const waits = useWaitsOnOwner(l);
+  const act = (p: Promise<unknown>) => p.catch(reportError);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-testid="loop-item"
+      data-waits={waits ? "" : undefined}
+      onClick={onPick}
+      onKeyDown={(e) => e.key === "Enter" && onPick()}
+      className={cn("group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-2 outline-none hover:bg-hover", picked && "k-picked")}
+    >
+      {waits ? <span className="grid size-2 shrink-0 place-items-center"><Mark w="need" /></span> : <span className={cn("size-2 shrink-0 rounded-full", l.last_status === "running" ? "bg-brass animate-pulse-dot" : l.enabled ? (l.last_status === "failed" ? "bg-danger" : "bg-ok") : "bg-line-strong")} />}
+      <div className="min-w-0 flex-1">
+        <div className={cn("truncate text-ui", !l.enabled && "text-muted")}>{l.name}</div>
+        <div className="truncate text-micro text-faint" data-testid="loop-item-state">
+          {waits ? <span className="font-medium text-accent">{waits}</span> : <>{l.schedule_text} · {l.enabled ? (l.next_ms ? inMs(l.next_ms) : l.kind === "webhook" ? "on call" : "running") : (l.disabled_reason ?? "paused")}</>}
+          {l.last_ms ? ` · ran ${ago(l.last_ms)}` : ""}
+        </div>
+      </div>
+      <span className="hidden items-center group-hover:flex">
+        {/* A run that waits for the owner goes on when they answer: another run would only be refused. */}
+        {!waits && <IconButton title="Run now" onClick={() => act(auto.runLoop(l.id))}><Play className="size-3.5" /></IconButton>}
+        <IconButton title={l.enabled ? "Turn off" : "Turn on"} onClick={() => act(auto.patchLoop(l.id, { enabled: !l.enabled }))}>
+          {l.enabled ? <Pause className="size-3.5" /> : <Repeat className="size-3.5" />}
+        </IconButton>
+        <IconButton title="Delete" danger onClick={() => act(auto.deleteLoop(l.id))}><Trash2 className="size-3.5" /></IconButton>
+      </span>
+    </div>
   );
 }
 
@@ -222,33 +300,7 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
             <div className="flex w-80 shrink-0 flex-col border-r border-line">
               <div className="min-h-0 flex-1 overflow-y-auto p-2" data-testid="loop-list">
                 {loops.length === 0 && <Empty>No loops yet.</Empty>}
-                {loops.map((l) => (
-                  <div
-                    key={l.id}
-                    role="button"
-                    tabIndex={0}
-                    data-testid="loop-item"
-                    onClick={() => setSel(l.id)}
-                    onKeyDown={(e) => e.key === "Enter" && setSel(l.id)}
-                    className={cn("group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-2 outline-none hover:bg-hover", current?.id === l.id && "k-picked")}
-                  >
-                    <span className={cn("size-2 shrink-0 rounded-full", l.last_status === "running" ? "bg-brass animate-pulse-dot" : l.enabled ? (l.last_status === "failed" ? "bg-danger" : "bg-ok") : "bg-line-strong")} />
-                    <div className="min-w-0 flex-1">
-                      <div className={cn("truncate text-ui", !l.enabled && "text-muted")}>{l.name}</div>
-                      <div className="truncate text-micro text-faint">
-                        {l.schedule_text} · {l.enabled ? (l.next_ms ? inMs(l.next_ms) : l.kind === "webhook" ? "on call" : "running") : (l.disabled_reason ?? "paused")}
-                        {l.last_ms ? ` · ran ${ago(l.last_ms)}` : ""}
-                      </div>
-                    </div>
-                    <span className="hidden items-center group-hover:flex">
-                      <IconButton title="Run now" onClick={() => act(auto.runLoop(l.id))}><Play className="size-3.5" /></IconButton>
-                      <IconButton title={l.enabled ? "Turn off" : "Turn on"} onClick={() => act(auto.patchLoop(l.id, { enabled: !l.enabled }))}>
-                        {l.enabled ? <Pause className="size-3.5" /> : <Repeat className="size-3.5" />}
-                      </IconButton>
-                      <IconButton title="Delete" danger onClick={() => act(auto.deleteLoop(l.id))}><Trash2 className="size-3.5" /></IconButton>
-                    </span>
-                  </div>
-                ))}
+                {loops.map((l) => <LoopItem key={l.id} l={l} picked={current?.id === l.id} onPick={() => setSel(l.id)} />)}
               </div>
               <div className="border-t border-line p-2">
                 <button

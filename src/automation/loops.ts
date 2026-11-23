@@ -8,6 +8,9 @@ import * as failures from "./failures.ts";
 import { stopSays } from "../core/stoppers.ts";
 import { loopLine, sayAt } from "../admin/daemon-log.ts";
 import * as channels from "./channels.ts";
+import * as perm from "../server/routes/permissions.ts";
+import { sessionState } from "./state.ts";
+import { NEEDS } from "../core/state-words.ts";
 
 // Loops: a prompt that runs again in its session on an interval, a calendar
 // schedule, its own pace (the model names the next delay), or a webhook. The
@@ -42,6 +45,7 @@ export type LoopRecord = {
   // A webhook loop whose requests are events pushed into its session (channels.ts), read
   // at the working turn's next step, instead of runs of its prompt after the turn ends.
   push?: boolean;
+  mode?: string; // the permission mode its runs work in: its session's, as it is now
 };
 
 export type RunRecord = {
@@ -148,6 +152,8 @@ function toRec(r: Row): LoopRecord {
   const { hook_hash, hook_secret, fallback_used, webhook_pending, last_hook_ms, push, ...rest } = r;
   void hook_hash; void fallback_used; void webhook_pending; void last_hook_ms;
   const rec: LoopRecord = { ...rest, enabled: !!r.enabled };
+  const mode = perm.gate?.perm(r.session_id).mode;
+  if (mode) rec.mode = mode;
   if (r.kind === "webhook") { rec.signed = !!hook_secret; rec.push = !!push; }
   // A schedule stored before the parser refused it lists no times (the scheduler turns the loop off).
   if (r.kind === "cron") try { rec.next_runs = nextRuns(r.schedule, Date.now(), 3, r.tz ?? undefined); } catch { rec.next_runs = []; }
@@ -358,6 +364,9 @@ function skip(l: LoopRecord, due: number, reason: string) {
     .run(Bun.randomUUIDv7(), l.id, l.session_id, due, Date.now(), reason);
   activity.record("loop", "skip", l.session_id, `Loop "${l.name}" did not run: ${reason}`, { loop_id: l.id });
   sayAt({ session: l.session_id }, loopLine({ name: l.name, said: `skipped: ${reason}`, title: D().store.session(l.session_id)?.title }));
+  // Told to the pages too: a history on screen reads its runs again and shows the skip with its reason.
+  const rec = get(l.id);
+  if (rec) emit("loop", rec);
 }
 
 function runText(l: LoopRecord, extra?: string): string {
@@ -410,6 +419,13 @@ function release(sessionId: string) {
   flush(sessionId);
 }
 
+// Why a run was not started over the one before it: a run that waits on the owner (an
+// approval, a question) says so, since it goes on only when they answer.
+function stillGoing(s: Parameters<typeof sessionState>[0]): string {
+  const st = sessionState(s);
+  return st.watch === "need" ? `the previous run was still waiting for ${NEEDS[st.why ?? ""] ?? "an answer"} from you` : "the previous run was still going";
+}
+
 // Starts one run now, or as soon as the session's running turn ends.
 export function start(l: LoopRecord, due: number, opts: { note?: string; body?: string; manual?: boolean } = {}): RunRecord | undefined {
   const s = D().store.session(l.session_id);
@@ -419,7 +435,7 @@ export function start(l: LoopRecord, due: number, opts: { note?: string; body?: 
   // for it, as for a running turn, while the engine may still decide.
   let cut = !D().engine.isRunning(l.session_id) && lastTurn(l.session_id) === "cut";
   if (cut && !deciding()) { release(l.session_id); cut = false; }
-  if (openRun(l.session_id)?.loop_id === l.id) { skip(l, due, "the previous run was still going"); return undefined; }
+  if (openRun(l.session_id)?.loop_id === l.id) { skip(l, due, stillGoing(s)); return undefined; }
   if (queuedRun(l.id)) { skip(l, due, "a run was already waiting for the session's turn to end"); return undefined; }
   const runId = Bun.randomUUIDv7();
   const busy = cut || D().engine.isRunning(l.session_id);
@@ -626,7 +642,11 @@ export function tick() {
 export function runNow(id: string): LoopRecord {
   const l = get(id);
   if (!l) throw new Error("no such loop");
-  if (openRun(l.session_id)?.loop_id === l.id || queuedRun(l.id)) throw Object.assign(new Error("the loop is already running"), { status: 409 });
+  if (openRun(l.session_id)?.loop_id === l.id || queuedRun(l.id)) {
+    const s = D().store.session(l.session_id);
+    const why = s && openRun(l.session_id)?.loop_id === l.id ? stillGoing(s).replace(/^the previous run was still/, "its run is still") : "";
+    throw Object.assign(new Error(why.startsWith("its run is still waiting") ? `the loop did not run again: ${why}` : "the loop is already running"), { status: 409 });
+  }
   start(l, Date.now(), { manual: true });
   return get(id)!;
 }

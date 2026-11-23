@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { HAIKU, scriptBash, shoot } from "./shots.ts";
 
 // Feature: `/loop 10m <prompt>` in the composer makes a loop that runs now and
 // again on its interval; the Loops panel lists it with its run history; it can
@@ -109,4 +111,58 @@ test("loops: an edit keeps the limits of a new loop", async ({ request }) => {
   expect((await (await patch({ max_runs: null })).json()).max_runs).toBeNull();
   expect((await (await patch({ prompt: "y".repeat(8000) })).json()).prompt).toHaveLength(8000);
   await request.delete(`/api/loops/${loop.id}`);
+});
+
+// A loop made in the panel says where its runs work and in what permission mode, the owner's
+// default mode unless another is picked. A run that waits on the owner (an approval) says so on
+// its row and in its history, the owner is alerted, and a run due meanwhile says why it was skipped.
+test("loops: a panel loop names its folder and mode, and a run waiting on you says so", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: { id: string }) => m.id === STAND_IN), "requires the scripted provider");
+  const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `loop-where-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  expect((await request.put("/api/permissions/settings", { data: { default_mode: "plan" } })).ok()).toBe(true);
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Loop host" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("loops-button").click();
+  await page.getByTestId("new-loop-button").click();
+  // The owner's default mode is the one offered.
+  await expect(page.getByTestId("new-loop-mode")).toHaveText("Plan");
+  await page.getByTestId("new-loop-where").getByTestId("workspace-picker").click();
+  await page.getByPlaceholder(/Type a path/).fill(ws);
+  await page.getByPlaceholder(/Type a path/).press("Enter");
+  await page.getByTestId("use-folder").click();
+  await expect(page.getByTestId("new-loop")).toBeVisible();
+  await page.getByTestId("new-loop-mode").click();
+  await page.getByRole("option", { name: "Ask", exact: true }).click();
+  await expect(page.getByTestId("new-loop-asks")).toBeVisible();
+  await page.getByTestId("new-loop-schedule").fill("1m");
+  await page.getByTestId("new-loop-prompt").fill(`Touch a file.\n${scriptBash("touch loop-ran.txt")}`);
+  await shoot(page, "loops-06-new-where");
+  await page.getByRole("button", { name: "Create loop" }).click();
+  await expect(page.getByTestId("loop-mode")).toHaveText("Ask");
+  await expect(page.getByTestId("loop-where")).toContainText(ws);
+  const loop = (await (await request.get("/api/loops")).json()).loops.find((l: any) => l.prompt.startsWith("Touch a file."));
+  expect((await (await request.get(`/api/sessions/${loop.session_id}`)).json()).session.workspace).toBe(ws);
+  expect((await (await request.get(`/api/sessions/${loop.session_id}/permissions`)).json()).perm.mode).toBe("ask");
+
+  // Its first run asks for the command: the row says it waits for the owner, who is alerted.
+  const item = page.getByTestId("loop-item").filter({ hasText: "Touch a file." });
+  await item.hover();
+  await item.getByTitle("Run now").click();
+  await expect(item.getByTestId("loop-item-state")).toContainText("waits for an approval from you", { timeout: 30_000 });
+  await expect(page.locator('[data-testid="loop-run"][data-waits]')).toContainText("waits for an approval from you");
+  await expect.poll(async () => (await (await request.get("/api/alerts")).json()).alerts.some((a: any) => a.kind === "approval" && a.session_id === loop.session_id)).toBe(true);
+  // Another run by hand is not offered; the run due meanwhile (a minute after the loop was made)
+  // is skipped, and says what the run before it waits on.
+  await item.hover();
+  await expect(item.getByTitle("Run now")).toHaveCount(0);
+  await expect(page.getByTestId("loop-run-detail").first()).toHaveText("the previous run was still waiting for an approval from you", { timeout: 100_000 });
+  await shoot(page, "loops-07-waits-on-you");
+
+  for (const l of (await (await request.get("/api/loops")).json()).loops) await request.delete(`/api/loops/${l.id}`);
+  const errors = (await (await request.get("/api/errors")).json()).errors;
+  expect(errors.length, JSON.stringify(errors.slice(0, 3))).toBe(errorsBefore);
 });
