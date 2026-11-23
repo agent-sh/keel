@@ -30,6 +30,7 @@ export type Simple = { words: string[]; text: string; redirects: boolean; nested
 export type Made = { one: boolean; lead: string; subs: Simple[][]; vars: { name: string; at: number; len: number }[]; rest: boolean };
 
 const OPS = ["&&", "||", "|&", ";;", ";", "|", "&", "\n"];
+const OPS_START = "&|;\n"; // the characters an operator starts with: most characters start none
 // A variable's name that neither the shell nor a program reads for itself: small letters, and not one of KEPT.
 const PLAIN = /^[a-z_][a-z0-9_]*$/;
 // Leading words that are syntax, not commands.
@@ -338,7 +339,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
       text += cmd.slice(i, j); i = j - 1;
       continue;
     }
-    const op = OPS.find((o) => cmd.startsWith(o, i));
+    const op = OPS_START.includes(c) ? OPS.find((o) => cmd.startsWith(o, i)) : undefined;
     if (op) {
       flushCmd(op);
       i += op.length - 1;

@@ -4,6 +4,7 @@
 // and no mode lets run on its own (never allowed). Pure: the gate supplies the
 // repository facts through `look`.
 import { isAbsolute, resolve } from "node:path";
+import { PATH_MAX } from "./risk-words.ts";
 import { highRisk, isReadOnly, lineRisk, type Simple } from "./shell.ts";
 
 // What the gate reads of a repository, lazily (each is one local git command,
@@ -49,12 +50,17 @@ export function located(parts: Simple[], cwd: string, home: string): { s: Simple
       if (s.nested || w[0] === "popd" || arg === "-" || (arg !== undefined && !literal(arg))) dir = null;
       else if (dir !== null) dir = arg === undefined ? home : resolve(dir, expand(arg, home));
       else if (arg && isAbsolute(expand(arg, home))) dir = resolve(expand(arg, home));
+      // (A folder longer than a path can be is none, as in dirsOf: a chain of relative cds is not resolved against
+      // a longer and longer one, which took the square of the line's length.)
+      if (dir !== null && dir.length > PATH_MAX) dir = null;
     }
     return { s, dir: here };
   });
 }
 
 const afterEnv = (w: string[]) => {
+  // (Most commands set nothing in front of them: their words as they are, with no copy.)
+  if (!w.length || !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0]!)) return w;
   let i = 0;
   while (i < w.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i]!)) i++;
   return w.slice(i);
@@ -144,6 +150,8 @@ export function preAllow(command: Simple[], cwd: string, home: string, look: Loo
   if (lineRisk(command)) return null;
   const parts = located(command, cwd, home);
   const why: string[] = [];
+  // How far the parts before are known to make no change (read only, or a cd): each is read once.
+  let checked = 0;
   for (let i = 0; i < parts.length; i++) {
     const { s, dir } = parts[i]!;
     if (!highRisk(s)) continue;
@@ -169,7 +177,8 @@ export function preAllow(command: Simple[], cwd: string, home: string, look: Loo
     }
     // Discarding local changes when there are none: only when nothing before
     // it on the line could have made some.
-    const earlier = parts.slice(0, i).every((p) => isReadOnly(p.s) || afterEnv(p.s.words)[0] === "cd");
+    for (; checked < i; checked++) if (!isReadOnly(parts[checked]!.s) && afterEnv(parts[checked]!.s.words)[0] !== "cd") break;
+    const earlier = checked >= i;
     const discard = (g.sub === "reset" && g.args.includes("--hard")) || g.sub === "checkout" || g.sub === "restore";
     if (discard && earlier && f.dirty() === 0) { why.push(`${g.sub} has no uncommitted change to discard`); continue; }
     if (g.sub === "clean" && earlier && !g.args.some((a) => /^-[a-zA-Z]*[xX]/.test(a)) && f.untracked() === 0) { why.push("clean has no untracked file to delete"); continue; }

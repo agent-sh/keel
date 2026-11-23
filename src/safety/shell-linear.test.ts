@@ -180,6 +180,31 @@ test("a line of many commands that change folder, write, run elsewhere or delete
   expect(wrong).toEqual([]);
 }, 120_000);
 
+// Over PARTS_MAX the line is high risk at once, but what is read before that count is taken (the checks that
+// refuse a line in every mode) reads it once too: 50,000 parts of `cd dN && echo x > f` took 100 times what
+// 5,000 take, each `cd` resolved against a folder every one before it made longer. Ten times the parts in linear
+// time is ten times the time, give or take what the processor's caches do with a line ten times larger; reading
+// the line again for every part is a hundred. The bound is fifteen.
+test("a line of more commands than the rules read is refused in step with its length", () => {
+  const facts = (mode: "ask" | "full-auto") => ({ mode, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] });
+  const line = (n: number) => Array.from({ length: n }, (_, k) => `cd d${k} && echo x > f`).join("; ");
+  const wrong: string[] = [];
+  for (const mode of ["ask", "full-auto"] as const) {
+    // (Best of five, each after a collection: what one try left behind is not counted to the next. A try within
+    // `bound` needs no other, and one three times past it says enough.)
+    const run = (n: number, bound = 0) => {
+      const command = line(n);
+      let b = Infinity, d: ReturnType<typeof decide> | undefined;
+      for (let k = 0; k < 5 && (k === 0 || !(b <= bound || (bound && b > 3 * bound))); k++) { Bun.gc(true); const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); b = Math.min(b, performance.now() - t); }
+      if (!(d && "ask" in d && d.ask.risk === "high")) wrong.push(`${mode}: ${n} parts: not high risk`);
+      return b;
+    };
+    const small = run(5_000), big = run(50_000, 15 * small + 20);
+    if (big > 15 * small + 20) wrong.push(`${mode}: 5,000 parts ${small.toFixed(0)} ms, 50,000 parts ${big.toFixed(0)} ms`);
+  }
+  expect(wrong).toEqual([]);
+}, 120_000);
+
 // The disk's answers are asked off the loop, and what is read there is bounded too: a repository's own
 // .gitmodules of 100 KB of blank lines held the loop 2.7 seconds for every delete inside the folder.
 test("a repository's own files do not hold the loop while a delete is judged", async () => {
