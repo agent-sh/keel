@@ -15,7 +15,6 @@ export const MarkDot = ({ m, label }: { m: Mark; label?: string }) => <span clas
 export const tilde = (p: string) => p.replace(/^\/home\/[^/]+/, "~").replace(/^\/Users\/[^/]+/, "~");
 // A long path keeps its end, where the names that tell folders apart are.
 export const tail = (p: string, n = 34) => { const t = tilde(p); return t.length <= n ? t : `…${t.slice(t.length - n + 1)}`; };
-export const kb = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(n < 10_240 ? 1 : 0)} KB`);
 export const tok = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`);
 
 // The folder project entries are seen from, shared by every page while Settings is open.

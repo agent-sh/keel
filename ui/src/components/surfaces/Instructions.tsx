@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, reportError } from "../../lib/store.ts";
 import { navigate } from "../../lib/ui.ts";
-import { Blank, FileEditor, FolderLine, kb, Ledger, ReaderHead, Seg, tilde, tok, useFolder, type Mark } from "./kit.tsx";
+import { fmtSize } from "../../lib/utils.ts";
+import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, Seg, tilde, tok, useFolder, type Mark } from "./kit.tsx";
 
 type File = { path: string; scope: "owner" | "parent" | "folder"; text: string; bytes: number; loaded: string; loaded_tokens: number; imports: boolean; truncated: boolean; trust: string | null };
 type View = { cwd: string; files: File[]; create: { path: string; scope: "owner" | "folder" }[] };
@@ -45,7 +46,7 @@ export default function Instructions() {
               path={file.path}
               right={file.imports || file.truncated ? <Seg label="Show" value={as} onChange={setAs} options={[["file", "The file"], ["loaded", "As loaded"]]} /> : undefined}
               facts={[
-                ["Size", kb(file.bytes)],
+                ["Size", fmtSize(file.bytes)],
                 ["In the prompt", `~${tok(file.loaded_tokens)} tokens`],
                 ...(file.imports ? [["Imports", "@ lines brought in"] as [string, string]] : []),
                 ...(file.truncated ? [["Cut", "at 40,000 characters"] as [string, string]] : []),

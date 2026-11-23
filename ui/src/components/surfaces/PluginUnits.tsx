@@ -5,6 +5,7 @@
 import { ArrowUpCircle, KeyRound, PackagePlus, Save, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, failed } from "../../lib/store.ts";
+import { fmtSize } from "../../lib/utils.ts";
 import { Select } from "../Select.tsx";
 import { MarkDot, ReaderHead, tail, tilde, Toggle, type Mark } from "./kit.tsx";
 
@@ -37,7 +38,6 @@ type MarketView = { kind: "marketplace"; token: string; input: string; name: str
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 // Where a plugin comes from, as the owner reads it: a local repository by its folder.
 export const sourceLabel = (s: string) => (s.startsWith("file://") ? `${tilde(s.slice(7))} (git)` : tilde(s));
-const size = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`);
 export const unitMark = (u: UnitView): Mark => (!u.enabled ? "off" : u.waiting?.length ? "need" : u.mcp.some((m) => m.state === "error") ? "fail" : u.mcp.some((m) => m.state === "connecting") ? "work" : "on");
 export const unitBrings = (u: { skills: unknown[]; commands: unknown[]; agents: unknown[]; hooks: unknown[]; mcp: unknown[] }) =>
   [[u.skills.length, "skill"], [u.commands.length, "command"], [u.agents.length, "agent"], [u.hooks.length, "hook"], [u.mcp.length, "MCP server"]].filter(([n]) => n).map(([n, w]) => plural(n as number, w as string)).join(", ") || "nothing Keel runs";
@@ -233,7 +233,7 @@ const planHead = (p: PlanView, extra: [string, ReactNode][] = []) => (
     title={p.id}
     desc={p.description ?? "A plugin, read and not yet installed."}
     path={sourceLabel(p.input)}
-    facts={[["Version", p.update ? `${p.update.from} to ${p.version}` : p.version], ...(p.author ? [["Author", p.author] as [string, string]] : []), ["Brings", unitBrings(p)], ["Size", size(p.bytes)], ...extra]}
+    facts={[["Version", p.update ? `${p.update.from} to ${p.version}` : p.version], ...(p.author ? [["Author", p.author] as [string, string]] : []), ["Brings", unitBrings(p)], ["Size", fmtSize(p.bytes)], ...extra]}
   >
     <ul className="k-plain-list mt-2.5" data-testid="plan-fetched">{p.fetched.map((f) => <li key={f}>{f.replace(/(folder |from )(\/\S+)/, (_m, w, path) => `${w}${tilde(path)}`)}</li>)}</ul>
   </ReaderHead>

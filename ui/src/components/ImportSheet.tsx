@@ -13,7 +13,7 @@ import { api, reportError, failed } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { takeOver, TOOL } from "./TakeOver.tsx";
 import { noteRows, OriginalStrip, ResumeCard, useStopped, type Intent, type Original, type Wait } from "./ResumeFrom.tsx";
-import { ago, cn } from "../lib/utils.ts";
+import { ago, cn, fmtSize } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { Seg, tabId } from "./Seg.tsx";
 import { OwnerWords } from "./Words.tsx";
@@ -46,7 +46,6 @@ export function ImportOverlay() {
 }
 
 
-const size = (n: number) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
 const home = (p?: string) => (p ?? "").replace(/^\/home\/[^/]+/, "~");
 
 function Stat({ n, label }: { n: number; label: string }) {
@@ -535,7 +534,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                       </div>
                       <div className="mt-0.5 flex gap-2 text-micro text-faint">
                         <span className="min-w-0 flex-1 truncate">{home(r.cwd)}</span>
-                        <span className="shrink-0 tabular-nums">{size(r.size_bytes)}</span>
+                        <span className="shrink-0 tabular-nums">{fmtSize(r.size_bytes)}</span>
                         <span className="shrink-0">{ago(r.updated_ms)}</span>
                       </div>
                     </button>
