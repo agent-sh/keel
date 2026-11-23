@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS spans (
 CREATE INDEX IF NOT EXISTS spans_trace ON spans(trace_id, start_ms);
 CREATE INDEX IF NOT EXISTS spans_session ON spans(session_id, start_ms);
 CREATE INDEX IF NOT EXISTS spans_start ON spans(start_ms);
+-- The few spans still running: a start closes the ones the daemon before it left, without reading every span.
+CREATE INDEX IF NOT EXISTS spans_running ON spans(start_ms) WHERE status = 'running';
 CREATE TABLE IF NOT EXISTS spans_owed (span_id TEXT PRIMARY KEY, first INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS trace_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;

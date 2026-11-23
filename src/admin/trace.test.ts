@@ -313,3 +313,17 @@ test("the spans a kill left running are owed to the collector until it takes the
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A start closes the spans the daemon before it left running. The store keeps
+// two weeks of spans, so finding those few reads an index of them alone, not
+// every span.
+test("a start finds the spans left running by an index of them alone", () => {
+  const { store, close } = tracer();
+  try {
+    const plan = (sql: string) => store.db.query<{ detail: string }, [number]>(`EXPLAIN QUERY PLAN ${sql}`).all(0).map((r) => r.detail).join("; ");
+    expect(plan("SELECT span_id FROM spans WHERE status = 'running' AND start_ms < ? ORDER BY start_ms")).toContain("USING INDEX spans_running");
+    expect(plan("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, MAX(start_ms, ?)) WHERE status = 'running'")).toContain("USING INDEX spans_running");
+  } finally {
+    close();
+  }
+});
