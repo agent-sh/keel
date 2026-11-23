@@ -10,6 +10,7 @@ import { name, unwrap } from "./risk-words.ts";
 // `unknown`: the parser could not account for it, so it is never a read.
 // `heredoc`: a line of a here-document read as a script, for the risk rules
 // alone: it runs only if the command it feeds runs it, and that one is judged.
+// `doc`: on the first line of a here-document, its text as written
 // A redirect is kept wherever it stands: one after a group, a loop or a
 // conditional, or with no command at all, is a part with no words.
 // `dyn`: the words (by index) an expansion makes ($x, $(...), {a,b}), so what
@@ -19,7 +20,7 @@ import { name, unwrap } from "./risk-words.ts";
 // ends it when that is not `;` or a newline. `flow`: a loop, a conditional, a
 // group or an assigning expansion stands before it in the line, so a variable
 // may not hold what the line's first words gave it.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; sep?: string; flow?: true };
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; doc?: string; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; sep?: string; flow?: true };
 
 // What is known of a word an expansion makes. `one`: it stays one word (every
 // expansion in it is inside double quotes, and no glob or brace is). `lead`:
@@ -235,7 +236,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
         cur = mine;
       }
       const script = splitCommand(cmd.slice(first, last));
-      if (script) out.push(...script.map((s) => ({ ...s, nested: true as const, heredoc: true as const })));
+      // (The first line's part keeps the text as written, for a rule that reads it as code: python3 - <<EOF.)
+      if (script) out.push(...script.map((s, k) => ({ ...s, nested: true as const, heredoc: true as const, ...(k === 0 ? { doc: cmd.slice(first, last) } : {}) })));
     }
     docs = [];
     return p;
