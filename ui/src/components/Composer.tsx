@@ -25,6 +25,7 @@ import { cn, fmtSize, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
+import type { ModelPick } from "./ModelMenu.tsx";
 import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
 import { SETTLE_MS } from "../lib/settle.ts";
@@ -102,7 +103,8 @@ type ComposerProps = {
   model: string;
   // A switch that asks first (the cache warning) returns its promise: until it
   // settles nothing is sent, so a message never leaves on the model being left.
-  onModel: (id: string) => unknown;
+  // `pick`: the effort set on the model's row (a session's picker sets both).
+  onModel: (id: string, pick?: ModelPick) => unknown;
   workspace?: string; // the folder @-mentions search
   // Why nothing can be sent now (the place picked for a new session does not
   // answer): Enter says it and the draft stays in the box.
@@ -170,6 +172,14 @@ const SessionComposer = memo(function SessionComposer({
     if (modelSignal !== lastSignal.current && focus) setPickerSignal((n) => n + 1);
     lastSignal.current = modelSignal;
   }, [modelSignal]);
+  // The effort menu's key opens it in the box that has the focus, as the model's does.
+  const effortSignal = useUI((s) => s.effortMenu);
+  const [effortOpen, setEffortOpen] = useState(0);
+  const lastEffort = useRef(effortSignal);
+  useEffect(() => {
+    if (effortSignal !== lastEffort.current && focus) setEffortOpen((n) => n + 1);
+    lastEffort.current = effortSignal;
+  }, [effortSignal]);
   const seed = useUI((s) => (s.composerSeed && s.composerSeed.session === session?.id ? s.composerSeed : null)); // only this box's
   const connected = useStore((s) => s.connected);
   const synced = useStore((s) => s.synced);
@@ -178,8 +188,8 @@ const SessionComposer = memo(function SessionComposer({
   const pick = useRef(onModel);
   pick.current = onModel;
   // One function for the box's life: the model list is not drawn again at every key.
-  const pickModel = useMemo(() => (id: string) => {
-    const r = pick.current(id);
+  const pickModel = useMemo(() => (id: string, p?: ModelPick) => {
+    const r = pick.current(id, p);
     if (!(r instanceof Promise)) return;
     setSwitching(true);
     r.finally(() => setSwitching(false));
@@ -1036,9 +1046,9 @@ const SessionComposer = memo(function SessionComposer({
               <Paperclip className="size-4" />
             </button>
             <FileInput at={fileInput} take={takeFiles} />
-            <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} />
+            <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} session={sid && !splitId(sid)?.machine ? sid : undefined} />
           </span>
-          {sid && <Pickers.Effort sessionId={sid} />}
+          {sid && <Pickers.Effort sessionId={sid} openSignal={effortOpen} />}
           {sid && <Pickers.Speed sessionId={sid} />}
           {sid && <Pickers.Fallback sessionId={sid} />}
           {model && <Pickers.Limit model={model} />}

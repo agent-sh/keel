@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useRef, useState, memo } from "react";
 import { useStore, ensureModels, reportError } from "../lib/store.ts";
 import { usePeerModels } from "../lib/peer-models.ts";
 import { cn } from "../lib/utils.ts";
+import type { ModelPick } from "./ModelMenu.tsx";
 
 const ModelMenu = lazy(() => import("./ModelMenu.tsx").then((m) => ({ default: m.ModelMenu })));
 
@@ -37,7 +38,8 @@ export function TriggerLabel({ label, any, value, placeholder }: { label?: strin
 // after the page; until then the same trigger stands in, and a click on it
 // opens the menu once it is there. `openSignal` opens it when it changes.
 // `machine`: the session is that daemon's, and its listing is the one offered.
-export const ModelPicker = memo(function ModelPicker(props: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string }) {
+// `session`: the menu sets that session's effort with its model (ModelMenu).
+export const ModelPicker = memo(function ModelPicker(props: { value: string; onChange: (id: string, pick?: ModelPick) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string; session?: string }) {
   const atMount = useRef(props.openSignal ?? 0);
   const [clicked, setClicked] = useState(0);
   const peer = usePeerModels(props.machine);

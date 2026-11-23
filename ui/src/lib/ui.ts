@@ -23,6 +23,7 @@ type UIState = {
   shortcuts: boolean;
   errors: boolean;
   modelMenu: number; // bumped to ask the composer's model picker to open
+  effortMenu: number; // bumped to ask the composer's effort picker to open
   permMenu: number; // bumped to ask the session header's permission menu to open
   enterSends: boolean;
   newWorkspace: string; // the folder the start box creates a session in ("" = daemon default)
@@ -84,6 +85,7 @@ let state: UIState = {
   shortcuts: false,
   errors: false,
   modelMenu: 0,
+  effortMenu: 0,
   permMenu: 0,
   enterSends: pref("keel.enterSends", true),
   newWorkspace: pref("keel.newWorkspace", ""),

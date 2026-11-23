@@ -9,6 +9,7 @@ import type { Store } from "../core/store.ts";
 import type { Session, SessionSettings } from "../core/types.ts";
 import { ModelLookupError, speedOffer, type Providers } from "../providers/registry.ts";
 import type { ModelInfo } from "../providers/types.ts";
+import { nearestEffort } from "../engine/switch-rule.ts";
 
 // Preview and PATCH must accept exactly the same model, even if it was
 // missing from the cached listing when the owner picked it.
@@ -30,23 +31,6 @@ export function switchCompactionBlock(providers: Providers, model: string): stri
   const problem = providers.problem(pid);
   if (problem) return `${label}: ${problem.message}`;
   if (!providers.cachedModel(model)) return `the current model ${model} is unavailable`;
-}
-
-// Effort levels from least to most: a level the new model does not list goes
-// to the nearest one it does (xhigh on a model that stops at high runs high).
-const LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-export function nearestEffort(want: string, offered: string[]): string | undefined {
-  if (offered.includes(want)) return want;
-  const w = LADDER.indexOf(want);
-  if (w < 0) return undefined;
-  let best: string | undefined;
-  let gap = Infinity;
-  for (const e of offered) {
-    const i = LADDER.indexOf(e);
-    // On a tie the lower level wins: the switch never makes a request dearer than asked.
-    if (i >= 0 && (Math.abs(i - w) < gap || (Math.abs(i - w) === gap && i < w))) { best = e; gap = Math.abs(i - w); }
-  }
-  return best;
 }
 
 // What the new model keeps of the session's settings.

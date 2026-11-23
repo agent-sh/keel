@@ -378,3 +378,83 @@ async function openPicker(page: import("@playwright/test").Page, id: string) {
   if (await tools.isVisible()) await tools.tap();
   await pane.getByTestId("model-picker").tap();
 }
+
+// One picker sets the model and the effort: each row shows the effort a pick
+// of it runs at (the session's, carried to the nearest level the model lists),
+// Left and Right change it on the highlighted row, Enter applies both. Alt+E
+// opens the effort menu by itself.
+test("model picker: the effort on each row, one Enter sets both", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "needs the scripted stand-in: the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Model and effort", settings: { effort: "high" } } })).json();
+  const read = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session;
+  try {
+    await page.goto(`/s/${session.id}`);
+    const popup = page.getByTestId("model-popup");
+    await page.getByTestId("composer").click();
+    await page.keyboard.press("Alt+m");
+    await expect(popup).toBeVisible();
+    await expect(popup.getByTestId("effort-keys")).toBeVisible();
+    // A query is being edited: plain Left moves the caret, Alt+Left sets the effort.
+    await page.keyboard.type("Scripted backup");
+    const row = popup.locator('[data-testid="model-option"][data-model="scripted:stand-in-backup"]').first();
+    await expect(row).toHaveAttribute("data-highlighted", "");
+    await expect(row.getByTestId("row-effort")).toHaveAttribute("data-effort", "high");
+    await page.keyboard.press("ArrowLeft");
+    await expect(row.getByTestId("row-effort")).toHaveAttribute("data-effort", "high");
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect(row.getByTestId("row-effort")).toHaveAttribute("data-effort", "low");
+    await expect(row.getByTestId("row-effort")).toHaveAttribute("data-changed", "");
+    await shoot(page, "picker-10-row-effort");
+    // Alt+M, the name, Alt+Left, Enter: four presses for both.
+    await page.keyboard.press("Enter");
+    await expect(popup).toBeHidden();
+    await expect(page.getByTestId("model-picker")).toContainText("Scripted backup");
+    await expect(page.getByTestId("effort-picker")).toContainText("low");
+    expect(await read()).toMatchObject({ model: "scripted:stand-in-backup", settings: { effort: "low" } });
+
+    // With no query plain Right steps it; on the model in use that is an effort change alone.
+    await page.keyboard.press("Alt+m");
+    await expect(popup).toBeVisible();
+    await page.keyboard.type("Scripted backup");
+    await page.getByPlaceholder("Search models").fill("");
+    const current = popup.locator('[data-testid="model-option"][data-model="scripted:stand-in-backup"]').first();
+    await current.hover();
+    await expect(current.getByTestId("row-effort")).toHaveAttribute("data-effort", "low");
+    await page.keyboard.press("ArrowRight");
+    await expect(current.getByTestId("row-effort")).toHaveAttribute("data-effort", "high");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("effort-picker")).toContainText("high");
+    expect(await read()).toMatchObject({ model: "scripted:stand-in-backup", settings: { effort: "high" } });
+
+    // Escape leaves both as they were, whatever the rows were set to.
+    await page.keyboard.press("Alt+m");
+    await page.keyboard.press("Alt+ArrowLeft");
+    await page.keyboard.press("Escape");
+    await expect(popup).toBeHidden();
+    expect(await read()).toMatchObject({ model: "scripted:stand-in-backup", settings: { effort: "high" } });
+
+    // The effort has a key of its own.
+    await page.getByTestId("composer").click();
+    await page.keyboard.press("Alt+e");
+    const menu = page.getByRole("menu");
+    await expect(menu).toContainText("Effort, from the next turn");
+    await menu.getByRole("menuitem", { name: "low" }).click();
+    await expect(page.getByTestId("effort-picker")).toContainText("low");
+
+    // A phone: the effort sits on the row's last line and answers a tap.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const tools = page.getByTestId("composer-open");
+    if (await tools.isVisible()) await tools.click();
+    await page.getByTestId("model-picker").click();
+    await expect(popup).toBeVisible();
+    await page.getByPlaceholder("Search models").fill("Scripted stand-in");
+    const phoneRow = popup.locator('[data-testid="model-option"][data-model="scripted:stand-in"]').first();
+    await expect(phoneRow.getByTestId("row-effort")).toBeVisible();
+    await shoot(page, "picker-11-row-effort-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});

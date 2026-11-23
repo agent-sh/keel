@@ -55,7 +55,7 @@ export async function switchSession(id: string, change: { model?: string; effort
       if (pick === "alt") await api(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ for_model: change.model }) });
     }
     patching = true;
-    await actions.patch(id, change.model ? { model: change.model } : { settings: { effort: change.effort } });
+    await actions.patch(id, { ...(change.model ? { model: change.model } : {}), ...(change.effort ? { settings: { effort: change.effort } } : {}) });
     return true;
   } catch (e) {
     const status = (e as { status?: number } | null)?.status;

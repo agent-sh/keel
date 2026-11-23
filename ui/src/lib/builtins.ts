@@ -122,7 +122,8 @@ registerCommand(
   { id: "text-bigger", label: "Bigger text", group: "View", keys: "mod+= mod+shift+=", inInput: true, words: "zoom font size larger letters", run: () => stepScale(1) },
   { id: "text-smaller", label: "Smaller text", group: "View", keys: "mod+-", inInput: true, words: "zoom font size letters", run: () => stepScale(-1) },
   { id: "text-reset", label: "Default text size", group: "View", keys: "mod+0", inInput: true, words: "zoom font size reset letters", run: () => setScale(1) },
-  { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
+  { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model effort", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
+  { id: "effort-menu", label: "Choose the effort", group: "Session", keys: "alt+e", inInput: true, when: () => !!current(), words: "reasoning effort thinking level", run: () => setUI({ effortMenu: getUI().effortMenu + 1 }) },
   { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => void copyOrSay(() => lastReply(current()!.id)) },
   // A panel lying over the conversation takes Escape first: it closes, and the
   // turn working behind it is not stopped by the same press.

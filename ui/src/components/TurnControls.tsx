@@ -415,14 +415,17 @@ function BuildPin({ build, used, busy, disabled, onAdopt }: { build: BuildState;
 }
 
 // The efforts the session's model lists; nothing is offered it does not take.
-export const EffortPicker = memo(function EffortPicker({ sessionId }: { sessionId: string }) {
+// `openSignal` opens it when it changes (its key, Alt+E).
+export const EffortPicker = memo(function EffortPicker({ sessionId, openSignal }: { sessionId: string; openSignal?: number }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const models = useStore((s) => s.models);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (openSignal) setOpen(true); }, [openSignal]);
   const efforts = models.find((m) => m.id === session?.model)?.efforts ?? [];
   if (!session || !efforts.length) return null;
   const cur = session.settings.effort && efforts.includes(session.settings.effort) ? session.settings.effort : efforts.includes("high") ? "high" : efforts[0]!;
   return (
-    <Menu.Root>
+    <Menu.Root open={open} onOpenChange={setOpen}>
       <Menu.Trigger
         data-testid="effort-picker"
         title="Reasoning effort (applies from the next turn)"

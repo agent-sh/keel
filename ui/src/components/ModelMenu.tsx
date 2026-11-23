@@ -1,5 +1,5 @@
 import { Combobox } from "@base-ui/react/combobox";
-import { Check, Eye, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-react";
 import { TriggerLabel, triggerClass } from "./ModelPicker.tsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { composing } from "../lib/keys.ts";
@@ -11,6 +11,10 @@ import { Kbd } from "./Kbd.tsx";
 import { loadPeerModels, usePeerModels } from "../lib/peer-models.ts";
 import { machineName } from "../lib/fleet.ts";
 import type { Session } from "../../../src/core/types.ts";
+import { carriedEffort, stepEffort } from "../../../src/engine/switch-rule.ts";
+
+// What a pick carries besides the model: the effort the owner set on its row.
+export type ModelPick = { effort?: string };
 
 // The lists themselves are built in lib/picker.ts. With no query: favorites,
 // recent picks, then one group per provider (the default model's provider,
@@ -27,7 +31,12 @@ function startedOn(sessions: Record<string, Session>): string {
   return v;
 }
 
-export function ModelMenu({ value, onChange, compact, openSignal, machine, placeholder }: { value: string; onChange: (id: string) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string }) {
+// `session`: the menu sets that session's model and effort together: each row
+// shows the effort a pick of it runs at (the session's, moved to the nearest
+// level the model lists), Left and Right change it on the highlighted row
+// (with the search field empty, or with Alt), a press on it steps it, and
+// Enter applies both.
+export function ModelMenu({ value, onChange, compact, openSignal, machine, placeholder, session }: { value: string; onChange: (id: string, pick?: ModelPick) => void; compact?: boolean; openSignal?: number; machine?: string; placeholder?: string; session?: string }) {
   const [open, setOpen] = useState(!!openSignal);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -51,6 +60,14 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   const localLabels = useStore((s) => s.providerLabels);
   const labels = machine ? peer?.labels ?? {} : localLabels;
   const problems = useStore((s) => s.limits?.problems);
+  // The effort each row runs at: what the owner set on it in this opening, else the session's carried over.
+  const want = useStore((s) => (session ? s.sessions[session]?.settings.effort : undefined));
+  const [efforts, setEfforts] = useState<Record<string, string>>({});
+  const offered = useMemo(() => new Map(models.map((m) => [m.id, m.efforts ?? []])), [models]);
+  const effortOf = (i: Item) => (session ? efforts[i.value] ?? carriedEffort(want, offered.get(i.value) ?? []) : undefined);
+  const pickOf = (i: Item): ModelPick | undefined => (session && efforts[i.value] !== undefined ? { effort: efforts[i.value] } : undefined);
+  const setEffort = (i: Item, next: string | undefined) => { if (next && next !== effortOf(i)) setEfforts((e) => ({ ...e, [i.value]: next })); };
+  const step = (i: Item, by: -1 | 1) => setEffort(i, stepEffort(effortOf(i), offered.get(i.value) ?? [], by));
   useEffect(() => { if (open) actions.loadLimits().catch((e) => reportError(e, { at: "limits" })); }, [open]);
 
   // Built once per listing change; a keystroke only filters these.
@@ -106,12 +123,12 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
     if (gone) setHint("The highlighted model left the listing. Nothing is highlighted: move with the arrows to choose.");
   }, [all]);
   const release = () => { if (held) setHeld(null); };
-  const choose = (i: Item) => { notePick(i.value); onChange(i.value); setOpen(false); setQuery(""); };
+  const choose = (i: Item) => { notePick(i.value); onChange(i.value, pickOf(i)); setOpen(false); setQuery(""); };
 
   return (
     <Combobox.Root
       open={open}
-      onOpenChange={(o) => { setOpen(o); setHint(null); setHeld(null); if (!o) setQuery(""); }}
+      onOpenChange={(o) => { setOpen(o); setHint(null); setHeld(null); setEfforts({}); if (!o) setQuery(""); }}
       items={groups}
       filteredItems={groups}
       filter={null}
@@ -119,7 +136,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
       inputValue={query}
       onInputValueChange={(v, d) => { if (d.reason !== "item-press") { release(); setQuery(v); } }}
       value={selected}
-      onValueChange={(v: Item | null) => { if (!v) return; notePick(v.value); onChange(v.value); }}
+      onValueChange={(v: Item | null) => { if (!v) return; notePick(v.value); onChange(v.value, pickOf(v)); }}
       onItemHighlighted={(v: Item | undefined, d) => {
         // The row index Base UI kept across a listing change: not the owner's move.
         if (d.reason === "none" && renderedAll.current !== seenAll.current) return;
@@ -154,6 +171,15 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                 className="h-10 min-w-0 flex-1 bg-transparent px-3 text-ui outline-none placeholder:text-faint"
                 onKeyDown={(e) => {
                   if (composing(e)) return;
+                  // Left and Right move the caret while there is a query to edit; with none (or with Alt) they set the effort.
+                  if (session && (e.key === "ArrowLeft" || e.key === "ArrowRight") && (e.altKey || !e.currentTarget.value) && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                    const i = current();
+                    if (!i || !(offered.get(i.value) ?? []).length) return;
+                    e.preventDefault();
+                    (e as any).preventBaseUIHandler?.();
+                    step(i, e.key === "ArrowLeft" ? -1 : 1);
+                    return;
+                  }
                   if (held && e.key === "Enter") {
                     e.preventDefault();
                     (e as any).preventBaseUIHandler?.();
@@ -249,6 +275,13 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         </span>
                         <span className={cn("col-start-3 flex items-center gap-1 text-micro tabular-nums text-faint", NARROW.tail)}>
                           <span className={cn("contents", NARROW.actions)}>
+                            {session && !item.hidden && effortOf(item) && (
+                              <EffortChip
+                                value={effortOf(item)!}
+                                changed={efforts[item.value] !== undefined}
+                                onStep={(by) => step(item, by)}
+                              />
+                            )}
                             {own && !item.hidden && <RowAction
                               label={pinned.includes(item.value) ? "Remove from favorites" : "Add to favorites"}
                               on={pinned.includes(item.value)}
@@ -296,6 +329,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
             <div className={cn("flex shrink-0 items-center gap-3 border-t border-line px-3 py-1.5 text-micro text-faint", own && NARROW.gone)}>
               {own ? (
                 <>
+                  {session && <span className="inline-flex items-center gap-1 pointer-coarse:hidden" data-testid="effort-keys"><Kbd keys="arrowleft" /><Kbd keys="arrowright" /> effort</span>}
                   <span className="inline-flex items-center gap-1 pointer-coarse:hidden"><Kbd keys="mod+f" /> favorite</span>
                   <span className="inline-flex items-center gap-1 pointer-coarse:hidden"><Kbd keys="mod+h" /> hide</span>
                   <span className="ml-auto">Search finds hidden models</span>
@@ -362,6 +396,31 @@ function RowAction({ label, on, testid, onPress, children }: { label: string; on
       )}
     >
       {children}
+    </span>
+  );
+}
+
+// The effort a pick of the row runs at. The arrows step it (shown on the
+// highlighted row, and always under a finger); the word is the row's like
+// its name, so a press on it picks the row. Changed in this opening: in the
+// accent, as what Enter sends.
+function EffortChip({ value, changed, onStep }: { value: string; changed: boolean; onStep: (by: -1 | 1) => void }) {
+  const hit = (f: () => void) => ({
+    onPointerDown: (e: React.PointerEvent) => { e.preventDefault(); e.stopPropagation(); },
+    onClick: (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); f(); },
+  });
+  // Kept in the layout while hidden: the word stays where it is when the row is highlighted.
+  const arrow = "invisible grid size-ctl-sm place-items-center rounded-xs hover:bg-line hover:text-fg group-hover/row:visible group-data-highlighted/row:visible pointer-coarse:visible pointer-coarse:size-[2.9rem]";
+  return (
+    <span className="inline-flex shrink-0 items-center" data-testid="row-effort" data-effort={value} data-changed={changed ? "" : undefined}>
+      <span role="button" tabIndex={-1} aria-label="Less effort" title="Less effort (Left)" className={arrow} {...hit(() => onStep(-1))}><ChevronLeft className="size-3" /></span>
+      <span
+        title={`Effort ${value}: Left and Right change it, Enter applies it with the model`}
+        className={cn("rounded-xs px-1 py-0.5 text-micro", changed ? "bg-accent-soft font-medium text-accent-ink" : "text-muted")}
+      >
+        {value}
+      </span>
+      <span role="button" tabIndex={-1} aria-label="More effort" title="More effort (Right)" className={arrow} {...hit(() => onStep(1))}><ChevronRight className="size-3" /></span>
     </span>
   );
 }

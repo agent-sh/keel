@@ -13,7 +13,8 @@ import { openPanel, SidePanel, usePanelSheet } from "./SidePanel.tsx";
 import { LiveSourceBanner } from "./TakeOver.tsx";
 import { TranscriptLoading } from "./TranscriptLoading.tsx";
 import { switchSession } from "../lib/switch.ts";
-import { actions, reportError, scope, useStore } from "../lib/store.ts";
+import { actions, getState, reportError, scope, useStore } from "../lib/store.ts";
+import type { ModelPick } from "./ModelMenu.tsx";
 import { navigate } from "../lib/ui.ts";
 import { useAgentCount } from "../lib/watch.ts";
 import { whenIdle } from "../lib/utils.ts";
@@ -131,7 +132,12 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
   // A coordinator's Stop ends its turn; its agents go on (the turn's end line offers to stop them too).
   const agents = useAgentCount(parentId ? undefined : id);
   const does = useMemo(() => ({
-    model: (m: string) => switchSession(id, { model: m }).catch(reportError),
+    // The picker's row sets the effort with the model; on the model in use that is an effort change alone.
+    model: (m: string, p?: ModelPick) => {
+      const s = getState().sessions[id];
+      const change = p?.effort && s?.model === m ? (p.effort === s.settings.effort ? { model: m } : { effort: p.effort }) : { model: m, ...(p?.effort ? { effort: p.effort } : {}) };
+      return switchSession(id, change).catch(reportError);
+    },
     send: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { images, client_id }),
     queue: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { mode: "queue", images, client_id }),
     stop: () => void stopHere({ id, parent_id: parentId }),
