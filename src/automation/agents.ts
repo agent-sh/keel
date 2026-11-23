@@ -1508,11 +1508,14 @@ const taskStart = (a: AgentRecord) => a.task_at ??
 // (src/tools/jobs.ts), so an agent with any of them has not finished: its report is the answer
 // it writes after that. (Named by id and the model's own description, never by its command line.)
 // `own: false`: without its background commands (a turn the owner stopped is not waiting on them).
-export const waitsOn = (a: AgentRecord, o: { own?: boolean } = {}): string =>
+// `marked`: a command's description (the model's words) is shown as its words, for a view of the owner's
+// (the lane); the parent's harness notice keeps its bytes.
+export const waitsOn = (a: AgentRecord, o: { own?: boolean; marked?: boolean } = {}): string =>
   [waits.describeActive(a.session_id), ...commandsOf(a, o)].filter(Boolean).join(", ");
-const commandsOf = (a: AgentRecord, o: { own?: boolean } = {}): string[] => [
+const described = (d: string, marked?: boolean) => (marked ? ` \u201c${d}\u201d (its description)` : ` (${d})`);
+const commandsOf = (a: AgentRecord, o: { own?: boolean; marked?: boolean } = {}): string[] => [
   ...awaited(a.session_id).map((j) => `command ${j.id}, which runs on after a daemon restart`),
-  ...(o.own === false ? [] : unfinished(a.session_id, taskStart(a)).map((j) => `background command ${j.id}${j.description ? ` (${attr(j.description).slice(0, 80)})` : ""}`)),
+  ...(o.own === false ? [] : unfinished(a.session_id, taskStart(a)).map((j) => `background command ${j.id}${j.description ? described(attr(j.description).slice(0, 80), o.marked) : ""}`)),
 ];
 
 // The park as it stands when it is sent: the latest thing the agent waits on,

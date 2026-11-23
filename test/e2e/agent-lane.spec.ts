@@ -61,7 +61,7 @@ test("an agent's lane: doing, waits for, went wrong, changed and next, for each 
       return (await (await request.get(`/api/automation/agents/${a.id}/lane`)).json()) as { lines: { key: string; text: string; from: string; tone?: string }[]; ms: number };
     };
     await expect.poll(async () => (await laneOf("Worker")).lines.find((l) => l.key === "waits")!.text, { timeout: 30_000 }).toMatch(/^Its command, running since/);
-    await expect.poll(async () => (await laneOf("Parker")).lines.find((l) => l.key === "waits")!.text, { timeout: 30_000 }).toMatch(/^Background command \w+ \(The long build\) since/);
+    await expect.poll(async () => (await laneOf("Parker")).lines.find((l) => l.key === "waits")!.text, { timeout: 30_000 }).toMatch(/^Background command \w+ \u201cThe long build\u201d \(its description\) since/);
     await expect.poll(async () => (await laneOf("Asker")).lines.find((l) => l.key === "waits")!.tone, { timeout: 30_000 }).toBe("need");
 
     // Reading lanes asks no model: the coordinator's usage does not move.
@@ -89,7 +89,7 @@ test("an agent's lane: doing, waits for, went wrong, changed and next, for each 
     await expect(kid("Worker").getByTestId("lane-doing")).toHaveAttribute("data-from", "own");
     await expect(line(kid("Worker"), "waits")).toContainText("Its command, running since");
     await expect(line(kid("Worker"), "next")).toHaveText("\u201cRun the slow suite\u201d (its plan, 1 of 2 done)");
-    await expect(line(kid("Parker"), "waits")).toContainText("(The long build) since");
+    await expect(line(kid("Parker"), "waits")).toContainText("\u201cThe long build\u201d (its description) since");
     await expect(kid("Parker").getByTestId("lane-next")).toHaveAttribute("data-from", "missing");
     await expect(kid("Asker").getByTestId("lane-waits")).toHaveAttribute("data-tone", "need");
     await expect(line(kid("Asker"), "waits")).toContainText("Its question, \u201cWhich store should I use?\u201d");

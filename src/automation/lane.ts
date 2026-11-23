@@ -234,7 +234,7 @@ export async function laneOf(agentId: string, at = Date.now()): Promise<Lane | u
     ended: live ? null : { at: a.ended ?? at, steps: used.steps, why: agentWhy(a) },
     lost: a.lost?.length ?? 0,
     call: call ? { line: callWords(call.name, call.input, s.workspace), shell: toolKind(call.name) === "shell", since: call.at } : null,
-    waitsOn: live ? agents.waitsOn(a) : "",
+    waitsOn: live ? agents.waitsOn(a, { marked: true }) : "",
     slot: !!a.slot_wait,
     failure: failureOf(sessions, a.id),
     hours: hours ? { wall_ms: hours.wall_ms, classes: hours.classes } : null,
