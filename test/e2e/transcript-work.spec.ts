@@ -504,7 +504,9 @@ const watchMoves = (page: Page, id: string, foot: boolean) => page.evaluate(([se
     }
     return out;
   };
-  let was = seen(), height = sc.scrollHeight;
+  // The conversation's own children and their heights (the padding a row keeps as room apart): a drop names what changed.
+  const kids = () => [...c.children].slice(-8).map((x) => { const h = x as HTMLElement; return `${h.dataset.testid ?? h.className.split(" ")[0]}:${Math.round(h.getBoundingClientRect().height)}${h.style.paddingBottom ? `(room ${h.style.paddingBottom})` : ""}`; }).join(" ");
+  let was = seen(), height = sc.scrollHeight, rows = kids();
   const tick = () => {
     const m = w.__moves;
     const now = seen();
@@ -517,10 +519,10 @@ const watchMoves = (page: Page, id: string, foot: boolean) => page.evaluate(([se
       if (rose > u) u = rose;
     }
     m.frames++;
-    if (d > 1) { m.down++; m.largestDown = Math.max(m.largestDown, Math.round(d)); if (m.at.length < 8) m.at.push(`down ${Math.round(d)}px at frame ${m.frames} ("${who}"), height ${height} to ${sc.scrollHeight}`); }
+    if (d > 1) { m.down++; m.largestDown = Math.max(m.largestDown, Math.round(d)); if (m.at.length < 8) m.at.push(`down ${Math.round(d)}px at frame ${m.frames} ("${who}"), height ${height} to ${sc.scrollHeight}; the end was [${rows}], is [${kids()}]`); }
     else if (u > 1) m.up++;
     if (sc.scrollHeight - sc.scrollTop - sc.clientHeight > 2) m.awayFromEnd++;
-    was = now; height = sc.scrollHeight;
+    was = now; height = sc.scrollHeight; rows = kids();
     w.__raf = requestAnimationFrame(tick);
   };
   w.__raf = requestAnimationFrame(tick);
@@ -540,7 +542,7 @@ const SEVEN = [
   { name: "Bash", input: { command: printing(12, 0.2) }, after_ms: 300 },
 ];
 const TWO_HUNDRED = [{ name: "Read", input: { file_path: "package.json" }, after_ms: 300 }, { name: "Bash", input: { command: printing(200, 0.012) }, after_ms: 300 }];
-type Watched = { name: string; calls: typeof SEVEN; width?: number; height?: number; scale?: number; reduced?: boolean; panes?: boolean; scrolledUp?: boolean };
+type Watched = { name: string; calls: typeof SEVEN; width?: number; height?: number; scale?: number; reduced?: boolean; panes?: boolean; scrolledUp?: boolean; late?: boolean };
 const WATCHED: Watched[] = [
   { name: "seven calls", calls: SEVEN },
   { name: "a 200-line command", calls: TWO_HUNDRED },
@@ -549,12 +551,28 @@ const WATCHED: Watched[] = [
   { name: "seven calls, 390 px", calls: SEVEN, width: 390, height: 844 },
   { name: "a 200-line command, reduced motion", calls: TWO_HUNDRED, reduced: true },
   { name: "seven calls, scrolled up", calls: SEVEN, scrolledUp: true },
+  // The session is told it is at rest a moment before its turn's end line comes (the two are frames of
+  // their own, and a busy page draws them apart): the working line goes with nothing yet in its place.
+  { name: "seven calls, the turn's end line comes late", calls: SEVEN, late: true },
 ];
 
 test("no line moves down while a turn runs, at its end or after it, and nothing moves at all while scrolled up", async ({ page, request }) => {
-  test.setTimeout(420_000);
+  test.setTimeout(480_000);
   const table: string[] = [];
+  // The page's socket, with a turn's end held back half a second when a case asks for it.
+  let late = false;
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((m) => server.send(m));
+    server.onMessage((m) => {
+      if (late) {
+        try { const f = JSON.parse(String(m)); if (f.t === "event" && f.event?.kind === "turn_end") return void setTimeout(() => ws.send(m), 500); } catch { /* not a frame of words */ }
+      }
+      ws.send(m);
+    });
+  });
   for (const w of WATCHED) {
+    late = false;
     const make = async () => ((await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json()).session.id as string);
     const id = await make();
     const others = w.panes ? [await make(), await make(), await make()] : [];
@@ -576,6 +594,7 @@ test("no line moves down while a turn runs, at its end or after it, and nothing 
     await expect(pane.getByTestId("turn-end")).toHaveCount(1);
     await page.waitForTimeout(500);
     const ordinary = (await endOf(page, id)).lastToViewBottom;
+    late = !!w.late;
     await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify(w.calls)}` } });
     await expect(pane.getByTestId("user-message")).toHaveCount(2, { timeout: 30_000 });
     if (w.scrolledUp) {

@@ -561,9 +561,13 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
 
 // The streaming reply and the working line. Deltas re-render only this, not
 // the whole transcript above it.
-function Live({ sessionId, working, asking, since, elsewhere }: { sessionId: string; working: boolean; asking: boolean; since?: number; elsewhere: "branch" | "earlier" | null }) {
+// `onTail`: told in the frame what stands here changes (the working line, the reply, a status row, a
+// question that takes the line's place), so the transcript keeps the height of its end through it.
+function Live({ sessionId, working, asking, since, elsewhere, onTail }: { sessionId: string; working: boolean; asking: boolean; since?: number; elsewhere: "branch" | "earlier" | null; onTail: () => void }) {
   const draft = useStore((s) => s.drafts[sessionId]);
   const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
+  const status = useStore((x) => { const st = x.status[sessionId]; return !st || st.kind === "idle" || st.kind === "model" || st.kind === "tool" ? "" : st.kind; });
+  useLayoutEffect(() => onTail(), [working, !!hasDraft, asking, status]);
   // The reply streams at the end of the current branch: under another branch,
   // or under an earlier part of this one, it would read as written there.
   if (elsewhere) {
@@ -723,7 +727,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const standing = (c: HTMLElement) => {
     const end = c.getBoundingClientRect().bottom;
     const ref = lastRow.current;
-    foot.current = { ref, len: ref ? end - ref.getBoundingClientRect().top : 0 };
+    // (Where the row will stand: one that is still coming in is drawn a little lower for a moment.)
+    foot.current = { ref, len: ref ? end - yOf(ref) : 0 };
     for (const k of kept.current) { k.mark = k.row.lastElementChild; k.after = k.mark ? end - k.mark.getBoundingClientRect().bottom - k.room : 0; }
   };
   // After an event's rows are drawn. `was`: the tail as it stood before them.
@@ -731,7 +736,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const c = content.current, el = scroller.current, row = lastRow.current as HTMLElement | null;
     if (!c || !el || !was.ref?.isConnected) return;
     const end = c.getBoundingClientRect().bottom;
-    const lost = was.len - (end - was.ref.getBoundingClientRect().top);
+    const lost = was.len - (end - yOf(was.ref));
     if (lost >= 1) {
       // (Only for a row the reader can see: one below the view moves nothing by standing lower.)
       if (!row || row.getBoundingClientRect().top >= el.getBoundingClientRect().bottom) return;
@@ -1211,10 +1216,26 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // (Not for another run of events, or an earlier part read above this one.)
     if (same) keepHeight(was);
     else { foot.current = { ref: null, len: 0 }; for (const k of [...kept.current]) setRoom(k, 0); }
+    drawn.current = events;
     // The owner comes back to where they were, before the first paint.
     comeBack();
     if (el && !same && stick.current && !reading?.end) pin(el);
+    // (The end as it stands now: two changes in one frame are each measured against the one before.)
+    if (content.current) standing(content.current);
   }, [events]);
+  // The conversation's end changes with no event too: the working line goes when the session is told
+  // it is at rest, which may be a frame or more before its turn's end line comes; a status row goes; a
+  // question takes the line's place. The height of the end is kept through that as through an
+  // event: the last row keeps what was lost as room, and what comes next takes it up. (Not in a
+  // frame that also draws an event: that one is kept above, with the new last row.)
+  const drawn = useRef<StoredEvent[] | undefined>(undefined);
+  const tailChanged = useRef(() => {});
+  tailChanged.current = () => {
+    if (!events || events !== drawn.current || !stick.current || short.current) return;
+    keepHeight(foot.current);
+    if (content.current) standing(content.current);
+  };
+  const onTail = useRef(() => tailChanged.current()).current;
   const viewSize = useRef(0);
   useEffect(() => {
     const c = content.current;
@@ -1643,7 +1664,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           )}
           {/* (Once the turn's end is on the page nothing says it works: its footer takes the working line's
               place in the same frame, so the lines above do not drop when the session's state follows.) */}
-          <Live sessionId={sessionId} working={session.phase === "working" && events?.at(-1)?.kind !== "turn_end"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} />
+          <Live sessionId={sessionId} working={session.phase === "working" && events?.at(-1)?.kind !== "turn_end"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} onTail={onTail} />
         </div>
       </div>
       {at && (
