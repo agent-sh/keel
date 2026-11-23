@@ -349,7 +349,21 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
 // on screen and has stood still for a second. It names how many those are,
 // and pointing at it frames exactly those rows. A row's own Allow acts under
 // the same rule: not within a second of arriving or of moving under the hand.
-export function Approvals({ sessionId, asker }: { sessionId: string; asker?: string }) {
+// `where`: the folder (and branch) the asker works in, when that is not the folder of the page the
+// cards are answered on: an agent's own worktree. Each card says it.
+export type Where = { folder: string; branch?: string | null };
+// The folder (and branch) an approval's command runs in, as its card names it: the folder it
+// starts in (`at.cwd`, said when it is not the asker's own) wins over the asker's; the asker's
+// branch goes with it only when that folder is the asker's or inside it.
+export function placeOf(at: Approval["at"], where?: Where): Where | null {
+  const cwd = at?.cwd;
+  if (!cwd) return where ?? null;
+  if (!where) return { folder: cwd };
+  const root = where.folder.replace(/\/+$/, "");
+  const inside = cwd === root || cwd.startsWith(`${root}/`);
+  return inside ? { folder: cwd, branch: where.branch } : { folder: cwd };
+}
+export function Approvals({ sessionId, asker, where }: { sessionId: string; asker?: string; where?: Where }) {
   const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
   const list = useRef<HTMLDivElement>(null);
   const { view, tick, waiting, setHot, spend, own, reader, latest } = useReadings(list, cards);
@@ -623,6 +637,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               a={a}
               first={i === 0}
               asker={asker}
+              where={where}
               list={list}
               many={many}
               plain={uniform}
@@ -819,8 +834,8 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card now.
 // `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
 // itself, or on the list. `touch`: the pointer is a finger.
-function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, keyLive, keyUnseen, armedKey, whole, onWhole, enterOpens, keysOn, touch }: {
-  a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
+function Card({ a, first, asker, where, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, keyLive, keyUnseen, armedKey, whole, onWhole, enterOpens, keysOn, touch }: {
+  a: Approval; first: boolean; asker?: string; where?: Where; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
   hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; read: () => unknown; cut: boolean; unseen?: Unseen;
   keyLive: boolean; keyUnseen?: number; armedKey: () => boolean;
   whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list"; touch: boolean;
@@ -1120,6 +1135,17 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       on <Spelled text={far.machine} />{far.cwd && <>, in <Spelled text={far.cwd} /></>}
     </span>
   );
+  // Where it runs, when that is not this page's folder: the folder the command starts in when it
+  // moved, else the asker's own (an agent's worktree). The asker's branch is named only for a folder
+  // in its worktree: a command an agent runs in another checkout acts on that checkout's branch, not
+  // its own. The same command is another act in another checkout. (Folder and branch names are the
+  // model's or the repository's: shown with nothing hidden.)
+  const runsIn = placeOf(a.at, where);
+  const place = runsIn && (
+    <span className={cn("max-w-full truncate rounded-full border px-2 py-0.5 text-micro font-medium", a.at?.away ? "border-line-strong text-warn" : "border-line text-muted")} dir="ltr" title={`${runsIn.folder}${runsIn.branch ? `, branch ${runsIn.branch}` : ""}`} data-testid="approval-where">
+      in <Spelled text={runsIn.folder.split("/").filter(Boolean).at(-1) ?? runsIn.folder} />{runsIn.branch && <>, branch <Spelled text={runsIn.branch} /></>}
+    </span>
+  );
   const fromCode = a.call_id.includes("~") && <span className="rounded-full bg-sunken px-1.5 py-px text-micro text-muted" data-testid="approval-from-code">from a program</span>;
   const title = (
     <span id={`${ids}-title`} className={cn(dense ? "text-caption font-medium" : "text-ui font-medium", dense && plain && "sr-only")}>
@@ -1249,7 +1275,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         <div className="flex min-w-0 flex-1 basis-64 items-start gap-2.5 py-2 pl-3 pr-1">
           <span className="mt-0.5">{icon}</span>
           <div className="min-w-0 flex-1">
-            {(!plain || fromCode || machine) && <div className="mb-1 flex flex-wrap items-center gap-2">{!plain && title}{machine}{fromCode}</div>}
+            {(!plain || fromCode || machine || place) && <div className="mb-1 flex flex-wrap items-center gap-2">{!plain && title}{machine}{place}{fromCode}</div>}
             {plain && title}
             {notice}
             {summary}
@@ -1261,6 +1287,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             {icon}
             {title}
             {machine}
+            {place}
             {fromCode}
             {a.risk === "high" && (
               <span className="ml-auto rounded-full bg-danger-soft px-2 py-0.5 text-micro font-medium text-danger" data-testid="approval-risk">

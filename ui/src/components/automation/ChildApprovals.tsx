@@ -31,8 +31,12 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
   return (
     <div data-testid="child-approvals" className="k-child-approvals">
       {[...asking].map((id) => {
-        const title = kids.find((k) => k.session_id === id)?.title || sessions[id]?.title;
+        const kid = kids.find((k) => k.session_id === id);
+        const title = kid?.title || sessions[id]?.title;
         const agent = title ? `Agent ${title}` : "Subagent";
+        // The agent's folder, when it is not this session's: its own worktree, on its branch.
+        const folder = kid?.worktree || sessions[id]?.workspace;
+        const where = folder && folder !== sessions[parentId]?.workspace ? { folder, branch: kid?.branch } : undefined;
         return (
           <div key={id}>
             <button
@@ -42,7 +46,7 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
             >
               <Bot className="size-3.5 text-accent" /> {agent} {stateWords({ watch: "need", why: questions?.includes(id) ? "question" : "approval" }).phrase.toLowerCase()}
             </button>
-            {!!open[id]?.length && <Suspense fallback={null}><Approvals sessionId={id} asker={agent} /></Suspense>}
+            {!!open[id]?.length && <Suspense fallback={null}><Approvals sessionId={id} asker={agent} where={where} /></Suspense>}
           </div>
         );
       })}
