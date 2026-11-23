@@ -157,6 +157,8 @@ test("a whole card keeps its rule; hidden and reordering characters are shown an
     const card = page.getByTestId("approval").first();
     await expect(card).not.toHaveAttribute("data-must-open", "true");
     await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await page.keyboard.press("Enter");
     await expect.poll(() => states(request, plain.id)).toBe("allowed/once");
 
@@ -259,6 +261,8 @@ test("a card the window cuts takes no answer for lines that were never in view",
     // (The answer is under the text in a window this short: it acts once it has stood in view.)
     await card.getByTestId("allow-once").scrollIntoViewIfNeeded();
     await expect(card.getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
     await page.keyboard.press("Enter");
     await expect.poll(() => states(request, s.id)).toBe("allowed/once");
@@ -352,6 +356,8 @@ test("a long command is read by keys: Enter opens it, End reads it to its end, E
       expect(await states(request, s.id)).toBe("pending");
       // Read: Allow once takes the keyboard once it stood, and Enter allows.
       await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+      // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+      await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
       await expect(card).toHaveAttribute("data-live", "true");
       await press("Enter");
       await expect.poll(() => states(request, s.id)).toBe("allowed/once");
@@ -445,6 +451,8 @@ test("a card that must be opened leads with opening it, and Enter on the list do
     expect(await states(request, cut.id)).toBe("pending");
     // All of it shows now: read, the answer takes the keyboard, and the second Enter allows.
     await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await page.keyboard.press("Enter");
     await expect.poll(() => states(request, cut.id)).toBe("allowed/once");
 
@@ -535,6 +543,8 @@ test("an edit's card shows what it writes, and takes no answer until that was re
     await expect(c.getByTestId("approval-summary")).toContainText("- let total = 1;");
     await expect(c.getByTestId("approval-summary")).toContainText("+ const total = 2;");
     await expect(c.getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(c.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await shoot(page, "approval-read-12-replace");
     await page.keyboard.press("Enter");
     await expect.poll(() => states(request, small.id)).toBe("allowed/once");
@@ -678,6 +688,8 @@ test("an early Enter opens nothing, and Enter alone never both opens and allows 
       await expect(list).toHaveAttribute("data-keys", "ready");
       await page.keyboard.press("ArrowDown");
       await expect(card.getByTestId("allow-once")).toBeFocused();
+      // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+      await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
       await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
       await page.keyboard.press("Enter");
       await expect.poll(() => states(request, loaded.id)).toBe("allowed/once");
@@ -721,6 +733,8 @@ test("an edit's content is spelled out: hidden and reordering characters in what
     await expect(card.getByTestId("approval-arming")).toHaveText("Marked characters: Down, then Enter allows once");
     await page.keyboard.press("ArrowDown");
     await expect(card.getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
     await page.keyboard.press("Enter");
     await expect.poll(() => states(request, s.id)).toBe("allowed/once");
@@ -860,6 +874,8 @@ test("every way to a waiting session lands the keyboard on its list, then on All
     await expect.poll(() => page.evaluate(() => (window as unknown as { __f: unknown[] }).__f.length), { message: `${way}: the keyboard came to the list` }).toBeGreaterThan(0);
     await page.keyboard.press("Enter");
     await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     const log = await page.evaluate(() => (window as unknown as { __f: { at: number; on: string; view: string }[] }).__f);
     // It landed on the list of requests (in the look, where there is one), and stayed off the answers for the settle time.
     expect(log[0]!.on, way).toBe("approvals");

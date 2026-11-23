@@ -149,6 +149,8 @@ export async function answerOnPurpose(page: Page, request: APIRequestContext, id
   await expect(card).toHaveAttribute("data-keys", "ready");
   if (kind === "approval") {
     await expect(card.getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
     await page.keyboard.press("Enter");
   } else if (kind === "question") {
@@ -165,6 +167,8 @@ export async function answerOnPurpose(page: Page, request: APIRequestContext, id
     }
   } else {
     await expect(card.getByTestId("plan-approve")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("plan-approve")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await page.keyboard.press("Enter");
   }
   await expect.poll(() => waits(request, id, kind)).toBe(false);
@@ -204,7 +208,7 @@ export async function secondEnter(page: Page, request: APIRequestContext, runs: 
   const ws = folder("second-enter");
   const DRAFT = "deploy it now";
   const allowOf = (id: string) => cardIn(page, id, "approval").getByTestId("allow-once");
-  const ready = async (id: string) => { await expect(allowOf(id)).toBeFocused(); await expect(cardIn(page, id, "approval").getByTestId("approval")).toHaveAttribute("data-live", "true"); };
+  const ready = async (id: string) => { await expect(allowOf(id)).toBeFocused(); await expect(cardIn(page, id, "approval").getByTestId("approval")).toHaveAttribute("data-live", "true"); await expect(allowOf(id)).toHaveAttribute("data-ready", "true", { timeout: 5000 }); };
   // Enter answers, and Enter again `d` ms later (not a repeat): the second lands while the sequence moves on.
   const twice = async (d: number) => {
     const one = page.keyboard.press("Enter");

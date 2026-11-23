@@ -231,6 +231,8 @@ test("the answering sequence ends where it began", async ({ page, request }) => 
     } else {
       const card = cardIn(page, id, "approval");
       await expect(card.getByTestId("allow-once")).toBeFocused();
+      // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+      await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
       await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
       await press("Enter");
     }
@@ -792,8 +794,13 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await expect(slot(page, 0)).toHaveAttribute("data-look", "");
   await slot(page, 0).getByTestId("look-keep").click();
   await expect(toast.getByTestId("undo-words")).toHaveText("Kept in the pane: Coordinator: release train 2.4");
-  await row(page, reader).dblclick();
-  await expect(slot(page, 0)).toHaveAttribute("data-holds", reader);
+  // (The other pane's session is moved into the kept one's pane: an act that offers no undo of its own.)
+  await slot(page, 1).getByTestId("composer").click();
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("Move this session to pane 1");
+  await expect(page.getByTestId("palette").getByRole("option").first()).toContainText("Move this session to pane 1");
+  await page.keyboard.press("Enter");
+  await expect(slot(page, 0)).toHaveAttribute("data-holds", other);
   await expect(toast).toHaveCount(0);
   // On a phone the offer hangs from the top edge, clear of the message box.
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1085,6 +1092,8 @@ test("a waiting session opened from the palette is answered and left in about te
   await expect(card).toHaveAttribute("data-keys", "ready");
   await press("ArrowDown");
   await expect(card.getByTestId("allow-once")).toBeFocused();
+  // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+  await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
   await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
   await press("Enter");
   await expect.poll(() => waiting(request, run)).toBe(0);

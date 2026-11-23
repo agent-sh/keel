@@ -7,14 +7,17 @@
 // - A card is a unit (`data-ask-card`). Code puts the keyboard on a region of
 //   it (`data-ask`, or any part with tabIndex -1: its text or frame), never
 //   on a control that answers. The control is one deliberate key away (Tab
-//   or an arrow).
+//   or an arrow), or the page brings the keyboard there itself once the card
+//   was read (pageFocus): that is an arrival too, with its own settle time.
 // - Every focus that lands in a unit and was not made by the owner's own Tab,
 //   or by their press on the unit, is an arrival by code, whoever made it. A
 //   key answers nothing within the settle time of it, in any pane layout.
 // - A key repeat never answers, and nothing answers under a dialog or a menu.
-// - What is typed while a card holds the keyboard goes to the message box of
-//   the card's pane, whole and in order. A card's own typing keys (a number
-//   that picks an option) act only once the owner put the keyboard there.
+// - What the owner was typing in a message box when a card took the keyboard
+//   goes on into that box, whole and in order. Any other key the card does not
+//   take types nothing: a key meant for a card never becomes a message. A
+//   card's own typing keys (a number that picks an option) act only once the
+//   owner put the keyboard there.
 // - A card takes the keyboard only in the pane worked in, from that pane's
 //   empty message box or from nothing.
 // - A message box is held to the same rule from the other side: Enter sends
@@ -26,6 +29,7 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from "react";
 import { SETTLE_MS } from "./approvals.ts";
 import { inPopup, overlayOver } from "./overlay.ts";
+import { tipSay } from "./tips.ts";
 
 const UNIT = "[data-ask-card]";
 const REGION = "[data-ask]";
@@ -177,6 +181,18 @@ export function takeKeys(target: Element | null, own: boolean, advance = true): 
   return document.activeElement === region;
 }
 
+// The page moves the keyboard by itself onto a part of a card that answers (an approval's Allow
+// once, once its text was read; a plan's Approve, once it stood whole): that too is an arrival made
+// by code, and no key answers within the settle time of it. A key pressed meanwhile was meant for
+// what was there before (the answer just given, the card before), not for this one. What the owner
+// did with the card before (their own Tab or arrow) is kept.
+export function pageFocus(el: HTMLElement | null | undefined) {
+  const unit = unitOf(el);
+  if (!el || !unit) return;
+  moving = { own: holds.get(unit)?.own ?? false, take: false };
+  try { el.focus({ preventScroll: true }); } finally { moving = null; }
+}
+
 // May a card take the keyboard by itself as it appears? Only in the pane
 // worked in, from that pane's empty message box or from nothing at all: never
 // out of another pane, a field the owner types in, or a card they are on. A
@@ -225,16 +241,29 @@ export const dropRepeats = (e: { key: string; repeat: boolean; target: EventTarg
 // the control it is on): a key that would be refused is typed on, so that
 // either all of what is typed reaches the box or none. Returns whether the
 // key was sent on.
-export function typeToBox(e: { key: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; target: EventTarget | null; currentTarget: EventTarget | null }): boolean {
+// Only a run of typing goes on into the box: one the owner was making in a message box when the
+// card took the keyboard (a key in it within the settle time before the arrival). Any other key
+// the card does not take was pressed for the card (a number for a question, a key meant for the
+// card before): it types nothing anywhere, so it can never become a message, and the card says so.
+export function typeToBox(e: { key: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; target: EventTarget | null; currentTarget: EventTarget | null; preventDefault?: () => void }): boolean {
   const t = e.target as HTMLElement;
   if (e.altKey || e.ctrlKey || e.metaKey || e.key.length !== 1) return false;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable) return false;
   if (e.key === " " && owned(t) && keysSettled(t)) return false;
   const box = (e.currentTarget as HTMLElement).closest(".k-session")?.querySelector<HTMLElement>(BOX);
   if (!box) return false;
+  const h = holds.get(unitOf(t)!);
+  if (h && boxTyped < h.at - SETTLE_MS) {
+    e.preventDefault?.();
+    tipSay(unitOf(t) as HTMLElement | null, "Nothing typed: this request has the keyboard", SETTLE_MS * 2);
+    return true;
+  }
   ownFocus(box);
   return document.activeElement === box;
 }
+// When a key last typed into a message box (a run of typing a card may take on into the box).
+let boxTyped = -Infinity;
+if (typeof window !== "undefined") addEventListener("input", (e) => { if (isBox(e.target)) boxTyped = performance.now(); }, true);
 
 // What the owner answered from this page, by the id of the request (an
 // approval, a question's call, a plan): the answering sequence moves on only

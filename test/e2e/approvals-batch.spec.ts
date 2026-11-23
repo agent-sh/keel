@@ -123,15 +123,21 @@ test("several requests are answered one by one from the keys, or all of a tool a
 
     // The oldest request has the keyboard: it is the framed one, the others are not.
     await expect(card.first().getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.first().getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     expect(await frames(page)).toEqual([true, false, false, false, false]);
     await expect(hint).toHaveText("Up and Down choose, Enter allows the framed one once");
     // Down moves to the next request, and the frame with it.
     await page.keyboard.press("ArrowDown");
     await expect(card.nth(1).getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.nth(1).getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     expect(await frames(page)).toEqual([false, true, false, false, false]);
     await page.keyboard.press("ArrowUp");
     await downTo("two", 0);
     await expect(row("two.txt").getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(row("two.txt").getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     expect(await frames(page)).toEqual(await only("two"));
     await shoot(page, "approvals-batch-1920-marked");
 
@@ -145,6 +151,8 @@ test("several requests are answered one by one from the keys, or all of a tool a
     // The key is still held: its repeat answers nothing, on a request whose Allow can act.
     await downTo("one", -1);
     await expect(row("one.txt").getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(row("one.txt").getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await expect(row("one.txt")).toHaveAttribute("data-live", "true");
     await page.keyboard.down("Enter");
     await page.waitForTimeout(400);

@@ -7,7 +7,7 @@ import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
 import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
-import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, pageFocus, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
@@ -918,7 +918,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     if (!mayHold()) { if (!unread.current) moved.current = hold.at; return; }
     if (!live && onceInRegion()) return;
     moved.current = hold.at;
-    once.current?.focus({ preventScroll: true });
+    // (An arrival of its own: Enter allows only after the settle time from now, lib/asks.ts.)
+    pageFocus(once.current);
   }, [hold.keys, hold.take, hold.at, live, mustOpen]);
   // The marked characters of a text opened for them are brought into view.
   useEffect(() => {
@@ -996,10 +997,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // arrival, counted from when the line came. (It fills by then and stays full until Enter works.)
   // (Only while Enter is about to allow: not for the words that say how to reach the answer of a card held for a second look.)
   const armingNow = arming === ARMING;
-  const armFrom = useRef<number | null>(null);
+  const armFrom = useRef<{ at: number; from: number } | null>(null);
   if (!armingNow) armFrom.current = null;
-  else armFrom.current ??= performance.now();
-  const armFor = armingNow ? Math.round(Math.max(200, Math.min(SETTLE_MS, (hold.at || armFrom.current!) + SETTLE_MS - armFrom.current!))) : 0;
+  else if (!armFrom.current || armFrom.current.at !== hold.at) armFrom.current = { at: hold.at, from: performance.now() };
+  const armFor = armingNow ? Math.round(Math.max(200, Math.min(SETTLE_MS, (hold.at || armFrom.current!.from) + SETTLE_MS - armFrom.current!.from))) : 0;
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);
     // (The grant's popup is the card's own, drawn outside it: an answer given there held the keyboard too.)
@@ -1246,7 +1247,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             data-nudge={nudge.mark}
             // The read-first latch is arming: Enter allows once in a moment (a line fills under the label meanwhile).
             data-arming={armingNow ? "" : undefined}
-            style={armingNow ? ({ "--k-arm": `${armFor}ms` } as CSSProperties) : undefined}
+            data-ready={ready || undefined}
             data-testid="allow-once"
             data-stop={shut ? undefined : "card"}
             onPointerDown={pressed.onPointerDown}
@@ -1263,6 +1264,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             )}
           >
             Allow once
+            {/* (Drawn anew with each arrival of the keyboard, so it fills for that arrival's settle time.) */}
+            {armingNow && <span key={hold.at} className="k-arm" aria-hidden="true" data-testid="allow-arming" style={{ "--k-arm": `${armFor}ms` } as CSSProperties} />}
           </button>
           {nudge.line}
           {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}

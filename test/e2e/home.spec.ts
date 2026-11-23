@@ -193,6 +193,8 @@ test("home: a cut command is reviewed on its card, never allowed from its row", 
     await page.waitForTimeout(300);
     expect(await pending(request, long.id)).toHaveLength(1);
     await expect(page.getByTestId("approval").first().getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(page.getByTestId("approval").first().getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     expect(Date.now() - arrived).toBeGreaterThanOrEqual(1000);
     expect(await pending(request, long.id)).toHaveLength(1);
     await page.goto("/");
@@ -612,6 +614,8 @@ test("home: a whole short command reached by its row's title takes Enter after t
     await page.keyboard.press("Enter");
     expect(await state()).toBe("pending");
     await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(card.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await page.keyboard.press("Enter");
     await expect.poll(state).toBe("allowed/once");
   } finally {

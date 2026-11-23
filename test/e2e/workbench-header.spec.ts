@@ -239,6 +239,8 @@ test("the focus goes to the message box when a request or Stop goes away", async
     await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo one > one.txt" } }])}` } });
     // The request takes the focus (the box is empty); Enter allows it; the card and its list go.
     await expect(pane.getByTestId("allow-once")).toBeFocused();
+    // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+    await expect(pane.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
     await page.keyboard.press("Enter");
     await expect(pane.getByTestId("approval")).toHaveCount(0);
     await expect(box).toBeFocused();

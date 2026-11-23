@@ -2,7 +2,7 @@ import { ClipboardList, Pencil } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
 import { paintedReader, readOnSteps, sawLines, SETTLE_MS, unseenLines, type Lines, type PaintedReader } from "../lib/approvals.ts";
-import { dropRepeats, keyRefused, noteAnswer, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, noteAnswer, pageFocus, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { setOpenPlans } from "../lib/plans.ts";
 import { wasBrought } from "../lib/shell.ts";
@@ -189,7 +189,8 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
     if (wait > 0) { const t = window.setTimeout(() => wake((n) => n + 1), wait + 1); return () => window.clearTimeout(t); }
     moved.current = hold.at;
     if (document.activeElement !== text.current || !fits || editing || wasBrought() || !approve.current || approve.current.disabled) return;
-    approve.current.focus({ preventScroll: true });
+    // (An arrival of its own: Enter approves only after the settle time from now, lib/asks.ts.)
+    pageFocus(approve.current);
   }, [hold.keys, hold.take, hold.at, read, fits, fitsAt.current, woke]);
   const [nudge, setNudge] = useState("");
   useEffect(() => {
@@ -202,6 +203,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
     : comes ? "Enter approves the plan in a moment"
     : at === "text" ? (read ? "Tab goes to Approve" : "Read to the end, then Tab goes to Approve")
     : at === "approve" && hold.keys === "ready" ? (read ? "Enter approves the plan" : "Read the plan to its end first")
+    : at === "approve" && hold.keys === "wait" && read ? "Enter approves the plan in a moment"
     : "";
   return (
     <div
@@ -259,6 +261,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
             <button
               ref={approve}
               data-testid="plan-approve"
+              data-ready={(at === "approve" && hold.keys === "ready" && read) || undefined}
               disabled={!plan.trim()}
               title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"}
               onClick={(e) => {

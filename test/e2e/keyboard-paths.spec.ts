@@ -277,6 +277,8 @@ test("a key and the palette reach what waits on the owner, the inbox and the err
   await expect(page).toHaveURL(new RegExp(`/s/${asks}$`));
   // (The keyboard comes to the card, and to its Allow once it has been there for the settle time.)
   await expect(page.getByTestId("allow-once")).toBeFocused();
+  // (Brought there by the page: Enter acts after the settle time from then, as the card says.)
+  await expect(page.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 5000 });
   await shoot(page, "keyboard-paths-02-next-waiting");
   // Again, from the card: the next one, and around.
   await page.keyboard.press("Alt+a");
