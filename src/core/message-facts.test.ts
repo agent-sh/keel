@@ -77,6 +77,15 @@ test("a message read again from the table, as new objects of the same text, is s
   expect(messageFacts({ role: "user", content: [body.results[0]] } as Message).mark).not.toBe(facts.mark);
 });
 
+test("a body's blocks and its results are known apart", () => {
+  const text = JSON.stringify({ blocks: [{ type: "text", text: "b ".repeat(20_000) }], results: [{ type: "tool_result", tool_use_id: "t1", content: "r ".repeat(30_000) }] });
+  const body = frozen(JSON.parse(text)); keyBlocks(body, text);
+  const block = messageFacts({ role: "user", content: [body.blocks[0]] } as Message);
+  const result = messageFacts({ role: "user", content: [body.results[0]] } as Message);
+  expect(result).toEqual({ mark: markOf({ role: "user", content: [body.results[0]] }), size: blobSize({ role: "user", content: [body.results[0]] }), contentBytes: expect.any(Number) });
+  expect(result.mark).not.toBe(block.mark);
+});
+
 test("a prompt's text and a checkpoint's summary, made of a stored body, are the same blocks each request", () => {
   const text = JSON.stringify({ text: "p ".repeat(20_000) });
   const body = frozen(JSON.parse(text)); keyBlocks(body, text);

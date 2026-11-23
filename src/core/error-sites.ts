@@ -131,8 +131,8 @@ export class ErrorSites {
     for (let i = 0; i < ids.length; i += 400) {
       const part = ids.slice(i, i + 400);
       const rows = this.db
-        .query<Row, string[]>(`SELECT p.*, s.title AS title FROM error_sites p JOIN sessions s ON s.id = p.session_id WHERE p.error_id IN (${part.map(() => "?").join(",")}) ORDER BY p.ts DESC`)
-        .all(...part);
+        .query<Row, string[]>(`SELECT p.*, s.title AS title FROM error_sites p JOIN sessions s ON s.id = p.session_id WHERE p.error_id IN (SELECT value FROM json_each(?)) ORDER BY p.ts DESC`)
+        .all(JSON.stringify(part));
       for (const r of rows) (out.get(r.error_id) ?? out.set(r.error_id, []).get(r.error_id)!).push(siteOf(r));
     }
     return out;
@@ -146,7 +146,7 @@ export class ErrorSites {
     const tally = new Map<string, { open: number; pending: number; healed_ts: number | null }>();
     for (let i = 0; i < ids.length; i += 400) {
       const part = ids.slice(i, i + 400);
-      for (const t of this.db.query<{ error_id: string; open: number; pending: number; healed_ts: number | null }, string[]>(`SELECT error_id, open, pending, healed_ts FROM error_tally WHERE error_id IN (${part.map(() => "?").join(",")})`).all(...part)) tally.set(t.error_id, t);
+      for (const t of this.db.query<{ error_id: string; open: number; pending: number; healed_ts: number | null }, string[]>(`SELECT error_id, open, pending, healed_ts FROM error_tally WHERE error_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(part))) tally.set(t.error_id, t);
     }
     return recs.map((r) => {
       const sites = all.get(r.id);

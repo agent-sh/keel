@@ -60,10 +60,9 @@ export function callsNamed(db: Database, a: NamedAsk): NamedPage {
   const before = a.before ?? END;
   if (!namedByIndex(db, a.names)) {
     // A name the index holds no word of: the replies are looked through for it as it is stored.
-    const has = a.names.map(() => "instr(data, ?) > 0").join(" OR ");
     const rows = db.query<ReplyRow, (string | number)[]>(
-      `SELECT seq, id, data FROM events WHERE session_id = ? AND seq < ? AND kind = 'assistant' AND (${has}) ORDER BY seq DESC LIMIT ?`,
-    ).all(a.session, Math.min(before, a.below ?? END), ...a.names.map((n) => `"name":${JSON.stringify(n)}`), a.max);
+      `SELECT seq, id, data FROM events WHERE session_id = ? AND seq < ? AND kind = 'assistant' AND EXISTS (SELECT 1 FROM json_each(?) n WHERE instr(data, n.value) > 0) ORDER BY seq DESC LIMIT ?`,
+    ).all(a.session, Math.min(before, a.below ?? END), JSON.stringify(a.names.map((n) => `"name":${JSON.stringify(n)}`)), a.max);
     return { replies: callsOf(rows, a.names), below: rows.length === a.max ? rows.at(-1)!.seq : null };
   }
   // A call is indexed as its name and the words of its input: the name is the

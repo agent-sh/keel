@@ -119,8 +119,8 @@ export class MessageStates {
 
   private set(id: string, state: PeerState, from: PeerState[], reason?: string): boolean {
     const r = this.d.store.db
-      .query(`UPDATE fleet_messages SET state = ?1, state_ms = ?2, reason = COALESCE(?3, reason) WHERE id = ?4 AND state IN (${from.map(() => "?").join(",")})`)
-      .run(state, Date.now(), reason ?? null, id, ...from);
+      .query(`UPDATE fleet_messages SET state = ?1, state_ms = ?2, reason = COALESCE(?3, reason) WHERE id = ?4 AND state IN (SELECT value FROM json_each(?5))`)
+      .run(state, Date.now(), reason ?? null, id, JSON.stringify(from));
     if (!r.changes) return false;
     const to = this.d.store.db.query<{ to_session: string }, [string]>("SELECT to_session FROM fleet_messages WHERE id = ?").get(id)?.to_session;
     this.d.bus.emit({ t: "feature", name: "fleet_message", session_id: to, data: { id, state } });

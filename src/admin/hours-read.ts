@@ -66,9 +66,9 @@ export function hoursInput(db: Database, a: HoursAsk): HourInput | null {
 
   const spans = chunks((part) => db.query<HourSpan, string[]>(
     `SELECT span_id, parent_id, session_id, kind, name, start_ms, end_ms, attrs ->> '$.tool' AS tool, attrs ->> '$.shape.purpose' AS purpose
-     FROM spans WHERE session_id IN (${part.map(() => "?").join(",")})`).all(...part));
+     FROM spans WHERE session_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(part)));
   const waits = chunks((part) => db.query<{ session_id: string; from: number; to: number | null }, string[]>(
-    `SELECT session_id, created AS "from", ended AS "to" FROM waits WHERE session_id IN (${part.map(() => "?").join(",")}) AND kind NOT IN ('monitor', 'websocket')`).all(...part));
+    `SELECT session_id, created AS "from", ended AS "to" FROM waits WHERE session_id IN (SELECT value FROM json_each(?)) AND kind NOT IN ('monitor', 'websocket')`).all(JSON.stringify(part)));
   // A slot hold is said in the parent's activity, by the agent it holds.
   const byAgent = new Map(agents.map((r) => [r.id, r.session_id]));
   const holds = db.query<{ ts: number; agent: string | null }, [string]>("SELECT ts, data ->> '$.agent_id' AS agent FROM activity WHERE session_id = ? AND kind = 'agent' AND sub IN ('queued', 'slot_wait')");

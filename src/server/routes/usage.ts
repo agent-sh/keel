@@ -367,9 +367,8 @@ export const usageRoutes: RouteModule = ({ store, errors, providers }) => {
         const shown = list.slice(0, limit).map((b) => b.key);
         for (let i = 0; i < shown.length; i += 400) {
           const part = shown.slice(i, i + 400);
-          // Made for this request and freed after it: its text carries how many ids it names.
-          for (const r of store.db.prepare<{ id: string; title: string; archived: number; parent_id: string | null }, string[]>(
-            `SELECT id, title, archived, ${agents ? "parent_id" : "NULL AS parent_id"} FROM sessions WHERE id IN (${part.map(() => "?").join(",")})`).all(...part)) {
+          for (const r of store.db.query<{ id: string; title: string; archived: number; parent_id: string | null }, [string]>(
+            `SELECT id, title, archived, ${agents ? "parent_id" : "NULL AS parent_id"} FROM sessions WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(part))) {
             sessions[r.id] = { title: r.title, ...(r.parent_id ? { parent_id: r.parent_id } : {}), ...(r.archived ? { archived: true as const } : {}) };
           }
         }

@@ -19,4 +19,21 @@ test("a statement is compiled once per text, past the twenty bun:sqlite keeps", 
   small.query("SELECT 3");
   expect(small.query("SELECT 1")).toBe(a);
   expect(small.query("SELECT 2")).not.toBe(b);
+  // The one let go still works for a caller that holds it (a statement made once for the daemon's life).
+  expect(b.get()).toEqual({ 2: 2 });
+  expect(small.query("SELECT 2").get()).toEqual({ 2: 2 });
+});
+
+// A text made from a list (one placeholder an item) or a value is another statement for each
+// length or value: each compiled again, and kept, and the ones used longest ago pushed out.
+test("no statement text is made from a list's length or a value", async () => {
+  const made: string[] = [];
+  const list = /IN \(\$\{[^}]*\.map\(\(\) => ["']\?["']\)/;
+  const value = /(LIMIT \$\{[a-z]|'\$\.\$\{)/;
+  for await (const f of new Bun.Glob("src/**/*.ts").scan({ cwd: `${import.meta.dir}/../..` })) {
+    if (f.endsWith(".test.ts")) continue;
+    const text = await Bun.file(`${import.meta.dir}/../../${f}`).text();
+    text.split("\n").forEach((l, i) => { if (list.test(l) || value.test(l)) made.push(`${f}:${i + 1}`); });
+  }
+  expect(made).toEqual([]);
 });

@@ -295,7 +295,7 @@ export const onTree = (key: string, tree: string, inputs: string | null = null):
 export function onTrees(key: string, trees: string[]): Run[] {
   const d = db();
   if (!d || !trees.length) return [];
-  return d.query<Run, string[]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_key_tree WHERE key = ? AND tree IN (${trees.map(() => "?").join(", ")}) AND result IN ('pass', 'fail')`).all(key, ...trees);
+  return d.query<Run, string[]>(`SELECT ${COLS} FROM check_runs INDEXED BY check_runs_key_tree WHERE key = ? AND tree IN (SELECT value FROM json_each(?)) AND result IN ('pass', 'fail')`).all(key, JSON.stringify(trees));
 }
 
 export const run = (id: number): Run | undefined => db()?.query<Run, [number]>(`SELECT ${COLS} FROM check_runs WHERE id = ?`).get(id) ?? undefined;

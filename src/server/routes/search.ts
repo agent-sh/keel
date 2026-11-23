@@ -103,8 +103,8 @@ export const searchRoutes: RouteModule = ({ store, errors, providers }) => {
         const inState = lim.state ? Object.entries(board?.all() ?? {}).filter(([, st]) => st.watch === lim.state).map(([id]) => id) : undefined;
         if (inState) {
           if (!inState.length) return Response.json({ query: q, hits: [], limits: lim.said });
-          scope.push(`s.id IN (${inState.map(() => "?").join(",")})`);
-          args.push(...inState);
+          scope.push("s.id IN (SELECT value FROM json_each(?))");
+          args.push(JSON.stringify(inState));
         }
         const where = scope.length ? `AND ${scope.join(" AND ")}` : "";
         // What limits the rows of the index: their kind (a command is a call of a shell tool) and their time.

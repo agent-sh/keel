@@ -122,8 +122,8 @@ export function listSql(opts: ListOpts, now = Date.now()): { sql: string; args: 
   const args: (string | number)[] = [Math.max(now - KEEP_MS, opts.since ?? 0)];
   if (opts.until !== undefined) { where.push("a.ts < ?"); args.push(opts.until); }
   if (opts.kinds?.length) {
-    where.push(`a.kind IN (${opts.kinds.map(() => "?").join(", ")})`);
-    args.push(...opts.kinds);
+    where.push("a.kind IN (SELECT value FROM json_each(?))");
+    args.push(JSON.stringify(opts.kinds));
   }
   if (opts.session_id) { where.push("a.session_id = ?"); args.push(opts.session_id); }
   if (opts.q?.trim()) { where.push("a.text LIKE ? ESCAPE '\\'"); args.push(`%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`); }

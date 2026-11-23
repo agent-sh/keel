@@ -124,7 +124,7 @@ export function list(sessionId?: string, settled = 50): WaitRecord[] {
   const where = sessionId ? "AND session_id = ?" : "";
   const args = sessionId ? [sessionId] : [];
   const active = db.query<Row, any>(`SELECT * FROM waits WHERE status = 'active' ${where} ORDER BY created`).all(...args);
-  const done = db.query<Row, any>(`SELECT * FROM waits WHERE status != 'active' ${where} ORDER BY ended DESC LIMIT ${settled}`).all(...args);
+  const done = db.query<Row, any>(`SELECT * FROM waits WHERE status != 'active' ${where} ORDER BY ended DESC LIMIT ?`).all(...args, settled);
   return [...active, ...done].map(toRec);
 }
 
@@ -182,7 +182,7 @@ function saveCursor(id: string, c: LogCursor) {
 }
 
 function setState(id: string, key: string, value: unknown) {
-  D().store.db.query(`UPDATE waits SET state = json_set(COALESCE(state, '{}'), '$.${key}', json(?)) WHERE id = ?`).run(JSON.stringify(value), id);
+  D().store.db.query("UPDATE waits SET state = json_set(COALESCE(state, '{}'), ?, json(?)) WHERE id = ?").run(`$.${key}`, JSON.stringify(value), id);
 }
 function stateOf(id: string): Record<string, any> {
   const r = D().store.db.query<{ state: string | null }, [string]>("SELECT state FROM waits WHERE id = ?").get(id);

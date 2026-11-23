@@ -166,7 +166,7 @@ export function writeOld(db: Database, rowid: number, kind: string) {
 }
 
 const has = (db: Database, names: string[]) =>
-  new Set(db.query<{ name: string }, string[]>(`SELECT name FROM sqlite_master WHERE name IN (${names.map(() => "?").join(", ")})`).all(...names).map((r) => r.name));
+  new Set(db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE name IN (SELECT value FROM json_each(?))").all(JSON.stringify(names)).map((r) => r.name));
 type Meta = { version: number; upto: number | null; fill_below: number | null; reads_old: number };
 export function searchMeta(db: Database): Meta | undefined {
   if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'search_meta'").get()) return undefined;

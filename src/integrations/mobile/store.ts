@@ -304,10 +304,10 @@ export class MobileStore implements ReplayStore {
   // Events after a global cursor across all sessions, oldest first; only the
   // given kinds when named.
   eventsAfter(since: number, limit: number, kinds?: string[]): (StoredEvent & { gseq: number })[] {
-    const only = kinds?.length ? ` AND e.kind IN (${kinds.map(() => "?").join(", ")})` : "";
+    const only = kinds?.length ? " AND e.kind IN (SELECT value FROM json_each(?))" : "";
     return this.db
       .query<any, any[]>(`SELECT e.*, g.gseq FROM event_gseq g JOIN events e ON e.id = g.event_id WHERE g.gseq > ?${only} ORDER BY g.gseq LIMIT ?`)
-      .all(since, ...(kinds ?? []), limit)
+      .all(since, ...(kinds?.length ? [JSON.stringify(kinds)] : []), limit)
       .map((r) => ({ ...r, data: JSON.parse(r.data) }));
   }
   // When the event at a cursor was stored (the newest one at or before it).

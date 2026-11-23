@@ -50,7 +50,7 @@ function rowsWhere(q: ContentQuery, call: string): { sql: string; args: (string 
   const r = q.rows ?? {};
   const sql: string[] = [];
   const args: (string | number)[] = [];
-  if (r.kinds) { sql.push(`f.kind IN (${r.kinds.map(() => "?").join(",")})`); args.push(...r.kinds); }
+  if (r.kinds) { sql.push("f.kind IN (SELECT value FROM json_each(?))"); args.push(JSON.stringify(r.kinds)); }
   if (r.commands) { sql.push(`(${SHELL_TOOLS.map(() => `${call} LIKE ?`).join(" OR ")})`); args.push(...SHELL_TOOLS.map((t) => `${t} %`)); }
   if (r.since !== undefined) { sql.push("CAST(f.ts AS INTEGER) >= ?"); args.push(r.since); }
   if (r.until !== undefined) { sql.push("CAST(f.ts AS INTEGER) < ?"); args.push(r.until); }

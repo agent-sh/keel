@@ -4,10 +4,14 @@
 // (Database.MAX_QUERY_CACHE_SIZE) and compiles every later text again at each
 // call: the store has hundreds, so most of its reads and writes compiled their
 // statement each time (eight times the cost of a cached read, and a statement
-// object left for the collector each call). Here query() keeps them all, the
-// ones used longest ago given back past `kept`. A statement that is given back
-// is not finalized: a caller may still hold it (it goes with the collector).
-// The ones kept are finalized when the connection closes.
+// object left for the collector each call). Here query() keeps them all, past
+// `kept` the one used longest ago let go (not finalized: a statement made once
+// and held for the daemon's life, as the sends and the vault's ledger do, is
+// the oldest entry and must go on working; the collector frees it once nothing
+// holds it). A text is compiled once only when it is the same each call: a
+// value goes in as a bound parameter, a list as one JSON array (`json_each(?)`),
+// never into the text, so the bound is not reached in practice. The ones kept
+// are finalized when the connection closes.
 import type { Database, Statement } from "bun:sqlite";
 
 export const STATEMENTS_KEPT = 2048;
@@ -24,7 +28,10 @@ export function cacheStatements(db: Database, kept = STATEMENTS_KEPT): void {
     }
     const st = prepare(sql);
     cache.set(sql, st);
-    if (cache.size > kept) cache.delete(cache.keys().next().value!);
+    if (cache.size > kept) {
+      const [old] = cache.entries().next().value!;
+      cache.delete(old);
+    }
     return st;
   };
   // A close finalizes what is kept first: a statement left open keeps the connection (and its log) open.

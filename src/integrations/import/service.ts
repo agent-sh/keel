@@ -367,7 +367,7 @@ export class Imports {
     const args: (string | number)[] = [];
     if (q.harness) { where.push("harness = ?"); args.push(q.harness); }
     const kinds = kindsOf(q.show);
-    if (kinds) { where.push(`kind IN (${kinds.map(() => "?").join(", ")})`); args.push(...kinds); }
+    if (kinds) { where.push("kind IN (SELECT value FROM json_each(?))"); args.push(JSON.stringify(kinds)); }
     if (q.cwd) { where.push("cwd = ?"); args.push(q.cwd); }
     const words = wordsOf(q.q);
     if (words.length) {
@@ -432,7 +432,7 @@ export class Imports {
 
     // Only now are the page's rows decoded.
     const take = merged.flatMap((m) => (m.f ? [] : [(m.k as IndexKey).rowid]));
-    const found = new Map(take.length ? db.query<{ rowid: number; found: string }, any[]>(`SELECT rowid, found FROM import_index WHERE rowid IN (${take.map(() => "?").join(", ")})`).all(...take).map((r) => [r.rowid, r.found]) : []);
+    const found = new Map(take.length ? db.query<{ rowid: number; found: string }, any[]>(`SELECT rowid, found FROM import_index WHERE rowid IN (SELECT value FROM json_each(?))`).all(JSON.stringify(take)).map((r) => [r.rowid, r.found]) : []);
     // A row only a search inside found says so: what matched is not in what the row shows.
     const inText = (f: Found) => !!q.inside?.has(f.path) && !words.every((w) => haystack(f).includes(w));
     const sessions = merged.flatMap((m) => { const f = m.f ?? (found.has((m.k as IndexKey).rowid) ? this.decode(found.get((m.k as IndexKey).rowid)!) : undefined); return f ? [{ ...f, imported: this.importedAs(f), ...(inText(f) ? { in_text: true as const } : {}) }] : []; });
@@ -468,9 +468,9 @@ export class Imports {
     let hit = this.insideCache.get(key);
     if (!hit) {
       const indexed = fileStores.filter(isIndexed);
-      const where = ["found IS NOT NULL", `harness IN (${indexed.map(() => "?").join(", ") || "NULL"})`];
-      const args: string[] = [...indexed];
-      if (kinds) { where.push(`kind IN (${kinds.map(() => "?").join(", ")})`); args.push(...kinds); }
+      const where = ["found IS NOT NULL", "harness IN (SELECT value FROM json_each(?))"];
+      const args: string[] = [JSON.stringify(indexed)];
+      if (kinds) { where.push("kind IN (SELECT value FROM json_each(?))"); args.push(JSON.stringify(kinds)); }
       const sql = `SELECT rowid, path FROM import_index WHERE ${where.join(" AND ")}`;
       const side = this.side(o.harness).filter((f) => !inDatabase(f.harness) && (!kinds || kinds.includes(f.kind))).map((f) => f.path);
       // One search for everyone who asks the same meanwhile; stopped when nobody waits for it any more

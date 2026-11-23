@@ -39,7 +39,8 @@ export function keyBlocks(body: unknown, text: string): void {
   const h = `${Bun.hash(text).toString(36)}.${text.length.toString(36)}`;
   keys.set(body, h);
   const b = body as { blocks?: unknown; results?: unknown; images?: unknown };
-  for (const [name, list] of [["", b.blocks], ["", b.results], ["i", b.images]] as const) {
+  // (Each list its own prefix: a body with blocks and results has a block 0 of each, two blocks.)
+  for (const [name, list] of [["", b.blocks], ["r", b.results], ["i", b.images]] as const) {
     if (!Array.isArray(list)) continue;
     list.forEach((x, i) => { if (x && typeof x === "object") keys.set(x, `${h}.${name}${i}`); });
   }

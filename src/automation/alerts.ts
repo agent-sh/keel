@@ -500,8 +500,8 @@ function file(x: Filing): Alert | undefined {
   const made = store.db.transaction(() => {
   let asked: number | undefined;
   if (key && decision) {
-    asked = store.db.query<{ t: number | null }, string[]>(`SELECT MIN(ts) AS t FROM alerts WHERE kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
-      .get(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs])?.t ?? undefined;
+    asked = store.db.query<{ t: number | null }, string[]>(`SELECT MIN(ts) AS t FROM alerts WHERE kind = ? AND json_extract(data, ?) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
+      .get(...[kind, `$.${key}`, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs])?.t ?? undefined;
   }
   if (key && decision) {
     // An approval or a question is its own decision: the same one raised again
@@ -510,8 +510,8 @@ function file(x: Filing): Alert | undefined {
     // An approval the owner has looked at and not answered is still listed while it waits: told of
     // again (its card changed while it waits), it is the same row, not a second one beside it.
     if (kind === "approval" && store.db.query(`SELECT 1 FROM alerts WHERE read = 1 AND kind = 'approval' AND json_extract(data, '$.approval_id') = ?${origin} LIMIT 1`).get(...[String(decision), ...theirs])) return undefined;
-    store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
-      .run(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
+    store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, ?) = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
+      .run(...[kind, `$.${key}`, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
   } else if (sid && failureFp(data)) {
     // Agents' failures of one cause are one row a cause: a newer count replaces the unread row of its cause, never the session's own failure.
     store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ?`).run(sid, kind, failureFp(data)!);
@@ -726,7 +726,7 @@ export function farWasRead(machine: string, o: { ids?: unknown; session_id?: unk
     const db = D().store.db;
     const keys = Array.isArray(o.ids) ? o.ids.map((id) => farKey(machine, String(id))).slice(0, 500) : [];
     const ids = keys.length
-      ? db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND far_id IN (${keys.map(() => "?").join(", ")})`).all(...keys)
+      ? db.query<{ id: string }, string[]>(`SELECT id FROM alerts WHERE read = 0 AND far_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(keys))
       : typeof o.session_id === "string"
       ? db.query<{ id: string }, [string]>("SELECT id FROM alerts WHERE read = 0 AND far_session = ? AND kept = 0").all(`${machine}--${o.session_id}`)
       : o.all
@@ -857,8 +857,8 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
   const args: (string | number)[] = [];
   if (opts.ids) {
     if (!opts.ids.length) return 0;
-    where.push(`id IN (${opts.ids.map(() => "?").join(", ")})`);
-    args.push(...opts.ids.map(String));
+    where.push("id IN (SELECT value FROM json_each(?))");
+    args.push(JSON.stringify(opts.ids.map(String)));
   } else if (opts.session_id) { where.push("(session_id = ? OR far_session = ?)"); args.push(opts.session_id, opts.session_id); }
   else if (!opts.all) return 0;
   if (Number.isFinite(opts.seen)) { where.push("rev <= ?"); args.push(Number(opts.seen)); }

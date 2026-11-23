@@ -142,13 +142,13 @@ export const artifactRoutes: RouteModule = ({ store, bus, errors }) => {
   const listOf = (s: Session) => {
     scanDir(s);
     const ids = [s.id, ...store.descendants(s.id)];
-    return db.query(`SELECT * FROM artifacts WHERE session_id IN (${ids.map(() => "?").join(",")}) ORDER BY last_ts DESC`).all(...ids).map((r) => view(r, s));
+    return db.query(`SELECT * FROM artifacts WHERE session_id IN (SELECT value FROM json_each(?)) ORDER BY last_ts DESC`).all(JSON.stringify(ids)).map((r) => view(r, s));
   };
   // A file the page may read: one of the session's artifacts, or in its artifacts folder.
   const allowed = (s: Session, path: string | null) => {
     if (!path) return null;
     const ids = [s.id, ...store.descendants(s.id)];
-    if (db.query(`SELECT 1 FROM artifacts WHERE path = ? AND session_id IN (${ids.map(() => "?").join(",")})`).get(path, ...ids)) return path;
+    if (db.query(`SELECT 1 FROM artifacts WHERE path = ? AND session_id IN (SELECT value FROM json_each(?))`).get(path, JSON.stringify(ids))) return path;
     const real = realOf(path);
     return contains(realOf(dirOf(s)), real) ? real : null;
   };
