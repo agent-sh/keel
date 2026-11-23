@@ -1,5 +1,7 @@
 // What an answer on the approval cards may cover. Pure: the cards measure
-// where they stand on screen (ApprovalCard.tsx), this decides from it. The
+// where they stand on screen (ApprovalCard.tsx, PlanCard.tsx), this decides
+// from it. The one part that is not pure is when a reading is taken (the
+// painted reader at the end): what counts as seen is what was painted. The
 // rule behind all of it: an approval is never given for something the owner
 // could not have read, or for a control that came under the hand a moment ago.
 import type { Approval } from "../../../src/safety/gate.ts";
@@ -65,15 +67,20 @@ export const pressable = (h: Hold | undefined, ripe: boolean, scrolling: boolean
 //   that has just arrived, a view the page itself moved (opening a long text
 //   jumps to its end, and what it jumped over was never in view);
 // - while the owner scrolls, each view counts as it is read, with the one
-//   they scrolled away from. A scroll is read at every step, and its steps
-//   overlap, so what it passes is counted; a jump counts where it lands. (A
-//   row the owner scrolled to is read as the scroll ends: its answer still
-//   waits out the card's first second on the page.)
+//   they scrolled away from, but only a view that was painted: a reading
+//   taken after the frame that drew it (`painted`, from the painted reader
+//   below). A view the page scrolled to and moved on from before a paint
+//   (a key handler's step, several steps in one frame) never stood on the
+//   screen, and counts for nothing. A scroll is read once a frame, and its
+//   painted views overlap, so what it passes is counted; a jump counts where
+//   it lands. (A row the owner scrolled to is read as the scroll ends: its
+//   answer still waits out the card's first second on the page.)
 // `total`, `line`: the text's lines as it wraps now and a line's height (a text
 // that wraps anew is another text: nothing of it was seen). `view`: the rows
-// in view now; `since`: when exactly those came to be the ones in view.
+// in view now; `since`: when exactly those came to be the ones in view;
+// `shown`: the last painted view (where an own scroll left from).
 type Rows = [number, number];
-export type Lines = { total: number; line: number; seen: Rows[]; view: Rows | null; since: number };
+export type Lines = { total: number; line: number; seen: Rows[]; view: Rows | null; since: number; shown: Rows | null };
 
 function withRows(seen: Rows[], [a, b]: Rows): Rows[] {
   const out: Rows[] = [];
@@ -87,18 +94,20 @@ function withRows(seen: Rows[], [a, b]: Rows): Rows[] {
 }
 
 // The next reading of a text. `own`: the view moved by the owner's own scroll
-// since the last reading, with nothing else changed.
-export function sawLines(prev: Lines | undefined, at: { total: number; line: number; view: Rows | null }, own: boolean, now: number): Lines {
+// since the last reading, with nothing else changed. `painted`: the reading
+// was taken after the frame that drew this view was painted.
+const sameRows = (a: Rows | null, b: Rows | null) => !!a && !!b && Math.abs(a[0] - b[0]) < 1 && Math.abs(a[1] - b[1]) < 1;
+export function sawLines(prev: Lines | undefined, at: { total: number; line: number; view: Rows | null; painted?: boolean }, own: boolean, now: number): Lines {
   const same = !!prev && prev.total === at.total && Math.abs(prev.line - at.line) < 0.01;
   let seen = same ? prev!.seen : [];
-  const was = same ? prev!.view : null;
-  const kept = !!at.view && !!was && Math.abs(was[0] - at.view[0]) < 1 && Math.abs(was[1] - at.view[1]) < 1;
+  const kept = sameRows(same ? prev!.view : null, at.view);
   const since = kept ? prev!.since : now;
+  const left = same ? prev!.shown : null; // the painted view the owner's scroll left from
   if (at.view) {
-    if (own && !kept) seen = withRows(was ? withRows(seen, was) : seen, at.view);
+    if (own && at.painted && !sameRows(left, at.view)) seen = withRows(left ? withRows(seen, left) : seen, at.view);
     else if (now - since >= SETTLE_MS) seen = withRows(seen, at.view);
   }
-  return { total: at.total, line: at.line, seen, view: at.view, since };
+  return { total: at.total, line: at.line, seen, view: at.view, since, shown: at.painted ? at.view : left };
 }
 
 // The lines that have not been in view (`n`), and how many of those are not in
@@ -195,3 +204,50 @@ export const batchName = (b: Pick<Batch, "tool" | "kind">, n: number): string =>
 // What the action says it covers: all of the tool's requests, or how many of them.
 export const coverName = (b: Pick<Batch, "tool" | "kind" | "waiting">, n: number): string =>
   n === b.waiting ? `all ${batchName(b, n)}` : `${n} of ${batchName(b, b.waiting)}`;
+
+// ---- The painted reader: when a reading of the lines in view is taken.
+// What a reading counts as seen must have stood on the screen. A reading is
+// asked for by whatever may have moved a view (a scroll, a resize, a step of
+// End); it is taken once a frame, after that frame was painted: a frame's
+// callback marks where the watched elements stand, a task posted from it runs
+// after the paint, and the reading is taken there only if they still stand
+// where they were marked (a key handled between the paint and the task moved
+// them: that view was not painted, and the reading waits for the next frame).
+// Asks within one frame are one reading: a view a later one replaced before
+// the paint is never read. `then` runs after the reading it waited for.
+export type PaintedReader = { ask: (then?: () => void) => void; stop: () => void };
+export function paintedReader(watched: () => Element[], read: () => void): PaintedReader {
+  let frame = 0, stopped = false;
+  let waiting: (() => void)[] = [];
+  const mark = () => watched().map((el) => { const r = el.getBoundingClientRect(); return `${Math.round(r.top * 10)}:${Math.round(r.bottom * 10)}:${el.scrollTop}`; }).join("|");
+  const port = new MessageChannel();
+  let marked = "";
+  port.port1.onmessage = () => {
+    if (stopped) return;
+    if (mark() !== marked) return schedule();
+    const then = waiting;
+    waiting = [];
+    read();
+    for (const f of then) f();
+  };
+  const schedule = () => {
+    if (frame || stopped) return;
+    frame = requestAnimationFrame(() => { frame = 0; marked = mark(); port.port2.postMessage(0); });
+  };
+  return {
+    ask: (then) => { if (then) waiting.push(then); schedule(); },
+    stop: () => { stopped = true; cancelAnimationFrame(frame); waiting = []; port.port1.close(); },
+  };
+}
+
+// Reads on through a text by steps (End, Page Down), each a move of the
+// owner's own: a step is made only once the view before it was painted and
+// read (two frames after the key, or after the reading of the step before),
+// and its own view is read after it was painted. `step` moves the view and
+// says whether it did; `end`: on to the end, else one step. `done` runs when
+// the steps are over (the last one read, or no step left to make).
+export function readOnSteps(step: () => boolean, reader: PaintedReader, end: boolean, done?: () => void): void {
+  const later = (f: () => void) => requestAnimationFrame(() => requestAnimationFrame(f));
+  const next = () => { if (step()) reader.ask(() => (end ? later(next) : done?.())); else done?.(); };
+  later(next);
+}

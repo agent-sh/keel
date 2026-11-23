@@ -267,12 +267,15 @@ test.describe("on a phone", () => {
       const free = () => approve.evaluate((el) => { const b = el.getBoundingClientRect(); const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height - 2); return b.top >= 0 && b.bottom <= innerHeight && !!at && el.contains(at); });
       await expect(approve).toBeInViewport({ ratio: 1 });
       expect(await free()).toBe(true);
+      // What stays at the foot is its buttons: it leaves the plan two thirds of the region or more.
+      const foot = (await card.locator(".k-plan-foot").boundingBox())!, region = (await pane.getByTestId("composer-tray").boundingBox())!;
+      expect(foot.height).toBeLessThanOrEqual(region.height / 3);
       await shoot(page, "plan-02-phone-arrival");
       // A tap before the plan was read approves nothing, and says why, in words of no key.
       await page.waitForTimeout(1200);
       await approve.tap();
       await expect(card.getByTestId("plan-hint")).toHaveText(/not seen yet/);
-      await expect(card).not.toContainText(/\b(Enter|Tab|Esc)\b/);
+      expect(await card.innerText()).not.toMatch(/\b(Enter|Tab|Esc)\b/);
       await shoot(page, "plan-03-phone-unread");
       expect(await open()).toBe(1);
       // Scrolled through as a finger does, a step at a time: read, with Approve in view all along.
@@ -289,4 +292,86 @@ test.describe("on a phone", () => {
       await expect.poll(open).toBe(0);
     } finally { await request.delete(`/api/sessions/${session.id}`); }
   });
+});
+
+// Feature: a long plan is read only through what was painted, and its foot stands still. A key that
+// reads on (End, Page Down) moves the plan a step at a time and each view counts once it was painted,
+// so nothing the screen never showed is counted as seen; a press refused for a plan not read keeps the
+// foot's height and Approve where it was, so the next press lands on it.
+test("a long plan counts only painted lines, and a refused press moves nothing", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+  const made: string[] = [];
+  const plan = async () => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `A long plan ${made.length + 1}` } })).json();
+    made.push(session.id);
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "plan", sandbox: "off" } });
+    const steps = Array.from({ length: 200 }, (_, i) => `${i + 1}. Step ${i + 1}.`).join("\n");
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "present_plan", input: { plan: steps } }])}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/plan`)).json()).open.length, { timeout: 30_000 }).toBe(1);
+    return session.id as string;
+  };
+  // After every paint, each step of the plan that stood whole where words show is marked painted; when
+  // the card first says it was read, the steps never painted are kept.
+  const record = () => page.evaluate(() => {
+    const w = window as any;
+    w.__painted = new Set<number>(); w.__miss = null;
+    const sample = () => {
+      const el = document.querySelector<HTMLElement>('[data-testid="plan-text"]');
+      if (!el) return;
+      const tray = el.closest('[data-testid="composer-tray"]'), foot = el.closest('[data-testid="plan-card"]')!.querySelector<HTMLElement>(".k-plan-foot");
+      const r = el.getBoundingClientRect(), b = tray?.getBoundingClientRect(), f = foot?.getBoundingClientRect();
+      let top = Math.max(0, b?.top ?? 0, r.top + el.clientTop), bottom = Math.min(innerHeight, b?.bottom ?? innerHeight, r.top + el.clientTop + el.clientHeight);
+      if (f && foot && getComputedStyle(foot).position === "sticky" && f.top < bottom && f.bottom > top) bottom = Math.min(bottom, f.top);
+      const items = el.querySelectorAll("li");
+      items.forEach((li, i) => { const q = li.getBoundingClientRect(); if (q.height > 0 && q.top >= top - 0.5 && q.bottom <= bottom + 0.5) w.__painted.add(i); });
+      if (w.__miss === null && el.closest('[data-testid="plan-card"]')!.hasAttribute("data-read")) w.__miss = [...items].map((_, i) => i + 1).filter((n) => !w.__painted.has(n - 1));
+    };
+    const port = new MessageChannel();
+    port.port1.onmessage = () => { sample(); requestAnimationFrame(() => port.port2.postMessage(0)); };
+    requestAnimationFrame(() => port.port2.postMessage(0));
+  });
+  const missed = () => page.evaluate(() => (window as any).__miss as number[] | null);
+  // The recorder has sampled the view the plan arrived in.
+  const recording = () => expect.poll(() => page.evaluate(() => (window as any).__painted.size as number)).toBeGreaterThan(0);
+  try {
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    // End on the text reads the plan to its end: read, with every step painted on the way.
+    const first = await plan();
+    await page.goto(`/s/${first}`);
+    const card = page.getByTestId("plan-card");
+    await expect(card.getByTestId("plan-text")).toBeFocused();
+    await expect(card).toHaveAttribute("data-keys", "ready");
+    await record();
+    await recording();
+    await page.keyboard.press("End");
+    await expect(card).toHaveAttribute("data-read", "true", { timeout: 20_000 });
+    expect(await missed()).toEqual([]);
+    // Page Down pressed fast, forty times: whatever it counts, it painted.
+    const second = await plan();
+    await page.goto(`/s/${second}`);
+    await expect(card.getByTestId("plan-text")).toBeFocused();
+    await expect(card).toHaveAttribute("data-keys", "ready");
+    await record();
+    await recording();
+    for (let i = 0; i < 40; i++) await page.keyboard.press("PageDown");
+    for (let i = 0; i < 80 && !(await card.getAttribute("data-read")); i++) await page.keyboard.press("PageDown");
+    await expect(card).toHaveAttribute("data-read", "true", { timeout: 20_000 });
+    expect(await missed()).toEqual([]);
+    // A press on Approve of a plan not read is refused, and the foot keeps its height and Approve its place.
+    const third = await plan();
+    await page.goto(`/s/${third}`);
+    const approve = card.getByTestId("plan-approve");
+    await expect(approve).toBeVisible();
+    const foot = card.locator(".k-plan-foot");
+    // (Once the card has come in: it rises into its place as it arrives.)
+    await expect(card).not.toHaveCSS("transform", /matrix/);
+    const before = { foot: (await foot.boundingBox())!.height, at: (await approve.boundingBox())!.y };
+    await approve.click();
+    await expect(card.getByTestId("plan-hint")).toHaveText(/not seen yet/);
+    expect((await foot.boundingBox())!.height).toBe(before.foot);
+    expect(Math.abs((await approve.boundingBox())!.y - before.at)).toBeLessThan(1);
+    await shoot(page, "plan-05-refused-still");
+    expect((await (await request.get(`/api/sessions/${third}/plan`)).json()).open).toHaveLength(1);
+  } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
 });

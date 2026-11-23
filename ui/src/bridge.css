@@ -940,6 +940,10 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-plan-foot { background: var(--raised); }
 .k-plan-foot[data-stick] { position: sticky; bottom: 0; z-index: 1; }
 .k-plan-foot[data-stuck] { box-shadow: 0 -1px 0 var(--line); }
+/* On a phone the foot that stays is its buttons: the mode keeps its name for a screen reader only,
+   and stands beside Approve on one row. */
+/* (By whether it stays, which depends on the sizes only: by whether it lies over the text now, its height would change what it lies over.) */
+@media (max-width: 767px) { .k-plan-foot[data-stick] .k-plan-label { display: none; } .k-plan-foot[data-stick] { padding-block: 0.5rem; } }
 .k-tray:has(.k-plan-foot[data-stuck])[data-more="down"] { mask-image: none; }
 .k-tray:has(.k-plan-foot[data-stuck])[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
 /* The control that opens a request's text and folds it again keeps the width of its longest

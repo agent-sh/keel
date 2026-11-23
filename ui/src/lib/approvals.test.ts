@@ -169,7 +169,7 @@ test("the action says what it covers", () => {
 
 test("a text is read when every line of it has been in view: by the owner's scroll, or standing for the settle time", () => {
   const H = 20; // a line's height
-  const at = (view: [number, number] | null, total = 41) => ({ total, line: H, view });
+  const at = (view: [number, number] | null, total = 41) => ({ total, line: H, view, painted: true });
   // A card that has just arrived: what shows counts once it has stood for the settle time.
   let l: Lines = sawLines(undefined, at([0, 200]), false, 0);
   expect(unseenLines(l)).toMatchObject({ n: 41, out: 31 });
@@ -206,4 +206,23 @@ test("a text is read when every line of it has been in view: by the owner's scro
   expect(unseenLines(sawLines(undefined, at(null), false, 0)).begun).toBe(false);
   expect(unseenLines(m).begun).toBe(true);
   expect(unseenLines(undefined)).toEqual({ n: 1, out: 0, begun: false });
+});
+
+test("an own scroll counts only views that were painted", () => {
+  const H = 20;
+  const at = (view: [number, number] | null, painted: boolean) => ({ total: 41, line: H, view, painted });
+  // Read on arrival (painted), then steps a key handler made and read before any paint: none of them counts.
+  let l: Lines = sawLines(undefined, at([0, 200], true), false, 0);
+  for (const top of [180, 360, 540, 720]) l = sawLines(l, at([top, top + 200], false), true, 10 + top / 100);
+  expect(unseenLines(l).n).toBe(41);
+  // The view they ended on is painted and read: it counts, and so does the painted one the scroll left from.
+  l = sawLines(l, at([620, 820], true), true, 30);
+  expect(l.seen).toEqual([[0, 200], [620, 820]]);
+  // A painted view first read before its paint (as the scroll moved it) still counts when read painted.
+  let q: Lines = sawLines(undefined, at([0, 200], true), false, 0);
+  q = sawLines(q, at([180, 380], false), true, 5);
+  q = sawLines(q, at([180, 380], true), true, 16);
+  expect(q.seen).toEqual([[0, 380]]);
+  // A view that stood for the settle time counts however it was read.
+  expect(sawLines(sawLines(undefined, at([0, 200], false), false, 0), at([0, 200], false), false, SETTLE_MS).seen).toEqual([[0, 200]]);
 });

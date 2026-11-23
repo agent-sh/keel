@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
-import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type Stand } from "../lib/approvals.ts";
+import { batches, batchName, coverName, hold, nextAction, paintedReader, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
 import { editBody, type EditBody } from "../lib/edit-body.ts";
@@ -150,6 +150,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
   const [view, setView] = useState(NO_VIEW);
   const st = useRef({
     cards, seen: new Map<string, Reading>(), lines: new Map<string, Lines>(), tall: new Set<string>(), acts: new Map<string, Action>(), hot: new Set<string>(), spent: new Set<string>(), view: NO_VIEW,
+    reader: null as PaintedReader | null, // takes the readings after a paint (lib/approvals.ts)
     sig: "",          // the region's frame at the last reading
     top: 0,           // how far it was scrolled then, and at the last timed reading
     timedTop: 0,
@@ -161,7 +162,8 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
   for (const id of st.current.spent) if (!cards.some((a) => a.id === id)) st.current.spent.delete(id);
   const waiting = cards.filter((a) => !st.current.spent.has(a.id));
   st.current.cards = waiting;
-  const tick = useCallback((why?: "timer" | "scrollend"): View => {
+  // `painted`: taken by the painted reader (lib/approvals.ts), after the frame that drew it.
+  const tick = useCallback((why?: "timer" | "scrollend", painted = false): View => {
     const s = st.current, root = list.current, now = performance.now();
     const seen: typeof s.seen = new Map();
     // A hidden page, or a pane something covers, shows nothing: every time starts again.
@@ -199,7 +201,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
         el.toggleAttribute("data-foot", tall && (el.hasAttribute("data-foot") || (!!words && words.bottom > f.shown.bottom + 1 && words.top < f.shown.bottom)));
         const text = sum ? clipUnder(sum, foot, f.text) : f.text;
         // The view moved by the owner's own scroll when their hand came first and nothing in the list changed.
-        if (sum) s.lines.set(id, sawLines(s.lines.get(id), rowsInView(sum, text), s.input && !listChanged, now));
+        if (sum) s.lines.set(id, sawLines(s.lines.get(id), { ...rowsInView(sum, text), painted }, s.input && !listChanged, now));
         seen.set(id, {
           born: was?.born ?? now,
           sum: sum ? stand(was?.sum, seenAt(sum, text, true).at, now) : undefined,
@@ -243,7 +245,9 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     const root = list.current;
     if (!any || !root) return;
     const tray = root.closest<HTMLElement>('[data-testid="composer-tray"]');
-    const read = () => { tick(); };
+    // Every move is read at once (for the answers' places) and again once it was painted (for the lines seen).
+    const reader = (st.current.reader = paintedReader(() => [...(tray ? [tray] : []), ...root.querySelectorAll('[data-testid="approval-summary"]')], () => tick(undefined, true)));
+    const read = () => { tick(); reader.ask(); };
     const ended = () => { tick("scrollend"); };
     // What comes before a scroll the owner makes: a wheel, a key, a finger put down on the
     // list, or a press on the region itself (its scroll bar).
@@ -270,6 +274,8 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     // Read as the page hides, so the time away counts for nothing.
     document.addEventListener("visibilitychange", read);
     return () => {
+      reader.stop();
+      st.current.reader = null;
       window.clearInterval(timer);
       sized.disconnect();
       root.removeEventListener("scroll", read, { capture: true });
