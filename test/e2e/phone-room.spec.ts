@@ -260,6 +260,53 @@ test.describe("on a phone", () => {
   });
 });
 
+// Feature: on a phone's home, requests are answered one after another at a finger's pace. An
+// answered row keeps its room for the settle time (and while a finger is down), so the next row's
+// Allow stays where it stood and takes the next tap; a row that moves is still refused.
+test.describe("on a phone's home", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("four requests are allowed with four taps: the next row stays where it stood, and the list closes up at once when none is left in view", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const ids: string[] = [];
+    try {
+      for (let i = 1; i <= 4; i++) {
+        const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Burst ${i}` } })).json();
+        ids.push(session.id);
+        await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+        await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: `touch burst-${i}.txt` } }])}` } });
+      }
+      const waiting = async () => { let n = 0; for (const id of ids) n += ((await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals ?? []).length; return n; };
+      await expect.poll(waiting, { timeout: 30_000 }).toBe(4);
+      await page.goto("/");
+      // (Only these sessions' rows: a daemon others work on may have requests of its own waiting.)
+      const allows = page.getByTestId("home-lists").locator(ids.map((id) => `[data-testid="home-session"][data-session="${id}"] [data-testid="home-allow"]`).join(", "));
+      await expect(allows).toHaveCount(4);
+      // The first is pressable once it has stood; each next one is pressable as soon as the one before was taken.
+      await expect(allows.first()).not.toHaveAttribute("aria-disabled", /./);
+      // The second stands where it stood while the first is answered, and takes a tap at once.
+      const second = (await allows.nth(1).boundingBox())!.y;
+      for (let k = 0; k < 4; k++) {
+        const next = allows.first();
+        if (k === 1) {
+          // (Under a pixel: what the Allow's own rule calls standing still, lib/approvals.ts.)
+          expect(Math.abs((await next.boundingBox())!.y - second)).toBeLessThan(1);
+          expect(await next.getAttribute("aria-disabled")).toBeNull();
+        }
+        // Once the rows in view are answered the list closes up at once; the rows that come up are
+        // pressed once they say they can be (a tap before that would be refused, and none is made).
+        await expect(next).not.toHaveAttribute("aria-disabled", /./);
+        const b = (await next.boundingBox())!;
+        await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+        await expect.poll(waiting).toBe(3 - k);
+        await expect(allows).toHaveCount(3 - k);
+        if (k === 0) await shoot(page, "phone-06-home-answered-row");
+      }
+      await expect(page.getByTestId("home-note")).toHaveCount(0);
+    } finally { for (const id of ids) await request.delete(`/api/sessions/${id}`); }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a

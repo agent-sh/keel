@@ -859,6 +859,10 @@ html[data-resizing] iframe { pointer-events: none; }
 /* A row. Its first line opens the session: the mark, the title in the width it has, where and
    when. Its second says what kind of thing waits and what it is, with the row's one action. */
 .k-home-row { display: flex; flex-direction: column; padding: 0.5rem 0 0.625rem; border-bottom: 1px solid var(--line); }
+/* A row answered a moment ago keeps its room while the list stands still under the hand (HomeWatch.tsx). */
+.k-home-kept { flex-direction: row; align-items: center; gap: 0.75rem; padding-left: 1.75rem; }
+.k-home-kept .k-home-row-title { color: var(--faint); font-weight: 400; }
+.k-home-kept-word { flex-shrink: 0; font-size: var(--text-micro); font-weight: 600; color: var(--muted); }
 .k-home-row-main { display: flex; align-items: baseline; gap: 0.75rem; min-width: 0; text-align: left; border-radius: 0.25rem; }
 .k-home-row-main:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .k-home-row-mark { display: grid; place-items: center; align-self: center; flex-shrink: 0; width: 1rem; height: 1.3125rem; }
@@ -1285,6 +1289,10 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
   .k-station .k-terminal { min-height: calc(var(--spacing-tap) + 0.5rem); }
   .k-terminal > .k-copy-corner.k-copy-second { right: calc(var(--spacing-tap) + 0.5rem); }
   .k-home-row-main { align-items: center; }
+  /* The headline's counts keep one line, scrolled sideways when there are more than fit: a count that
+     comes or goes never pushes the rows under it (and the Allow a finger is on its way to) down. */
+  .k-home-state:not([data-quiet]) { flex-wrap: nowrap; column-gap: 1rem; overflow-x: auto; scrollbar-width: none; padding: 0.25rem; margin-inline: -0.25rem; }
+  .k-home-state:not([data-quiet]) > .k-home-count { flex-shrink: 0; white-space: nowrap; }
   /* A question's choice is a row as tall as a target: its words stand in its middle. */
   .k-q-option { align-items: center; }
   .k-station-identity .k-station-title { max-width: calc(100% - 3 * var(--spacing-tap) - 0.5rem); }

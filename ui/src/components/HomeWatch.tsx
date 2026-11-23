@@ -31,7 +31,7 @@
 //   and answers nothing. A press before that is answered: the button is ringed
 //   and the row says why.
 // - Deny opens the card's own denial, the keyboard in its reason field.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { READ_MS, SETTLE_MS, settled, stand, type Stand } from "../lib/approvals.ts";
 import { focusAsk } from "../lib/asks.ts";
@@ -185,7 +185,7 @@ function Held({ id, stands, lead, quiet, busy, onAct, onRefused, testid, title, 
   );
 }
 
-function Row({ s, st, lead, stands }: { s: Session; st: SessionState; lead: boolean; stands: Stands }) {
+function Row({ s, st, lead, stands, onAnswer, room }: { s: Session; st: SessionState; lead: boolean; stands: Stands; onAnswer: () => void; room?: number }) {
   const w = st.watch;
   const f = useFact(s, st);
   const a = f.approval;
@@ -205,6 +205,7 @@ function Row({ s, st, lead, stands }: { s: Session; st: SessionState; lead: bool
     if (!a || busy) return;
     setBusy(true);
     setNote(null);
+    onAnswer();
     try {
       await safety.answer(s.id, a.id, { choice: "once" });
     } catch (e) {
@@ -218,7 +219,7 @@ function Row({ s, st, lead, stands }: { s: Session; st: SessionState; lead: bool
   };
   const here = w === "need" && f.whole !== null && !note?.review;
   return (
-    <div className="k-home-row" data-testid="home-session" data-watch={w} data-session={s.id}>
+    <div className="k-home-row" data-testid="home-session" data-watch={w} data-session={s.id} style={room ? { minHeight: room } : undefined}>
       <button type="button" className="k-home-row-main" data-testid="home-open" onClick={open}>
         <span className={cn("k-home-row-mark", st.offline && "opacity-45 grayscale [&_.k-mark]:[animation-play-state:paused]")}><Mark w={w} /></span>
         <span dir="auto" className="k-home-row-title">{s.title || "New session"}</span>
@@ -250,18 +251,80 @@ function Row({ s, st, lead, stands }: { s: Session; st: SessionState; lead: bool
   );
 }
 
+// The rows stand still under the hand: while a finger or the pointer is down on the list, and
+// for the settle time after an answer and after a row it answered went, the rows keep their
+// order and their places. A row that left meanwhile keeps its room, as a quiet line that says it
+// was answered; one that came is put at the end. Then the list is what it is. (Without it, an
+// answered row went at once, the next came up under the finger, and its Allow, having just moved,
+// refused the press that followed.) With no answer of a row left in view to press, the list closes
+// up at once: nothing is under the finger then, and the rows that come up start their settle time
+// as early as they can.
+function useStill(root: RefObject<HTMLElement | null>, live: string[]) {
+  const [held, setHeld] = useState<string[] | null>(null);
+  const down = useRef(false), until = useRef(0), timer = useRef(0);
+  const shownNow = useRef(live);
+  const heights = useRef(new Map<string, number>());
+  // An answer of a row still waiting stands whole in the window (one a finger may be on its way to).
+  const pressable = () => [...(root.current?.querySelectorAll<HTMLElement>('[data-testid="home-session"] [data-hold]') ?? [])].some((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
+  });
+  const release = useCallback(() => {
+    window.clearTimeout(timer.current);
+    const wait = until.current - performance.now();
+    if (down.current) return;
+    if (!pressable()) { until.current = 0; setHeld(null); return; }
+    if (wait > 0) { timer.current = window.setTimeout(release, wait + 1); return; }
+    setHeld(null);
+  }, []);
+  const hold = useCallback((ms: number) => {
+    until.current = Math.max(until.current, performance.now() + ms);
+    setHeld((h) => h ?? shownNow.current);
+    release();
+  }, [release]);
+  useEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const press = () => { down.current = true; hold(0); };
+    const up = () => { if (!down.current) return; down.current = false; release(); };
+    el.addEventListener("pointerdown", press, true);
+    addEventListener("pointerup", up, true);
+    addEventListener("pointercancel", up, true);
+    return () => { el.removeEventListener("pointerdown", press, true); removeEventListener("pointerup", up, true); removeEventListener("pointercancel", up, true); window.clearTimeout(timer.current); };
+  }, [root, hold, release]);
+  const order = held ? [...held, ...live.filter((id) => !held.includes(id))] : live;
+  shownNow.current = order;
+  const gone = held ? held.filter((id) => !live.includes(id)) : [];
+  // A row that went while held keeps the list still for the settle time from then.
+  const goneKey = gone.join();
+  useEffect(() => { if (goneKey) hold(SETTLE_MS); }, [goneKey, hold]);
+  // (Read after the frame the list was drawn in: whether an answer is left in view.)
+  useEffect(() => { if (held && !down.current) { const f = requestAnimationFrame(() => release()); return () => cancelAnimationFrame(f); } }, [held, goneKey, release]);
+  // Each row's height as drawn before the hold (and of one that came during it, as it came): the
+  // room it keeps while held, whatever it says meanwhile (an answered request leaves its row first).
+  useLayoutEffect(() => {
+    for (const r of root.current?.querySelectorAll<HTMLElement>('[data-testid="home-session"][data-session]') ?? []) {
+      if (!held || !heights.current.has(r.dataset.session!)) heights.current.set(r.dataset.session!, r.getBoundingClientRect().height);
+    }
+  });
+  return { order, held: !!held, gone: new Set(gone), height: (id: string) => heights.current.get(id), answered: () => hold(SETTLE_MS) };
+}
+
 function List({ title, rows, most, testid, className }: { title: string; rows: { id: string; w: Watch }[]; most: number; testid: string; className?: string }) {
   const { byId, states } = useHome();
   const root = useRef<HTMLElement>(null);
   const stands = useStands(root);
   const { shown, more } = useMemo(() => pickRows(rows, most), [rows, most]);
-  if (!rows.length) return null;
+  const still = useStill(root, useMemo(() => shown.map((r) => r.id), [shown]));
+  if (!rows.length && !still.gone.size) return null;
   const next = more[0]?.ids[0];
   return (
     <section ref={root} className={className} data-testid={testid}>
       <h2 className="k-pane-empty-word">{title}</h2>
       <div className="k-home-list">
-        {shown.map((r, i) => byId[r.id] && states[r.id] && <Row key={r.id} s={byId[r.id]!} st={states[r.id]!} lead={i === 0} stands={stands} />)}
+        {still.order.map((id) => still.gone.has(id)
+          ? <div key={id} className="k-home-row k-home-kept" data-testid="home-kept" data-session={id} style={{ minHeight: still.height(id) }} aria-hidden="true"><span dir="auto" className="k-home-row-title">{byId[id]?.title || "New session"}</span><span className="k-home-kept-word">Answered</span></div>
+          : byId[id] && states[id] && <Row key={id} s={byId[id]!} st={states[id]!} lead={id === still.order.find((x) => !still.gone.has(x))} stands={stands} onAnswer={still.answered} room={still.held ? still.height(id) : undefined} />)}
       </div>
       {/* What did not fit, in the headline's own words, so the two counts read as one. */}
       {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => openWaiting(next, states[next]?.child)}>{sayMore(more)}</button>}
