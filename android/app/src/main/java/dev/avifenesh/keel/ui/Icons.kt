@@ -17,6 +17,7 @@ private fun icon(name: String, vararg paths: String): ImageVector = ImageVector.
 
 object Ic {
     val ArrowLeft by lazy { icon("arrow-left", "m12 19-7-7 7-7", "M19 12H5") }
+    val ArrowDown by lazy { icon("arrow-down", "M12 5v14", "m19 12-7 7-7-7") }
     val ArrowUp by lazy { icon("arrow-up", "m5 12 7-7 7 7", "M12 19V5") }
     val Square by lazy { icon("square", "M5.0 3.0h14.0a2.0 2.0 0 0 1 2.0 2.0v14.0a2.0 2.0 0 0 1 -2.0 2.0h-14.0a2.0 2.0 0 0 1 -2.0 -2.0v-14.0a2.0 2.0 0 0 1 2.0 -2.0z") }
     val Plus by lazy { icon("plus", "M5 12h14", "M12 5v14") }

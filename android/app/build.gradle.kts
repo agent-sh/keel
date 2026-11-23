@@ -92,4 +92,8 @@ dependencies {
     testImplementation("org.json:json:20231013")
     androidTestImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.7.0")
+    // The screens' own tests, on a device or the emulator (connectedDebugAndroidTest).
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

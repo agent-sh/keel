@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -119,10 +120,9 @@ fun SessionScreen(act: MainActivity, id: String) {
         Rule()
         usage?.let { Txt(it, T.meta, k.muted, Modifier.fillMaxWidth().background(k.panel).padding(horizontal = S.lg, vertical = 8.dp)) }
         if (error.isNotBlank()) Notice(error, modifier = Modifier.padding(S.md))
-        val list = rememberLazyListState()
         val items = msgs.filter { it.kind != "deleted" }
-        // Newest at the bottom: the list runs reversed, so a new message keeps the view at the end.
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, reverseLayout = true, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = S.md)) {
+        val newest = items.lastOrNull()
+        FollowingList(newest?.id, newest?.mine == true, draft.length, Modifier.weight(1f).fillMaxWidth()) {
             if (isWorking || draft.isNotBlank()) item(key = "live") {
                 Column(Modifier.padding(horizontal = S.lg, vertical = 6.dp)) {
                     if (draft.isNotBlank()) Markdown(draft)
@@ -149,6 +149,41 @@ fun SessionScreen(act: MainActivity, id: String) {
         Composer(id, isWorking, chat?.archived == true) { error = it }
     }
     viewing?.let { Viewer(it) { viewing = null } }
+    }
+}
+
+/**
+ * The transcript's list, newest at the bottom. While the owner is at the end, what arrives (a
+ * message, the streamed reply growing: `growth`) stays on the screen; the owner's own send always
+ * brings the view down. Read further up, the view stays where it is, and a button leads back down.
+ * (A list keeps its place by the item it shows: a message added after it would land below the screen.)
+ */
+@Composable
+fun FollowingList(newest: String?, newestMine: Boolean, growth: Int, modifier: Modifier = Modifier, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
+    val k = k()
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // Whether the owner is at the end: changed only by the owner's own scrolling, never by a layout.
+    var follow by remember { mutableStateOf(true) }
+    // A scroll of this list's own making (back to the end) says nothing of where the owner reads.
+    var own by remember { mutableStateOf(false) }
+    suspend fun toEnd(animate: Boolean) { own = true; try { if (animate) list.animateScrollToItem(0) else list.scrollToItem(0) } finally { own = false; follow = true } }
+    LaunchedEffect(list) {
+        snapshotFlow { list.isScrollInProgress to list.canScrollBackward }.collect { (moving, back) -> if (moving && !own) follow = !back }
+    }
+    LaunchedEffect(newest, growth) {
+        if (newest == null) return@LaunchedEffect
+        if (newestMine || follow) toEnd(false)
+    }
+    Box(modifier) {
+        LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = S.md), content = content)
+        if (!follow && list.canScrollBackward) Box(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = S.md).size(44.dp).clip(RoundedCornerShape(S.rPill))
+                .background(k.raised).border(1.dp, k.lineStrong, RoundedCornerShape(S.rPill))
+                .press({ scope.launch { toEnd(true) } })
+                .semantics { contentDescription = "Latest" }.testTag("to-latest"),
+            contentAlignment = Alignment.Center,
+        ) { KIcon(Ic.ArrowDown, k.fg, 20.dp) }
     }
 }
 

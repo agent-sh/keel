@@ -107,6 +107,8 @@ JDK 21 and the Android SDK (platform 37).
 ```bash
 cd android
 ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+# the screens' own tests, on the emulator or a phone that adb sees (they uninstall the debug app after)
+./gradlew :app:connectedDebugAndroidTest
 # release: a properties file with storeFile, storePassword, keyAlias, keyPassword
 ./gradlew -PkeelSigning=/path/to/keystore.properties :app:assembleRelease
 ./gradlew --stop
