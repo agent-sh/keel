@@ -246,7 +246,7 @@ function init(deps: Deps) {
         if (alerts.raisedFor("plan_id", card.id, card.session_id)) return;
         const first = card.plan.split("\n").find((l) => l.trim())?.replace(/^[#\s>*-]+/, "") ?? "";
         alerts.raise("question", card.session_id, `Plan to approve: ${deps.store.session(card.session_id)?.title || "a session"}`, clip(card.title || first || "The model presents its plan.", 300), { plan_id: card.id, open_session: card.session_id });
-      } else if (!deps.engine.isDraining?.()) alerts.readWhere("plan_id", card.id);
+      } else if (!deps.engine.isDraining?.()) alerts.readWhere("plan_id", card.id, card.session_id);
       return;
     }
     // A secret the model asks the owner to give waits on them like a question: an alert until it is given or let go.

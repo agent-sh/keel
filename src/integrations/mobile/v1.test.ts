@@ -21,7 +21,7 @@ import { mobileApi } from "./v1.ts";
 import { pushData, testMessage } from "./push.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
 import { Gate, type Approval } from "../../safety/gate.ts";
-import { planRoutes } from "../../server/routes/plan.ts";
+import { planRoutes, plansWaiting } from "../../server/routes/plan.ts";
 import { toolsFor } from "../../tools/registry.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
@@ -364,13 +364,17 @@ describe("uploads", () => {
 
 describe("plans", () => {
   // The page's plan routes over the same store, and the tool a model in plan mode calls.
-  const planApi: any = planRoutes({ store, bus } as any);
+  let draining = false;
+  const planApi: any = planRoutes({ store, bus, engine: { isDraining: () => draining } } as any);
   const present = toolsFor("other").find((t) => t.name === "present_plan")!;
+  const stops: AbortController[] = [];
   const presents = (sid: string, callId: string, plan: string) => {
     store.append(sid, "assistant", { blocks: [{ type: "tool_use", id: callId, name: "present_plan", input: { plan, title: "Split the store" } }] });
     let got: any;
-    present.run({ plan, title: "Split the store" }, { callId, sessionId: sid, signal: new AbortController().signal } as any).then((r: any) => (got = r));
-    return () => got;
+    const stop = new AbortController();
+    stops.push(stop);
+    present.run({ plan, title: "Split the store" }, { callId, sessionId: sid, signal: stop.signal } as any).then((r: any) => (got = r));
+    return Object.assign(() => got, { stop: () => stop.abort() });
   };
   const signedApprove = (aid: string, body: any) => {
     const ts = String(Math.floor(Date.now() / 1000));
@@ -415,16 +419,44 @@ describe("plans", () => {
     void planApi;
   });
 
-  test("two sessions' plans under one call id are two cards: one that closed hides nothing of the other", async () => {
+  test("two sessions' plans under one call id wait side by side: deciding one leaves the other waiting", async () => {
     const a = session("A"), b = session("B");
-    presents(a.id, "call-same", "1. A.");
+    const ra = presents(a.id, "call-same", "1. A."), rb = presents(b.id, "call-same", "1. B.");
     await Bun.sleep(0);
-    expect((await call("POST", `/v1/approvals/plan-${a.id}.call-same`, { choice: "deny" })).status).toBe(200);
-    presents(b.id, "call-same", "1. B.");
+    expect(plansWaiting().filter((p) => p.id === "call-same").map((p) => p.session_id).sort()).toEqual([a.id, b.id].sort());
+    expect((await call("POST", `/v1/approvals/plan-${a.id}.call-same`, { choice: "deny", feedback: "not A" })).status).toBe(200);
     await Bun.sleep(0);
+    expect([ra().content.includes("not A"), rb()]).toEqual([true, undefined]);
     const cards = (await call("GET", "/v1/sync")).body.approvals.filter((c: any) => c.kind === "plan" && c.id.endsWith(".call-same"));
     expect(cards.map((c: any) => [c.id, c.state]).sort()).toEqual([[`plan-${a.id}.call-same`, "denied"], [`plan-${b.id}.call-same`, "pending"]].sort());
     expect((await call("POST", `/v1/approvals/plan-${b.id}.call-same`, { choice: "deny" })).status).toBe(200);
+  });
+
+  test("a plan parked by a stopping daemon is not said to have ended; one whose turn was stopped is", async () => {
+    const s = session("Parked");
+    const parked = presents(s.id, "call-park", "1. Wait.");
+    await Bun.sleep(0);
+    draining = true;
+    try { parked.stop(); } finally { draining = false; }
+    await Bun.sleep(0);
+    expect((await call("GET", "/v1/sync")).body.approvals.some((c: any) => c.id === `plan-${s.id}.call-park`)).toBe(false);
+    // Put back on its card at the next start: the phone sees it waiting, under the same id.
+    presents(s.id, "call-park", "1. Wait.");
+    await Bun.sleep(0);
+    expect((await call("GET", "/v1/sync")).body.approvals.filter((c: any) => c.id === `plan-${s.id}.call-park`).map((c: any) => c.state)).toEqual(["pending"]);
+    // The owner's Stop ends it.
+    stops.at(-1)!.abort();
+    await Bun.sleep(0);
+    expect((await call("GET", "/v1/sync")).body.approvals.filter((c: any) => c.id === `plan-${s.id}.call-park`).map((c: any) => c.state)).toEqual(["expired"]);
+  });
+
+  test("a plan is not approved from a notification", async () => {
+    const s = session("From a notification");
+    presents(s.id, "call-note", "1. One.");
+    await Bun.sleep(0);
+    const r = await signedApprove(`plan-${s.id}.call-note`, { choice: "once", seen: "whole", via: "notification" });
+    expect([r.status, r.body.error]).toEqual([409, "Open the plan to read it before approving it."]);
+    expect((await call("POST", `/v1/approvals/plan-${s.id}.call-note`, { choice: "deny", via: "notification" })).status).toBe(200);
   });
 
   test("a plan's push opens the app and allows nothing from the notification", () => {

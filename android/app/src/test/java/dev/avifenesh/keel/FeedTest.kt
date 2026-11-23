@@ -32,6 +32,19 @@ class FeedTest {
         assertEquals(10L, it.cursor)
     }
 
+    @Test fun aCardClosedWithoutAnAnswerOpensAgainWhenItIsPutBack() {
+        val f = level()
+        // The daemon stopped under it (an older daemon said it expired), then put it back on its card.
+        f.frame(frame("approval").put("approval", card("expired")))
+        assertFalse(f.cards.value.getValue("q-1").pending)
+        f.frame(frame("approval").put("approval", card("pending")))
+        assertTrue(f.cards.value.getValue("q-1").pending)
+        // One that was answered stays answered, whatever an older frame says.
+        f.frame(frame("approval").put("approval", card("approved")))
+        f.frame(frame("approval").put("approval", card("pending")))
+        assertFalse(f.cards.value.getValue("q-1").pending)
+    }
+
     @Test fun aLateCatchUpRecoversWhatWasMissedUnderANewerLiveMessage() {
         val f = level()
         f.closed()

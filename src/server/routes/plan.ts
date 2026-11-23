@@ -13,7 +13,10 @@ const bad = (error: string, status = 400) => json({ error }, status);
 
 export type PlanCard = { id: string; session_id: string; plan: string; title?: string; created: number };
 type Answer = { approved: true; mode: string; plan: string; note?: string } | { approved: false; feedback?: string };
+// By session and id: a plan is known by its tool call's id, and a wire whose ids count the calls
+// gives two sessions the same one.
 const waiting = new Map<string, PlanCard & { resolve: (a: Answer) => void }>();
+const keyOf = (sessionId: string, id: string) => `${sessionId}\u0000${id}`;
 // How a plan stopped waiting: approved (in a mode), sent back to planning, or the turn ended under it.
 export type PlanEnd = { card: PlanCard; how: "approved" | "denied" | "expired"; mode?: string; at: number };
 // The plans that ended in the last day, newest last: a client that was away (a phone) is told how
@@ -24,7 +27,10 @@ let emit: (c: PlanCard, state: "open" | "closed", end?: PlanEnd) => void = () =>
 export const plansEnded = (sinceMs: number): PlanEnd[] => ended.filter((e) => e.at >= sinceMs);
 // The plans that wait for the owner now: a session with one needs them (src/automation/state.ts).
 export const plansWaiting = (): PlanCard[] => Array.from(waiting.values(), ({ resolve: _r, ...c }) => c);
-export const planWaits = (id: string) => waiting.has(id);
+export const planWaits = (sessionId: string, id: string) => waiting.has(keyOf(sessionId, id));
+// Set when the routes load: the daemon is stopping, and a plan whose wait ends now is parked with its
+// turn, to be put back on its card at the next start (it did not end).
+let parking = () => false;
 // Known as calls that wait on the owner before their route module registers them (see declareAsksOwner).
 declareAsksOwner("ExitPlanMode", "present_plan");
 
@@ -36,8 +42,10 @@ async function present(input: any, ctx: ToolContext) {
   const card: PlanCard = { id: ctx.callId ?? crypto.randomUUID(), session_id: ctx.sessionId, plan: plan.slice(0, 40_000), title: input?.title ? String(input.title).slice(0, 120) : undefined, created: Date.now() };
   const a = await new Promise<Answer>((resolve) => {
     const done = (x: Answer, stopped = false) => {
-      if (!waiting.delete(card.id)) return;
+      if (!waiting.delete(keyOf(card.session_id, card.id))) return;
       ctx.signal.removeEventListener("abort", onAbort);
+      // Parked with its turn by a daemon that stops: it did not end, and no client is told it did.
+      if (stopped && parking()) { emit(card, "closed"); resolve(x); return; }
       const end: PlanEnd = { card, how: stopped ? "expired" : x.approved ? "approved" : "denied", ...(x.approved ? { mode: x.mode } : {}), at: Date.now() };
       while (ended.length && (ended[0]!.at < end.at - ENDED_FOR)) ended.shift();
       ended.push(end);
@@ -45,7 +53,7 @@ async function present(input: any, ctx: ToolContext) {
       resolve(x);
     };
     const onAbort = () => done({ approved: false, feedback: "the turn was stopped" }, true);
-    waiting.set(card.id, { ...card, resolve: done });
+    waiting.set(keyOf(card.session_id, card.id), { ...card, resolve: done });
     emit(card, "open");
     if (ctx.signal.aborted) onAbort();
     else ctx.signal.addEventListener("abort", onAbort, { once: true });
@@ -83,12 +91,13 @@ const PresentPlan: Tool = {
 export type PlanDecision = { approve?: unknown; mode?: unknown; plan?: unknown; note?: unknown; feedback?: unknown };
 // `proven`: asked once an approval is valid, before it is applied; an answer it gives refuses it.
 type Said = { status: number; body: any };
-export let decidePlan: (id: string, b: PlanDecision, proven?: () => Said | null) => Said = () => ({ status: 503, body: { error: "plans are not loaded" } });
+export let decidePlan: (sessionId: string, id: string, b: PlanDecision, proven?: () => Said | null) => Said = () => ({ status: 503, body: { error: "plans are not loaded" } });
 
 export const planRoutes: RouteModule = (deps: Deps) => {
   const { store, bus } = deps;
-  decidePlan = (id, b, proven) => {
-    const w = waiting.get(id);
+  parking = () => !!deps.engine?.isDraining?.();
+  decidePlan = (sessionId, id, b, proven) => {
+    const w = waiting.get(keyOf(sessionId, id));
     if (!w) return { status: 404, body: { error: "no plan is waiting with that id" } };
     // The decision is said one way. A body that says it another way (or not
     // at all) decides nothing: the plan keeps waiting.
@@ -128,11 +137,11 @@ export const planRoutes: RouteModule = (deps: Deps) => {
     },
     "/api/sessions/:id/plan/:pid": {
       POST: async (req: any) => {
-        const w = waiting.get(req.params.pid);
+        const w = waiting.get(keyOf(req.params.id, req.params.pid));
         if (!w || w.session_id !== req.params.id) return bad("no plan is waiting with that id", 404);
         const b = await body(req);
         // Leaving plan mode lets the session do more: from a remote device, the owner's passkey.
-        const r = decidePlan(w.id, b, () => presence && !presence.allows(req, `plan:${w.id}`)
+        const r = decidePlan(w.session_id, w.id, b, () => presence && !presence.allows(req, `plan:${w.id}`)
           ? { status: 428, body: { error: "this needs your passkey from a remote device", presence: { action: `plan:${w.id}` } } } : null);
         return json(r.body, r.status);
       },

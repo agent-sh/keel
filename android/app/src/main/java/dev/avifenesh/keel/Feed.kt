@@ -239,10 +239,14 @@ class Feed {
     /** The daemon's answer to a card: the card as it stands now. */
     fun resolved(o: JSONObject): Card? = o.optJSONObject("approval")?.let(Card::of)?.also { mergeCards(listOf(it)) }
 
-    /** A card that closed stays closed: an older frame that still calls it pending changes nothing. */
+    /**
+     * A card that was answered stays answered: an older frame that still calls it pending changes nothing.
+     * One that closed without an answer ("expired": its turn ended under it, or a daemon that stopped said
+     * so) opens again when the daemon puts it back on its card.
+     */
     @Synchronized fun mergeCards(list: List<Card>, replacePending: Boolean = false) {
         val before = cards.value
-        val fresh = list.filter { !(it.pending && before[it.id]?.pending == false) }
+        val fresh = list.filter { !(it.pending && before[it.id]?.let { b -> !b.pending && b.state != "expired" } == true) }
         cards.update { all ->
             val base = if (replacePending) all.filterValues { !it.pending } else all
             base + fresh.associateBy { it.id }

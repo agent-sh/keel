@@ -546,10 +546,12 @@ export function mobileApi(ctx: MobileCtx) {
       if (!p) return ended ? json({ error: `this plan is already ${ended.how === "approved" ? "approved" : ended.how === "denied" ? "sent back to planning" : "closed"}`, approval: planCardOf(ended.card, ended) }, 409) : err("this plan is no longer waiting", 409);
       if (text) return err("answer only applies to questions", 400);
       if (choice === "always") return err("a plan is approved for the work it describes, not always", 400);
+      // A notification shows a line of it: a plan is approved only from where it is read whole.
+      if (choice !== "deny" && b.via === "notification") return json({ error: "Open the plan to read it before approving it.", hold: ["plan"], approval: planCardOf(p) }, 409);
       // Approved only once the whole plan was on the phone's screen.
       if (choice !== "deny" && b.seen !== "whole") return json({ error: "Read the plan to its end to approve it.", hold: ["plan"], approval: planCardOf(p) }, 409);
       const feedback = typeof b.feedback === "string" ? b.feedback : undefined;
-      const r = decidePlan(id, choice === "deny" ? { approve: false, feedback } : { approve: true, mode: choice === "session" ? "auto-edits" : "ask" });
+      const r = decidePlan(sid, id, choice === "deny" ? { approve: false, feedback } : { approve: true, mode: choice === "session" ? "auto-edits" : "ask" });
       if (r.status !== 200) return json({ error: r.body.error ?? "the plan was not decided", approval: planCardOf(p) }, r.status);
       const end = plansEnded(0).findLast((e) => e.card.id === id && e.card.session_id === sid);
       return json({ approval: planCardOf(p, end ?? { card: p, how: choice === "deny" ? "denied" : "approved", at: Date.now() }), resolved: 1 });
@@ -710,7 +712,8 @@ export function mobileApi(ctx: MobileCtx) {
                 const s = store.session(f.data.data.parent_id);
                 if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
-              else if (f.t === "feature" && f.name === "plan" && f.data?.card) {
+              // (A plan parked with its turn by a stopping daemon is closed with no end: nothing is said of it.)
+              else if (f.t === "feature" && f.name === "plan" && f.data?.card && (f.data.state === "open" || f.data.end)) {
                 // A plan presented, or how it ended: its card, its place in the chat, and the chat's row.
                 const a = planCardOf(f.data.card, f.data.end);
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });

@@ -117,7 +117,7 @@ export const currentRev = () => D().store.db.query<{ n: number }, []>("SELECT n 
 // and is read when that daemon says it was answered. See `waits`.)
 function stillOpen(a: Pick<Alert, "kind" | "session_id" | "data">): boolean {
   if (a.kind === "approval") return !!a.data?.approval_id && perm.gate?.approval(a.data.approval_id)?.state === "pending";
-  if (a.kind === "question" && a.data?.plan_id) return planWaits(a.data.plan_id);
+  if (a.kind === "question" && a.data?.plan_id) return planWaits(a.data.open_session ?? a.session_id ?? "", a.data.plan_id);
   if (a.kind === "question" && a.data?.secret_id) return secretsWaiting().some((c) => c.id === a.data.secret_id);
   if (a.kind === "question") return !!a.data?.call_id && pendingQuestions(a.data.open_session ?? a.session_id ?? "").includes(a.data.call_id);
   return false;
