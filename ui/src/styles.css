@@ -724,7 +724,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
    other). Printed, a page draws every block first (Transcript.tsx); a box still held is printed as
    its words. */
 .k-hold { content-visibility: auto; overflow: clip; color: transparent; font-size: var(--text-micro); line-height: 1.2; forced-color-adjust: none; }
-.k-hold > * { margin: 0; overflow: clip; white-space: pre-line; }
+.k-hold > * { margin: 0; overflow: clip; white-space: pre-wrap; }
 @media print {
   .k-hold { content-visibility: visible; height: auto !important; overflow: visible; color: inherit; font-size: inherit; line-height: inherit; }
   .k-hold > * { height: auto !important; overflow: visible; margin-bottom: 0.75em; }
