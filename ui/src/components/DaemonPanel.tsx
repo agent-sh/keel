@@ -11,12 +11,13 @@ import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { type Restart, restartSummary, restartTurnLine } from "../../../src/admin/life-rows.ts";
 import type { CauseKind } from "../../../src/admin/stall-cause.ts";
 import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
-import { confirmAction } from "./Confirm.tsx";
+import { askRestart, turnsOf } from "../lib/restart.ts";
+import { countName, STATE_WORD } from "../../../src/core/state-words.ts";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
 type Stall = { ts_ms: number; ms: number; what: string; kind: string; error_id?: string };
-type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null; stalls?: Stall[]; earlier_starts?: { start: Restart; stalls: Stall[]; down_ms?: number }[] };
+type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; waiting?: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null; stalls?: Stall[]; earlier_starts?: { start: Restart; stalls: Stall[]; down_ms?: number }[] };
 const ENDED: Record<NonNullable<Restart["before"]>["how"] | "unknown", string> = { killed: "Went down", crash: "Failed", restart: "Restarted", stop: "Stopped", signal: "Stopped by a signal", unknown: "Not known" };
 const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Resumed", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
@@ -152,19 +153,12 @@ export function DaemonPanel() {
     return () => { off(); clearInterval(iv); heard(); };
   }, []);
 
-  const restart = async () => {
-    const n = st?.running.length ?? 0;
-    const ok = await confirmAction({
-      title: "Restart Keel?",
-      body: n ? `${n} turn${n > 1 ? "s are" : " is"} running. New work waits; running turns get two minutes to finish, and any still running then resume after the restart.` : "No turn is running. The page reconnects by itself.",
-      action: "Restart",
-      careful: true,
-    });
-    if (ok) await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true, reason: "asked from Settings, Daemon" }) });
-  };
+  const restart = () => askRestart(st ?? { running: [] }, "asked from Settings, Daemon");
 
   if (!st) return <div className="text-ui text-faint">Asking the daemon.</div>;
   const draining = st.draining;
+  const { working, waiting } = turnsOf(st);
+  const titles = (ids: string[]) => ids.map((id) => sessions[id]?.title || "a session").join(", ");
   return (
     <div className="flex flex-col gap-4" data-testid="daemon-panel">
       <Card>
@@ -174,8 +168,9 @@ export function DaemonPanel() {
             {!connected ? "Reconnecting" : draining ? (draining.restart ? "Restarting" : "Stopping") : `pid ${st.pid}, up ${dur(Date.now() - st.started_ms)}`}
           </span>
         </SettingRow>
-        <SettingRow label="Running turns" hint={st.running.length ? st.running.map((id) => sessions[id]?.title || "a session").join(", ") : "None right now."}>
-          <span className="text-ui tabular-nums text-muted" data-testid="daemon-running">{st.running.length}</span>
+        {/* The turns that work, apart from those that only wait on the owner: a restart waits for the first, not the second. */}
+        <SettingRow label="Working turns" hint={working.length || waiting.length ? [working.length ? titles(working) : "", waiting.length ? `${STATE_WORD.need}: ${titles(waiting)}` : ""].filter(Boolean).join(". ") : "None right now."}>
+          <span className="text-ui tabular-nums text-muted" data-testid="daemon-running">{working.length}{waiting.length > 0 && <span className="text-faint" data-testid="daemon-waiting">{`, ${waiting.length} ${countName("need", waiting.length)}`}</span>}</span>
         </SettingRow>
         <SettingRow
           label="Restart"

@@ -233,6 +233,9 @@ export class Daemon {
       argv: relaunchArgv(),
       systemd: process.env.KEEL_SUPERVISED === "systemd",
       running: this.runningSessions(),
+      // Of those, the turns that do nothing but wait on the owner (an approval, a question, a plan): a
+      // restart does not wait for them, and they ask again after it.
+      waiting: this.runningSessions().filter((id) => this.deps.engine.waitsOnOwner(id)),
       draining: this.draining,
       // What the daemon before this one left to be said at this start (a restart that made no backup, writes it could not save).
       start_notes: startNotes,
