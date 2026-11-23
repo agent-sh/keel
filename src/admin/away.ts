@@ -20,7 +20,7 @@
 import { localTime, zoned, zonedPair, zoneLabel } from "../core/clock.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
 import type { DaemonFacts, OutageFact, StallFact } from "./daemon-facts.ts";
-import { type Restart, restartSummary, tally } from "./life-rows.ts";
+import { downMs, type Restart, restartSummary, tally } from "./life-rows.ts";
 import { agentsText, costText, cutText, failedText, fitted, MAX, name, plural, shortId, SINCE_MAX_MS, titleAt, usd, type Overview, type OverviewRow } from "./overview.ts";
 import { dur } from "./timeline-rows.ts";
 
@@ -199,9 +199,9 @@ export function stallsLine(stalls: StallFact[]): string {
 // signal from outside: neither asked of Keel nor the daemon's own doing, and said as such.
 const wasAsked = (r: Restart) => r.before?.how === "restart" || r.before?.how === "stop";
 const bySignal = (r: Restart) => r.before?.how === "signal";
-const longest = (rs: Restart[]) => rs.reduce((n, r) => Math.max(n, r.before ? Math.max(0, r.up_ms - r.before.down_ms) : 0), 0);
+const longest = (rs: Restart[]) => rs.reduce((n, r) => Math.max(n, downMs(r)), 0);
 const cutOf = (rs: Restart[]) => rs.flatMap((r) => r.turns.filter((t) => !t.earlier));
-const downOf = (rs: Restart[]) => rs.reduce((n, r) => n + (r.before ? Math.max(0, r.up_ms - r.before.down_ms) : 0), 0);
+const downOf = (rs: Restart[]) => rs.reduce((n, r) => n + downMs(r), 0);
 // "(killed, or the machine went down; ended on a failure)": the ways among these starts.
 function ownWays(rs: Restart[]): string {
   const has = (how: string | undefined) => rs.some((r) => r.before?.how === how);
@@ -271,7 +271,7 @@ function cutBrief(rs: Restart[]): string {
   const stuck = cut.filter((t) => t.state === "held" || t.state === "left");
   return `, ${plural(cut.length, "turn")} cut${stuck.length ? ` (${tally(stuck)})` : ""}`;
 }
-const downWords = (r: Restart) => (!r.before ? "started after an end that was not recorded" : `${r.before.how === "killed" ? "went down" : "ended on a failure"} and came back after ${dur(Math.max(0, r.up_ms - r.before.down_ms))}`);
+const downWords = (r: Restart) => (!r.before ? "started after an end that was not recorded" : `${r.before.how === "killed" ? "went down" : "ended on a failure"} and came back after ${dur(downMs(r))}`);
 // "the daemon went down and came back after 29 s, 6 turns cut; restarted 12 times when asked, 71 turns cut; unresponsive twice".
 export function daemonBrief(f: DaemonFacts | undefined): string {
   const outages = outageBrief(f?.outages);

@@ -10,14 +10,17 @@ import type { CutState, CutTurn } from "../engine/hooks.ts";
 // `crash`: the process ended itself on a failure (`code`: its exit code).
 // `signal`: a stop signal from outside (SIGTERM, SIGINT) stopped it: nobody asked Keel to stop.
 // `within_ms`: a killed daemon that was idle wrote its sign of life this far apart: it went down at `down_ms` or within this long after.
-export type Before = { pid: number; started_ms: number; down_ms: number; how: "killed" | "restart" | "stop" | "crash" | "signal"; code?: number; within_ms?: number };
+// `drain_ms`: a stop it made itself: when it stopped taking work. It answered requests until `down_ms`.
+export type Before = { pid: number; started_ms: number; down_ms: number; how: "killed" | "restart" | "stop" | "crash" | "signal"; code?: number; within_ms?: number; drain_ms?: number };
 // `left`: nothing went on with it (its session is archived, say); it is as the cut left it.
 // `why`: for a held turn the reason; for one that went on by other means, what the means were.
 // `earlier`: an earlier stop cut it, and it was still waiting to be decided when this start came.
 export type RestartTurn = CutTurn & { session_id: string; title: string; parent_id?: string | null; state: "pending" | CutState | "left"; why?: string; earlier?: true };
 export type Restart = {
   id: string;
-  up_ms: number;
+  up_ms: number; // the process's start
+  // When it began to answer: up_ms and the time its modules took to load. Absent in a record from before it was kept.
+  listening_ms?: number;
   pid: number;
   // Null: nothing is known of the daemon before this one, for the reason in `unknown`.
   before: Before | null;
@@ -56,6 +59,13 @@ export function tally(turns: RestartTurn[]): string {
 export const restartNeedsEye = (r: Restart): boolean =>
   r.before?.how === "killed" || r.before?.how === "crash" || r.turns.some((t) => t.state === "held" || t.state === "left");
 
+// When a start came back: when it began to answer, else (a record from before that was kept) its process's start.
+export const backAt = (r: Restart): number => r.listening_ms ?? r.up_ms;
+// How long nothing answered: from the end of the daemon before (its last answer) to this one listening.
+export const downMs = (r: Restart): number => (r.before ? Math.max(0, backAt(r) - r.before.down_ms) : 0);
+// How long the daemon before took from the start of its drain (when it stopped taking work) to its end.
+export const drainMs = (r: Restart): number | undefined => (r.before?.drain_ms !== undefined ? Math.max(0, r.before.down_ms - r.before.drain_ms) : undefined);
+
 // One sentence: when it went down, how, when it came back, and what that cut.
 export function restartSummary(r: Restart): string {
   const b = r.before;
@@ -64,10 +74,13 @@ export function restartSummary(r: Restart): string {
   // Turns an earlier stop cut, which the daemon before this one had not decided before it went down too.
   const old = earlier.length ? ` ${earlier.length} turn${earlier.length > 1 ? "s" : ""} an earlier stop cut ${earlier.length > 1 ? "were" : "was"} still waiting: ${tally(earlier)}.` : "";
   // The sentence is read alone (a log line, an Activity row, a terminal): it says its zone, once, after its last time.
-  if (!b) return `The daemon started at ${clock(r.up_ms)} ${zoneLabel(r.up_ms)}. How the one before it ended is not known: ${r.unknown ?? "nothing is known"}; ${r.turns.length ? `${r.turns.length} turn${r.turns.length > 1 ? "s were" : " was"} found cut: ${tally(r.turns)}` : "no turn was found cut"}.`;
+  if (!b) return `The daemon started at ${clock(backAt(r))} ${zoneLabel(backAt(r))}. How the one before it ended is not known: ${r.unknown ?? "nothing is known"}; ${r.turns.length ? `${r.turns.length} turn${r.turns.length > 1 ? "s were" : " was"} found cut: ${tally(r.turns)}` : "no turn was found cut"}.`;
   const how = b.how === "crash" && b.code !== undefined ? `${HOW.crash} (exit code ${b.code})` : HOW[b.how];
-  const [down, up] = zonedPair(b.down_ms, r.up_ms, (ts) => clock(ts, r.up_ms));
-  return `The daemon ${how} at ${b.how === "killed" ? "about " : ""}${down}${b.how === "killed" && b.within_ms ? ` (it was idle: within ${span(b.within_ms)} after)` : ""} and came back at ${up} (down ${span(Math.max(0, r.up_ms - b.down_ms))}); ${cut}.${old}`;
+  const back = backAt(r);
+  const [down, up] = zonedPair(b.down_ms, back, (ts) => clock(ts, back));
+  // (A drain with nothing to wait for ends within a moment: not worth the words.)
+  const drain = (drainMs(r) ?? 0) >= 1000 ? drainMs(r) : undefined;
+  return `The daemon ${how} at ${b.how === "killed" ? "about " : ""}${down}${b.how === "killed" && b.within_ms ? ` (it was idle: within ${span(b.within_ms)} after)` : ""} and came back at ${up} (down ${span(downMs(r))}${drain !== undefined ? `, after a drain of ${span(drain)} that took no new work` : ""}); ${cut}.${old}`;
 }
 
 // Where a turn was cut: the step, what it was at, and how long it had run.

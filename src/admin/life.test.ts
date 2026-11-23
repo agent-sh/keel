@@ -19,7 +19,7 @@ const at = (h: number, m: number, s: number) => new Date(2026, 10, 21, h, m, s).
 const cut = (n: number, more: Partial<CutTurn> = {}): CutTurn => ({
   turn_event: `t${n}`, end_event: `e${n}`, started_ms: at(10, 1, 30), ran_ms: 41_600, down_ms: at(10, 2, 11), crashed: true, unstarted: false, step: 3, tools: ["Bash"], waiting: 0, ...more,
 });
-const life = (before: Life["before"], unknown?: string): Life => ({ before, unknown, started_ms: at(10, 2, 26), beat() {}, listening() {}, end() {} });
+const life = (before: Life["before"], unknown?: string): Life => ({ before, unknown, started_ms: at(10, 2, 26), beat() {}, listening() {}, draining() {}, end() {} });
 const scratch = () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "life-"));
   const store = new Store(dir);
@@ -46,6 +46,31 @@ test("the sign of life says how the daemon before ended, or that it cannot be sa
   for (const text of ["", '{"pid":41,"started_ms":17', "[]", '{"pid":41}']) expect(read(text).before).toBeNull();
   expect(read("").unknown).toBe("the sign of life was cut while it was written");
   expect(read({ ...alive, pid: 99 }).before).toBeNull();
+  // A stop it made itself says when its drain began; a kill keeps no drain (it never ended one).
+  expect(read({ ...alive, drain_ms: at(10, 0, 0), ended_ms: at(10, 2, 12), how: "restart" }).before).toMatchObject({ how: "restart", drain_ms: at(10, 0, 0) });
+  expect(read({ ...alive, drain_ms: at(10, 0, 0) }).before).not.toHaveProperty("drain_ms");
+});
+
+// A start's modules load for many seconds before it answers: the time down is
+// counted to the moment it listens, from the end of the daemon before (its last
+// answer), and the drain before that end is said beside it.
+test("a restart is down from the last daemon's end to this one listening, and its drain is said", () => {
+  const f = scratch();
+  try {
+    const end = at(10, 2, 5);
+    const rs = new Restarts(f.store, { ...life({ pid: 41, started_ms: at(9, 0, 0), down_ms: end, how: "restart", drain_ms: at(9, 59, 53) }), started_ms: at(10, 2, 8) });
+    rs.listening(at(10, 2, 24));
+    rs.listening(at(10, 3, 0)); // once
+    const r = rs.last();
+    expect(r.listening_ms).toBe(at(10, 2, 24));
+    expect(restartSummary(r)).toBe(`The daemon stopped for a restart at ${localTime(end)} and came back at ${localTime(at(10, 2, 24))} ${zoneLabel(end)} (down 19 s, after a drain of 2 min that took no new work); no turn was cut.`);
+    // A drain that had nothing to wait for is not said.
+    expect(restartSummary({ ...r, before: { ...r.before!, drain_ms: end - 400 } })).toContain("(down 19 s); ");
+    // A record from before the listening time was kept is read as it was.
+    expect(restartSummary({ ...r, listening_ms: undefined, before: { ...r.before!, drain_ms: undefined } })).toContain(`came back at ${localTime(at(10, 2, 8))} ${zoneLabel(end)} (down 3 s); `);
+  } finally {
+    f.close();
+  }
 });
 
 test("a start records each cut turn once, what became of it, and is whole once", () => {

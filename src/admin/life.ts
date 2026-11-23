@@ -37,13 +37,15 @@ const WIDTH = 192;
 const KEPT = 50;
 const G = globalThis as { __keelLife?: Life; __keelRestarts?: Restarts };
 
-// `listening_ms`: when it began to answer. `code`: the exit code of an end it did not choose.
+// `listening_ms`: when it began to answer. `drain_ms`: when it stopped taking work for a stop or
+// a restart (it still answered until its end). `code`: the exit code of an end it did not choose.
 // `within_ms`: the next sign comes within this long of `alive_ms` (not there: a second, as every daemon before this field wrote).
-type Alive = { pid: number; started_ms: number; alive_ms: number; within_ms?: number; listening_ms?: number; ended_ms?: number; how?: "restart" | "stop" | "crash" | "signal"; code?: number };
+type Alive = { pid: number; started_ms: number; alive_ms: number; within_ms?: number; listening_ms?: number; drain_ms?: number; ended_ms?: number; how?: "restart" | "stop" | "crash" | "signal"; code?: number };
 
 // `unknown`: why nothing is known of the daemon before this one.
 // `beat(withinMs)`: a sign of life, with how long until the next one at the latest.
-export type Life = { before: Before | null; unknown?: string; started_ms: number; beat(withinMs?: number): void; listening(): void; end(how: "restart" | "stop" | "crash" | "signal", code?: number): void };
+// `listening_ms`: when this process began to answer (unset until it does).
+export type Life = { before: Before | null; unknown?: string; started_ms: number; listening_ms?: number; beat(withinMs?: number): void; listening(): void; draining(on?: boolean): void; end(how: "restart" | "stop" | "crash" | "signal", code?: number): void };
 
 // How the daemon that wrote this sign of life ended, or why that cannot be said.
 // `listened`: when the log last shows a daemon begin to answer (any daemon writes that line).
@@ -57,7 +59,9 @@ export function readBefore(text: string | null, listened: number | undefined, pi
   if (listened !== undefined && listened > (a.listening_ms ?? a.alive_ms) + 2000) return { before: null, unknown: "another daemon, one that keeps no sign of life, ran since the last sign" };
   // A daemon that left no end went down after its last sign and before the next was due: an idle one up to ten seconds after.
   const within = !a.ended_ms && Number.isFinite(a.within_ms) && a.within_ms! > 2 * BEAT_MS ? { within_ms: a.within_ms! } : {};
-  return { before: { pid: a.pid, started_ms: a.started_ms, down_ms: a.ended_ms ?? a.alive_ms, how: a.ended_ms ? a.how ?? "stop" : "killed", ...(a.how === "crash" && a.code !== undefined ? { code: a.code } : {}), ...within } };
+  // A stop it made itself began with a drain, when it stopped taking work: said beside the time down.
+  const drain = a.ended_ms && Number.isFinite(a.drain_ms) && a.drain_ms! <= a.ended_ms ? { drain_ms: a.drain_ms! } : {};
+  return { before: { pid: a.pid, started_ms: a.started_ms, down_ms: a.ended_ms ?? a.alive_ms, how: a.ended_ms ? a.how ?? "stop" : "killed", ...(a.how === "crash" && a.code !== undefined ? { code: a.code } : {}), ...within, ...drain } };
 }
 
 // Once per process (a hot reload keeps the life it has): reads how the last
@@ -72,6 +76,7 @@ export function beginLife(stateDir: string): Life {
   const started_ms = Date.now();
   let ended = false;
   let listening_ms: number | undefined;
+  let drain_ms: number | undefined;
   let last = 0;
   let within = BEAT_MS;
   // Kept open and written in place: one small write, no truncate, nothing for the disk to flush each time.
@@ -80,7 +85,7 @@ export function beginLife(stateDir: string): Life {
   const write = (more: Partial<Alive> = {}) => {
     if (fd === undefined) return;
     last = Date.now();
-    try { writeSync(fd, `${JSON.stringify({ pid: process.pid, started_ms, alive_ms: last, ...(within > BEAT_MS ? { within_ms: within } : {}), ...(listening_ms ? { listening_ms } : {}), ...more }).padEnd(WIDTH - 1)}\n`, 0); } catch {}
+    try { writeSync(fd, `${JSON.stringify({ pid: process.pid, started_ms, alive_ms: last, ...(within > BEAT_MS ? { within_ms: within } : {}), ...(listening_ms ? { listening_ms } : {}), ...(drain_ms ? { drain_ms } : {}), ...more }).padEnd(WIDTH - 1)}\n`, 0); } catch {}
   };
   write();
   const life: Life = {
@@ -92,7 +97,13 @@ export function beginLife(stateDir: string): Life {
       within = withinMs;
       if (sooner || Date.now() - last >= BEAT_MS - 50) write();
     },
-    listening() { listening_ms = Date.now(); if (!ended) write(); },
+    listening() { life.listening_ms = listening_ms = Date.now(); if (!ended) write(); },
+    // (The first drain counts: a second ask that adds the restart does not move it. One called off is forgotten.)
+    draining(on = true) {
+      if (ended || !!drain_ms === on) return;
+      drain_ms = on ? Date.now() : undefined;
+      write();
+    },
     end(how, code) {
       if (ended) return;
       ended = true;
@@ -113,7 +124,13 @@ export function beginLife(stateDir: string): Life {
 export const endLife = (how: "restart" | "stop" | "signal") => G.__keelLife?.end(how);
 // The sign of life, from the daemon's one tick; and the moment it began to answer.
 export const beatLife = (withinMs?: number) => G.__keelLife?.beat(withinMs);
-export const lifeListening = () => G.__keelLife?.listening();
+export const lifeListening = () => {
+  G.__keelLife?.listening();
+  G.__keelRestarts?.listening(G.__keelLife?.listening_ms ?? Date.now());
+};
+// It stops taking work (a stop or a restart): the next start says how long before it went down.
+// `false`: the drain was called off and the daemon goes on.
+export const lifeDraining = (on = true) => G.__keelLife?.draining(on);
 
 // When the last daemon went down, for what was open then (a turn, a span).
 export const wentDownAt = (): number | undefined => G.__keelLife?.before?.down_ms;
@@ -150,6 +167,13 @@ export class Restarts {
     const r = this.now;
     this.store.db.query("INSERT INTO daemon_starts (id, up_ms, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").run(r.id, r.up_ms, JSON.stringify(r));
     try { this.changed(); } catch {}
+  }
+
+  // It answers from now: the time down ends here, not at the process's start (its modules load before it listens).
+  listening(ms: number) {
+    if (this.now.listening_ms) return;
+    this.now.listening_ms = ms;
+    this.save();
   }
 
   // This start's record: its own, whatever it knows, never an older start's.

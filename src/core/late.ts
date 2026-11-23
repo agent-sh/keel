@@ -9,8 +9,9 @@ export type Down = { from: number; to: number };
 
 // The stretch this process's daemon was down before it started, when the one before it is known.
 export function lastDown(): Down | undefined {
-  const life = (globalThis as { __keelLife?: { before: { down_ms: number } | null; started_ms: number } }).__keelLife;
-  return life?.before ? { from: life.before.down_ms, to: life.started_ms } : undefined;
+  // (To when it began to answer: a start's modules load for many seconds before that.)
+  const life = (globalThis as { __keelLife?: { before: { down_ms: number } | null; started_ms: number; listening_ms?: number } }).__keelLife;
+  return life?.before ? { from: life.before.down_ms, to: life.listening_ms ?? life.started_ms } : undefined;
 }
 
 // Late by less than this is the daemon's own pace (a probe a second, a busy loop), not worth a word.

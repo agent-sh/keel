@@ -16,7 +16,7 @@ import { addAdmission } from "../server/admission.ts";
 import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
 import { IDLE_MAX_MS, pulse } from "../core/pulse.ts";
-import { beatLife, endLife, restarts } from "./life.ts";
+import { beatLife, endLife, lifeDraining, restarts } from "./life.ts";
 import { describeStall, type Stall, StallMonitor, TurnWatch, unanswered, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
@@ -271,6 +271,7 @@ export class Daemon {
     this.stopping = true;
     if (this.draining) return;
     this.draining = { since_ms: Date.now(), restart: false, deadline_ms: Date.now() + Number(process.env.KEEL_DRAIN_MS ?? 10_000) };
+    lifeDraining();
     this.emit();
   }
 
@@ -285,6 +286,7 @@ export class Daemon {
       return this.finished;
     }
     this.draining = { since_ms: Date.now(), restart: opts.restart, deadline_ms: Date.now() + opts.timeoutMs };
+    lifeDraining();
     this.restartFailed = null;
     // With the store's disk not answering nothing is made before the
     // restart (a backup would wait on the same disk, and a restart is the
@@ -321,6 +323,7 @@ export class Daemon {
           // A stop by signal meanwhile goes on (main.ts parks the turns and exits): no turn starts.
           if (this.stopping) return this.emit();
           this.draining = null;
+          lifeDraining(false);
           this.deps.engine.undrain();
           flushAll();
           this.emit();

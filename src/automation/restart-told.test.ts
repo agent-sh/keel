@@ -59,7 +59,7 @@ function world() {
     store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, ?, 'general-purpose', 'm:x', 1, 'running', ?)").run(id, parent.id, s.id, title, Date.now());
     return { s: store.session(s.id)!, id };
   };
-  const life = (pid: number, at: number): Life => ({ before: { pid: pid - 1, started_ms: at - 60_000, down_ms: at - 1000, how: "killed" }, started_ms: at, beat() {}, listening() {}, end() {} });
+  const life = (pid: number, at: number): Life => ({ before: { pid: pid - 1, started_ms: at - 60_000, down_ms: at - 1000, how: "killed" }, started_ms: at, beat() {}, listening() {}, draining() {}, end() {} });
   const cut = (n: number): CutTurn => ({ turn_event: `t${n}`, end_event: `e${n}`, started_ms: 1, ran_ms: 1000, down_ms: Date.now() - 500, crashed: true, unstarted: false, step: 1, tools: ["Bash"], waiting: 0 });
   const send = () => drainNotices(parent.id).flatMap((n: Notice) => { const t = n.fresh ? n.fresh() : n.text; if (t) n.stored?.(); return t ? [t] : []; });
   const start = (pid: number, at: number) => {

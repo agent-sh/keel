@@ -230,6 +230,9 @@ test("asked restarts are summed and never told as going down, and a kill among t
   const d = digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: twelve, stalls: [] } })!;
   expect(d.daemon).toEqual(["The daemon restarted 12 times when asked (down 3.6 s in all); 71 turns were cut: 71 resumed."]);
   expect(digestText(d)).not.toMatch(/went down|stopped by itself/);
+  // Each start answered 16 s after its process began (its modules load first): that is time down too.
+  const listened = twelve.map((r) => ({ ...r, listening_ms: r.up_ms + 16_000 }));
+  expect(digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: listened, stalls: [] } })!.daemon).toEqual(["The daemon restarted 12 times when asked (down 3 min in all); 71 turns were cut: 71 resumed."]);
   // One asked restart: its own sentence, and what did not go on by itself is in the short form.
   const held = { ...start(0, "restart", 2), turns: [turn(0, 0), turn(0, 1, "held")] };
   expect(daemonBrief({ restarts: [held], stalls: [] })).toBe("the daemon restarted when asked, 2 turns cut (1 held for the owner)");
