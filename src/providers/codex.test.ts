@@ -45,3 +45,72 @@ test("the listing asks for the installed Codex's version over an older cache, an
     for (const [k, v] of [["CODEX_HOME", env.home], ["KEEL_CODEX_BASE_URL", env.base], ["PATH", env.path]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
   }
 });
+
+// A stand-in for the backend's Responses route over HTTP and WebSocket. Like
+// the documented stream, each response event carries the response object, and
+// in it the tool catalog the request sent and the usage's attribution per item,
+// unless the request's x-codex-exclude names them.
+function echoingBackend() {
+  const seen: { via: string; exclude: string | null }[] = [];
+  let bytes = 0;
+  const events = (body: any, exclude: string) => {
+    const drop = new Set(exclude.split(",").map((s) => s.trim()));
+    const usage = { input_tokens: 1200, output_tokens: 7, input_tokens_details: { cached_tokens: 1000 }, ...(drop.has("usage.attribution") ? {} : { attribution: (body.tools ?? []).map((t: any) => ({ tool: t.name, input_tokens: 40 })) }) };
+    const response = (status: string, more: object = {}) => ({ id: "resp_1", status, model: body.model, ...(drop.has("tools") ? {} : { tools: body.tools ?? [] }), ...more });
+    const item = { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] };
+    return [
+      { type: "response.created", response: response("in_progress") },
+      { type: "response.in_progress", response: response("in_progress") },
+      { type: "response.output_item.done", output_index: 0, item },
+      { type: "response.completed", response: response("completed", { output: [item], usage }) },
+    ].map((e) => JSON.stringify(e));
+  };
+  const srv = Bun.serve({
+    port: 0,
+    async fetch(req, s) {
+      const exclude = req.headers.get("x-codex-exclude");
+      if (req.headers.get("upgrade") === "websocket") {
+        seen.push({ via: "ws", exclude });
+        return s.upgrade(req, { data: { exclude: exclude ?? "" } }) ? undefined : new Response("no", { status: 400 });
+      }
+      seen.push({ via: new URL(req.url).pathname, exclude });
+      const out = events(await req.json(), exclude ?? "").map((e) => `data: ${e}\n\n`).join("");
+      bytes += out.length;
+      return new Response(out, { headers: { "content-type": "text/event-stream" } });
+    },
+    websocket: {
+      data: {} as { exclude: string },
+      message(ws, raw) {
+        for (const e of events(JSON.parse(String(raw)), ws.data.exclude)) { bytes += e.length; ws.send(e); }
+      },
+    },
+  });
+  return { base: `http://127.0.0.1:${srv.port}`, seen, bytes: () => bytes, stop: () => srv.stop(true) };
+}
+
+// Codex asks the backend not to echo the tool catalog or the attribution per
+// item on every Responses request and handshake (openai/codex#62863, #63219):
+// each response event of a stream repeats the whole catalog otherwise.
+test("a response is asked without the echoed tool catalog over HTTP and the socket, and its usage is still read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-codex-"));
+  writeFileSync(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "fixture-access", refresh_token: "fixture-refresh" }, last_refresh: new Date().toISOString() }));
+  const b = echoingBackend();
+  const env = { home: process.env.CODEX_HOME, base: process.env.KEEL_CODEX_BASE_URL, broker: process.env.KEEL_PROVIDER_ENV_FILE };
+  process.env.CODEX_HOME = dir;
+  process.env.KEEL_CODEX_BASE_URL = b.base;
+  delete process.env.KEEL_PROVIDER_ENV_FILE;
+  // A catalog of 40 tools of about 4 KB each: the size a turn's tools zone has.
+  const tools = Array.from({ length: 40 }, (_, i) => ({ name: `tool_${i}`, description: "d".repeat(3000), input_schema: { type: "object", properties: { a: { type: "string", description: "x".repeat(1000) } } } }));
+  const ask = (sessionKey?: string) => new CodexProvider().stream({ model: "gpt-test", system: "be brief", messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }], tools, signal: new AbortController().signal, sessionKey }, () => {});
+  try {
+    const http = await ask();
+    const ws = await ask("s1");
+    expect(b.seen).toEqual([{ via: "/responses", exclude: "tools,usage.attribution" }, { via: "ws", exclude: "tools,usage.attribution" }]);
+    for (const r of [http, ws]) expect(r.usage).toMatchObject({ input: 200, cache_read: 1000, output: 7 });
+    // Four response events with the catalog in three would be over 450 KB a call.
+    expect(b.bytes()).toBeLessThan(4000);
+  } finally {
+    b.stop();
+    for (const [k, v] of [["CODEX_HOME", env.home], ["KEEL_CODEX_BASE_URL", env.base], ["KEEL_PROVIDER_ENV_FILE", env.broker]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
+  }
+});

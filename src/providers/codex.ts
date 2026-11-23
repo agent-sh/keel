@@ -191,6 +191,16 @@ export class CodexProvider implements Provider {
       }));
   }
 
+  // A request for a response asks the backend not to echo what Keel does not
+  // read: the tool catalog the request sent, and the usage's attribution per
+  // item (the totals stay). Codex sends the same on every Responses request
+  // and WebSocket handshake (codex-rs core client.rs build_responses_headers,
+  // openai/codex#62863 and #63219); the echo repeats the whole catalog in each
+  // response event of a stream.
+  private responseHeaders(a: AuthFile, sessionKey?: string): Record<string, string> {
+    return { ...this.headers(a, sessionKey), "x-codex-exclude": "tools,usage.attribution" };
+  }
+
   // The plan's windows as Codex's /status reads them.
   async usage(): Promise<WindowReading[]> {
     const a = await this.auth();
@@ -212,7 +222,7 @@ export class CodexProvider implements Provider {
     // Use HTTP for a reloadable loopback broker: it reports a precise connect
     // refusal and never reuses a socket from before a port move.
     if (req.sessionKey && !directBrokerOrigin(this.base) && this.sockets.usable(key)) {
-      const headers = { ...this.headers(a, req.sessionKey), "OpenAI-Beta": "responses_websockets=2026-02-06", ...req.extraHeaders };
+      const headers = { ...this.responseHeaders(a, req.sessionKey), "OpenAI-Beta": "responses_websockets=2026-02-06", ...req.extraHeaders };
       try {
         const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, this.sockets.events(key, headers, req, (m) => this.rateEvent(m, req)));
         delete res.served;
@@ -223,10 +233,10 @@ export class CodexProvider implements Provider {
       }
     }
     const res = await runEvents(responsesWire("codex"), req, ctx, onDelta, httpEvents({
-      label: this.label, url: `${this.base}/responses`, headers: this.headers(a, req.sessionKey), secrets: [a.tokens!.access_token!],
+      label: this.label, url: `${this.base}/responses`, headers: this.responseHeaders(a, req.sessionKey), secrets: [a.tokens!.access_token!],
       onAuthFailure: async () => {
         a = await this.auth(true);
-        return this.headers(a, req.sessionKey);
+        return this.responseHeaders(a, req.sessionKey);
       },
     }, req));
     // The backend answers `service_tier: "default"` whatever served the call
