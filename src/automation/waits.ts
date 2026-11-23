@@ -188,6 +188,16 @@ function startTime(pid: number): string | undefined {
   return stat ? statFields(stat)[19] : undefined;
 }
 
+// A pattern with a leading inline flag group, as Python, PCRE and Go write it
+// ("(?i)exit"): JavaScript takes the same flags as a group around the pattern.
+function pattern(p: unknown): string {
+  const s = String(p);
+  const m = /^\(\?([ims]+)\)/.exec(s);
+  const out = m ? `(?${m[1]}:${s.slice(m[0].length)})` : s;
+  new RegExp(out);
+  return out;
+}
+
 // Validates a spec the way the model or the page wrote it; throws the reason.
 export function normalize(raw: any, cwd: string): WaitSpec {
   const spec = raw?.spec && typeof raw.spec === "object" ? raw.spec : raw;
@@ -206,8 +216,7 @@ export function normalize(raw: any, cwd: string): WaitSpec {
       return { kind, path: resolvePath(String(spec.path), cwd), contains: spec.contains ? String(spec.contains) : undefined };
     case "log":
       if (!spec.path || !spec.match) throw new Error("a log wait needs a path and a match pattern");
-      new RegExp(spec.match);
-      return { kind, path: resolvePath(String(spec.path), cwd), match: String(spec.match) };
+      return { kind, path: resolvePath(String(spec.path), cwd), match: pattern(spec.match) };
     case "http": {
       const u = new URL(String(spec.url));
       if (!/^https?:$/.test(u.protocol)) throw new Error("an http wait needs an http(s) URL");
@@ -229,10 +238,9 @@ export function normalize(raw: any, cwd: string): WaitSpec {
       const u = new URL(String(spec.url));
       if (!/^wss?:$/.test(u.protocol)) throw new Error("a socket monitor needs a ws:// or wss:// URL");
       if (u.username || u.password) throw new Error("a socket URL carries no credentials");
-      if (spec.match) new RegExp(spec.match);
       const protocols = Array.isArray(spec.protocols) ? spec.protocols.map(String).filter(Boolean).slice(0, 8) : undefined;
       return {
-        kind, url: u.href, protocols: protocols?.length ? protocols : undefined, match: spec.match ? String(spec.match) : undefined,
+        kind, url: u.href, protocols: protocols?.length ? protocols : undefined, match: spec.match ? pattern(spec.match) : undefined,
         coalesce_ms: Math.min(Math.max(Number(spec.coalesce_ms ?? 500), 0), 60_000),
         max_events: Math.min(Math.max(Number(spec.max_events ?? 20), 1), 200),
       };
@@ -246,9 +254,8 @@ export function normalize(raw: any, cwd: string): WaitSpec {
     }
     case "monitor":
       if (!spec.command) throw new Error("a monitor needs a command");
-      if (spec.match) new RegExp(spec.match);
       return {
-        kind, command: String(spec.command), match: spec.match ? String(spec.match) : undefined,
+        kind, command: String(spec.command), match: spec.match ? pattern(spec.match) : undefined,
         coalesce_ms: Math.min(Math.max(Number(spec.coalesce_ms ?? 500), 0), 60_000),
         max_events: Math.min(Math.max(Number(spec.max_events ?? 20), 1), 200),
       };

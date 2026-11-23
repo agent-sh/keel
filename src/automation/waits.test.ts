@@ -51,6 +51,16 @@ test("a line written while the daemon was down still wakes the wait; one written
   expect(waits.get(w.id)!.outcome).toContain("READY");
 });
 
+// A pattern with a leading flag group, as Python, PCRE and Go write it: JavaScript refused it, and the wait was never set.
+test("a log wait's pattern may start with an inline flag group", async () => {
+  const p = log("flags.log");
+  const w = waits.create(s.id, waits.normalize({ kind: "log", path: p, match: "(?i)^ready$|done" }, dir), { timeout_seconds: 60 });
+  appendFileSync(p, "Ready\n");
+  await waits.tick();
+  expect(status(w.id)).toBe("fired");
+  expect(() => waits.normalize({ kind: "monitor", command: "true", match: "(?im)^exit" }, dir)).not.toThrow();
+});
+
 test("a replaced file is read from its start, whatever its size", async () => {
   for (const [n, text] of [["small", "READY\n"], ["equal", "READY\nab\n"], ["large", "READY\nabcd\n"]] as const) {
     const p = log(`${n}.log`, "12345678");
