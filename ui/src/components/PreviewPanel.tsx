@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { machineName } from "../lib/fleet.ts";
+import { pointSeed } from "../lib/preview-point.ts";
 import { api, reportError } from "../lib/store.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
@@ -29,17 +30,22 @@ export function PreviewPanel({ session }: { session: Session }) {
     const t = setInterval(load, 5000); // a dev server the session starts shows up within seconds
     return () => clearInterval(t);
   }, [session.id]);
+  // What the picker in the frame says. The frame's page is not Keel's: its words reach the
+  // message box only while the owner is picking, with the pointer over the frame (lib/preview-point.ts).
+  const picking = !!ports?.find((p) => p.port === shown && p.open)?.point;
   useEffect(() => {
     const on = (e: MessageEvent) => {
-      if (e.source !== frame.current?.contentWindow || !e.data || typeof e.data !== "object") return;
-      // The dev server's own address, not the portal's (its key stays out of the conversation).
-      const where = String(e.data.url ?? "").replace(/^https?:\/\/[^/]+\/(?:portal|fleet-portal\/[^/]+)\/[^/]+\/(\d+)\/[^/]+/, "http://127.0.0.1:$1") + (remote ? ` on ${machineName(remote.machine)}` : "");
-      if (e.data.type === "keel_point") seedComposer(`In the preview (${where}), the element \`${e.data.selector}\`${e.data.text ? ` ("${String(e.data.text).slice(0, 120)}")` : ""}: `);
-      if (e.data.type === "keel_point_exit") toggle(shown!, true, false);
+      if (e.source !== frame.current?.contentWindow || !e.data || typeof e.data !== "object" || shown === null) return;
+      const by = { picking, over: !!frame.current?.matches(":hover") };
+      if (e.data.type === "keel_point") {
+        const seed = pointSeed(e.data, shown, remote ? (machineName(remote.machine) ?? remote.machine) : "", by);
+        if (seed) seedComposer(seed);
+      }
+      if (e.data.type === "keel_point_exit" && picking) toggle(shown, true, false);
     };
     addEventListener("message", on);
     return () => removeEventListener("message", on);
-  }, [shown]);
+  }, [shown, picking]);
   const toggle = async (port: number, open: boolean, point = false) => {
     const r = await api<{ ports: Port[] }>(`/api/sessions/${session.id}/portal`, { method: "POST", body: JSON.stringify({ port, open, point }) }).catch((e) => (reportError(e), null));
     if (!r) return;
