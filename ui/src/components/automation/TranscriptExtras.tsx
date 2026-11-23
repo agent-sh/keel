@@ -129,14 +129,14 @@ export function toolSummary(name: string, input: any): string | undefined {
 
 function Shell({ icon: Icon, label, sub, children, testid, defaultOpen, tone }: { icon: typeof Bot; label: string; sub?: string; children?: React.ReactNode; testid: string; defaultOpen?: boolean; tone?: "danger" }) {
   return (
-    <Collapsible.Root defaultOpen={defaultOpen} className="group/in animate-in rounded-lg border border-dashed border-line-strong bg-sunken/60" data-testid={testid}>
-      <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-caption text-muted outline-none hover:text-fg">
-        <Icon className={cn("size-3.5 shrink-0", tone === "danger" ? "text-danger" : "text-accent")} />
-        <span className="font-medium text-fg">{label}</span>
-        {sub && <span className="min-w-0 truncate text-faint">{sub}</span>}
-        <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/in:rotate-90" />
+    <Collapsible.Root defaultOpen={defaultOpen} className="k-heard group/in animate-in" data-tone={tone} data-testid={testid}>
+      <Collapsible.Trigger className="k-heard-line">
+        <Icon />
+        <span className="k-heard-who">{label}</span>
+        {sub && <span className="k-heard-what truncate">{sub}</span>}
+        <ChevronRight className="k-heard-chev group-data-[open]/in:rotate-90" />
       </Collapsible.Trigger>
-      <Collapsible.Panel className="overflow-hidden">{children}</Collapsible.Panel>
+      <Collapsible.Panel className="k-heard-body">{children}</Collapsible.Panel>
     </Collapsible.Root>
   );
 }
@@ -154,28 +154,28 @@ export function InputNotice({ e }: { e: StoredEvent }) {
 
   // One input can carry agents' reports and wakes together: every part shows.
   const reportCards = rs.length > 0 && (kind === "subagent" || kind === "wake") && (
-    <div className="flex flex-col gap-2 animate-in" data-testid="agent-reports">
+    <div className="flex flex-col gap-0.5 animate-in" data-testid="agent-reports">
       {rs.map((r) => (
-        <Collapsible.Root key={r.key} className="group/rep rounded-lg border border-line bg-raised shadow-1" data-testid="agent-report" data-status={r.status}>
-          <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-ui outline-none">
-            <CornerDownRight className="size-3.5 shrink-0 text-faint" />
+        <Collapsible.Root key={r.key} className="k-heard group/rep" data-testid="agent-report" data-status={r.status}>
+          <Collapsible.Trigger className="k-heard-line">
+            <CornerDownRight />
             <AgentMark w={r.said.watch} />
             {/* The agent by its title; its id is on hover. */}
-            <span className="min-w-[3rem] shrink truncate font-medium" title={`${r.title} (agent ${r.id})`}>{r.title}</span>
+            <span className="k-heard-who min-w-[3rem] shrink truncate" title={`${r.title} (agent ${r.id})`}>{r.title}</span>
             {/* The word first and whole: what gives way in a narrow pane is the rest of the line. */}
-            <span className="shrink-0 whitespace-nowrap text-caption text-faint" data-testid="agent-report-state">{r.said.phrase}</span>
+            <span className="shrink-0 whitespace-nowrap" data-testid="agent-report-state">{r.said.phrase}</span>
             {/* The rest gives way: cut at its end while "· reported" has room, and gone whole where it has not. */}
-            <span className="k-report-rest text-caption text-faint"><span data-testid="agent-report-status">· reported{r.task ? ` · ${r.task}` : ""}{r.said.why ? ` · ${r.said.why}` : ""}</span></span>
-            <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/rep:rotate-90" />
+            <span className="k-report-rest text-faint"><span data-testid="agent-report-status">· reported{r.task ? ` · ${r.task}` : ""}{r.said.why ? ` · ${r.said.why}` : ""}</span></span>
+            <ChevronRight className="k-heard-chev group-data-[open]/rep:rotate-90" />
           </Collapsible.Trigger>
-          <Collapsible.Panel className="overflow-hidden border-t border-line px-4 py-3 text-ui"><Markdown text={r.text} /></Collapsible.Panel>
+          <Collapsible.Panel className="k-heard-body text-ui text-fg"><Markdown text={r.text} /></Collapsible.Panel>
         </Collapsible.Root>
       ))}
     </div>
   );
   const wakeCard = (kind === "wait" || (kind === "wake" && ws.length > 0)) && (
     <Shell icon={kind === "wait" && e.data.outcome === "event" ? Radio : Timer} label={`Woken: ${ws.map((w) => w.label).join(", ") || "a wait ended"}`} testid="wake-notice">
-      <div className="mx-3 mb-3 flex max-h-60 flex-col gap-2 overflow-auto rounded-lg bg-code p-2.5 font-mono text-caption text-muted">
+      <div className="flex max-h-60 flex-col gap-2 overflow-auto rounded-md bg-code p-2.5 font-mono text-caption text-muted">
         {ws.length ? ws.map((w, i) => (
           <div key={i} data-testid="wake-part">
             <div className="text-faint">{w.label}</div>
@@ -192,14 +192,14 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     const title = (a && sessions[a.session_id]?.title) || a?.title || (typeof p.title === "string" && p.title) || `Agent ${p.agent_id}`;
     return (
       <Shell key={p.agent_id} icon={Timer} label={`Agent ${STATE_WORD.wait.toLowerCase()}`} sub={title} testid="agent-park-notice">
-        <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">{title} waits for {p.waiting_on}. It has not ended. <span className="text-faint" data-testid="agent-park-id">Agent {p.agent_id}</span></p>
+        <p className="whitespace-pre-wrap text-ui text-muted">{title} waits for {p.waiting_on}. It has not ended. <span className="text-faint" data-testid="agent-park-id">Agent {p.agent_id}</span></p>
       </Shell>
     );
   });
   // What failed around the session, one entry per cause: open, since it is what needs a look.
   const failCard = fails && (
     <Shell icon={AlertTriangle} tone="danger" label="Failures, grouped by cause" sub={fails.sub} testid="failure-notice" defaultOpen>
-      <div className="mx-3 mb-3 flex max-h-80 flex-col gap-2 overflow-auto rounded-lg bg-code p-2.5 font-mono text-caption text-muted">
+      <div className="flex max-h-80 flex-col gap-2 overflow-auto rounded-md bg-code p-2.5 font-mono text-caption text-muted">
         {/* An entry's first line hangs; who failed, each with its own failure, sits under it, and stays there when a line wraps. */}
         <div data-testid="failure-entries">
           {fails.body.split("\n").map((line, i) => (
@@ -229,7 +229,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   if (kind === "loop") {
     return (
       <Shell icon={Repeat} label="Loop run" sub={e.data.loop_name} testid="loop-notice">
-        <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">{text}</p>
+        <p className="whitespace-pre-wrap text-ui text-muted">{text}</p>
       </Shell>
     );
   }
@@ -237,7 +237,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     const label = e.data.goal === "start" ? "Goal set" : e.data.goal === "resume" ? "Goal resumed" : "Goal not met yet: next turn";
     return (
       <Shell icon={Flag} label={label} testid="goal-notice" defaultOpen={e.data.goal === "start"}>
-        <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">{text.replace(/^\[harness\]\s*/, "")}</p>
+        <p className="whitespace-pre-wrap text-ui text-muted">{text.replace(/^\[harness\]\s*/, "")}</p>
       </Shell>
     );
   }
@@ -247,22 +247,22 @@ export function InputNotice({ e }: { e: StoredEvent }) {
     const at = e.data.task_at;
     const task = typeof at === "number" && at >= 0 && at <= text.length ? text.slice(at) : text;
     return (
-      <div className="animate-in rounded-lg border border-line bg-raised shadow-1 px-4 py-3" data-testid="task-notice">
-        <div className="flex items-center gap-2 text-caption text-muted">
-          <Bot className="size-3.5 text-accent" /> Task from
+      <div className="k-heard animate-in" data-testid="task-notice">
+        <div className="k-heard-line">
+          <Bot /> <span className="k-heard-who">Task from</span>
           {parentId ? (
             <button type="button" onClick={() => openSession(parentId)} className="flex min-h-ctl-sm items-center gap-1 font-medium text-fg hover:text-accent">
               {sessions[parentId]?.title || "the parent session"} <ExternalLink className="size-3" />
             </button>
           ) : <span className="font-medium text-fg">the parent session</span>}
         </div>
-        <p className="mt-1.5 whitespace-pre-wrap leading-relaxed">{task}</p>
+        <p className="k-heard-body whitespace-pre-wrap text-read leading-relaxed text-fg">{task}</p>
       </div>
     );
   }
   return (
     <Shell icon={Zap} label={kind === "steer" ? "Message from the parent session" : "Harness note"} testid="harness-notice" defaultOpen={kind === "steer"}>
-      <p className="mx-3 mb-3 whitespace-pre-wrap text-ui text-muted">{text}</p>
+      <p className="whitespace-pre-wrap text-ui text-muted">{text}</p>
     </Shell>
   );
 }

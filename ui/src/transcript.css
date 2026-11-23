@@ -37,6 +37,22 @@
   border-left: 1px solid var(--line-strong); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow-y: auto; color: var(--muted);
 }
 
+/* ---------- What the harness brought in ----------
+   An agent's report, a wake, a loop run, a goal, a task, the failures of the session's scope: a line
+   in Keel's voice (a glyph, who or what, a few words) that opens to what it holds, under the same
+   hairline as the words Keel sent the model. */
+.k-heard { min-width: 0; font-size: var(--text-caption); line-height: 1.45; color: var(--muted); }
+.k-heard-line { display: flex; align-items: center; gap: 0.5rem; width: 100%; min-width: 0; min-height: var(--spacing-ctl-sm); border-radius: var(--radius-sm); text-align: left; outline: none; }
+.k-heard-line:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+button.k-heard-line:hover { color: var(--fg); }
+.k-heard-line > svg:first-child { width: 0.875rem; height: 0.875rem; flex-shrink: 0; color: var(--faint); }
+.k-heard[data-tone="danger"] .k-heard-line > svg:first-child { color: var(--st-fail); }
+.k-heard-who { flex-shrink: 0; font-weight: 600; color: var(--fg); }
+.k-heard-what { min-width: 0; color: var(--faint); }
+.k-heard-chev { flex-shrink: 0; width: 0.75rem; height: 0.75rem; margin-left: auto; color: var(--faint); transition: transform var(--dur-move) var(--ease-out); }
+.k-heard-body { margin: 0.25rem 0 0.375rem 0.4375rem; padding-left: 0.75rem; border-left: 1px solid var(--line-strong); }
+.k-heard-body > .prose-keel { color: var(--fg); }
+
 /* ---------- The rail of work ---------- */
 /* `--k-verb`: the verbs' column; `--k-hang`: where a line's words start, and where its later rows do
    (a line outside a run of work, the question above the message box, stands at the same two). */
