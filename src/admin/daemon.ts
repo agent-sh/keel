@@ -136,6 +136,9 @@ export class Daemon {
       const why = this.draining.restart ? "the daemon is restarting and takes no new work until it is back" : "the daemon is stopping and takes no new work";
       return Response.json({ error: why, draining: true }, { status: 503 });
     });
+    // While draining, each turn that ends is told: the page counts the turns the drain still waits for.
+    // (The engine says a session is idle once its turn has left what runs.)
+    deps.bus.on((f) => { if (this.draining && f.t === "status" && (f as { status?: { kind?: string } }).status?.kind === "idle") this.emit(); });
   }
 
   onExit(f: () => void | Promise<void>) { this.beforeExit.push(f); }

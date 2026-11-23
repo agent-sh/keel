@@ -516,29 +516,36 @@ test("connection truth: a daemon that drains says so within two seconds, with th
   test.setTimeout(120_000);
   const state = join(info.outputPath("drain"), "state");
   mkdirSync(state, { recursive: true });
-  const gate = join(state, "drain.go");
-  const d = await ownDaemon(state, 0, { KEEL_DRAIN_MS: "15000" });
+  const gates = [join(state, "drain-1.go"), join(state, "drain-2.go")];
+  const d = await ownDaemon(state, 0, { KEEL_DRAIN_MS: "30000" });
   const ctx = await browser.newContext({ viewport: { width: 1920, height: 1040 } });
   const page = await ctx.newPage();
   try {
     const call = (path: string, data?: unknown, method = data === undefined ? "GET" : "POST") => fetch(`${d.url}${path}`, { method, headers: { "content-type": "application/json" }, body: data === undefined ? undefined : JSON.stringify(data) }).then((r) => r.json() as Promise<any>);
-    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "A turn that finishes in the drain", workspace: state });
-    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto", sandbox: "off" }, "PUT");
-    await call(`/api/sessions/${session.id}/messages`, { text: `Work. ${script([until(gate)])}` });
-    await expect.poll(async () => (await call(`/api/sessions/${session.id}`)).running, { timeout: 20_000 }).toBe(true);
-    await page.goto(`${d.url}/s/${session.id}`);
+    const ids: string[] = [];
+    for (const [i, gate] of gates.entries()) {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: `A turn that finishes in the drain ${i + 1}`, workspace: state });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto", sandbox: "off" }, "PUT");
+      await call(`/api/sessions/${session.id}/messages`, { text: `Work. ${script([until(gate)])}` });
+      ids.push(session.id);
+    }
+    for (const id of ids) await expect.poll(async () => (await call(`/api/sessions/${id}`)).running, { timeout: 20_000 }).toBe(true);
+    await page.goto(`${d.url}/s/${ids[0]}`);
     await expect(logo(page)).toHaveAttribute("title", "Connected to the daemon", { timeout: 30_000 });
     const t0 = Date.now();
     d.proc.kill("SIGTERM");
-    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping: 1 turn finishing.", { timeout: 2000 });
+    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping: 2 turns finishing.", { timeout: 2000 });
     const band = Date.now() - t0;
-    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 1 turn finishing.");
+    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 2 turns finishing.");
     await shoot(page, "connection-truth-drain");
-    // And the whole drain long: never "Connected" while it lasts.
-    await page.waitForTimeout(3000);
+    // And the whole drain long: never "Connected" while it lasts, and the count goes down as each turn ends.
+    await page.waitForTimeout(2000);
+    await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 2 turns finishing.");
+    writeFileSync(gates[0]!, "go\n");
+    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping: 1 turn finishing.", { timeout: 10_000 });
     await expect(logo(page)).toHaveAttribute("title", "Keel is stopping: 1 turn finishing.");
     console.log(`CONNECTION-TRUTH drain said ${band} ms after the stop signal`);
-    writeFileSync(gate, "go\n");
+    writeFileSync(gates[1]!, "go\n");
     await exited(d.proc);
   } finally {
     await ctx.close();
