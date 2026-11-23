@@ -307,6 +307,64 @@ test.describe("on a phone's home", () => {
   });
 });
 
+// Feature: on a phone, what waits on the owner is answered one card after another. The dock's
+// count of what needs them is a button in a slot of its own: a tap goes to the card that has
+// waited longest (the phone's Alt+A).
+test.describe("on a phone, what waits", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const bash = (command: string) => `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`;
+  // Sessions made in order (the first has waited longest), each sent its prompt; resolves once each waits.
+  async function waiting(request: import("@playwright/test").APIRequestContext, tag: string, prompts: { title: string; mode: string; text: string }[]) {
+    const ids: string[] = [];
+    for (const p of prompts) {
+      const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `${p.title} ${tag}` } })).json();
+      ids.push(session.id);
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: p.mode, sandbox: "off" } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: p.text } });
+      // One at a time, so the order of waiting is the order made.
+      const asks = async () => ((await (await request.get(`/api/sessions/${session.id}/approvals`)).json()).approvals ?? []).length
+        + ((await (await request.get(`/api/sessions/${session.id}/questions`)).json()).pending ?? []).length;
+      await expect.poll(asks, { timeout: 30_000 }).toBe(1);
+    }
+    return ids;
+  }
+
+  test("the dock's count is a button of its own that goes to the card that waited longest", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const made: string[] = [];
+    try {
+      const { session: home } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Desk ${tag}` } })).json();
+      made.push(home.id);
+      await request.post(`/api/sessions/${home.id}/messages`, { data: { text: "script:say ready" } });
+      const ids = await waiting(request, tag, [
+        { title: "Wait one", mode: "ask", text: bash("touch one.txt") },
+        { title: "Wait two", mode: "ask", text: bash("touch two.txt") },
+        { title: "Wait three", mode: "ask", text: bash("touch three.txt") },
+      ]);
+      made.push(...ids);
+      await page.goto(`/s/${home.id}`);
+      const pill = page.getByRole("button", { name: /need you/ });
+      await expect(pill).toBeVisible();
+      await shoot(page, "phone-07-dock-need");
+      // A finger's size, and in a slot of its own: no mark of the dock lies under it.
+      const b = (await pill.boundingBox())!;
+      const tap = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize) * 2.75);
+      expect(b.height).toBeGreaterThanOrEqual(tap - 0.5);
+      const list = (await page.locator(".k-dock-list").boundingBox())!;
+      expect(list.x + list.width).toBeLessThanOrEqual(b.x + 0.5);
+      await pill.tap();
+      const pane = page.locator(".k-station[data-helm]");
+      await expect(page).toHaveURL(new RegExp(`/s/${ids[0]}$`));
+      await expect(pane.getByTestId("allow-once")).toBeVisible();
+      // (Once the page has glided into place.)
+      await expect(pane).toBeInViewport({ ratio: 1 });
+      await shoot(page, "phone-08-dock-need-went");
+    } finally { for (const id of made) await request.delete(`/api/sessions/${id}`); }
+  });
+});
+
 // The targets on screen that a finger cannot press well: under 2.75rem a side, or lying over
 // another target of the same layer (a fixed bar, a popup or a dialog is a layer of its own; a
 // box is taken as it shows, cut by what clips it). A target is what a press acts on: a

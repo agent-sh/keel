@@ -47,6 +47,7 @@ import { Boundary, SessionView } from "./SessionView.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { WatchHeadline, WatchLists, useAttended } from "./HomeWatch.tsx";
 import { StartBox } from "./StartBox.tsx";
+import { goNextWaiting } from "./AnswerQueue.tsx";
 
 const helmNow = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
 // What the panes show, left to right: a look where one lies over a pane, else the pane's own session.
@@ -478,8 +479,12 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
           </li>
         ))}
       </ol>
-      {/* The home screen's headline already says it. */}
-      {need > 0 && !fresh && <span className="k-dock-need" data-testid="dock-need" aria-live="polite">{countWord("need", need)}</span>}
+      {/* The home screen's headline already says it. A tap goes to the card that has waited longest (the desk's Alt+A). */}
+      {need > 0 && !fresh && (
+        <button type="button" className="k-dock-need" data-testid="dock-need" onClick={goNextWaiting}>
+          <span className="k-dock-need-n" aria-live="polite">{countWord("need", need)}</span>
+        </button>
+      )}
       <button type="button" className="k-dock-btn" aria-label="New session" aria-current={fresh ? "page" : undefined} onClick={() => navigate({ name: "new" })}><Plus /></button>
     </nav>
   );

@@ -1019,7 +1019,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-dock-mark[aria-current] .k-dock-code, .k-dock-mark[data-watch="need"] .k-dock-code { color: var(--fg); }
   .k-dock-mark[aria-current] { background: var(--raised); }
   .k-dock-mark[aria-current]::after { content: ""; position: absolute; left: 0.5rem; right: 0.5rem; bottom: 0.125rem; height: 0.125rem; border-radius: 2px; background: var(--fg); }
-  .k-dock-need { flex-shrink: 0; padding: 0 0.5rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; color: var(--accent-fg); background: var(--st-need); }
+  /* What needs the owner: a finger's size of its own beside the marks, the pill inside it. */
+  .k-dock-need { flex-shrink: 0; display: grid; place-items: center; height: 2.75rem; padding: 0 0.125rem; border-radius: var(--radius-md); }
+  .k-dock-need-n { padding: 0 0.5rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; white-space: nowrap; color: var(--accent-fg); background: var(--st-need); }
+  .k-dock-need:active .k-dock-need-n { filter: brightness(0.92); }
 }
 
 /* The station head already names the folder: the helm header drops its folder chip. */
