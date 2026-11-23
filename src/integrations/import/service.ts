@@ -352,7 +352,8 @@ export class Imports {
   // session, found without decoding the index: its columns filter, order and
   // count in SQL, the few sessions of the other stores are merged in by the
   // same order, and only the rows of the page are decoded.
-  list(q: ListQuery & { offered?: boolean }, max = 500) {
+  // `insideRows`: the index's rows of the files of `inside` (what `inside()` gives with them).
+  list(q: ListQuery & { offered?: boolean; insideRows?: readonly number[] }, max = 500) {
     const db = this.store.db;
     const scope = q.offered ? "offered" : "";
     const limit = pageLimit(q, max);
@@ -372,8 +373,9 @@ export class Imports {
     if (words.length) {
       // Every word in what the index keeps of the row, or the row's file among those a search inside found.
       const hay = words.map(() => "instr(hay, ?) > 0").join(" AND ");
-      where.push(q.inside ? `((${hay}) OR path IN (SELECT value FROM json_each(?)))` : `(${hay})`);
-      args.push(...words, ...(q.inside ? [JSON.stringify([...q.inside])] : []));
+      // (The rows found are named by rowid: a list of paths of every file of a word said everywhere is megabytes.)
+      where.push(q.inside ? `((${hay}) OR rowid IN (SELECT value FROM json_each(?)))` : `(${hay})`);
+      args.push(...words, ...(q.inside ? [JSON.stringify(q.insideRows ?? [])] : []));
     }
     if (q.offered) where.push("offered = 1");
     const W = where.join(" AND ");
@@ -448,14 +450,18 @@ export class Imports {
   // The answer for one query is kept for a moment: the next page, and the same query typed again.
   // Told of a search inside that failed (the daemon's error tracker).
   insideFailed?: (e: unknown) => void;
-  private insideCache = new Map<string, { at: number; done: Promise<Set<string> | null>; settled: boolean; waiting: number; stop: AbortController }>();
-  async inside(q: string, o: { harness?: Harness; show?: string; signal?: AbortSignal } = {}): Promise<{ paths: Set<string> | null; searched: Harness[]; not: Harness[] }> {
+  // Where the index's files are read for it: the read thread (src/server/reads.ts), so a list of every
+  // file indexed is never read on the loop. Unset (a unit test), they are read here.
+  offRead?: <T>(sql: string, params: (string | number | null)[]) => Promise<T[]>;
+  // `rows`: the index's rows of the files found (the list matches them by rowid, a few bytes each).
+  private insideCache = new Map<string, { at: number; done: Promise<{ paths: Set<string>; rows: number[] } | null>; settled: boolean; waiting: number; stop: AbortController }>();
+  async inside(q: string, o: { harness?: Harness; show?: string; signal?: AbortSignal } = {}): Promise<{ paths: Set<string> | null; rows: number[]; searched: Harness[]; not: Harness[] }> {
     const words = wordsOf(q);
     const kinds = kindsOf(o.show);
     const want = (h: Harness) => !o.harness || o.harness === h;
     const fileStores = HARNESSES.map((h) => h.harness).filter((h) => !inDatabase(h) && want(h));
     const not = HARNESSES.map((h) => h.harness).filter((h) => inDatabase(h) && want(h));
-    if (!words.length) return { paths: new Set(), searched: fileStores, not };
+    if (!words.length) return { paths: new Set(), rows: [], searched: fileStores, not };
     const key = JSON.stringify([words, o.harness ?? "", kinds ?? "all"]);
     const now = Date.now();
     for (const [k, v] of this.insideCache) if (v.settled && now - v.at > REFRESH_MS) this.insideCache.delete(k);
@@ -465,12 +471,18 @@ export class Imports {
       const where = ["found IS NOT NULL", `harness IN (${indexed.map(() => "?").join(", ") || "NULL"})`];
       const args: string[] = [...indexed];
       if (kinds) { where.push(`kind IN (${kinds.map(() => "?").join(", ")})`); args.push(...kinds); }
-      const files = this.store.db.query<{ path: string }, string[]>(`SELECT path FROM import_index WHERE ${where.join(" AND ")}`).all(...args).map((r) => r.path);
-      for (const f of this.side(o.harness)) if (!inDatabase(f.harness) && (!kinds || kinds.includes(f.kind))) files.push(f.path);
+      const sql = `SELECT rowid, path FROM import_index WHERE ${where.join(" AND ")}`;
+      const side = this.side(o.harness).filter((f) => !inDatabase(f.harness) && (!kinds || kinds.includes(f.kind))).map((f) => f.path);
       // One search for everyone who asks the same meanwhile; stopped when nobody waits for it any more
       // (a query typed on: its search is no longer read).
       const stop = new AbortController();
-      const entry = { at: now, done: filesWithAll(words, files, stop.signal), settled: false, waiting: 0, stop };
+      const search = async () => {
+        const indexedRows = await (this.offRead ? this.offRead<{ rowid: number; path: string }>(sql, args) : Promise.resolve(this.store.db.query<{ rowid: number; path: string }, string[]>(sql).all(...args)));
+        const rowOf = new Map(indexedRows.map((r) => [r.path, r.rowid]));
+        const paths = await filesWithAll(words, [...rowOf.keys(), ...side], stop.signal);
+        return paths && { paths, rows: [...paths].flatMap((f) => { const r = rowOf.get(f); return r === undefined ? [] : [r]; }) };
+      };
+      const entry = { at: now, done: search(), settled: false, waiting: 0, stop };
       entry.done.then(() => { entry.settled = true; entry.at = Date.now(); }, () => { if (this.insideCache.get(key) === entry) this.insideCache.delete(key); });
       this.insideCache.set(key, hit = entry);
     }
@@ -479,8 +491,8 @@ export class Imports {
     try {
       const asked = o.signal ? Promise.race([h.done, new Promise<never>((_, no) => o.signal!.addEventListener("abort", () => no(o.signal!.reason ?? new Error("aborted")), { once: true }))]) : h.done;
       // A search that could not read the files is a search that did not happen: said as such, not as no match.
-      const paths = await asked.catch((e) => { if (o.signal?.aborted) throw e; this.insideFailed?.(e); return null; });
-      return { paths, searched: paths ? fileStores : [], not: paths ? not : [...fileStores, ...not] };
+      const got = await asked.catch((e) => { if (o.signal?.aborted) throw e; this.insideFailed?.(e); return null; });
+      return { paths: got?.paths ?? null, rows: got?.rows ?? [], searched: got ? fileStores : [], not: got ? not : [...fileStores, ...not] };
     } finally {
       if (--h.waiting === 0 && !h.settled) { h.stop.abort(); if (this.insideCache.get(key) === h) this.insideCache.delete(key); }
     }

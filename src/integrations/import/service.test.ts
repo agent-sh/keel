@@ -326,3 +326,23 @@ test("an OpenCode compaction that kept its newest messages: the model reads the 
   check(b.session.id);
   db.close();
 });
+
+test("a search inside the transcripts reads the files of the index off the loop and names the rows it found by rowid", async () => {
+  const { store, imports, path, found } = fixture();
+  const f = found();
+  imports.record(path, "claude", f.size_bytes, f.updated_ms, f);
+  // The read thread stands in: what it is asked is run on a connection of its own here too.
+  const asked: string[] = [];
+  imports.offRead = async <T,>(sql: string, params: (string | number | null)[]) => { asked.push(sql); return store.db.query(sql).all(...(params as string[])) as T[]; };
+  const r = await imports.inside("answer", { harness: "claude" });
+  // The list of every file indexed was read where offRead reads (the read thread), not on the loop.
+  expect(asked).toHaveLength(1);
+  expect(asked[0]).toContain("FROM import_index");
+  expect([...r.paths!]).toEqual([path]);
+  const rowid = store.db.query<{ rowid: number }, [string]>("SELECT rowid FROM import_index WHERE path = ?").get(path)!.rowid;
+  expect(r.rows).toEqual([rowid]);
+  // The words are only in the replies: the list finds the row by the rowid it was given.
+  const listed = imports.list({ harness: "claude", q: "answer", inside: r.paths!, insideRows: r.rows });
+  expect(listed.sessions.map((s) => [s.path, s.in_text])).toEqual([[path, true]]);
+  expect(imports.list({ harness: "claude", q: "answer", inside: r.paths!, insideRows: [] }).sessions).toEqual([]);
+});

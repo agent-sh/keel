@@ -2,6 +2,7 @@
 // export of a session: to read, to import into another keel-bun, or to resume
 // in Claude Code or Codex.
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { readsOf } from "../reads.ts";
 import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
@@ -28,6 +29,8 @@ export const importRoutes: RouteModule = (deps) => {
   // tens of thousands of other harnesses' files costs every start CPU and memory.
   const imports = sharedImports(store);
   imports.insideFailed ??= (e) => deps.errors.capture("server", e, { at: "import search inside" });
+  const reads = readsOf(store);
+  imports.offRead ??= (sql, params) => reads.sql(sql, params);
   const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
   // The source's model when this daemon lists it, else the default one.
   const modelFor = (f: Found) => pickModel(providers, f);
@@ -229,7 +232,7 @@ export const importRoutes: RouteModule = (deps) => {
         // folders and prompts. The answer says which harnesses' text was searched and which was not.
         const q = u.get("q") ?? undefined;
         const found = u.has("inside") && q?.trim() ? await imports.inside(q, { harness: harness as Harness | undefined, show: u.get("show") ?? undefined, signal: req.signal }) : undefined;
-        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor, inside: found?.paths ?? undefined }));
+        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor, inside: found?.paths ?? undefined, insideRows: found?.rows }));
         if (r instanceof Response) return r;
         return json({ ...r, harnesses: imports.harnesses(), ...(found ? { inside: { searched: found.searched, not: found.not } } : {}) });
       },
