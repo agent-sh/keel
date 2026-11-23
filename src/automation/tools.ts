@@ -391,7 +391,9 @@ const waitRun = (input: any, ctx: ToolContext) => guard(() => {
   if (input.kind === "webhook" || input.spec?.kind === "webhook") return fail("A webhook wait is the owner's to create.");
   // A session whose commands run on another machine: their files are there, not on this disk.
   const elsewhere = !!D().store.session(ctx.sessionId)?.machine;
-  const spec = waits.normalize(input, ctx.cwd, { elsewhere });
+  // The background command of this session a path is the output of (logDir in src/tools/shell.ts), by its id.
+  const job = (path: string) => (dirname(path) === join(ctx.spillDir, "jobs") && existsSync(path) ? basename(path).replace(/\.log$/, "") : undefined);
+  const spec = waits.normalize(input, ctx.cwd, { elsewhere, job });
   if (waits.isMonitor(spec.kind)) return fail("Use the monitor tool for a command's output or a socket.");
   // The output file of a background command of this session (logDir in src/tools/shell.ts) that does not
   // exist names no command of it: a wait on it only reaches its deadline. Its exit file (`<log>.exit`, src/tools/jobs.ts)

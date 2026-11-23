@@ -67,7 +67,8 @@ test("a log wait's pattern may start with an inline flag group", async () => {
 // exit file waits for it too.
 test("a process wait with no pid says what a pid is and what to use instead", () => {
   for (const pid of [0, undefined, 1]) {
-    expect(() => waits.normalize({ kind: "process", pid, timeout_seconds: 60 }, dir)).toThrow(/a running process's id.*background command.*wakes this session by itself.*needs no wait.*"file".*\.exit.*"timer"/s);
+    const head = pid === undefined ? "a process wait needs a running process's id" : `pid ${pid} is no process to wait on`;
+    expect(() => waits.normalize({ kind: "process", pid, timeout_seconds: 60 }, dir)).toThrow(new RegExp(`^${head}.*"timer".*background command.*wakes this session by itself.*needs no wait.*"file".*\\.exit`, "s"));
   }
 });
 

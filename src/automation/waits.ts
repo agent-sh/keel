@@ -530,9 +530,37 @@ function pattern(p: unknown): string {
 
 const writerOf = (spec: any): { writer?: string } => (spec.writer === undefined || spec.writer === null || spec.writer === "" ? {} : { writer: String(spec.writer).trim() });
 
+// Why a process wait with no process to wait on is refused, and the kind that does what the call
+// meant. Models sent pid 0 or 1 with a timeout of a few seconds as a pause, and the path of their
+// own command's log with no pid. A command's end starts a turn of an idle session and rides a turn
+// at work (src/server/routes/tools.ts); a file wait on `<log>.exit` (src/tools/jobs.ts writes it at
+// the end) waits for it too. A session on another machine has its commands there: their end does
+// not reach this daemon, and a wait here does not see their files.
+// `job`: the background command of the session whose output file a path is.
+function processRefusal(spec: any, cwd: string, o: { elsewhere?: boolean; job?: (path: string) => string | undefined }): string {
+  const woken = o.elsewhere
+    ? "A background command of this session does not wake it when it ends: the command runs on the session's machine, whose files and processes a wait here does not see: wait there with a command in the shell tool."
+    : "A background command you started wakes this session by itself when it ends (a turn at work reads its end at its next step): it needs no wait.";
+  const exitFile = (log: string) => (o.elsewhere ? "" : ` To wait on it all the same, use kind "file" with path "${log}.exit", which its end writes.`);
+  if (typeof spec.path === "string" && spec.path.trim()) {
+    const path = resolvePath(spec.path.trim(), cwd);
+    const log = path.endsWith(".exit") ? path.slice(0, -".exit".length) : path;
+    const job = o.job?.(log);
+    if (job) return `kind "process" waits on a process id, not a path. ${path} is the output of your background command ${job}. ${woken}${exitFile(log)}`;
+    return `kind "process" waits on a process id, not a path. To wait for that file, use kind "file" (with contains for its text) or kind "log" (with match for a new line). ${woken}${exitFile("<its log>")}`;
+  }
+  const pause = 'For a pause, use kind "timer" with seconds.';
+  const given = spec.pid !== undefined && spec.pid !== null && spec.pid !== "";
+  const head = given && Number.isInteger(Number(spec.pid)) && Number(spec.pid) <= 1
+    ? `pid ${Number(spec.pid)} is no process to wait on. ${pause}`
+    : `a process wait needs a running process's id (a number above 1, as \`echo $!\` prints it). ${pause}`;
+  return `${head} ${woken}${o.elsewhere ? "" : ' To wait on one all the same, use kind "file" on its log\'s path plus ".exit", which its end writes.'}`;
+}
+
 // Validates a spec the way the model or the page wrote it; throws the reason.
 // `elsewhere`: the session's commands run on another machine, whose files a wait here does not see.
-export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}): WaitSpec {
+// `job`: the background command of the session whose output file a path is (for the words of a refusal).
+export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean; job?: (path: string) => string | undefined } = {}): WaitSpec {
   const spec = raw?.spec && typeof raw.spec === "object" ? raw.spec : raw;
   const kind = spec?.kind ?? (spec?.command ? "monitor" : spec?.pid ? "process" : spec?.url ? "http" : spec?.match && spec?.path ? "log" : spec?.path ? "file" : spec?.seconds || spec?.at_ms ? "timer" : undefined);
   const custom = kinds.get(kind);
@@ -562,16 +590,7 @@ export function normalize(raw: any, cwd: string, o: { elsewhere?: boolean } = {}
     }
     case "process": {
       const pid = Number(spec.pid);
-      // Models sent pid 0 for a pause, or for a command they started in the background. Its end starts a
-      // turn of an idle session and rides a turn at work (src/server/routes/tools.ts); a file wait on
-      // `<log>.exit` (src/tools/jobs.ts writes it at the end) waits for it too. A session on another machine
-      // has its commands there: their end does not reach this daemon, and a wait here does not see their files.
-      if (!Number.isInteger(pid) || pid <= 1) {
-        const woken = o.elsewhere
-          ? "A background command of this session does not wake it when it ends: the command runs on the session's machine, whose files and processes a wait here does not see: wait there with a command in the shell tool"
-          : 'A background command you started wakes this session by itself when it ends (a turn at work reads its end at its next step): it needs no wait. To wait on one all the same, use kind "file" on its log\'s path plus ".exit", which its end writes';
-        throw new Error(`a process wait needs a running process's id (a number above 1, as \`echo $!\` prints it). ${woken}. For a pause, use kind "timer" with seconds.`);
-      }
+      if (!Number.isInteger(pid) || pid <= 1) throw new Error(processRefusal(spec, cwd, o));
       if (!procAlive(pid)) throw new Error(`process ${pid} has already ended`);
       const start = startTime(pid);
       return start ? { kind, pid, start } : { kind, pid };

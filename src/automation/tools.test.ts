@@ -90,6 +90,29 @@ test("a session on another machine is not told to wait for a file of its machine
   for (const w of waits.list(far.id)) waits.cancel(w.id, far.id);
 });
 
+// Models sent pid 0 or 1 with a few seconds' timeout as a pause, and their own command's log path
+// with no pid: each refusal leads with the kind that does what the call meant.
+test("a process wait with no process to wait on names the kind the call meant", async () => {
+  const spill = mkdtempSync(join(tmpdir(), "keel-spill-"));
+  const own = { ...ctx, spillDir: spill };
+  const before = waits.list(s.id).length;
+  const pause = await tool("WaitFor").run({ kind: "process", pid: 1, timeout_seconds: 1, note: "noop" }, own);
+  expect(pause.is_error).toBe(true);
+  expect(text(pause)).toStartWith('pid 1 is no process to wait on. For a pause, use kind "timer" with seconds.');
+  expect(text(pause)).toContain("wakes this session by itself when it ends");
+  mkdirSync(join(spill, "jobs"));
+  const log = join(spill, "jobs", "b1run.log");
+  writeFileSync(log, "");
+  const path = await tool("WaitFor").run({ kind: "process", path: log, timeout_seconds: 1800, note: "remote run" }, own);
+  expect(path.is_error).toBe(true);
+  expect(text(path)).toStartWith(`kind "process" waits on a process id, not a path. ${log} is the output of your background command b1run.`);
+  expect(text(path)).toContain("it needs no wait.");
+  expect(text(path)).toContain(`use kind "file" with path "${log}.exit"`);
+  const other = await tool("WaitFor").run({ kind: "process", path: join(spill, "out.txt") }, own);
+  expect(text(other)).toContain('To wait for that file, use kind "file"');
+  expect(waits.list(s.id)).toHaveLength(before);
+});
+
 test("CronDelete deletes the model's own scheduled tasks, not the owner's", async () => {
   const mine = loops.create({ session_id: s.id, schedule: "10m", prompt: "check", created_by: "model" }).loop;
   const owners = loops.create({ session_id: s.id, schedule: "10m", prompt: "report", created_by: "owner" }).loop;
