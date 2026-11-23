@@ -29,11 +29,11 @@ test("each agent's line says what it is doing now", async ({ page, request }) =>
   try {
     const id = await session("Coordinator");
     // Frames of the page's socket: how often each agent's line was told.
-    const told = new Map<string, number[]>();
+    const told = new Map<string, { at: number; need: boolean }[]>();
     page.on("websocket", (ws) => ws.on("framereceived", (f) => {
       const s = String(f.payload);
       if (!s.includes('"agents_now"')) return;
-      for (const l of JSON.parse(s).data.lines as Line[]) (told.get(l.agent_id) ?? told.set(l.agent_id, []).get(l.agent_id)!).push(Date.now());
+      for (const l of JSON.parse(s).data.lines as Line[]) (told.get(l.agent_id) ?? told.set(l.agent_id, []).get(l.agent_id)!).push({ at: Date.now(), need: !!l.need });
     }));
     await page.goto(`/s/${id}`);
     const thinker = `Thinker\n${calls([
@@ -88,7 +88,9 @@ test("each agent's line says what it is doing now", async ({ page, request }) =>
     await shoot(page, "agent-now-02-tree");
 
     // At most one telling a line every 15 s (a little less for the timer's own beat), for every agent told twice.
-    const gaps = [...told.values()].flatMap((ts) => ts.slice(1).map((t, i) => t - ts[i]!));
+    // A line whose owner's part changed is told at once by design (dueAt): the asker's first line can come a
+    // moment before its question does, so that telling is not counted.
+    const gaps = [...told.values()].flatMap((ts) => ts.slice(1).flatMap((t, i) => (t.need === ts[i]!.need ? [t.at - ts[i]!.at] : [])));
     expect(gaps.length).toBeGreaterThan(0);
     expect(Math.min(...gaps)).toBeGreaterThanOrEqual(14_000);
     // Of another tree, the page that shows none of it hears nothing.
