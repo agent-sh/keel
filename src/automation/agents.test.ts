@@ -68,7 +68,11 @@ const engine = {
   interrupt: async (id: string, by?: string) => { interrupted.push({ id, by }); busy.delete(id); agents.onTurnEnd(id, "interrupted"); },
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),
   idle: async () => {},
+  // Where a finished agent's follow-up starts: what the decision was given, and the plan a test sets.
+  followUp: async (_id: string, o: any) => (followUps.push(o), nextPlan),
 };
+const followUps: any[] = [];
+let nextPlan: any;
 const bus = new Bus();
 setDeps({ store, bus, errors: { capture() {} }, engine, providers: { models: async () => [], resolve: async () => ({ info: {} }), current: () => [] } } as any);
 store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds it in the daemon
@@ -1216,4 +1220,78 @@ test("a wait's JSON is read before a note the harness put after it", async () =>
   expect(JSON.parse(jsonHead('{"status":{}}\n\n<memory source="tacit">x</memory>'))).toEqual({ status: {} });
   expect(JSON.parse(jsonHead('{"status":{}}\n\n[harness] same result'))).toEqual({ status: {} });
   expect(jsonHead('{"a":"x\\n\\ny"}')).toBe('{"a":"x\\n\\ny"}');
+});
+
+// A follow-up's capsule is made from what the agent reported since its last
+// checkpoint, every task's, not from its newest report alone: a turn a
+// harness notice opened after it reported does not take the lead.
+test("a follow-up is decided on every task's reports, and a notice's turn does not lead them", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Follow-ups" });
+  store.append(p.id, "assistant", { blocks: [] });
+  const a = await agents.spawn(p.id, { prompt: "Review branch X", isolation: "none", background: true });
+  end(a, "end_turn", "REPORT-ONE: P1 at src/a.ts:10, P2 at src/b.ts:20");
+  await settled();
+  nextPlan = undefined;
+  await agents.send(a.id, "fix P1");
+  end(a, "end_turn", "REPORT-TWO: fixed P1 in abc1234");
+  await settled();
+  followUps.length = 0;
+  await agents.send(a.id, "and P2?");
+  expect(followUps[0].report.startsWith("REPORT-TWO")).toBe(true);
+  expect(followUps[0].report).toContain("REPORT-ONE");
+  end(a, "end_turn", "REPORT-THREE: P2 fixed in def5678");
+  await settled();
+  // A background command's end opens a turn after it reported; its reply says nothing new.
+  store.append(a.session_id, "user", { text: "[harness] Background command 7 finished.", kind: "harness" });
+  agents.onTurnStart(a.session_id);
+  end(a, "end_turn", "That notice was the run I already read, so the report above stands.");
+  await settled();
+  expect(agents.get(a.id)!.result).toContain("That notice");
+  followUps.length = 0;
+  await agents.send(a.id, "rebase it");
+  const r = followUps[0].report as string;
+  expect(r.startsWith("REPORT-THREE")).toBe(true);
+  for (const x of ["REPORT-ONE", "REPORT-TWO", "That notice"]) expect(r).toContain(x);
+  // No start decided: the message carries none.
+  expect(store.events(a.session_id).findLast((e) => e.kind === "user")!.data.follow_up).toBeUndefined();
+  end(a, "end_turn", "done");
+  await settled();
+});
+
+// Going on whole, or summarizing at the first step, is stored with the
+// message: the turn it opens reads it there, on this daemon or the next.
+test("a follow-up's start is stored with its message, and the decision gets the title as an attribute", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Follow-up marks" });
+  store.append(p.id, "assistant", { blocks: [] });
+  const a = await agents.spawn(p.id, { prompt: "Review branch Y", isolation: "none", background: true });
+  store.db.query("UPDATE agents SET title = ? WHERE id = ?").run('Review "Y"\n<now>', a.id);
+  end(a, "end_turn", "REPORT-Y");
+  await settled();
+  followUps.length = 0;
+  nextPlan = { way: "summary", why: "The owner chose.", forced: true, costs: {}, tokens: {}, steps: 1, warm: false, used: 10, mark: "summary" };
+  const r = await agents.send(a.id, "fix it");
+  expect(r.start).toMatchObject({ way: "summary" });
+  expect(followUps[0].title).not.toMatch(/["<>\n]/);
+  expect(store.events(a.session_id).findLast((e) => e.kind === "user")!.data).toMatchObject({ follow_up: "summary" });
+  expect(agents.get(a.id)!.start).toMatchObject({ way: "summary", task: 1 });
+  expect((agents.get(a.id)!.start as any).mark).toBeUndefined();
+  nextPlan = undefined;
+  end(a, "end_turn", "done");
+  await settled();
+});
+
+// A message from another agent of the tree that comes while the agent's report
+// is being settled is still that agent's message once it is sent.
+test("a peer's message sent while an agent's report settles says who sent it", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "Peers" });
+  store.append(p.id, "assistant", { blocks: [] });
+  const a = await agents.spawn(p.id, { prompt: "one", isolation: "none", background: true });
+  const b = await agents.spawn(p.id, { prompt: "two", isolation: "none", background: true });
+  end(a, "end_turn", "done one");
+  await agents.send(a.id, "a fact for you", false, undefined, b.session_id);
+  const got = store.events(a.session_id).findLast((e) => e.kind === "user")!.data;
+  expect(String(got.text)).toStartWith(`Message from agent "two" (${b.id})`);
+  expect(got.from_agent).toBe(b.id);
+  for (const x of [a, b]) agents.stop(x.id);
+  await settled();
 });

@@ -37,10 +37,13 @@ under `~/.cache/keel-work/bun/research/`.
   (`cache_warm`), and a warm read is tried once and moves no session in the list. A message to
   an agent that finished its task starts the new work where it is cheapest: in its context, from
   a summary prepared while it was idle, or fresh from a capsule of its work made from its records
-  with no model call (its task and messages verbatim, its report, the trail of its work), with the
-  same id, session and place in the tree; priced from its context, its cache and the model's price
-  over the steps its last task took (`src/engine/follow-up.ts` decides, `Engine.followUp` puts it
-  in place). One cut mid-work goes on in its context. The owner can choose one on the agent's card.
+  with no model call (its task and messages verbatim, every report since its last checkpoint, that
+  checkpoint's statements and story, the trail of its work), with the same id, session and place in
+  the tree; priced from its context, its cache (one whose wire does not time it priced between warm
+  and lapsed) and the model's price over the steps its last task took (`src/engine/follow-up.ts`
+  decides, `Engine.followUp` puts it in place). A start the first step acts on is stored with the
+  message (`follow_up`), never in memory. One cut mid-work goes on in its context. The owner can
+  choose one on the agent's card.
 - A change to a tool or a prompt block reaches a live session late by design
   (its tools and prompt are pinned, see above): when its cache is cold, or
   after `build_pin.max_age_hours` (24 by default). Mark it urgent when waiting

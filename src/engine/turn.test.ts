@@ -897,3 +897,119 @@ test("an external turn's streamed text is all sent before the event that stores 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A follow-up to a finished agent (Engine.followUp, src/engine/follow-up.ts):
+// an agent's session with a checkpoint that carried a statement and a story,
+// a task after it, and engines on one store with a provider of a given wire.
+async function followUpBench() {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "follow-up-"));
+  const store = new Store(dir);
+  const asked: any[] = [];
+  const price = { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 };
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 200_000, output: 1_000, efforts: [], billing: "per_token", price };
+  const usage = { input: 700, output: 1, cache_read: 0, cache_write: 0 };
+  let n = 0;
+  const make = (wire: string) => {
+    const provider = {
+      id: "p", wire, available: () => true, list: async () => [],
+      stream: async (req: any) => {
+        asked.push(req);
+        return { blocks: [{ type: "text", text: req.purpose === "summary" ? "SUMMARY-NOW" : "ok" }], usage, stop: "end_turn", model: "m" };
+      },
+    };
+    const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+    return new Engine(store, new Bus(), providers as any, { capture: (_s: string, e: unknown) => ({ message: String((e as Error).message) }) } as any, join(dir, `spill-${++n}`));
+  };
+  const agentSession = () => {
+    const parent = store.createSession({ model: "p:m", workspace: dir });
+    const s = store.createSession({ model: "p:m", workspace: dir });
+    // (An agent's session: the automation adds the column in the daemon.)
+    if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+    store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent.id, s.id);
+    (store as any).forget(s.id);
+    const reply = (c: string) => store.append(s.id, "assistant", { blocks: [{ type: "text", text: c.repeat(40_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 10, cache_read: 0, cache_write: 12_000 } });
+    store.append(s.id, "user", { text: "Do the big task", kind: "task" });
+    reply("x");
+    store.append(s.id, "compaction", {
+      mode: "summary", auto: true, owner_messages: [],
+      summary: "## Statements\nThe conversation's own words, carried through every compaction until lifted:\n- work: \"never push to main\"\n\n## Story\nSTORY-OLD: chose design Z over Y because of W.",
+      statements: [{ kind: "standing", by: "work", text: "never push to main" }],
+    });
+    store.append(s.id, "user", { text: "Message from the session that started you:\ngo on" });
+    reply("y");
+    store.append(s.id, "turn_end", { reason: "end_turn" });
+    return s.id;
+  };
+  const o = { title: "Big task", report: "REPORT-AFTER: done, see branch", tasks: 1, since: 0, message: "fix the review findings", ended: "completed" as const };
+  return { store, asked, make, agentSession, o };
+}
+
+// The capsule keeps what the checkpoint before it carried: its statements, as
+// the model reads them, and its story verbatim.
+test("a follow-up's capsule keeps the statements and the story of the checkpoint before it", async () => {
+  const { summaryMessage } = await import("./compact.ts");
+  const { store, make, agentSession, o } = await followUpBench();
+  const c = agentSession();
+  const plan = await make("anthropic_messages").followUp(c, { ...o, force: "capsule" });
+  expect(plan).toMatchObject({ way: "capsule", forced: true });
+  const cp = store.events(c).findLast((e) => e.kind === "compaction")!;
+  expect(cp.data).toMatchObject({ capsule: true, trigger: "follow_up" });
+  const read = JSON.stringify(summaryMessage(cp.data).content);
+  expect(read).toContain("REPORT-AFTER");
+  expect(read).toContain("never push to main");
+  expect(read).toContain("STORY-OLD: chose design Z");
+  expect(cp.data.statements).toEqual([expect.objectContaining({ text: "never push to main" })]);
+});
+
+// A wire that does not say how long it keeps a cache is not taken for lapsed
+// while it may still hold it; and the owner's choice to go on whole makes no capsule.
+test("a follow-up on a wire that does not time its cache prices it as perhaps warm", async () => {
+  const { store, make, agentSession, o } = await followUpBench();
+  const m = agentSession();
+  const chat = make("chat_completions");
+  const plan = await chat.followUp(m, o);
+  expect(plan!.why).not.toContain("cache lapsed");
+  expect(plan).toMatchObject({ warm: false, maybe: true });
+  // (The way that one took depends on the prompt and tools this machine gives: a session of its own for the owner's choice.)
+  const f = agentSession();
+  const forced = await make("chat_completions").followUp(f, { ...o, force: "carry" });
+  expect(forced).toMatchObject({ way: "carry", forced: true, mark: "carry" });
+  expect(store.events(f).filter((e) => e.kind === "compaction")).toHaveLength(1);
+  // The long lifetime is priced only where the next request asks for it: an agent's request soon after its last asks for the short one.
+  const anthropic = make("anthropic_messages");
+  const st = await (anthropic as any).step(store.session(f), "p:m");
+  expect((anthropic as any).asksLong(f, st)).toBe(false);
+  store.mergeSettings(f, { cache_long: true });
+  expect((anthropic as any).asksLong(f, st)).toBe(true);
+  expect((anthropic as any).asksLong(f, await (chat as any).step(store.session(f), "p:m"))).toBe(false);
+});
+
+// Where the follow-up starts, when the first step must act on it, is read
+// from the message that opens the turn: a later engine on the same store
+// reads it, and no other turn does.
+test("a follow-up's summary at the first step is read from its message, by a later engine too", async () => {
+  const { store, asked, make, agentSession, o } = await followUpBench();
+  const s = agentSession();
+  expect(await make("anthropic_messages").followUp(s, { ...o, force: "summary" })).toMatchObject({ way: "summary" });
+  const next = make("anthropic_messages");
+  next.message(s, "Message from the session that started you:\nfix the review findings", { kind: "steer", follow_up: "summary" });
+  await next.idle(s);
+  expect(asked.filter((r) => r.purpose === "summary")).toHaveLength(1);
+  expect(store.events(s).findLast((e) => e.kind === "compaction")!.data).toMatchObject({ trigger: "follow_up" });
+});
+
+test("a follow-up decision whose message never came leaves the next turn alone", async () => {
+  const { asked, make, agentSession, o } = await followUpBench();
+  const h = agentSession();
+  const engine = make("anthropic_messages");
+  await engine.followUp(h, { ...o, force: "summary" });
+  engine.send(h, "an unrelated prompt");
+  await engine.idle(h);
+  expect(asked.filter((r) => r.purpose === "summary")).toHaveLength(0);
+  expect(asked.filter((r) => r.purpose === "turn")).toHaveLength(1);
+});

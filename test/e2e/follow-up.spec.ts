@@ -3,11 +3,12 @@ import { shoot } from "./shots.ts";
 
 // Feature: a message to an agent that has finished starts its new work in
 // the cheapest context that still holds the work. An agent reads three long
-// command outputs and reports; its parent sends it a follow-up after the
-// cache of that context lapsed (the scripted stand-in keeps none), so going
-// on would write the whole context again: the agent starts fresh from a
-// capsule of its work instead (its task and messages verbatim, its report,
-// the trail of its files and commands), with the same id, session and place.
+// command outputs and reports; its parent sends it a follow-up at once. The
+// scripted stand-in does not say how long it keeps a cache, so going on is
+// priced between reading the context again and writing it again: the agent
+// starts fresh from a capsule of its work instead (its task and messages
+// verbatim, its reports, the trail of its files and commands), with the same
+// id, session and place.
 // Its card and both timelines say which start was taken and why, and the
 // owner can choose another for the next follow-ups.
 const MODEL = "scripted:stand-in-strict";
@@ -36,7 +37,7 @@ test("a follow-up to a finished agent at a large context starts from a capsule, 
   expect(a.id).toBe(first.id);
   expect(a.session_id).toBe(first.session_id);
   expect(a.start).toMatchObject({ way: "capsule", task: 1 });
-  expect(a.start.why).toContain("cache lapsed");
+  expect(a.start.why).toContain("perhaps warm");
   expect(a.start.costs.capsule).toBeLessThan(a.start.costs.carry);
 
   // The new work's first request read the capsule, not the whole earlier context.

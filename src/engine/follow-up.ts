@@ -35,7 +35,11 @@ export const isWay = (x: unknown): x is Way => typeof x === "string" && (WAYS as
 export type FollowUpFacts = {
   used: number;     // tokens the context holds now
   prefix: number;   // tokens of the system prompt and tools: every way keeps them
-  warm: boolean;    // the provider still holds the context's cache (the cache plan's lifetime from its last read or write)
+  warm: boolean;    // the provider surely still holds the context's cache (cacheState)
+  // The provider may still hold it: it does not say how long it keeps a
+  // cache, and the longest it may keep one has not passed. Each way is priced
+  // between its warm and its lapsed cost.
+  maybe?: boolean;
   long: boolean;    // a cache write on this route asks for the long lifetime (priced at its own rate)
   price?: Price;    // the model's listed price; none: nothing can be priced
   steps: number;    // steps the work is expected to take
@@ -63,9 +67,23 @@ export type FollowUpPlan = {
   tokens: Partial<Record<Way, number>>;
   steps: number;
   warm: boolean;
+  maybe?: true;
   used: number;
   missing?: string[];
 };
+
+// Whether the context's cache is still held, from its last read or write
+// (`touched`, 0 for never). `own`: the lifetime the provider states for its
+// cache; else retention()'s lifetimes on the wire: `sure` is what it keeps for
+// certain (0 when it does not say), `max` the longest it may keep one. Each
+// lifetime less the cache plan's margin (marginOf).
+export function cacheState(o: { touched: number; now: number; own?: number; sure: number; max: number; margin: (life: number) => number }): "warm" | "maybe" | "lapsed" {
+  if (o.touched <= 0) return "lapsed";
+  const within = (life: number) => life > 0 && o.now < o.touched + life - o.margin(life);
+  if (o.own !== undefined) return within(o.own) ? "warm" : "lapsed";
+  if (within(o.sure)) return "warm";
+  return o.sure === 0 && within(o.max) ? "maybe" : "lapsed";
+}
 
 const usage = (read: number, write: number) => ({ input: 0, output: 0, cache_read: Math.max(0, Math.round(read)), cache_write: Math.max(0, Math.round(write)) });
 
@@ -92,13 +110,20 @@ export const WAY_WORDS: Record<Way, string> = { carry: "went on in its context",
 export function decideFollowUp(f: FollowUpFacts): FollowUpPlan {
   const tokens: Partial<Record<Way, number>> = { carry: f.used, capsule: f.prefix + f.capsule };
   const costs: Partial<Record<Way, number>> = {};
-  const carry = costFrom(f.used, f.warm ? f.used : 0, f);
+  // `held`: what the first step reads from a cache that holds. A cache that
+  // may hold is priced halfway between holding and not.
+  const priced = (start: number, held: number, g: Pick<FollowUpFacts, "steps" | "growth" | "long" | "price">) => {
+    if (!f.maybe) return costFrom(start, f.warm ? held : 0, g);
+    const a = costFrom(start, held, g), b = costFrom(start, 0, g);
+    return a === undefined || b === undefined ? undefined : (a + b) / 2;
+  };
+  const carry = priced(f.used, f.used, f);
   if (carry !== undefined) costs.carry = carry;
   // A fresh start keeps the system prompt and tools in the cache while the
   // context's cache holds. It also takes one step more than going on: the
   // step that finds where its work stands (its branch, the files its report
   // names), which the whole context does not need.
-  const fresh = (body: number) => costFrom(f.prefix + body + f.reread, f.warm ? f.prefix : 0, { ...f, steps: f.steps + 1 });
+  const fresh = (body: number) => priced(f.prefix + body + f.reread, f.prefix, { ...f, steps: f.steps + 1 });
   const cap = fresh(f.capsule);
   if (cap !== undefined) costs.capsule = cap;
   if (f.prepared !== undefined) {
@@ -106,7 +131,7 @@ export function decideFollowUp(f: FollowUpFacts): FollowUpPlan {
     const s = fresh(f.prepared);
     if (s !== undefined) costs.summary = s;
   }
-  const base = { costs, tokens, steps: f.steps, warm: f.warm, used: f.used, ...(f.missing?.length ? { missing: f.missing } : {}) };
+  const base = { costs, tokens, steps: f.steps, warm: f.warm, ...(f.maybe ? { maybe: true as const } : {}), used: f.used, ...(f.missing?.length ? { missing: f.missing } : {}) };
   if (f.force) {
     const how = f.force === "carry" ? "go on in its context" : f.force === "summary" ? `start from a summary (${f.prepared !== undefined ? "the one prepared while it was idle" : "written now, with the message as its focus"})` : "start fresh from a capsule of its work";
     return { ...base, way: f.force, forced: true, why: `The owner chose that this agent's follow-ups ${how}.` };
@@ -115,7 +140,7 @@ export function decideFollowUp(f: FollowUpFacts): FollowUpPlan {
   if (costs.carry === undefined) return { ...base, way: "carry", why: "Went on in its context: the model's price is not known, so no start could be priced." };
   let way: Way = "carry";
   for (const w of ["summary", "capsule"] as const) if (costs[w] !== undefined && costs[w]! < costs[way]!) way = w;
-  const cache = f.warm ? "its cache warm" : "its cache lapsed";
+  const cache = f.warm ? "its cache warm" : f.maybe ? "its cache perhaps warm: the provider does not say how long it keeps one" : "its cache lapsed";
   const over = `over about ${f.steps} ${f.steps === 1 ? "step" : "steps"}`;
   // (Counted, not named: the words are told in timelines, which carry no message's content.)
   const named = f.missing?.length ? ` (${f.missing.length} of them named in the message)` : "";
@@ -129,17 +154,30 @@ export function decideFollowUp(f: FollowUpFacts): FollowUpPlan {
 }
 
 // The capsule's own words: what the agent reported, as the session that
-// started it got it (its report, where its work is, what it did, its checks).
-// Its task and the messages it was sent are kept beside it by the checkpoint,
-// verbatim, and the trail of its work follows it.
-export function capsuleText(o: { title: string; report: string; tasks: number }): string {
+// started it got it (its reports since its last checkpoint, the newest first),
+// and what its context held before them (`before`: the story of its last
+// checkpoint's summary, verbatim). Its task and the messages it was sent are
+// kept beside it by the checkpoint, verbatim, and so are the statements that
+// summary carried; the trail of its work follows it. `title` comes as a
+// frame attribute (attr in src/automation/core.ts): one line, no quotes.
+export function capsuleText(o: { title: string; report: string; tasks: number; before?: string }): string {
   const report = o.report.trim() || "(It wrote no report.)";
+  const before = o.before?.trim();
   return [
     `You are agent "${o.title}", taking up new work after you reported${o.tasks ? ` (task ${o.tasks + 1})` : ""}. Your earlier context was replaced by this capsule, made by the harness from your records: your task and the messages you were sent are kept below as they were, and the trail lists the files you wrote and the commands you ran. The whole history is still stored: read the files again as you need them.`,
+    ...(before ? ["", "What your context held before that work, from its last summary (as it was written then):", before] : []),
     "",
-    "Your report of the work so far (your final message, as the session that started you got it):",
+    "Your reports of the work so far (your final messages, as the session that started you got them; the newest first):",
     report,
   ].join("\n");
+}
+
+// The story part of a checkpoint's summary: its text after the "## Story"
+// heading settle() writes (src/engine/compact.ts), else the whole text. The
+// statements before it are carried by the next checkpoint on their own.
+export function storyOf(summary: string): string {
+  const at = summary.search(/^## Story$/m);
+  return (at < 0 ? summary : summary.slice(at).replace(/^## Story\n?/, "")).trim();
 }
 
 // The steps of the task the agent finished and what each added to its

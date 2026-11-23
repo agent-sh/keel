@@ -1008,23 +1008,37 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
 // just written. A reply cut at the output limit and the reply that continues
 // it are one answer.
 const NO_FINAL = "(No final answer. Before its last tool call it wrote:)\n";
-function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string; events: readonly StoredEvent[] } {
-  const evs = D().store.events(a.session_id, a.first_seq);
-  const rounds: { text: string; note?: boolean }[] = [];
+// One agent's rounds in `evs` (see collect): each with what opened it, and
+// whether a harness notice opened it after a turn that ended with a report (a
+// background command's end, a monitor's batch, a failure notice, any input of
+// the harness's that starts a turn of its own).
+type Round = { text: string; note?: boolean; notice?: boolean };
+function roundsOf(evs: readonly StoredEvent[]): { rounds: Round[]; failure: string; err: string } {
+  const rounds: Round[] = [];
   let final = "";
   let before = "";
   let carry = ""; // a reply cut at the output limit, until the reply that continues it
   let failure = "";
   let bad: any[] = []; // the failed results of the newest step
   let err = "";
-  const close = () => {
-    if (final) rounds.push({ text: final });
-    else if (before) rounds.push({ text: before, note: true });
+  let opener: StoredEvent | undefined; // the first input of the round now open
+  let reported = false; // the round before it ended its turn with a final answer
+  let acted = false; // the round now open has a reply
+  // `ended`: the round closes with a turn that ended as it should (not one a restart, a stop or an
+  // error cut, and not at input the turn took in after a final answer).
+  const close = (ended = true) => {
+    const notice = reported && !!opener && isNotice(opener);
+    if (final) rounds.push({ text: final, ...(notice ? { notice } : {}) });
+    else if (before) rounds.push({ text: before, note: true, ...(notice ? { notice } : {}) });
+    if (opener || acted) reported = ended && !!final;
     final = before = "";
+    opener = undefined;
+    acted = false;
   };
   for (const e of evs) {
     if (e.kind === "assistant") {
       bad = [];
+      acted = true;
       const whole = carry + (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n");
       const t = whole.trim();
       const usesTools = (e.data.blocks as any[]).some((b) => b.type === "tool_use");
@@ -1037,21 +1051,59 @@ function collect(a: AgentRecord, end?: string): { text: string; own: boolean; er
       // A failure a later step got past is not the agent's last word.
       failure = bad.length ? bad.map((r) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content))).join("\n").slice(0, 2000) : "";
     } else if (e.kind === "error") err = e.data.message;
-    else if (e.kind === "turn_end") { close(); carry = ""; }
+    else if (e.kind === "turn_end") { close(e.data.reason === "end_turn"); carry = ""; }
     // Input the turn took in after a final answer: that answer is a report of
     // its own. (Not the harness's word that a cut reply goes on: `carry`.)
-    else if (e.kind === "user" && final && !carry) close();
+    else if (e.kind === "user") {
+      if (final && !carry) close(false);
+      opener ??= e;
+    }
   }
   close();
+  return { rounds, failure, err };
+}
+// Input of the harness's own that is not the agent's work going on: a
+// continue after a restart or a cut is (it follows a turn that did not end
+// as it should, see roundsOf), and so is a wake the agent asked for (a wait
+// that fired or timed out). A monitor's batch, a failure notice or any other
+// notice is not.
+function isNotice(e: StoredEvent): boolean {
+  const d = e.data;
+  if (d.kind === "wait") return d.outcome === "event";
+  return d.kind === "harness" || d.kind === "failures" || d.origin === "harness" || /^\[harness\]/.test(String(d.text ?? ""));
+}
+// The rounds as one report: the newest whole, the earlier ones after it.
+// An earlier round a later one repeats is left out.
+const said = (r: Round) => `${r.note ? NO_FINAL : ""}${r.text}`;
+function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string; events: readonly StoredEvent[] } {
+  const evs = D().store.events(a.session_id, a.first_seq);
+  const { rounds, failure, err } = roundsOf(evs);
   const last = rounds.at(-1);
   const earlier = rounds.slice(0, -1).filter((r, i) => !rounds.slice(i + 1).some((x) => x.text.includes(r.text)));
-  const said = (r: { text: string; note?: boolean }) => `${r.note ? NO_FINAL : ""}${r.text}`;
   let tail = "";
   const ended = end === "budget" ? `${budgetEnd(a)}. A message to it continues it, with its budget counted again from then` : end ? END_TEXT[end] : undefined;
   if (ended) tail += `${last ? "\n\n" : ""}It did not finish: ${ended}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
   if (err) tail += `${last || tail ? "\n\n" : ""}Error: ${err}`;
   const text = fitReport(last ? said(last) : "", earlier.map(said), tail, RESULT_CAP - REPORT_ROOM);
   return { text: text || "(the agent ended without a report)", own: rounds.length > 0, error: err, events: evs };
+}
+
+// What a capsule of the agent's work carries as its report (Engine.followUp):
+// every final answer since its last checkpoint, across all its tasks, in the
+// cap of a report. The newest leads, unless a harness notice opened it after
+// the agent had reported: then the newest round before it that has a final
+// answer leads, and the notice's round is with the others. An earlier
+// round a later one repeats is left out.
+const CAPSULE_EARLIER = "\n\nYour other reports since then, oldest first:\n\n";
+export const capsuleReport = (sessionId: string) => capsuleReportOf(D().store.lineage(sessionId));
+export function capsuleReportOf(line: readonly StoredEvent[]): string {
+  const { rounds } = roundsOf(line.slice(checkpointAt(line).keepFrom).filter((e) => e.kind !== "compaction"));
+  const kept = rounds.filter((r, i) => !rounds.slice(i + 1).some((x) => x.text.includes(r.text)));
+  let lead = kept.findLastIndex((r) => !r.note && !r.notice);
+  if (lead < 0) lead = kept.findLastIndex((r) => !r.note);
+  if (lead < 0) lead = kept.length - 1;
+  if (lead < 0) return "";
+  return fitReport(said(kept[lead]!), kept.filter((_, i) => i !== lead).map(said), "", RESULT_CAP - REPORT_ROOM, CAPSULE_EARLIER);
 }
 
 // What a report's frame and the notes after it may add (the agent's id and
@@ -1081,12 +1133,12 @@ function shortened(text: string, max: number): string {
 // cut, in its middle. Every cut says how many bytes it took, in its place, so
 // the parent knows what it did not get (the agent's session holds all of it).
 const NOTE_ROOM = 80; // the line that counts the reports left out whole
-export function fitReport(last: string, earlier: string[], tail: string, cap: number): string {
-  const join = (newest: string, list: string[]) => `${newest}${list.length ? `${EARLIER}${list.join("\n\n")}` : ""}${tail}`;
+export function fitReport(last: string, earlier: string[], tail: string, cap: number, heading = EARLIER): string {
+  const join = (newest: string, list: string[]) => `${newest}${list.length ? `${heading}${list.join("\n\n")}` : ""}${tail}`;
   if (join(last, earlier).length <= cap) return join(last, earlier);
   // `reserve`: room kept for the line that counts what went whole.
   const pass = (reserve: number) => {
-    const head = earlier.length ? EARLIER.length + reserve : 0;
+    const head = earlier.length ? heading.length + reserve : 0;
     const newest = shortened(last, Math.max(STUB, cap - tail.length - head));
     let room = cap - newest.length - tail.length - head;
     const kept: string[] = [];
@@ -1750,8 +1802,13 @@ export async function send(id: string, message: string, interrupt = false, key?:
     const start = await startFor(a, message, key);
     a = get(id);
     if (!a) throw new Error(`no agent ${id}`);
-    // The owner stopped it while that was weighed: the message waits for the owner.
-    if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) return sent(engine.message(a.session_id, text, meta, opts));
+    // The owner stopped it while that was weighed: the message waits for the
+    // owner, with no start of its own (the turn that takes it up later starts
+    // as any turn does). A capsule already in place stays: the record says so.
+    if (ownerHolds(a.session_id) || (peer && engine.isHeld(a.session_id))) {
+      if (start?.way === "capsule") update(id, { start: { ...without(start), task: a.tasks + 1 } });
+      return sent(engine.message(a.session_id, text, meta, opts));
+    }
     // The message and the record that says the agent runs again are one write.
     return store.atomic(a.session_id, () => {
       // The same message again (its sender's key was seen): the agent stays as it is.
@@ -1760,13 +1817,14 @@ export async function send(id: string, message: string, interrupt = false, key?:
       const last = store.lastSeq(a!.session_id);
       // (Each task has a report of its own: two started with no event between them do not share its id.)
       // (Its budget counts again from this task, the one the message gives if it gives one.)
-      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), ...(budget ? { budget } : {}), ...(start ? { start: { ...start, task: a!.tasks + 1 } } : {}) });
+      update(id, { status: "running", ended: null, first_seq: last, tasks: a!.tasks + 1, handback: false, background: true, stopped_by: null, end_reason: null, task_at: Date.now(), ...(budget ? { budget } : {}), ...(start ? { start: { ...without(start), task: a!.tasks + 1 } } : {}) });
       if (start) activity.record("agent", "follow_up", a!.parent_id, `Agent "${a!.title}" ${WAY_WORDS[start.way]}`, { agent_id: id, child_session: a!.session_id, way: start.way, why: start.why, ...(start.forced ? { forced: true } : {}) });
       release?.(); // the running row now occupies the slot
       // The stop that ended it was the sending side's: its hold goes before anything starts.
       if (!peer) engine.releaseHold(a!.session_id, OWN_HOLDS);
       sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
-      return { ...sent(engine.message(a!.session_id, text, meta, opts)), ...(start ? { start: { way: start.way, why: start.why } } : {}) };
+      // (Where it starts goes with the message: the turn it opens reads it, on this daemon or the next.)
+      return { ...sent(engine.message(a!.session_id, text, start?.mark ? { ...meta, follow_up: start.mark } : meta, opts)), ...(start ? { start: { way: start.way, why: start.why } } : {}) };
     });
   } finally {
     free();
@@ -1778,19 +1836,24 @@ export async function send(id: string, message: string, interrupt = false, key?:
 // in a session here (on another machine), whose first task never reached its
 // session, or for a message already stored once: it goes on in its context.
 // A failure to decide is captured and the agent goes on in its context.
-async function startFor(a: AgentRecord, message: string, key?: string): Promise<Omit<AgentStart, "task"> | undefined> {
+// `mark`: what the turn the message opens does at its first step (go on
+// whole, or write the summary now), stored with the message (Engine.followUp).
+async function startFor(a: AgentRecord, message: string, key?: string): Promise<(Omit<AgentStart, "task"> & { mark?: "carry" | "summary" }) | undefined> {
   const { engine } = D();
   if (a.machine || queuedTask(a.id) || (key && engine.hasInput(a.session_id, key))) return undefined;
   try {
     const ended = a.status === "completed" || a.status === "failed" || a.status === "stopped" ? a.status : "incomplete";
-    const plan = await engine.followUp(a.session_id, { title: a.title, report: report(a.id) ?? "", tasks: a.tasks, since: a.first_seq, message, ended, force: a.start_force ?? undefined });
+    // Its reports since its last checkpoint, every task's: the newest is not always the one that says where its work stands.
+    const plan = await engine.followUp(a.session_id, { title: attr(a.title), report: capsuleReport(a.session_id), tasks: a.tasks, since: a.first_seq, message, ended, force: a.start_force ?? undefined });
     if (!plan) return undefined;
-    return { way: plan.way, why: plan.why, ...(plan.forced ? { forced: true } : {}), at: Date.now(), used: plan.used, tokens: plan.tokens[plan.way], costs: plan.costs };
+    return { way: plan.way, why: plan.why, ...(plan.forced ? { forced: true } : {}), at: Date.now(), used: plan.used, tokens: plan.tokens[plan.way], costs: plan.costs, ...(plan.mark ? { mark: plan.mark } : {}) };
   } catch (e) {
     capture(e, { at: "follow-up start", agent: a.id });
     return undefined;
   }
 }
+
+const without = ({ mark, ...rest }: Omit<AgentStart, "task"> & { mark?: unknown }) => (void mark, rest);
 
 // The owner's choice of where this agent's follow-ups start (null: Keel decides).
 export function setStartForce(id: string, force: Way | null): AgentRecord | undefined {
