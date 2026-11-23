@@ -58,6 +58,16 @@ test("a package the base declares that does not load is the checkout's lack, not
   expect([missingPackage("Cannot find package 'lodash/fp' imported from /x.js"), missingPackage("Cannot find module '@a/b/c'"), missingPackage("Cannot find module 'node:fs'"), missingPackage("Cannot find module '/abs/x'")]).toEqual(["lodash", "@a/b", undefined, undefined]);
 });
 
+test("a file that fails writing under packages read-only to it could not run, it does not fail before", () => {
+  const out = "error: EROFS: read-only file system, open '/s/node_modules/.cache/x'\n 0 pass\n 1 fail\n";
+  const v = (base?: Parameters<typeof verdictOf>[1], o = out) => verdictOf({ code: 1, out: o, limitMs: 120_000 }, base);
+  expect(v({ declared: new Set(), readOnly: true })).toEqual({ state: "unrun", why: "the base's packages are read-only here: the test writes under node_modules" });
+  expect(v({ declared: new Set(), readOnly: true }, "mkdir: cannot create directory 'node_modules/.vite': Read-only file system\n 0 pass\n 1 fail\n").state).toBe("unrun");
+  // Packages it may write, or a read-only folder that is not theirs: what the run says.
+  expect(v({ declared: new Set() })).toEqual({ state: "fails", why: "1 of 1 failed" });
+  expect(v({ declared: new Set(), readOnly: true }, "error: EROFS: read-only file system, open '/s/out.txt'\n 0 pass\n 1 fail\n").state).toBe("fails");
+});
+
 test("the packages of a check's folder are the nearest lockfile's, up to the top", () => {
   const has = (files: string[]) => (p: string) => files.includes(p);
   expect(lockDirOf("web/app", has(["bun.lock", "web/package-lock.json"]))).toMatchObject({ dir: "web", lock: { install: "npm ci" } });

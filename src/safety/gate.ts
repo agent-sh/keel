@@ -40,7 +40,7 @@ export const HOOK_ASKS = "A hook of yours asks";
 import { landing, type MarkArgs } from "./marks.ts";
 import { readOptsFor } from "./sandbox-config.ts";
 import { bindable, globBase, judgeWrite, ownerOpens, refusedWrites, scopes, shellWrites, type Base } from "./write-scope.ts";
-import { ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
+import { overlays, ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
 
 // Whether a file is, by its inode, one of the files Keel keeps at the top of its state or config folders (and one
 // level into the config): asked only of a file that has more than one name.
@@ -536,15 +536,22 @@ export class Gate {
   // How a command Keel runs as the session's own is confined (its tests on the base without its change,
   // src/checks/before-run.ts): the profile its own commands get, with `workspace` in the place of its folder
   // and `tool` as its tool folder (writable in every profile, as a call's spill folder is). Undefined when the
-  // session's commands run unconfined. (No pin of the session's folder: `workspace` is not that folder.)
-  confineFor(sessionId: string, workspace: string, tool: string): { wrap: (argv: string[]) => string[]; sandbox: SessionPerm["sandbox"]; network: boolean } | undefined {
+  // session's commands run unconfined. (No pin of the session's folder: `workspace` is not that folder.) `shown`:
+  // folders out of `workspace` the command reads (the base's packages a run links): where overlays mount, each
+  // with a layer of its own in `tool`, so the command writes into them as into its own and nothing it writes
+  // reaches them (`layered`); else read-only.
+  confineFor(sessionId: string, workspace: string, tool: string, shown: string[] = []): { wrap: (argv: string[]) => string[]; sandbox: SessionPerm["sandbox"]; network: boolean; layered: boolean } | undefined {
     const session = this.store.session(sessionId);
     if (!session || session.machine) return undefined;
     const p = this.perm(session.id);
     if (p.sandbox === "off" || !this.sandboxed(session, p)) return undefined;
     const { root: _pin, ...read } = this.readOpts(session, p.sandbox);
     const writable = this.writable(session, tool, p.sandbox);
-    return { wrap: (argv) => confine(argv, p, workspace, writable, read), sandbox: p.sandbox, network: p.network };
+    const layers = shown.length && overlays() ? shown.map((at, i) => ({ at, up: join(tool, "layers", `${i}`, "up"), work: join(tool, "layers", `${i}`, "work") })) : [];
+    try { for (const l of layers) { mkdirSync(l.up, { recursive: true }); mkdirSync(l.work, { recursive: true }); } }
+    catch { layers.length = 0; } // the tool folder takes none: read-only, then
+    const given = shown.length ? { ...read, own: [...(read.own ?? []), ...shown], ...(layers.length ? { layers } : {}) } : read;
+    return { wrap: (argv) => confine(argv, p, workspace, writable, given), sandbox: p.sandbox, network: p.network, layered: layers.length > 0 };
   }
   // (Read from the store at most every two seconds per session: a turn asks for it at every call.)
   private trees = new Map<string, { at: number; list: string[] }>();

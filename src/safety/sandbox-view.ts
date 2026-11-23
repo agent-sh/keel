@@ -73,6 +73,9 @@ export type ReadOpts = {
   // What an agent's write scope keeps read-only in a workspace-write profile (src/safety/write-scope.ts): the
   // session's folder, when no place of the scope holds it, and the ref files of branches other checkouts have out.
   held?: { workspace?: true; refs?: string[] };
+  // Folders a command reads and writes into a layer of its own (an overlay: `up` and `work` are its folders, on
+  // one file system): what it writes there stays out of the folder. Only where overlays mount (overlays()).
+  layers?: { at: string; up: string; work: string }[];
 };
 
 // The folders at the top of a Linux file system that hold the system.

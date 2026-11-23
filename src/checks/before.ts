@@ -47,7 +47,7 @@ export type Ran = { code: number | null; signal?: string | null; timedOut?: bool
 export type Verdict = { state: State; why: string };
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
 const WHY_MAX = 160;
-const clipWhy = (s: string) => (s.length > WHY_MAX ? `${s.slice(0, WHY_MAX - 1)}…` : s);
+export const clipWhy = (s: string, max = WHY_MAX) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 // The line of an error that stopped the file from loading (a module the change adds, an export it defines):
 // bun, node and vite say "Cannot find module", "Cannot find package" or "does not provide an export",
 // Python an ImportError or ModuleNotFoundError, every runner a SyntaxError.
@@ -57,11 +57,15 @@ const lastLine = (out: string) => out.replace(ANSI, "").trim().split("\n").map((
 // `base`: what the base declares of packages (`declared`: the names in its package.json files) and, when its
 // packages could not be put in the scratch checkout, why. A package the base declares that does not load is the
 // checkout's lack, not the change's: the file could not run. A module only the change adds is a real failure.
-export type BasePackages = { declared: ReadonlySet<string>; why?: string };
+// `readOnly`: the packages are another checkout's, read-only to the run (a sandbox without overlays): a file
+// that failed writing under them could not run here, whatever the base does.
+export type BasePackages = { declared: ReadonlySet<string>; why?: string; readOnly?: boolean };
+const READ_ONLY = /^.*(?:EROFS|Read-only file system).*node_modules.*$|^.*node_modules.*(?:EROFS|Read-only file system).*$/m;
 export function verdictOf(r: Ran, base?: BasePackages): Verdict {
   const out = r.out.replace(ANSI, "").replace(/\r/g, "");
   if (r.timedOut) return { state: "unrun", why: `it ran past its ${Math.round(r.limitMs / 1000)} s limit and was stopped` };
   if (r.signal) return { state: "unrun", why: `it was ended by ${r.signal}` };
+  if (r.code !== 0 && base?.readOnly && READ_ONLY.test(out)) return { state: "unrun", why: "the base's packages are read-only here: the test writes under node_modules" };
   // The shell's own codes: the command, or a program it names, is not there (or cannot start) on the base.
   if (r.code === 126 || r.code === 127) return { state: "unrun", why: clipWhy(`the command could not start on the base: ${lastLine(out) || `exit ${r.code}`}`) };
   const counts = countsOf(out);
@@ -159,9 +163,11 @@ export function limitFor(ownRunsMs: readonly number[]): number {
 
 // --- the line on the agent's report
 
-export type FileResult = { path: string; check: string; command: string; state: State | "running" | "waiting"; why: string; exit: number | null; ms: number | null; cpu_ms: number | null };
+// `install`: the key of the base's install whose failure kept the file from running (src/checks/package-cache.ts).
+export type FileResult = { path: string; check: string; command: string; state: State | "running" | "waiting"; why: string; exit: number | null; ms: number | null; cpu_ms: number | null; install?: string };
 // `unconfined`: why the run went outside the sandbox (the session runs in full auto with its sandbox off).
-export type BeforeIn = { mergeBase: string | null; base: string | null; why?: string | null; unconfined?: string | null; results: readonly FileResult[] };
+// `note`: how its packages were had, when the line should say it (installed for this run only).
+export type BeforeIn = { mergeBase: string | null; base: string | null; why?: string | null; unconfined?: string | null; note?: string | null; results: readonly FileResult[] };
 export const LINE_MAX = 700;
 const SHOWN = 6;
 const short = (sha: string | null) => (sha ? sha.slice(0, 9) : "?");
@@ -170,7 +176,7 @@ const short = (sha: string | null) => (sha ? sha.slice(0, 9) : "?");
 // time the report goes says which files are still running.
 export function beforeLine(b: BeforeIn): string {
   if (!b.results.length) return "";
-  const head = `Its new and changed tests on the base${b.base ? ` (${b.base} at ${short(b.mergeBase)})` : ""}, without the change${b.unconfined ? `, run outside the sandbox (${b.unconfined})` : ""}`;
+  const head = `Its new and changed tests on the base${b.base ? ` (${b.base} at ${short(b.mergeBase)})` : ""}, without the change${b.unconfined ? `, run outside the sandbox (${b.unconfined})` : ""}${b.note ? `, ${b.note}` : ""}`;
   if (b.why) return `(${head}: ${b.results.length === 1 ? b.results[0]!.path : `${b.results.length} test files`} could not run (${b.why}).)`.slice(0, LINE_MAX);
   const open = b.results.filter((r) => r.state === "running" || r.state === "waiting");
   const done = b.results.filter((r) => r.state !== "running" && r.state !== "waiting");

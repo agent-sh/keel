@@ -1740,7 +1740,7 @@ export function onTurnEnd(sessionId: string, reason: string) {
 // agents' runs in the same repository (one at a time there), does not hold the report, its parent's slot or its
 // wake. The report then says how many are still running, and their answers follow (followBefore).
 export const BEFORE_WAIT = { ms: 10_000 };
-const beforeOf = (r: beforeRun.BeforeRun) => beforeLine({ mergeBase: r.merge_base, base: r.base, why: r.why, unconfined: r.unconfined, results: r.results });
+const beforeOf = (r: beforeRun.BeforeRun) => beforeLine({ mergeBase: r.merge_base, base: r.base, why: r.why, unconfined: r.unconfined, note: r.note, results: r.results });
 const isOpen = (r: beforeRun.BeforeRun) => r.results.some((f) => f.state === "running" || f.state === "waiting");
 const startBefore = (sessionId: string, folder: string): Promise<beforeRun.BeforeRun | undefined> =>
   beforeRun.startFor(sessionId, folder).catch((e) => { capture(e, { at: "agent fails before", session: sessionId }); return undefined; });

@@ -7,7 +7,8 @@
 // each file within its time limit. Never in the session's own folder or the
 // owner's checkout: the scratch worktree is Keel's own, under its state
 // folder, and goes when the run ends.
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { git } from "../core/git.ts";
 import { chunksUntil, readText } from "../core/proc.ts";
@@ -16,7 +17,8 @@ import type { Store } from "../core/store.ts";
 import { sandboxStatus, scopeHead } from "../safety/sandbox.ts";
 import { toolEnv } from "../tools/jobs.ts";
 import { git as worktreeGit } from "../worktree/manager.ts";
-import { BEFORE_DIR, commandFor, declaredOf, howToRun, keyOf, limitFor, lockDirOf, missingOnBase, needsOf, testsOf, timesCpu, TIMES_FILE, verdictOf, withTimes, type BasePackages, type FileResult } from "./before.ts";
+import * as cache from "./package-cache.ts";
+import { BEFORE_DIR, clipWhy, commandFor, declaredOf, howToRun, keyOf, limitFor, lockDirOf, missingOnBase, needsOf, testsOf, timesCpu, TIMES_FILE, verdictOf, withTimes, type BasePackages, type FileResult } from "./before.ts";
 import { baseOf, namedFor, ofSession, repoOf, type Repo } from "./ledger.ts";
 
 const SCHEMA = `
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS fails_before (
   merge_base TEXT,
   common TEXT,
   unconfined TEXT,
+  note TEXT,
   follow_agent TEXT,
   follow_said TEXT,
   state TEXT NOT NULL,
@@ -42,10 +45,11 @@ CREATE INDEX IF NOT EXISTS fails_before_session ON fails_before(session_id, id);
 
 // `common`: the repository's common git directory, where its scratch worktree is listed.
 // `unconfined`: why its tests ran outside the sandbox (the session runs in full auto with its sandbox off).
+// `note`: how the base's packages were had, when its line says it (installed for this run only, and why).
 // `follow_agent`: the agent whose report went while files of the run were open, owed their answers (its parent
 // is told once, in the write that stores the parent's prompt); `follow_said`: the line that report holds for
 // them ("" when the report holds none: the run started after it went).
-export type BeforeRun = { id: number; session_id: string; key: string; repo: string; base: string | null; merge_base: string | null; common: string | null; unconfined: string | null; follow_agent?: string | null; follow_said?: string | null; state: "running" | "done"; why: string | null; results: FileResult[]; created: number; ended: number | null };
+export type BeforeRun = { id: number; session_id: string; key: string; repo: string; base: string | null; merge_base: string | null; common: string | null; unconfined: string | null; note?: string | null; follow_agent?: string | null; follow_said?: string | null; state: "running" | "done"; why: string | null; results: FileResult[]; created: number; ended: number | null };
 type Row = Omit<BeforeRun, "results"> & { results: string };
 
 // `confine`: the session's own sandbox profile with `workspace` in the place of its folder and `tool` as its tool
@@ -53,7 +57,9 @@ type Row = Omit<BeforeRun, "results"> & { results: string };
 type Deps = {
   store: Store; bus: Bus; capture: (e: unknown, ctx: object) => void;
   perm: (sessionId: string) => { mode: string; sandbox: string } | undefined;
-  confine: (sessionId: string, workspace: string, tool: string) => { wrap: (argv: string[]) => string[]; sandbox: string } | undefined;
+  // `shown`: more folders the run reads (the base's packages, src/checks/package-cache.ts), each in a layer of the
+  // run's own where overlays mount (`layered`: what the run writes there stays out of them), else read-only.
+  confine: (sessionId: string, workspace: string, tool: string, shown?: string[]) => { wrap: (argv: string[]) => string[]; sandbox: string; network?: boolean; layered?: boolean } | undefined;
 };
 let d: Deps | undefined;
 const dir = () => join(d!.store.stateDir, ...BEFORE_DIR);
@@ -65,13 +71,13 @@ const OUT_MAX = 256 * 1024;
 export function bindBefore(deps: Deps): Promise<void> {
   d = deps;
   d.store.migrate(SCHEMA);
-  for (const col of ["common", "unconfined", "follow_agent", "follow_said"]) if (!d.store.columnExists("fails_before", col)) d.store.migrate(`ALTER TABLE fails_before ADD COLUMN ${col} TEXT`);
+  for (const col of ["common", "unconfined", "note", "follow_agent", "follow_said"]) if (!d.store.columnExists("fails_before", col)) d.store.migrate(`ALTER TABLE fails_before ADD COLUMN ${col} TEXT`);
   const cut = d.store.db.query<Row, []>("SELECT * FROM fails_before WHERE state = 'running'").all().filter((r) => !going.has(r.id));
   for (const r of cut) {
     const results = (JSON.parse(r.results) as FileResult[]).map((f) => (f.state === "running" || f.state === "waiting" ? { ...f, state: "unrun" as const, why: "the daemon restarted while it ran" } : f));
     d.store.db.query("UPDATE fails_before SET state = 'done', results = ?, ended = ? WHERE id = ?").run(JSON.stringify(results), Date.now(), r.id);
   }
-  return Promise.all([sweep(), stopLeftScopes()]).then(() => {}, (e) => d!.capture(e, { at: "fails before sweep" }));
+  return Promise.all([sweep(), stopLeftScopes(), cache.bindCache(d.store)]).then(() => {}, (e) => d!.capture(e, { at: "fails before sweep" }));
 }
 
 // A file's run outside the sandbox goes in a scope named for the daemon that started it (keel-before-<pid>-...):
@@ -131,7 +137,7 @@ export const latest = (sessionId: string): BeforeRun | undefined => {
   return r ? toRun(r) : undefined;
 };
 const save = (r: BeforeRun) => {
-  d!.store.db.query("UPDATE fails_before SET state = ?, why = ?, unconfined = ?, results = ?, ended = ? WHERE id = ?").run(r.state, r.why, r.unconfined, JSON.stringify(r.results), r.ended, r.id);
+  d!.store.db.query("UPDATE fails_before SET state = ?, why = ?, unconfined = ?, note = ?, results = ?, ended = ? WHERE id = ?").run(r.state, r.why, r.unconfined, r.note ?? null, JSON.stringify(r.results), r.ended, r.id);
   d!.bus.emit({ t: "feature", name: "fails_before", session_id: r.session_id, data: r });
 };
 
@@ -160,7 +166,9 @@ export async function startFor(sessionId: string, folder: string, o: { base?: st
   const key = keyOf(mb ?? "", files);
   const had = d.store.db.query<Row, [string, string]>("SELECT * FROM fails_before WHERE session_id = ? AND key = ? ORDER BY id DESC LIMIT 1").get(sessionId, key);
   if (had && going.has(had.id)) return going.get(had.id)!.run;
-  if (had && !o.again && !(JSON.parse(had.results) as FileResult[]).some((f) => f.state === "unrun")) return toRun(had);
+  // (A file that could not run is run again, unless what stopped it was the base's install, which failed for its
+  // lockfile a short while ago: the same answer, at once.)
+  if (had && !o.again && (JSON.parse(had.results) as FileResult[]).every((f) => f.state !== "unrun" || (f.install && cache.lookup(f.install)?.state === "failed"))) return toRun(had);
   const results: FileResult[] = tests.map((t, i) => ({ path: t.path, check: t.check.name, command: files[i]!.command, state: "waiting", why: "", exit: null, ms: null, cpu_ms: null }));
   const why = !baseName ? "no base branch to compare with" : !mb ? `no merge base with ${baseName}` : null;
   const id = Number(d.store.db.query("INSERT INTO fails_before (session_id, key, repo, base, merge_base, common, state, why, results, created) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)")
@@ -169,7 +177,7 @@ export async function startFor(sessionId: string, folder: string, o: { base?: st
   if (why) { run.results = results.map((r) => ({ ...r, state: "unrun", why })); run.state = "done"; run.ended = Date.now(); save(run); return run; }
   save(run);
   const lane = lanes.get(repo.common) ?? Promise.resolve();
-  const p = lane.then(() => execute(run, repo, tests.map((t, i) => ({ ...t, bytes: files[i]!.bytes }))))
+  const p = lane.then(() => execute(run, repo, tests.map((t, i) => ({ ...t, bytes: files[i]!.bytes })), !!o.again))
     .catch((e) => { d!.capture(e, { at: "fails before", session: sessionId }); run.results = run.results.map((r) => (r.state === "running" || r.state === "waiting" ? { ...r, state: "unrun", why: `Keel failed: ${(e as Error).message}` } : r)); return run; })
     .finally(() => { run.state = "done"; run.ended = Date.now(); save(run); going.delete(id); });
   const tail = p.catch(() => {});
@@ -205,7 +213,7 @@ async function changedFiles(repo: Repo, mb: string): Promise<string[]> {
 // speed and yields when other work wants the machine), not the idle class.
 const LOW = () => [...(existsSync("/usr/bin/nice") ? ["/usr/bin/nice", "-n", "10"] : []), ...(existsSync("/usr/bin/ionice") ? ["/usr/bin/ionice", "-c2", "-n7"] : [])];
 
-async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof testsOf>[number] & { bytes: Uint8Array | null })[]): Promise<BeforeRun> {
+async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof testsOf>[number] & { bytes: Uint8Array | null })[], again: boolean): Promise<BeforeRun> {
   const scratch = join(dir(), `${run.id}`);
   // Its tool folder: where the run's own files go (its processor time), writable in every sandbox profile.
   const tool = `${scratch}.tool`;
@@ -218,22 +226,38 @@ async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof tes
   rmSync(scratch, { recursive: true, force: true });
   mkdirSync(tool, { recursive: true });
   const top = mainTop(repo);
+  const held: string[] = [];
   try {
     try { await worktreeGit(top, ["worktree", "add", "--detach", scratch, run.merge_base!]); }
     catch (e) { run.results = run.results.map((r) => ({ ...r, state: "unrun", why: `the base could not be checked out: ${(e as Error).message.slice(0, 120)}` })); return run; }
     // Only the test files are applied.
     for (const t of tests) { mkdirSync(dirname(join(scratch, t.path)), { recursive: true }); writeFileSync(join(scratch, t.path), t.bytes ?? new Uint8Array()); }
     const own = ofSession(run.session_id, 0);
-    const wrap = confined?.wrap;
+    let wrap = confined?.wrap;
     // (CI: a runner that would watch for changes runs once.)
     const env: Record<string, string> = { ...toolEnv(run.session_id), CI: "1" };
     // The base's packages, once per check folder, before any of its files runs.
     const pkgs = new Map<string, Packages>();
     const dirs = [...new Set(tests.map((t) => t.check.dir))];
+    // (In the sandbox, a source's packages are linked only when the session's own sandbox reads them.)
+    const readable = wrap ? (p: string) => readsIn(wrap!, p, scratch) : undefined;
     for (let k = 0; k < dirs.length; k++) {
-      pkgs.set(dirs[k]!, await packagesFor(scratch, dirs[k]!, [repo.top, top], env.PATH ?? "", (cwd, command) =>
-        runOne({ cwd, tool, env, command, limitMs: INSTALL_MS, wrap, unit: `keel-before-${process.pid}-${run.id}-${tests.length + k}` })));
+      const got = await packagesFor({ scratch, checkDir: dirs[k]!, sources: [repo.top, top], path: env.PATH ?? "", common: repo.common, again, readable, how: confined ? `${confined.sandbox}${confined.network ? "+network" : ""}` : "unconfined" }, (cwd, command) =>
+        runOne({ cwd, tool, env, command, limitMs: INSTALL_MS, wrap, unit: `keel-before-${process.pid}-${run.id}-${tests.length + k}` }));
+      if (got.held) held.push(got.held);
+      pkgs.set(dirs[k]!, got);
     }
+    // The packages a run reads that are not in its checkout are out of its reach where it runs in the sandbox: in a
+    // layer of its own where overlays mount (it writes into them as into its own, and nothing it writes reaches
+    // them), else read-only (a file that fails writing under them could not run here). (Out of the sandbox, the
+    // run has the session's own reach: it could write them, as the session's own commands could.)
+    const shown = [...new Set([...pkgs.values()].flatMap((p) => p.shown ?? []))];
+    if (confined && shown.length) {
+      const c = d!.confine(run.session_id, scratch, tool, shown);
+      if (c) wrap = c.wrap;
+      if (!c?.layered) for (const p of pkgs.values()) if (p.shown?.length) p.readOnly = true;
+    }
+    run.note = [...pkgs.values()].find((p) => p.note)?.note ?? null;
     const handled = new Set([...pkgs.values()].flatMap((p) => (p.modules ? [p.modules] : [])));
     // What a check reads that is not in the tree (an install named in its inputs) is the folder's own, linked,
     // unless it is the packages of a lockfile the base has: those are the base's own (above).
@@ -251,15 +275,29 @@ async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof tes
       const cwd = t.check.dir === "." ? scratch : join(scratch, t.check.dir);
       const missing = !existsSync(cwd) ? `the check's folder ${t.check.dir} is not on the base`
         : missingOnBase(t.check.run, { file: (f) => existsSync(join(cwd, f)), onPath: (n) => !!Bun.which(n, { PATH: env.PATH ?? "", cwd }) });
+      const pk = pkgs.get(t.check.dir);
+      // (A check whose packages the base's install could not make does not run: it says why at once.)
+      if (!missing && pk?.failed) { run.results[i] = { ...run.results[i]!, state: "unrun", why: pk.why!, install: pk.failed }; save(run); continue; }
       run.results[i] = { ...run.results[i]!, ...(missing ? { state: "unrun" as const, why: missing } : await runOne({ cwd, tool, env, command: run.results[i]!.command, limitMs: limitFor(mine), wrap, unit: `keel-before-${process.pid}-${run.id}-${i}` }, pkgs.get(t.check.dir))) };
       save(run);
     }
     return run;
   } finally {
+    for (const k of held) cache.release(k);
     await worktreeGit(top, ["worktree", "remove", "--force", scratch], { ok: true }).catch(() => {});
-    rmSync(scratch, { recursive: true, force: true });
+    // (Off the loop: a checkout whose install could not be kept holds its packages.)
+    await rm(scratch, { recursive: true, force: true });
+    openLayers(tool);
     rmSync(tool, { recursive: true, force: true });
   }
+}
+
+// The kernel leaves a folder with no permissions in an overlay's work folder (the run's layers, in its tool
+// folder): opened up, so the tool folder can go.
+function openLayers(tool: string) {
+  let names: string[] = [];
+  try { names = readdirSync(join(tool, "layers")); } catch { return; } // the run had none
+  for (const n of names) try { chmodSync(join(tool, "layers", n, "work", "work"), 0o700); } catch {} // none made: nothing written
 }
 
 // The main checkout of a repository (its worktree commands go one after another there).
@@ -271,17 +309,26 @@ export const INSTALL_MS = 600_000;
 
 // The base's packages for a check's folder in the scratch checkout. `modules`: the packages folder this decided
 // (relative to the checkout), linked or installed or neither; `declared`: what the base's package.json files
-// from the check's folder up to the top name; `why`: why the packages are not there, when they are not.
-type Packages = BasePackages & { modules?: string };
+// from the check's folder up to the top name; `why`: why the packages are not there, when they are not;
+// `failed`: the install key whose install failed (the check's files do not run); `shown`: folders out of the
+// checkout the run reads them from; `held`: the cache entry the run holds until its end; `note`: what the
+// report's line says of them (installed for this run only).
+type Packages = BasePackages & { modules?: string; failed?: string; shown?: string[]; held?: string; note?: string };
 const bytesOf = async (p: string): Promise<Uint8Array | null> => { try { return await Bun.file(p).bytes(); } catch { return null; } };
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && Buffer.from(a).equals(Buffer.from(b));
 
 // Packages installed in a source folder (the session's own, the repository's main checkout) from the same
 // lockfile as the base's are linked: the lockfile compared is the one next to the folder the packages really are
-// (a source's own packages may be a link to another checkout's). Else the base's own install runs in the scratch
-// checkout, in the run's sandbox and at its priority, within INSTALL_MS. Never an install through a link: it
-// would rewrite the source's packages under whoever uses them.
-async function packagesFor(scratch: string, checkDir: string, sources: string[], path: string, install: (cwd: string, command: string) => Promise<Partial<FileResult>>): Promise<Packages> {
+// (a source's own packages may be a link to another checkout's). In the sandbox only a source the session's own
+// sandbox reads (`readable`). Else the cache's entry of the lockfile is linked (src/checks/package-cache.ts),
+// else the base's own install runs in the scratch checkout, in the run's sandbox and at its priority, within
+// INSTALL_MS, and what it made becomes the entry. An install that failed is the answer for its lockfile for a
+// while (cache.FAILED_MS), unless `again` (the owner's Run again). Never an install through a link: it would
+// rewrite the source's packages under whoever uses them.
+// `how`: how the install runs (in which sandbox profile, with the network or not), which its failure is known by.
+type PkgIn = { scratch: string; checkDir: string; sources: string[]; path: string; common: string; again: boolean; how: string; readable?: (p: string) => Promise<boolean> };
+async function packagesFor(o: PkgIn, install: (cwd: string, command: string) => Promise<Partial<FileResult>>): Promise<Packages> {
+  const { scratch, checkDir } = o;
   const texts: string[] = [];
   const parts = checkDir === "." ? [] : checkDir.split("/").filter(Boolean);
   for (let n = parts.length; n >= 0; n--) { const t = await bytesOf(join(scratch, ...parts.slice(0, n), "package.json")); if (t) texts.push(new TextDecoder().decode(t)); }
@@ -293,18 +340,74 @@ async function packagesFor(scratch: string, checkDir: string, sources: string[],
   const to = join(scratch, modules);
   if (existsSync(to)) return { declared, modules }; // committed on the base
   const want = await bytesOf(join(scratch, at.dir, at.lock.file));
-  for (const src of [...new Set(sources)]) {
+  for (const src of [...new Set(o.sources)]) {
     let real: string;
     try { real = realpathSync(join(src, modules)); } catch { continue; } // none there
     const have = await bytesOf(join(dirname(real), at.lock.file));
     if (!want || !have || !sameBytes(want, have)) continue;
-    try { symlinkSync(real, to); return { declared, modules }; } catch (e) { return { declared, modules, why: `they could not be linked: ${(e as Error).message}` }; }
+    if (o.readable && !(await o.readable(real))) continue; // the sandbox does not show them: the cache's, or an install
+    try { symlinkSync(real, to); return { declared, modules, shown: [real] }; } catch (e) { return { declared, modules, why: `they could not be linked: ${(e as Error).message}` }; }
   }
+  const lockDir = join(scratch, at.dir);
+  const key = want ? cache.cacheKey(o.common, at.dir, at.lock.file, want) : undefined;
+  const hit = key ? cache.lookup(key) : undefined;
+  const fkey = key ? cache.failedKey(key, o.how) : undefined;
+  const fail = fkey ? cache.lookup(fkey) : undefined;
+  if (key && hit?.state === "ok") {
+    cache.hold(key);
+    try { cache.linkInto(key, hit, lockDir); return { declared, modules, shown: [hit.dir], held: key }; }
+    catch (e) { return { declared, modules, why: (e as Error).message, held: key }; }
+  }
+  if (fkey && fail?.state === "failed" && !o.again) return { declared, modules, failed: fkey, why: failedWhy(fail.why, fail.at) };
   const program = needsOf(at.lock.install).program;
-  if (!Bun.which(program, { PATH: path })) return { declared, modules, why: `no installed packages match its ${at.lock.file}, and ${program} is not here to install them` };
-  const r = await install(join(scratch, at.dir), at.lock.install);
-  if (r.exit === 0) return { declared, modules };
-  return { declared, modules, why: `its install (${at.lock.install}) did not finish: ${r.why || `exit ${r.exit}`}` };
+  if (!Bun.which(program, { PATH: o.path })) return { declared, modules, why: `no installed packages match its ${at.lock.file}, and ${program} is not here to install them` };
+  // What is untracked in the checkout before the install: what it adds besides packages folders keeps it from the cache.
+  const pre = key ? await untracked(scratch) : undefined;
+  const r = await install(lockDir, at.lock.install);
+  if (r.exit !== 0) {
+    const why = `${at.lock.install}: ${r.why || `exit ${r.exit}`}`;
+    if (!fkey) return { declared, modules, why: `its install (${at.lock.install}) did not finish: ${r.why || `exit ${r.exit}`}` };
+    cache.failed(fkey, o.common, join(at.dir, at.lock.file), why);
+    return { declared, modules, failed: fkey, why: failedWhy(why) };
+  }
+  if (!key) return { declared, modules };
+  // An install that writes out of its packages folders (a postinstall's generated file, a built folder) is not
+  // kept: a later run would link the packages without what it wrote. It runs again for each run.
+  const post = pre === undefined ? undefined : await untracked(scratch);
+  const outside = pre !== undefined && post !== undefined ? cache.madeOutside(pre, post) : undefined;
+  if (!outside) return { declared, modules };
+  if (outside.length) return { declared, modules, note: `with the base's packages installed for this run only (its install writes out of node_modules: ${outside.slice(0, 2).join(", ")}${outside.length > 2 ? ` and ${outside.length - 2} more` : ""}, so they are not kept)` };
+  // What it made is kept for the next run of this lockfile, and linked back here.
+  const listed = await git(lockDir, ["ls-files", "-o", "--directory", "-z"], { read: true, timeout: 60_000 }).catch(() => undefined);
+  cache.hold(key);
+  // (Kept or not, the packages are in the checkout for this run: linked back, or where the install made them.)
+  try {
+    const kept = listed?.code === 0 ? await cache.adopt(key, { repo: o.common, lock: join(at.dir, at.lock.file) }, scratch, lockDir, cache.foldersOf(listed.out)) : undefined;
+    return { declared, modules, held: key, ...(kept ? { shown: [kept.dir] } : {}) };
+  } catch (e) { return { declared, modules, held: key, why: `the installed packages could not be kept: ${(e as Error).message}` }; }
+}
+
+// What git lists as untracked in a checkout out of its packages folders (ignored files too), or undefined when it
+// could not tell.
+async function untracked(scratch: string): Promise<string | undefined> {
+  const l = await git(scratch, ["ls-files", "-o", "-z", "-x", "node_modules"], { read: true, timeout: 60_000 }).catch(() => undefined);
+  return l?.code === 0 ? l.out : undefined;
+}
+
+// The words of an install that failed: now, or `at` (remembered for its lockfile).
+const failedWhy = (why: string, at?: number) => clipWhy(`the base's install failed${at ? ` ${Math.max(1, Math.round((Date.now() - at) / 60_000))} min ago (tried again ${Math.round(cache.FAILED_MS / 60_000)} min after it, or now by Run again)` : ""}: ${why}`, FAILED_WHY_MAX);
+// (Its words hold the install's own error after them.)
+const FAILED_WHY_MAX = 320;
+
+// Whether the session's own sandbox (`wrap`, for the scratch checkout) shows a folder's entries.
+async function readsIn(wrap: (argv: string[]) => string[], p: string, cwd: string): Promise<boolean> {
+  try {
+    const c = Bun.spawn(wrap(["/bin/sh", "-c", '[ -n "$(ls -A "$1" 2>/dev/null | head -n 1)" ]', "probe", p]), { cwd, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const t = setTimeout(() => c.kill("SIGKILL"), 30_000);
+    const code = await c.exited;
+    clearTimeout(t);
+    return code === 0;
+  } catch { return false; }
 }
 
 // How long the output of a run is still read after its end: what a process it started outside its group still
