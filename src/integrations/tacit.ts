@@ -306,6 +306,17 @@ const PATH_OF: Record<OwedHook, MemoryPath> = { "session-start": "store_start", 
 // The session id the probes call the store with: no session of Keel's.
 const PROBE_SESSION = "keel-probe";
 
+// Whether a session reads the memory store: on unless the owner turned it off
+// (memory_flags, made by the Tacit below; none yet is on).
+export function memoryOn(store: Store, id: string): boolean {
+  try {
+    const r = store.db.query<{ use_memory: number }, [string]>("SELECT use_memory FROM memory_flags WHERE session_id = ?").get(id);
+    return r ? !!r.use_memory : true;
+  } catch {
+    return true;
+  }
+}
+
 export class Tacit {
   bin: string | null;
   private start = new Map<string, Running>();

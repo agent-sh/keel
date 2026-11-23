@@ -312,7 +312,8 @@ function addRoot(dir: string, label: string, extra: Partial<SkillRoot> = {}) {
 // What a Claude Code plugin brings to Keel, and what it holds that Keel cannot run.
 const NATIVE: [RegExp, string][] = [
   [/\bparlar\b/, "Keel has voice through parlar built in"],
-  [/\btacit\s+(hook|mcp)\b/, "Keel runs tacit's hooks itself"],
+  [/\btacit\s+hook\b/, "Keel runs tacit's hooks itself"],
+  [/\btacit\s+mcp\b/, "Keel brings tacit's tools itself (the tacit server in MCP servers)"],
 ];
 const native = (s: string) => NATIVE.find(([re]) => re.test(s))?.[1];
 

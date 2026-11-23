@@ -4,7 +4,8 @@
 # A prompt holding the word standin:slow is answered after 5 s with nothing:
 # longer than a turn waits for it, shorter than a hook process is left to run.
 # It also answers the commands the Memory panel runs (search, fact, add), from
-# a small store of its own.
+# a small store of its own. `mcp` is the store's MCP server (tacit-mcp-standin.ts).
+[ "$1" = mcp ] && exec bun "$(dirname "$0")/tacit-mcp-standin.ts" "$@"
 input=$(cat)
 case "$1" in search|fact|add) ;; *) [ -n "$TACIT_STANDIN_LOG" ] && printf '%s %s\n' "$2" "$input" >> "$TACIT_STANDIN_LOG" ;; esac
 case "$2:$input" in prompt:*standin:slow*) exec sleep 5 ;; esac

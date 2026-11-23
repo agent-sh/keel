@@ -39,7 +39,7 @@ export type McpServerConfig = {
 export type McpConfigFile = { servers: Record<string, McpServerConfig>; [k: string]: unknown };
 
 // Built-in groups and catalogs, and the servers Keel brings itself (bundled).
-export const RESERVED = new Set(["web", "mcp", "chrome", "keel", "keel-import", "phone", "parlar"]);
+export const RESERVED = new Set(["web", "mcp", "chrome", "keel", "keel-import", "phone", "parlar", "tacit"]);
 
 // The owner's file. Named by whoever starts a manager or a command (the
 // daemon's route, keel port); nothing below them falls back to it.

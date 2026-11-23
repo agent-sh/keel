@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { ask, HAIKU, pickModel, shoot } from "./shots.ts";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { ask, HAIKU, pickModel, SCRIPTED, shoot } from "./shots.ts";
 
 const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 
@@ -14,6 +16,7 @@ const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 let modeBefore: string | undefined;
 test.afterEach(async ({ request }) => {
   await request.delete("/api/mcp/servers/echo").catch(() => {});
+  await request.delete("/api/mcp/servers/broken").catch(() => {});
   if (modeBefore !== undefined) await request.put("/api/permissions/settings", { data: { default_mode: modeBefore } });
   modeBefore = undefined;
 });
@@ -248,4 +251,70 @@ test("mcp import from other agents", async ({ page, request }) => {
   await clear();
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
+});
+
+// Feature: the memory store's own tools. Where Keel runs tacit's hooks it
+// brings tacit's MCP server too (the hooks name its tools in every block):
+// the server is listed as Keel's own, a session finds tacit_search and calls
+// it, and a session with memory off is refused. A configured server that
+// cannot start is named, with its reason, where its tools are missing: in the
+// search result and in the panel.
+test("tacit's tools reach a session, and a server that fails says so", async ({ page, request }) => {
+  const info = await (await request.get("/api/integrations")).json();
+  test.skip(!info.tacit.bin?.includes("tacit-standin"), "needs the tacit stand-in (TACIT_BIN)");
+  test.skip(!SCRIPTED, "drives the calls with the scripted model");
+  await request.delete("/api/mcp/servers/broken").catch(() => {});
+  const list = async () => (await (await request.get("/api/mcp/servers")).json()).servers as any[];
+  const tacit = (await list()).find((s) => s.name === "tacit");
+  expect(tacit).toMatchObject({ bundled: "Memory (tacit)", enabled: true });
+  expect(tacit.target).toContain("mcp --harness claude");
+  expect(tacit.tool_names).toContain("tacit_search");
+  // A server whose program is not there: it fails to start.
+  expect((await request.post("/api/mcp/servers", { data: { name: "broken", command: "/nonexistent/keel-e2e-server" } })).ok()).toBe(true);
+  await expect.poll(async () => (await list()).find((s) => s.name === "broken")?.state, { timeout: 20_000 }).toBe("error");
+
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `tacit-mcp-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const open = async (memory: boolean) => {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    if (!memory) expect((await request.patch(`/api/sessions/${session.id}`, { data: { use_memory: false } })).ok()).toBe(true);
+    return session.id as string;
+  };
+  const results = async (id: string) => ((await (await request.get(`/api/sessions/${id}`)).json()).events as any[]).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data.results[0].content));
+  const calls = (c: { name: string; input: unknown }[]) => `script:calls ${JSON.stringify(c)}`;
+
+  const id = await open(true);
+  await page.goto(`/s/${id}`);
+  await page.getByTestId("composer").fill(calls([
+    { name: "search_tools", input: { query: "tacit search" } },
+    // By the name the memory hook's own text gives it (mcp__tacit__tacit_search), as Claude Code names MCP tools.
+    { name: "mcp_call", input: { tool: "mcp__tacit__tacit_search", arguments: { query: "code word" } } },
+    { name: "search_tools", input: { query: "keel-e2e-server" } },
+  ]));
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  const [found, answer, missing] = await results(id);
+  expect(found).toContain("tacit__tacit_search");
+  expect(answer).toContain("heron");
+  expect(missing).toMatch(/Not available now: [^"]*broken \(ENOENT[^"]*keel-e2e-server/);
+  expect((await list()).find((s) => s.name === "tacit").state).toBe("ready");
+
+  // Memory off in a session: the store's tools are refused there.
+  const off = await open(false);
+  await request.post(`/api/sessions/${off}/messages`, { data: { text: calls([{ name: "mcp_call", input: { tool: "tacit__tacit_search", arguments: { query: "code word" } } }]) } });
+  await expect.poll(async () => (await results(off))[0] ?? "", { timeout: 60_000 }).toContain("Memory is turned off in this session");
+
+  // The panel: tacit as Keel's own, the broken one failed with its reason.
+  await page.goto("/");
+  await page.getByTestId("composer").fill("/mcp");
+  await page.keyboard.press("Enter");
+  const panel = page.getByTestId("mcp-panel");
+  await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "broken" }).first().click();
+  await expect(panel.getByTestId("mcp-error")).toBeVisible();
+  await shoot(page, "mcp-09-failed-server");
+  await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "Memory (tacit)" }).first().click();
+  await expect(panel.locator('[data-testid="mcp-server"][data-name="tacit"]')).toHaveAttribute("data-state", "ready");
+  await shoot(page, "mcp-10-tacit");
+  await request.delete("/api/mcp/servers/broken");
 });

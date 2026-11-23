@@ -3,7 +3,7 @@
 // one line per hit and the schema only for the hits shown, so finding a tool
 // costs a few hundred tokens instead of every server's schemas on every request.
 import { registerHooks } from "../engine/hooks.ts";
-import { catalogSources, catalogTools, judgedOf, registerCatalog, score, stale, type CatalogTool, type Judged } from "../tools/catalog.ts";
+import { catalogSources, catalogTools, judgedOf, registerCatalog, score, stale, unavailableNote, type CatalogTool, type Judged } from "../tools/catalog.ts";
 export { score };
 import { registerShared } from "../tools/registry.ts";
 import { fail, ok, type Tool } from "../tools/types.ts";
@@ -42,7 +42,8 @@ const SearchTools: Tool = {
     const offset = Math.max(Number(input.offset) || 0, 0);
     const all = (await catalogTools(ctx?.sessionId)).filter((t) => !t.hidden);
     const pending = catalogSources(ctx?.sessionId).flatMap((s) => s.pending?.() ?? []);
-    const note = pending.length ? `\nStill connecting: ${pending.join(", ")}; search again shortly for their tools.` : "";
+    const down = unavailableNote(ctx?.sessionId);
+    const note = (pending.length ? `\nStill connecting: ${pending.join(", ")}; search again shortly for their tools.` : "") + (down ? `\n${down}` : "");
     if (!query.trim()) {
       const by = new Map<string, number>();
       for (const t of all) by.set(t.server, (by.get(t.server) ?? 0) + 1);
@@ -52,7 +53,7 @@ const SearchTools: Tool = {
     let hits: CatalogTool[];
     if (query.startsWith("select:")) {
       const want = query.slice(7).split(",").map((s) => s.trim()).filter(Boolean);
-      hits = want.map((w) => all.find((t) => t.qualified === w || t.name === w)).filter(Boolean) as CatalogTool[];
+      hits = want.map((w) => byName(all, w)).filter(Boolean) as CatalogTool[];
     } else {
       hits = all
         .map((t) => ({ t, s: score(t, query) }))
@@ -68,10 +69,17 @@ const SearchTools: Tool = {
   },
 };
 
+// A tool by the name a call gives: its full name (server__tool), the name it
+// loads by where tools load natively (mcp__server__tool, which instructions and
+// hooks name), or its own name on its server.
+const byName = (all: CatalogTool[], name: string) =>
+  all.find((x) => x.qualified === name) ?? all.find((x) => x.mcp && `mcp__${x.qualified}` === name) ?? all.find((x) => x.name === name);
+
 function unknownTool(name: string, all: CatalogTool[], session?: string): string {
   const near = all.map((x) => ({ x, s: score(x, name.replace(/__/g, " ")) })).filter((h) => h.s > 0).sort((a, b) => b.s - a.s).slice(0, 3);
   const pending = catalogSources(session).flatMap((s) => s.pending?.() ?? []);
-  return `No tool named ${name}.${near.length ? ` Closest: ${near.map((h) => h.x.qualified).join(", ")}.` : ""}${pending.length ? ` Still connecting: ${pending.join(", ")}; search again shortly.` : ""} Find tools with search_tools.`;
+  const down = unavailableNote(session);
+  return `No tool named ${name}.${near.length ? ` Closest: ${near.map((h) => h.x.qualified).join(", ")}.` : ""}${pending.length ? ` Still connecting: ${pending.join(", ")}; search again shortly.` : ""}${down ? ` ${down}` : ""} Find tools with search_tools.`;
 }
 
 // What the gate judged for a call: if the server is reloaded while the card
@@ -84,7 +92,7 @@ const McpCall: Tool = {
   async target(input, session) {
     const name = String(input?.tool ?? "");
     const all = await catalogTools(session);
-    const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
+    const t = byName(all, name);
     const args = input?.arguments ?? {};
     const j = t && judgedOf(t);
     if (j && input && typeof input === "object") judged.set(input, j);
@@ -107,7 +115,7 @@ const McpCall: Tool = {
   async run(input, ctx) {
     const name = String(input.tool ?? "");
     const all = await catalogTools(ctx?.sessionId);
-    const t = all.find((x) => x.qualified === name) ?? all.find((x) => x.name === name);
+    const t = byName(all, name);
     if (!t) return fail(unknownTool(name, all, ctx?.sessionId));
     const why = stale(judged.get(input), t, t.qualified, "Search for it again");
     if (why) return fail(why);

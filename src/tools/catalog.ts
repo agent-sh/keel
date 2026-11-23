@@ -31,6 +31,9 @@ export type CatalogSource = {
   name: string;
   tools(): Promise<CatalogTool[]>;
   pending?(): string[];
+  // Servers that should offer tools and cannot now (failed to start, need a
+  // sign-in): a search says so with the reason, so a missing tool is never silent.
+  failed?(): { name: string; why: string }[];
   // The tools listed right now, without connecting anything (an MCP server's
   // last listing while it is ready). A source without it is asked with tools().
   known?(): CatalogTool[];
@@ -67,6 +70,14 @@ const offered = (session?: string) => {
   return [...all.filter((s) => !s.session), ...(session ? all.filter((s) => s.session === session) : [])];
 };
 export const catalogSources = (session?: string) => offered(session);
+
+// One line naming the servers whose tools are missing now and why, or "".
+export function unavailableNote(session?: string): string {
+  const down = offered(session).flatMap((s) => s.failed?.() ?? []);
+  if (!down.length) return "";
+  const why = (w: string) => w.replace(/\s+/g, " ").trim().slice(0, 200);
+  return `Not available now: ${down.map((d) => `${d.name} (${why(d.why)})`).join("; ")}. Their tools are missing from this list; the owner sees the same in Settings > MCP servers.`;
+}
 
 // What every source offers now, without waiting on a connection: the deferred
 // tools a request declares (src/tools/defer.ts).

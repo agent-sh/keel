@@ -646,6 +646,13 @@ export class McpManager {
         return e.tools.map((t) => this.catalogTool(e, t));
       },
       pending: () => (e.state === "connecting" ? [e.label ?? name] : []),
+      failed: () => {
+        const live = e.bundled?.live && e.state !== "disabled" ? e.bundled.live.state() : null;
+        const state = live?.state ?? e.state;
+        if (state === "needs_auth") return [{ name: e.label ?? name, why: "it needs a sign-in, which the owner gives in Settings > MCP servers" }];
+        if (state !== "error" && state !== "unreachable") return [];
+        return [{ name: e.label ?? name, why: (live?.error ?? e.error ?? "it failed to start").split("\nstderr:")[0]!.split("\n")[0]! }];
+      },
       known: () => {
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
         if (e.state === "disabled" || e.state === "needs_auth" || e.state === "missing") return [];

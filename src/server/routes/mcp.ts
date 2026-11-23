@@ -5,6 +5,8 @@ import { installMcpTools } from "../../mcp/tools.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
+import { installTacitServer } from "../../integrations/tacit-mcp.ts";
+import { memoryOn } from "../../integrations/tacit.ts";
 import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
 import { endpoint, importHome } from "../../mcp/sources.ts";
 import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
@@ -49,6 +51,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   });
   installChromeBridge(m);
   installPhone(m);
+  installTacitServer(m, (id) => memoryOn(deps.store, id));
   m.start();
   // Once a process, when the servers had a moment to connect: one line of what was found (daemon-log.ts).
   if (!g.__keelMcpSaid) {

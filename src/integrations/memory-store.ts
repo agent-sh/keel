@@ -24,6 +24,7 @@
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { collect } from "../core/proc.ts";
+import { registerSettings, settings } from "../admin/settings.ts";
 
 // How long a read of the store is waited for. The store answers a search in
 // well under a second; past this it is hung or syncing, and the owner is told.
@@ -51,6 +52,17 @@ type Ran = { state: StoreState; out: string; err?: string; error?: string; ms: n
 export const isFactName = (name: unknown): name is string => typeof name === "string" && name.length <= 200 && /^[a-z0-9][a-z0-9-]*$/.test(name);
 // A writer of the store as the store names one.
 export const isWriter = (w: unknown): w is string => typeof w === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(w);
+
+// The writer of the memory store a correction sent from Keel, and a note the
+// store's own tools add, is recorded under. The store has no writer for Keel:
+// it runs the store's hooks the way Claude Code does and feeds it transcripts
+// in that format, so its notes go to that writer's inbox until the owner names
+// another (Settings, or TACIT_HARNESS).
+registerSettings("memory", { writer: "claude" }, (v) => (isWriter(v.writer) ? undefined : "writer is one of the store's writers: lower-case letters, digits and dashes"));
+export const memoryWriter = (): string => {
+  const env = process.env.TACIT_HARNESS?.trim();
+  return isWriter(env) ? env : String(settings().memory?.writer ?? "claude");
+};
 
 export type Hit = { name: string; description: string; cut: boolean; scope: string; type: string; created: string; score: number | null; inbox: boolean; ruling: boolean; kind: string; path: string };
 // `replaced_by`: the fact the store put in this one's place.

@@ -12,7 +12,7 @@
 // and every built-in eager.
 import { testBuild } from "../core/build.ts";
 import type { Message } from "../core/types.ts";
-import { catalogReady, catalogTools, judgedOf, score, stale, type CatalogTool, type Judged } from "./catalog.ts";
+import { catalogReady, catalogTools, judgedOf, score, stale, unavailableNote, type CatalogTool, type Judged } from "./catalog.ts";
 import { fail, type Tool, type ToolOutput } from "./types.ts";
 
 export const TOOL_SEARCH = "ToolSearch";
@@ -87,7 +87,7 @@ function wrap(t: CatalogTool): Deferred {
     },
     async run(input, ctx): Promise<ToolOutput> {
       const now = (await catalogTools(ctx?.sessionId)).find((x) => x.qualified === t.qualified);
-      if (!now) return fail(`${name} is no longer available (its server was removed or is not connected). Search with ${TOOL_SEARCH} again.`);
+      if (!now) return fail(`${name} is no longer available (its server was removed or is not connected). ${unavailableNote(ctx?.sessionId)} Search with ${TOOL_SEARCH} again.`.replace("  ", " "));
       const why = stale(input && typeof input === "object" ? judged.get(input) : undefined, now, name, "Load it again");
       if (why) return fail(why);
       const deny = ctx.authorizationError?.();
@@ -205,14 +205,15 @@ export function toolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
       if (!query) {
         const by = new Map<string, string[]>();
         for (const t of pool) by.set(t.server, [...(by.get(t.server) ?? []), t.name]);
-        return { content: [...by].map(([s, ns]) => `${s}: ${ns.join(", ")}`).join("\n") || "No deferred tools." };
+        const down = unavailableNote(ctx?.sessionId);
+        return { content: [[...by].map(([s, ns]) => `${s}: ${ns.join(", ")}`).join("\n") || "No deferred tools.", down].filter(Boolean).join("\n") };
       }
       let hits: typeof pool;
       if (query.startsWith("select:")) {
         const want = query.slice(7).split(",").map((s) => s.trim()).filter(Boolean);
         hits = want.map((w) => all.find((t) => t.name === w) ?? all.find((t) => t.name.toLowerCase() === w.toLowerCase())).filter(Boolean) as typeof pool;
         const missing = want.filter((w) => !hits.some((h) => h.name.toLowerCase() === w.toLowerCase()));
-        if (!hits.length) return fail(`No deferred tool named ${missing.join(", ")}. Search by keywords instead.`);
+        if (!hits.length) return fail(`No deferred tool named ${missing.join(", ")}. ${unavailableNote(ctx?.sessionId)} Search by keywords instead.`.replace("  ", " "));
       } else {
         const m = /^\+(\S+)\s*(.*)$/.exec(query);
         const need = m?.[1]?.toLowerCase();
@@ -223,7 +224,7 @@ export function toolSearch(builtins: (sessionId?: string) => Tool[]): Tool {
           .filter((x) => x.s > 0)
           .sort((a, b) => b.s - a.s || a.t.name.localeCompare(b.t.name))
           .map((x) => x.t);
-        if (!hits.length) return { content: `No deferred tool matches "${query}". An empty query lists them all.` };
+        if (!hits.length) return { content: [`No deferred tool matches "${query}". An empty query lists them all.`, unavailableNote(ctx?.sessionId)].filter(Boolean).join("\n") };
       }
       // The provider takes tool_reference blocks alone in a result (mixed with text it answers 400).
       return { content: hits.slice(0, limit).map((t) => ({ type: "tool_reference" as const, tool_name: t.name })) };

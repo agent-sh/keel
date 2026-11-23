@@ -5,23 +5,13 @@ import { draftPresent } from "./drafts.ts";
 import { deliver } from "../../automation/core.ts";
 import { momentumReport, momentumSocketPath, startMomentumSocket } from "../../integrations/momentum.ts";
 import { memoryMeter } from "../../integrations/memory-meter.ts";
-import { isWriter, MemoryStore } from "../../integrations/memory-store.ts";
-import { registerSettings, settings } from "../../admin/settings.ts";
+import { isWriter, MemoryStore, memoryWriter as writer } from "../../integrations/memory-store.ts";
 import { readsOf } from "../reads.ts";
 import { memoryRoutes } from "./memory.ts";
 import { findBin, Tacit } from "../../integrations/tacit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
-// The writer of the memory store a correction sent from Keel is recorded
-// under. The store has no writer for Keel: it runs the store's hooks the way
-// Claude Code does and feeds it transcripts in that format, so its notes go
-// to that writer's inbox until the owner names another (here, or TACIT_HARNESS).
-registerSettings("memory", { writer: "claude" }, (v) => (isWriter(v.writer) ? undefined : "writer is one of the store's writers: lower-case letters, digits and dashes"));
-const writer = (): string => {
-  const env = process.env.TACIT_HARNESS?.trim();
-  return isWriter(env) ? env : String(settings().memory?.writer ?? "claude");
-};
 const bad = (error: string, status = 400) => json({ error }, status);
 
 export const integrationRoutes: RouteModule = (deps) => {
