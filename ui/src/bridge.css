@@ -1060,7 +1060,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 /* The container itself is k-surface (styles.css); here is only where it stands. */
 
 /* The Panels picker: search on top, grouped rows, a pin keeps one at hand. */
-.k-picker { width: min(24rem, calc(100vw - 1.5rem)); max-height: min(var(--available-height, 100dvh) - 0.5rem, 46rem); display: flex; flex-direction: column; overflow: hidden; border-radius: var(--radius-xl); border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
+.k-picker { width: min(24rem, calc(100vw - 1.5rem)); max-height: min(var(--available-height, 100dvh) - 0.5rem, 58rem); display: flex; flex-direction: column; overflow: hidden; border-radius: var(--radius-xl); border: 1px solid var(--line-strong); border-top: 0.1875rem solid var(--band); background: var(--raised); box-shadow: var(--shadow-3); }
 .k-picker-search { display: flex; align-items: center; gap: 0.5rem; height: 2.625rem; padding: 0 0.75rem; border-bottom: 1px solid var(--line); color: var(--faint); }
 .k-picker-search input { flex: 1; min-width: 0; background: transparent; outline: none; font-size: var(--text-base); color: var(--fg); }
 .k-picker-search input::placeholder { color: var(--faint); }
