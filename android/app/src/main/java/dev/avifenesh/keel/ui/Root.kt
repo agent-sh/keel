@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,7 +42,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -106,29 +110,43 @@ fun Root(act: MainActivity) {
 }
 
 @Composable
-private fun TabBar(active: Int) {
+fun TabBar(active: Int) {
     val k = k()
     val needs by Hub.cards.collectAsState()
     val open = needs.values.count { it.pending }
+    val tabs = listOf(Triple("Sessions", Ic.MessagesSquare, 0), Triple("Needs you", Ic.Inbox, 1), Triple("Usage", Ic.ChartColumn, 2), Triple("Settings", Ic.Settings, 3))
     Column(Modifier.fillMaxWidth().background(k.panel)) {
         Rule()
-        Row(Modifier.fillMaxWidth().navigationBarsPadding().height(64.dp)) {
-            listOf(Triple("Sessions", Ic.MessagesSquare, 0), Triple("Needs you", Ic.Inbox, 1), Triple("Usage", Ic.ChartColumn, 2), Triple("Settings", Ic.Settings, 3)).forEach { (label, icon, i) ->
-                val on = i == active
-                Column(
-                    Modifier.weight(1f).height(64.dp).press({ Ui.route.value = Route.Tabs(i) }).semantics { contentDescription = "tab-$label" },
-                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
-                ) {
-                    Box {
-                        KIcon(icon, if (on) k.fg else k.faint, 22.dp)
-                        if (i == 1 && open > 0) Box(
-                            Modifier.offset(x = 14.dp, y = (-6).dp).clip(RoundedCornerShape(S.rPill)).background(k.need).padding(horizontal = 5.dp, vertical = 1.dp),
-                        ) { Txt("$open", T.label, if (k.dark) k.bg else k.raised) }
+        BoxWithConstraints(Modifier.fillMaxWidth().navigationBarsPadding()) {
+            // A label has a quarter of the width. At a large text size the four get smaller together until
+            // the longest fits, never smaller than they are at the default size (half their own size at the
+            // largest scale, 200%): one size for the row, a gap between neighbours.
+            val measurer = rememberTextMeasurer()
+            val room = with(LocalDensity.current) { (maxWidth / tabs.size - 8.dp).roundToPx() }
+            val floor = T.label.fontSize / 2
+            val size = remember(room, LocalDensity.current.fontScale) {
+                var at = T.label.fontSize
+                while (at > floor && tabs.any { (label) -> measurer.measure(label, T.label.copy(fontSize = at), maxLines = 1, softWrap = false).size.width > room }) at = (at.value - 0.25f).sp
+                at
+            }
+            Row(Modifier.fillMaxWidth().height(64.dp)) {
+                tabs.forEach { (label, icon, i) ->
+                    val on = i == active
+                    Column(
+                        Modifier.weight(1f).height(64.dp).press({ Ui.route.value = Route.Tabs(i) }).semantics { contentDescription = "tab-$label" },
+                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+                    ) {
+                        Box {
+                            KIcon(icon, if (on) k.fg else k.faint, 22.dp)
+                            if (i == 1 && open > 0) Box(
+                                Modifier.offset(x = 14.dp, y = (-6).dp).clip(RoundedCornerShape(S.rPill)).background(k.need).padding(horizontal = 5.dp, vertical = 1.dp),
+                            ) { Txt("$open", T.label, if (k.dark) k.bg else k.raised) }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Txt(label, T.label.copy(fontSize = size), if (on) k.fg else k.faint, maxLines = 1)
+                        Spacer(Modifier.height(4.dp))
+                        Box(Modifier.width(18.dp).height(2.dp).background(if (on) k.fg else androidx.compose.ui.graphics.Color.Transparent))
                     }
-                    Spacer(Modifier.height(4.dp))
-                    Txt(label, T.label, if (on) k.fg else k.faint)
-                    Spacer(Modifier.height(4.dp))
-                    Box(Modifier.width(18.dp).height(2.dp).background(if (on) k.fg else androidx.compose.ui.graphics.Color.Transparent))
                 }
             }
         }
