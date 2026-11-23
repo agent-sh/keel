@@ -40,7 +40,10 @@ CREATE INDEX IF NOT EXISTS overlap_told_owed ON overlap_told(session_id) WHERE o
 CREATE TABLE IF NOT EXISTS overlap_marks (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, repo TEXT NOT NULL, branch TEXT, tip TEXT, base TEXT);
 `;
 
-type PairRow = { repo: string; a: string; b: string; base: number; a_tip: string; b_tip: string; conflict: number; error: string | null; files: string; checked: number };
+// `raw`: what git's merge of a branch pair said, before the files only the base meets were taken out
+// (JSON: the conflicted paths, or null when clean); `base_tip`: the base that was judged against.
+// A row with no `raw` was written by an earlier build and is merged again once.
+type PairRow = { repo: string; a: string; b: string; base: number; a_tip: string; b_tip: string; conflict: number; error: string | null; files: string; checked: number; raw: string | null; base_tip: string | null };
 type ToldRow = { session_id: string; repo: string; a: string; b: string; told: string | null; owed: "conflict" | "cleared" | null };
 // `waits`: a conflict between two branches that is not told while one side conflicts with the base (overlap.ts waiting).
 export type Pair = { a: string; b: string; base: boolean; a_tip: string; b_tip: string; conflict: boolean; error?: string; files: ConflictFile[]; checked: number; a_session?: string; b_session?: string; waits?: true };
@@ -93,9 +96,12 @@ export class Overlaps {
   private scanning = new Map<string, Promise<void>>();
   private again = new Set<string>();
   private empty = new Map<string, string>(); // repo → its empty tree's id (sha1 or sha256)
+  private own = new Map<string, Set<string> | null>(); // `${tip} ${baseTip}` → the files the branch changed since it left the base
 
   constructor(private store: Store, private teller: Teller) {
     store.migrate(SCHEMA);
+    if (!store.columnExists("overlap_pairs", "raw")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN raw TEXT");
+    if (!store.columnExists("overlap_pairs", "base_tip")) store.migrate("ALTER TABLE overlap_pairs ADD COLUMN base_tip TEXT");
     // A pass a stop cut left its folder: no pass runs yet, so none is in use.
     rmSync(join(store.stateDir, "overlap-objects"), { recursive: true, force: true });
   }
@@ -212,23 +218,44 @@ export class Overlaps {
       live.push(b);
     }
     const shortBase = base?.replace(/^refs\/(heads|remotes)\//, "") ?? null;
-    const want: { a: string; b: string; base: boolean; ta: string; tb: string }[] = pairsOf(live).map(([a, b]) => ({ a, b, base: false, ta: tips.get(`refs/heads/${a}`)!, tb: tips.get(`refs/heads/${b}`)! }));
+    // The pairs with the base first: what each branch meets the base in decides what of a branch pair is the base's.
+    const want: { a: string; b: string; base: boolean; ta: string; tb: string }[] = [];
     if (shortBase && baseTip) for (const a of live) want.push({ a, b: shortBase, base: true, ta: tips.get(`refs/heads/${a}`)!, tb: baseTip });
+    for (const [a, b] of pairsOf(live)) want.push({ a, b, base: false, ta: tips.get(`refs/heads/${a}`)!, tb: tips.get(`refs/heads/${b}`)! });
     keep = new Set(want.map((p) => `${p.a}\0${p.b}`));
     old = new Map(this.store.db.query<PairRow, [string]>("SELECT * FROM overlap_pairs WHERE repo = ?").all(repo).map((r) => [`${r.a}\0${r.b}`, r]));
+    const withBase = new Map<string, Set<string>>(); // branch → the files it conflicts with the base in
+    const paths = (files: string) => (JSON.parse(files) as ConflictFile[]).map((f) => f.path);
       for (const p of want) {
         const row = old.get(`${p.a}\0${p.b}`);
-        if (row && row.a_tip === p.ta && row.b_tip === p.tb && !row.error) { stat.reused++; continue; }
-        const env = envOf();
-        const mt = await git(repo, [...(await this.noAttrs(repo)), "merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", p.ta, p.tb], { read: true, env });
-        stat.merges++;
-        const r = parseMergeTree(mt.out, mt.code, mt.err);
-        const files = "conflict" in r && r.conflict ? await this.place(repo, p.ta, p.tb, r.files, stat) : [];
+        const same = !!row && row.a_tip === p.ta && row.b_tip === p.tb && !row.error;
+        if (p.base && same) {
+          stat.reused++;
+          if (row!.conflict) withBase.set(p.a, new Set(paths(row!.files)));
+          continue;
+        }
+        // A branch pair merged by this build: its merge is kept, and judged again only when the base moved.
+        const kept = !p.base && same && row!.raw !== null ? (JSON.parse(row!.raw) as string[] | null) : undefined;
+        if (kept !== undefined && (kept === null || row!.base_tip === (baseTip ?? null))) { stat.reused++; continue; }
+        let merged: Result;
+        if (kept !== undefined) merged = kept === null ? { conflict: false } : { conflict: true, files: kept };
+        else {
+          const env = envOf();
+          const mt = await git(repo, [...(await this.noAttrs(repo)), "merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", p.ta, p.tb], { read: true, env });
+          stat.merges++;
+          merged = parseMergeTree(mt.out, mt.code, mt.err);
+        }
+        const r = p.base ? merged : await this.meeting(repo, p, merged, baseTip, withBase);
+        if (p.base && "conflict" in r && r.conflict) withBase.set(p.a, new Set(r.files));
+        // A judgement again of a kept merge that names the same files keeps their places.
+        const sameFiles = kept !== undefined && !!row!.conflict && "conflict" in r && r.conflict && JSON.stringify(paths(row!.files)) === JSON.stringify(r.files);
+        const files = sameFiles ? (JSON.parse(row!.files) as ConflictFile[]) : "conflict" in r && r.conflict ? await this.place(repo, p.ta, p.tb, r.files, stat) : [];
         const was = row ? { conflict: !!row.conflict, files: row.files, error: row.error } : undefined;
         const now = { conflict: "conflict" in r && r.conflict, files: JSON.stringify(files), error: "error" in r ? r.error : null };
-        this.store.db.query(`INSERT INTO overlap_pairs (repo, a, b, base, a_tip, b_tip, conflict, error, files, checked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(repo, a, b) DO UPDATE SET base = excluded.base, a_tip = excluded.a_tip, b_tip = excluded.b_tip, conflict = excluded.conflict, error = excluded.error, files = excluded.files, checked = excluded.checked`)
-          .run(repo, p.a, p.b, p.base ? 1 : 0, p.ta, p.tb, now.conflict ? 1 : 0, now.error, now.files, Date.now());
+        const raw = p.base || "error" in merged ? null : JSON.stringify(merged.conflict ? merged.files : null);
+        this.store.db.query(`INSERT INTO overlap_pairs (repo, a, b, base, a_tip, b_tip, conflict, error, files, checked, raw, base_tip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(repo, a, b) DO UPDATE SET base = excluded.base, a_tip = excluded.a_tip, b_tip = excluded.b_tip, conflict = excluded.conflict, error = excluded.error, files = excluded.files, checked = excluded.checked, raw = excluded.raw, base_tip = excluded.base_tip`)
+          .run(repo, p.a, p.b, p.base ? 1 : 0, p.ta, p.tb, now.conflict ? 1 : 0, now.error, now.files, Date.now(), raw, baseTip ?? null);
         if (!was || was.conflict !== now.conflict || was.files !== now.files || was.error !== now.error) changed.add(`${p.a}\0${p.b}`);
         this.owe(repo, p.a, p.b, p.base, r, owners);
       }
@@ -290,6 +317,36 @@ export class Overlaps {
     if (this.lands.size > 4096) this.lands.clear();
     this.lands.set(key, yes);
     return yes;
+  }
+
+  // Where two branches meet, from what their merge said. A branch made on a newer base brings the base's
+  // new commits, so its merge with an older branch conflicts wherever the base meets that branch: a file
+  // is taken out when one of the two conflicts with the base in it and not both changed it since they
+  // left the base (by path: a file renamed on one side stays, its new path is no change of the other's).
+  private async meeting(repo: string, p: { a: string; b: string; ta: string; tb: string }, r: Result, baseTip: string | undefined, withBase: Map<string, Set<string>>): Promise<Result> {
+    if (!baseTip || !("conflict" in r) || !r.conflict || !r.files.length) return r;
+    const ba = withBase.get(p.a), bb = withBase.get(p.b);
+    if (!ba && !bb) return r;
+    const [oa, ob] = await Promise.all([this.ownFiles(repo, p.ta, baseTip), this.ownFiles(repo, p.tb, baseTip)]);
+    if (!oa || !ob) return r;
+    const files = r.files.filter((f) => (oa.has(f) && ob.has(f)) || !(ba?.has(f) || bb?.has(f)));
+    return files.length ? { conflict: true, files } : { conflict: false };
+  }
+
+  // The files a branch changed since it left the base (from their merge base): null when git cannot say.
+  private async ownFiles(repo: string, tip: string, baseTip: string): Promise<Set<string> | null> {
+    const key = `${tip} ${baseTip}`;
+    if (this.own.has(key)) return this.own.get(key)!;
+    let files: Set<string> | null = null;
+    const mb = await git(repo, ["merge-base", baseTip, tip], { read: true });
+    const from = mb.code === 0 ? mb.out.trim().split("\n")[0] : "";
+    if (from) {
+      const d = await git(repo, ["diff", "--name-only", "-z", "--no-renames", from, tip], { read: true });
+      if (d.code === 0) files = new Set(d.out.split("\0").filter(Boolean));
+    }
+    if (this.own.size > 4096) this.own.clear();
+    this.own.set(key, files);
+    return files;
   }
 
   // Where the two sides' changes of each conflicted file meet: each side's

@@ -1,6 +1,6 @@
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ownEnv } from "../../test/env.ts";
 import { Store } from "../core/store.ts";
@@ -140,6 +140,118 @@ test("a conflict owed whose files were all told before writes no note", async ()
   ov.noteFor(a)!.settle();
   store.db.run("UPDATE overlap_told SET owed = 'conflict' WHERE session_id = ?", [a]);
   expect(ov.noteFor(a)).toBeUndefined();
+});
+
+// A branch made on a newer base holds the base's new commits: merged with a
+// branch made before them, it meets that branch wherever the base does. Those
+// files are the older branch's conflict with the base (its own pair says so),
+// not a meeting of the two branches.
+test("a branch on a newer base does not conflict with an older one where only the base meets it", async () => {
+  const { repo, store, ov, a, b } = setup();
+  g(repo, "checkout", "-q", "main");
+  writeFileSync(join(repo, "notes.md"), readFileSync(join(repo, "notes.md"), "utf8").replace("line 3\n", "line 3 on main\n"));
+  g(repo, "commit", "-qam", "main moves");
+  g(repo, "checkout", "-q", "-B", "keel/c", "main");
+  writeFileSync(join(repo, "c.txt"), "c\n");
+  g(repo, "add", "c.txt");
+  g(repo, "commit", "-qm", "c");
+  g(repo, "checkout", "-q", "main");
+  const c = store.createSession({ model: "scripted:stand-in", workspace: repo, title: "C" });
+  ov.committed(repo, "keel/c", c.id);
+  await ov.scan(repo);
+  // The two older branches still meet each other, and each meets the base; keel/c meets nobody.
+  expect(ov.view(c.id).pairs.map((p) => [p.a, p.b]).sort()).toEqual([["keel/a", "keel/b"], ["keel/a", "main"], ["keel/b", "main"]]);
+  expect(ov.noteFor(c.id)).toBeUndefined();
+  expect(ov.noteFor(a)?.text).not.toContain("keel/c");
+  expect(ov.noteFor(b)?.text).not.toContain("keel/c");
+});
+
+// A repository whose base holds f.txt of twenty lines, and two branches each held by a session.
+function pairOf(made: (repo: string, br: (b: string, from: string, fn: () => void) => void) => void) {
+  const dir = join(root, `case-${++n}`);
+  const repo = join(dir, "repo");
+  mkdirSync(repo, { recursive: true });
+  g(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "f.txt"), Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  g(repo, "add", "-A");
+  g(repo, "commit", "-qm", "init");
+  const br = (b: string, from: string, fn: () => void) => { g(repo, "checkout", "-q", "-B", b, from); fn(); g(repo, "add", "-A"); g(repo, "commit", "-qm", b); g(repo, "checkout", "-q", "main"); };
+  made(repo, br);
+  const store = new Store(join(dir, "state"));
+  const teller = { changed: () => {}, failed: (e: unknown) => { throw e; } } as any;
+  const ov = new Overlaps(store, teller);
+  const ids = ["keel/a", "keel/b"].map((b) => { const s = store.createSession({ model: "scripted:stand-in", workspace: repo, title: b }); ov.committed(repo, b, s.id); return s.id; });
+  const pair = () => ov.view(ids[0]!).pairs.find((p) => p.a === "keel/a" && p.b === "keel/b");
+  return { repo, store, ov, teller, pair, id: ids[0]! };
+}
+const edit = (repo: string, f: string, from: string, to: string) => writeFileSync(join(repo, f), readFileSync(join(repo, f), "utf8").replace(`${from}\n`, `${to}\n`));
+
+// git names a rename's conflict at the new path, which the other branch never changed by that name.
+test("two branches that meet in a renamed file conflict, whatever the bases", async () => {
+  const cases: [string, (repo: string, br: (b: string, from: string, fn: () => void) => void) => void, string[]][] = [
+    ["a rename and an edit of the old path", (repo, br) => {
+      br("keel/a", "main", () => { g(repo, "mv", "f.txt", "g.txt"); edit(repo, "g.txt", "line 3", "A3"); });
+      br("keel/b", "main", () => edit(repo, "f.txt", "line 3", "B3"));
+    }, ["g.txt"]],
+    ["two renames of one file", (repo, br) => {
+      br("keel/a", "main", () => g(repo, "mv", "f.txt", "g.txt"));
+      br("keel/b", "main", () => g(repo, "mv", "f.txt", "h.txt"));
+    }, ["f.txt", "g.txt", "h.txt"]],
+    ["a rename and a delete", (repo, br) => {
+      br("keel/a", "main", () => g(repo, "mv", "f.txt", "g.txt"));
+      br("keel/b", "main", () => unlinkSync(join(repo, "f.txt")));
+    }, ["g.txt"]],
+    ["an edit on the old base and one on a base that renamed the file", (repo, br) => {
+      br("keel/a", "main", () => edit(repo, "f.txt", "line 3", "A3"));
+      g(repo, "mv", "f.txt", "g.txt");
+      g(repo, "commit", "-qm", "main renames");
+      br("keel/b", "main", () => edit(repo, "g.txt", "line 3", "B3"));
+    }, ["g.txt"]],
+  ];
+  for (const [what, made, files] of cases) {
+    const { repo, ov, pair } = pairOf(made);
+    await ov.scan(repo);
+    expect([what, pair()?.conflict, pair()?.files.map((f) => f.path).sort()]).toEqual([what, true, files]);
+  }
+});
+
+// A branch pair judged clean because the base met the older branch is judged again when the base moves:
+// moved back, the base no longer meets it, and the two branches do.
+test("a branch pair is judged again when the base moves, back included", async () => {
+  let O = "";
+  const { repo, store, ov, teller, pair, id } = pairOf((repo, br) => {
+    O = g(repo, "rev-parse", "HEAD");
+    br("keel/a", "main", () => edit(repo, "f.txt", "line 3", "A3"));
+    edit(repo, "f.txt", "line 3", "N3");
+    g(repo, "commit", "-qam", "N");
+    br("keel/b", "main", () => writeFileSync(join(repo, "b.txt"), "b\n"));
+  });
+  await ov.scan(repo);
+  expect(pair()).toBeUndefined(); // (the view lists the pairs that conflict)
+  g(repo, "reset", "-q", "--hard", O);
+  await ov.scan(repo);
+  expect([pair()?.conflict, pair()?.files.map((f) => f.path)]).toEqual([true, ["f.txt"]]);
+  // A later start reads the same, and keeps every pair it judged (two with the base, one of the branches).
+  const again = new Overlaps(store, teller);
+  await again.scan(repo);
+  expect([again.view(id).last?.reused, pair()?.conflict]).toEqual([3, true]);
+});
+
+// A row an earlier build wrote (no merge kept with it) is merged once, then kept across starts.
+test("a branch pair from an earlier build is merged again once", async () => {
+  const { repo, store, ov, teller, pair, id } = pairOf((repo, br) => {
+    br("keel/a", "main", () => edit(repo, "f.txt", "line 3", "A3"));
+    br("keel/b", "main", () => edit(repo, "f.txt", "line 3", "B3"));
+  });
+  await ov.scan(repo);
+  store.db.run("UPDATE overlap_pairs SET raw = NULL, conflict = 0, files = '[]' WHERE base = 0");
+  const next = new Overlaps(store, teller);
+  await next.scan(repo);
+  expect(pair()?.conflict).toBe(true);
+  expect(next.view(id).last?.reused).toBe(2);
+  const third = new Overlaps(store, teller);
+  await third.scan(repo);
+  expect(third.view(id).last?.reused).toBe(3);
 });
 
 // Attributes a session can write name a driver of the owner's config, or a
