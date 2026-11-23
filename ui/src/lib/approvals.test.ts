@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Approval } from "../../../src/safety/gate.ts";
-import { batches, batchName, coverName, hold, nextAction, pressable, sawLines, settled, spentAction, stand, unseenLines, SETTLE_MS, type Action, type Hold, type Lines } from "./approvals.ts";
+import { batches, holdAt, KEY_MS, batchName, coverName, hold, nextAction, pressable, sawLines, settled, spentAction, stand, unseenLines, SETTLE_MS, type Action, type Hold, type Lines } from "./approvals.ts";
 
 const card = (id: string, over: Partial<Approval> = {}): Approval => ({
   id, session_id: "s", call_id: `c-${id}`, tool: "Bash", kind: "shell", summary: `echo ${id}`, input: {}, risk: "low", suggest: [], state: "pending", created: 1, ...over,
@@ -225,4 +225,26 @@ test("an own scroll counts only views that were painted", () => {
   expect(q.seen).toEqual([[0, 380]]);
   // A view that stood for the settle time counts however it was read.
   expect(sawLines(sawLines(undefined, at([0, 200], false), false, 0), at([0, 200], false), false, SETTLE_MS).seen).toEqual([[0, 200]]);
+});
+
+// A card's keys are ready a key's settle time after its arrival was painted, and until then the card
+// is told how long to wait. Read from one time, the two never disagree: at the moment the time runs out
+// by a float's rounding (painted + KEY_MS equals now while now - painted is a hair under KEY_MS) the card
+// either is ready or waits a timer more, never "wait" with nothing to wake it.
+test("a hold is ready, or says how long until it is, from the one time", () => {
+  // (Times as performance.now() gives them; the sum rounds so that the difference is under KEY_MS.)
+  const painted = 212.300000214578;
+  const edge = painted + KEY_MS;
+  expect(edge - painted).toBeLessThan(KEY_MS);
+  const at = holdAt({ code: true, painted }, edge);
+  expect(at.ready || at.wait > 0).toBe(true);
+  const soon = holdAt({ code: true, painted }, painted + 100);
+  expect(soon.ready).toBe(false);
+  expect(soon.wait).toBeCloseTo(KEY_MS - 100);
+  expect(holdAt({ code: true, painted }, painted + KEY_MS + 1)).toEqual({ ready: true, wait: 0 });
+  // Not painted yet: the stamp of its paint draws the card again, no timer.
+  expect(holdAt({ code: true }, 1000)).toEqual({ ready: false, wait: 0 });
+  // The owner's own move is ready at once, unless a key was refused a moment ago.
+  expect(holdAt({ code: false }, 1000)).toEqual({ ready: true, wait: 0 });
+  expect(holdAt({ code: false, key: 900 }, 1000)).toEqual({ ready: false, wait: 200 });
 });

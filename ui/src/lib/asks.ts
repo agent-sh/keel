@@ -27,7 +27,7 @@
 //   meant for the card's answer does not send what the box holds. And a move
 //   the answering sequence makes never puts the keyboard in a message box.
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from "react";
-import { KEY_MS, SETTLE_MS } from "./approvals.ts";
+import { holdAt, keysReady, KEY_MS, SETTLE_MS } from "./approvals.ts";
 import { inPopup, overlayOver } from "./overlay.ts";
 import { tipSay } from "./tips.ts";
 
@@ -66,7 +66,7 @@ const unitOf = (el: Element | null | undefined) => el?.closest(UNIT) ?? null;
 // a way to answer (Escape opens the denial's reason): there the arrival alone counts.
 // `at`: when the press went down (keyAt), not when it is handled: a key that went down while the page was busy
 // and is handled later was still on its way before the card stood there.
-const settledAt = (h: Hold | undefined | null, run = true, at = keyAt()) => !h || ((!h.code || (!!h.painted && at - h.painted >= KEY_MS)) && (!run || !h.key || at - h.key >= KEY_MS));
+const settledAt = (h: Hold | undefined | null, run = true, at = keyAt()) => !h || keysReady(h, at, run);
 // The key being pressed: when it went down (the event's own time, from a listener on the window that hears
 // it first), until the task after its key up (Space presses a button on its way up, and that press is judged
 // by when Space went down). A repeat keeps the first press's time. With no key being pressed: now.
@@ -75,8 +75,6 @@ const keyAt = () => down?.at ?? performance.now();
 // The control the owner's own Tab or arrow put the keyboard on (null: none, or code moved it since).
 let keyed: Element | null = null;
 let stepped = -Infinity; // the owner's last Tab or arrow
-// When the key settle time of a hold ends (0: it has not begun, the arrival is not painted yet).
-const readyAt = (h: Hold) => (h.code && !h.painted ? 0 : Math.max(h.code ? h.painted! + KEY_MS : 0, h.key ? h.key + KEY_MS : 0));
 // Stamps a hold with the paint of the frame that showed it: from a task posted in the frame's
 // callback, which runs after that frame was painted.
 const stamp = (h: Hold) => {
@@ -371,14 +369,14 @@ export function useHold(unit: RefObject<Element | null>): { keys: "" | "wait" | 
   const el = unit.current;
   const h = el ? holds.get(el) : undefined;
   const held = !!el && el === current && el.contains(document.activeElement);
-  // (Not painted yet: the stamp itself draws the card again.)
-  const wait = held && h ? readyAt(h) - performance.now() : 0;
+  const now = held && h ? holdAt(h, performance.now()) : null;
+  const wait = now?.wait ?? 0;
   useEffect(() => {
     if (wait <= 0) return;
     const t = window.setTimeout(changed, wait + 1);
     return () => window.clearTimeout(t);
   }, [wait > 0, h?.at, h?.key]);
-  return { keys: !held ? "" : settledAt(h, true, performance.now()) ? "ready" : "wait", own: held && !!h?.own, take: held && !!h?.take, at: h?.at ?? 0, key: h?.key ?? 0 };
+  return { keys: !held ? "" : !h || now!.ready ? "ready" : "wait", own: held && !!h?.own, take: held && !!h?.take, at: h?.at ?? 0, key: h?.key ?? 0 };
 }
 
 // A card that takes the keyboard as it appears (`take`: it is the first of

@@ -75,6 +75,25 @@ export const pressable = (h: Hold | undefined, ripe: boolean, scrolling: boolean
 export const keyPressable = (h: Hold | undefined, scrolling: boolean, now: number): boolean =>
   !!h && h.view.whole && !scrolling && settled(h.view, now, KEY_MS);
 
+// ---- When a card's keys are ready (lib/asks.ts keeps how the keyboard came to each card).
+// `code`: code moved the keyboard there; `painted`: when the frame that showed that was painted (none
+// yet: not ready, and nothing to time); `key`: when a key on the card was last refused.
+type KeyHold = { code: boolean; painted?: number; key?: number };
+// Ready at `at`: a key's settle time after the arrival was painted, and (`run`) after a key refused.
+export const keysReady = (h: KeyHold, at: number, run = true): boolean =>
+  (!h.code || (!!h.painted && at - h.painted >= KEY_MS)) && (!run || !h.key || at - h.key >= KEY_MS);
+// Whether a hold's keys are ready at `now`, and if not, how long until they are (0: not painted yet, the
+// stamp draws the card again). Both from the one time and the one test: computed apart, a moment came
+// where the time was up by the one and not yet by the other (painted + KEY_MS - now was 0 while
+// now - painted was a hair under KEY_MS, a float's rounding), the card said "wait" and set no timer,
+// and it waited for nothing.
+export function holdAt(h: KeyHold, now: number): { ready: boolean; wait: number } {
+  if (keysReady(h, now)) return { ready: true, wait: 0 };
+  if (h.code && !h.painted) return { ready: false, wait: 0 };
+  const at = Math.max(h.code ? h.painted! + KEY_MS : 0, h.key ? h.key + KEY_MS : 0);
+  return { ready: false, wait: Math.max(1, at - now) };
+}
+
 // ---- The lines of a text the owner has had in view.
 // A request is answered only for what was read, so a card keeps how much of
 // its text has been in view: rows of the text, in the text's own coordinates

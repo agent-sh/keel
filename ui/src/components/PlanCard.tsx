@@ -192,6 +192,13 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
   const moved = useRef(0);
   const comes = hold.take && moved.current !== hold.at && at === "text" && readKey && fits && !editing && !wasBrought();
   useEffect(() => {
+    // Everything else is there and only the keys still wait: asked again a key's settle time on, whatever
+    // else draws the card meanwhile. (The move is this card's to make for this arrival; it is not left to
+    // a timer of the keyboard's that another drawing of the card may have put off.)
+    if (hold.keys === "wait" && hold.take && moved.current !== hold.at && readKey && fits) {
+      const t = window.setTimeout(() => wake((n) => n + 1), KEY_MS);
+      return () => window.clearTimeout(t);
+    }
     if (hold.keys !== "ready" || !hold.take || moved.current === hold.at || !readKey) return;
     // Not whole in view (a window made short, a foot over it): the move waits for it, asked again when it
     // fits. The arrival is not used up meanwhile.
