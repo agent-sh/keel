@@ -15,6 +15,8 @@ import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
 import { ownerSeen } from "../admin/away.ts";
 import * as activity from "./activity.ts";
+import * as incidents from "./incidents.ts";
+import { lineOf, youOf, type Incident } from "./incident-book.ts";
 import * as connection from "./connection.ts";
 import * as consult from "./consult.ts";
 import * as goals from "./goals.ts";
@@ -89,6 +91,7 @@ function init(deps: Deps) {
   channels.migrate();
   failures.init();
   now.init();
+  incidents.bind();
   outage.bind();
   // A called-off restart checks the goal turns its drain put off.
   afterCallOff.splice(0, afterCallOff.length, () => goals.recheckOwed());
@@ -156,6 +159,8 @@ function init(deps: Deps) {
       // Named now: by the time the row is written the turn is over.
       const turn = deps.engine.turnOf(s.id);
       afterTurn(s.id, () => {
+        // First: an incident this failure makes or is part of takes the alerts the rest would raise.
+        incidents.onTurnEnd(s.id, reason);
         const loopRun = loops.runOpenIn(s.id);
         failures.onTurnEnd(s.id, reason);
         // A notice held back while the owner had stopped the session goes after the owner's next turn.
@@ -245,6 +250,7 @@ function init(deps: Deps) {
     // phone interruption), except a repeat of one already raised.
     if (f.t === "feature" && f.name === "judged") {
       const j = f.data as Judged;
+      incidents.onJudged(j);
       const ran = j.outcome === "rule" || j.outcome === "judge" || j.outcome === "retry" || j.outcome === "unreviewed";
       activity.record("approval", ran ? (j.outcome === "unreviewed" ? "ran unreviewed (Full auto)" : `allowed by ${j.outcome === "rule" ? "a rule" : j.outcome === "judge" ? "the judge" : "a retry"}`) : j.outcome === "repeat" ? "refused again" : "refused", j.session_id, `${j.tool}: ${spelled(j.summary)}`.slice(0, 300) + ` (${j.reason})`.slice(0, 300), { call_id: j.call_id, blocked_id: j.blocked_id, model: j.model, ms: j.ms });
       if (!ran && j.outcome !== "repeat") {
@@ -634,6 +640,19 @@ export const automationRoutes: RouteModule = (deps) => {
         }
         return json({ ok: true });
       },
+    },
+
+    // --- incidents: one row a cause across sessions, open and cleared in the last day (src/automation/incidents.ts).
+    //   format=text: a line each, for a terminal or a model.
+    "/api/incidents": {
+      GET: (req: Request) => attempt(async () => {
+        const l = incidents.listed();
+        if (new URL(req.url).searchParams.get("format") !== "text") return json(l);
+        const z = zoned();
+        const line = (i: Incident) => `  ${z.time(i.since)}${i.cleared ? `-${z.time(i.cleared)}` : ""}  ${lineOf(i)}${i.cleared ? "" : ` ${youOf(i)}`}`;
+        const text = [`Incidents, newest first. ${z.note}.`, l.open.length ? "Open:" : "Nothing is open.", ...l.open.map(line), ...(l.cleared.length ? ["Cleared in the last day:", ...l.cleared.map(line)] : [])].join("\n");
+        return new Response(`${text}\n`, { headers: { "content-type": "text/plain; charset=utf-8" } });
+      }),
     },
 
     // --- alerts

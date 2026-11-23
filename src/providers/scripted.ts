@@ -364,6 +364,9 @@ export class ScriptedProvider implements Provider {
         return reply(`The last outage refused ${this.outage.requests} requests and ${this.outage.listings} listings.`);
       case "counted":
         return reply(`counted ${JSON.stringify({ window: STRICT_WINDOW, ...(this.counted.get(owner.match(/script:counted\s+(\S+)/)?.[1] ?? "") ?? { requests: 0, largest: 0, refused: 0 }) })}`);
+      case "auth":
+        // A refused credential: the turn fails at once, nothing is tried again.
+        throw new ProviderError("auth", "Scripted: HTTP 401: the API key was refused.", 401);
       case "billing":
         // An account state, not a passing failure: turns are refused until the owner acts.
         throw new ProviderError("quota", "Scripted: your credit balance is too low to make this request. Add credits at https://example.com/billing.", 402);

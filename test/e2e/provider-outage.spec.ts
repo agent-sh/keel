@@ -44,8 +44,10 @@ test("a turn started while the provider cannot be reached waits and completes wh
   const t0 = Date.now();
   const id = await open(request, "Outage: a turn waits");
   await page.goto(`/s/${id}`);
-  // A DNS failure for 9 s: the first request never gets an answer.
-  await send(page, "script:outage dns 9000");
+  // A DNS failure for 20 s: the first request never gets an answer. Long enough to be confirmed
+  // also when an outage of the last five minutes (another spec's) kept its place in the schedule:
+  // its tries are then five seconds apart, and two must fail.
+  await send(page, "script:outage dns 20000");
 
   // The transcript's footer: since when, that Keel tries again, and what the transport said. No count, no countdown.
   const wait = page.getByTestId("provider-wait");

@@ -10,6 +10,7 @@ import { navigate, setUI } from "../lib/ui.ts";
 import { ago, clock, cn, when } from "../lib/utils.ts";
 import { Seg, tabId } from "./Seg.tsx";
 import { FailureActions } from "./TurnFailure.tsx";
+import { IncidentList } from "./IncidentBand.tsx";
 import type { Cause } from "../../../src/admin/stall-cause.ts";
 import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
 
@@ -318,6 +319,7 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               <X />
             </Dialog.Close>
           </div>
+          <IncidentList />
           {/* One band: which errors, then what to do with the open ones at its right end. */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-3 py-2 whitespace-nowrap">
             <Seg

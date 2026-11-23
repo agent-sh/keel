@@ -25,6 +25,8 @@ import { handShell, shellShows, tellShells } from "../server/shell.ts";
 
 // `machine`: about a machine of the fleet, not a session (it went out of reach; more of its alerts came than are listed).
 // `review`: a pull request review from GitHub is ready, was posted, or failed (src/prreview/watch.ts).
+// `outage`: an incident of the daemon's, across sessions (src/automation/incidents.ts): a provider down
+// or failing, a refused credential, the judge, a stall, a stop of the daemon, the disk. One an incident.
 export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine", "outage", "review"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
@@ -427,9 +429,16 @@ const routine = (kind: AlertKind, data: unknown, st: AlertSettings) =>
   kind === "snooze_over" || kind === "refused" || kind === "machine" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
 
 // `silent`: kept in the inbox and told on no channel (an update of a row the owner was told of already).
+// An open incident a session's failure is part of (src/automation/incidents.ts): its one alert
+// stands for the failure alerts of every session it touched, so these are filed silently.
+export const absorbHook: { of?: (sessionId: string) => string | undefined } = {};
+const ABSORBED = new Set<AlertKind>(["failed", "limit", "loop_failed"]);
+
 export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown, silent = false): Alert | undefined {
   try {
     const { store } = D();
+    const incident = !silent && sessionId && ABSORBED.has(kind) ? absorbHook.of?.(sessionId) : undefined;
+    if (incident) { silent = true; data = { ...(data as object), in_incident: incident }; }
     const s = sessionId ? store.session(sessionId) : undefined;
     if (sessionId && !s) return undefined;
     // A subagent's alerts belong to its parent's session in the inbox, with the

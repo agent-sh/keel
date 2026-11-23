@@ -12,8 +12,9 @@ import { span } from "../core/watch.ts";
 import type { Outage } from "../providers/outage.ts";
 import { addNotice, hasNotice } from "../tools/jobs.ts";
 import * as activity from "./activity.ts";
-import { raise, readWhere } from "./alerts.ts";
+import { readWhere } from "./alerts.ts";
 import { D, capture } from "./core.ts";
+import * as incidents from "./incidents.ts";
 
 const keyOf = (o: Pick<Outage, "provider" | "since">) => `outage:${o.provider}:${o.since}`;
 
@@ -69,6 +70,8 @@ export function bind() {
           }
           if (id) activity.outageCount(id, o.sessions.length, began(o));
         }
+        // The incident across sessions holds the sessions that wait now.
+        incidents.syncHeld();
         const parent = o?.confirmed ? parentOf(session) : undefined;
         if (o && parent) tellParent(parent, o);
       } catch (e) { capture(e, { at: "outage notice" }); }
@@ -81,16 +84,18 @@ export function bind() {
         if (row) rows.set(keyOf(o), row.id);
         for (const parent of new Set(o.sessions.map(parentOf))) if (parent) tellParent(parent, o);
       } catch (e) { capture(e, { at: "outage began" }); }
+      incidents.syncHeld();
     },
-    long: (o) => {
-      raise("outage", null, "Work is waiting for a provider", began(o), { provider: o.provider, since: o.since, provider_outage: keyOf(o) });
-    },
+    // It lasts: the owner is told once, by the incident's alert (an alert of this kind raised by an
+    // older daemon is still read below when the wait ends).
+    long: (o) => incidents.syncHeld(o),
     close: (o, ms, answered, parents) => {
       const text = outageEnded(label(o.provider), span(ms), answered);
       say(`[provider] ${text}`);
       const key = keyOf(o);
       rows.delete(key);
       try { readWhere("provider_outage", key); } catch (e) { capture(e, { at: "outage alert" }); }
+      try { incidents.outageOver(o, ms, answered); } catch (e) { capture(e, { at: "outage incident" }); }
       try {
         activity.record("daemon", "outage_over", null, text, { provider: o.provider, since: o.since, ms, answered });
         // Only a parent that read the first line gets the second.
