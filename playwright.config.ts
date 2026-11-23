@@ -32,10 +32,14 @@ if (given && !relative(resolve(given), shared).startsWith("..")) {
 // MCP servers in his home. Each gets a default here, so every daemon a spec starts inherits it: a
 // TACIT_BIN and a KEEL_PARLAR that name no file (Keel then runs no memory tool and no voice, and
 // looks nowhere else), a phone socket and the readers' homes under the e2e state. What the shell
-// names is kept: scripts/dev.sh and a spec that wants a stand-in name their own.
+// names is kept: scripts/dev.sh and a spec that wants a stand-in name their own. No desktop
+// notification is shown from a run either (a test turn's end is not the owner's to see).
+// The daemons the specs start themselves get an environment made from nothing instead
+// (test/e2e/own-daemon.ts specEnv); these defaults cover what a spec runs from its own.
 // (test/e2e/spec-env.spec.ts checks what such a daemon would find.)
 const envRoot = `${process.env.HOME}/.cache/keel-work/bun/e2e-state/run-env-${new URL(url).port || "80"}`;
 const defaults: Record<string, string> = {
+  KEEL_DESKTOP_NOTIFY: "off",
   TACIT_BIN: `${envRoot}/no-tacit`,
   KEEL_PARLAR: `${envRoot}/no-parlar`,
   KEEL_PHONE_SOCKET: `${envRoot}/phone/phone.sock`,

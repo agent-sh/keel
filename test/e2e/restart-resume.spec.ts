@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { sessionsFolder } from "./own-daemon.ts";
+import { sessionsFolder, specEnv } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a daemon restart does not lose a running turn. A crash (SIGKILL)
@@ -23,8 +23,8 @@ function daemon(state: string, extra: Record<string, string> = {}, opts: { bin?:
   // (Its sessions work beside the state folder, not in it: what their commands write is in ws(state).)
   const args = ["serve", "--bind", opts.bind ?? "127.0.0.1:0", "--state-dir", state, "--workspace", ws(state)];
   const proc = spawn(opts.bin ?? "bun", opts.bin ? args : ["src/main.ts", ...args], {
-    // A config folder of its own unless the run names one: never the owner's.
-    env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", ...extra },
+    // An environment made from nothing, its own config folder: never the owner's.
+    env: specEnv(state, extra),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
@@ -177,7 +177,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     expect(cutRow.ms).toBeLessThan(up - killed);
 
     // The command says it, with a line a turn.
-    const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
+    const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: specEnv(state) });
     expect(said.status, said.stderr).toBe(0);
     expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(down ([89]|1\d) s\); 4 turns were cut: 4 resumed\./);
     expect(said.stdout).toContain(`"Cut during a command" cut at step 1, during Bash, after`);
@@ -312,7 +312,7 @@ test("the log names each line's session and turn, and is read across a restart",
     expect(log).toMatch(/ERROR \(this turn\) \[provider\] .*credit balance/);
 
     // The command reads the same lines, with the session and turn on each.
-    const said = spawnSync("bun", ["src/main.ts", "debug", "log", "--session", failed, "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
+    const said = spawnSync("bun", ["src/main.ts", "debug", "log", "--session", failed, "--url", d.url], { encoding: "utf8", env: specEnv(state) });
     expect(said.status, said.stderr).toBe(0);
     expect(said.stdout).toMatch(new RegExp(`^\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3} ERROR \\{${failed} ${failedTurn}\\} \\[provider\\] .*credit balance`, "m"));
     expect(said.stdout).not.toContain(running);

@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { startFakeMessages } from "./fixtures/fake-messages.ts";
+import { specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a daemon upgrade does not make a live session pay for its whole
@@ -19,14 +20,12 @@ const TWO = { id: "build-two", core: LINE, tools: { Bash: { description: "Runs a
 const THREE = { ...TWO, id: "build-three", tools: { ...TWO.tools, TodoWrite: { remove: true } } };
 
 function daemon(state: string, build?: unknown, extra: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
-  const env: Record<string, string | undefined> = {
-    ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300", KEEL_RESUME_GAP_MS: "0",
-    KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_SCRIPTED_CACHE: "prefix", KEEL_CONFIG_DIR: join(state, "config"),
-    KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
+  // An environment made from nothing (own-daemon.ts); the MCP servers are the config folder's own.
+  const env = specEnv(state, {
+    KEEL_RESUME_GAP_MS: "0", KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_SCRIPTED_CACHE: "prefix", TACIT_BIN: TACIT_STANDIN,
     KEEL_TEST_BUILD: build ? JSON.stringify(build) : undefined, ...extra,
-  };
-  delete env.KEEL_MCP_CONFIG;
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], { env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
+  }, join(state, "work"));
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], { env, stdio: ["ignore", "pipe", "pipe"] });
   return new Promise((done, reject) => {
     let out = "";
     const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);

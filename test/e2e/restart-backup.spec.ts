@@ -1,8 +1,9 @@
 import { expect, test } from "./isolate.ts";
+import { specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { freePort } from "./ports.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
 // Feature: a restart makes a backup first, and a backup that fails calls the
@@ -19,10 +20,7 @@ const FAILED = "The backup before the restart failed";
 
 function daemon(state: string, port: number): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
-    env: {
-      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_RESUME_GAP_MS: "0",
-      KEEL_CONFIG_DIR: join(state, "config"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
-    },
+    env: specEnv(state, { KEEL_DRAIN_MS: undefined, KEEL_RESUME_GAP_MS: "0", TACIT_BIN: TACIT_STANDIN }, join(state, "work")),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((done, reject) => {

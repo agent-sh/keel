@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sessionsFolder, ownEnv } from "./own-daemon.ts";
+import { sessionsFolder, specEnv } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a message a session was told is sent is delivered, once. A message
@@ -17,8 +17,8 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
 function daemon(state: string, extra: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)], {
-    // A config folder of its own: never the owner's.
-    env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DESKTOP_NOTIFY: "off", ...ownEnv(state), ...extra },
+    // An environment made from nothing, its own config folder: never the owner's.
+    env: specEnv(state, extra),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {

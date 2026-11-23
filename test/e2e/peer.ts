@@ -6,10 +6,10 @@ import type { APIRequestContext } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { sessionsFolder } from "./own-daemon.ts";
+import { bareEnv, sessionsFolder, specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 
 export async function peerProblem(request: APIRequestContext, peer: string): Promise<string | null> {
   const fix = "start a second daemon with a state of its own (scripts/dev.sh <another port>) and set KEEL_PEER_URL and KEEL_PEER_ROOT";
@@ -56,11 +56,11 @@ export function standInDaemon(name: string) {
 export async function emptyKeel(dir: string): Promise<{ url: string; state: string; stop: () => Promise<void> }> {
   for (const d of ["state", "work", "config", "home", "stores"]) mkdirSync(join(dir, d), { recursive: true });
   const proc: ChildProcess = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(dir, "state"), "--workspace", join(dir, "work")], {
-    env: {
-      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(dir, "config"), KEEL_MCP_CONFIG: join(dir, "mcp.json"),
-      KEEL_IMPORT_HOME: join(dir, "home"), KEEL_IMPORT_CLAUDE_DIR: join(dir, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(dir, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(dir, "stores/agy"), KEEL_IMPORT_GEMINI_DIR: join(dir, "stores/gemini"),
-      KEEL_IMPORT_KEEL_DB: join(dir, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(dir, "stores/hermes"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
-    },
+    env: specEnv(dir, {
+      KEEL_DRAIN_MS: undefined, KEEL_MCP_CONFIG: join(dir, "mcp.json"), KEEL_IMPORT_HOME: join(dir, "home"),
+      KEEL_IMPORT_CLAUDE_DIR: join(dir, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(dir, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(dir, "stores/agy"), KEEL_IMPORT_GEMINI_DIR: join(dir, "stores/gemini"),
+      KEEL_IMPORT_KEEL_DB: join(dir, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(dir, "stores/hermes"), TACIT_BIN: TACIT_STANDIN,
+    }, join(dir, "work")),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const url = await new Promise<string>((done, reject) => {
@@ -86,18 +86,16 @@ export async function emptyKeel(dir: string): Promise<{ url: string; state: stri
 // home is its own, so no sign-in file; and it has no session bus, so no keyring.
 // `more`: settings of the spec's own for that daemon (a shorter wait, a gap).
 export function ownDaemon(state: string, port = 0, more: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string; port: number }> {
-  for (const d of ["config", "home/run", "stores", "tmp"]) mkdirSync(join(state, d), { recursive: true });
+  for (const d of ["config", "stores"]) mkdirSync(join(state, d), { recursive: true });
   writeFileSync(join(state, "ssh_config"), "");
   // (Its sessions work beside the state folder, not in it: sessionsFolder.)
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
-    env: {
-      PATH: process.env.PATH ?? "", TMPDIR: process.env.TMPDIR ?? join(state, "tmp"), LANG: "C.UTF-8", HOME: join(state, "home"),
-      KEEL_KEYRING_SERVICE: "keel-scratch-empty", DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", XDG_RUNTIME_DIR: join(state, "home/run"), KEEL_CRED_GET: "/bin/false",
-      KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_SERVER_NAME: "desk", KEEL_CONFIG_DIR: join(state, "config"), KEEL_SSH_CONFIG: join(state, "ssh_config"), KEEL_DESKTOP_NOTIFY: "off",
-      KEEL_MCP_CONFIG: join(state, "mcp.json"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_IMPORT_CLAUDE_DIR: join(state, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(state, "stores/agy"), KEEL_IMPORT_GEMINI_DIR: join(state, "stores/gemini"),
-      KEEL_IMPORT_KEEL_DB: join(state, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "stores/hermes"), TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
+    env: specEnv(state, {
+      KEEL_SERVER_NAME: "desk", KEEL_SSH_CONFIG: join(state, "ssh_config"), KEEL_MCP_CONFIG: join(state, "mcp.json"), KEEL_IMPORT_HOME: join(state, "home"),
+      KEEL_IMPORT_CLAUDE_DIR: join(state, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(state, "stores/agy"), KEEL_IMPORT_GEMINI_DIR: join(state, "stores/gemini"),
+      KEEL_IMPORT_KEEL_DB: join(state, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "stores/hermes"), TACIT_BIN: TACIT_STANDIN,
       ...more,
-    },
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((done, reject) => {
@@ -113,11 +111,7 @@ export function ownDaemon(state: string, port = 0, more: Record<string, string> 
   });
 }
 // The environment of a command line run against such a daemon: the path and that daemon's own folders, nothing of the caller's.
-export const ownEnv = (state: string): NodeJS.ProcessEnv => ({
-  PATH: process.env.PATH ?? "", TMPDIR: process.env.TMPDIR ?? join(state, "tmp"), LANG: "C.UTF-8", HOME: join(state, "home"),
-  KEEL_KEYRING_SERVICE: "keel-scratch-empty", DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", XDG_RUNTIME_DIR: join(state, "home/run"), KEEL_CRED_GET: "/bin/false",
-  KEEL_CONFIG_DIR: join(state, "config"), KEEL_STATE_DIR: state,
-});
+export const ownEnv = (state: string): NodeJS.ProcessEnv => ({ ...bareEnv(join(state, "home")), KEEL_CONFIG_DIR: join(state, "config"), KEEL_STATE_DIR: state });
 export const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
 
 // The way to another daemon with a hand on it: every request goes through to

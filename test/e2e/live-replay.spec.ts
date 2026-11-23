@@ -3,7 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sessionsFolder, ownEnv } from "./own-daemon.ts";
+import { sessionsFolder, specEnv } from "./own-daemon.ts";
 import { HAIKU, ask, shoot } from "./shots.ts";
 
 // Feature: the live feed survives a lost socket. On every reconnect the page
@@ -79,7 +79,7 @@ function daemon(state: string, port = 0): Promise<{ proc: ChildProcess; url: str
   mkdirSync(state, { recursive: true });
   // Its own config folder too: a spec's daemon reads and writes nothing of the owner's.
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", sessionsFolder(state)], {
-    env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off", ...ownEnv(state) },
+    env: specEnv(state),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {

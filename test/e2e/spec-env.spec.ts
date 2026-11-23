@@ -1,60 +1,157 @@
 import { expect, test } from "./isolate.ts";
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
-import { delimiter, join, relative } from "node:path";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { userInfo } from "node:os";
+import { delimiter, dirname, join, relative } from "node:path";
+import { exited, listening, sessionsFolder, specEnv } from "./own-daemon.ts";
 
-// Feature: a daemon a spec starts from the run's environment ({ ...process.env },
-// as the specs that start their own daemons do) finds none of the owner's own
-// tools or setups, whatever shell ran the specs: no tacit (his memory store), no
-// parlar (his mic and speaker), no Hermes gateway (his phone), and no harness
-// setups or sessions from his home (playwright.config.ts names the defaults).
+// Feature: a daemon a spec starts reaches nothing of the owner's, whatever
+// shell ran the specs. Its environment is made from nothing (specEnv in
+// own-daemon.ts): no provider key, sign-in, keyring or credential helper of
+// his, no tool or setup from his home (tacit, parlar, plugins, the other
+// harnesses' setups and sessions), no session or job of his. What a spec runs
+// from the run's own environment ({ ...process.env }) gets the defaults
+// playwright.config.ts names: no tacit, no parlar, no phone, no harness setups
+// from the home, no desktop notifications.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
-const under = (p: string, dir: string) => !relative(dir, p).startsWith("..");
+// The owner's home as the account names it, whatever HOME the run was given.
+const HOME = userInfo().homedir;
+const under = (p: string, dir: string) => p === dir || !relative(dir, p).startsWith("..");
+// Besides the stand-in, the two that list with no key and cannot answer.
+const LISTED_WITHOUT_KEY = new Set(["scripted", "acp", "alibaba"]);
 
-test("a spec's own daemon finds none of the owner's tools or setups", async ({ request }) => {
-  // What the daemon would find, from the environment it would take: checked before one starts.
-  // A program is looked for as findBin (src/integrations/tacit.ts) and discoverParlar
-  // (src/integrations/voice.ts) look: the variable when it is set, else PATH and ~/.local/bin.
+test("the run's environment names none of the owner's tools or setups", () => {
+  // What a daemon would find, from the environment it would take. A program is looked for as
+  // findBin (src/integrations/tacit.ts) and discoverParlar (src/integrations/voice.ts) look:
+  // the variable when it is set, else PATH and ~/.local/bin.
   const env = { ...process.env };
   const found = (variable: string, name: string) => {
     const given = env[variable]?.trim();
     if (given) return existsSync(given) ? given : null;
     for (const dir of (env.PATH ?? "").split(delimiter)) if (dir && existsSync(join(dir, name))) return join(dir, name);
-    return existsSync(join(homedir(), ".local/bin", name)) ? join(homedir(), ".local/bin", name) : null;
+    return existsSync(join(HOME, ".local/bin", name)) ? join(HOME, ".local/bin", name) : null;
   };
   expect(found("TACIT_BIN", "tacit"), "tacit found").toBeNull();
   expect(found("KEEL_PARLAR", "parlar"), "parlar found").toBeNull();
   const phone = env.KEEL_PHONE_SOCKET ?? "";
-  expect(!!phone && !under(phone, join(homedir(), ".hermes")), `phone socket ${phone}`).toBe(true);
+  expect(!!phone && !under(phone, join(HOME, ".hermes")), `phone socket ${phone}`).toBe(true);
+  expect(env.KEEL_DESKTOP_NOTIFY).toBe("off");
   // The other harnesses' setups and sessions: read from folders under the e2e state, not the home.
   for (const k of ["KEEL_IMPORT_HOME", "KEEL_IMPORT_CLAUDE_DIR", "KEEL_IMPORT_CODEX_DIR", "KEEL_IMPORT_AGY_DIR", "KEEL_IMPORT_HERMES_DIR", "KEEL_IMPORT_OPENCODE_DIR", "KEEL_IMPORT_KEEL_DB"]) {
-    expect(!!env[k] && (!under(env[k]!, homedir()) || under(env[k]!, join(homedir(), ".cache"))), `${k}=${env[k]}`).toBe(true);
+    expect(!!env[k] && (!under(env[k]!, HOME) || under(env[k]!, join(HOME, ".cache"))), `${k}=${env[k]}`).toBe(true);
   }
+});
 
-  // A daemon started so says the memory and voice servers are not installed.
-  const state = join(ROOT, `spec-env-${Date.now().toString(36)}`);
+type Api = (path: string, body?: unknown, method?: string) => Promise<any>;
+
+// A daemon on specEnv, its sessions in their own folder; `wrap` runs it under another program (strace).
+async function start(state: string, wrap: string[] = []) {
   mkdirSync(state, { recursive: true });
-  let proc: ChildProcess | undefined;
+  const env = specEnv(state);
+  const [cmd, ...args] = [...wrap, "bun", "src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)];
+  const proc: ChildProcess = spawn(cmd!, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+  const { url } = await listening(proc);
+  const api: Api = async (path, body, method = body === undefined ? "GET" : "POST") =>
+    (await fetch(url + path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })).json();
+  return { proc, env, api, pid: (await api("/api/daemon")).pid as number };
+}
+// The daemon is stopped, not what it runs under (strace stops tracing on a SIGTERM of its own and leaves the daemon running).
+const stop = async (d: { proc: ChildProcess; pid: number }) => { process.kill(d.pid, "SIGTERM"); await exited(d.proc); };
+
+// What the daemon offers once every source was read: a source never read counts as
+// there until its first read, so the listings are read first.
+async function settled(api: Api) {
+  await api("/api/models?refresh=1");
+  await expect.poll(async () => ((await api("/api/providers")).providers as { id: string; available: boolean }[])
+    .filter((p) => p.available && !LISTED_WITHOUT_KEY.has(p.id)).map((p) => p.id), { timeout: 30_000 }).toEqual([]);
+  const servers = async () => (await api("/api/mcp/servers")).servers as { name: string; state: string }[];
+  await expect.poll(async () => (await servers()).filter((s) => s.state === "starting").map((s) => s.name), { timeout: 30_000 }).toEqual([]);
+  return servers();
+}
+
+// A turn on the stand-in that runs a command; its title is the session's own model's.
+async function turn(api: Api) {
+  const { session } = await api("/api/sessions", { model: "scripted:stand-in" });
+  await api(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+  await api(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo from-the-turn" } }])}` });
+  await expect.poll(async () => ((await api(`/api/sessions/${session.id}`)).events as any[]).some((e) => e.kind === "turn_end"), { timeout: 60_000 }).toBe(true);
+}
+
+test("a spec's own daemon has only the stand-in provider and none of the owner's tools", async () => {
+  test.setTimeout(120_000);
+  const state = join(ROOT, `spec-env-${Date.now().toString(36)}`);
+  let d: Awaited<ReturnType<typeof start>> | undefined;
   try {
-    proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", state], {
-      env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const url = await new Promise<string>((resolve, reject) => {
-      let out = "";
-      const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
-      const on = (d: Buffer) => { out += d; const m = out.match(/keel listening on (http:\/\/\S+?)\/? /); if (m) { clearTimeout(t); resolve(m[1]!); } };
-      proc!.stdout!.on("data", on);
-      proc!.stderr!.on("data", on);
-    });
-    const servers = (await (await request.get(`${url}/api/mcp/servers`)).json()).servers as { name: string; state: string }[];
+    d = await start(state);
+    const servers = await settled(d.api);
     const of = (n: string) => servers.find((s) => s.name === n)?.state;
     expect(of("tacit")).toBe("missing");
     expect(of("parlar")).toBe("missing");
+    // Its environment is the one it was given, name for name: nothing of the shell that ran the specs.
+    // (BUN_GC_TIMER_DISABLE: the daemon starts itself again with it, src/core/relaunch.ts.)
+    const names = readFileSync(`/proc/${d.pid}/environ`, "utf8").split("\0").filter(Boolean).map((l) => l.slice(0, l.indexOf("=")));
+    expect(names.filter((n) => !(n in d!.env) && n !== "BUN_GC_TIMER_DISABLE")).toEqual([]);
+    expect(under(d.env.HOME!, `${state}-ws`)).toBe(true);
   } finally {
-    proc?.kill("SIGTERM");
-    await new Promise((r) => (proc && proc.exitCode === null ? proc.once("exit", r) : r(null)));
-    rmSync(state, { recursive: true, force: true });
+    if (d) await stop(d);
+    for (const dir of [state, `${state}-ws`]) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// What a trace of the daemon and of every process it started shows it opened, ran and connected to.
+type Seen = { call: string; target: string };
+function traced(dir: string): Seen[] {
+  const seen: Seen[] = [];
+  for (const f of readdirSync(dir)) {
+    for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
+      const m = /^(\w+)\((.*)\)\s+=\s+(-?\d+|\?)/.exec(line);
+      if (!m) continue;
+      const call = m[1]!, args = m[2]!;
+      if (call === "connect") {
+        const unix = /sun_path="([^"]+)"/.exec(args);
+        const ip = /inet_addr\("([^"]+)"\)|inet_pton\(AF_INET6, "([^"]+)"/.exec(args);
+        if (unix) seen.push({ call, target: unix[1]! });
+        else if (ip) seen.push({ call, target: ip[1] ?? ip[2]! });
+        continue;
+      }
+      const path = /"(\/[^"]*)"/.exec(args);
+      if (path) seen.push({ call, target: path[1]! });
+    }
+  }
+  return seen;
+}
+
+test("a spec's own daemon opens, runs and reaches nothing of the owner's", async () => {
+  test.skip(spawnSync("strace", ["-V"]).status !== 0, "needs strace: the trace of what the daemon opens, runs and connects to");
+  test.setTimeout(180_000);
+  const state = join(ROOT, `spec-env-trace-${Date.now().toString(36)}`);
+  const trace = `${state}-trace`;
+  mkdirSync(trace, { recursive: true });
+  let d: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    // Every attempt counts, a failed one too: a look for a file this machine lacks reads it on the next.
+    d = await start(state, ["strace", "-ff", "-qq", "-s", "4096", "-o", join(trace, "t"), "-e", "trace=execve,execveat,open,openat,creat,mkdir,connect"]);
+    await settled(d.api);
+    await turn(d.api);
+    const { env } = d;
+    await stop(d);
+    d = undefined;
+    // Under the home: only the repository (its git folder and modules too), Bun, the run's scratch
+    // folder and the daemon's own folders (its state, and its home with its sessions' folder in it).
+    const bun = env.PATH!.split(delimiter)[0]!;
+    const git = realpathSync(execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim());
+    const own = [process.cwd(), git, realpathSync("node_modules"), bun, dirname(realpathSync(join(bun, "bun"))), state, `${state}-ws`, trace, env.TMPDIR!];
+    const runtime = `/run/user/${process.getuid!()}`;
+    const seen = traced(trace);
+    expect(seen.length, "the trace holds what the daemon did").toBeGreaterThan(100);
+    const owners = seen.filter(({ call, target }) => {
+      if (call === "connect" && !target.startsWith("/")) return !/^(127\.|::1$|::ffff:127\.|0\.0\.0\.0$)/.test(target);
+      // (A folder above one of its own is walked through, not read.)
+      return (under(target, HOME) && !own.some((dir) => under(target, dir) || under(dir, target))) || under(target, runtime);
+    });
+    expect([...new Set(owners.map((s) => `${s.call} ${s.target}`))].sort()).toEqual([]);
+  } finally {
+    if (d) await stop(d);
+    for (const dir of [state, `${state}-ws`, trace]) rmSync(dir, { recursive: true, force: true });
   }
 });

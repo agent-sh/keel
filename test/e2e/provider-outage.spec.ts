@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { sessionsFolder } from "./own-daemon.ts";
+import { sessionsFolder, specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a model provider that cannot be reached makes a turn wait and go on
@@ -247,15 +247,7 @@ test("twelve agents of one parent wait through an outage of a minute: none fails
 
 // A daemon of this test's own, on the scripted provider only: no key, no keyring, a home of its own.
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
-  const home = join(state, "home");
-  mkdirSync(join(home, "run"), { recursive: true });
-  const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "", HOME: home, TMPDIR: process.env.TMPDIR ?? "/tmp", LANG: "C.UTF-8",
-    KEEL_CONFIG_DIR: join(state, "config"), KEEL_KEYRING_SERVICE: "keel-scratch-empty", KEEL_CRED_GET: "/bin/false", KEEL_DESKTOP_NOTIFY: "off",
-    DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", XDG_RUNTIME_DIR: join(home, "run"),
-    KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: STAND_IN, KEEL_DRAIN_MS: "300",
-    TACIT_BIN: join(process.cwd(), "test/e2e/fixtures/tacit-standin.sh"), TACIT_STANDIN_STORE: join(state, "tacit-store"),
-  };
+  const env = specEnv(state, { KEEL_DEFAULT_MODEL: STAND_IN, TACIT_BIN: TACIT_STANDIN });
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)], { env, stdio: ["ignore", "pipe", "pipe"] });
   return new Promise((resolve, reject) => {
     let out = "";

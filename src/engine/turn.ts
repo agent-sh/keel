@@ -223,7 +223,10 @@ export const instructionFilter: { file?: (path: string, text: string) => string 
 
 // The instruction files a session in `cwd` loads, outermost first: the
 // owner's own (<config>/AGENTS.md, for every folder), then the AGENTS.md
-// (else CLAUDE.md) of each folder from the root down to `cwd`.
+// (else CLAUDE.md) of each folder from the home folder down to `cwd` (from
+// the root, for a folder outside the home): the folders above the home are
+// other accounts' and the system's, as the agents' walk stops there too
+// (src/automation/agents.ts).
 // A file linked from two places is one source: it is listed once, where it is
 // met first from the root down (the owner's own file before a folder's).
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
@@ -234,7 +237,7 @@ export function instructionPaths(cwd: string): { path: string; scope: "owner" | 
     seen.add(dir);
     const name = ["AGENTS.md", "CLAUDE.md"].find((n) => existsSync(join(dir, n))); // AGENTS.md wins in one folder
     if (name) found.unshift({ path: join(dir, name), scope: dir === cwd ? "folder" : "parent" });
-    if (dirname(dir) === dir) break;
+    if (dirname(dir) === dir || dir === homedir()) break;
   }
   const own = join(configDir(), "AGENTS.md");
   if (existsSync(own)) found.unshift({ path: own, scope: "owner" });

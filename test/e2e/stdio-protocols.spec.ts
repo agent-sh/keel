@@ -2,6 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { sessionsFolder } from "./own-daemon.ts";
 import { exited, ownDaemon, ownEnv } from "./peer.ts";
 
 // Feature: the streams Keel speaks a protocol on carry the protocol and nothing else. The
@@ -75,7 +76,8 @@ test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: 
 
 test("every byte on a protocol's stream is the protocol, while the daemon logs every kind of line", async () => {
   test.setTimeout(300_000);
-  const state = join(ROOT, `stdio-${Date.now()}`), taps = join(state, "taps"), ws = join(state, "ws"), alone = join(state, "alone");
+  // (The sessions' folder is beside the state, not in it: Keel refuses a write into its own state.)
+  const state = join(ROOT, `stdio-${Date.now()}`), taps = join(state, "taps"), ws = sessionsFolder(state), alone = join(state, "alone");
   made.push(state);
   for (const d of [taps, ws, alone]) mkdirSync(d, { recursive: true });
   execFileSync("git", ["init", "-q"], { cwd: ws });

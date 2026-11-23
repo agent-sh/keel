@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { daemon, exited } from "./own-daemon.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: agents start agents of their own. A root starts a coordinator and
@@ -14,27 +14,6 @@ import { shoot } from "./shots.ts";
 // coordinator stops the worker below it and holds both. The spec runs its own
 // daemons on a scratch state folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
-
-function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
-  const args = ["serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", state];
-  const proc = spawn("bun", ["src/main.ts", ...args], {
-    // A config folder of its own: never the owner's.
-    env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  return new Promise((resolve, reject) => {
-    let out = "";
-    const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
-    const on = (d: Buffer) => {
-      out += d;
-      const m = out.match(/keel listening on (http:\/\/\S+?)\/? /);
-      if (m) { clearTimeout(t); resolve({ proc, url: m[1]!.replace(/\/$/, "") }); }
-    };
-    proc.stdout!.on("data", on);
-    proc.stderr!.on("data", on);
-  });
-}
-const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
 
 const calls = (list: { name: string; input: unknown }[]) => `script:calls ${JSON.stringify(list)}`;
 const bash = (command: string) => ({ name: "Bash", input: { command } });

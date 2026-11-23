@@ -1,7 +1,8 @@
 import { expect, test } from "./isolate.ts";
+import { specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 // Feature: a daemon starts on what a restore left. A restore.pending it cannot
 // read (not written by a restore) moves nothing: the daemon says so, sets the
@@ -11,10 +12,7 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string; out: () => string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
-    env: {
-      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300",
-      KEEL_CONFIG_DIR: join(state, "config"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
-    },
+    env: specEnv(state, { TACIT_BIN: TACIT_STANDIN }, join(state, "work")),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((done, reject) => {

@@ -1,7 +1,8 @@
 import { expect, test } from "./isolate.ts";
+import { sessionsFolder, specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
 // Feature: what a coordinating model and the owner are told about sessions,
@@ -16,10 +17,9 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   // (The sessions' folder is beside the state folder, not in it: a session's file tools write nothing into the daemon's own.)
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", `${state}-ws`], {
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", sessionsFolder(state)], {
     // The memory store is a stand-in with a store of its own: a file there makes it slow (hook-delay).
-    env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in",
-      TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"), TACIT_STANDIN_STORE: join(state, "tacit-store") },
+    env: specEnv(state, { TACIT_BIN: TACIT_STANDIN }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
@@ -42,9 +42,8 @@ test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: 
 test("what a coordinator and the owner are told about agents, restarts and tools is true", async ({ page }) => {
   test.setTimeout(540_000);
   const state = join(ROOT, `told-${Date.now()}`);
-  made.push(state, `${state}-ws`);
+  made.push(state);
   mkdirSync(state, { recursive: true });
-  mkdirSync(`${state}-ws`, { recursive: true });
   let d = await daemon(state);
   const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
     fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
@@ -79,7 +78,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     return record();
   };
   const status = () => {
-    const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
+    const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: specEnv(state) });
     expect(said.status, said.stderr).toBe(0);
     return said.stdout;
   };
@@ -99,7 +98,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
       { name: "NoSuchTool", input: { x: 1 } },
     ])}`);
     const approval = await open("Needs approval", "ask");
-    await send(approval, calls([bash(`echo asked >> ${join(`${state}-ws`, "asked.txt")}`)]));
+    await send(approval, calls([bash(`echo asked >> ${join(sessionsFolder(state), "asked.txt")}`)]));
     const question = await open("Asks a question");
     await send(question, calls([{ name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which database should hold the queue?", options: [{ label: "SQLite" }, { label: "Valkey" }], multiSelect: false }] } }]));
     // The one that spends most: long replies, done before the report is read.
@@ -130,7 +129,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await send(coord, `Run twelve lanes\n${calls([
       ...[1, 2, 3, 4].map((i) => agent(`Quota lane ${i}\nscript:billing`)),
       ...[1, 2, 3].map((i) => agent(`Tool lane ${i}\n${calls([fail3(i), fail3(i), fail3(i), bash("echo recovered")])}`)),
-      ...[1, 2].map((i) => agent(`Good lane ${i}\n${calls([bash(`echo built-${i}`), { name: "Write", input: { file_path: join(`${state}-ws`, `good-${i}.txt`), content: "built\n" } }])}`)),
+      ...[1, 2].map((i) => agent(`Good lane ${i}\n${calls([bash(`echo built-${i}`), { name: "Write", input: { file_path: join(sessionsFolder(state), `good-${i}.txt`), content: "built\n" } }])}`)),
       ...[1, 2].map((i) => agent(`Slow lane ${i}\n${calls([until(`slow-${i}`)])}`)),
       agent(`Parked lane\n${calls([{ name: "wait_for", input: { kind: "timer", seconds: 1800, note: "wait for CI" } }])}`),
       bash("echo started-all"),

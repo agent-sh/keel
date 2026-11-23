@@ -2,6 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { specEnv } from "./own-daemon.ts";
 import { openPanel, shoot } from "./shots.ts";
 
 // Feature: a session that waits past its prompt cache's lifetime does not pay
@@ -16,13 +17,9 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 const TTL = 12_000;
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
-  const env: Record<string, string | undefined> = {
-    ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300",
-    KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_SCRIPTED_CACHE_TTL_MS: String(TTL), KEEL_CONFIG_DIR: join(state, "config"),
-    KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off",
-  };
-  delete env.KEEL_MCP_CONFIG;
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], { env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
+  // An environment made from nothing (own-daemon.ts).
+  const env = specEnv(state, { KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_SCRIPTED_CACHE_TTL_MS: String(TTL) }, join(state, "work"));
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], { env, stdio: ["ignore", "pipe", "pipe"] });
   return new Promise((done, reject) => {
     let out = "";
     const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);

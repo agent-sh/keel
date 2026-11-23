@@ -1,7 +1,8 @@
 import { expect, test } from "./isolate.ts";
+import { specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { TimelinePage, TimelineRow } from "../../src/admin/timeline-rows.ts";
 import type { StoredEvent } from "../../src/core/types.ts";
 import { shoot } from "./shots.ts";
@@ -16,14 +17,8 @@ const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
-    env: {
-      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300", KEEL_RESUME_GAP_MS: "0",
-      KEEL_CONFIG_DIR: join(state, "config"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
-      // Nothing of the machine's own is reached: no other harness's sessions, no registry, no phone.
-      KEEL_IMPORT_CLAUDE_DIR: join(state, "import/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "import/codex"), KEEL_IMPORT_AGY_DIR: join(state, "import/agy"), KEEL_IMPORT_GEMINI_DIR: join(state, "import/gemini"),
-      KEEL_IMPORT_KEEL_DB: join(state, "import/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "import/hermes"), KEEL_MCP_CONFIG: join(state, "mcp.json"),
-      KEEL_MCP_REGISTRY: `file://${join(state, "registry.json")}`, KEEL_PHONE_SOCKET: join(state, "phone.sock"), KEEL_MAIL_STANDIN: join(state, "mail"),
-    },
+    // Nothing of the machine's own is reached (own-daemon.ts): no other harness's sessions, no registry, no phone.
+    env: specEnv(state, { KEEL_RESUME_GAP_MS: "0", TACIT_BIN: TACIT_STANDIN, KEEL_MCP_CONFIG: join(state, "mcp.json") }, join(state, "work")),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((done, reject) => {
@@ -465,7 +460,7 @@ test("a second read for what is new is one line on a timeline longer than a page
   made.push(state);
   for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
   const [id] = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-transcript.ts"), join(state, "state"), join(state, "work"), "400", "Sixty turns"],
-    { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config"), KEEL_FIXTURE_SHAPE: "turns" } })) as string[];
+    { encoding: "utf8", env: { ...specEnv(state, {}, join(state, "work")), KEEL_FIXTURE_SHAPE: "turns" } })) as string[];
   const d = await daemon(state);
   const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
     fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
@@ -496,7 +491,7 @@ test("the timeline of a session of forty thousand notes opens at once and the da
   made.push(state);
   for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
   const [id] = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-transcript.ts"), join(state, "state"), join(state, "work"), "40000", "Forty thousand notes"],
-    { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } })) as string[];
+    { encoding: "utf8", env: specEnv(state, {}, join(state, "work")) })) as string[];
   const d = await daemon(state);
   try {
     // A read that walks the notes takes minutes and holds every other request: both are given seconds.
@@ -544,7 +539,7 @@ test("a turn far up a long session says its branch is not placed yet, and is pla
   made.push(state);
   for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
   const seeded = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-branch.ts"), join(state, "state"), join(state, "work"), "60000"],
-    { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } })) as { session: string; kept: string; left: string };
+    { encoding: "utf8", env: specEnv(state, {}, join(state, "work")) })) as { session: string; kept: string; left: string };
   const d = await daemon(state);
   try {
     // The first read walks its piece from the head and stops well short of the first turns: they say so, and the page does.

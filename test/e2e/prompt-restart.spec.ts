@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { specEnv, TACIT_STANDIN } from "./own-daemon.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -20,11 +21,7 @@ const SECRET = "9fK2mQx7Lp3Zr8Tw";
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string; spawned: number }> {
   const spawned = Date.now();
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], {
-    env: {
-      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300", KEEL_RESUME_GAP_MS: "0",
-      KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_MCP_CONFIG: join(state, "mcp.json"), KEEL_CONFIG_DIR: join(state, "config"),
-      KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
-    },
+    env: specEnv(state, { KEEL_RESUME_GAP_MS: "0", KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_MCP_CONFIG: join(state, "mcp.json"), TACIT_BIN: TACIT_STANDIN }, join(state, "work")),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((done, reject) => {
