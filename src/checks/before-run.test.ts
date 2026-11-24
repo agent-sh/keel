@@ -35,6 +35,14 @@ function repo(files: Record<string, string>) {
   return { top, session: store.createSession({ model: "m:x", workspace: top, title: "before" }) };
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// Stopped: gone, or a zombie its new parent has not reaped yet (on a loaded machine that takes a moment), within a few seconds.
+const stopped = async (pid: number) => {
+  for (const end = Date.now() + 3_000; Date.now() < end; await Bun.sleep(50)) {
+    if (!alive(pid)) return true;
+    try { if (/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))) return true; } catch { return true; }
+  }
+  return false;
+};
 
 test("what a test leaves running, in its group or out of it, does not hold the run, and goes", async () => {
   const pids = join(dir, "pids");
@@ -52,9 +60,9 @@ test("what a test leaves running, in its group or out of it, does not hold the r
   expect(r.results.map((f) => [f.path, f.state])).toEqual([["a.test.sh", "passes"], ["b.test.sh", "fails"]]);
   expect(r.unconfined).toBe("the session runs in full auto with its sandbox off");
   // Its group goes at its end; a process that left the group goes with the run's scope, where the machine has them.
-  expect(alive(Number(readFileSync(`${pids}.a`, "utf8")))).toBe(false);
+  expect(await stopped(Number(readFileSync(`${pids}.a`, "utf8")))).toBe(true);
   const b = Number(readFileSync(`${pids}.b`, "utf8"));
-  if (sandboxStatus().scope) expect(alive(b)).toBe(false);
+  if (sandboxStatus().scope) expect(await stopped(b)).toBe(true);
   else try { process.kill(b, "SIGKILL"); } catch {} // no scope here: the run did not wait for it all the same
 });
 
