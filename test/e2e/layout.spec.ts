@@ -895,3 +895,54 @@ test("settings sections share one column and one title size, and the rail folds"
   expect(await top()).toBe(before);
   await shoot(page, "layout-16-settings-column");
 });
+
+// At a laptop width the session list and Settings' own rail leave little for the page. While Settings or Customize is
+// open the list folds to its marks (a peek still lays it over), and it comes back by itself on leaving. The owner's own
+// fold choice is never written by this and is kept.
+test("settings fold the session list at a narrow window and give it back", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.goto("/");
+  await page.evaluate(() => localStorage.setItem("keel.list", "true"));
+  await page.reload();
+  const side = page.getByTestId("sidebar");
+  await expect(side).toHaveAttribute("data-open", "true");
+  for (const [button, area] of [["settings-button", "settings"]] as const) {
+    await page.getByTestId(button).click();
+    await expect(page.getByTestId(area)).toBeVisible();
+    await expect(side, "the list is folded while settings is open").not.toHaveAttribute("data-open", "true");
+    // The page gets the room: the column keeps its reading width and the window less the marks.
+    const body = (await page.locator(".k-settings-scroll").boundingBox())!;
+    expect(body.width, "room for the page (the window less the marks and the sections rail)").toBeGreaterThanOrEqual(1366 - 64 - 255 - 4);
+    await shoot(page, "layout-17-settings-list-folded-1366");
+    // A peek lays the list over; it writes no choice of the owner's.
+    await page.keyboard.press("Control+b");
+    await expect(side).toHaveAttribute("data-over", "true");
+    await page.keyboard.press("Escape");
+    expect(await page.evaluate(() => localStorage.getItem("keel.list"))).toBe("true");
+    // Leaving brings the list back.
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(side).toHaveAttribute("data-open", "true");
+  }
+  // Customize is the same.
+  await page.goto("/customize/skills");
+  await expect(page.getByTestId("customize")).toBeVisible();
+  await expect(side).not.toHaveAttribute("data-open", "true");
+  // The owner folded the list: leaving settings leaves it folded.
+  await page.goto("/");
+  await page.evaluate(() => localStorage.setItem("keel.list", "false"));
+  await page.reload();
+  await page.getByTestId("settings-button").click();
+  await expect(page.getByTestId("settings")).toBeVisible();
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByTestId("new-composer")).toBeVisible();
+  await expect(side).not.toHaveAttribute("data-open", "true");
+  expect(await page.evaluate(() => localStorage.getItem("keel.list"))).toBe("false");
+  // A wide window has the room and keeps the list beside Settings.
+  await page.evaluate(() => localStorage.setItem("keel.list", "true"));
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.reload();
+  await page.getByTestId("settings-button").click();
+  await expect(page.getByTestId("settings")).toBeVisible();
+  await expect(side).toHaveAttribute("data-open", "true");
+  await shoot(page, "layout-18-settings-list-kept-1920");
+});

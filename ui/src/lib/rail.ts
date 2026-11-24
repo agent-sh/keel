@@ -79,11 +79,21 @@ function needed(width: number): number {
 const listRoom = (width: number) => Math.floor(width - needed(width)) - panes();
 // More panes than the window holds beside the folded rail: the row scrolls sideways whatever the list does.
 export const panesOver = (width = innerWidth) => !phone() && panes() > panesMax(width);
+// Settings and Customize read as a column of their own rail (15rem) and a page (52rem, the reading width): the
+// list stays beside them only while the window holds all three. With less it folds to the marks, as a squeeze does
+// (a press lays it over the page), and comes back by itself on leaving. It is derived from the route, so the
+// owner's own choice to fold or show the list is never written by it.
+const SETTINGS_NEED = 15 + 52 + 3;
+export const settingsFold = (width = innerWidth) => {
+  const ui = getUI();
+  return !phone() && (ui.route.name === "settings" || ui.route.name === "customize") && width - listWidth() < rem(SETTINGS_NEED * 16);
+};
 // The list beside the panes: at the owner's width or what the room gives, while
 // that is a width the list is dragged to; with less, the narrow list of titles.
 // With more panes than fit, the room is what the panes that fit leave: the list
 // is as it would be with only those open.
 function beside(width: number): { width: number; narrow: boolean } | null {
+  if (settingsFold(width)) return null;
   if (panesOver(width)) {
     const fit = panesMax(width), room = Math.floor(width - fit * paneMin() - fit);
     if (room >= Math.floor(rem(LIST_MIN))) return { width: Math.min(listWidth(), room), narrow: false };
@@ -160,7 +170,8 @@ export function toggleList(show?: boolean) {
   if (phone()) return savePref("sidebar", show ?? !ui.sidebar);
   if (railTight()) {
     const next = show ?? !ui.peek;
-    if (next && !ui.sidebar) savePref("sidebar", true);
+    // (A list folded for Settings is only laid over it: the owner's own choice stays as it was.)
+    if (next && !ui.sidebar && !settingsFold()) savePref("sidebar", true);
     return setUI({ peek: next });
   }
   savePref("sidebar", show ?? !ui.sidebar);
