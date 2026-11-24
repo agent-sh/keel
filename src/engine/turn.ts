@@ -1371,7 +1371,7 @@ export class Engine {
       // until the next reply makes one again. A title the owner gave stays.
       const s = this.store.session(id);
       const first = ownerPrompts(this.lineage(id)).length === 1 && !old.data.kind;
-      if (s && first && s.title_by && text.trim()) {
+      if (s && first && s.title_by && s.title_by !== "hook" && text.trim()) {
         this.titleGen.set(id, (this.titleGen.get(id) ?? 0) + 1);
         this.store.updateSession(id, { title: firstLineTitle(text), title_by: "prompt" });
       }

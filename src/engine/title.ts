@@ -29,8 +29,9 @@ export const modelTitles = (): boolean => settings().titles?.by_model !== false;
 
 // Who wrote a session's title: "" given (the owner, the session's maker, or a
 // session from before), "prompt" the first prompt's first line, "model" a
-// small model, "start" a small model from a first prompt that held no task yet.
-export type TitleBy = "" | "prompt" | "model" | "start";
+// small model, "start" a small model from a first prompt that held no task yet,
+// "hook" a hook's name for it (no model title replaces it, and it replaces no title that was given).
+export type TitleBy = "" | "prompt" | "model" | "start" | "hook";
 
 export const TITLE_SYSTEM = "You name a coding session in a list of sessions. You answer with the title only.";
 
@@ -110,8 +111,15 @@ export function cleanTitle(answer: string): string {
   let t = (answer.split("\n").map((l) => l.trim()).find(Boolean) ?? "");
   t = t.replace(/^[#>*_`\-\s]+/, "").replace(/^(session )?title\s*[:\-]\s*/i, "").replace(/[*_`]+/g, "");
   t = t.replace(/^["'\u201c\u2018\u00ab]+|["'\u201d\u2019\u00bb]+$/g, "").replace(/[.\s]+$/, "").replace(/\s+/g, " ").trim();
-  if (t.length <= TITLE_CHARS) return t;
-  const head = t.slice(0, TITLE_CHARS - 1);
+  return cutTitle(t);
+}
+
+// A title cut to TITLE_CHARS at a word, with an ellipsis where it was cut.
+// It is cut by characters, never between the halves of one (a lone surrogate would be no text).
+export function cutTitle(t: string): string {
+  const chars = Array.from(t);
+  if (chars.length <= TITLE_CHARS) return t;
+  const head = chars.slice(0, TITLE_CHARS - 1).join("");
   const at = head.lastIndexOf(" ");
   return (at > TITLE_CHARS / 2 ? head.slice(0, at) : head).replace(/[\s,.;:]+$/, "") + "\u2026";
 }

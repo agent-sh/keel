@@ -87,7 +87,9 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
   };
   const who = (s: Session): Record<string, unknown> => {
     const mode = gate?.perm(s.id).mode;
-    const base = mode ? { permission_mode: MODE_NAMES[mode] ?? "default", keel_permission_mode: mode } : {};
+    // A title the owner or a hook gave (title_by empty, or "hook") is the session's custom title: a hook that names sessions can leave it be.
+    const now = store.session(s.id) ?? s;
+    const base = { ...(mode ? { permission_mode: MODE_NAMES[mode] ?? "default", keel_permission_mode: mode } : {}), ...((!now.title_by || now.title_by === "hook") && now.title ? { session_title: now.title } : {}) };
     if (!s.parent_id) return base;
     let root = s;
     for (let n = 0; root.parent_id && n < 32; n++) root = store.session(root.parent_id) ?? { ...root, parent_id: null };
@@ -148,10 +150,17 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const since = before < 0 ? undefined : evs.findLast((e, k) => k > before && e.kind === "compaction");
       const source = before < 0 ? "startup" : since ? (since.data.mode === "clear" ? "clear" : "compact") : undefined;
       const startEvent = s.parent_id ? (before < 0 ? "SubagentStart" : undefined) : source ? "SessionStart" : undefined;
+      const titled = s.parent_id ? undefined : store.session(s.id);
       const [start, prompt] = await Promise.all([
         startEvent === "SubagentStart" ? fire("SubagentStart", s, () => ({}), [agentType(s)]) : startEvent ? fire("SessionStart", s, () => ({ source }), [source!]) : null,
         fire("UserPromptSubmit", s, () => ({ prompt: text })),
       ]);
+      // A name a hook gave the session is kept against a model's title (title_by "hook"). It replaces no title the owner
+      // gave (one whose title_by is empty), and none that changed while the hook ran.
+      const name = prompt.title ?? start?.title;
+      const now = name && titled ? store.session(s.id) : undefined;
+      if (name && now && !prompt.block && (!titled!.title || titled!.title_by) && now.title === titled!.title && now.title_by === titled!.title_by && now.title !== name)
+        bus.emit({ t: "session", session: store.updateSession(s.id, { title: name, title_by: "hook" }) });
       if (prompt.block) {
         sayAt({ session: s.id }, hookLine({ event: "UserPromptSubmit", did: "refused the prompt", reason: prompt.block, title: s.title }), "warn");
         throw Object.assign(new Error(`A hook refused this prompt: ${prompt.block}`), { expected: true });

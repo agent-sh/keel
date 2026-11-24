@@ -27,6 +27,7 @@ import { tacitToolCall } from "./tacit.ts";
 import { configDir } from "../providers/config.ts";
 import { chunks, pumpText } from "../core/proc.ts";
 import { hookSaid } from "../engine/hooks.ts";
+import { cutTitle } from "../engine/title.ts";
 import { homeOf } from "../safety/credentials.ts";
 import { shellText } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
@@ -408,7 +409,8 @@ export function namesOf(tool: string, input: any, via?: string): string[] {
 // (the first hook's, in file order). `continueWith`: a Stop hook sends the
 // session back to work with these words. `ran`: how many hooks ran.
 // `failed`: each hook of the event that failed, in the words its Errors row has ("Hook timed out (PreToolUse, 5 s): hook.sh pre").
-export type HookResult = { block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string; ran: number; failed?: string[] };
+// `title`: the name a SessionStart or UserPromptSubmit hook gave the session (hookSpecificOutput.sessionTitle).
+export type HookResult = { title?: string; block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string; ran: number; failed?: string[] };
 
 // A matcher against the values an event is matched on (a tool's names, a
 // start's source, a compaction's trigger). As Claude Code reads it: nothing,
@@ -881,6 +883,10 @@ export class Hooks {
         // An allow that also changes the input or the standing rules is not taken: the owner gets the card.
         else if (d.behavior === "allow" && d.updatedInput === undefined && d.updatedPermissions === undefined) res.allow ??= "";
       }
+      if ((event === "SessionStart" || event === "UserPromptSubmit") && typeof hso.sessionTitle === "string") {
+        const t = hookTitle(hso.sessionTitle);
+        if (t) res.title ??= t;
+      }
       if (can.context) {
         if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) res.context.push(hookSaid(hso.additionalContext.trim()));
         if (typeof j.systemMessage === "string" && j.systemMessage.trim()) res.context.push(hookSaid(j.systemMessage.trim()));
@@ -961,6 +967,15 @@ export function stopBackground(session?: string): number {
 
 // How many background hooks run now, of a session or in all.
 export const backgroundCount = (session?: string) => [...RUNNING.values()].filter((s) => session === undefined || s === session).length;
+
+// The name a hook gives a session, as plain text: one line, no control characters, no lone surrogate, no character
+// that draws nothing (the braille blank, the Hangul fillers and the like), cut as a model's title is. A name with
+// nothing visible in it is no name.
+const BLANK = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\u2800\u3164\u115F\u1160\uFFA0\u180E\u034F\u17B4\u17B5\u2063\u2064]+/gu;
+export const hookTitle = (said: string): string => {
+  const t = cutTitle(said.replace(BLANK, " ").replace(/\s+/g, " ").trim());
+  return /[\p{L}\p{N}\p{P}\p{S}]/u.test(t) ? t : "";
+};
 
 // What a hook runs, in one line: its command, URL or tool.
 const hookName = (h: Handler) => (h.type === "http" ? h.url : h.type === "mcp_tool" ? `${h.server}__${h.tool}` : [h.command, ...(h.args ?? [])].join(" "));

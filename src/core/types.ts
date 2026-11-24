@@ -112,8 +112,9 @@ export type Session = {
   // Who wrote the title (src/engine/title.ts): "" given (the owner, the
   // session's maker, or a session from before), "prompt" the first prompt's
   // words, "model" a small model, "start" a small model from a first prompt
-  // that held no task yet (made again once).
-  title_by?: "" | "prompt" | "model" | "start";
+  // that held no task yet (made again once), "hook" a hook of the owner's (kept
+  // like a given one against a model, but not over what the owner gave).
+  title_by?: "" | "prompt" | "model" | "start" | "hook";
   model: string;
   workspace: string;
   created: number;

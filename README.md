@@ -927,6 +927,13 @@ name, with Keel's own in `keel_permission_mode`), `transcript_path` (always
 fields. Inside a subagent `session_id` is the parent's, and `agent_id`,
 `agent_type` and `agent_session_id` name the agent.
 
+Every event carries `session_title` when the session has a custom title (one you
+or a hook gave), so a hook that names sessions can leave it be. A `SessionStart` or
+`UserPromptSubmit` hook that answers `hookSpecificOutput.sessionTitle` (plain text,
+one line, cut at 80 characters, nothing that draws no character) names the session:
+no model title replaces it. It never replaces a title you gave (a rename of yours stays
+for good), and is not applied over a rename made while the hook ran.
+
 A `matcher` of letters, digits, `_`, `-`, spaces, `,` and `|` is a list of
 exact names. Anything else is a regular expression, tested unanchored. No
 matcher, `""` and `"*"` match all. A hook's `if` (`Bash(rm *)`, `Edit(*.ts)`)
@@ -937,9 +944,9 @@ These fire, most used first:
 
 | Event | When | Matcher | Own fields | What its hooks can do |
 | --- | --- | --- | --- | --- |
-| `SessionStart` | The first prompt of a session, and the first prompt after its context was cleared or compacted | `source`: `startup`, `clear`, `compact` | `source` | Add context (plain stdout or `additionalContext`) |
+| `SessionStart` | The first prompt of a session, and the first prompt after its context was cleared or compacted | `source`: `startup`, `clear`, `compact` | `source` | Add context (plain stdout or `additionalContext`), or name the session (`hookSpecificOutput.sessionTitle`, see below) |
 | `Stop` | A turn ends by itself, outside a subagent | none | `stop_hook_active`, `last_assistant_message` | Exit code 2 or `decision: "block"` sends the session back to work with the reason, five times in a row at most (a daemon restart does not start the five again). `continue: false` from any hook lets it stop |
-| `UserPromptSubmit` | A prompt is about to reach the model | none | `prompt` | Block the prompt, add context |
+| `UserPromptSubmit` | A prompt is about to reach the model | none | `prompt` | Block the prompt, add context, or name the session (`hookSpecificOutput.sessionTitle`, see below) |
 | `PostToolUse` | A call ran and did not fail | tool name | `tool_name`, `tool_input`, `tool_response`, `tool_use_id`, `duration_ms` | Add context to the result. A block is told to the model: the call already ran |
 | `PostToolUseFailure` | A call's result is an error, or its tool threw | tool name | `tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`, `duration_ms` | Add context to the result |
 | `UserPromptExpansion` | You run a slash command, before its prompt is stored | command name | `expansion_type`, `command_name`, `command_args`, `command_source`, `prompt` | Block the command, add context |

@@ -12,9 +12,10 @@ const { Bus } = await import("../core/bus.ts");
 const { Engine } = await import("../engine/turn.ts");
 const { allHooks, registerHooks } = await import("../engine/hooks.ts");
 const { Gate } = await import("../safety/gate.ts");
+const { titleOwed } = await import("../engine/title.ts");
 const routes = await import("../server/routes/hooks.ts");
 const { joinHooks } = routes;
-const { EVENTS, NOT_FIRED, ifHolds, matches, parseHooks } = await import("./hooks.ts");
+const { EVENTS, NOT_FIRED, hookTitle, ifHolds, matches, parseHooks } = await import("./hooks.ts");
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "hk-ev-"));
 const kept = process.env.KEEL_HOOKS;
@@ -29,9 +30,12 @@ case "$input" in *'"cwd":"${dir}'*) ;; *) exit 0 ;; esac
 printf '%s' "$input" > "${seenDir}/$1.$$.$RANDOM.json"
 has() { case "$input" in *"$1"*) return 0 ;; esac; return 1; }
 case "$1" in
-  SessionStart) echo "start-context for $1" ;;
+  SessionStart)
+    if [ -e "${dir}/start-title" ]; then printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","sessionTitle":"%s"}}' "$(cat "${dir}/start-title")"; else echo "start-context for $1"; fi ;;
   SubagentStart) echo '{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"agent-context"}}' ;;
-  UserPromptSubmit) if has w-refuse; then echo '{"decision":"block","reason":"not this prompt"}'; fi ;;
+  UserPromptSubmit)
+    if has w-refuse; then echo '{"decision":"block","reason":"not this prompt"}'; fi
+    if has w-name; then echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","sessionTitle":"Named by the prompt hook"}}'; fi ;;
   UserPromptExpansion) if has w-refuse; then echo "not this command" >&2; exit 2; fi; echo "expansion-context" ;;
   PreToolUse)
     if has w-slow-ask; then sleep 0.3; echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"look at this one"}}'; fi
@@ -113,6 +117,47 @@ test("every event of the three harnesses loads: it fires, or the file says why i
   expect(notes.length).toBe(Object.keys(NOT_FIRED).length);
   expect(notes.every((x) => x.includes("never runs here"))).toBe(true);
   expect(problems).toEqual(["Nonsense: not an event of Claude Code, Codex or Keel"]);
+});
+
+test("a hook names the session as a rename does: no model title replaces it, a later rename stays, and hooks are told the title", async () => {
+  clear();
+  writeFileSync(join(dir, "start-title"), "Fix the\\u0007 login\\nbug");
+  try {
+    // SessionStart: the session is named before its first reply.
+    const a = session();
+    await prompt(a, "hello");
+    expect(store.session(a.id)).toMatchObject({ title: "Fix the login bug", title_by: "hook" });
+    // (A title kept by the owner or a hook is not owed a model's: no title request is made.)
+    expect(titleOwed(store.session(a.id)!.title_by, store.lineage(a.id))).toBe(false);
+    // The next hook is told the custom title, so it can leave it be.
+    const b = session();
+    store.updateSession(b.id, { title: "Mine", title_by: "" });
+    clear();
+    await prompt(b, "hello");
+    expect((await given("UserPromptSubmit"))[0]).toMatchObject({ session_title: "Mine" });
+    // A hook names no session the owner named: the title the owner gave stays.
+    expect(store.session(b.id)).toMatchObject({ title: "Mine", title_by: "" });
+    // A title made from the first prompt is no custom title.
+    const c = session();
+    store.updateSession(c.id, { title: "hello there", title_by: "prompt" });
+    clear();
+    await prompt(c, "hello");
+    expect((await given("UserPromptSubmit"))[0].session_title).toBeUndefined();
+    expect(store.session(c.id)!.title).toBe("Fix the login bug");
+  } finally { rmSync(join(dir, "start-title")); }
+  // UserPromptSubmit names it from the prompt; an owner rename afterwards stays.
+  const d = session();
+  await prompt(d, "w-name please");
+  expect(store.session(d.id)).toMatchObject({ title: "Named by the prompt hook", title_by: "hook" });
+  store.updateSession(d.id, { title: "Owner's own", title_by: "" });
+  expect(store.session(d.id)!.title).toBe("Owner's own");
+  // The next prompt's hook does not take it back.
+  await prompt(d, "w-name again");
+  expect(store.session(d.id)).toMatchObject({ title: "Owner's own", title_by: "" });
+  // Plain text: cut by characters, and nothing that draws nothing is a name.
+  expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(hookTitle("x".repeat(78) + "\u{1F600}\u{1F600}\u{1F600}"))).toBe(false);
+  expect(hookTitle("\u2800\u3164 \u2800")).toBe("");
+  expect(hookTitle("Fix\u3164 it")).toBe("Fix it");
 });
 
 test("a matcher is exact alternatives or a regular expression, and `if` narrows a tool's hook", () => {
