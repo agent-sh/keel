@@ -45,7 +45,7 @@ function FileChip({ path, how, via, meet }: { path: string; how: string; via?: s
       title={how === "importer" ? `imports ${via}` : how === "new" ? "a file the lane makes" : how === "declared" ? "declared by the plan" : "named by the brief"}
       data-testid="lane-file" data-how={how} data-meet={meet}
     >
-      <span className="truncate">{path}</span>
+      <span className="truncate k-whole">{path}</span>
       {how === "new" && <span className="font-sans text-faint">new</span>}
     </li>
   );
@@ -58,9 +58,9 @@ function LaneCard({ l, plan, meets, picked, pick, startNow, busy }: { l: LaneVie
   return (
     <li className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-raised p-2.5", picked ? "border-ring" : "border-line")} data-testid="lane-card" data-lane={l.idx} data-state={st.state}>
       <div className="flex min-w-0 items-center gap-2">
-        {pick && <input type="checkbox" checked={picked} onChange={(e) => pick(e.target.checked)} className="size-3.5 shrink-0 accent-[var(--ring)]" aria-label={`Pick lane ${n(l.idx)}`} data-testid="lane-pick" />}
+        {pick && <label className="k-hit"><input type="checkbox" checked={picked} onChange={(e) => pick(e.target.checked)} className="size-3.5 shrink-0 accent-[var(--ring)]" aria-label={`Pick lane ${n(l.idx)}`} data-testid="lane-pick" /></label>}
         <LaneNo i={l.idx} tone={met ? "meet" : "plain"} />
-        <span className="min-w-0 flex-1 truncate text-ui font-medium text-fg" title={l.title}>{l.title}</span>
+        <span className="min-w-0 flex-1 truncate k-whole text-ui font-medium text-fg" title={l.title}>{l.title}</span>
         <span className={cn("shrink-0 text-micro", st.tone)} data-testid="lane-state">{st.word}</span>
       </div>
       <p className="line-clamp-2 whitespace-pre-line text-caption text-muted" title={l.brief}>{l.brief}</p>
@@ -85,7 +85,7 @@ function LaneCard({ l, plan, meets, picked, pick, startNow, busy }: { l: LaneVie
       )}
       {l.agent && (
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-line pt-2 text-caption">
-          <button type="button" className="min-w-0 truncate text-accent-ink hover:underline" onClick={() => openSession(l.agent!.session_id)} data-testid="lane-agent">{l.agent.title}</button>
+          <button type="button" className="min-w-0 truncate k-whole text-accent-ink hover:underline" onClick={() => openSession(l.agent!.session_id)} data-testid="lane-agent">{l.agent.title}</button>
           <span className="font-mono text-micro text-faint">{l.agent.id}</span>
           {l.started && <span className="text-micro text-faint">started {ago(l.started)}</span>}
         </div>
@@ -100,7 +100,7 @@ function LaneCard({ l, plan, meets, picked, pick, startNow, busy }: { l: LaneVie
           {l.changed.strays.map((s) => (
             <p key={s.file} className="flex min-w-0 items-center gap-1.5 rounded-md bg-danger-soft px-2 py-1 text-danger" data-testid="lane-stray">
               <FileWarning className="size-3.5 shrink-0" aria-hidden="true" />
-              <span className="min-w-0 truncate"><span className="font-mono">{s.file}</span> is lane {s.lanes.map(n).join(", ")}'s</span>
+              <span className="min-w-0 truncate k-whole"><span className="font-mono">{s.file}</span> is lane {s.lanes.map(n).join(", ")}'s</span>
               <span className="ml-auto shrink-0 text-micro">{l.told.includes(s.file) ? "told" : "not told yet"}</span>
             </p>
           ))}
@@ -183,7 +183,7 @@ function Plan({ plan, session }: { plan: PlanView; session: Session }) {
               <li key={`${m.a}-${m.b}`} className="flex min-w-0 items-center gap-2 rounded-md border border-line bg-raised px-2 py-1.5 text-caption" data-testid="plan-meeting" data-kind={m.kind} data-pair={`${m.a},${m.b}`} title={KIND[m.kind].hint}>
                 <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-micro font-medium", KIND[m.kind].tone)}>{KIND[m.kind].word}</span>
                 <LaneNo i={m.a} /><GitMerge className="size-3.5 shrink-0 text-faint" aria-hidden="true" /><LaneNo i={m.b} />
-                <span className="min-w-0 truncate font-mono text-micro text-fg">{m.files.join(", ")}</span>
+                <span className="min-w-0 truncate k-whole font-mono text-micro text-fg">{m.files.join(", ")}</span>
               </li>
             ))}
           </ul>

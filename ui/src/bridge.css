@@ -1426,6 +1426,10 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
 @media (pointer: coarse) and (max-width: 767px) {
   .k-truncate, .k-set-sub[data-clip], .k-settings-body :is(.k-path, .k-editor-bar > span:first-child) { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 }
+/* A line a panel cut short with an ellipsis, written whole on a phone (the same as in a Settings section). */
+@media (pointer: coarse) and (max-width: 767px) {
+  .k-whole { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+}
 /* A checkbox in a row: the label around it is the target, as large as a finger needs on a phone. */
 .k-hit { display: inline-grid; place-items: center; }
 @media (pointer: coarse) and (max-width: 767px) {

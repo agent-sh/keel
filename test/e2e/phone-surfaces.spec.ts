@@ -47,6 +47,33 @@ const small = (box: Locator) => box.evaluate((el) => {
   }
   return out;
 });
+// What a finger cannot use in a box on a phone: a page or box that scrolls sideways, a part past the page's edge,
+// words cut by an ellipsis (a title is no way to read them on a touch screen), a control under 2.75 rem.
+const phoneProblems = (box: Locator) => box.evaluate((root) => {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize), out: string[] = [];
+    const name = (e: Element) => `${(e as HTMLElement).dataset.testid ?? `${e.tagName.toLowerCase()}.${String((e as HTMLElement).className).trim().split(/\s+/).slice(0, 4).join(".")}`}${(e.textContent ?? "").trim().slice(0, 24) ? ` "${(e.textContent ?? "").trim().slice(0, 24)}"` : ""}`;
+    const shown = (e: Element) => { const r = e.getBoundingClientRect(); return !!r.width && !!r.height && getComputedStyle(e).visibility !== "hidden" && !e.closest("[aria-hidden=true], [hidden], details:not([open]) > :not(summary)"); };
+    // Inside something that scrolls sideways by itself, a wide part is reached by a finger.
+    const scrolls = (e: Element) => { for (let a = e.parentElement; a && a !== root; a = a.parentElement) if (/auto|scroll/.test(getComputedStyle(a).overflowX)) return true; return false; };
+    if (document.documentElement.scrollWidth > document.documentElement.clientWidth) out.push(`page scrolls sideways by ${document.documentElement.scrollWidth - document.documentElement.clientWidth}`);
+    if ((root as HTMLElement).scrollWidth > (root as HTMLElement).clientWidth + 1) out.push(`section scrolls sideways by ${(root as HTMLElement).scrollWidth - (root as HTMLElement).clientWidth}`);
+    for (const e of root.querySelectorAll("*")) {
+      if (!shown(e) || scrolls(e)) continue;
+      const r = e.getBoundingClientRect();
+      if (r.right > innerWidth + 0.5 || r.left < -0.5) out.push(`past the edge: ${name(e)} ${Math.round(r.left)}-${Math.round(r.right)}`);
+      const cs = getComputedStyle(e);
+      if (cs.textOverflow === "ellipsis" && e.scrollWidth > e.clientWidth + 1) out.push(`cut: ${name(e)}`);
+    }
+    for (const c of root.querySelectorAll<HTMLElement>("button, [role=button], a[href], input:not([type=hidden]), select, textarea, summary")) {
+      if (!shown(c)) continue;
+      // A link among words keeps its line; a checkbox or radio is pressed by the label around it.
+      if (c.tagName === "A" && getComputedStyle(c).display === "inline") continue;
+      const r = (/^(checkbox|radio)$/.test((c as HTMLInputElement).type) ? c.closest("label") ?? c : c).getBoundingClientRect();
+      if (r.width <= 1 && r.height <= 1) continue; // (a visually hidden field: its label is the control)
+      if (r.height < 2.75 * rem - 1 || r.width < 2.75 * rem - 1) out.push(`small: ${name(c)} ${Math.round(r.width)}x${Math.round(r.height)}`);
+    }
+    return [...new Set(out)];
+});
 const inside = async (page: Page, box: Locator) => {
   const b = (await box.boundingBox())!, w = page.viewportSize()!;
   expect(b.x).toBeGreaterThanOrEqual(0);
@@ -504,31 +531,7 @@ for (const size of SIZES) {
         await page.waitForLoadState("networkidle").catch(() => {});
         await page.waitForTimeout(250);
         const scroll = page.getByTestId("settings-scroll");
-        const problems = await scroll.evaluate((root) => {
-          const rem = parseFloat(getComputedStyle(document.documentElement).fontSize), out: string[] = [];
-          const name = (e: Element) => `${(e as HTMLElement).dataset.testid ?? `${e.tagName.toLowerCase()}.${String((e as HTMLElement).className).trim().split(/\s+/).slice(0, 4).join(".")}`}${(e.textContent ?? "").trim().slice(0, 24) ? ` "${(e.textContent ?? "").trim().slice(0, 24)}"` : ""}`;
-          const shown = (e: Element) => { const r = e.getBoundingClientRect(); return !!r.width && !!r.height && getComputedStyle(e).visibility !== "hidden" && !e.closest("[aria-hidden=true], [hidden], details:not([open]) > :not(summary)"); };
-          // Inside something that scrolls sideways by itself, a wide part is reached by a finger.
-          const scrolls = (e: Element) => { for (let a = e.parentElement; a && a !== root; a = a.parentElement) if (/auto|scroll/.test(getComputedStyle(a).overflowX)) return true; return false; };
-          if (document.documentElement.scrollWidth > document.documentElement.clientWidth) out.push(`page scrolls sideways by ${document.documentElement.scrollWidth - document.documentElement.clientWidth}`);
-          if ((root as HTMLElement).scrollWidth > (root as HTMLElement).clientWidth + 1) out.push(`section scrolls sideways by ${(root as HTMLElement).scrollWidth - (root as HTMLElement).clientWidth}`);
-          for (const e of root.querySelectorAll("*")) {
-            if (!shown(e) || scrolls(e)) continue;
-            const r = e.getBoundingClientRect();
-            if (r.right > innerWidth + 0.5 || r.left < -0.5) out.push(`past the edge: ${name(e)} ${Math.round(r.left)}-${Math.round(r.right)}`);
-            const cs = getComputedStyle(e);
-            if (cs.textOverflow === "ellipsis" && e.scrollWidth > e.clientWidth + 1) out.push(`cut: ${name(e)}`);
-          }
-          for (const c of root.querySelectorAll<HTMLElement>("button, [role=button], a[href], input:not([type=hidden]), select, textarea, summary")) {
-            if (!shown(c)) continue;
-            // A link among words keeps its line; a checkbox or radio is pressed by the label around it.
-            if (c.tagName === "A" && getComputedStyle(c).display === "inline") continue;
-            const r = (/^(checkbox|radio)$/.test((c as HTMLInputElement).type) ? c.closest("label") ?? c : c).getBoundingClientRect();
-            if (r.width <= 1 && r.height <= 1) continue; // (a visually hidden field: its label is the control)
-            if (r.height < 2.75 * rem - 1 || r.width < 2.75 * rem - 1) out.push(`small: ${name(c)} ${Math.round(r.width)}x${Math.round(r.height)}`);
-          }
-          return [...new Set(out)];
-        });
+        const problems = await phoneProblems(scroll);
         if (problems.length) found[id] = problems;
       }
       writeFileSync(join(SHOTS, `walk-${size.width}.json`), JSON.stringify(found, null, 1));
@@ -537,6 +540,50 @@ for (const size of SIZES) {
       expect(fitsNow, "sections that fit a phone now: take them out of WALK_PENDING").toEqual([]);
       for (const id of WALK_PENDING) delete found[id];
       expect(found, "sections with a part a finger cannot reach whole").toEqual({});
+    });
+    test("the lane plans panel reads whole and is pressed by a finger", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      test.setTimeout(120_000);
+      await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+      const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `phone-lanes-${Date.now()}-${size.width}`, "repo");
+      mkdirSync(join(repo, "src"), { recursive: true });
+      const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      for (const f of ["src/a-rather-long-module-name-for-a-phone.ts", "src/z.ts"]) writeFileSync(join(repo, f), `export const v = "${f}";\n`);
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      const coord = (await (await request.post("/api/sessions", { data: { model: STAND_IN, workspace: repo, title: "Coordinator" } })).json()).session.id as string;
+      const lanes = [
+        { title: "Lane alpha reworks the long module and its callers", brief: "Rework src/a-rather-long-module-name-for-a-phone.ts and src/z.ts." },
+        { title: "Lane beta fixes the same long module", brief: "Fix src/a-rather-long-module-name-for-a-phone.ts and src/z.ts." },
+        { title: "Lane gamma restyles the docs", brief: "Restyle docs/guide.md." },
+      ];
+      try {
+        await request.post(`/api/sessions/${coord}/messages`, { data: { text: calls([{ name: "keel__lane_plan", input: { action: "plan", lanes } }]) } });
+        await expect.poll(() => idle(request, coord), { timeout: 60_000 }).toBe(true);
+        await expect.poll(async () => ((await (await request.get(`/api/sessions/${coord}/lane-plans`)).json()).plans as unknown[]).length, { timeout: 30_000 }).toBe(1);
+        await page.goto(`/s/${coord}`);
+        await page.getByTestId("panel-menu").first().tap();
+        await page.getByTestId("panel-pick-lanes").tap();
+        const panel = page.getByTestId("lane-plan");
+        await expect(panel.getByTestId("lane-card")).toHaveCount(3);
+        await expect(panel.getByTestId("plan-meeting")).toHaveCount(1);
+        await panel.scrollIntoViewIfNeeded();
+        await shoot(page, `phone-surfaces-19-lane-plan-${size.width}`);
+        expect(await phoneProblems(panel), "the plan has a part a finger cannot use").toEqual([]);
+        await noSideScroll(page);
+        // The proposal's order and its start buttons are reached.
+        for (const t of ["plan-start-order", "plan-drop"]) {
+          const b = panel.getByTestId(t);
+          await b.scrollIntoViewIfNeeded();
+          const r = (await b.boundingBox())!;
+          expect(r.x, `${t} is inside the page`).toBeGreaterThanOrEqual(0);
+          expect(r.x + r.width, `${t} is inside the page`).toBeLessThanOrEqual(size.width);
+        }
+        await shoot(page, `phone-surfaces-20-lane-plan-start-${size.width}`);
+      } finally {
+        await drop(request, coord);
+      }
     });
     test("the tree review reads as one column on a phone: areas, one area's diff, and its decisions by a finger", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
