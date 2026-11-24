@@ -817,5 +817,36 @@ for (const size of SIZES) {
         await models();
       }
     });
+    test("the work board writes a one-line agent's title and its reviews whole, and says a check passed on uncommitted files", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const id = await start(request, "Phone board lines");
+      try {
+        const head = "b3166396dd37cfd55fb0fd54b7bafd8f0457e17c";
+        const row = (n: number, extra: Record<string, unknown>) => ({
+          id: `${n}`.repeat(12), session_id: `s-${n}`, parent_id: id, depth: 1, title: `Lane ${n}`, type: "general-purpose", model: STAND_IN, state: "completed", created: Date.now() - 600_000, ended: Date.now(), machine: null,
+          branch: `keel/lane-${n}`, repo: "/r", base: "main", head, ahead: 1, behind: 0, worktree: "here",
+          checks: { state: "known", passed: [], failed: [], notRun: ["notes"], uncommitted: { passed: ["notes", "typecheck"], failed: [] } }, reviews: [], queue: null, live: null,
+          work: { uncommitted: { files: 3, added: 20, removed: 4 }, branch: { files: 2, added: 5, removed: 1 } }, landed: { state: "no", missing: 1 }, review: null, ...extra,
+        });
+        const none = { branch: null, head: null, work: null, checks: null, landed: null };
+        const rows = [
+          row(1, {}),
+          row(3, { ...none, title: "Reviewer of the second lane with a very long name that goes on", reviews: ["111111111111", "222222222222"], state: "working", ended: null }),
+          row(5, { ...none, title: "Another reader nested deep in the tree of agents", parent_id: "s-3", depth: 3, reviews: ["111111111111"] }),
+        ];
+        await page.route(`**/api/sessions/${id}/board*`, (route) => route.fulfill({ json: { session_id: id, rows, total: rows.length, repos: [{ repo: "/r", base: "main", base_tip: head, deploys: [] }], at: Date.now(), took_ms: 3 } }));
+        await page.goto(`/s/${id}`);
+        await page.getByTestId("panel-menu").first().tap();
+        await page.getByTestId("panel-pick-board").tap();
+        const board = page.getByTestId("work-board");
+        await expect(board.getByTestId("board-row")).toHaveCount(3);
+        await expect(board.getByTestId("board-checks")).toContainText("passed on uncommitted files");
+        expect(await phoneProblems(board), "the board").toEqual([]);
+        await shoot(page, `phone-surfaces-24-board-lines-${size.width}`);
+      } finally {
+        await page.unroute(`**/api/sessions/${id}/board*`);
+        await drop(request, id);
+      }
+    });
   });
 }

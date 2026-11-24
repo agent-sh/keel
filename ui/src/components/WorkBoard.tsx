@@ -187,13 +187,13 @@ function Line({ r, indent, w, st }: { r: BoardRow; indent: number; w: Watch; st:
   const word = STATE_WORD[w].toLowerCase() + (why ? `: ${why}` : "");
   const answers = w === "need" && CARD_ASKS.has(st?.why ?? "");
   return (
-    <li className="group/line flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1 hover:bg-hover" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-compact="" data-agent={r.id} data-state={r.state} data-indent={indent} data-watch={w}
+    <li className="group/line flex min-w-0 items-center gap-2 rounded-md px-2.5 py-1 hover:bg-hover max-md:flex-wrap max-md:gap-y-0" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-compact="" data-agent={r.id} data-state={r.state} data-indent={indent} data-watch={w}
       // The whole row opens the agent (its title is the control for a keyboard); its own buttons keep their own press.
       onClick={(e) => { if (e.target === e.currentTarget || !(e.target as Element).closest("button")) openSession(r.session_id); }}>
       <StateMark w={w} />
-      <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-caption font-medium text-fg group-hover/line:text-accent" title={`Open ${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
-      {r.reviews.length > 0 && <span className="min-w-0 max-w-[40%] shrink truncate font-mono text-micro text-muted" title={`reviews ${r.reviews.map(short).join(", ")}`}>reviews {r.reviews.map(short).join(", ")}</span>}
-      <span className={cn("shrink-0 text-micro", w === "fail" ? "text-danger" : "text-muted")} data-testid="board-state">{word}</span>
+      <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-caption font-medium text-fg group-hover/line:text-accent max-md:basis-[calc(100%-1.75rem)]" title={`Open ${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
+      {r.reviews.length > 0 && <span className="k-whole min-w-0 max-w-[40%] shrink truncate font-mono text-micro text-muted max-md:ml-7 max-md:max-w-none max-md:basis-[calc(100%-1.75rem)]" title={`reviews ${r.reviews.map(short).join(", ")}`}>reviews {r.reviews.map(short).join(", ")}</span>}
+      <span className={cn("shrink-0 text-micro max-md:ml-7", w === "fail" ? "text-danger" : "text-muted")} data-testid="board-state">{word}</span>
       <span className="shrink-0 text-micro text-faint tabular-nums" data-testid="board-lasted" title={r.ended ? `Worked ${lasted(r.created, r.ended)}; ended ${ago(r.ended)}` : "Working since it started"}>{lasted(r.created, r.ended ?? Date.now())}</span>
       {answers && <button type="button" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it" className="inline-flex h-6 shrink-0 items-center rounded-md border border-accent/40 bg-accent-soft px-2 text-micro font-medium text-accent-ink hover:border-accent">Answer</button>}
       <ChevronRight className="size-3.5 shrink-0 text-faint group-hover/line:text-accent" aria-hidden="true" data-testid="board-opens" />
@@ -210,14 +210,14 @@ function Card({ r, below, indent, w, st }: { r: BoardRow; below: Board["rows"]; 
     <li className="flex flex-col gap-2 rounded-lg border border-line bg-raised p-2.5" style={indent ? { marginLeft: `${Math.min(indent, 4) * 1.25}rem` } : undefined} data-testid="board-row" data-agent={r.id} data-branch={r.branch ?? undefined} data-state={r.state} data-indent={indent} data-watch={w}>
       <div className="flex min-w-0 items-center gap-2">
         <StateMark w={w} />
-        <button type="button" onClick={() => openSession(r.session_id)} className="min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
+        <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
         <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
 
       </div>
       {r.branch ? (
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
           <GitBranch className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <span className="min-w-0 truncate font-mono text-fg" title={r.branch}>{short(r.branch)}</span>
+          <span className="k-whole min-w-0 truncate font-mono text-fg" title={r.branch}>{short(r.branch)}</span>
           {r.head && <span className="shrink-0 font-mono text-micro text-muted" data-testid="board-head">{sha(r.head)}</span>}
           {!!r.behind && r.landed?.state !== "yes" && <span className="shrink-0 text-micro text-warn">{r.behind} behind {r.base ?? "the base"}</span>}
           {r.worktree === "gone" && !branchGone(r) && <span className="shrink-0 text-micro text-faint">worktree removed</span>}
