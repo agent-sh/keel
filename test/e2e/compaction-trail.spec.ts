@@ -59,6 +59,8 @@ test("a compaction keeps the work's artifact trail and says what it kept", async
   expect((await (await request.get("/api/errors")).json()).errors).toHaveLength(errorsBefore);
   await shoot(page, "compaction-stop-02-stopped");
 
+  // (The press on Stop closed the popup: the stopped compaction is tried again, with no hang in its focus.)
+  await page.getByTestId("context-meter").click();
   await page.getByTestId("compact-focus").fill("");
   await page.getByTestId("compact-now").click();
   await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 60_000 });
