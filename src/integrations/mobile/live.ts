@@ -13,36 +13,50 @@
 import type { Store } from "../../core/store.ts";
 import { newestTurn } from "../../admin/marks.ts";
 
-export type LiveStatus = { working: number; needs: number; titles: string[]; since: number | null };
+// `failed`: the open errors not read yet (the Errors view's count), said only beside work or a wait:
+// the lasting notification is for what runs, and a failure has a notification of its own.
+export type LiveStatus = { working: number; needs: number; failed: number; titles: string[]; since: number | null };
+
+// Where a tap on the lasting notification leads: what waits on the owner first, then what failed,
+// else the sessions at work.
+export type LiveTo = "needs" | "errors" | "sessions";
+export const liveTo = (s: Pick<LiveStatus, "needs" | "failed">): LiveTo => (s.needs ? "needs" : s.failed ? "errors" : "sessions");
 
 // A session's part in the status: its title, whether its turn runs and since when, and how many
 // cards wait on the owner in it or in its agents (an agent's work is its root's: a root is listed).
 export type LiveRow = { title: string; running: boolean; since?: number; needs: number };
 
-export function liveStatus(rows: LiveRow[]): LiveStatus {
+export function liveStatus(rows: LiveRow[], failed = 0): LiveStatus {
   // A session whose turn waits on the owner is counted with what needs them, not with what works.
   const run = rows.filter((r) => r.running && !r.needs);
   const starts = run.map((r) => r.since).filter((n): n is number => typeof n === "number");
-  return {
-    working: run.length, needs: rows.reduce((n, r) => n + r.needs, 0),
+  const out: LiveStatus = {
+    working: run.length, needs: rows.reduce((n, r) => n + r.needs, 0), failed: 0,
     // The longest-running first: the one the owner has waited on longest.
     titles: run.sort((a, b) => (a.since ?? 0) - (b.since ?? 0)).map((r) => r.title || "A session").slice(0, 4),
     since: starts.length ? Math.min(...starts) : null,
   };
+  out.failed = out.working || out.needs ? Math.max(0, failed) : 0;
+  return out;
 }
 
-const same = (a: LiveStatus | null, b: LiveStatus) => !!a && a.working === b.working && a.needs === b.needs && a.titles.join("\u0000") === b.titles.join("\u0000");
+const same = (a: LiveStatus | null, b: LiveStatus) => !!a && a.working === b.working && a.needs === b.needs && (a.failed ?? 0) === b.failed && a.titles.join("\u0000") === b.titles.join("\u0000");
 
 // The push's data: counts and a title and body the notification shows as they are.
 export function liveData(s: LiveStatus): Record<string, string> {
-  const what = [s.working ? `${s.working} session${s.working === 1 ? "" : "s"} working` : "", s.needs ? `${s.needs} need${s.needs === 1 ? "s" : ""} you` : ""].filter(Boolean).join(" · ");
-  return { w: String(s.working), q: String(s.needs), title: what, body: s.titles.join(" · "), ...(s.since ? { since: String(s.since) } : {}) };
+  const what = [
+    s.working ? `${s.working} session${s.working === 1 ? "" : "s"} working` : "",
+    s.needs ? `${s.needs} need${s.needs === 1 ? "s" : ""} you` : "",
+    s.failed ? `${s.failed} error${s.failed === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" · ");
+  return { w: String(s.working), q: String(s.needs), f: String(s.failed), to: liveTo(s), title: what, body: s.titles.join(" · "), ...(s.since ? { since: String(s.since) } : {}) };
 }
 
 // What the status is read from: the store, the sessions whose turns run, the sessions a card waits on
 // the owner in (an approval, a question, a plan), and how many agents work below each session
 // (agentCounts, src/automation/state.ts).
-export type LiveDeps = { store: Store; running(): Iterable<string>; waiting(): Iterable<string>; below(): Map<string, number> };
+// `failed`: the open errors not read yet, as the Errors view counts them.
+export type LiveDeps = { store: Store; running(): Iterable<string>; waiting(): Iterable<string>; below(): Map<string, number>; failed?(): number };
 
 // The status now, per session nobody started (an agent's part is its root's; an archived one is not
 // counted). Only the sessions that run, lead agents or wait are read, each by its id, and a turn's
@@ -65,7 +79,7 @@ export function readLive(d: LiveDeps): LiveStatus {
     const running = runs.has(id) || (below.get(id) ?? 0) > 0;
     rows.push({ title: s.title, running, since: running ? newestTurn(store, id)?.ts : undefined, needs: waits.get(id) ?? 0 });
   }
-  return liveStatus(rows);
+  return liveStatus(rows, rows.length ? d.failed?.() ?? 0 : 0);
 }
 
 // What was last told, kept where the next daemon reads it (the mobile settings): a daemon that stops

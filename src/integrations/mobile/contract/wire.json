@@ -24,7 +24,7 @@
   "helper (GET /v1/helper, PATCH /v1/helper with `on`) is the owner's helper: whether it is on, its conversation (`chat_id`, a chat of the list marked `helper`), how many records its memory holds, and what it was told lately, newest first (helper_event: `chat_id` is the session it is about, null for mail). Turning it on makes its conversation the first time. memory (GET /v1/helper/memory[?q=<words>]) is its memory's records (memory_record), found by key, alias, topic or words with `q`; DELETE /v1/helper/memory/<key> forgets one. A daemon that runs no helper answers 409.",
   "What waits on the owner is in the order of the next-look queue (src/core/wait-rank.ts): the costliest wait first, then the one asked first. A pending card says when its alert was first raised (`asked`, seconds) and what its wait costs: `wait` holds the facts it began with (`at` and `until` in seconds; `key`, what the wait costs a minute in dollars, is the order's key and never changes while the card waits), `wait_line` what it costs as it stands when the card is sent (the agents that wait then, the cache's life then), in words. The app orders the cards that wait by `wait.key`, then `asked` (a card without one, its `ts`), then `id`. A push of an ask whose wait costs something also carries the words as they stand in `cost` and the key in `wk` (the app does not read them yet).",
   "error_changed is a frame of the stream: one kind of failure changed (it happened again, was read, healed or resolved), as its error_row; `gone`: it left the open list (resolved, or let go before the store took it). The app keeps its Errors list and count from these frames.",
-  "A push of kind failed, outage or another failure says `open: errors` when it has no session to open: its notification opens the Errors view."
+  "A push of kind failed, outage or another failure says `open: errors` when it has no session to open: its notification opens the Errors view. A live push says `f`, the open errors not read yet (only beside work or a wait), and `to`, where a tap on the lasting notification leads: needs (something waits on the owner), errors, or sessions."
  ],
  "signing": {
   "request": [
@@ -358,7 +358,9 @@
    "w": "string?",
    "q": "string?",
    "since": "string?",
-   "open": "string?"
+   "open": "string?",
+   "f": "string?",
+   "to": "string?"
   },
   "changes": {
    "turns": "array",
@@ -2509,6 +2511,19 @@
     "pri": "high",
     "reply": "0",
     "open": "errors"
+   },
+   {
+    "t": "live",
+    "c": "",
+    "s": "51",
+    "n": "push_7",
+    "w": "2",
+    "q": "0",
+    "f": "3",
+    "to": "errors",
+    "title": "2 sessions working · 3 errors",
+    "body": "Fix the build · Docs",
+    "since": "1795195000000"
    }
   ],
   "file_change": [

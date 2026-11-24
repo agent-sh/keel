@@ -5,7 +5,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-// The phone's view of the fleet: the Errors list kept from the stream, and where a failure's notification leads.
+// The phone's view of the fleet: the Errors list kept from the stream, the lasting notification's words and where
+// its tap leads, and where a failure's notification leads.
 class FleetTest {
     private fun row(id: String, last: Double, read: Boolean = false, recovered: Boolean = false) =
         ErrorRow(id, "m-$id", "provider", 1, last, last, read, recovered)
@@ -32,9 +33,27 @@ class FleetTest {
         assertNull(ErrorList.frame(JSONObject().put("type", "error_changed")))
     }
 
+    @Test fun theLastingNotificationCountsErrorsBesideWorkAndLeadsToWhatAsksFirst() {
+        val chats = mapOf("s1" to Chat("s1", "Fix the build", "working", 0.0, 0, false, false, "", "", null), "s2" to Chat("s2", "Docs", "idle", 0.0, 0, false, false, "", "", null))
+        val l = Live.of(mapOf("s1" to 100.0), emptyList(), chats, unreadErrors = 3)
+        assertEquals(listOf("1 session working · 3 errors", "Fix the build", "errors", 3), listOf(l.title, l.body, l.to, l.failed))
+        // Nothing runs or waits: no notification, and errors alone put none up.
+        val idle = Live.of(emptyMap(), emptyList(), chats, unreadErrors = 3)
+        assertEquals(listOf(false, 0, "sessions"), listOf(idle.shown, idle.failed, idle.to))
+        assertEquals(listOf("sessions", "needs", "needs", "errors"), listOf(Live.to(0, 0), Live.to(1, 0), Live.to(2, 5), Live.to(0, 1)))
+        // The daemon's push says it all; one from before `to` leads by its counts.
+        val pushed = Live.of(PushMsg.of(mapOf("t" to "live", "w" to "2", "q" to "1", "f" to "4", "to" to "needs", "title" to "2 sessions working · 1 needs you · 4 errors")))
+        assertEquals(listOf(2, 1, 4, "needs"), listOf(pushed.working, pushed.needs, pushed.failed, pushed.to))
+        assertEquals("errors", Live.of(PushMsg.of(mapOf("t" to "live", "w" to "1", "f" to "2"))).to)
+        // Swiped away: not posted again while the work goes on; when nothing runs or waits, the next work gets it.
+        assertEquals(true to false, Live.gate(l, swiped = false))
+        assertEquals(false to true, Live.gate(l.copy(working = 3), swiped = true))
+        assertEquals(false to false, Live.gate(idle, swiped = true))
+    }
+
     @Test fun aNotificationThatNamesNoSessionLeadsToItsList() {
         assertEquals("errors", PushMsg.of(mapOf("t" to "outage", "c" to "", "open" to "errors")).open)
         assertEquals("", PushMsg.of(mapOf("t" to "failed", "c" to "s1")).open)
-        assertEquals(listOf(Route.Errors, Route.Tabs(0), Route.Tabs(0)), listOf(Route.of("errors"), Route.of("sessions"), Route.of("")))
+        assertEquals(listOf(Route.Tabs(1), Route.Errors, Route.Tabs(0), Route.Tabs(0)), listOf(Route.of("needs"), Route.of("errors"), Route.of("sessions"), Route.of("")))
     }
 }

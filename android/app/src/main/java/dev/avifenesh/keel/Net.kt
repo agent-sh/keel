@@ -52,6 +52,8 @@ object Prefs {
     var notified: String? get() = g("notified"); set(v) = s("notified", v)
     var theme: Int get() = sp.getInt("theme", 0); set(v) { sp.edit().putInt("theme", v).apply() }
     var noLock: Boolean get() = sp.getBoolean("nolock", false); set(v) { sp.edit().putBoolean("nolock", v).apply() }
+    /** The owner swiped the lasting notification away; cleared when the work it told of is over. */
+    var liveSwiped: Boolean get() = sp.getBoolean("liveswiped", false); set(v) { sp.edit().putBoolean("liveswiped", v).apply() }
     val paired: Boolean get() = token != null && base != null
     fun clear() { val t = theme; sp.edit().clear().apply(); theme = t }
 

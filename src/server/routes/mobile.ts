@@ -96,7 +96,9 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     ...allPendingQuestions().map((q) => q.session_id),
     ...plansWaiting().map((p) => p.session_id),
   ];
-  const nowLive = () => readLive({ store, running: () => deps.engine.runningIds(), waiting, below: () => agentCounts({ store }) });
+  // The open errors not read yet, counted as the Errors view counts them (the newest 200 open kinds).
+  const unreadErrors = () => [...errors.unwritten(), ...errors.list(200, { resolved: false })].filter((e) => !e.read_ts && !e.recovered_ts).length;
+  const nowLive = () => readLive({ store, running: () => deps.engine.runningIds(), waiting, below: () => agentCounts({ store }), failed: unreadErrors });
   // What the phone was last told is kept in the mobile settings: a daemon that stopped inside a hold
   // after it said something works leaves this one to say it ended (the poke at the start).
   const keep = {
@@ -110,7 +112,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
   }, 20_000, () => push.configured() && mobile.pushTargets().length > 0, keep, (e) => errors.capture("server", e, { live: true }));
   live.poke();
   bus.on((f) => {
-    if (f.t === "session" || (f.t === "feature" && (f.name === "approval" || f.name === "plan" || f.name === "automation"))) live.poke();
+    if (f.t === "session" || f.t === "error" || (f.t === "feature" && (f.name === "approval" || f.name === "plan" || f.name === "automation"))) live.poke();
   });
 
   // What the phone holds a notification for, so a withdraw goes only there.

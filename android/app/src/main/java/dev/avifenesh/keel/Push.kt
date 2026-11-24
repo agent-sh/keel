@@ -64,13 +64,18 @@ object Notify {
      */
     fun live(c: Context, l: Live) {
         val nm = c.getSystemService(NotificationManager::class.java)
-        if (!l.shown) { nm.cancel(LIVE, LIVE_ID); return }
+        // Swiped away by the owner: it stays down until the work it told of is over (Android's rule for a
+        // Live Update: never post again one the user dismissed). A new wait has a notification of its own.
+        val (post, swiped) = Live.gate(l, Prefs.liveSwiped)
+        Prefs.liveSwiped = swiped
+        if (!post) { nm.cancel(LIVE, LIVE_ID); return }
         val b = NotificationCompat.Builder(c, LIVE)
             .setSmallIcon(R.drawable.ic_stat).setColor(0xFF0E6A80.toInt())
             .setContentTitle(l.title).setContentText(l.body).setStyle(NotificationCompat.BigTextStyle().bigText(l.body))
-            .setContentIntent(open(c, null)).setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
+            .setContentIntent(open(c, null, l.to)).setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS).setPriority(NotificationCompat.PRIORITY_LOW)
             .setRequestPromotedOngoing(true)
+            .setDeleteIntent(PendingIntent.getBroadcast(c, LIVE_ID, Intent(c, NotifyReceiver::class.java).setAction(NotifyReceiver.LIVE_GONE), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         // Its time counts from the longest-running turn's start.
         if (l.since > 0) b.setWhen(l.since).setUsesChronometer(true).setShowWhen(true)
         runCatching { nm.notify(LIVE, LIVE_ID, b.build()) }
@@ -81,6 +86,9 @@ object Notify {
      * the back: none is put up then. One that says nothing runs still takes a shown one down. True when
      * the notification was set.
      */
+    /** The app is in front and shows what runs itself: the notification goes, and a swipe of it is still kept. */
+    fun hideLive(c: Context) { runCatching { c.getSystemService(NotificationManager::class.java).cancel(LIVE, LIVE_ID) } }
+
     fun livePush(c: Context, l: Live): Boolean = (!Ui.inFront || !l.shown).also { if (it) live(c, l) }
 
     private fun idOf(key: String) = key.hashCode()
@@ -136,8 +144,10 @@ object Notify {
 
 /** Deny from the notification: no signature is needed to refuse. */
 class NotifyReceiver : BroadcastReceiver() {
-    companion object { const val DENY = "dev.avifenesh.keel.DENY" }
+    companion object { const val DENY = "dev.avifenesh.keel.DENY"; const val LIVE_GONE = "dev.avifenesh.keel.LIVE_GONE" }
     override fun onReceive(c: Context, i: Intent) {
+        // The owner swiped the lasting notification away (never sent when the app takes it down itself).
+        if (i.action == LIVE_GONE) { Prefs.liveSwiped = true; return }
         if (i.action != DENY) return
         val aid = i.getStringExtra("aid") ?: return
         val done = goAsync()
@@ -224,7 +234,7 @@ class CheckWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c, p) {
         if (!Prefs.paired || Prefs.pushState == "on") return Result.success()
         val pulse = runCatching { Hub.pulse() }.getOrElse { return Result.retry() }
         // The lasting notification follows the check while the app is in the back (push off).
-        if (!Ui.inFront) Notify.live(applicationContext, Live.of(pulse))
+        if (!Ui.inFront) Notify.live(applicationContext, Live.of(pulse, Hub.errors.value?.unread ?: 0))
         val seen = Prefs.notified.orEmpty().split('\n').filter { it.isNotBlank() }.toMutableSet()
         val open = pulse.cards.filter { it.pending }
         val titles = pulse.sessions.associate { it.id to it.title }

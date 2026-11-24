@@ -43,8 +43,8 @@ sealed class Route {
     /** The helper's memory. */
     object Memory : Route()
     companion object {
-        /** Where a notification's `to` leads: errors (the Errors view), else the sessions. */
-        fun of(to: String): Route = when (to) { "errors" -> Errors; else -> Tabs(0) }
+        /** Where a notification's `to` leads: needs (the Needs you tab), errors (the Errors view), else the sessions. */
+        fun of(to: String): Route = when (to) { "needs" -> Tabs(1); "errors" -> Errors; else -> Tabs(0) }
     }
 }
 
@@ -120,7 +120,7 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         Ui.inFront = true
-        Notify.live(this, Live(0, 0, "", ""))
+        Notify.hideLive(this)
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(net)
         if (Prefs.paired) onPaired(first = false)
     }
@@ -129,7 +129,7 @@ class MainActivity : FragmentActivity() {
         super.onStop()
         Ui.inFront = false
         // What runs as the app goes to the back stays told: pushes (or the check) carry it on from here.
-        if (Prefs.paired) Notify.live(this, Live.of(Hub.working.value, Hub.cards.value.values, Hub.chats.value))
+        if (Prefs.paired) Notify.live(this, Live.of(Hub.working.value, Hub.cards.value.values, Hub.chats.value, Hub.errors.value?.unread ?: 0))
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(net) }
         Hub.stop()
     }

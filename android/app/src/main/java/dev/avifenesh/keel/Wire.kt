@@ -923,8 +923,8 @@ data class PushConfig(val enabled: Boolean, val missing: String, val apiKey: Str
 /** One push, as its data arrives: the kind, the session, the alert's words, the card it is about, the choices a notification offers, the id to confirm. */
 data class PushMsg(
     val kind: String, val chat: String?, val title: String, val body: String, val card: String?, val choices: List<String>, val id: String?, val held: Boolean = false,
-    /** A "live" push: sessions working, cards waiting, when the longest turn started (ms). */
-    val working: Int = 0, val needs: Int = 0, val since: Long = 0,
+    /** A "live" push: sessions working, cards waiting, when the longest turn started (ms), open errors not read, where a tap leads. */
+    val working: Int = 0, val needs: Int = 0, val since: Long = 0, val failed: Int = 0, val to: String = "",
     /** Where its notification leads when it names no session: "errors" for a failure with no session to open. */
     val open: String = "",
 ) {
@@ -937,7 +937,7 @@ data class PushMsg(
             // The request is opened and read before it is allowed: its notification carries no Allow.
             held = !d["hold"].isNullOrBlank(),
             working = d["w"]?.toIntOrNull() ?: 0, needs = d["q"]?.toIntOrNull() ?: 0, since = d["since"]?.toLongOrNull() ?: 0,
-            open = d["open"].orEmpty(),
+            failed = d["f"]?.toIntOrNull() ?: 0, to = d["to"].orEmpty(), open = d["open"].orEmpty(),
         )
     }
     /**
@@ -962,17 +962,28 @@ sealed interface TakeDown {
  * The lasting notification's state: sessions working, cards waiting on the owner, the words to show,
  * when the longest turn started (ms, 0 unknown). Nothing working or waiting: no notification.
  */
-data class Live(val working: Int, val needs: Int, val title: String, val body: String, val since: Long = 0) {
+/**
+ * `failed`: the open errors not read yet, said beside work or a wait (never alone: a failure has a notification
+ * of its own). `to`: where a tap leads, as the daemon decides it (live.ts liveTo): needs, errors or sessions.
+ */
+data class Live(val working: Int, val needs: Int, val title: String, val body: String, val since: Long = 0, val failed: Int = 0, val to: String = "sessions") {
     val shown get() = working > 0 || needs > 0
     companion object {
-        /** A "live" push, as the daemon sends it. */
-        fun of(m: PushMsg) = Live(m.working, m.needs, m.title, m.body, m.since)
+        /**
+         * Whether to post `l`, and whether a swipe still holds after it: a status that shows nothing ends the swipe
+         * (the next work gets its notification again); while the swipe holds, nothing is posted.
+         */
+        fun gate(l: Live, swiped: Boolean): Pair<Boolean, Boolean> = if (!l.shown) false to false else !swiped to swiped
+        /** What waits on the owner first, then what failed, else the sessions at work. */
+        fun to(needs: Int, failed: Int) = if (needs > 0) "needs" else if (failed > 0) "errors" else "sessions"
+        /** A "live" push, as the daemon sends it (one from before `to` leads by its counts). */
+        fun of(m: PushMsg) = Live(m.working, m.needs, m.title, m.body, m.since, m.failed, m.to.ifBlank { to(m.needs, m.failed) })
         /**
          * What the app holds: the sessions whose turns run (since when), the open cards, the titles. Counted
          * as the daemon counts (live.ts readLive): per root, a root whose agents work works, an archived
          * root counts for nothing, and a root a card waits in needs the owner instead of working.
          */
-        fun of(working: Map<String, Double>, cards: Collection<Card>, chats: Map<String, Chat>): Live {
+        fun of(working: Map<String, Double>, cards: Collection<Card>, chats: Map<String, Chat>, unreadErrors: Int = 0): Live {
             val shelved = { id: String -> chats[id]?.archived == true }
             val open = cards.filter { it.pending && !shelved(rootOf(chats, it.chatId)) }
             val needs = open.size
@@ -982,19 +993,21 @@ data class Live(val working: Int, val needs: Int, val title: String, val body: S
             for ((id, at) in working) { val r = rootOf(chats, id); start[r] = minOf(start[r] ?: at, at) }
             val roots = (working.keys.map { rootOf(chats, it) } + chats.values.filter { it.agents > 0 }.map { it.id })
                 .filter { chats[it]?.parentId == null && !shelved(it) && it !in waiting }.distinct()
+            val failed = if (roots.isNotEmpty() || needs > 0) unreadErrors.coerceAtLeast(0) else 0
             val what = listOfNotNull(
                 if (roots.isNotEmpty()) "${roots.size} session${if (roots.size == 1) "" else "s"} working" else null,
                 if (needs > 0) "$needs need${if (needs == 1) "s" else ""} you" else null,
+                if (failed > 0) "$failed error${if (failed == 1) "" else "s"}" else null,
             ).joinToString(" · ")
             val byStart = roots.sortedBy { start[it] ?: 0.0 }
             return Live(roots.size, needs, what, byStart.take(4).joinToString(" · ") { chats[it]?.title ?: "A session" },
-                byStart.mapNotNull { start[it] }.minOrNull()?.let { (it * 1000).toLong() } ?: 0)
+                byStart.mapNotNull { start[it] }.minOrNull()?.let { (it * 1000).toLong() } ?: 0, failed, to(needs, failed))
         }
         /** The background check's read (GET /v1/pulse): the daemon's own status, else made from the pulse (a daemon from before). */
-        fun of(p: Pulse): Live {
+        fun of(p: Pulse, unreadErrors: Int = 0): Live {
             p.live?.let { return it }
             val chats = p.sessions.associate { it.id to Chat(it.id, it.title, "working", 0.0, 0, false, false, "", "", null) }
-            return of(p.working, p.cards, chats)
+            return of(p.working, p.cards, chats, unreadErrors)
         }
     }
 }

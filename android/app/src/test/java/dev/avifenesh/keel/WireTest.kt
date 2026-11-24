@@ -259,14 +259,14 @@ class WireTest {
     @Test fun theLastingNotificationSaysWhatRunsAndWhatWaits() {
         // From a live push.
         val m = PushMsg.of(mapOf("t" to "live", "w" to "2", "q" to "1", "title" to "2 sessions working · 1 needs you", "body" to "Fix the build · Docs", "since" to "1795195000500"))
-        assertEquals(Live(2, 1, "2 sessions working · 1 needs you", "Fix the build · Docs", 1795195000500), Live.of(m))
+        assertEquals(Live(2, 1, "2 sessions working · 1 needs you", "Fix the build · Docs", 1795195000500, to = "needs"), Live.of(m))
         assertEquals(false, Live.of(PushMsg.of(mapOf("t" to "live", "w" to "0", "q" to "0"))).shown)
         // From what the app holds as it goes to the back: an agent's turn is its root's, the oldest first.
         fun chat(id: String, title: String, parent: String? = null) = Chat(id, title, "working", 1.0, 0, false, false, "", "", parent)
         val chats = listOf(chat("a", "Fix the build"), chat("b", "Docs"), chat("a1", "Worker", "a")).associateBy { it.id }
         val held = Live.of(mapOf("b" to 200.0, "a" to 100.0, "a1" to 150.0), listOf(Card("q-1", "a1", "question", "", "", emptyList(), "pending", null, 1.0, emptyList())), chats)
         // Fix the build's agent asks: it needs the owner, Docs works.
-        assertEquals(Live(1, 1, "1 session working · 1 needs you", "Docs", 200_000), held)
+        assertEquals(Live(1, 1, "1 session working · 1 needs you", "Docs", 200_000, to = "needs"), held)
         assertEquals(false, Live.of(emptyMap(), emptyList(), chats).shown)
     }
 

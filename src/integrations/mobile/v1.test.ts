@@ -1337,6 +1337,7 @@ describe("the wire contract", () => {
     take("push", pushData(alertPush({ id: "al1", ts: Date.now(), kind: "approval", session_id: s.id, title: "Fix the build needs your approval", body: "rm -rf build", read: false, data: { approval_id: "apr_9", hold: [] }, channels: [] } as any), mobile.globalSeq(), "push_1"));
     take("push", pushData(testMessage(), mobile.globalSeq(), "push_2"));
     take("push", pushData({ kind: "live", high: false, data: liveData(liveStatus([{ title: "Fix the build", running: true, since: 1000, needs: 0 }, { title: "Docs", running: true, since: 2000, needs: 1 }])) }, mobile.globalSeq(), "push_3"));
+    take("push", pushData({ kind: "live", high: false, data: liveData(liveStatus([{ title: "Fix the build", running: true, since: 1000, needs: 0 }], 3)) }, mobile.globalSeq(), "push_4"));
     // A failure with no session to open: its notification opens the Errors view.
     const outage = pushData(alertPush({ id: "al2", ts: Date.now(), kind: "outage", session_id: null, title: "Provider outage", body: "HTTP 529", read: false, data: {}, channels: [] } as any), mobile.globalSeq(), "push_5");
     expect(outage.open).toBe("errors");
