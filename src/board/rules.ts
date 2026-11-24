@@ -450,6 +450,15 @@ export function rowLine(r: BoardRow, full = false): string {
 export const branchGone = (r: BoardRow) => !!r.branch && !r.head && r.worktree === "gone" && !live(r.state);
 // Work a coordinator still owes a landing: a branch not landed, or one git could not read.
 export const toLand = (r: BoardRow) => !!r.landed && r.landed.state !== "yes" && r.landed.state !== "nothing" && !branchGone(r);
+// A branch the card offers Land for: its agent has ended, the base lacks its commits, no check failed on its head, no
+// reviewer refused it, it is not in the queue, and no pair of branches fails together with it. The queue still says
+// no where git does (a conflict); this only decides which one action a card leads with.
+export const canLand = (r: BoardRow) =>
+  toLand(r) && r.landed?.state === "no" && !!r.head && !live(r.state)
+  && !(r.checks?.state === "known" && r.checks.failed.length)
+  && r.review?.verdict !== "refused" && r.review?.verdict !== "disputed"
+  && !(r.queue?.current && ["queued", "building", "checking", "resolving"].includes(r.queue.state))
+  && !(r.together ?? []).some((p) => p.state === "red");
 
 // A branch with nothing left but the landing: not landed, no agent at work on it, its named checks all passed on its head,
 // nothing uncommitted in its worktree, and no reviewer's refusal. (A worktree not read is not known clean.)

@@ -11,9 +11,10 @@ import { useAgentsSeen } from "../lib/agent-seen.ts";
 import { EarlierRow } from "./automation/Earlier.tsx";
 import { treeOrder } from "../lib/board-order.ts";
 import { rememberPanel } from "../lib/ui.ts";
-import { branchGone, toLand, type Change } from "../../../src/board/rules.ts";
+import { branchGone, canLand, toLand, type Change } from "../../../src/board/rules.ts";
 import { loadBoard, useBoard, type Board, type BoardRow } from "../lib/board.ts";
 import { checksWords } from "../lib/check-words.ts";
+import { queueBranches } from "../lib/landing.ts";
 import { failed } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { useToldStates, type SessionState, type Watch } from "../lib/watch.ts";
@@ -201,8 +202,22 @@ function Line({ r, indent, w, st }: { r: BoardRow; indent: number; w: Watch; st:
   );
 }
 
-function Card({ r, below, indent, w, st }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch; st: SessionState | undefined }) {
+function Card({ r, below, indent, w, st, coord }: { r: BoardRow; below: Board["rows"]; indent: number; w: Watch; st: SessionState | undefined; coord: string }) {
+  const [landing, setLanding] = useState(false);
+  const [err, setErr] = useState("");
   if (compact(r)) return <Line r={r} indent={indent} w={w} st={st} />;
+  // One action leads the card: Answer when its agent waits on the owner, else Land when its branch can land.
+  // Without either, the card's one act is to open what it changed (below, in the line of its changes).
+  const answers = w === "need" && CARD_ASKS.has(st?.why ?? "");
+  const lands = !answers && canLand(r);
+  const land = () => {
+    setLanding(true);
+    setErr("");
+    queueBranches(coord, [r.branch!])
+      .then((q) => { if (q.refused.length) setErr(q.refused.map((x) => x.why).join("; ")); })
+      .catch((e) => setErr(failed(e, { at: "WorkBoard land" })))
+      .finally(() => setLanding(false));
+  };
   const reviewing = r.reviews.length > 0;
   // A tile shows only a fact: a check the repository names, a review, a landing, a live record.
   const facts = [checksFact(r), reviewFact(r), landedFact(r), liveFact(r)].filter(Boolean);
@@ -212,8 +227,10 @@ function Card({ r, below, indent, w, st }: { r: BoardRow; below: Board["rows"]; 
         <StateMark w={w} />
         <button type="button" onClick={() => openSession(r.session_id)} className="k-whole min-w-0 flex-1 truncate text-left text-ui font-medium text-fg hover:text-accent" title={`${r.title} (agent ${r.id})`} data-testid="board-title">{r.title}</button>
         <span className="shrink-0 text-micro text-muted" data-testid="board-state">{STATE_WORD[w].toLowerCase()}</span>
-
+        {answers && <button type="button" className="k-btn" data-ink="" onClick={() => goToAsk(r.session_id)} data-testid="board-answer" title="Go to what it asks and answer it">Answer</button>}
+        {lands && <button type="button" className="k-btn" data-ink="" disabled={landing} onClick={land} data-testid="board-land" title={`Queue ${short(r.branch!)} to land on ${r.base ?? "the base"}`}><GitMerge /> Land</button>}
       </div>
+      {err && <p className="text-caption text-danger" data-testid="board-land-error">{err}</p>}
       {r.branch ? (
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption">
           <GitBranch className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
@@ -233,7 +250,7 @@ function Card({ r, below, indent, w, st }: { r: BoardRow; below: Board["rows"]; 
             {r.work.branch && <Changed c={r.work.branch} where="on branch" testid="board-on-branch" />}
             {!r.work.uncommitted && !r.work.branch && <span className="text-muted" data-testid="board-no-changes">no changes yet</span>}
           </div>
-          {(r.work.uncommitted || r.work.branch) && (
+          {!answers && !lands && (r.work.uncommitted || r.work.branch) && (
             <button type="button" onClick={() => { rememberPanel(r.session_id, "changes"); openSession(r.session_id); }} data-testid="board-open-changes"
               className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 text-micro text-accent hover:bg-hover">Open changes</button>
           )}
@@ -277,16 +294,18 @@ export function WorkBoard({ session }: { session: Session }) {
   const toLandLeft = ordered.filter((_, i) => !fold.show[i] && toLand(ordered[i]!.row)).length;
   const working = b.rows.filter((r) => watches.get(r.id) === "work").length;
   const landed = b.rows.filter((r) => r.landed?.state === "yes").length;
+  // What to do next, first: the agents that wait on the owner, then the branches that wait to land. A count of nothing is not said.
+  const answering = b.rows.filter((r) => watches.get(r.id) === "need" && CARD_ASKS.has(told[r.session_id]?.why ?? "")).length;
+  const landing = b.rows.filter(canLand).length;
+  const next = [answering && `${answering} to answer`, landing && `${landing} to land`, working && `${working} working`, landed && `${landed} landed`].filter(Boolean).join(" · ") || "Nothing to do";
   return (
     <div className="@container flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="work-board" data-quote-from="the work board">
       {/* The summary keeps a measure of its own (16rem); where the panel has no room for it and the buttons, they stand under it. */}
       <div className="flex flex-wrap items-start gap-2 px-1">
         <div className="flex min-w-0 basis-64 grow flex-col gap-0.5">
           <p className="text-ui font-medium text-fg">{b.total} {b.total === 1 ? "agent" : "agents"}</p>
-          <p className="text-caption text-muted" data-testid="board-summary">
-            {working} working · {landed} landed
-            {repo?.base && <> · base <span className="font-mono">{repo.base}</span> at <span className="font-mono">{sha(repo.base_tip)}</span></>}
-            {repo?.deploys.map((d) => <span key={d.how}> · live at <span className="font-mono">{sha(d.sha)}</span> ({d.how})</span>)}
+          <p className="text-caption text-muted" data-testid="board-summary" title={[repo?.base && `Base ${repo.base} at ${sha(repo.base_tip)}`, ...(repo?.deploys.map((d) => `live at ${sha(d.sha)} (${d.how})`) ?? [])].filter(Boolean).join(" · ") || undefined}>
+            {next}
           </p>
         </div>
         {b.rows.some((r) => toLand(r)) && (
@@ -305,7 +324,7 @@ export function WorkBoard({ session }: { session: Session }) {
         <p className="k-empty px-1"><b>No agents yet</b>Each agent this session starts shows here with its branch, checks, review and whether it landed, kept from what Keel sees.</p>
       ) : (
         <ul className="flex flex-col gap-2" data-testid="board-rows">
-          {ordered.map(({ row, indent }, i) => fold.show[i] ? <Card key={row.id} r={row} below={b.rows} indent={indent} w={watches.get(row.id)!} st={told[row.session_id]} /> : null)}
+          {ordered.map(({ row, indent }, i) => fold.show[i] ? <Card key={row.id} r={row} below={b.rows} indent={indent} w={watches.get(row.id)!} st={told[row.session_id]} coord={session.id} /> : null)}
           {fold.earlier > 0 && <li className="list-none"><EarlierRow n={fold.earlier} onMore={fold.more} extra={toLandLeft ? `${toLandLeft} to land` : undefined} testid="board-earlier" className="k-earlier" /></li>}
         </ul>
       )}

@@ -257,6 +257,26 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   await openPanel(page, "board");
   await expect(card(gamma.id).getByTestId("board-review")).toHaveAttribute("data-state", "words");
   await expect(card(gamma.id).getByTestId("board-verdict")).toContainText("LAND: yes");
+  // One action leads a card: gamma ended with no refusal, so it is Land, and Open changes gives way to it. The
+  // header says what to do next (one to land), with no hash of the base. Land queues exactly gamma's branch.
+  await expect(card(gamma.id).getByTestId("board-land")).toBeVisible();
+  await expect(card(gamma.id).getByTestId("board-open-changes")).toHaveCount(0);
+  await expect(panel.getByTestId("board-summary")).toHaveText(/^1 to land · /);
+  await expect(panel.getByTestId("board-summary")).not.toHaveText(/\b[0-9a-f]{9}\b|\b0 /);
+  await expect(panel.getByTestId("board-summary")).toHaveAttribute("title", /^Base main at [0-9a-f]{9}/);
+  await expect(card(beta.id).getByTestId("board-land")).toHaveCount(0);
+  await expect(card(beta.id).getByTestId("board-open-changes")).toBeVisible();
+  await expect(card(alpha.id).getByTestId("board-land")).toHaveCount(0);
+  let queued: string[] = [];
+  await page.route(new RegExp(`/api/sessions/${coord}/landing$`), async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    queued = route.request().postDataJSON().branches;
+    await route.fulfill({ json: { refused: [{ branch: queued[0], why: "held by the spec" }], warnings: [], view: { entries: [] } } });
+  });
+  await card(gamma.id).getByTestId("board-land").click();
+  await expect(card(gamma.id).getByTestId("board-land-error")).toHaveText("held by the spec");
+  expect(queued).toEqual([gamma.branch]);
+  await page.unroute(new RegExp(`/api/sessions/${coord}/landing$`));
   await page.mouse.move(0, 0);
   await shoot(page, "work-board-03-words");
 
