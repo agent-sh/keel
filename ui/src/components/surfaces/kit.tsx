@@ -123,8 +123,8 @@ export const Blank = ({ title, children }: { title: string; children?: ReactNode
 // A mark in a grid of choices (which alert goes where): a box that is ticked or not. A grid
 // of switches is a wall of pills; a grid of marks reads as the table it is.
 // `mixed`: a row of marks that are not all alike; a press turns them all on.
-export function Tick({ on, onChange, label, testid, mixed }: { on: boolean; onChange: (on: boolean) => void; label: string; testid?: string; mixed?: boolean }) {
-  return <button type="button" role="checkbox" aria-checked={mixed ? "mixed" : on} aria-label={label} data-testid={testid} className="k-check" onClick={() => onChange(mixed ? true : !on)} />;
+export function Tick({ on, onChange, label, testid, mixed, disabled, title }: { on: boolean; onChange: (on: boolean) => void; label: string; testid?: string; mixed?: boolean; disabled?: boolean; title?: string }) {
+  return <button type="button" role="checkbox" aria-checked={mixed ? "mixed" : on} aria-label={label} aria-disabled={disabled || undefined} disabled={disabled} title={title} data-testid={testid} className="k-check" onClick={() => onChange(mixed ? true : !on)} />;
 }
 
 export function Toggle({ on, onChange, label, testid }: { on: boolean; onChange: (on: boolean) => void; label: string; testid?: string }) {

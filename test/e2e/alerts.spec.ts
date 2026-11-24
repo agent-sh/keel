@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { exited, ownDaemon } from "./peer.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: a turn that finishes while the owner looks elsewhere becomes an
@@ -52,14 +54,21 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
   await expect(page.getByTestId("alert-routes")).toBeVisible();
   await page.getByTestId("alert-fine-toggle").click();
   const sw = page.getByTestId("route-finished-command");
-  await expect(sw).toHaveAttribute("aria-checked", "true");
-  await sw.click();
-  await expect(sw).toHaveAttribute("aria-checked", "false");
-  const st = (await (await request.get("/api/alerts/settings")).json()).settings;
-  expect(st.routes.finished).not.toContain("command");
-  await shoot(page, "alerts-04-routes");
-  await sw.click();
-  await expect(sw).toHaveAttribute("aria-checked", "true");
+  if (hooked) {
+    await expect(sw).toHaveAttribute("aria-checked", "true");
+    await sw.click();
+    await expect(sw).toHaveAttribute("aria-checked", "false");
+    const st = (await (await request.get("/api/alerts/settings")).json()).settings;
+    expect(st.routes.finished).not.toContain("command");
+    await shoot(page, "alerts-04-routes");
+    await sw.click();
+    await expect(sw).toHaveAttribute("aria-checked", "true");
+  } else {
+    // No hook on this daemon: the column is off and out of reach (the own-daemon test below switches one that is set up).
+    await expect(sw).toBeDisabled();
+    await expect(sw).toHaveAttribute("aria-checked", "false");
+    await shoot(page, "alerts-04-routes");
+  }
 
   // Mark all read is always offered.
   await page.getByTestId("inbox-button").click();
@@ -160,19 +169,12 @@ test("alerts: rows by keyboard, kept unread, a failed hook, routes one by one", 
   await page.getByTestId("alert-routes-link").click();
   await page.getByTestId("alert-fine-toggle").click();
   const a = page.getByTestId("route-approval-command"), q = page.getByTestId("route-question-desktop");
-  const was = { a: await a.getAttribute("aria-checked"), q: await q.getAttribute("aria-checked") };
-  await page.evaluate(() => {
-    (document.querySelector('[data-testid="route-approval-command"]') as HTMLElement).click();
-    (document.querySelector('[data-testid="route-question-desktop"]') as HTMLElement).click();
-  });
-  await expect(a).toHaveAttribute("aria-checked", was.a === "true" ? "false" : "true");
-  await page.reload();
-  await page.getByTestId("alert-fine-toggle").click();
-  await expect(a).toHaveAttribute("aria-checked", was.a === "true" ? "false" : "true");
-  await expect(q).toHaveAttribute("aria-checked", was.q === "true" ? "false" : "true");
-  await a.click();
-  await q.click();
-  await expect(a).toHaveAttribute("aria-checked", String(was.a));
+  // A channel that is not set up has its boxes out of reach (the own-daemon test below flips ones that are set up).
+  if (hooked) await expect(a).toBeEnabled();
+  else {
+    await expect(a).toBeDisabled();
+    await expect(q).toBeDisabled();
+  }
   // The test button says where the alert went.
   await page.getByTestId("alert-test").click();
   await expect(page.getByTestId("alert-test-result")).toContainText(hooked ? "Sent to Command hook" : "Inbox only");
@@ -327,74 +329,141 @@ test("alerts: agents that fail are one alert a cause, and their coordinator coun
 // kinds differ shows mixed; the 15-kind table is under Fine tune. One sound switch:
 // the notification the desktop app is handed carries it.
 test("alerts: four rows, mixed, one sound switch", async ({ page, request }) => {
-  await page.goto("/settings/alerts");
-  await expect(page.getByTestId("alert-groups")).toBeVisible();
-  await expect(page.locator('[data-testid^="route-group-"][data-testid$="-command"]')).toHaveCount(4);
-  await expect(page.getByTestId("alert-kinds")).toBeHidden();
-  const need = page.getByTestId("route-group-need-command");
-  await expect(need).toHaveAttribute("aria-checked", "true");
-  await shoot(page, "alerts-09-four-rows");
-
-  // A row sets every kind it holds: one saved change.
-  await need.click();
-  await expect(need).toHaveAttribute("aria-checked", "false");
-  const routes = async () => (await (await request.get("/api/alerts/settings")).json()).settings.routes as Record<string, string[]>;
-  await expect.poll(async () => (await routes()).approval).not.toContain("command");
-  expect((await routes()).question).not.toContain("command");
-  expect((await routes()).finished).toContain("command");
-
-  // One kind back on in Fine tune: the row says mixed, and a press turns all its kinds on.
-  await page.getByTestId("alert-fine-toggle").click();
-  await page.getByTestId("route-approval-command").click();
-  await expect(need).toHaveAttribute("aria-checked", "mixed");
-  await shoot(page, "alerts-10-mixed-fine-tune");
-  await need.click();
-  await expect(need).toHaveAttribute("aria-checked", "true");
-  await expect.poll(async () => (await routes()).question).toContain("command");
-
-  // The sound switch is saved, and the desktop app is handed it with the notification.
-  const sound = page.getByTestId("alert-sound");
-  await expect(sound).toHaveAttribute("aria-checked", "true");
-  const base = new URL(page.url()).origin;
-  const ctl = new AbortController();
-  const res = await fetch(`${base}/api/shell/events?engine=spec&version=1&acks=1`, { signal: ctl.signal });
-  const reader = res.body!.getReader();
-  const dec = new TextDecoder();
-  let buf = "", stream = "";
-  const next = async (name: string) => {
-    for (;;) {
-      const at = buf.indexOf("\n\n");
-      if (at >= 0) {
-        const chunk = buf.slice(0, at);
-        buf = buf.slice(at + 2);
-        const m = /^event: (\w+)\ndata: (.*)$/s.exec(chunk);
-        if (m && m[1] === name) return JSON.parse(m[2]!);
-        continue;
-      }
-      const { value, done } = await reader.read();
-      if (done) throw new Error("the shell stream ended");
-      buf += dec.decode(value, { stream: true });
-    }
-  };
+  test.setTimeout(120_000);
+  // A daemon of the spec's own with a command hook: the shared one has no channel set up, and a channel not set up has its boxes out of reach.
+  const state = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state", `alerts-rows-${Date.now().toString(36)}`);
+  const d = await ownDaemon(state, 0, { KEEL_NOTIFY_COMMAND: resolve("test/e2e/fixtures/notify-log.sh"), KEEL_NOTIFY_LOG: join(state, "notify.log") });
   try {
-    stream = (await next("hello")).stream;
-    const handed = async () => {
-      const sent = request.post("/api/alerts/test", { data: { kind: "approval" } });
-      const n = await next("notify");
-      await request.post("/api/shell/ack", { data: { ack: n.ack, stream } });
-      await sent;
-      return n;
-    };
-    expect((await handed()).sound).toBe(true);
-    await sound.click();
-    await expect(sound).toHaveAttribute("aria-checked", "false");
-    await expect.poll(async () => (await (await request.get("/api/alerts/settings")).json()).settings.sound).toBe(false);
-    expect((await handed()).sound).toBe(false);
-    await shoot(page, "alerts-11-sound-off");
-    await sound.click();
+    await page.goto(`${d.url}/settings/alerts`);
+    await expect(page.getByTestId("alert-groups")).toBeVisible();
+    await expect(page.locator('[data-testid^="route-group-"][data-testid$="-command"]')).toHaveCount(4);
+    await expect(page.getByTestId("alert-kinds")).toBeHidden();
+    const need = page.getByTestId("route-group-need-command");
+    await expect(need).toHaveAttribute("aria-checked", "true");
+    await shoot(page, "alerts-09-four-rows");
+
+    // A row sets every kind it holds: one saved change.
+    await need.click();
+    await expect(need).toHaveAttribute("aria-checked", "false");
+    const routes = async () => (await (await request.get(`${d.url}/api/alerts/settings`)).json()).settings.routes as Record<string, string[]>;
+    await expect.poll(async () => (await routes()).approval).not.toContain("command");
+    expect((await routes()).question).not.toContain("command");
+    expect((await routes()).finished).toContain("command");
+
+    // One kind back on in Fine tune: the row says mixed, and a press turns all its kinds on.
+    await page.getByTestId("alert-fine-toggle").click();
+    await page.getByTestId("route-approval-command").click();
+    await expect(need).toHaveAttribute("aria-checked", "mixed");
+    await shoot(page, "alerts-10-mixed-fine-tune");
+    await need.click();
+    await expect(need).toHaveAttribute("aria-checked", "true");
+    await expect.poll(async () => (await routes()).question).toContain("command");
+
+    // The sound switch is saved, and the desktop app is handed it with the notification.
+    const sound = page.getByTestId("alert-sound");
     await expect(sound).toHaveAttribute("aria-checked", "true");
+    const base = new URL(page.url()).origin;
+    const ctl = new AbortController();
+    const res = await fetch(`${base}/api/shell/events?engine=spec&version=1&acks=1`, { signal: ctl.signal });
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let buf = "", stream = "";
+    const next = async (name: string) => {
+      for (;;) {
+        const at = buf.indexOf("\n\n");
+        if (at >= 0) {
+          const chunk = buf.slice(0, at);
+          buf = buf.slice(at + 2);
+          const m = /^event: (\w+)\ndata: (.*)$/s.exec(chunk);
+          if (m && m[1] === name) return JSON.parse(m[2]!);
+          continue;
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error("the shell stream ended");
+        buf += dec.decode(value, { stream: true });
+      }
+    };
+    try {
+      stream = (await next("hello")).stream;
+      const handed = async () => {
+        const sent = request.post(`${d.url}/api/alerts/test`, { data: { kind: "approval" } });
+        const n = await next("notify");
+        await request.post(`${d.url}/api/shell/ack`, { data: { ack: n.ack, stream } });
+        await sent;
+        return n;
+      };
+      expect((await handed()).sound).toBe(true);
+      await sound.click();
+      await expect(sound).toHaveAttribute("aria-checked", "false");
+      await expect.poll(async () => (await (await request.get(`${d.url}/api/alerts/settings`)).json()).settings.sound).toBe(false);
+      expect((await handed()).sound).toBe(false);
+      await shoot(page, "alerts-11-sound-off");
+      await sound.click();
+      await expect(sound).toHaveAttribute("aria-checked", "true");
+    } finally {
+      ctl.abort();
+    }
+    await request.post(`${d.url}/api/alerts/read`, { data: {} });
   } finally {
-    ctl.abort();
+    d.proc.kill();
+    await exited(d.proc);
   }
-  await request.post("/api/alerts/read", { data: {} });
+});
+
+// Routes name only channels that can send: a channel not set up has its boxes off and out of reach, with a Set up link
+// to where it is set up, and what was chosen for it is kept for when it is. A channel that is set up (here a command hook,
+// on a daemon of the spec's own) switches one box at a time, and two quick clicks both stay.
+test("alerts: routes of a channel not set up are off with a Set up link; a channel that is set up switches", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state", `alerts-routes-${Date.now().toString(36)}`);
+  const d = await ownDaemon(state, 0, { KEEL_NOTIFY_COMMAND: resolve("test/e2e/fixtures/notify-log.sh"), KEEL_NOTIFY_LOG: join(state, "notify.log") });
+  const api = async (path: string) => (await fetch(`${d.url}${path}`)).json() as Promise<any>;
+  try {
+    const channels = (await api("/api/alerts/settings")).channels as { id: string; available: boolean }[];
+    expect(channels.filter((c) => !c.available).map((c) => c.id).sort(), "desktop and phone are not set up on a scratch daemon").toEqual(["desktop", "push"]);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${d.url}/settings/alerts`);
+    const routes = page.getByTestId("alert-routes");
+    await expect(routes).toBeVisible();
+    await page.getByTestId("alert-fine-toggle").click();
+    // The boxes of what is not set up are off and out of reach, whatever was chosen for them (the default chooses all three).
+    expect((await api("/api/alerts/settings")).settings.routes.approval).toContain("desktop");
+    for (const ch of ["desktop", "push"]) {
+      for (const id of [`route-group-need-${ch}`, `route-approval-${ch}`]) {
+        await expect(routes.getByTestId(id)).toBeDisabled();
+        await expect(routes.getByTestId(id)).toHaveAttribute("aria-checked", "false");
+      }
+      await expect(routes.getByTestId(`route-setup-${ch}`)).toHaveText("Set up");
+    }
+    // The set up one has none of that.
+    await expect(routes.getByTestId("route-group-need-command")).toBeEnabled();
+    await expect(routes.getByTestId("route-approval-command")).toHaveAttribute("aria-checked", "true");
+    await expect(routes.getByTestId("route-setup-command")).toHaveCount(0);
+    // The desktop's Set up says how it is set up; the phone's goes to Settings > Phone.
+    await routes.getByTestId("route-setup-desktop").click();
+    await expect(routes.getByTestId("route-setup-note-desktop")).toBeInViewport();
+    await shoot(page, "alerts-12-routes-not-set-up");
+    // Two switches flipped before either save returns both stay off.
+    const a = routes.getByTestId("route-approval-command"), q = routes.getByTestId("route-question-command");
+    await page.evaluate(() => {
+      (document.querySelector('[data-testid="route-approval-command"]') as HTMLElement).click();
+      (document.querySelector('[data-testid="route-question-command"]') as HTMLElement).click();
+    });
+    await expect(a).toHaveAttribute("aria-checked", "false");
+    await page.reload();
+    await page.getByTestId("alert-fine-toggle").click();
+    await expect(a).toHaveAttribute("aria-checked", "false");
+    await expect(q).toHaveAttribute("aria-checked", "false");
+    await a.click();
+    await q.click();
+    await expect(a).toHaveAttribute("aria-checked", "true");
+    await expect(q).toHaveAttribute("aria-checked", "true");
+    // What was chosen for the desktop stayed saved while it is out of reach.
+    expect((await api("/api/alerts/settings")).settings.routes.approval).toContain("desktop");
+    await page.getByTestId("route-setup-push").click();
+    await expect(page).toHaveURL(/\/settings\/phone$/);
+  } finally {
+    d.proc.kill();
+    await exited(d.proc);
+  }
 });

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { auto, useAuto, type AlertSettings as Settings } from "../../lib/automation.ts";
 import { reportError } from "../../lib/store.ts";
+import { navigate } from "../../lib/ui.ts";
 import { Card, Segmented, SettingRow } from "../Settings.tsx";
 import { Tick, Toggle } from "../surfaces/kit.tsx";
 import { STATE_WORD } from "../../../../src/core/state-words.ts";
@@ -15,6 +16,12 @@ const GROUPS: { id: string; label: string; hint: string; kinds: (keyof Settings[
   { id: "fail", label: STATE_WORD.fail, hint: "A failed turn or loop, a regression, a declined turn", kinds: KINDS.filter((k) => ALERT_STATE[k] === "fail") },
   { id: "other", label: "Everything else", hint: "Agents, limits, snoozes, refused calls, machines, incidents", kinds: KINDS.filter((k) => !["need", "done", "fail"].includes(ALERT_STATE[k])) },
 ];
+
+// How a channel is set up, for the ones Settings has no section for (the phone's is Settings > Phone).
+const SETUP: Record<string, string> = {
+  desktop: "Shown by the Keel desktop app while it is open, or by this machine's notification service when the daemon runs in a desktop session.",
+  command: "Set KEEL_NOTIFY_COMMAND for the daemon to a program. It gets each alert as JSON in its last argument.",
+};
 
 // Settings > Alerts: where each kind of alert goes besides the inbox.
 export default function AlertSettings() {
@@ -77,7 +84,19 @@ export default function AlertSettings() {
               {channels.map((c) => (
                 <th key={c.id} className="px-3 py-2 text-center font-medium max-md:px-1" title={c.label}>
                   {CHANNEL_NAME[c.id] ?? c.id}
-                  {!c.available && <span className="block text-micro font-normal">not set up</span>}
+                  {!c.available && (
+                    <span className="block text-micro font-normal">
+                      <button
+                        type="button"
+                        data-testid={`route-setup-${c.id}`}
+                        title={`${CHANNEL_NAME[c.id] ?? c.id} is not set up`}
+                        className="k-link text-accent underline"
+                        onClick={() => (c.id === "push" ? navigate({ name: "settings", section: "phone" }) : document.querySelector(`[data-testid="route-setup-note-${c.id}"]`)?.scrollIntoView({ block: "nearest" }))}
+                      >
+                        Set up
+                      </button>
+                    </span>
+                  )}
                 </th>
               ))}
             </tr>
@@ -95,8 +114,11 @@ export default function AlertSettings() {
                     <td key={c.id} className="px-3 py-2.5 text-center max-md:px-1">
                       <Tick
                         testid={`route-group-${g.id}-${c.id}`}
-                        on={n === g.kinds.length}
-                        mixed={n > 0 && n < g.kinds.length}
+                        // A channel that is not set up sends nothing: its mark is off and out of reach (what was chosen is kept for when it is).
+                        on={c.available && n === g.kinds.length}
+                        mixed={c.available && n > 0 && n < g.kinds.length}
+                        disabled={!c.available}
+                        title={c.available ? undefined : `${CHANNEL_NAME[c.id] ?? c.id} is not set up`}
                         onChange={(on) => auto.setRoutes(g.kinds, c.id, on).catch(reportError)}
                         label={`${g.label} to ${CHANNEL_NAME[c.id] ?? c.id}`}
                       />
@@ -129,7 +151,9 @@ export default function AlertSettings() {
                     <td key={c.id} className="px-3 py-2.5 text-center max-md:px-1">
                       <Tick
                         testid={`route-${k}-${c.id}`}
-                        on={settings.routes[k]?.includes(c.id) ?? false}
+                        on={c.available && (settings.routes[k]?.includes(c.id) ?? false)}
+                        disabled={!c.available}
+                        title={c.available ? undefined : `${CHANNEL_NAME[c.id] ?? c.id} is not set up`}
                         onChange={(on) => toggle(k, c.id, on)}
                         label={`${ALERT_LABEL[k]} to ${CHANNEL_NAME[c.id] ?? c.id}`}
                       />
@@ -140,6 +164,13 @@ export default function AlertSettings() {
             </tbody>
           </table>
         </details>
+        {channels.some((c) => !c.available && SETUP[c.id]) && (
+          <div className="border-t border-line py-3 text-ui text-muted">
+            {channels.filter((c) => !c.available && SETUP[c.id]).map((c) => (
+              <p key={c.id} data-testid={`route-setup-note-${c.id}`} className="py-1"><span className="text-fg">{CHANNEL_NAME[c.id] ?? c.id}.</span> {SETUP[c.id]}</p>
+            ))}
+          </div>
+        )}
       </Card>
     </div>
   );
