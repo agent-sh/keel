@@ -385,7 +385,7 @@ export function UnitReader({ u, folder, onChange }: { u: UnitView; folder: strin
                 <MarkDot m={mcpMarkOf(m.state)} label={m.state} />
                 <span className="shrink-0 whitespace-nowrap font-medium">{m.label}</span>
                 <code className="min-w-0 truncate font-mono text-micro text-faint" title={m.what}>{tilde(m.what)}</code>
-                <span className="ml-auto shrink-0 whitespace-nowrap text-caption tabular-nums text-muted">{m.state === "ready" ? plural(m.tools.length, "tool") : m.state.replace("_", " ")}</span>
+                <span className="ml-auto shrink-0 whitespace-nowrap text-caption tabular-nums text-muted">{m.state === "ready" || m.state === "idle" ? plural(m.tools.length, "tool") : m.state.replace("_", " ")}</span>
               </div>
             ))}
           </div>

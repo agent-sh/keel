@@ -92,9 +92,15 @@ export async function catalogReady(family?: string, session?: string): Promise<C
   return lists.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }
 
-// Tools a search showed the model: each one's source is told, so a server asleep is starting when the call comes.
+// How many servers a search starts: those of its first results. A broad query lists up to twenty tools across many
+// servers, and the model calls from the top of the list, so starting every server it names would bring back the
+// processes the sleep saves; one the model calls later out of the rest starts at that call.
+export const SURFACED_STARTS = 3;
+
+// Tools a search showed the model: the sources of its first results are told, so a server asleep is starting when the call comes.
 export function surfaced(tools: { server: string }[], session?: string) {
-  const by = new Set(tools.map((t) => t.server));
+  const first = [...new Set(tools.map((t) => t.server))].slice(0, SURFACED_STARTS);
+  const by = new Set(first);
   for (const s of offered(session)) if (by.has(s.name)) try { s.warm?.(); } catch { /* a start that fails shows when the tool is called */ }
 }
 

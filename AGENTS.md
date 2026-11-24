@@ -260,9 +260,13 @@ under `~/.cache/keel-work/bun/research/`.
 - A command MCP server holds no process until it is used. Its last listing (tools, instructions, whether it
   has resources or prompts, its prompts) is kept in the state keyed by a hash of its command, arguments and
   environment names (`mcp-tools.json`, `src/mcp/manager.ts` `keep`/`useKept`), and a server with one and an
-  accepted pin starts asleep: its tools are in the catalog, nothing runs. Its first call, or a search that
-  shows one of its tools, starts it; the listing it gives then replaces the kept one, and a changed list is a
-  tool change for the owner's review as before (`settle`). With no call for `mcp_idle.stop_min` minutes it
+  accepted pin starts asleep: its tools are in the catalog, nothing runs. Only a listing the owner already
+  accepted sleeps (`accepted`), and each kept listing is signed with Keel's own key: one edited in the file,
+  or differing from the pin, makes the server connect as one with no kept listing, so a change is only ever
+  reviewed from what the server itself lists (a server with no process has nothing to accept: asking starts
+  it). Its first call, a search that shows one of its first three servers' tools, or a read of its resources
+  or prompts starts it; the listing it gives then replaces the kept one, and a changed list is a tool
+  change for the owner's review as before (`settle`). With no call for `mcp_idle.stop_min` minutes it
   loses its process again (`stopIdle`); not one with a call under way, resources it is told about, a channel
   the owner takes, `keep_running` set, or a browser the owner did not choose to close when idle. A server
   with no kept listing connects at start, as before.

@@ -117,7 +117,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           ...(s.plugin ? [["Source", <button type="button" className="underline decoration-line-strong underline-offset-2 hover:text-accent" data-testid="mcp-plugin" onClick={() => navigate({ name: "settings", section: "plugins" })}>Plugin · {s.plugin}</button>] as [string, React.ReactNode]] : []),
           ...(s.sync ? [["Follows", <span data-testid="mcp-sync" data-gone={s.sync.gone || undefined}>{s.sync.label}{s.sync.name !== s.name ? ` (${s.sync.name})` : ""}{s.sync.gone ? ", which no longer has it" : ""}</span>] as [string, React.ReactNode]] : []),
           ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),
-          ...(s.state === "ready" && s.last_connected ? [["Connected", ago(s.last_connected)] as [string, string]] : []),
+          ...((s.state === "ready" || s.state === "idle") && s.last_connected ? [[s.state === "idle" ? "Last started" : "Connected", ago(s.last_connected)] as [string, string]] : []),
           ...(s.retry ? [["Retry", <span data-testid="mcp-retry" data-attempt={s.retry.attempt}>try {s.retry.attempt} failed, next {inMs(s.retry.next_ms)}, until {clock(s.retry.until_ms, { weekday: true })}</span>] as [string, React.ReactNode]] : []),
         ]}
       >
@@ -160,7 +160,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         {offered(s) && s.schema_fit?.length > 0 && <SchemaFit rows={s.schema_fit} />}
         {s.idle_browser && !s.plugin && !s.session && (s.idle_browser.can || s.idle_browser.on) && <IdleBrowserSection s={s} base={base} act={act} />}
         {!s.bundled && <ChannelSection s={s} base={base} act={act} />}
-        {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
+        {(s.state === "ready" || s.state === "idle") && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
         {(s.logging || s.log_rev > 0) && <ServerLog s={s} base={base} />}
         {!offered(s) && !s.error && <p className="text-caption text-faint">Its tools show once it connects.</p>}
         {!s.bundled && (
@@ -250,7 +250,7 @@ function ChannelSection({ s, base, act }: { s: McpServerState; base: string; act
         <Toggle testid="mcp-channel-toggle" on={ch.on} label={`${ch.on ? "Stop taking" : "Take"} ${s.name}'s events`} onChange={(on) => post({ on })} />
       </div>
       <p className="text-caption text-muted" data-testid="mcp-channel-says">
-        {!ch.declared && s.state === "ready" ? "It declares no channel, so it sends no events. " : ch.declared ? "It is a channel: it can push chat, CI or webhook events. " : ""}
+        {!ch.declared && s.state === "ready" ? "It declares no channel, so it sends no events. " : ch.declared ? "It is a channel: it can push chat, CI or webhook events. " : s.state === "idle" && !ch.on ? "It has no process now: turning this on starts it, and it then stays running to push its events. " : ""}
         {s.session ? (ch.on ? "Its events go into the session that passed it." : "Off: its events are dropped.")
           : !ch.on ? "Off: its events are dropped." : named.size ? "Each event is read at a working session's next step, or starts a turn in an idle one. A session you stopped keeps it until you go on." : "On, but no session takes its events yet: name one below."}
       </p>

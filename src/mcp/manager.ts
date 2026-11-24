@@ -4,8 +4,9 @@
 // restarts only the servers whose config changed, and never touches a session's
 // request prefix (MCP tools are deferred, so the eager tool list is fixed).
 import { fitReport, type SchemaFitRow } from "../providers/wires/schema-fit.ts";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { rename as renameAsync, writeFile as writeFileAsync } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { basename, dirname, join } from "node:path";
 import { spelled } from "../safety/chars.ts";
@@ -291,16 +292,25 @@ const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 // the owner's secret and no part of the key). Another program, arguments or set of names is another server.
 const keptKey = (c: McpServerConfig) => digest(canon({ command: c.command, args: c.args ?? [], env: Object.keys(c.env ?? {}).sort(), env_vars: [...(c.env_vars ?? [])].sort() }));
 
-// The kept listings as a file holds them, whole or not at all: a file that is not this build's gives none.
-function readKept(text: string): Record<string, Kept> {
+// What a kept listing is signed over: its server's name and everything it holds, with Keel's own key (the one that
+// binds an app to its server). A listing that was edited, or moved to another name, no longer matches its signature.
+const keptSig = (key: Uint8Array, name: string, k: Kept) => createHmac("sha256", key).update(canon({ name, key: k.key, tools: k.tools, instructions: k.instructions, caps: k.caps, prompts: k.prompts ?? null })).digest("hex");
+
+// The kept listings as a file holds them, whole or not at all (a file that is not this build's gives none); a listing
+// whose signature does not match is left out, so that server connects as one with no kept listing does.
+function readKept(text: string, key: Uint8Array): Record<string, Kept> {
   const f = JSON.parse(text);
   if (!f || f.version !== 1 || !f.servers || typeof f.servers !== "object" || Array.isArray(f.servers)) throw new Error("it is not a tool list file of this build");
   const out: Record<string, Kept> = {};
   for (const [name, k] of Object.entries<any>(f.servers)) {
     const ok = k && typeof k.key === "string" && Array.isArray(k.tools) && k.tools.every((t: any) => t && typeof t.name === "string")
       && (k.instructions === null || typeof k.instructions === "string") && k.caps && typeof k.caps.resources === "boolean" && typeof k.caps.prompts === "boolean"
-      && (k.prompts === undefined || Array.isArray(k.prompts));
-    if (ok) out[name] = k;
+      && (k.prompts === undefined || Array.isArray(k.prompts)) && typeof k.sig === "string";
+    if (!ok) continue;
+    const { sig, ...kept } = k as Kept & { sig: string };
+    const want = Buffer.from(keptSig(key, name, kept));
+    const have = Buffer.from(sig);
+    if (want.length === have.length && timingSafeEqual(want, have)) out[name] = kept;
   }
   return out;
 }
@@ -402,9 +412,10 @@ const SSE_TRY_MS = 4000;
 // enough for the next step of a task and short of holding a browser's memory for hours.
 const IDLE_PASS_MS = 60_000;
 // The minutes a command server may sit with no call before its process is ended (its tool list stays, the next call
-// starts it again): 30. Measured over the owner's calls (five days, seven servers, 1,891 calls): at 30 minutes the
-// busiest server (about 13 calls an hour) restarts about 9 times a day and every other one twice or less; shorter
-// bounds multiply the busiest one's restarts (18 a day at 5 minutes) for little more memory held back.
+// starts it again): 30. Long enough that a server a task uses now and then is not started again in the middle of it,
+// short enough that one used once is not held for the rest of the day. A server called every few minutes would restart
+// many times a day at a shorter bound, for little memory held back (the call counts per server and hour are the
+// owner's own, and stay at home).
 registerSettings("mcp_idle", { close_browser_min: 10, stop_min: 30 }, (v) =>
   typeof v.close_browser_min !== "number" || !Number.isFinite(v.close_browser_min) || v.close_browser_min < 0 ? "close_browser_min is a number of minutes, 0 or more (0: never)"
     : typeof v.stop_min !== "number" || !Number.isFinite(v.stop_min) || v.stop_min < 0 ? "stop_min is a number of minutes, 0 or more (0: never)" : undefined);
@@ -462,7 +473,6 @@ export class McpManager {
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
     this.publishedPath = join(stateDir, "mcp-instructions.json");
     this.toolsPath = join(stateDir, "mcp-tools.json");
-    try { this.kept = readKept(readFileSync(this.toolsPath, "utf8")); } catch {} // none kept yet, or a file that is not this build's: every server connects
     this.askedPath = join(stateDir, "mcp-asked.json");
     this.pinsPath = join(stateDir, "mcp-pins.json");
     this.loadPins();
@@ -483,6 +493,7 @@ export class McpManager {
       try { writeFileSync(keyPath, randomBytes(32), { mode: 0o600, flag: "wx" }); } catch {} // another manager wrote it first
     }
     this.bindKey = readFileSync(keyPath);
+    try { this.kept = readKept(readFileSync(this.toolsPath, "utf8"), this.bindKey); } catch {} // none kept yet, or a file that is not this build's: every server connects
   }
 
   // Register a server Keel brings itself; call before start().
@@ -784,6 +795,12 @@ export class McpManager {
       this.addEntry(name, c);
     }
     this.markUpgrade();
+    // A kept listing of a server that is no longer here and was never accepted (no pin) is of no use: dropped.
+    // (A plugin's server is added later and is kept; one gone later is dropped when it goes.)
+    if (!runMode.client && Object.keys(this.kept).some((n) => !this.entries.has(n) && !this.pins[n])) {
+      for (const n of Object.keys(this.kept)) if (!this.entries.has(n) && !this.pins[n]) delete this.kept[n];
+      this.writeKept();
+    }
     if (!runMode.client) {
       try { this.syncSources(); } catch (e) { this.errors.capture("server", e, { at: "mcp sources sync" }); }
       this.watchSources();
@@ -818,6 +835,11 @@ export class McpManager {
       unregisterCatalog(e.name);
     }
     this.entries.clear();
+    // Owed to the file, or being written: written whole now, before the process can end.
+    if (this.keptOwed || this.keptWriting) {
+      this.keptOwed = false;
+      try { writeFileSync(this.toolsPath + ".tmp", this.keptText(), { mode: 0o600 }); renameSync(this.toolsPath + ".tmp", this.toolsPath); } catch (err) { this.errors.capture("server", err, { at: "mcp tool lists" }); }
+    }
   }
 
   private addEntry(name: string, config: McpServerConfig, bundled?: BundledServer, own?: Own, plugin?: string) {
@@ -873,11 +895,19 @@ export class McpManager {
     return !e.bundled && !e.session && !!e.config.command && !e.config.url && !e.config.keep_running && !this.channelOn(e);
   }
 
+  // Whether a listing is one the owner already accepted: every tool it names is pinned as it is, and its instructions are
+  // the pinned ones. Only such a listing is a server's while it has no process: a change is the owner's to review from
+  // what the server itself lists, never from a file.
+  private accepted(e: Entry, tools: McpTool[], instructions: string | null): boolean {
+    const p = this.pinOf(e);
+    return !!p && !diffTools(p.tools, tools).changes.length && !instructionsChange(p.instructions, instructions);
+  }
+
   // A server with a kept listing under this config that the owner accepted (a pin): it starts asleep.
   private useKept(e: Entry) {
     if (e.state === "disabled" || !this.sleeps(e)) return;
     const k = this.kept[e.name];
-    if (!k || k.key !== keptKey(e.config) || !this.pinOf(e)) return;
+    if (!k || k.key !== keptKey(e.config) || !this.accepted(e, k.tools, k.instructions)) return;
     e.tools = k.tools;
     e.instr = k.instructions;
     e.caps = k.caps;
@@ -897,14 +927,40 @@ export class McpManager {
     this.writeKept(e.name);
   }
 
+  // The file is written off the loop, one write at a time: a change that comes while one is under way is written
+  // after it, whole (the file always holds every listing). `dispose` finishes what is owed.
+  private keptOwed = false;
+  private keptWriting?: Promise<void>;
+  private keptAt?: string;
   private writeKept(at?: string) {
-    try {
-      mkdirSync(this.stateDir, { recursive: true });
-      writeFileSync(this.toolsPath + ".tmp", JSON.stringify({ version: 1, servers: this.kept }), { mode: 0o600 });
-      renameSync(this.toolsPath + ".tmp", this.toolsPath);
-    } catch (err) {
-      this.errors.capture("server", err, { at: "mcp tool lists", ...(at ? { mcp: at } : {}) });
-    }
+    this.keptOwed = true;
+    if (at) this.keptAt = at;
+    if (this.keptWriting) return;
+    this.keptWriting = (async () => {
+      try {
+        while (this.keptOwed) {
+          this.keptOwed = false;
+          const text = this.keptText();
+          mkdirSync(this.stateDir, { recursive: true });
+          await writeFileAsync(this.toolsPath + ".tmp", text, { mode: 0o600 });
+          if (this.disposed) return; // the manager's end wrote the file itself
+          await renameAsync(this.toolsPath + ".tmp", this.toolsPath);
+        }
+      } catch (err) {
+        // (A manager that ended while this one was under way wrote the file itself: its rename finds the file taken.)
+        if (!(this.disposed && (err as NodeJS.ErrnoException).code === "ENOENT")) this.errors.capture("server", err, { at: "mcp tool lists", ...(this.keptAt ? { mcp: this.keptAt } : {}) });
+      } finally {
+        this.keptWriting = undefined;
+      }
+    })();
+  }
+  private keptText() {
+    const servers = Object.fromEntries(Object.entries(this.kept).map(([n, k]) => [n, { ...k, sig: keptSig(this.bindKey, n, k) }]));
+    return JSON.stringify({ version: 1, servers });
+  }
+  // The listings written, as far as they were asked for (a test waits on it).
+  keptWritten(): Promise<void> {
+    return this.keptWriting ?? Promise.resolve();
   }
 
   private catalogTool(e: Entry, t: McpTool): CatalogTool {
@@ -1201,6 +1257,12 @@ export class McpManager {
     return (e?.closing ? e.closing.then(run) : run()).finally(done);
   }
 
+  // A read of a server's resources or prompts is a use of it as a tool call is: it is not idle for the bound after it.
+  private used(name: string) {
+    const e = this.entries.get(name);
+    if (e) e.used = Date.now();
+  }
+
   // Whether a server's browser may be closed by Keel: one Keel starts (a command; never a remote URL, whose
   // browser may be somebody else's or a shared one), not a plugin's or a session's, that lists the Playwright
   // server's pair of tools, `browser_navigate` with `browser_close`. A name alone is not enough.
@@ -1266,14 +1328,14 @@ export class McpManager {
     for (const e of [...this.entries.values()]) {
       const c = e.client;
       if (!c || e.state !== "ready" || e.cold || !this.sleeps(e) || e.closing || (e.inflight ?? 0) > 0 || c.inflight > 0 || e.subscribed.size > 0) continue;
-      const k = this.kept[e.name];
-      if (!k || k.key !== keptKey(e.config) || !this.pinOf(e)) continue;
+      // A listing the owner has not accepted stays held with its process, where it is read from the server itself.
+      if (!this.accepted(e, e.tools, e.instr ?? null)) continue;
       // (Its browser is the owner's to close: a server that opens one stops only when the owner chose to close it when idle.)
       if (this.browserClose(e) && !e.config.close_idle_browser) continue;
       const since = Math.max(e.used ?? 0, e.last ?? 0);
       if (!since || now - since < minutes * 60_000) continue;
-      // What it lists now is what is kept (a list that changed since is held for the owner as before): it sleeps on that.
-      if (canon(k.tools) !== canon(e.tools)) this.keep(e);
+      // What it lists now is what is kept: it sleeps on that.
+      this.keep(e);
       e.client = undefined;
       e.connecting = undefined;
       e.abort = undefined;
@@ -1430,6 +1492,7 @@ export class McpManager {
   // An app's page as its server gives it: each content item whole, with its `_meta`.
   async readApp(name: string, uri: string, signal?: AbortSignal): Promise<{ uri?: string; mimeType?: string; text?: string; blob?: string; _meta?: Record<string, unknown> }[]> {
     const c = await this.ensure(name, 15_000);
+    this.used(name);
     const r = await c.readResource(uri, signal);
     return Array.isArray(r?.contents) ? r.contents : [];
   }
@@ -1818,6 +1881,11 @@ export class McpManager {
       this.save({ ...this.cfg.servers, [name]: c });
       e.config = c;
     }
+    // A server that takes events must be there to push them: one with no process starts now.
+    if (on && e.cold && !this.sleeps(e)) {
+      e.cold = false;
+      this.ensure(e.name).catch(() => {}); // its state says why it failed
+    }
     return this.channelFrom(e);
   }
   // What became of an event, to a server that asked to be told (STATUS_CAP).
@@ -1999,6 +2067,8 @@ export class McpManager {
   }
 
   private changesOf(e: Entry): { changes: ToolChange[]; instructions?: InstructionsChange } {
+    // Asleep it lists what the owner accepted (that is the only listing that sleeps): nothing it could change is read from a file.
+    if (e.cold) return { changes: [] };
     const instr = e.instr ?? null;
     if (e.diff && e.diff.from === e.tools && e.diff.rev === this.pinsRev && e.diff.instr === instr) return e.diff;
     const p = this.pinOf(e);
@@ -2068,6 +2138,11 @@ export class McpManager {
   acceptTools(name: string, digest: string) {
     const e = this.entries.get(name);
     if (!e || !this.leashed(e)) throw Object.assign(new Error(`no MCP server of the owner's named ${name}`), { status: 404 });
+    // With no process there is nothing of the server's own to accept: it starts, and its listing is reviewed as it comes.
+    if (e.cold) {
+      this.ensure(name).catch(() => {});
+      throw Object.assign(new Error(`${name} has no process: it is starting, look at its tools again`), { status: 409 });
+    }
     const { changes, instructions } = this.changesOf(e);
     if (!changes.length && !instructions) return;
     if (!digest) throw Object.assign(new Error("an acceptance names the change set the owner was shown (held.digest)"), { status: 400 });
@@ -2155,6 +2230,11 @@ export class McpManager {
     // Gone, not replaced (a change of its config adds it again at once): whatever named it for its events goes.
     if (!e.session && !e.bundled) queueMicrotask(() => {
       if (this.entries.has(name) || this.disposed) return;
+      // Its kept listing goes with it (a server added again lists afresh).
+      if (this.kept[name]) {
+        delete this.kept[name];
+        this.writeKept(name);
+      }
       if (this.pluginChannels().has(name)) {
         const set = new Set(this.pluginChannels());
         set.delete(name);
@@ -2416,6 +2496,7 @@ export class McpManager {
   // when the other fails, and a server without templates is not a failure.
   async resources(name: string, signal?: AbortSignal, from?: { list: "resources" | "templates"; cursor: string }): Promise<{ resources: ResourceHalf; templates: ResourceHalf }> {
     const c = await this.ensure(name, 15_000);
+    this.used(name);
     const half = async (list: "resources" | "templates"): Promise<ResourceHalf> => {
       if (from && from.list !== list) return { items: [] };
       try {
@@ -2434,6 +2515,7 @@ export class McpManager {
   // URI subscribes to its changes when the server offers that.
   async readResource(name: string, uri: string, signal?: AbortSignal): Promise<ResourceItem[]> {
     const c = await this.ensure(name, 15_000);
+    this.used(name);
     const r = await c.readResource(uri, signal);
     const e = this.entries.get(name);
     if (e && c.capabilities.resources?.subscribe && !e.subscribed.has(uri)) {
@@ -2446,6 +2528,7 @@ export class McpManager {
 
   async prompts(name: string, signal?: AbortSignal) {
     const c = await this.ensure(name, 15_000);
+    this.used(name);
     return c.listPrompts(signal);
   }
 
@@ -2459,6 +2542,7 @@ export class McpManager {
   // strings only. A server that does not declare completions suggests nothing.
   async complete(name: string, ref: { type: "ref/prompt"; name: string } | { type: "ref/resource"; uri: string }, argument: { name: string; value: string }, context?: Record<string, string>, signal?: AbortSignal): Promise<{ values: string[]; hasMore?: true; total?: number }> {
     const c = await this.ensure(name, 15_000);
+    this.used(name);
     if (!c.capabilities.completions) return { values: [] };
     const r = (await c.complete(ref, argument, context, signal))?.completion ?? {};
     const values = (Array.isArray(r.values) ? r.values : []).filter((v: unknown): v is string => typeof v === "string").slice(0, 100);
@@ -2467,6 +2551,7 @@ export class McpManager {
 
   async promptMessages(name: string, prompt: string, args: Record<string, string>, signal?: AbortSignal): Promise<PromptMessage[]> {
     const c = await this.ensure(name, 15_000);
+    this.used(name);
     const r = await c.getPrompt(prompt, args, signal);
     return (r?.messages ?? []).map((m: any) => ({ role: String(m.role ?? "user"), ...promptPart(m.content) }));
   }
