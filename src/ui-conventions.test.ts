@@ -471,11 +471,16 @@ function shared(list: Src[]): string[] {
 // A Settings section is made of the Settings kit (components/settings/kit.tsx), so that sections built by
 // different hands read as one page: a group's box, a status and a label are the kit's. A section's module
 // draws no framed box of its own (a border on the raised surface with a corner: Group or Card), no status
-// tag of its own (a small tinted chip: Status) and no label in capitals. The sections not moved yet are
-// named in NOT_ON_KIT, each with what it still draws; the list only shrinks.
+// tag of its own (a small tinted chip: Status), no label in capitals and no border in a style object. A box is
+// any corner or border width on a surface, a tag any corner with a small tinted chip, whatever their sizes. The
+// rule holds for the modules a section imports too (not the dialogs and menus that float over the page).
+// The modules not moved yet are named in NOT_ON_KIT, each with what it still draws; the list only shrinks.
 const NOT_ON_KIT = [
   "components/ContentRoutes.tsx", "components/ElsewherePanel.tsx", "components/LogsSettings.tsx",
   "components/PhonePanel.tsx", "components/PortPanel.tsx", "components/PrReviews.tsx",
+  "components/HeavyPool.tsx", "components/HelperPanel.tsx", "components/MemoryFacts.tsx",
+  "components/MemoryUsage.tsx", "components/NewModels.tsx", "components/ProviderModels.tsx", "components/ResumeFrom.tsx", "components/TakeOver.tsx",
+  "components/surfaces/PluginUnits.tsx",
   "components/ProvidersPanel.tsx", "components/ResourcesPanel.tsx", "components/SafetySettings.tsx", "components/Settings.tsx",
 ];
 // The module each registered section shows: a lazy import's file, a component imported by name, or the file that registers it.
@@ -492,21 +497,54 @@ function sectionFiles(list: Src[]): string[] {
   }
   return [...out].sort();
 }
+// A section's own modules: the file a section registers and every component of the page it imports, by
+// the relative paths of its imports, however deep. The kit and the shared surfaces are not walked.
+// (Not walked: the kit, the page's primitives and the dialogs and menus that float over a page.)
+const SHARED_PARTS = new Set(["components/settings/kit.tsx", "components/ui.tsx", "components/Confirm.tsx", "components/ModelMenu.tsx", "components/AddProvider.tsx", "components/Chart.tsx"]);
+function reached(list: Src[], sections: string[]): string[] {
+  const by = new Map(list.map((s) => [s.file, s]));
+  const out = new Set<string>(sections);
+  const todo = [...sections];
+  while (todo.length) {
+    const f = by.get(todo.pop()!);
+    if (!f) continue;
+    for (const m of code(f.text).matchAll(/\b(?:import|export)\b[^;"']*?from\s*["'](\.[^"']+)["']|import\(\s*["'](\.[^"']+)["']\s*\)/g)) {
+      const rel = (m[1] ?? m[2])!;
+      const to = relative(UI, join(UI, f.file, "..", rel.replace(/\.[tj]sx?$/, "")));
+      const hit = [".tsx", ".ts"].map((e) => to + e).find((x) => by.has(x));
+      if (!hit || out.has(hit) || SHARED_PARTS.has(hit) || !/^components\//.test(hit)) continue;
+      out.add(hit); todo.push(hit);
+    }
+  }
+  return [...out].sort();
+}
+// A corner of any kind, a border of any width and a surface (a background that is not a hover or a state).
+const CORNER = /^rounded(-(?!none$)\S+)?$/, EDGE = /^border(-[xytblrse])?(-\d+)?$/, SURFACE = /^bg-(raised|sunken|surface|panel|card|elevated|bg)$/;
 function offKit(list: Src[], sections: string[], waiting: string[] = NOT_ON_KIT): string[] {
   const out: string[] = [];
-  const of = new Set(sections);
+  const of = new Set(reached(list, sections));
   for (const s of list) {
     if (!of.has(s.file)) continue;
     const found: string[] = [];
     for (const { value, line } of strings(s.text)) {
       const c = new Set(classList(value));
       if (!c.size) continue;
-      const corner = [...c].some((x) => /^rounded(-(sm|md|lg|xl|xs))?$/.test(x));
+      const corner = [...c].some((x) => CORNER.test(x)), edge = [...c].some((x) => EDGE.test(x));
+      const surface = [...c].some((x) => SURFACE.test(x)), anyBg = [...c].some((x) => /^bg-/.test(x));
       // (A field or a control has a height of its own; a code span is mono.)
       if (c.has("font-mono") || [...c].some((x) => /^h-\d/.test(x))) continue;
-      if (corner && c.has("border") && c.has("bg-raised")) found.push(at(s, line, `a framed box of its own (${value.slice(0, 40)}): use Group or Card of components/settings/kit.tsx`));
-      else if (corner && (c.has("text-micro") || c.has("text-caption")) && [...c].some((x) => /^bg-/.test(x)) && [...c].some((x) => /^px-(1|1\.5|2)$/.test(x))) found.push(at(s, line, `a status tag of its own (${value.slice(0, 40)}): use Status of components/settings/kit.tsx`));
+      // (A surface that floats over the page, a dialog or a menu, is not a box of the page.)
+      if ([...c].some((x) => /^(fixed|absolute|sticky|z-\d+|k-dialog)$/.test(x))) continue;
+      // (An icon tile is a square of its own size.)
+      const tile = [...c].some((x) => /^size-\d/.test(x));
+      if (corner && (c.has("text-micro") || c.has("text-caption")) && anyBg && [...c].some((x) => /^px-(1|1\.5|2)$/.test(x))) found.push(at(s, line, `a status tag of its own (${value.slice(0, 40)}): use Status of components/settings/kit.tsx`));
+      else if ((corner || edge) && surface && !tile) found.push(at(s, line, `a framed box of its own (${value.slice(0, 40)}): use Group or Card of components/settings/kit.tsx`));
       else if (c.has("uppercase")) found.push(at(s, line, "a label in capitals: a group's title or Status"));
+    }
+    // A border drawn in a style object is a second way to frame a box: the kit's classes are the only one.
+    const src = code(s.text);
+    for (const m of src.matchAll(/style=\{\{([^}]*)\}\}|\bstyle:\s*\{([^}]*)\}/g)) {
+      if (/\bborder(?:[A-Z]\w*)?\s*:/.test(m[1] ?? m[2] ?? "")) found.push(at(s, lineOf(src, m.index!), "a border in a style object: a box is Group or Card of components/settings/kit.tsx"));
     }
     if (waiting.includes(s.file)) { if (!found.length) out.push(`${s.file}: is on the kit now; take it out of NOT_ON_KIT`); }
     else out.push(...found);
@@ -801,6 +839,11 @@ test("each check refuses what it is for", () => {
   expect(stateLiterals(tsx('<span title="Needs You" />\nconst a = "NEEDS YOU";\nconst b = "needs you";\n<i aria-label="Needs you, under a look" />'))).toHaveLength(4);
   // A section that draws its own box, tag or capitals; one named as waiting that no longer does.
   expect(offKit(tsx('<section className="rounded-lg border border-line bg-raised p-4" />\n<span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>\n<h3 className="text-micro uppercase">Tools</h3>'), ["components/Thing.tsx"], [])).toHaveLength(3);
+  // Any corner or border width on a surface, a chip of any shape, a border in a style object, and what a section imports.
+  expect(offKit(tsx('<div className="rounded-2xl border-2 border-line bg-raised p-4" />\n<span className="rounded-full bg-sunken px-2 text-micro" />\n<div style={{ border: "1px solid red" }} />\n<div style={{ borderColor: c }} />\n<div className="rounded-sm bg-sunken p-2" />'), ["components/Thing.tsx"], [])).toHaveLength(5);
+  const two = [...tsx('import { Part } from "./Part.tsx";\nimport { Pop } from "./ui.tsx";\nexport const Thing = () => <Part />;', "components/Thing.tsx"), ...tsx('<div className="rounded-lg border bg-raised" />', "components/Part.tsx"), ...tsx('<div className="rounded-lg border bg-raised" />', "components/ui.tsx"), ...tsx('<div className="rounded-lg border bg-raised" />', "components/Other.tsx")];
+  expect(offKit(two, ["components/Thing.tsx"], [])).toHaveLength(1);
+  expect(offKit(two, ["components/Thing.tsx"], ["components/Part.tsx"])).toEqual([]);
   expect(offKit(tsx('<Group title="Tools"><Status>archived</Status></Group>'), ["components/Thing.tsx"], ["components/Thing.tsx"])).toHaveLength(1);
   // And no rule turns one to capitals.
   expect(shoutedStates(css(".k-row-state { font-weight: 700; text-transform: uppercase; }\n.k-rail .k-sum-word, .k-other { text-transform: uppercase; }"))).toHaveLength(2);
@@ -837,7 +880,7 @@ test("each check lets ordinary edits through", () => {
   expect(segmented(tsx('<Seg kind="tabs" label="View" value={v} onChange={set} options={o} />\n// role="tablist" is the Seg component\'s'), [])).toEqual([]);
   expect(empties(tsx('<p className="text-caption text-muted">No further approval is asked for this folder.</p>'), [])).toEqual([]);
   // The kit's parts, a box that is not a section's, and a section not moved yet are let through.
-  expect(offKit(tsx('<Group title="Tools" pad><Status tone="ok">Well</Status><Empty>None.</Empty></Group>\n<span className="rounded-full bg-sunken px-2 text-micro" />'), ["components/Thing.tsx"], [])).toEqual([]);
+  expect(offKit(tsx('<Group title="Tools" pad><Status tone="ok">Well</Status><Empty>None.</Empty></Group>\n<span className="size-5 rounded-full bg-sunken" />\n<div className="fixed rounded-xl border-2 border-line bg-raised" />'), ["components/Thing.tsx"], [])).toEqual([]);
   expect(offKit(tsx('<div className="rounded-lg border border-line bg-raised" />'), [], [])).toEqual([]);
   expect(offKit(tsx('<div className="rounded-lg border border-line bg-raised" />'), ["components/Thing.tsx"], ["components/Thing.tsx"])).toEqual([]);
   expect(pageTimes(tsx('const n = (1234567).toLocaleString();\nconst m = total.toLocaleString("en-US");\nconst d = new Date(ts).toLocaleDateString();'))).toEqual([]);
