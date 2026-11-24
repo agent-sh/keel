@@ -64,6 +64,8 @@ test("one report tells every session's state, failure, run time and spend, as th
     const done: string[] = [];
     for (const t of ["Changelog", "Lint cleanup", "Typo sweep", "Readme pass", "Flag removal", "Cache key audit", "Logger rename", "Test names", "Docs index"]) done.push(await open(t));
     for (const id of done) await send(id, "overview-prompt-marker say something");
+    // A message sent while its turn still runs is taken at that turn's next step (one turn end), so the second one waits for the first end.
+    await ended(done[0]!, 1);
     await send(done[0]!, "and once more");
     await open("Not yet begun");
     await open("Parked idea");
@@ -148,8 +150,13 @@ test("one report tells every session's state, failure, run time and spend, as th
     await page.goto(`${d.url}/s/${done[0]}`);
     const list = page.getByTestId("session-list");
     await expect(list.locator('[data-testid="session-row"]').first()).toBeVisible();
-    for (const more of await list.locator(".k-more").all()) await more.click();
     expect(o.sessions).toHaveLength(20);
+    // Sessions at rest that were read fold into "N more", and opening one marks it read: open the fold until every row is drawn.
+    await expect(async () => {
+      const fold = list.getByRole("button", { name: /^\d+ more$/ });
+      if (await fold.count()) await fold.first().click();
+      for (const r of o.sessions) await expect(list.locator(`[data-testid="session-row"][data-session="${r.id}"]`)).toHaveCount(1, { timeout: 500 });
+    }).toPass({ timeout: 15_000 });
     for (const r of o.sessions) await expect(list.locator(`[data-testid="session-row"][data-session="${r.id}"]`), r.title).toHaveAttribute("data-watch", r.watch);
     await expect(list.locator(`[data-testid="session-row"][data-session="${parent}"]`).getByTestId("row-state")).toHaveText("Working · 1 agent");
     expect(Object.fromEntries(["need", "work", "wait", "fail", "stop", "done", "idle"].map((w) => [w, o.sessions.filter((r) => r.watch === w).length]))).toEqual({ need: 2, work: 3, wait: 1, fail: 2, stop: 1, done: 9, idle: 2 });
