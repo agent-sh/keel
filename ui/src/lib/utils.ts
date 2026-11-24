@@ -27,8 +27,8 @@ export function fmtSize(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function ago(ts: number): string {
-  const s = Math.round((Date.now() - ts) / 1000);
+export function ago(ts: number, now = Date.now()): string {
+  const s = Math.round((now - ts) / 1000);
   if (s < 60) return "now";
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
@@ -37,7 +37,7 @@ export function ago(ts: number): string {
 // The bucket of a time a glance tells apart: now, within the hour, within the day, within the week, then
 // month by month. A calm list shows a quiet row's time only where its bucket changes (Sidebar.tsx).
 export function timeBucket(ts: number, now = Date.now()): number {
-  const s = (now - ts) / 1000;
+  const s = Math.round((now - ts) / 1000); // as `ago` reads it: a time that says "1m" is in the minute's bucket
   return s < 60 ? 0 : s < 3600 ? 1 : s < 86400 ? 2 : s < 7 * 86400 ? 3 : 4 + Math.floor(s / (30 * 86400));
 }
 

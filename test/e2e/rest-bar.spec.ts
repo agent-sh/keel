@@ -241,3 +241,48 @@ test("a row red for its agents says how many failed, and a calm list says a time
     for (const id of made) await request.delete(`/api/sessions/${id}`);
   }
 });
+
+test("a calm list's time buckets move with the page's clock, with nothing touched", async ({ page, request }) => {
+  const model = await scripted(request);
+  test.skip(!model, "needs the scripted stand-in: start the daemon with KEEL_SCRIPTED_PROVIDER=1");
+  const fs = await import("node:fs");
+  const workspace = gate();
+  fs.mkdirSync(workspace, { recursive: true });
+  const made: string[] = [];
+  const make = async (title: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model, title, workspace } })).json();
+    made.push(session.id);
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:say Done." } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+    await request.post(`/api/sessions/${session.id}/marks`, { data: { unread: false } });
+    return session.id as string;
+  };
+  const updated = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).session.updated as number;
+  try {
+    const older = await make("Calm clock: the older one");
+    const newer = await make("Calm clock: the newer one");
+    const [o, n] = [await updated(older), await updated(newer)];
+    const gap = n - o;
+    expect(gap, "the two sessions ended apart").toBeGreaterThan(20);
+    expect(gap).toBeLessThan(40_000);
+    // The page's own clock: both ended a few seconds ago, so both say the same and the older one's time is not repeated.
+    await page.clock.install({ time: n + 1000 });
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto("/");
+    await expect(row(page, newer)).toBeVisible();
+    await page.clock.pauseAt(n + 15_000);
+    await expect(row(page, older).getByTestId("row-time")).toHaveAttribute("data-calm", "true");
+    await expect(row(page, older).getByTestId("row-time")).toBeHidden();
+    await expect(row(page, newer).getByTestId("row-time")).toHaveText("now");
+    // The page's clock moves on to the instant the older one says a minute and the newer one does not yet: its time
+    // shows, with no event, no click and no reload.
+    await page.clock.fastForward(59_500 - Math.ceil(gap / 2) - 15_000);
+    await expect(row(page, older).getByTestId("row-time")).toBeVisible();
+    await expect(row(page, older).getByTestId("row-time")).toHaveText("1m");
+    await expect(row(page, older).getByTestId("row-time")).not.toHaveAttribute("data-calm", /.*/);
+    await expect(row(page, newer).getByTestId("row-time")).toHaveText("now");
+    await shoot(page, "rest-bar-06-calm-clock");
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});
