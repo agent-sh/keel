@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "./isolate.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { exited, ownDaemon } from "./peer.ts";
@@ -125,20 +125,12 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(page.getByTestId("bg-agent").filter({ hasText: "Fetch the release notes" }).getByTestId("bg-agent-state")).toHaveText("Failed: billing");
     await expect(card("Fetch the release notes").getByTestId("agent-call-state")).toHaveText("Failed: billing");
     // No surface says the words the vocabulary retired.
-    const said = [await kids.innerText(), await page.getByTestId("background-popup").innerText(), ...(await station(page, coord).getByTestId("agent-call").allInnerTexts())];
+    // (What an agent is doing now, "Running <command>", is its tool's own line, not a state word.)
+    const worded = (l: Locator) => l.evaluateAll((els) => els.map((el) => { const c = el.cloneNode(true) as HTMLElement; c.querySelectorAll('[data-testid="agent-now-text"]').forEach((n) => n.remove()); return c.textContent ?? ""; }));
+    const said = [...(await worded(kids)), ...(await worded(page.getByTestId("background-popup"))), ...(await worded(station(page, coord).getByTestId("agent-call")))];
     for (const text of said) expect(flat(text)).not.toMatch(/\b(Running|running|Asks you|asks you|Finished)\b/);
     await shoot(page, "state-words-01-coordinator");
     await page.keyboard.press("Escape");
-
-    // A notice about an agent names it by its title; its id stands at the end.
-    const ci = await by("Watch CI on main");
-    const park = station(page, coord).getByTestId("agent-park-notice").filter({ hasText: "Watch CI on main" }).first();
-    await expect(park).toContainText("Agent waiting");
-    await park.click();
-    await expect(park).toContainText("Watch CI on main waits for");
-    await expect(park.getByTestId("agent-park-id")).toHaveText(`Agent ${ci.id}`);
-    // The failure notice says the class in the word the rows use for it.
-    await expect(station(page, coord).getByTestId("failure-entries").first()).toContainText("1 agent failed (billing)");
 
     // And in each agent's own pane: the head says the same word.
     for (const l of LANES) {
@@ -155,6 +147,17 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await summary.toHaveText("8 agents: 1 failed, 3 working, 2 waiting, 2 done", { timeout: 60_000 });
     expect(await counts()).toBe(8);
     await expect.poll(async () => !(await (await request.get(`/api/sessions/${coord}`)).json()).running && (await states(request))[coord]?.watch, { timeout: 60_000 }).toBe("work");
+    // A notice about an agent names it by its title; its id stands at the end. A park starts no turn of the
+    // parent (0b3664139): it rides the parent's next input, here the report of the agent that was allowed.
+    const ci = await by("Watch CI on main");
+    const park = station(page, coord).getByTestId("agent-park-notice").filter({ hasText: "Watch CI on main" }).first();
+    await expect(park).toContainText("Agent waiting");
+    await park.click();
+    await expect(park).toContainText("Watch CI on main waits for");
+    await expect(park.getByTestId("agent-park-id")).toHaveText(`Agent ${ci.id}`);
+    // The failure notice says the class in the word the rows use for it.
+    await expect(station(page, coord).getByTestId("failure-entries").first()).toContainText("1 agent failed (billing)");
+
     // Three of its eight agents work: the head says of how many, the total the agents' line starts with,
     // and the pill beside it counts the five still out (three work, two wait).
     await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working · 3 of 8 agents");
