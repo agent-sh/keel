@@ -1077,8 +1077,10 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   if (left.length) leftOut.set(id, left);
   if (scope.json && scope.why) scopeOut.set(id, writeAsks.spawnLine(store.session(child.id) ?? child, scope.json, scope.why));
   const reviews = await reviewsAt(parentId, parent.workspace, input).catch((e) => { capture(e, { at: "agent reviews", agent: id }); return null; });
-  const near = await earlier;
-  if (near) { earlierOut.set(id, near); if (earlierOut.size > EARLIER_KEPT) earlierOut.delete(earlierOut.keys().next().value!); }
+  // The agent's start does not wait for the look past EARLIER_WAIT_MS: a slower answer is still said in a
+  // result read later (a foreground agent's), and in none once its spawn's result was read.
+  const keep = (near: string | undefined) => { if (near && !earlierTaken.has(id)) { earlierOut.set(id, near); if (earlierOut.size > EARLIER_KEPT) earlierOut.delete(earlierOut.keys().next().value!); } };
+  if (earlier) await Promise.race([earlier.then(keep), Bun.sleep(EARLIER_WAIT_MS)]);
   const task = [
     preamble(depth, max), def.body, memory?.block ?? "", ...preloaded,
     reviews || isReviewer(def.name) ? VERDICT_LINE : "",
@@ -1243,8 +1245,18 @@ export const scopeNote = (id: string) => scopeOut.get(id) ?? "";
 // The earlier agents of the repository closest to its task (src/automation/earlier.ts), by agent id, said once in the spawn's result.
 const earlierOut = new Map<string, string>();
 const EARLIER_KEPT = 200;
+// How long a spawn waits for the look at earlier agents: on a store with 600 of them it answers in about 50 ms,
+// and its lines help only when they ride the spawn's own result.
+const EARLIER_WAIT_MS = 750;
 // Taken once: the spawn's result carries the lines, and no later read of the agent does.
-export const takeEarlier = (id: string) => { const n = earlierOut.get(id) ?? ""; earlierOut.delete(id); return n; };
+const earlierTaken = new Set<string>();
+export const takeEarlier = (id: string) => {
+  const n = earlierOut.get(id) ?? "";
+  earlierOut.delete(id);
+  earlierTaken.add(id);
+  if (earlierTaken.size > EARLIER_KEPT) earlierTaken.delete(earlierTaken.values().next().value!);
+  return n;
+};
 // What the spawn's result says past the start: what was not carried, the agent's write scope, and the earlier attempts near its task.
 export function spawnNotes(id: string): string {
   const s = scopeOut.get(id);
