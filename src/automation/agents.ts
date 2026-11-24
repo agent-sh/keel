@@ -263,20 +263,22 @@ const wts = () => {
 // `start_from`: the last follow-up's start, as JSON (AgentStart).
 // `reviews`: the branches it reviews with their tips as it started, as JSON (reviewsAt), for the work board.
 type Row = Omit<AgentRecord, "background" | "handback" | "structured" | "budget" | "start" | "start_force" | "lost" | "reviews" | "api" | "api_off"> & { api: string | null; lost: string | null; budget: string | null; background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task?: string | null; parked: number | null; result?: string | null; report_chars?: number; start_from: string | null; start_force: string | null; reviews?: string | null };
-const toRec = (r: Row): AgentLean & { result?: string | null } => {
+// What a read of many rows asks the database once (`toRecs`); one row asks for itself.
+type RowFacts = { waiting: number; line: (parentId: string) => Line | undefined };
+const toRec = (r: Row, facts?: RowFacts): AgentLean & { result?: string | null } => {
   const { def, output_schema, schema_tries, restarts, park_told, task, parked, start_from, start_force, lost: lostJson, reviews: reviewsRaw, api, report_chars, ...rest } = r;
   let external: ExternalInfo | undefined;
   if (def?.includes('"external"')) try { external = (JSON.parse(def) as AgentDef).external; } catch {}
   void schema_tries; void restarts; void park_told; void task; void parked;
   // A waiting agent whose wake came while every slot was taken: it goes on when one frees.
-  const inLine = !!lineAt(r.parent_id)?.has(`wake:${r.id}`);
+  const inLine = !!(facts ? facts.line(r.parent_id) : lineAt(r.parent_id))?.has(`wake:${r.id}`);
   let start: AgentStart | undefined;
   try { start = start_from ? JSON.parse(start_from) : undefined; } catch {}
   let lost: Lost[] | undefined;
   try { lost = lostJson ? JSON.parse(lostJson) : undefined; } catch {}
   let reviews: string[] | undefined;
   try { reviews = reviewsRaw ? (JSON.parse(reviewsRaw) as { branch: string }[]).map((x) => x.branch) : undefined; } catch {}
-  return { ...rest, ...(report_chars !== undefined ? { report_chars } : {}), ...(external ? { external } : {}), ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...apiOf(r.session_id, api) };
+  return { ...rest, ...(report_chars !== undefined ? { report_chars } : {}), ...(external ? { external } : {}), ...(reviews?.length ? { reviews } : {}), background: !!r.background, handback: !!r.handback, structured: !!output_schema, budget: r.budget ? JSON.parse(r.budget) as Budget : null, messages_waiting: facts ? facts.waiting : waitingFor(r.session_id), ...(inLine ? { slot_wait: true } : {}), ...(start ? { start } : {}), ...(isWay(start_force) ? { start_force } : {}), ...(lost?.length ? { lost } : {}), ...apiOf(r.session_id, api) };
 };
 // Its grant of the daemon's lists, and why it does not take effect when one above it lost its own.
 function apiOf(sessionId: string, api: string | null): Pick<AgentRecord, "api" | "api_off"> {
@@ -287,6 +289,19 @@ function apiOf(sessionId: string, api: string | null): Pick<AgentRecord, "api" |
 }
 // The messages of its parent an agent's session has not read yet (the queue's rows of that kind).
 const waitingFor = (sessionId: string) => D().store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM queue WHERE session_id = ? AND json_extract(meta, '$.kind') = 'steer'").get(sessionId)!.n;
+// The same for a list of rows: one statement for all of them (the queue's index by session), and each parent's
+// line looked up once, none at all while no tree has a line (the usual case: nobody waits for a slot).
+function toRecs(rows: Row[]): (AgentLean & { result?: string | null })[] {
+  if (rows.length < 2) return rows.map((r) => toRec(r));
+  const waiting = new Map(D().store.db.query<{ session_id: string; n: number }, [string]>("SELECT session_id, COUNT(*) AS n FROM queue WHERE session_id IN (SELECT value FROM json_each(?)) AND json_extract(meta, '$.kind') = 'steer' GROUP BY session_id").all(JSON.stringify(rows.map((r) => r.session_id))).map((w) => [w.session_id, w.n]));
+  const byParent = new Map<string, Line | undefined>();
+  const line = (parentId: string) => {
+    if (!lines.size) return undefined;
+    if (!byParent.has(parentId)) byParent.set(parentId, lineAt(parentId));
+    return byParent.get(parentId);
+  };
+  return rows.map((r) => toRec(r, { waiting: waiting.get(r.session_id) ?? 0, line }));
+}
 
 export const get = (id: string): AgentFull | undefined => {
   const r = D().store.db.query<Row, [string]>("SELECT * FROM agents WHERE id = ?").get(id);
@@ -325,16 +340,17 @@ export const byChild = (sessionId: string): AgentLean | undefined => {
   return r ? toRec(r) : undefined;
 };
 export const list = (parentId?: string): AgentLean[] =>
-  D().store.db.query<Row, any>(`SELECT ${LEAN()} FROM agents ${parentId ? "WHERE parent_id = ?" : ""} ORDER BY created`).all(...(parentId ? [parentId] : [])).map(toRec);
+  toRecs(D().store.db.query<Row, any>(`SELECT ${LEAN()} FROM agents ${parentId ? "WHERE parent_id = ?" : ""} ORDER BY created`).all(...(parentId ? [parentId] : [])));
 // The agents of a parent still at work (and, with `owed`, those ended whose report is owed): what most callers
 // ask. The status is read before the row's report, so the reports of the ended ones (most of what a long-lived
 // coordinator's agents hold) are never read.
 export const live = (parentId: string, owed = false): AgentLean[] =>
-  D().store.db.query<Row, [string]>(`SELECT ${LEAN()} FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting')${owed ? " OR handback" : ""}) ORDER BY created`).all(parentId).map(toRec);
+  toRecs(D().store.db.query<Row, [string]>(`SELECT ${LEAN()} FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting')${owed ? " OR handback" : ""}) ORDER BY created`).all(parentId));
 // The agents a session shows as its own: its own, and when it is an agent's successor, the agents its lost contexts
 // started that ended before the handover. Those stay the lost context's (their reports were its, and a message
 // to one would start a follow-up that reports there): a read for the owner's views, not for what acts on agents.
-const lostOf = (sessionId: string): string[] => byChild(sessionId)?.lost?.map((l) => l.session).filter((x) => x !== sessionId) ?? [];
+const lostIn = (a: AgentLean | undefined, sessionId: string): string[] => a?.lost?.map((l) => l.session).filter((x) => x !== sessionId) ?? [];
+const lostOf = (sessionId: string): string[] => lostIn(byChild(sessionId), sessionId);
 export const shown = (sessionId: string): AgentLean[] => {
   const before = lostOf(sessionId).flatMap((l) => list(l));
   return before.length ? [...list(sessionId), ...before].sort((x, y) => x.created - y.created) : list(sessionId);
@@ -377,13 +393,14 @@ const BELOW = "WITH RECURSIVE t(s) AS (SELECT session_id FROM agents WHERE paren
 // The agents below a session, each followed by its own, with their depth under it.
 // `lost`: for the owner's views, the agents of a lost context show under the session that took its task up (shown).
 export const tree = (sessionId: string, lost = false): TreeRow<AgentLean>[] => {
-  const below = (sid: string) => D().store.db.query<Row, [string]>(`${BELOW} SELECT ${LEAN()} FROM agents WHERE session_id IN (SELECT s FROM t)`).all(sid).map(toRec);
+  const below = (sid: string) => toRecs(D().store.db.query<Row, [string]>(`${BELOW} SELECT ${LEAN()} FROM agents WHERE session_id IN (SELECT s FROM t)`).all(sid));
   const rows = below(sessionId);
   if (!lost) return treeRows(rows, sessionId);
   const seen = new Set(rows.map((r) => r.id));
   for (let i = -1; i < rows.length; i++) {
+    // (A row's own record holds what lostOf reads: no second read of it. Rows pushed here are read the same way.)
     const at = i < 0 ? sessionId : rows[i]!.session_id;
-    for (const l of lostOf(at)) for (const k of below(l)) if (!seen.has(k.id)) { seen.add(k.id); rows.push(k.parent_id === l ? { ...k, parent_id: at } : k); }
+    for (const l of lostIn(i < 0 ? byChild(at) : rows[i]!, at)) for (const k of below(l)) if (!seen.has(k.id)) { seen.add(k.id); rows.push(k.parent_id === l ? { ...k, parent_id: at } : k); }
   }
   return treeRows(rows, sessionId);
 };
