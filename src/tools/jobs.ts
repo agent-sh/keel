@@ -355,9 +355,10 @@ const codeEnds = new Map<string, () => void>();
 const CODE_CARRY = 8_000;
 // The program has ended (or was stopped): what it printed since its call returned goes to the log and, cut to
 // CODE_CARRY, into the input that tells its end.
-export function endCodeJob(job: Job, o: { code: number | null; signal?: string | null; text: string }) {
+// `log`: what is appended to the log when it is not all of `text` (some of it was written as it printed).
+export function endCodeJob(job: Job, o: { code: number | null; signal?: string | null; text: string; log?: string }) {
   if (job.ended !== undefined) return;
-  try { appendFileSync(job.log, o.text); } catch {}
+  try { appendFileSync(job.log, o.log ?? o.text); } catch {}
   const t = o.text.trim();
   job.result = t.length <= CODE_CARRY ? t : `${t.slice(0, CODE_CARRY / 2)}\n[... ${t.length - CODE_CARRY} characters cut; the whole is in the log ...]\n${t.slice(-CODE_CARRY / 2)}`;
   finish(job, o.code, o.signal ?? null);

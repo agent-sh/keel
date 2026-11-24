@@ -20,6 +20,7 @@ import { logDir, shq } from "./shell.ts";
 import { codeJob, endCodeJob, sessionScope, toolEnv, UNREAD_CAP, type Job } from "./jobs.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
+import { appendFileSync } from "node:fs";
 import { pump } from "../core/proc.ts";
 
 export const RUN_CODE = "run_code";
@@ -28,6 +29,8 @@ export const RUN_CODE = "run_code";
 // to the head a running command's unread output keeps; the result the model
 // gets is bounded again by spill().
 const KEPT = UNREAD_CAP;
+// How long after a program's exit its output streams are still read to their end.
+const STREAMS_GRACE_MS = 500;
 
 // The program's side. Runs as `bun -e`; the program's source is the first IPC
 // message. console output is collected (not written to a stream), so nothing the
@@ -43,6 +46,7 @@ const keep = (s) => {
   else if (take > 0) printed += new TextDecoder().decode(b.subarray(0, take)).replace(/\\uFFFD$/, "");
   held += take;
   dropped += b.length - take;
+  if (liveAt >= 0) liveTimer ??= setTimeout(flush, 250);
 };
 const show = (v) => typeof v === "string" ? v : Bun.inspect(v, { depth: 6 });
 const log = (...a) => keep(a.map(show).join(" ") + "\\n");
@@ -67,9 +71,19 @@ globalThis.tools = new Proxy({}, {
 // The daemon went away (a restart, a crash): nothing reads this program's calls or its end any more.
 process.on("disconnect", () => process.exit(143));
 process.on("unhandledRejection", (e) => keep("[unhandled rejection] " + show(e?.stack ?? e) + "\\n"));
-const finish = (error) => process.send({ done: true, printed, dropped, error });
+// Once the program goes on in the background, what it prints reaches the daemon as it prints (the job's log
+// shows it live): from the character the call's result stopped at, at most four times a second.
+let liveAt = -1, liveTimer = null;
+const flush = () => {
+  liveTimer = null;
+  if (liveAt < 0 || printed.length <= liveAt) return;
+  process.send({ print: printed.slice(liveAt), from: liveAt, to: printed.length });
+  liveAt = printed.length;
+};
+const finish = (error) => { clearTimeout(liveTimer); flush(); process.send({ done: true, printed, dropped, error }); };
 process.on("message", async (m) => {
   if (m?.snap) { process.send({ snap: true, printed, dropped }); return; }
+  if (typeof m?.live === "number") { liveAt = m.live; liveTimer ??= setTimeout(flush, 250); return; }
   if (typeof m?.code === "string") {
     let error = null;
     try {
@@ -131,6 +145,9 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
   let resolveDone!: () => void;
   const doneP = new Promise<void>((r) => (resolveDone = r));
   let snapped: ((m: { printed: string; dropped: number } | null) => void) | undefined;
+  // Once the program is a job: what it printed that was appended to the job's log as it came (the character
+  // the log has reached, in the program's printed text), and the log to append to.
+  let live: { log: string; at: number } | undefined;
   // What a call of the program runs under: the turn's own stop, until the program goes on past its turn.
   let signal: AbortSignal | undefined;
   // In a scope of its own, as a shell command is (else in a process group and session of its own): a
@@ -143,6 +160,10 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
     ipc(m: any) {
       if (m?.done) { done = m; resolveDone(); return; }
       if (m?.snap) { snapped?.(m); return; }
+      if (typeof m?.print === "string") {
+        if (live && m.from === live.at) { try { appendFileSync(live.log, m.print); live.at = m.to; } catch { /* the log is gone: the end says it all */ } }
+        return;
+      }
       if (typeof m?.call !== "number") return;
       const n = ++calls;
       void (async () => {
@@ -195,7 +216,9 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
     // Unawaited work of a finished program is dropped with it.
     if (done) proc.kill("SIGKILL");
     const exit = await proc.exited;
-    await streams;
+    // The streams end with the program, unless a child it left behind holds them open: a program that
+    // has ended is not kept running for that.
+    await Promise.race([streams, Bun.sleep(STREAMS_GRACE_MS)]);
     return { exit };
   })();
   let keep = false;
@@ -224,11 +247,18 @@ export async function runProgram(code: string, ctx: ToolContext, rec: CodeRecord
     signal = own.signal;
     ctx.signal.removeEventListener("abort", onAbort);
     keep = true;
+    // What it prints from here on goes to the job's log as it comes.
+    live = { log: job.log, at: given.printed };
+    try { proc.send({ live: given.printed }); } catch { /* it ended: its end writes the log */ }
     void ended.then(({ exit }) => {
       const rest = outcome(exit, given);
+      // The log already has what streamed: only the rest is appended (the wake carries it all).
+      const streamed = live!.at > given.printed;
+      const tail = outcome(exit, { ...given, printed: live!.at });
+      const quiet = streamed && !tail.printed && !tail.dropped && !tail.output.trim() && !tail.error && tail.finished;
       // (A program that finished was ended by us, with a kill: that is no signal of its own.)
       const sig = rest.finished || proc.signalCode == null ? null : String(proc.signalCode);
-      endCodeJob(job, { code: rest.finished ? (rest.error ? 1 : 0) : exit, signal: sig, text: `${render(rest)}\n` });
+      endCodeJob(job, { code: rest.finished ? (rest.error ? 1 : 0) : exit, signal: sig, text: `${render(rest)}\n`, log: quiet ? "" : `${render(tail)}\n` });
       if (job.stopReason) own.abort();
     }, () => {});
     return { ...sofar, moved: job };
@@ -289,7 +319,7 @@ export function runCodeTool(rec: CodeRecorder): Tool {
         const sofar = [o.printed.trimEnd(), o.output.trim() ? `[output of commands]\n${o.output.trimEnd()}` : ""].filter(Boolean).join("\n\n");
         const head = `The program did not finish within its ${Math.round(timeout / 1000)}s timeout and went on in the background with ID: ${j.id} (pid ${j.pid}). `
           + `You are told when it ends, with what it printed since and its value: do not run it again. It is listed with your other background tasks; stop it with TaskStop (ID ${j.id}) if you have that tool, or the owner can. `
-          + `What it prints from now on is written to ${j.log} when it ends.`;
+          + `What it prints from now on is written to ${j.log} as it prints.`;
         return ok(await spill(sofar ? `${head}\n\nPrinted so far:\n${sofar}` : head, ctx.spillDir, "run_code"));
       }
       const text = await spill(render(o), ctx.spillDir, "run_code");

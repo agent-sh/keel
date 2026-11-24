@@ -1875,9 +1875,10 @@ describe("a run_code program that outlives its wait", () => {
     reader.releaseLock();
     return { d, url: json(readFileSync(join(state, "daemon.lock"), "utf8")).url as string };
   };
-  test("the turn ends, the gate still asks, the end wakes the session once; a restart interrupts it once", async () => {
-    let { d, url } = await serve();
-    const api = async (path: string, init?: RequestInit) => (await fetch(url + path, { ...init, headers: { "content-type": "application/json" } })).json() as Promise<any>;
+  // A daemon on the scripted model, and the calls the three tests make of it. `at.url` follows a restart.
+  const rig = async () => {
+    const at = await serve();
+    const api = async (path: string, init?: RequestInit) => (await fetch(at.url + path, { ...init, headers: { "content-type": "application/json" } })).json() as Promise<any>;
     const until = async <T>(what: string, f: () => Promise<T | undefined | false>, ms = 20_000): Promise<T> => {
       for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(100)) { const v = await f(); if (v) return v; }
       throw new Error(`timed out: ${what}`);
@@ -1897,16 +1898,27 @@ describe("a run_code program that outlives its wait", () => {
       await api(`/api/sessions/${session.id}/messages`, { method: "POST", body: JSON.stringify({ text: `script:calls ${JSON.stringify([call])}` }) });
       return session.id as string;
     };
+    const turns = async (id: string) => (await events(id)).filter((e) => e.kind === "turn_end").length;
+    return { at, api, until, events, harness, pending, allow, start, turns };
+  };
+
+  test("the turn ends, the gate still asks, its output is in the job's log as it prints, the end wakes the session once", async () => {
+    const { at, api, until, events, harness, pending, allow, start, turns } = await rig();
     try {
-      const sid = await start(`console.log("started"); await Bun.sleep(2500); await tools.Bash({ command: "echo bg > code-bg.txt", description: "write a file" }); console.log("bash done"); return "RETURNED-42";`);
+      const sid = await start(`console.log("started"); await Bun.sleep(2500); console.log("live-line"); await Bun.sleep(1500); await tools.Bash({ command: "echo bg > code-bg.txt", description: "write a file" }); console.log("bash done"); return "RETURNED-42";`);
       await allow(sid, "the program's own card");
       // The call returns at its wait, and the turn ends with the program still running.
-      await until("the turn ends", async () => (await events(sid)).filter((e) => e.kind === "turn_end").length >= 1);
+      await until("the turn ends", async () => (await turns(sid)) >= 1);
       const result = JSON.stringify((await events(sid)).filter((e) => e.kind === "tool_result"));
       expect(result).toContain("went on in the background with ID");
       expect(result).toContain("started");
       const job = (await api(`/api/sessions/${sid}/jobs`)).jobs.find((j: any) => j.command.startsWith("run_code:"));
       expect(job).toMatchObject({ running: true, background: true });
+      // What it prints reaches the job's log while it runs, and what its call returned is not written again.
+      const log = async () => String((await api(`/api/sessions/${sid}/jobs/${job.id}/log`)).tail);
+      await until("the live line in the log", async () => (await log()).includes("live-line"));
+      expect((await api(`/api/sessions/${sid}/jobs`)).jobs.find((j: any) => j.id === job.id).running).toBe(true);
+      expect(await log()).not.toContain("started");
       // What it does after that meets the same gate: its Bash call waits for the owner, with no turn running.
       const inner = await until("the program's Bash call asks", () => pending(sid));
       expect(JSON.stringify(inner)).toContain("code-bg.txt");
@@ -1914,38 +1926,51 @@ describe("a run_code program that outlives its wait", () => {
       await api(`/api/sessions/${sid}/approvals/${inner.id}`, { method: "POST", body: JSON.stringify({ choice: "once", seen: "whole" }) });
       // Its end wakes the session once, with its value and what it printed since.
       const wake = await until("the wake", async () => { const h = await harness(sid); return h.length ? h : undefined; });
-      await until("the woken turn ends", async () => (await events(sid)).filter((e) => e.kind === "turn_end").length >= 2);
+      await until("the woken turn ends", async () => (await turns(sid)) >= 2);
       expect(wake.length).toBe(1);
       expect(wake[0].data.text).toContain("RETURNED-42");
       expect(wake[0].data.text).toContain("bash done");
+      expect(wake[0].data.text).toContain("live-line");
       expect(wake[0].data.text).toContain("exited with code 0");
       expect(wake[0].data.text.split("What it printed since")[1]).not.toContain("started");
       expect(existsSync(join(WS, "code-bg.txt"))).toBe(true);
       expect((await harness(sid)).length).toBe(1);
+      // Each line is in the log once.
+      const whole = await log();
+      expect(whole.match(/live-line/g)).toHaveLength(1);
+      expect(whole.match(/bash done/g)).toHaveLength(1);
+    } finally { at.d.kill("SIGTERM"); await at.d.exited; }
+  }, 120_000);
 
-      // Stopped from the job list like any background job: it ends, with its stop said.
-      const sid3 = await start(`await Bun.sleep(120000); return "never";`);
-      await allow(sid3, "the program's own card");
-      await until("the third turn ends", async () => (await events(sid3)).filter((e) => e.kind === "turn_end").length >= 1);
-      const running = (await api(`/api/sessions/${sid3}/jobs`)).jobs.find((j: any) => j.running);
-      const stopped = await api(`/api/sessions/${sid3}/jobs/${running.id}/stop`, { method: "POST" });
+  test("it is stopped from the job list like any background job: it ends, with its stop said", async () => {
+    const { at, api, until, allow, start, turns } = await rig();
+    try {
+      const sid = await start(`await Bun.sleep(120000); return "never";`);
+      await allow(sid, "the program's own card");
+      await until("the turn ends", async () => (await turns(sid)) >= 1);
+      const running = (await api(`/api/sessions/${sid}/jobs`)).jobs.find((j: any) => j.running);
+      const stopped = await api(`/api/sessions/${sid}/jobs/${running.id}/stop`, { method: "POST" });
       expect(stopped.job).toMatchObject({ running: false, stop_reason: "was stopped by the owner" });
+    } finally { at.d.kill("SIGTERM"); await at.d.exited; }
+  }, 60_000);
 
-      // A restart while it runs: told once as interrupted, and not run again.
+  test("a restart while it runs tells it once as interrupted, and does not run it again", async () => {
+    const r = await rig();
+    try {
       const ran = join(WS, "code-ran.txt");
-      const sid2 = await start(`require("node:fs").appendFileSync(${JSON.stringify(ran)}, "x"); await Bun.sleep(120000); return "never";`);
-      await allow(sid2, "the program's own card");
-      await until("the second turn ends", async () => (await events(sid2)).filter((e) => e.kind === "turn_end").length >= 1);
-      d.kill("SIGTERM");
-      await d.exited;
-      ({ d, url } = await serve());
-      const told = await until("the interruption", async () => { const h = await harness(sid2); return h.length ? h : undefined; }, 30_000);
+      const sid = await r.start(`require("node:fs").appendFileSync(${JSON.stringify(ran)}, "x"); await Bun.sleep(120000); return "never";`);
+      await r.allow(sid, "the program's own card");
+      await r.until("the turn ends", async () => (await r.turns(sid)) >= 1);
+      r.at.d.kill("SIGTERM");
+      await r.at.d.exited;
+      Object.assign(r.at, await serve());
+      const told = await r.until("the interruption", async () => { const h = await r.harness(sid); return h.length ? h : undefined; }, 30_000);
       expect(told[0].data.text).toContain("interrupted");
       await Bun.sleep(1500);
-      expect((await harness(sid2)).length).toBe(1);
+      expect((await r.harness(sid)).length).toBe(1);
       expect(readFileSync(ran, "utf8")).toBe("x");
-      expect((await api(`/api/sessions/${sid2}/jobs`)).jobs.some((j: any) => j.running)).toBe(false);
-    } finally { d.kill("SIGTERM"); await d.exited; }
+      expect((await r.api(`/api/sessions/${sid}/jobs`)).jobs.some((j: any) => j.running)).toBe(false);
+    } finally { r.at.d.kill("SIGTERM"); await r.at.d.exited; }
   }, 120_000);
 });
 
