@@ -1126,12 +1126,74 @@ export function matchRule(pattern: string, s: Simple): boolean {
 
 const MULTI = new Set(["git", "npm", "pnpm", "yarn", "bun", "bunx", "npx", "cargo", "go", "docker", "podman", "kubectl", "gh", "uv", "pip", "python", "python3", "make", "systemctl", "brew", "apt", "deno", "rustup", "terraform", "aws"]);
 
+// ---- launchers: programs that fetch a package from a registry and run it ----
+// A rule that stops at the launcher (`pnpm dlx *`) runs whatever package a line names, code nobody read. Such a rule
+// is a grant for the package it names, so a line that runs a package is covered only by a rule that names the package.
+
+// The program word as a launcher is run by: its folder and a `@version` taken off (/usr/bin/pnpm, pnpm@9).
+const launcherName = (w: string | undefined) => name(w).replace(/@[^@/]*$/, "");
+const DIRECT = new Set(["npx", "pnpx", "bunx", "uvx"]);
+const SUBCOMMAND: Record<string, RegExp> = Object.assign(Object.create(null), { pnpm: /^dlx$/, yarn: /^dlx$/, bun: /^x$/, npm: /^(exec|x)$/, pipx: /^run$/ });
+// Options in front of the subcommand that take a value in the next word.
+const BEFORE_VALUED = /^(-C|--dir|--cwd|--filter|-F|--prefix|--workspace|-w|--registry|--cache|--userconfig|--config)$/;
+// Options after it that name a package (the value is part of what runs), and ones that take a value that is none.
+const PACKAGE_OPTION = /^(-p|--package|--from|--with)(=.*)?$/;
+const AFTER_VALUED = /^(--python|-P|--registry|--cache|--prefix|--workspace|-w|--node-arg|--config|--userconfig)$/;
+
+// The index of the last word that names what a launcher runs (the package, with the options that add one), or -1 when
+// the words are no launcher or name no package (`npx --help`).
+function launched(words: string[]): number {
+  let i = 0;
+  if (launcherName(words[i]) === "corepack") i++;
+  const prog = launcherName(words[i]);
+  if (!prog) return -1;
+  i++;
+  if (!DIRECT.has(prog)) {
+    const sub = prog === "uv" ? null : SUBCOMMAND[prog];
+    const next = () => { while (i < words.length && words[i]!.startsWith("-")) i += BEFORE_VALUED.test(words[i]!) ? 2 : 1; };
+    if (!sub && prog !== "uv") return -1;
+    next();
+    if (prog === "uv") { if (words[i] !== "tool") return -1; i++; next(); if (words[i] !== "run") return -1; i++; }
+    else if (!sub!.test(words[i] ?? "")) return -1;
+    else i++;
+  }
+  let end = -1;
+  for (; i < words.length; i++) {
+    const w = words[i]!;
+    if (w === "--") continue;
+    if (PACKAGE_OPTION.test(w)) { if (!w.includes("=")) i++; if (i < words.length) end = i; continue; }
+    if (w.startsWith("-")) { if (AFTER_VALUED.test(w)) i++; continue; }
+    return i;
+  }
+  return end;
+}
+
+// Whether a rule that matches the part covers any package its launcher runs: the rule's fixed text, before its first `*`,
+// stops short of the package.
+export function runsAnyPackage(pattern: string, s: Simple): boolean {
+  const { words } = body(s.words);
+  const at = launched(words);
+  if (at < 0) return false;
+  const star = pattern.trim().replace(/:\*$/, " *").indexOf("*");
+  return star >= 0 && star < words.slice(0, at + 1).join(" ").length;
+}
+
+// The rule a part would be granted by `pattern`, made to name the package: `pnpm dlx cowsay *`.
+export function packageRule(s: Simple): string | null {
+  const { words } = body(s.words);
+  const at = launched(words);
+  if (at < 0 || !/^[\w@./:^~+=-]+$/.test(words[at]!)) return null;
+  return `${words.slice(0, at + 1).join(" ")} *`;
+}
+
 // The rule "allow always" suggests for a command: the program and its
-// subcommand, then `*`.
+// subcommand, then `*`. A launcher's names the package it runs.
 export function suggestRule(s: Simple): string {
   const { words } = body(s.words);
   const [prog, second] = words;
   if (!prog) return s.text;
+  const named = packageRule(s);
+  if (named) return named;
   if (second && MULTI.has(prog) && /^[a-z][\w:.-]*$/i.test(second) && !second.includes("/")) return `${prog} ${second} *`;
   return `${prog} *`;
 }

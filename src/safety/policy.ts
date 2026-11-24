@@ -13,7 +13,7 @@ import { outputsOf } from "./outputs.ts";
 import { resolvedLine } from "./resolved-line.ts";
 import { gitStoreOf, sharedMessage, sharedRefusal, type Shared } from "./shared-branches.ts";
 import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
-import { isReadOnly, matchRule, readForm, redirectTargets, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
+import { isReadOnly, matchRule, packageRule, readForm, redirectTargets, resolveVariables, runsAnyPackage, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains, homeDir } from "../core/paths.ts";
 import { RESERVED } from "../mcp/config.ts";
 import type { ToolKind } from "../tools/types.ts";
@@ -1010,7 +1010,19 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   if (f.mode === "full-auto") return { allow: true };
   // A variable the line's first words give a value is read as that value.
   const reads = (p: Simple) => { if (isReadOnly(p)) return true; const program = f.real && shimmedRead(p); return !!program && f.real!(program); };
-  const open = resolveVariables(parts).filter((p) => (interpreter !== undefined || !reads(p)) && !shellRules.some((r) => matchRule(r.pattern, p)));
+  // A rule that stops at a launcher (`pnpm dlx *`) covers no package where a model decides: the line goes to it.
+  const judged = f.mode === "auto" || f.mode === "reviewer";
+  const anyPackage: { rule: string; part: Simple }[] = [];
+  const open = resolveVariables(parts).filter((p) => {
+    if (interpreter === undefined && reads(p)) return false;
+    const hit = shellRules.filter((r) => matchRule(r.pattern, p));
+    if (!hit.length) return true;
+    if (!judged) return false;
+    const covering = hit.find((r) => !runsAnyPackage(r.pattern, p));
+    if (covering) return false;
+    anyPackage.push({ rule: hit[0]!.pattern, part: p });
+    return true;
+  });
   if (!open.length) return { allow: true };
   // The form that would be read as a read, when an expansion among the arguments is all that keeps it from being one.
   const form = interpreter === undefined ? readForm(open[0]!) : null;
@@ -1030,7 +1042,10 @@ function decideLine(command: string, f: Facts, cwd = f.workspace, interpreter?: 
   for (const p of open) { if (p.words.length) patterns.add(suggestRule(p)); if (patterns.size >= 5) break; }
   const suggest = [...patterns].map((pattern) => ({ kind: "shell" as const, pattern }));
   // One command asks, and only for its expansion: the card says the form that runs without asking.
-  const notice = form && open.length === 1 ? `It reads, but one of its arguments comes from an expansion, which could add an option that writes. To run without asking: ${form}.` : undefined;
+  const readNotice = form && open.length === 1 ? `It reads, but one of its arguments comes from an expansion, which could add an option that writes. To run without asking: ${form}.` : undefined;
+  const any = anyPackage[0];
+  const named = any && packageRule(any.part);
+  const notice = any ? `Your rule "${any.rule}" runs any package, so it does not cover this one${named ? `: allow ${named.slice(0, -2)} only with "${named}"` : ""}.` : readNotice;
   return { ask: { risk: "low", suggest, ...(notice ? { notice } : {}) } };
 }
 

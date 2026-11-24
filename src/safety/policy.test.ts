@@ -277,3 +277,32 @@ test("$PWD is the shell's folder only while nothing in the line can have set it"
   for (const c of ["PWD=/etc; cd $PWD/ui && rm -rf dist", "export PWD=/etc && cd $PWD/ui && rm -rf dist", "declare PWD=/etc; cd $PWD/ui; rm -rf dist",
     "read PWD <<< /etc; cd $PWD/ui; rm -rf dist", "eval 'PWD=/etc'; cd $PWD/ui && rm -rf dist", "unset PWD; cd $PWD/ui && rm -rf dist"]) expect([c, at(c)]).toEqual([c, "ask-high"]);
 });
+
+test("a rule that stops at a launcher covers no package where a model decides", () => {
+  const run = (mode: Mode, pattern: string, command: string, extra: Partial<Facts> = {}) => decide({ kind: "shell", command, cwd: ws } as any, facts(mode, { rules: [rule("shell", pattern)], ...extra }));
+  const modes = ["ask", "auto-edits", "auto", "full-auto", "read-only", "plan", "reviewer"] as const;
+  for (const [command, pattern] of [["pnpm dlx cowsay hi", "pnpm dlx *"], ["bun x cowsay", "bun *"], ["yarn dlx cowsay", "yarn dlx *"], ["npm exec -- cowsay", "npm exec *"], ["uvx ruff", "uvx *"], ["pnpx cowsay", "pnpx *"],
+    ["/usr/bin/pnpm dlx cowsay", "/usr/bin/pnpm *"], ["pnpm@9 dlx cowsay", "pnpm@9 *"]] as const) {
+    for (const mode of modes) {
+      const d = run(mode, pattern, command);
+      // The judge or reviewer is asked (a low-risk card it answers); everywhere else the owner's rule stands.
+      expect([mode, command, pattern, mode === "auto" || mode === "reviewer" ? kind(d) : "ok"]).toEqual([mode, command, pattern, mode === "auto" || mode === "reviewer" ? "ask-low" : "ok"]);
+      if (mode === "auto" || mode === "reviewer") expect("ask" in d && d.ask.notice).toContain("runs any package");
+      else expect(kind(d)).toBe("allow");
+    }
+  }
+  // A rule that names the package covers that package, in every mode, and no other.
+  for (const mode of modes) {
+    expect([mode, kind(run(mode, "pnpm dlx cowsay *", "pnpm dlx cowsay hi"))]).toEqual([mode, "allow"]);
+    expect([mode, kind(run(mode, "/usr/bin/pnpm dlx cowsay *", "/usr/bin/pnpm dlx cowsay hi"))]).toEqual([mode, "allow"]);
+  }
+  for (const mode of ["auto", "reviewer"] as const) {
+    const d = run(mode, "pnpm dlx cowsay *", "pnpm dlx evil hi");
+    expect([mode, kind(d)]).toEqual([mode, "ask-low"]);
+    // The card offers the rule that names this package.
+    expect("ask" in d && d.ask.suggest).toEqual([{ kind: "shell", pattern: "pnpm dlx evil *" }]);
+    // A rule that stops at the launcher still covers what is not a package.
+    expect(kind(run(mode, "pnpm *", "pnpm install"))).toBe("allow");
+    expect(kind(run(mode, "npx *", "npx --help"))).toBe("allow");
+  }
+});

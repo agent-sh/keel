@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { risksOf as risksIn } from "./risk.ts";
-import { highRisk, isReadOnly, matchRule, readForm, readOnlyCommand, resolveVariables, splitCommand, suggestRule, type Simple } from "./shell.ts";
+import { highRisk, isReadOnly, matchRule, readForm, readOnlyCommand, resolveVariables, runsAnyPackage, splitCommand, suggestRule, type Simple } from "./shell.ts";
 
 const split = (c: string) => splitCommand(c)!;
 const risksOf = (parts: Simple[]) => risksIn(parts, { cwd: "/w", home: "/h", workspace: "/w" }).map((r) => r.why);
@@ -356,6 +356,39 @@ test("rules match like Claude Code's", () => {
   expect(matchRule("git * main", s("git commit -m 'x\ny' main"))).toBe(false);
   expect(suggestRule(s("bun test src/x.test.ts"))).toBe("bun test *");
   expect(suggestRule(s("./run.sh --fast"))).toBe("./run.sh *");
+});
+
+test("a launcher's rule names the package it runs", () => {
+  const s = (c: string) => split(c)[0]!;
+  for (const [line, rule] of [
+    ["pnpm dlx cowsay hi", "pnpm dlx cowsay *"], ["bun x cowsay", "bun x cowsay *"], ["yarn dlx cowsay", "yarn dlx cowsay *"],
+    ["npm exec -- cowsay hi", "npm exec -- cowsay *"], ["uvx ruff check", "uvx ruff *"], ["pnpx cowsay", "pnpx cowsay *"],
+    ["npx -y cowsay", "npx -y cowsay *"], ["bunx cowsay@1.2", "bunx cowsay@1.2 *"], ["uv tool run ruff", "uv tool run ruff *"],
+    ["/usr/bin/pnpm dlx cowsay", "/usr/bin/pnpm dlx cowsay *"], ["pnpm@9 dlx cowsay", "pnpm@9 dlx cowsay *"], ["pnpm -C app dlx cowsay", "pnpm -C app dlx cowsay *"],
+    ["npx --package typescript tsc", "npx --package typescript tsc *"], ["corepack pnpm dlx cowsay", "corepack pnpm dlx cowsay *"],
+  ] as const) expect([line, suggestRule(s(line))]).toEqual([line, rule]);
+  // No package behind the launcher, or one the rule cannot name: the old form, which covers no package.
+  expect(suggestRule(s("pnpm dlx"))).toBe("pnpm dlx *");
+  expect(suggestRule(s("npx --help"))).toBe("npx *");
+  expect(suggestRule(s("pnpm install"))).toBe("pnpm install *");
+  expect(suggestRule(s("bun run build"))).toBe("bun run *");
+  // A rule covers a package only when its fixed text reaches the package.
+  const any = (pattern: string, line: string) => matchRule(pattern, s(line)) && runsAnyPackage(pattern, s(line));
+  for (const line of ["pnpm dlx cowsay hi", "/usr/bin/pnpm dlx cowsay", "pnpm@9 dlx cowsay", "bun x cowsay", "yarn dlx cowsay", "npm exec -- cowsay", "uvx ruff", "pnpx cowsay", "npx -y cowsay"]) {
+    for (const pattern of ["*", `${line.split(/ (cowsay|ruff|-- )/)[0]} *`, "pnpm *", "pnpm dlx *", "bun *", "npm *", "uvx *", "pnpx *", "npx *", "yarn *", "/usr/bin/pnpm *", "pnpm dlx cow*", "pnpm:*"]) {
+      if (matchRule(pattern, s(line)) && !/^pnpm dlx cow\*$/.test(pattern)) expect([pattern, line, any(pattern, line)]).toEqual([pattern, line, true]);
+    }
+  }
+  for (const [pattern, line] of [["pnpm dlx cowsay *", "pnpm dlx cowsay hi"], ["pnpm dlx cowsay", "pnpm dlx cowsay"], ["uvx ruff *", "uvx ruff check"], ["npm exec -- cowsay *", "npm exec -- cowsay x"], ["/usr/bin/pnpm dlx cowsay *", "/usr/bin/pnpm dlx cowsay x"], ["pnpm@9 dlx cowsay *", "pnpm@9 dlx cowsay x"]] as const) {
+    expect([pattern, line, matchRule(pattern, s(line)), runsAnyPackage(pattern, s(line))]).toEqual([pattern, line, true, false]);
+  }
+  // Another package of a similar name is not covered; a line that is no launcher is never "any package".
+  expect(matchRule("pnpm dlx cowsay *", s("pnpm dlx cowsay-evil hi"))).toBe(false);
+  expect(runsAnyPackage("pnpm dlx cow*", s("pnpm dlx cowsay-evil"))).toBe(true);
+  expect(runsAnyPackage("pnpm *", s("pnpm install"))).toBe(false);
+  expect(runsAnyPackage("pnpm *", s("pnpm dlx"))).toBe(false);
+  expect(runsAnyPackage("npx *", s("npx --help"))).toBe(false);
+  expect(runsAnyPackage("bun *", s("bun run x"))).toBe(false);
 });
 
 test("an arithmetic expansion, an arithmetic command and an array assignment are not commands of their own: the substitutions in them are", () => {
