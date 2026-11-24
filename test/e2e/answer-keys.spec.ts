@@ -1411,6 +1411,21 @@ test("a number meant for the message box answers nothing on a card that took the
 test("a request that comes under the pointer takes no click within its second, though its Allow has the keyboard", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
+  const two = calls([{ name: "Bash", input: { command: "echo c0 > c0.txt" } }, { name: "Bash", input: { command: "echo c1 > c1.txt" } }]);
+  const waiting = async (id: string) => ((await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals as { summary: string }[]).map((a) => a.summary);
+  // The page draws the next request where the last step's result leaves room, not in the place of the one before:
+  // a first session of the same two calls says where, and the pointer waits there in the second.
+  const first = await create(request, "Where the next lands", folder("click-where"));
+  await request.put(`/api/sessions/${first}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await page.goto(`/s/${first}`);
+  await request.post(`/api/sessions/${first}/messages`, { data: { text: two } });
+  await expect(page.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 30_000 });
+  await page.keyboard.press("Enter");
+  await expect.poll(() => waiting(first), { timeout: 10_000 }).toEqual([expect.stringContaining("c1")]);
+  await expect(page.getByTestId("allow-once")).toHaveAttribute("data-ready", "true", { timeout: 8000 });
+  await page.waitForTimeout(1200);
+  const there = (await page.getByTestId("allow-once").boundingBox())!;
+  await drop(request, first);
   const id = await create(request, "Clicks onto the next", folder("click-next"));
   await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
   await page.goto(`/s/${id}`);
@@ -1422,17 +1437,17 @@ test("a request that comes under the pointer takes no click within its second, t
       for (const c of document.querySelectorAll<HTMLElement>('[data-testid="approval"]')) if (!w.seen.some((x) => x.id === c.dataset.approvalId)) w.seen.push({ id: c.dataset.approvalId!, at: performance.now() });
     }).observe(document.body, { subtree: true, childList: true });
   });
-  await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "echo c0 > c0.txt" } }, { name: "Bash", input: { command: "echo c1 > c1.txt" } }]) } });
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: two } });
   const allow = page.getByTestId("allow-once");
   await expect(allow).toHaveCount(1, { timeout: 30_000 });
   await expect(allow).toHaveAttribute("data-ready", "true", { timeout: 8000 });
   await page.waitForTimeout(1200);
-  const at = (await allow.boundingBox())!;
-  const x = at.x + at.width / 2, y = at.y + at.height / 2;
-  await page.mouse.click(x, y);
-  const waiting = async () => ((await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals as { summary: string }[]).map((a) => a.summary);
-  await expect.poll(waiting, { timeout: 10_000 }).toEqual([expect.stringContaining("c1")]);
-  // The next request is drawn in the same place, and its Allow takes the keyboard by itself.
+  // The pointer rests where the next request's Allow will be; the first is answered by its key.
+  const x = there.x + there.width / 2, y = there.y + there.height / 2;
+  await page.mouse.move(x, y);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => waiting(id), { timeout: 10_000 }).toEqual([expect.stringContaining("c1")]);
+  // The next request is drawn under the pointer, and its Allow takes the keyboard by itself.
   const since = await page.waitForFunction(([x, y]: [number, number]) => {
     const b = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-testid="allow-once"]');
     const card = b?.closest<HTMLElement>('[data-testid="approval"]');
@@ -1443,12 +1458,12 @@ test("a request that comes under the pointer takes no click within its second, t
   expect(await since.jsonValue(), "the click comes within the next request's second").toBeLessThan(800);
   await page.mouse.click(x, y);
   await page.waitForTimeout(400);
-  expect(await waiting(), "a click within the second of a request that came under the pointer").toEqual([expect.stringContaining("c1")]);
+  expect(await waiting(id), "a click within the second of a request that came under the pointer").toEqual([expect.stringContaining("c1")]);
   await expect(allow).toHaveAttribute("data-nudge", "true");
   // Once it stood its second, a click allows it.
   await page.waitForTimeout(1200);
   await page.mouse.click(x, y);
-  await expect.poll(waiting).toEqual([]);
+  await expect.poll(() => waiting(id)).toEqual([]);
   expect((await approvals(request, id)).map((a) => a.state)).toEqual(["allowed", "allowed"]);
   await drop(request, id);
 });
