@@ -639,3 +639,27 @@ test("the session model's reasoning levels are a thought_level option; setting i
   expect(f.updates("s").filter((u: any) => u.sessionUpdate === "config_option_update").length).toBe(upd.length);
   expect((await call(f.bridge, f.out, "session/set_config_option", { sessionId: "s", configId: "effort", value: "low" })).error.code).toBe(-32602);
 });
+
+test("an editor's MCP entry of a transport type Keel does not know is named as not connected and starts nothing", async () => {
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const f = fixture([s], {});
+  f.d.post = (_method, path) => (path === "/api/sessions" ? { session: s } : path.endsWith("/mcp") ? { set: [] } : undefined);
+  await call(f.bridge, f.out, "initialize", {});
+  await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [
+    { name: "plain", command: "srv", args: [], env: [] },
+    { type: "stdio", name: "typed", command: "srv2", args: [], env: [] },
+    { type: "websocket", name: "odd", command: "srv3", args: [], env: [] },
+    { type: "ws", name: "oddurl", url: "wss://example.test/mcp", headers: [] },
+    { type: "http", name: "nourl", headers: [] },
+  ] });
+  const puts = f.d.sent.filter((x) => x.method === "PUT" && x.path === "/api/sessions/s/mcp").map((x) => x.body.servers);
+  expect(puts).toEqual([[
+    { name: "plain", command: "srv", args: [], env: {} },
+    { name: "typed", command: "srv2", args: [], env: {} },
+  ]]);
+  await Bun.sleep(0);
+  const said = JSON.stringify(f.updates("s"));
+  expect(said).toContain("odd: the transport type");
+  expect(said).toContain("oddurl: the transport type");
+  expect(said).toContain("nourl: no url");
+});

@@ -336,19 +336,34 @@ export class AcpBridge {
     // A new session has none to drop; one opened again may hold an earlier editor's.
     if (!list.length && fresh) return;
     const pairs = (v: unknown) => (Array.isArray(v) ? Object.fromEntries(v.filter((x) => x && typeof x.name === "string").map((x) => [x.name, String(x.value ?? "")])) : undefined);
-    const servers = list.map((m: Json) => (m?.type === "http" || m?.type === "sse" || (m?.url && !m?.command)
-      ? { name: m.name, url: m.url, headers: pairs(m.headers), ...(m.type === "sse" ? { transport: "sse" } : {}) }
-      : { name: m?.name, command: m?.command, args: m?.args, env: pairs(m?.env) }));
+    // Each entry is one transport the daemon can start, or is named as not connected and starts nothing:
+    // a command entry is stdio only with no type or "stdio" (the spec's own), never by guessing from a type it does not know.
+    const servers: Json[] = [];
+    const refused: string[] = [];
+    for (const m of list as Json[]) {
+      const name = typeof m?.name === "string" ? m.name : "";
+      const type = m?.type;
+      if (type === "http" || type === "sse") {
+        if (typeof m.url === "string" && m.url) servers.push({ name, url: m.url, headers: pairs(m.headers), ...(type === "sse" ? { transport: "sse" } : {}) });
+        else refused.push(`${name}: no url for its ${type} transport`);
+      } else if (type !== undefined && type !== "stdio") {
+        refused.push(`${name}: the transport type ${JSON.stringify(String(type)).slice(0, 40)} is not supported (stdio, http and sse are)`);
+      } else if (type === undefined && m?.url && !m?.command) {
+        servers.push({ name, url: m.url, headers: pairs(m.headers) });
+      } else if (typeof m?.command === "string" && m.command) {
+        servers.push({ name, command: m.command, args: m.args, env: pairs(m.env) });
+      } else refused.push(`${name}: no command to start`);
+    }
     // Known as served before the daemon is asked: one that fails at once is told while the answer is on its way.
     if (list.length) this.served.add(sessionId);
-    let failed: string[];
+    let failed: string[] = [...refused];
     try {
-      if (list.length && this.daemon.hold) await (this.holding ??= this.daemon.hold(this.holder));
+      if (servers.length && this.daemon.hold) await (this.holding ??= this.daemon.hold(this.holder));
       const r = await this.daemon.send("PUT", `/api/sessions/${sessionId}/mcp`, { servers, ...(this.daemon.hold ? { holder: this.holder } : {}) });
-      failed = (r.set ?? []).filter((x: Json) => x.error).map((x: Json) => `${x.name}: ${x.error}`);
+      failed.push(...(r.set ?? []).filter((x: Json) => x.error).map((x: Json) => `${x.name}: ${x.error}`));
     } catch (e) {
       this.holding = undefined; // a hold that did not open is tried again with the next list
-      failed = [`${list.map((m: Json) => m?.name).join(", ")}: ${(e as Error).message}`];
+      failed.push(`${servers.map((m) => m.name).join(", ")}: ${(e as Error).message}`);
     }
     if (!list.length) this.served.delete(sessionId);
     // After the answer, so the editor knows the session first.
