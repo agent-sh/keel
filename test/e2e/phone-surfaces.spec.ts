@@ -266,11 +266,20 @@ for (const size of SIZES) {
       const first = cards.getByTestId("new-model").first();
       await first.scrollIntoViewIfNeeded();
       await shoot(page, `phone-surfaces-07-new-model-card-${size.width}`);
-      // The result is a table that scrolls inside the card, which the page does not.
+      // The result is read down the card, never scrolled sideways: each row is a block, and every figure of it
+      // (with its own heading) is inside the page.
       const table = first.getByTestId("new-model-table");
       await expect(table).toBeVisible();
       await inside(page, table);
       await noSideScroll(page);
+      expect(await table.evaluate((el) => el.scrollWidth - el.clientWidth), "the result table scrolls sideways in its card").toBeLessThanOrEqual(0);
+      const past = await table.evaluate((el) => [...el.querySelectorAll<HTMLElement>("td")].filter((e) => e.getBoundingClientRect().right > innerWidth || e.getBoundingClientRect().left < 0).map((e) => e.textContent));
+      expect(past, "figures past the page's edge").toEqual([]);
+      await expect(table.locator("thead")).toBeHidden();
+      const row = table.getByTestId("new-model-row-cost_usd");
+      for (const head of ["As before", "With it", "Change"]) await expect(row.getByText(head).first()).toBeVisible();
+      await table.scrollIntoViewIfNeeded();
+      await shoot(page, `phone-surfaces-07b-new-model-table-${size.width}`);
     });
 
     test("the start box's branch chip and its list fit the page and are pressed by a finger", async ({ page, request }) => {

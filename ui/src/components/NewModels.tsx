@@ -268,31 +268,35 @@ function NewModelCard({ m, roles, metrics, reload, lean }: { m: Listed; roles: R
   );
 }
 
+const HEAD = { before: "As before", after: "With it", change: "Change" };
 function Results({ t, metrics }: { t: Trial; metrics: Page["metrics"] }) {
   const [a, b] = t.report!.arms.length ? [t.report!.arms.find((x) => x.arm === t.arms[0]), t.report!.arms.find((x) => x.arm === t.arms[1])] : [];
   const rows = Object.keys(metrics).filter((k) => a?.metrics[k] || b?.metrics[k]);
   if (!rows.length) return <p className="mt-2 text-caption text-faint" data-testid="new-model-empty">No turn has ended in either arm yet.</p>;
   const cell = (unit: string, i?: Interval) => (!i ? <span className="text-faint">none</span> : <span className="tabular-nums">{fmtMetric(unit, i.estimate)}<span className="block text-micro text-faint">{i.method !== "none" ? `${fmtMetric(unit, i.lo)} to ${fmtMetric(unit, i.hi)}` : `${i.n} ${i.n === 1 ? "turn" : "turns"}`}</span></span>);
   return (
-    <div className="mt-2 overflow-x-auto" data-testid="new-model-table">
-      <table className="w-full min-w-[30rem] text-ui">
-        <thead>
+    <div className="mt-2" data-testid="new-model-table">
+      {/* (On a phone each row is a block: its name over its three figures, each with its own heading, and no head row.) */}
+      <table className="w-full text-ui max-md:block">
+        <thead className="max-md:hidden">
           <tr className="text-left text-caption text-faint">
             <th className="py-1 pr-3 font-normal">Per turn</th>
-            <th className="px-3 py-1 font-normal">As before <span className="text-micro">({a?.clusters ?? 0} {a?.clusters === 1 ? "tree" : "trees"})</span></th>
-            <th className="px-3 py-1 font-normal">With it <span className="text-micro">({b?.clusters ?? 0} {b?.clusters === 1 ? "tree" : "trees"})</span></th>
-            <th className="py-1 pl-3 font-normal">Change</th>
+            <th className="px-3 py-1 font-normal">{HEAD.before} <span className="text-micro">({a?.clusters ?? 0} {a?.clusters === 1 ? "tree" : "trees"})</span></th>
+            <th className="px-3 py-1 font-normal">{HEAD.after} <span className="text-micro">({b?.clusters ?? 0} {b?.clusters === 1 ? "tree" : "trees"})</span></th>
+            <th className="py-1 pl-3 font-normal">{HEAD.change}</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="max-md:block">
           {rows.map((k) => {
             const unit = metrics[k]!.unit, f = t.report!.effects.find((e) => e.metric === k);
+            const lab = (w: string, trees?: number) => <span className="mb-0.5 block text-micro text-faint md:hidden" aria-hidden="true">{w}{trees === undefined ? "" : ` (${trees} ${trees === 1 ? "tree" : "trees"})`}</span>;
             return (
-              <tr key={k} className="border-t border-line/60 align-top" data-testid={`new-model-row-${k}`}>
-                <td className="py-1.5 pr-3 text-muted">{metrics[k]!.label}</td>
-                <td className="px-3 py-1.5">{cell(unit, a?.metrics[k])}</td>
-                <td className="px-3 py-1.5">{cell(unit, b?.metrics[k])}</td>
-                <td className={cn("py-1.5 pl-3 tabular-nums", f?.better === true && "text-ok", f?.better === false && "text-danger", f?.better == null && "text-faint")}>
+              <tr key={k} className="border-t border-line/60 align-top max-md:grid max-md:grid-cols-3 max-md:gap-x-3 max-md:py-2" data-testid={`new-model-row-${k}`}>
+                <td className="py-1.5 pr-3 text-muted max-md:col-span-3 max-md:p-0 max-md:pb-1.5">{metrics[k]!.label}</td>
+                <td className="px-3 py-1.5 max-md:min-w-0 max-md:p-0">{lab(HEAD.before, a?.clusters ?? 0)}{cell(unit, a?.metrics[k])}</td>
+                <td className="px-3 py-1.5 max-md:min-w-0 max-md:p-0">{lab(HEAD.after, b?.clusters ?? 0)}{cell(unit, b?.metrics[k])}</td>
+                <td className={cn("py-1.5 pl-3 tabular-nums max-md:min-w-0 max-md:p-0", f?.better === true && "text-ok", f?.better === false && "text-danger", f?.better == null && "text-faint")}>
+                  {lab(HEAD.change)}
                   {f ? fmtMetric(unit, f.diff.estimate, true) : "none"}
                   <span className="block text-micro text-faint">{f ? (f.diff.significant ? "beyond chance" : "within chance") : ""}</span>
                 </td>
