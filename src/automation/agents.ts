@@ -235,7 +235,14 @@ CREATE INDEX IF NOT EXISTS agents_live ON agents(status) WHERE status IN ('runni
 // Work agents' worktrees: the same records the worktree sessions use, so a
 // child's branch shows in its session header like any worktree session's.
 let wtsCache: Worktrees | undefined;
-const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir, "worktrees")));
+// (Kept for the store it was made for: a daemon has one, and a test run that sets the deps again with another
+// store gets a manager of that store, not one of a store that is closed.)
+let wtsOf: unknown;
+const wts = () => {
+  const store = D().store;
+  if (!wtsCache || wtsOf !== store) { wtsCache = new Worktrees(store, join(store.stateDir, "worktrees")); wtsOf = store; }
+  return wtsCache;
+};
 
 // `restarts`: a column from when a restart count decided an agent's end; unused.
 // `park_told`: the task (its first_seq) whose park on a command the parent has been woken for.
