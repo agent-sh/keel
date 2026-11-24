@@ -71,6 +71,9 @@ for (const size of [{ width: 1920, height: 1040 }, { width: 390, height: 844 }])
       await expect(card(g.session_id).getByTestId("question-submit")).toHaveCount(1, { timeout: 30_000 });
 
       // The child's card by the pointer, and the questions of both agents: all answered here, none opened.
+      // (The grandchild's question just came in and the region went to the oldest request, which moves this card on a
+      // phone: its Allow takes a press once it has stood still. A click that waits for that is scrolled by the retries.)
+      await expect(card(a!.session_id).getByTestId("allow-once")).not.toHaveAttribute("aria-disabled", "true", { timeout: 10_000 });
       await card(a!.session_id).getByTestId("allow-once").click();
       await expect.poll(() => existsSync(join(ws, "alpha.txt")), { timeout: 30_000 }).toBe(true);
       await shoot(page, `tree-approvals-02-${size.width}`);
