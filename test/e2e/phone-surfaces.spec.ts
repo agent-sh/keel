@@ -950,7 +950,7 @@ for (const size of SIZES) {
       const id = await start(request, "Phone running tools");
       try {
         await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "sleep 30" } }]) } });
-        for (const scale of [1.3, 1.5]) {
+        for (const scale of [1, 1.3, 1.5]) {
           const ctx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: size, hasTouch: true, isMobile: true });
           await ctx.addInitScript((s) => localStorage.setItem("keel.textScale", String(s)), scale);
           const page = await ctx.newPage();
@@ -958,11 +958,13 @@ for (const size of SIZES) {
             await page.goto(`/s/${id}`);
             const box = page.locator(".k-station[data-helm]").locator(".k-box");
             await expect(box.getByTestId("stop")).toBeVisible({ timeout: 30_000 });
-            await expect(box.getByTestId("attach")).toBeAttached();
-            // Every tool of the row is a whole target inside the box, and a press at its middle lands on it.
+            await expect(box.getByTestId("permission-menu")).toBeVisible();
+            // Every tool of the row is a whole target inside the box, and a press at its middle lands on it. The attach
+            // button gives its place to the mode while a turn runs, so a tool with no box (display none) is not in the row.
+            // The queue button is drawn only when the box can queue.
             const bad = await box.evaluate((el) => {
               const b = el.getBoundingClientRect(), out: string[] = [], rects: { id: string; r: DOMRect }[] = [];
-              for (const id of ["attach", "effort-picker", "model-picker", "context-meter", "queue-button", "stop", "send"]) {
+              for (const id of ["permission-menu", "effort-picker", "model-picker", "context-meter", "queue-button", "stop", "send"]) {
                 const t = el.querySelector(`[data-testid="${id}"]`);
                 if (!t) continue;
                 const r = t.getBoundingClientRect();
