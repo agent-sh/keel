@@ -59,7 +59,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSy
 import { basename, dirname, join, resolve } from "node:path";
 import { privateHost } from "./hosts.ts";
 import { defaultStateDir } from "./paths.ts";
-import { chunksUntil, readText } from "./proc.ts";
+import { chunks, chunksUntil, readText } from "./proc.ts";
 
 export type GitResult = { code: number; out: string; err: string };
 export type GitOpts = {
@@ -647,7 +647,8 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
 // The entries a listing prints (with -z), handed to `each` a pipe's chunk at a time as they come, so the
 // listing is never held whole: one of a folder that holds many repositories printed 48 MB, and reading
 // that into one string and splitting it held the loop for seconds. `each` returns false to stop: git is
-// killed there (`stopped`). Never throws for a failed command: the code says.
+// killed there (`stopped`), and when `each` throws (which it passes on). Never throws for a failed command:
+// the code says.
 export async function gitEach(dir: string, args: string[], o: GitOpts, each: (entries: string[]) => boolean): Promise<{ code: number; err: string; stopped?: true }> {
   let p: Plan;
   try { p = plan(dir, args, o); } catch (e) { return { code: 128, err: `git: ${(e as Error).message}` }; }
@@ -660,12 +661,10 @@ export async function gitEach(dir: string, args: string[], o: GitOpts, each: (en
   }
   const err = readText(proc.stderr as ReadableStream<Uint8Array>);
   const text = new TextDecoder();
-  let rest = "", stopped = false;
-  const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+  let rest = "", stopped = false, read = false;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    // (Left early, chunks() cancels the pipe.)
+    for await (const value of chunks(proc.stdout as ReadableStream<Uint8Array>)) {
       const buf = rest + text.decode(value, { stream: true });
       const parts = buf.split("\0");
       rest = parts.pop()!;
@@ -675,8 +674,13 @@ export async function gitEach(dir: string, args: string[], o: GitOpts, each: (en
       await new Promise<void>((done) => setImmediate(done));
     }
     if (!stopped && rest) stopped = !each([rest]);
+    read = !stopped;
   } finally {
-    if (stopped) { reader.cancel().catch(() => {}); try { proc.kill("SIGKILL"); } catch { /* gone already */ } }
+    // Stopped, or `each` threw: git would wait on a full pipe until its timeout.
+    if (!read) {
+      try { proc.kill("SIGKILL"); } catch { /* gone already */ }
+      err.catch(() => {});
+    }
   }
   const code = await proc.exited;
   const e = await err;

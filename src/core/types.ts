@@ -213,7 +213,7 @@ export type Frame = (
   | { t: "queue"; session_id: string; queue: QueueItem[]; held: boolean }
   | { t: "status"; session_id: string; status: TurnStatus }
   | { t: "questions"; pending: PendingQuestion[]; machine?: string } // all live questions of one daemon
-  | { t: "error"; error: ErrorRecord }
+  | { t: "error"; error: ErrorRecord; repeat?: true } // repeat: one more of a row that said it already (ErrorPlace.repeat)
   // A feature module's live update (approvals, checkpoints, worktrees): the UI
   // routes it by `name` to the module's own client state.
   | { t: "feature"; name: string; session_id?: string; data: any }

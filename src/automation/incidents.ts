@@ -256,7 +256,7 @@ export function bind() {
   // A session's failure alert while an incident it is part of is open: kept in the inbox, told on no channel.
   absorbHook.of = (sessionId, cls) => book().absorbs(sessionId, cls, Date.now())?.id;
   const offErrors = errors.onCapture((c) => {
-    if ((c.context as { kind?: unknown } | undefined)?.kind !== "stall") return;
+    if ((c.context as { kind?: unknown } | undefined)?.kind !== "stall" || c.repeat) return;
     const e = store.error(c.id);
     hit({ key: "stall", cause: "stall", cls: "stall", at: Date.now(), message: e?.message ?? "the daemon did not answer" });
   });

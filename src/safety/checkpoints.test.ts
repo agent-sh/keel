@@ -421,3 +421,32 @@ test("a snapshot runs no clean filter the files' attributes name, whole or by pa
     if (before === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = before;
   }
 });
+
+// A workspace that would add more than the snapshot cap is known for that as soon as what was
+// listed passes it: the rest of the listing is not read (a folder of many repositories listed
+// 48 MB of names, and reading them all held the loop for seconds).
+test("a workspace over the snapshot cap stops its listing at the cap and keeps only the written files", async () => {
+  const { Shadow } = await import("./shadow.ts");
+  const dir = join(root, `case-${++n}`);
+  const ws = join(dir, "ws");
+  mkdirSync(ws, { recursive: true });
+  const files = 3000;
+  for (let i = 0; i < files; i++) writeFileSync(join(ws, `${String(i).padStart(6, "0")}-${"n".repeat(140)}.txt`), "y".repeat(50));
+  const sh = new Shadow(join(dir, "state", "checkpoints"), ws);
+  let seen = 0;
+  const list = sh.listEach.bind(sh);
+  sh.listEach = (args, opts, each) => list(args, opts, (entries) => { seen += entries.length; return each(entries); });
+  const before = process.env.KEEL_CHECKPOINT_SNAPSHOT_MB;
+  process.env.KEEL_CHECKPOINT_SNAPSHOT_MB = String(10_000 / 1024 / 1024); // 200 of the files
+  try {
+    const first = `${String(0).padStart(6, "0")}-${"n".repeat(140)}.txt`;
+    const tree = await sh.snapshot([first]);
+    expect(sh.mode).toBe("written");
+    expect(sh.reason).toContain("would add more than");
+    expect(seen).toBeGreaterThan(200);
+    expect(seen).toBeLessThan(files);
+    expect((await sh.git(["ls-tree", "--name-only", tree])).trim()).toBe(first);
+  } finally {
+    if (before === undefined) delete process.env.KEEL_CHECKPOINT_SNAPSHOT_MB; else process.env.KEEL_CHECKPOINT_SNAPSHOT_MB = before;
+  }
+});

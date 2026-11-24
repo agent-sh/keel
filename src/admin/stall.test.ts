@@ -2,7 +2,14 @@
 // late a tick is, what held the loop, how often the timer fires, and what the
 // row says.
 import { afterEach, expect, test } from "bun:test";
-import { describeStall, dropBeat, during, inFlight, Recurrence, RECUR_MS, shareBeat, type Stall, StallMonitor, timed, TurnWatch } from "./stall.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Bus } from "../core/bus.ts";
+import { ErrorTracker } from "../core/errors.ts";
+import { Store } from "../core/store.ts";
+import { spike, SPIKE_COUNT, SPIKE_WINDOW_MS, spikeCounts } from "../helper/policy.ts";
+import { describeStall, dropBeat, during, inFlight, Recurrence, RECUR_MS, shareBeat, type Stall, stallCapture, StallMonitor, timed, TurnWatch } from "./stall.ts";
 import { ALLOW_MASK, IDLE_ALLOW } from "./stall-beat.ts";
 import { type Cause, decide, type Sample, unknown, UNSEEN } from "./stall-cause.ts";
 
@@ -399,4 +406,44 @@ test("a cause that recurs three times in an hour is counted per cause, within th
   // Another cause counts by itself, and one gone for an hour starts again.
   expect(r.add("stall cpu_wait", t0 + RECUR_MS + 1_001)).toBe(1);
   expect(r.add("stall compute kernel memory untimed", t0 + 3 * RECUR_MS)).toBe(1);
+});
+
+// A short stall that keeps coming back makes one row at its third time, and each later one counts on it as
+// a repeat: the frames update the views, and nothing that counts new failures pages on them. Five within
+// ten minutes were five error frames before, and the helper's spike woke the coordinator for one slow cause.
+test("a recurring short stall's later repeats count on its row and are no new failure", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-stall-"));
+  const store = new Store(dir);
+  const bus = new Bus();
+  const errors = new ErrorTracker(store, bus);
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const frames: { id: string; repeat?: true }[] = [];
+    bus.on((f) => { if (f.t === "error") frames.push({ id: f.error.id, ...(f.repeat ? { repeat: f.repeat } : {}) }); });
+    let times: number[] = [], spiked = false, counted = 0;
+    errors.onCapture((c) => { if (!spikeCounts(c)) return; counted++; const r = spike(times, Date.now(), SPIKE_WINDOW_MS, SPIKE_COUNT); times = r.times; spiked ||= r.spiked; });
+    const r = new Recurrence();
+    const d = { message: "The daemon was unresponsive for 1.6 s", context: { kind: "stall", ms: 1600 }, group: "stall compute kernel memory untimed" };
+    const t0 = 50_000_000;
+    const made = [];
+    for (let i = 0; i < 6; i++) {
+      const ended = t0 + i * 60_000;
+      const c = stallCapture(d, false, r.add(d.group, ended), ended);
+      if (c) made.push(errors.capture("server", Object.assign(new Error(c.message), { stack: undefined }), c.context, c.at));
+    }
+    // The first two reach the log alone; the third makes the row, and the rest count on it.
+    expect(made.length).toBe(4);
+    expect(new Set(made.map((m) => m.id)).size).toBe(1);
+    expect(store.error(made[0]!.id)?.count).toBe(4);
+    expect(frames.map((f) => !!f.repeat)).toEqual([false, true, true, true]);
+    expect(counted).toBe(1);
+    expect(spiked).toBe(false);
+    // A stall long enough for a row by itself is never a repeat.
+    const long = stallCapture({ ...d, message: "The daemon was unresponsive for 3 s" }, true, r.add(d.group, t0 + 7 * 60_000), t0 + 7 * 60_000);
+    expect(long?.at).toEqual({ group: d.group });
+  } finally {
+    console.error = quiet;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

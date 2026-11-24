@@ -34,6 +34,12 @@ export function nextWakeAt(now: number, lastWake: number, coalesceMs: number, ga
 // A spike: `threshold` failures captured within `windowMs`. Returns the
 // times still inside the window (with `ts`), and whether this one made a
 // spike; after a spike the window starts empty, so one spike is told once.
+// Errors: this many captures within the window is a spike worth a wake.
+export const SPIKE_WINDOW_MS = 10 * 60_000;
+export const SPIKE_COUNT = 5;
+// A captured failure the spike counts: a new one, not a repeat a row already said (ErrorPlace.repeat).
+export const spikeCounts = (c: { repeat?: true }) => !c.repeat;
+
 export function spike(times: number[], ts: number, windowMs: number, threshold: number): { times: number[]; spiked: boolean } {
   const kept = [...times.filter((t) => ts - t < windowMs), ts];
   return kept.length >= threshold ? { times: [], spiked: true } : { times: kept, spiked: false };

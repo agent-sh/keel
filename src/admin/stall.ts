@@ -30,6 +30,7 @@
 // the loop writes a beat it reads, at every tick and around every timed
 // section, and the row carries what the watcher saw of the main thread
 // meanwhile (stall-cause.ts).
+import type { ErrorPlace } from "../core/errors.ts";
 import { KICK, packBeat, packIdle } from "./stall-beat.ts";
 import { type Cause, UNSEEN } from "./stall-cause.ts";
 import { secs } from "./stall-rows.ts";
@@ -492,6 +493,21 @@ export class Recurrence {
     this.seen.set(group, ts);
     return ts.length;
   }
+}
+
+// What a described stall makes in Errors: nothing (`row` false and under RECUR_N of its cause, the log
+// alone), its row, or, for a shorter stall that came back, its row with how often. A shorter stall past
+// the one that made its row is a repeat (ErrorPlace.repeat): it counts on the row, and is no news for
+// what counts new failures (the helper's spike, the incidents), which one cause coming back every few
+// minutes would otherwise page.
+export function stallCapture(d: { message: string; context: Record<string, unknown>; group: string }, row: boolean, times: number, ended: number): { message: string; context: Record<string, unknown>; at: ErrorPlace } | undefined {
+  if (!row && times < RECUR_N) return undefined;
+  if (row) return { message: d.message, context: { ...d.context, ended_ms: ended }, at: { group: d.group } };
+  return {
+    message: `${d.message}; ${times} stalls of this cause in the last hour`,
+    context: { ...d.context, ended_ms: ended, recurring: times },
+    at: { group: d.group, ...(times > RECUR_N ? { repeat: true as const } : {}) },
+  };
 }
 
 // The daemon's one monitor: made with the admin routes, started once the server listens.

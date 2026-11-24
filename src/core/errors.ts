@@ -16,8 +16,12 @@ export const detached = <T>(f: () => T): T => errorScope.exit(f);
 // `group`: what repeats of this failure share, when its words do not say (a
 // message that carries what varies: a duration's cause, a child's name). The
 // row is one per group instead of one per message shape.
-export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string; recovered?: true; quietLog?: true };
-export type ErrorCapture = Pick<ErrorRecord, "id" | "source"> & { context: unknown; turnSession?: string };
+// `repeat`: one more of a failure whose row already said it, and no news (a
+// short stall that keeps coming back, after the time that made its row,
+// src/admin/stall.ts): the row counts it and its frame updates the views, but
+// what reacts to new failures (a spike of them, an incident) leaves it out.
+export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string; recovered?: true; quietLog?: true; repeat?: true };
+export type ErrorCapture = Pick<ErrorRecord, "id" | "source" | "session_id"> & { context: unknown; turnSession?: string; repeat?: true };
 
 const KEPT_MAX = 100;
 const FLUSH_MS = 30_000;
@@ -191,9 +195,9 @@ export class ErrorTracker {
       if (quiet) rec = this.store.readError(rec.id, true) ?? rec;
       rec = this.sites.with([rec])[0]!;
     } catch (failed) { console.error(`[${source}] where it happened was not recorded: ${(failed as Error)?.message ?? failed}`); }
-    this.bus.emit({ t: "error", error: rec });
+    this.bus.emit({ t: "error", error: rec, ...(at.repeat ? { repeat: true as const } : {}) });
     for (const listener of this.captures) {
-      try { listener({ id: rec.id, source, context, turnSession: scope?.session }); } catch {}
+      try { listener({ id: rec.id, source, session_id: rec.session_id, context, turnSession: scope?.session, ...(at.repeat ? { repeat: true as const } : {}) }); } catch {}
     }
     // A request tried again on the same failure is said on the console once, at its first try: the
     // daemon's own lines say the retrying, and how it ended (src/admin/story.ts). The row counts each.

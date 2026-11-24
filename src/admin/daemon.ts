@@ -18,7 +18,7 @@ import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
 import { IDLE_MAX_MS, pulse } from "../core/pulse.ts";
 import { beatLife, endLife, lifeDraining, restarts } from "./life.ts";
-import { describeStall, Recurrence, RECUR_N, type Stall, StallMonitor, timed, TurnWatch, unanswered, watchWith } from "./stall.ts";
+import { describeStall, Recurrence, type Stall, stallCapture, StallMonitor, timed, TurnWatch, unanswered, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
 import { liveJobs } from "../tools/jobs.ts";
@@ -180,11 +180,10 @@ export class Daemon {
     const told = async (stall: Stall, row: boolean) => {
       const ended = Date.now();
       const d = describeStall({ ...stall, cause: await sight.ask(stall.ms, stall.window_ms ?? stall.ms) });
-      const times = recur.add(d.group, ended);
-      if (!row && times < RECUR_N) return console.warn(`[daemon] ${d.message}`);
-      const context = { ...d.context, ended_ms: ended, ...(row ? {} : { recurring: times }) };
-      const message = row ? d.message : `${d.message}; ${times} stalls of this cause in the last hour`;
-      const rec = this.deps.errors.capture("server", Object.assign(new Error(message), { stack: undefined }), context, { group: d.group });
+      const c = stallCapture(d, row, recur.add(d.group, ended), ended);
+      if (!c) return console.warn(`[daemon] ${d.message}`);
+      const { context } = c;
+      const rec = this.deps.errors.capture("server", Object.assign(new Error(c.message), { stack: undefined }), context, c.at);
       try { onRow?.(context, d.what, rec.id || undefined); } catch (e) { console.warn(`[daemon] a stall's span was not written: ${(e as Error).message}`); }
       this.stalls.unshift({ ts_ms: ended, ms: d.ms, what: d.what, kind: d.kind, ...(rec.id ? { error_id: rec.id } : {}) });
       // Kept past this process too: the away digest tells of the stalls of an absence.

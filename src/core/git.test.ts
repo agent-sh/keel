@@ -1,10 +1,10 @@
 // The daemon's own git calls against a repository whose files name programs:
 // none of them may run. Each program writes a marker file when it does.
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addAll, git, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, setGitReach, setGitViews } from "./git.ts";
+import { addAll, git, gitEach, GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitSync, innerWork, locate, setGitReach, setGitViews } from "./git.ts";
 import { handsRoutes } from "../fleet/hands-routes.ts";
 import { Shadow } from "../safety/shadow.ts";
 import { Store } from "./store.ts";
@@ -775,4 +775,40 @@ test("the work in a folder on another machine is asked through that machine's he
   expect(await ask({ dir: sup, root, base: "HEAD" })).toEqual({ dirty: 1, unpushed: [], unknown: [], ahead: 0 });
   expect(ran().filter((m) => m !== "owner-filter")).toEqual([]);
   expect((await ask({ dir: sup, root: join(root, "kept") })).error).toContain("not a directory inside the granted one");
+});
+
+// A listing read as it comes stops git where its reader stops, and when the reader fails:
+// otherwise git waits on a full pipe for its whole timeout.
+test("gitEach stops git when told to and when its reader throws", async () => {
+  const dir = join(root, "each");
+  mkdirSync(dir);
+  must(dir, "init", "-q");
+  writeFileSync(join(dir, "big"), "x\0".repeat(4_000_000));
+  must(dir, "add", "big");
+  must(dir, "commit", "-q", "-m", "big");
+  // The git processes of this test still running (a zombie is gone).
+  const alive = () => {
+    const kids: string[] = [];
+    for (const t of readdirSync(`/proc/${process.pid}/task`)) {
+      try { kids.push(...readFileSync(`/proc/${process.pid}/task/${t}/children`, "utf8").split(" ").filter(Boolean)); } catch {}
+    }
+    return kids.filter((pid) => {
+      try { return readlinkSync(`/proc/${pid}/cwd`) === dir && !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8")); } catch { return false; }
+    }).length;
+  };
+  const gone = async () => { for (let i = 0; i < 60 && alive(); i++) await Bun.sleep(50); return alive() === 0; };
+  // Read whole: every entry, in order.
+  let n = 0;
+  const whole = await gitEach(dir, ["cat-file", "blob", "HEAD:big"], { timeout: 30_000 }, (e) => { n += e.filter((x) => x === "x").length; return true; });
+  expect(whole).toEqual({ code: 0, err: "" });
+  expect(n).toBe(4_000_000);
+  // Stopped at the first chunk: one call, git killed long before it printed everything.
+  let calls = 0;
+  const stopped = await gitEach(dir, ["cat-file", "blob", "HEAD:big"], { timeout: 30_000 }, () => { calls++; return false; });
+  expect(stopped.stopped).toBe(true);
+  expect(calls).toBe(1);
+  expect(await gone()).toBe(true);
+  // The reader throws: the failure is passed on, and git does not wait on the pipe.
+  await expect(gitEach(dir, ["cat-file", "blob", "HEAD:big"], { timeout: 30_000 }, () => { throw new Error("reader failed"); })).rejects.toThrow("reader failed");
+  expect(await gone()).toBe(true);
 });

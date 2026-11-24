@@ -24,7 +24,7 @@ import { toMessages } from "../engine/turn.ts";
 import type { Deps } from "../server/app.ts";
 import { mailSource, type MailMsg, type MailSource } from "./mail.ts";
 import { Memory } from "./memory.ts";
-import { digestLines, digestZone, levelOfAlert, nextWakeAt, spike, type DigestEvent, type Level } from "./policy.ts";
+import { digestLines, digestZone, levelOfAlert, nextWakeAt, spike, SPIKE_COUNT, SPIKE_WINDOW_MS, spikeCounts, type DigestEvent, type Level } from "./policy.ts";
 import { recallLine, type MemoryRecord } from "./records.ts";
 import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -41,9 +41,6 @@ type State = HelperSettings & { last_wake: number; mail_baseline: boolean; label
 
 // A burst of events is gathered this long before a wake (one wake, not one per event).
 export const COALESCE_MS = 60_000;
-// Errors: this many captures within the window is a spike worth a wake.
-export const SPIKE_WINDOW_MS = 10 * 60_000;
-export const SPIKE_COUNT = 5;
 // Per turn: remembered items recalled (characters) and digest lines told.
 export const RECALL_CHARS = 2_000;
 export const DIGEST_LINES = 30;
@@ -386,10 +383,13 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     this.off.push(this.deps.bus.on((f) => {
       try {
         if (f.t === "feature" && f.name === "automation" && f.data?.kind === "alert") this.onAlert(f.data.data as alerts.Alert);
-        else if (f.t === "error") this.onError(f.error);
       } catch (e) {
         this.deps.errors.capture("server", e, { at: "helper event" });
       }
+    }));
+    // Failures as they are captured: a frame of the bus also says a row was read, healed or resolved.
+    this.off.push(this.deps.errors.onCapture((c) => {
+      try { if (spikeCounts(c)) this.onError(c); } catch (e) { this.deps.errors.capture("server", e, { at: "helper event" }); }
     }));
     this.start();
     // A wake a restart cut short is scheduled again.
@@ -412,8 +412,8 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
     this.record(a.kind, a.session_id, `${a.title}${who}`, a.body, level);
   }
 
-  private onError(err: { message: string; session_id?: string; ts: number }) {
-    if (this.isHelper(err.session_id)) return;
+  private onError(err: { session_id?: string; turnSession?: string }) {
+    if (this.isHelper(err.session_id) || this.isHelper(err.turnSession)) return;
     const r = spike(this.errTimes, Date.now(), SPIKE_WINDOW_MS, SPIKE_COUNT);
     this.errTimes = r.times;
     if (!r.spiked) return;

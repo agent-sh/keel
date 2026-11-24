@@ -98,7 +98,7 @@ const hooksAtStart = allHooks().length;
 afterAll(() => { helper?.stop(); allHooks().length = hooksAtStart; });
 const noMail = { id: "none", label: "No mail", available: () => false, account: () => undefined, can: { modify: false, send: false, calendar: false } } as unknown as MailSource;
 const helperOn = async () => {
-  helper ??= new Helper({ store, bus, engine, providers, workspace: dir, errors: { capture() {} } } as any, noMail);
+  helper ??= new Helper({ store, bus, engine, providers, workspace: dir, errors: { capture() {}, onCapture: () => () => {} } } as any, noMail);
   helper.configure({ mail_every_min: 0 });
   await helper.setOn(true);
   return helper;
@@ -672,7 +672,7 @@ describe("helper", () => {
     try {
       // A daemon that runs no helper says so.
       expect((await call("GET", "/v1/helper")).status).toBe(409);
-      helper = new Helper({ store, bus, providers, workspace: dir, errors: { capture() {} } } as any, noMail);
+      helper = new Helper({ store, bus, providers, workspace: dir, errors: { capture() {}, onCapture: () => () => {} } } as any, noMail);
       helper.configure({ mail_every_min: 0 });
       expect((await call("GET", "/v1/helper")).body).toMatchObject({ on: false, chat_id: null, events: [] });
       expect((await call("PATCH", "/v1/helper", { on: "yes" })).status).toBe(400);
