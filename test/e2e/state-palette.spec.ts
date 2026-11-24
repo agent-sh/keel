@@ -110,7 +110,7 @@ test("every surface that shows a state wears the hue of its dot, in both themes"
         if (watch === "need") await sameHue(page, `${where}: the row's word`, row(page, id).getByTestId("row-state"), dots.need!);
         if (watch === "need") {
           await sameHue(page, `${where}: the approval card's edge`, page.getByTestId("approval"), dots.need!, "borderTopColor");
-          await sameHue(page, `${where}: the pane's band`, page.locator(".k-station .k-band").first(), dots.need!, "backgroundColor");
+          // (The pane's band says no state since UX-S113: the glyph and the word say it once.)
         }
       }
       // The question card is the same yellow.
