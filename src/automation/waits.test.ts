@@ -925,3 +925,8 @@ test("an agent's turn end drops the fallback timer of the wait that woke it, and
   waits.cancel(owners.id);
   waits.cancel(later.id);
 });
+
+test("an index leads with the session, so what reads a session's waits by its id is a search, not a scan of every wait ever set", () => {
+  const lead = store.db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'waits' AND sql LIKE '%(session_id%'").all();
+  expect(lead.length).toBeGreaterThan(0);
+});

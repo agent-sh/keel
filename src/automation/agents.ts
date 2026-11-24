@@ -306,6 +306,11 @@ export const byChild = (sessionId: string) => {
 };
 export const list = (parentId?: string) =>
   D().store.db.query<Row, any>(`SELECT * FROM agents ${parentId ? "WHERE parent_id = ?" : ""} ORDER BY created`).all(...(parentId ? [parentId] : [])).map(toRec);
+// The agents of a parent still at work (and, with `owed`, those ended whose report is owed): what most callers
+// ask. The status is read before the row's report, so the reports of the ended ones (most of what a long-lived
+// coordinator's agents hold) are never read.
+export const live = (parentId: string, owed = false) =>
+  D().store.db.query<Row, [string]>(`SELECT * FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting')${owed ? " OR handback" : ""}) ORDER BY created`).all(parentId).map(toRec);
 // The agents a session shows as its own: its own, and when it is an agent's successor, the agents its lost contexts
 // started that ended before the handover. Those stay the lost context's (their reports were its, and a message
 // to one would start a follow-up that reports there): a read for the owner's views, not for what acts on agents.
@@ -2739,7 +2744,7 @@ const restarting = new Map<string, Promise<void>>(); // finished agents a messag
 // it is stored. A wait cut by a stop leaves the report owed, for the parent's
 // next turn.
 export async function waitAll(parentId: string, ids: string[] | undefined, timeoutMs: number, signal?: AbortSignal): Promise<AgentRecord[]> {
-  const targets = ids?.length ? ids.map((i) => resolveTarget(parentId, i)) : list(parentId).filter((a) => a.status === "running" || a.status === "waiting");
+  const targets = ids?.length ? ids.map((i) => resolveTarget(parentId, i)) : live(parentId);
   if (targets.length && !targets.some((a) => isEnded(get(a.id)!))) {
     const quit = new AbortController();
     const stopAll = () => quit.abort();
@@ -2754,8 +2759,8 @@ export async function waitAll(parentId: string, ids: string[] | undefined, timeo
 
 // Whether the parent's agents still at work all wait on the owner (and there is one).
 export function allWaitOnOwner(parentId: string): boolean {
-  const live = list(parentId).filter((a) => a.status === "running" || a.status === "waiting");
-  return live.length > 0 && live.every((a) => D().engine.waitsOnOwner(a.session_id));
+  const at = live(parentId);
+  return at.length > 0 && at.every((a) => D().engine.waitsOnOwner(a.session_id));
 }
 
 // The parent has these agents' results in a stored tool result: their

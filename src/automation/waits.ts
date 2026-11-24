@@ -89,7 +89,9 @@ CREATE TABLE IF NOT EXISTS waits (
   events INTEGER NOT NULL DEFAULT 0,
   state TEXT
 );
-CREATE INDEX IF NOT EXISTS waits_status ON waits(status, session_id);`);
+CREATE INDEX IF NOT EXISTS waits_status ON waits(status, session_id);
+-- What reads a session's waits whatever their status (a stop's cleanup, the file and log waits it set): by session, not a scan of every wait ever set.
+CREATE INDEX IF NOT EXISTS waits_session ON waits(session_id);`);
   // 1 while the wait's last wake (fired, timed out, ended) is owed to its
   // session: set in the statement that settles it, cleared when the wake is
   // stored in the transcript. A restart sends what is still owed.

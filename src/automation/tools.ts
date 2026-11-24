@@ -619,7 +619,7 @@ const schedule_create: Tool = { name: "schedule_create", inputAlias: { cron: ["s
 const listRun = (_: any, ctx: ToolContext) => guard(() => {
   const ls = loops.list(ctx.sessionId);
   const ws = waits.list(ctx.sessionId, 0).filter((w) => w.status === "active");
-  const as = agents.list(ctx.sessionId).filter((a) => !agents.isEnded(a));
+  const as = agents.live(ctx.sessionId);
   const parts = [
     ls.length ? `Scheduled tasks:\n${ls.map(loopLine).join("\n")}` : "No scheduled tasks.",
     ws.length ? `Active waits:\n${ws.map((w) => `${w.id} · ${w.kind} · ${w.note || JSON.stringify(w.spec)}`).join("\n")}` : "",

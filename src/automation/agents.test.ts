@@ -153,9 +153,12 @@ test("blocking spawns wake on failed admission and a raised limit, and detach wh
   await settled();
   const [_, b] = agents.list(p.id);
   expect(b?.status).toBe("running");
+  // What is at work is read without the reports of the ended ones.
+  expect(agents.live(p.id).map((x) => x.id)).toEqual([a!.id, b!.id]);
   end(a!, "end_turn");
   end(b!, "end_turn");
   expect((await Promise.all([first, second])).map((r) => r.status)).toEqual(["completed", "completed"]);
+  expect(agents.live(p.id)).toEqual([]);
 });
 
 test("who stopped an agent is kept, and a second stop does not change it", async () => {

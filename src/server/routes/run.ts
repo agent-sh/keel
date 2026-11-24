@@ -113,7 +113,7 @@ export const runRoutes: RouteModule = (deps) => {
         // An agent that ended but whose report has not reached the session yet
         // still counts: its report starts the turn that uses it.
         // (A failure notice that stands in for failed agents' reports counts the same.)
-        const agentsLive = agents.list(s.id).filter((a) => a.status === "running" || a.status === "waiting" || a.handback).length + (owedWake(s.id) ? 1 : 0);
+        const agentsLive = agents.live(s.id, true).length + (owedWake(s.id) ? 1 : 0);
         const waitsLive = waits.list(s.id, 0).filter((w) => w.status === "active").length;
         const jobsLive = jobsOf(s.id).filter((j) => j.background && running(j)).length;
         const { label: _l, word: _w, ...state } = sessionState(s, { from: { store, engine } });
