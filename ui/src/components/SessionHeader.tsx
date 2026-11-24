@@ -250,7 +250,7 @@ export function SessionHeader({ session }: { session: Session }) {
   const tokenWords = `${fmtTokens(input_)} in (${cached}% cached), ${fmtTokens(u.output)} out`;
   const usageId = useId();
   const folder = session.workspace.split("/").pop();
-  // A cap that is set stays in the row (it is what the owner watches); the button that sets one folds first.
+  // A cap that is set rests in the row, below the permission mode (a safety state) and above the worktree; the button that sets one is in the menu.
   const capped = !!useCap(session.id, !!session.settings.cap_usd || !!session.parent_id);
 
   // In the row's order; the rank says which stays longest when the row is short. `rest`: it has a place in
@@ -273,7 +273,7 @@ export function SessionHeader({ session }: { session: Session }) {
     >
       {u.cost !== undefined ? <span data-testid="session-cost">{fmtSessionCost(u.cost)}</span> : `${fmtTokens(input_ + u.output)} tokens`}
     </button><span id={usageId} hidden>{tokenWords}</span></> }] : []),
-    { id: "cap", label: "Dollar cap", rank: capped ? 7 : 0, node: <CapControl session={session} /> },
+    { id: "cap", label: "Dollar cap", rank: capped ? 5.5 : 0, rest: capped, node: <CapControl session={session} /> },
     { id: "background", label: "Background", rank: 3, node: <BackgroundButton sessionId={session.id} /> },
     { id: "machine", label: "Runs on", rank: 4, node: <MachineChip session={session} /> },
     ...(session.parent_id ? [] : [{ id: "snooze", label: "Snooze", rank: 2, node: <SessionSnoozeButton sessionId={session.id} /> }]),
