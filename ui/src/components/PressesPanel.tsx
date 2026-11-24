@@ -83,7 +83,7 @@ export default function PressesPanel() {
             {v.controls.map((c) => (
               <li key={c.control} className="relative grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-4 border-b border-line/60 py-1 text-ui last:border-0" data-testid="press-row" data-control={c.control}>
                 <span className="absolute inset-y-0.5 left-0 rounded-xs bg-accent-soft" style={{ width: `${(100 * c.presses) / top}%` }} aria-hidden />
-                <span className="relative truncate pl-1 font-mono text-caption">{c.control}</span>
+                <span className="relative min-w-0 pl-1 font-mono text-caption [overflow-wrap:anywhere]" data-testid="press-name">{c.control}</span>
                 <span className="relative tabular-nums" data-testid="press-count">{c.presses.toLocaleString()}</span>
                 <span className={cn("relative w-20 text-right text-caption text-faint")} title={c.surfaces.split(",").map((s) => SURFACE[s] ?? s).join(", ")}>{clock(c.last_ms)}</span>
               </li>
@@ -98,10 +98,10 @@ export default function PressesPanel() {
         {!r.never.length ? <p className="k-empty">{r.first_ms || r.views.length ? "Every control drawn was pressed." : "No control has been seen yet."}</p> : (
           <ul className="flex flex-col">
             {(all ? r.never : r.never.slice(0, NEVER_SHOWN)).map((n) => (
-              <li key={n.control} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-baseline gap-x-4 border-b border-line/60 py-1 text-ui last:border-0 max-sm:grid-cols-[minmax(0,1fr)_auto]" data-testid="press-never-row" data-control={n.control}>
-                <span className="truncate font-mono text-caption">{n.control}</span>
+              <li key={n.control} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-baseline gap-x-4 border-b border-line/60 py-1 text-ui last:border-0 max-sm:grid-cols-1" data-testid="press-never-row" data-control={n.control}>
+                <span className="min-w-0 font-mono text-caption [overflow-wrap:anywhere]" data-testid="press-name">{n.control}</span>
                 <span className="truncate text-caption text-muted max-sm:hidden">{n.views.split(",").map(viewName).join(", ")}</span>
-                <span className="text-right text-caption text-faint">seen since {when(n.seen_since_ms)}</span>
+                <span className="text-right text-caption text-faint max-sm:text-left">seen since {when(n.seen_since_ms)}</span>
               </li>
             ))}
           </ul>
