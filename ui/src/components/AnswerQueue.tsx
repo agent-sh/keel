@@ -338,7 +338,7 @@ export function WaitingElsewhere({ sessionId }: { sessionId: string }) {
   // It stands beside the words, out of their live region: a screen reader tells the words as they
   // change, and a control read out inside a status is told as more of it.)
   return (
-    <div className="mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint pointer-coarse:h-tap" data-testid="waiting-elsewhere" data-on={on || undefined} title={words}>
+    <div className="k-waiting-elsewhere mb-1.5 flex h-ctl-sm items-center gap-x-1.5 overflow-hidden whitespace-nowrap pl-0.5 text-micro text-faint pointer-coarse:h-tap" data-testid="waiting-elsewhere" data-on={on || undefined} title={words}>
       <p className="flex min-w-0 items-center gap-x-1.5" role="status">
         <span className="size-1.5 shrink-0 rotate-45 bg-st-need" aria-hidden="true" />
         {on ? <span className="min-w-0 truncate"><span className="text-muted">Answering in sequence.</span> {n}: the next opens when this is answered.</span>

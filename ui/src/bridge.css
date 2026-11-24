@@ -1125,7 +1125,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-station[data-question] .k-session > .k-reading-room { min-height: 0; }
   /* What is asked comes first: the line of the other sessions that wait goes under the card. */
   .k-station[data-question] .k-asks { display: flex; flex-direction: column; }
-  .k-station[data-question] .k-asks > [data-testid="waiting-elsewhere"] { order: 1; margin: 0.375rem 0 0; }
+  .k-station[data-question] .k-asks > .k-waiting-elsewhere { order: 1; margin: 0.375rem 0 0; }
   /* A long question is cut at three lines, its choices in view with it; "Read it all" shows the rest. */
   .k-q-text:not([data-whole]) { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   /* Tapped or holding something, the box keeps its tools row whole above the dock: the cards give way
@@ -1160,8 +1160,8 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-compose-tools[data-busy] .k-compose-send { gap: 0.125rem; }
   .k-station-head { padding: 0.625rem 0.875rem 0.5rem 1rem; }
   .k-station-title { font-size: var(--text-read); }
-  /* The helm's title in the head's size until that is more than a phone's width allows, then in the reading size. */
-  .k-station[data-helm] .k-station-title { font-size: min(var(--text-head), max(var(--text-read), 5.2vw)); }
+  /* (The helm's title too: the head's size cut a long title at large text on a phone, and the scale has no size
+     between: the reading size keeps it whole.) */
   .k-station-tools .k-tool-move { display: none; }
   .k-station-tools { opacity: 1; }
   .k-dock {
@@ -1180,7 +1180,7 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   /* Errors not yet read: the bug in the failure's ink, its count on it. */
   .k-dock-errors { color: var(--st-fail-ink); }
   .k-dock-errors .k-dock-out { color: var(--st-fail-ink); }
-  .k-dock-out { position: absolute; top: 0.125rem; right: 0; padding: 0 0.1875rem; border-radius: 999px; font-weight: 700; font-size: 0.625rem; line-height: 0.875rem; color: var(--muted); background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); font-variant-numeric: tabular-nums; pointer-events: none; }
+  .k-dock-out { position: absolute; top: 0.125rem; right: 0; padding: 0 0.1875rem; border-radius: 999px; font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; color: var(--muted); background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); font-variant-numeric: tabular-nums; pointer-events: none; }
   .k-dock-list { --mark: var(--spacing-tap); --gap: 2px; display: flex; gap: var(--gap); max-width: calc(round(down, 100cqw + var(--gap), var(--mark) + var(--gap)) - var(--gap)); overflow-x: auto; scrollbar-width: none; scroll-snap-type: x mandatory; }
   .k-dock-list > li { scroll-snap-align: start; }
   /* A mark and the session's short code under it: no two read alike. */
