@@ -14,11 +14,13 @@ import { claudeTools } from "../tools/claude.ts";
 import { geminiTools } from "../tools/gemini.ts";
 import { gptTools } from "../tools/gpt.ts";
 import { Gate } from "./gate.ts";
+import { vault } from "./secrets.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "keel-cov-")));
-const home = join(root, "home"), ws = join(home, "ws"), state = join(root, "state");
+const home = join(root, "home"), ws = join(home, "ws"), proj = join(home, "proj"), ws2 = join(home, "ws2"), state = join(root, "state");
+const ghToken = "GH_TOKEN_" + "ghp9Zq7Lm2Xv", dockToken = "DOCK_TOKEN_" + "x9Zq3Lm7Kd";
 const was = { HOME: process.env.HOME, config: process.env.KEEL_CONFIG_DIR, views: dirname(gitViewsDir()) };
-let gate: Gate, owner: Session, agent: Session;
+let gate: Gate, owner: Session, agent: Session, owner2: Session, agent2: Session;
 const put = (path: string, text = "x\n") => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
 const tool = (name: string) => [...claudeTools, ...geminiTools, ...gptTools].find((t) => t.name === name)!;
 
@@ -32,6 +34,8 @@ beforeAll(() => {
   mkdirSync(ws, { recursive: true });
   owner = store.createSession({ model: "fixture:m", workspace: ws });
   agent = { ...store.createSession({ model: "fixture:m", workspace: ws }), parent_id: owner.id } as Session;
+  owner2 = store.createSession({ model: "fixture:m", workspace: ws2 });
+  agent2 = { ...store.createSession({ model: "fixture:m", workspace: ws2 }), parent_id: owner2.id } as Session;
   gate.setPerm(owner.id, { mode: "ask", sandbox: "off" });
   gate.setPerm(agent.id, { mode: "auto", sandbox: "off" });
   const token = "TEST_TOKEN_" + "abc123Zq9";
@@ -48,8 +52,21 @@ beforeAll(() => {
   put(join(configDir(), "mcp.json"), `{"servers":{"x":{"env":{"API_KEY":"${token}"}}}}`);
   put(join(configDir(), "providers.toml"), `key = "${token}"`);
   put(join(configDir(), "AGENTS.md"), "# notes\n");
-  linkSync(join(home, ".aws/credentials"), join(ws, "hard.txt"));
-  symlinkSync(join(home, ".aws/credentials"), join(ws, "link.txt"));
+  // (Another folder of the home: names for a listed file, which a search of the session's own folder does not meet.)
+  mkdirSync(proj, { recursive: true });
+  linkSync(join(home, ".aws/credentials"), join(proj, "hard.txt"));
+  symlinkSync(join(home, ".aws/credentials"), join(proj, "link.txt"));
+  put(join(proj, "plain.txt"), "plain\n");
+  // (A folder of the owner's, with a store opened for the sandbox and one that stays hidden.)
+  put(join(home, ".config/gh/hosts.yml"), `github.com:\n  oauth_token: ${ghToken}\n`);
+  put(join(home, ".config/other/readme.txt"), "other\n");
+  // (A second session folder with names for a listed file inside it, in every shape.)
+  mkdirSync(ws2, { recursive: true });
+  put(join(home, ".docker/config.json"), `{"auths":{"r":{"auth":"${dockToken}"}}}\n`);
+  linkSync(join(home, ".docker/config.json"), join(ws2, "hl.txt"));
+  symlinkSync(join(home, ".docker/config.json"), join(ws2, "sym.txt"));
+  symlinkSync(join(home, ".docker/config.json"), join(ws2, ".env"));
+  put(join(ws2, "plain.txt"), "plain\n");
 });
 afterAll(() => {
   if (was.HOME === undefined) delete process.env.HOME; else process.env.HOME = was.HOME;
@@ -88,14 +105,14 @@ const isOwner = (v: string) => v.startsWith("owner: ");
 const isRefused = (v: string) => v.startsWith("refused: ");
 
 test("a file with more than one name is judged by what it is", async () => {
-  expect(isOwner(await through(owner, "Read", { file_path: join(ws, "hard.txt") }))).toBe(true);
-  expect(isRefused(await through(agent, "Read", { file_path: join(ws, "hard.txt") }))).toBe(true);
-  expect(isOwner(await bash("cat hard.txt"))).toBe(true);
+  expect(isOwner(await through(owner, "Read", { file_path: join(proj, "hard.txt") }))).toBe(true);
+  expect(isRefused(await through(agent, "Read", { file_path: join(proj, "hard.txt") }))).toBe(true);
+  expect(isOwner(await bash("cat ../proj/hard.txt"))).toBe(true);
   expect(await through(owner, "Read", { file_path: join(ws, "notes.txt") })).toBe("ran");
-  const asked = await through(owner, "Read", { file_path: join(ws, "hard.txt") });
+  const asked = await through(owner, "Read", { file_path: join(proj, "hard.txt") });
   expect(asked).toContain("another name for ~/.aws/credentials");
   // A search of the folder leaves it out, as it does the file it is a name of.
-  const found = await ran(agent, "Grep", { pattern: "TEST_TOKEN", path: ws, output_mode: "content" });
+  const found = await ran(agent, "Grep", { pattern: "TEST_TOKEN", path: proj, output_mode: "content" });
   expect(found).not.toContain("hard.txt:");
   expect(found).not.toContain("TEST_TOKEN");
   expect(found).toContain("Left out");
@@ -178,4 +195,72 @@ test("a command that runs in the sandbox asks nobody for what the sandbox hides,
   sb.setPerm(owner.id, { mode: "auto-edits", sandbox: "off" });
   expect(await run(owner, "cat .env")).toBe("card");
   expect(await run(owner, "cat ~/.aws/credentials")).toBe("card");
+});
+
+// A gate whose sessions have a sandbox, and what its Bash call comes to: "ran", "card" or "refused".
+function sandboxed() {
+  const sb = new Gate((gate as any).store, new Bus(), (_s, p) => p.sandbox !== "off");
+  const run = async (s: Session, command: string) => {
+    const stop = new AbortController();
+    let done: unknown = "waiting";
+    const asked = sb.beforeTool(s, { id: `c${n++}`, tool: tool("Bash"), input: { command }, ctx: { sessionId: s.id, cwd: s.workspace, signal: stop.signal, spillDir: join(state, "spill", s.id), seen: new Map() } }).then((r) => (done = r));
+    const open = () => sb.approvals({ session: s.id, pending: true });
+    for (let i = 0; i < 100 && done === "waiting" && !open().length; i++) await Bun.sleep(5);
+    const card = open()[0];
+    if (card) sb.resolve(card.id, s.id, { choice: "deny" });
+    await asked;
+    return card ? "card" : done && typeof done === "object" && "deny" in done ? "refused" : "ran";
+  };
+  return { sb, run };
+}
+
+test("names for a listed file are found by a search of a folder, however they are called, and a folder that is only like one is not", async () => {
+  const hit = [
+    "rg TEST_TOKEN proj", "grep -r TEST_TOKEN proj", "grep -R TEST_TOKEN proj", "rg -L TEST_TOKEN proj", "rg --follow TEST_TOKEN proj", "find proj -type f -exec cat {} +", "find -L proj -type f -exec cat {} +",
+    "cd proj; ls | xargs cat", "cd proj && ls | xargs cat", "find proj -type f | xargs cat",
+  ];
+  for (const c of hit) {
+    const [o, a] = [await bash(`cd ${home} && ${c}`), await agentBash(`cd ${home} && ${c}`)];
+    expect([c, isOwner(o) ? "owner" : o, isRefused(a) ? "refused" : a]).toEqual([c, "owner", "refused"]);
+  }
+  // The folder's other files are no reason to ask.
+  for (const c of ["cat proj/plain.txt", "grep -r plain proj/plain.txt", "ls proj"]) expect([c, await bash(`cd ${home} && ${c}`)]).toEqual([c, "ran"]);
+});
+
+test("Keel's own folders are read by a search of them, or of a folder above them, as they are by a file tool", async () => {
+  for (const c of [`grep -r KEY ${configDir()}`, `find ${configDir()} -type f -exec cat {} +`, `rg KEY ${state}`, `grep -r x ${root}`, `cd ${configDir()} && grep -r KEY .`]) {
+    const [o, a] = [await bash(c), await agentBash(c)];
+    expect([c, isOwner(o) ? "owner" : o, isRefused(a) ? "refused" : a]).toEqual([c, "owner", "refused"]);
+  }
+});
+
+test("a command in the sandbox that searches above a store the owner opened reads it: an agent is refused, the owner's values go to the vault", async () => {
+  const { sb, run } = sandboxed();
+  sb.setPerm(owner.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  sb.setPerm(agent.id, { mode: "auto", sandbox: "workspace-write" });
+  const config = join(configDir(), "sandbox.json");
+  put(config, JSON.stringify({ read: [join(home, ".config/gh")] }));
+  try {
+    for (const c of ["grep -r GH_TOKEN ~/.config", "rg GH_TOKEN ~/.config", "find ~/.config -type f -exec cat {} +", "cd ~/.config && grep -r GH_TOKEN .", "cat ~/.config/gh/hosts.yml"]) {
+      const [o, a] = [await run(owner, c), await run(agent, c)];
+      expect([c, o, a]).toEqual([c, "ran", "refused"]);
+    }
+    // What the owner's run read is in the vault: the value is a placeholder wherever the session sees it.
+    expect(vault.redact(`oauth_token: ${ghToken}`, owner.id, "output")).not.toContain(ghToken);
+    // The store that stays hidden is not read by the same search, and a search of what holds no store is not held.
+    for (const c of ["grep -r x ~/.config/other", "cat ~/.aws/credentials"]) expect([c, await run(agent, c)]).toEqual([c, "ran"]);
+  } finally { rmSync(config, { force: true }); }
+});
+
+test("a link to a listed file in the session's folder is not the folder's own file: the sandbox gives it to the vault, an agent is refused", async () => {
+  const { sb, run } = sandboxed();
+  sb.setPerm(owner2.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  sb.setPerm(agent2.id, { mode: "auto", sandbox: "workspace-write" });
+  for (const c of ["cat hl.txt", "grep -r DOCK_TOKEN .", "rg DOCK_TOKEN .", "find . -type f -exec cat {} +"]) {
+    expect([c, await run(owner2, c)]).toEqual([c, "ran"]);
+    expect([c, await run(agent2, c)]).toEqual([c, "refused"]);
+  }
+  expect(vault.redact(`auth: ${dockToken}`, owner2.id, "output")).not.toContain(dockToken);
+  // (A link that lands in the hidden home reads nothing in the sandbox, named by its own name.)
+  for (const c of ["cat plain.txt", "cat sym.txt", "cat .env"]) expect([c, await run(agent2, c)]).toEqual([c, "ran"]);
 });

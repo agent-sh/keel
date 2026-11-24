@@ -26,3 +26,17 @@ test("the list of servers carries no value of the file's: not in a target, not i
   expect(m.list().map((s) => s.target)).toEqual(["srv --api-key *** --secret=***", "https://me:***@host.invalid/mcp?access_token=***"]);
   m.dispose();
 });
+
+test("a password in an option's address, a header's credential and a token in an address's path or fragment are hidden; a place named like a secret is not", () => {
+  expect(maskedArgs([`--db=postgres://user:${token}@db.invalid/app`, "--header", `Authorization: Bearer ${token}`, "-H", "Content-Type: application/json", `X-Api-Key: ${token}`, "serve"]))
+    .toEqual(["--db=postgres://user:***@db.invalid/app", "--header", "Authorization: ***", "-H", "Content-Type: application/json", "X-Api-Key: ***", "serve"]);
+  expect(maskedUrl(`https://host.invalid/hook/${token}/run`)).toBe("https://host.invalid/hook/***/run");
+  expect(maskedUrl(`https://host.invalid/bot12345:${token}/send`)).toBe("https://host.invalid/***/send");
+  expect(maskedUrl(`https://host.invalid/v1/token/${token.slice(0, 9)}`)).toBe("https://host.invalid/v1/token/***");
+  expect(maskedUrl(`https://host.invalid/cb#access_token=${token}&state=ok`)).toBe("https://host.invalid/cb#access_token=***&state=ok");
+  expect(maskedUrl(`https://host.invalid/cb#${token}`)).toBe("https://host.invalid/cb#***");
+  // A path or a file's name is not a token, whatever the option is called.
+  const places = ["--config=configs/server-v2.production.json", "--session-dir", "/home/u/.local/state/sessions-2024-11", "--password-file", "/etc/secrets/db-password.txt", "--keyfile=./keys/server.key", "--token-file", "~/.config/tokens/main.txt"];
+  expect(maskedArgs(places)).toEqual(places);
+  expect(maskedUrl("https://host.invalid/mcp/server-v2.production.json?page=2#top")).toBe("https://host.invalid/mcp/server-v2.production.json?page=2#top");
+});

@@ -242,27 +242,71 @@ const SENSITIVE = /(?:key|token|secret|pass(?:word|wd)?|auth|sig(?:nature)?|cred
 const KEPT = "***";
 // A value the owner has not filled in (`${user_config.token}`, `$TOKEN`) is a name, not a secret.
 const placeholder = (v: string) => /^\$\{?[A-Za-z_][\w.]*\}?$/.test(v);
-// A value that looks like a token whatever it is called: long, letters and digits mixed, no spaces.
-const tokenLike = (v: string) => v.length >= 20 && !v.startsWith("/") && !v.startsWith("./") && /^[A-Za-z0-9+/=_~.-]+$/.test(v) && /[A-Za-z]/.test(v) && /\d/.test(v);
+// A value that looks like a token whatever it is called: long, letters and digits mixed in one run, no spaces, and
+// not a path or a file's name (`configs/server-v2.production.json` is made of words, a token of one long run).
+const tokenLike = (v: string) => v.length >= 20 && !pathLike(v) && /^[A-Za-z0-9+/=_~.:-]+$/.test(v) && /[A-Za-z]/.test(v) && /\d/.test(v)
+  && v.split(/[-_./]/).some((run) => run.length >= 16 && /[A-Za-z]/.test(run) && /\d/.test(run));
+// A value that names a place on a disk: an absolute or relative path, or a file name with an extension in a folder.
+const pathLike = (v: string) => /^(?:\/|\.{1,2}\/|~\/?|[A-Za-z]:[\\/])/.test(v) || /^[\w.@-]+(?:\/[\w.@ -]+)+\.[A-Za-z0-9]{1,8}$/.test(v);
+// An option whose value is a place (`--password-file`, `--session-dir`, `--keyfile`): the name of a secret's file is not the secret.
+const placeOption = (name: string) => /(?:file|dir|path|folder|directory)$/i.test(name.replace(/^-+/, ""));
+// A header line whose value is a credential: `Authorization: Bearer X`, `X-Api-Key: X`.
+const headerLine = (w: string) => /^([A-Za-z][\w-]*)\s*:\s*(\S.*)$/s.exec(w);
+const secretHeader = (name: string, value: string) => !placeholder(value) && (SENSITIVE.test(name) || /^(?:bearer|basic|token|digest)\s/i.test(value));
+// The path of an address: a segment that is a token, or comes right after the word `token` or `key`.
+const KEY_WORD = /^(?:token|key|apikey|api-key|api_key|secret|access[-_]?token|bearer|password)$/i;
+function maskedPath(path: string): string {
+  const segs = path.split("/");
+  let prev = "";
+  const out = segs.map((seg) => {
+    let value = seg;
+    try { value = decodeURIComponent(seg); } catch {}
+    const hide = seg !== "" && !placeholder(value) && (tokenLike(value) || (KEY_WORD.test(prev) && value.length >= 6));
+    prev = seg;
+    return hide ? KEPT : seg;
+  });
+  return out.join("/");
+}
 export function maskedUrl(url: string): string {
   const text = url.trim();
   try {
     const u = new URL(text);
     if (u.password) u.password = KEPT;
     for (const [k, v] of [...u.searchParams]) if (!placeholder(v) && (SENSITIVE.test(k) || tokenLike(v))) u.searchParams.set(k, KEPT);
+    const path = maskedPath(u.pathname);
+    if (path !== u.pathname) u.pathname = path;
+    // The fragment: `#access_token=X&state=Y` is read as parameters, anything else as one value.
+    if (u.hash.length > 1) {
+      const frag = u.hash.slice(1);
+      if (frag.includes("=")) {
+        const params = new URLSearchParams(frag);
+        for (const [k, v] of [...params]) if (!placeholder(v) && (SENSITIVE.test(k) || tokenLike(v))) params.set(k, KEPT);
+        u.hash = params.toString();
+      } else if (tokenLike(frag)) u.hash = KEPT;
+    }
     return u.toString();
   } catch {
-    return text.replace(/(:\/\/[^:/@\s]+:)[^@\s]+@/, `$1${KEPT}@`).replace(/([?&][^=&\s]*(?:key|token|secret|pass|auth|sig)[^=&\s]*=)[^&\s]+/gi, `$1${KEPT}`);
+    return text.replace(/(:\/\/[^:/@\s]+:)[^@\s]+@/, `$1${KEPT}@`).replace(/([?&#][^=&\s]*(?:key|token|secret|pass|auth|sig)[^=&\s]*=)[^&\s]+/gi, `$1${KEPT}`);
   }
 }
+const isUrl = (w: string) => /^[a-z][a-z0-9+.-]*:\/\/\S/i.test(w);
 export function maskedArgs(words: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!;
     const eq = /^(-{0,2}[A-Za-z_][\w.-]*)=(.*)$/s.exec(w);
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(w)) out.push(maskedUrl(w));
-    else if (eq) out.push(!placeholder(eq[2]!) && (SENSITIVE.test(eq[1]!) || tokenLike(eq[2]!)) ? `${eq[1]}=${KEPT}` : w);
-    else if (/^--?[A-Za-z][\w-]*$/.test(w) && SENSITIVE.test(w) && i + 1 < words.length && !words[i + 1]!.startsWith("-") && !placeholder(words[i + 1]!)) { out.push(w, KEPT); i++; }
+    const next = words[i + 1];
+    if (isUrl(w)) out.push(maskedUrl(w));
+    else if (eq && isUrl(eq[2]!)) out.push(`${eq[1]}=${maskedUrl(eq[2]!)}`);
+    else if (eq) out.push(!placeholder(eq[2]!) && !pathLike(eq[2]!) && !placeOption(eq[1]!) && (SENSITIVE.test(eq[1]!) || tokenLike(eq[2]!)) ? `${eq[1]}=${KEPT}` : w);
+    else if (/^(?:-H|--header|--headers|-header)$/.test(w) && next !== undefined) {
+      const h = headerLine(next);
+      out.push(w, h && secretHeader(h[1]!, h[2]!) ? `${h[1]}: ${KEPT}` : isUrl(next) ? maskedUrl(next) : next);
+      i++;
+    }
+    else if (headerLine(w) && secretHeader(headerLine(w)![1]!, headerLine(w)![2]!) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(w)) out.push(`${headerLine(w)![1]}: ${KEPT}`);
+    else if (/^--?[A-Za-z][\w-]*$/.test(w) && next !== undefined && !next.startsWith("-") && !placeholder(next) && !placeOption(w) && !pathLike(next) && SENSITIVE.test(w)) { out.push(w, KEPT); i++; }
+    else if (/^--?[A-Za-z][\w-]*$/.test(w) && next !== undefined && isUrl(next)) { out.push(w, maskedUrl(next)); i++; }
     else out.push(w);
   }
   return out;

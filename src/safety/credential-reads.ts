@@ -2,10 +2,11 @@
 // stores it names to a program that reads them, straight or through a helper (xargs, find -exec, a substitution), a
 // wildcard that can reach one, a copy of one, and a recursive search of a folder that holds the home's stores or
 // files named like credentials. A file tool's read of the same paths is the same class (policy.ts decides both).
-import { readdirSync, type Dirent } from "node:fs";
+import { lstatSync, readdirSync, type Dirent } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { timed } from "../admin/stall.ts";
 import { contains } from "../core/paths.ts";
-import { credentialName, storesSaid, storesUnder, STORES, type Credential } from "./credentials.ts";
+import { credentialAt, credentialName, foreignAt, homeOf, placesOf, realPlaces, storesSaid, storesUnder, STORES, type Credential } from "./credentials.ts";
 import { laid, type Laid } from "./risk.ts";
 import { name as baseName } from "./risk-words.ts";
 import type { Made, Simple } from "./shell.ts";
@@ -39,6 +40,8 @@ const valuedOf = (prog: string) => SEARCH_VALUED[prog === "egrep" || prog === "f
 const RECURSIVE = new Set(["rg", "ag", "ack"]);
 // Programs that walk folders and list what they find: what they print is read next by a reader that takes names.
 const WALKERS = new Set(["find", "fd", "fdfind"]);
+// Programs that list the names in a folder: what a reader fed by xargs then reads.
+const LISTERS = new Set(["ls", "dir", "vdir"]);
 
 // ---- wildcards ----
 
@@ -92,13 +95,17 @@ export function wildNames(last: string): string[] {
 
 // `hits`: each place the command reads that is a credential, where it is (a file, a store, or the folder a search
 // walks that holds some): what a sandbox that hides it keeps the command from, whatever the command is.
-export type Hit = { path: string; what: string; by: string; api?: string };
+// `foreign`: the file is another name for one of the owner's credentials (a link): never its folder's own.
+export type Hit = { path: string; what: string; by: string; api?: string; foreign?: true };
 export type Reads = { what: string; by: string; paths: string[]; api?: string; hits: Hit[] };
 // What the gate can add from the disk: the names of the files under a folder that hold credentials by their names
 // (a bounded look), and the files a pattern names. Without them, a command is judged by its words alone.
 const EXPANDED_MAX = 500;
-export type DiskLook = { named?: (folder: string) => string[]; // the files under a folder that hold credentials by their names, as full paths
-   expand?: (pattern: string, dir: string) => string[] };
+// A file a look found: `foreign` when it is a link to one of the owner's credentials, not a file named like one.
+export type Found = { path: string; foreign?: true };
+export type DiskLook = { named?: (folder: string) => (string | Found)[]; // the files under a folder that hold credentials (by their names, by where they are, by being a link to one), as full paths
+   expand?: (pattern: string, dir: string) => string[];
+   own?: () => string[] }; // Keel's own folders (state, config), as named and where they land
 
 // A literal excluded by an option of a searcher or a find: `--exclude=.env`, `-g '!.env'`, `--ignore .env`.
 const globMatches = (glob: string, name: string) => { try { return new Bun.Glob(glob).match(name); } catch { return false; } };
@@ -134,7 +141,7 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
     const c = credential(p);
     if (!c) return false;
     paths.push(c.path);
-    hits.push({ path: c.path, what: c.what, by, ...(c.api ? { api: c.api } : {}) });
+    hits.push({ path: c.path, what: c.what, by, ...(c.api ? { api: c.api } : {}), ...(c.foreign ? { foreign: true as const } : {}) });
     first ??= { what: c.what, by, ...(c.api ? { api: c.api } : {}) };
     return true;
   };
@@ -163,24 +170,32 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
   // credentials that the program would read. `except`: whether the command leaves a name out.
   const walks = (folder: string, by: string, except: (name: string) => boolean = () => false, hidden = true): boolean => {
     if (note(folder, by)) return true;
+    const where = folder === home ? "the home folder" : contains(home, folder) ? `~/${folder.slice(home.length + 1)}` : folder;
+    let hit = false;
+    // Each store the folder holds is a place the walk reads: a sandbox that shows one of them shows the walk its files.
     const stores = storesUnder(folder, home);
     if (stores.length) {
-      const what = `${folder === home ? "the home folder" : contains(home, folder) ? `~/${folder.slice(home.length + 1)}` : folder}, which holds the owner's credential stores (${storesSaid(stores, home)})`;
-      hits.push({ path: folder, what, by });
+      const what = `${where}, which holds the owner's credential stores (${storesSaid(stores, home)})`;
+      for (const st of stores) { paths.push(st); hits.push({ path: st, what, by }); }
       first ??= { what, by };
-      return true;
+      hit = true;
     }
     if (look.named) {
-      const found = look.named(folder).filter((n) => !except(basename(n)) && (hidden || !basename(n).startsWith(".")));
+      // (And Keel's own folders the walk starts above: its token, its keys and its sign-ins are in them.)
+      const folders = [folder, ...(look.own?.() ?? []).filter((o) => o !== folder && contains(folder, o))];
+      const all = new Map<string, Found>();
+      for (const f of folders.flatMap((x) => look.named!(x))) { const g = typeof f === "string" ? { path: f } as Found : f; all.set(g.path, g); }
+      const found = [...all.values()]
+        .filter((f) => !except(basename(f.path)) && (hidden || !basename(f.path).startsWith(".")) && !stores.some((st) => contains(st, f.path)));
       if (found.length) {
-        const names = found.map((n) => basename(n));
-        const what = `${folder === home ? "the home folder" : contains(home, folder) ? `~/${folder.slice(home.length + 1)}` : folder}, which holds files that hold credentials (${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}). Leave them out of the search (grep --exclude=${names[0]}, rg -g '!${names[0]}') or name the files you need`;
-        for (const f of found) { paths.push(f); hits.push({ path: f, what, by }); }
+        const names = found.map((f) => basename(f.path));
+        const what = `${where}, which holds files that hold credentials (${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}). Leave them out of the search (grep --exclude=${names[0]}, rg -g '!${names[0]}') or name the files you need`;
+        for (const f of found) { paths.push(f.path); hits.push({ path: f.path, what, by, ...(f.foreign ? { foreign: true as const } : {}) }); }
         first ??= { what, by };
-        return true;
+        hit = true;
       }
     }
-    return false;
+    return hit;
   };
   // The folders and patterns a `find` walks: its start words, and the names it is asked for.
   const findWalks = (words: string[], dir: string | null, by: string): boolean => {
@@ -250,7 +265,12 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
         const sd = pre.dirs[j] ?? null;
         const words = pre.runs[j]!.words;
         if (WALKERS.has(baseName(words[0]))) findWalks(words, sd, "the command reads through xargs");
-        else for (const w of words.slice(1)) reads(w, sd, "the command reads through xargs");
+        else if (LISTERS.has(baseName(words[0]))) {
+          // (`ls | xargs cat`: the names of a folder, each read.)
+          const ops = words.slice(1).filter((w) => !w.startsWith("-"));
+          const all = words.slice(1).some((w) => /^-[a-zA-Z]*[aA]|^--all$|^--almost-all$/.test(w));
+          for (const o of ops.length ? ops : ["."]) { const p = at(o, sd); if (p && !reads(o, sd, "the command reads through xargs")) walks(p, "the command reads through xargs", undefined, all); }
+        } else for (const w of words.slice(1)) reads(w, sd, "the command reads through xargs");
         for (const t of stage.inputs ?? []) reads(t, sd, "the command reads through xargs");
       }
     }
@@ -333,25 +353,45 @@ export function shellCredentialReads(parts: Simple[], cwd: string, home: string,
 const NOT_ENTERED = new Set([".git", "node_modules"]);
 const LOOK_ENTRIES = 4000, LOOK_NAMES = 20;
 
-// The files under a folder (full paths) that hold credentials by their names, as far as a look of a few thousand
-// entries goes (a folder is read, then those in it, level by level).
-export function namedUnder(folder: string): string[] {
-  const names = new Set<string>();
-  let seen = 0;
-  for (let level = [folder]; level.length && seen < LOOK_ENTRIES && names.size < LOOK_NAMES; ) {
-    const next: string[] = [];
-    for (const d of level) {
-      let entries: Dirent[] = [];
-      try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
-      for (const e of entries) {
-        if (seen++ >= LOOK_ENTRIES) break;
-        if (e.isDirectory()) { if (!NOT_ENTERED.has(e.name)) next.push(join(d, e.name)); }
-        else if (e.isFile() && credentialName(e.name)) names.add(join(d, e.name));
+// How the walk of a folder tells a credential: `by`, where a path is and what it is called (a pure look at the
+// path); `link`, whether the file is another name for a listed one (a hard link, a link that lands in them).
+export type Classifier = { by: (path: string) => Credential | null; link: (path: string) => Credential | null };
+export const classifierOf = (): Classifier => {
+  const home = homeOf();
+  const as = { ...placesOf(home), dir: undefined };
+  const at = realPlaces(home);
+  return { by: (p) => credentialAt(p, as), link: (p) => foreignAt(p, at) };
+};
+
+// The files under a folder (full paths) that hold credentials, as far as a look of a few thousand entries goes (a
+// folder is read, then those in it, level by level): by their names or where they are (Keel's own files among
+// them), and the links to a listed file, which no name gives away: a hard link (a file with more than one name that
+// the disk keeps as one of the listed files) and a link that lands in one.
+export function namedUnder(folder: string, is: Classifier = classifierOf()): Found[] {
+  return timed(() => "a look for the credential files under a folder", () => {
+    const names = new Map<string, Found>();
+    let seen = 0;
+    for (let level = [folder]; level.length && seen < LOOK_ENTRIES && names.size < LOOK_NAMES; ) {
+      const next: string[] = [];
+      for (const d of level) {
+        let entries: Dirent[] = [];
+        try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
+        for (const e of entries) {
+          if (seen++ >= LOOK_ENTRIES) break;
+          const p = join(d, e.name);
+          if (e.isDirectory()) { if (!NOT_ENTERED.has(e.name)) next.push(p); continue; }
+          let foreign = false;
+          if (e.isSymbolicLink()) foreign = !!is.link(p);
+          else if (e.isFile()) { try { foreign = lstatSync(p).nlink > 1 && !!is.link(p); } catch {} }
+          else continue;
+          if (foreign) names.set(p, { path: p, foreign: true });
+          else if (is.by(p)) names.set(p, { path: p });
+        }
       }
+      level = next;
     }
-    level = next;
-  }
-  return [...names];
+    return [...names.values()];
+  });
 }
 
 // The files a pattern with wildcards matches, at most a few hundred. (A pattern that is not a path the disk has: none.)
@@ -367,4 +407,7 @@ export function expanded(pattern: string): string[] {
   return out;
 }
 
-export const diskLook = (): DiskLook => ({ named: namedUnder, expand: expanded });
+export const diskLook = (is?: () => Classifier, own?: () => string[]): DiskLook => {
+  let kept: Classifier | undefined;
+  return { named: (folder) => namedUnder(folder, (kept ??= is?.() ?? classifierOf())), expand: expanded, ...(own ? { own } : {}) };
+};

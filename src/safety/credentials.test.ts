@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { credentialAt, credentialName, credentialValues, foldsCase, HIDDEN, linkedCredential, placesOf, STORES, storesUnder } from "./credentials.ts";
+import { expect, setSystemTime, test } from "bun:test";
+import { credentialAt, credentialName, credentialValues, foldsCase, forgetListed, HIDDEN, linkedCredential, placesOf, STORES, storesUnder } from "./credentials.ts";
 import { CREDENTIALS } from "./sandbox-view.ts";
 import { mkdirSync, mkdtempSync, linkSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -224,4 +224,31 @@ test("in the sandbox: what it hides asks nobody; what it shows runs, and an agen
   expect(cmd(`cat ${mine}`, { ...shows(mine), agent: true })).toBe("runs");
   // Without the sandbox's view (off, or the command leaves it) the owner is asked.
   expect(cmd(`cat ${mine}`, {})).toBe("owner");
+});
+
+test("the list of the listed files by identity is not made again on the loop each few seconds: the last one answers while a new one is made in slices", async () => {
+  const h = realpathSync(mkdtempSync(join(tmpdir(), "keel-ids-")));
+  mkdirSync(join(h, ".aws"), { recursive: true });
+  mkdirSync(join(h, "ws"), { recursive: true });
+  writeFileSync(join(h, ".aws/credentials"), "x\n");
+  linkSync(join(h, ".aws/credentials"), join(h, "ws/one.txt"));
+  const places = { ...placesOf(h) };
+  forgetListed();
+  expect(linkedCredential(join(h, "ws/one.txt"), places)?.foreign).toBe(true);
+  // A file listed later, with a name of its own: a few seconds on, the call is answered from the list it has.
+  writeFileSync(join(h, ".aws/later"), "y\n");
+  linkSync(join(h, ".aws/later"), join(h, "ws/two.txt"));
+  const t0 = Date.now();
+  setSystemTime(new Date(t0 + 10_000));
+  try {
+    expect(linkedCredential(join(h, "ws/two.txt"), places)).toBeNull();
+    // Made again behind it, a slice at a time: the next call has it.
+    for (let i = 0; i < 100 && !linkedCredential(join(h, "ws/two.txt"), places); i++) await Bun.sleep(5);
+    expect(linkedCredential(join(h, "ws/two.txt"), places)?.what).toContain("another name for ~/.aws/later");
+    // A list as old as half a minute is made again at once.
+    writeFileSync(join(h, ".aws/third"), "z\n");
+    linkSync(join(h, ".aws/third"), join(h, "ws/three.txt"));
+    setSystemTime(new Date(t0 + 60_000));
+    expect(linkedCredential(join(h, "ws/three.txt"), places)?.what).toContain("another name for ~/.aws/third");
+  } finally { setSystemTime(); forgetListed(); }
 });

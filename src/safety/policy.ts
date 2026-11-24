@@ -846,7 +846,8 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
     // card: what it prints is given to the secrets vault first (the gate does, with the paths), so it reaches no
     // model. An agent's command that shows one outside its own folder is refused.
     const shown = f.confinedShown ? cred.hits.filter((h) => f.confinedShown!(h.path).shown) : null;
-    const outside = shown?.find((h) => !contains(f.workspace, h.path));
+    // (A link to one of the owner's files is not the folder's own, whatever it is called or where it stands.)
+    const outside = shown?.find((h) => h.foreign || !contains(f.workspace, h.path));
     if (!shown) return credentialRead(cred.what, f, cred.by, cred.api);
     if (outside && f.agent) return credentialRead(outside.what, f, outside.by, outside.api);
   }

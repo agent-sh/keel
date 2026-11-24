@@ -15,9 +15,10 @@
 //   with, its sessions' store, its MCP sign-ins, its provider keys (KEEL_STATE,
 //   KEEL_CONFIG);
 // - a system file of the same kind (/etc/shadow, a host's private ssh key).
-import { lstatSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { timed } from "../admin/stall.ts";
 import { contains as inside, realOf } from "../core/paths.ts";
 import { credentialName as secretName, entropy } from "./secrets.ts";
 
@@ -112,11 +113,14 @@ export function credentialName(name: string): boolean {
 }
 
 // `api`: what an agent may do instead of reading it (Keel's API shows it with the values left out).
-export type Credential = { path: string; store: string; what: string; api?: string };
+// `foreign`: the file is another name for one of the owner's credentials (a hard link, or a link that lands in the
+// places listed), wherever that name stands: it is never "the session's own file", even inside its folder.
+export type Credential = { path: string; store: string; what: string; api?: string; foreign?: true };
 // `own`: Keel's state and config folders, where the daemon runs from. `fold`: the disk does not tell `.SSH` from
 // `.ssh` (macOS, Windows, a casefolded folder: foldsCase), so every listed name is matched in any case. `dir`:
 // whether a path is a folder: one that is named like a key file (a folder `secrets`, `.env`, `token`) is not a key.
-export type CredentialPlaces = { home: string; state?: string; config?: string; fold?: boolean; dir?: (path: string) => boolean };
+// `names`: false leaves out the rule of names (a path is judged by where it is alone).
+export type CredentialPlaces = { home: string; state?: string; config?: string; fold?: boolean; dir?: (path: string) => boolean; names?: boolean };
 
 const tilde = (p: string, home: string) => (p === home ? "~" : inside(home, p) ? `~/${p.slice(home.length + 1)}` : p);
 const lower = (s: string) => s.toLowerCase();
@@ -154,7 +158,7 @@ export function credentialAt(path: string, at: CredentialPlaces): Credential | n
     }
   }
   const name = basename(p);
-  if (credentialName(name) && !at.dir?.(p)) return { path: p, store: p, what: `${tilde(p, home)}, a file that holds credentials by its name` };
+  if (at.names !== false && credentialName(name) && !at.dir?.(p)) return { path: p, store: p, what: `${tilde(p, home)}, a file that holds credentials by its name` };
   return null;
 }
 
@@ -185,34 +189,68 @@ export const placesOf = (home: string, own: { state?: string; config?: string } 
 // The files that hold credentials, by where the disk keeps them (device and inode): each file of the home's
 // stores (to a depth and a number of files, browser profiles being large) and Keel's own secrets at the top of its
 // folders. Kept for a few seconds: asked of every file of a search that has more than one name.
-const WALK_DEPTH = 6, WALK_FILES = 4000, IDS_MS = 3000;
-const ids = new Map<string, { at: number; files: Map<string, string> }>();
-function listedFiles(at: CredentialPlaces): Map<string, string> {
-  const key = [at.home, at.state, at.config].join("\0");
-  const kept = ids.get(key);
-  if (kept && Date.now() - kept.at < IDS_MS) return kept.files;
+const WALK_DEPTH = 6, WALK_FILES = 4000, IDS_MS = 3000, IDS_STALE_MS = 30_000;
+const ids = new Map<string, { at: number; files: Map<string, string>; busy?: boolean }>();
+// The walk, one folder at a time: it gives the loop back between folders when it is run in slices.
+function* walkListed(at: CredentialPlaces): Generator<void, Map<string, string>> {
   const files = new Map<string, string>();
   let seen = 0;
-  const walk = (p: string, depth: number) => {
-    if (seen++ >= WALK_FILES) return;
-    let st;
-    try { st = lstatSync(p); } catch { return; }
-    if (st.isFile()) { if (credentialAt(p, { ...at, dir: undefined })) files.set(`${st.dev}:${st.ino}`, p); return; }
-    if (!st.isDirectory() || depth > WALK_DEPTH) return;
-    let names: string[] = [];
-    try { names = readdirSync(p); } catch { return; }
-    for (const n of names) if (!/^(?:Cache|Code Cache|GPUCache|CacheStorage|Service Worker|ShaderCache|GrShaderCache|cache2)$/.test(n)) walk(join(p, n), depth + 1);
-  };
-  if (at.home) for (const s of STORES) walk(join(at.home, s), 0);
+  const nameless = { ...at, dir: undefined, names: false };
+  const todo: [string, number][] = [];
+  const first = (p: string, depth: number) => todo.push([p, depth]);
+  if (at.home) for (const s of STORES) first(join(at.home, s), 0);
   for (const dir of [at.state, at.config]) {
     if (!dir) continue;
     let names: string[] = [];
     try { names = readdirSync(dir); } catch { continue; }
-    for (const n of names) walk(join(dir, n), 1);
+    for (const n of names) first(join(dir, n), 1);
   }
+  while (todo.length) {
+    const [p, depth] = todo.pop()!;
+    if (seen++ >= WALK_FILES) break;
+    let st;
+    try { st = lstatSync(p); } catch { continue; }
+    if (st.isFile()) { if (credentialAt(p, nameless)) files.set(`${st.dev}:${st.ino}`, p); continue; }
+    if (!st.isDirectory() || depth > WALK_DEPTH) continue;
+    let names: string[] = [];
+    try { names = readdirSync(p); } catch { continue; }
+    for (const n of names) if (!/^(?:Cache|Code Cache|GPUCache|CacheStorage|Service Worker|ShaderCache|GrShaderCache|cache2)$/.test(n)) todo.push([join(p, n), depth + 1]);
+    yield;
+  }
+  return files;
+}
+// The listed files by identity. Seen at most a few seconds ago: as it is. Seen less than half a minute ago: as it
+// was, and made again in slices between the loop's other work. Not seen for longer, or never: made now, timed (a
+// look at a few thousand entries, bounded by WALK_FILES).
+function listedFiles(at: CredentialPlaces): Map<string, string> {
+  const key = [at.home, at.state, at.config].join("\0");
+  const kept = ids.get(key);
+  const age = kept ? Date.now() - kept.at : Infinity;
+  if (kept && age < IDS_MS) return kept.files;
+  if (kept && age < IDS_STALE_MS) {
+    if (!kept.busy) {
+      kept.busy = true;
+      const run = walkListed(at);
+      const step = () => {
+        const t0 = performance.now();
+        let r = run.next();
+        while (!r.done && performance.now() - t0 < 4) r = run.next();
+        if (r.done) ids.set(key, { at: Date.now(), files: r.value });
+        else setTimeout(step, 0);
+      };
+      setTimeout(step, 0);
+    }
+    return kept.files;
+  }
+  const files = timed(() => "the identities of the files that hold credentials", () => { const run = walkListed(at); let r = run.next(); while (!r.done) r = run.next(); return r.value; });
   ids.set(key, { at: Date.now(), files });
   return files;
 }
+// The places as they really are (the home's own links resolved): where a link's landing is judged.
+export const realPlaces = (home: string, own: { state?: string; config?: string } = {}): CredentialPlaces => {
+  const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+  return placesOf(real(home), { ...(own.state ? { state: real(own.state) } : {}), ...(own.config ? { config: real(own.config) } : {}) });
+};
 export const forgetListed = () => ids.clear();
 
 // A regular file with more than one name that is one of the files credentialAt lists, under whatever name it is
@@ -225,8 +263,22 @@ export function linkedCredential(path: string, at: CredentialPlaces): Credential
   const listed = listedFiles(at).get(`${st.dev}:${st.ino}`);
   if (!listed) return null;
   const p = resolve(path);
-  const c = credentialAt(listed, { ...at, dir: undefined });
-  return { path: p, store: listed, what: `${tilde(p, at.home)}, another name for ${tilde(listed, at.home)}, where the owner's credentials are kept`, ...(c?.api ? { api: c.api } : {}) };
+  const c = credentialAt(listed, { ...at, dir: undefined, names: false });
+  return { path: p, store: listed, what: `${tilde(p, at.home)}, another name for ${tilde(listed, at.home)}, where the owner's credentials are kept`, foreign: true, ...(c?.api ? { api: c.api } : {}) };
+}
+
+// Whether a path is another name for one of the listed files, wherever the name stands: a hard link to one, or a
+// link that lands in the places listed (what `names` would say of the landing alone is not asked). `at`: the
+// places as they really are, links resolved. The answer is marked `foreign`.
+export function foreignAt(path: string, at: CredentialPlaces): Credential | null {
+  if (!isAbsolute(path)) return null;
+  const nameless = { ...at, dir: undefined, names: false };
+  let landed: string;
+  try { landed = realpathSync(path); } catch { return null; }
+  const link = linkedCredential(landed, nameless);
+  if (link) return link;
+  if (landed !== resolve(path)) { const c = credentialAt(landed, nameless); if (c) return { ...c, foreign: true }; }
+  return null;
 }
 
 // The stores of the home inside a folder that is not itself in one: what a search of the folder would read.
