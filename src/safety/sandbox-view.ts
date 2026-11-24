@@ -776,6 +776,11 @@ export function readView(workspace: string, profile: "workspace-write" | "read-o
   const runtime = env.XDG_RUNTIME_DIR && under("/run", resolve(env.XDG_RUNTIME_DIR)) ? resolve(env.XDG_RUNTIME_DIR) : `/run/user/${userInfo().uid}`;
   before.push("--perms", "0700", "--dir", runtime);
 
+  // The temp folder is the sandbox's own, bound at TMPDIR below. A home inside it (a scratch home under the temp
+  // folder) is made in it, so it is bound first: bound after, it would hide the home that was made.
+  const tmp = env.TMPDIR && isAbsolute(env.TMPDIR) && !contains("/tmp", resolve(env.TMPDIR)) ? resolve(env.TMPDIR) : undefined;
+  const tmpFirst = !!tmp && contains(tmp, home) && !contains(ws, home);
+  if (tmp && tmpFirst) before.push(rw, own.tmp, tmp);
   // The home: an empty folder in memory (unless the session's folder is the home or holds it: then that is the home).
   const homeIsWorkspace = contains(ws, home);
   if (!homeIsWorkspace) {
@@ -868,8 +873,7 @@ export function readView(workspace: string, profile: "workspace-write" | "read-o
     if (c.key.startsWith(".cache/") && rwAt === join(home, RW) && !contains(realCache, c.at) && !homeIsWorkspace) before.push("--symlink", c.at, join(home, c.key));
   }
   // The temp folder: the sandbox's own, bound there.
-  const tmp = env.TMPDIR && isAbsolute(env.TMPDIR) && !contains("/tmp", resolve(env.TMPDIR)) ? resolve(env.TMPDIR) : undefined;
-  if (tmp) before.push(rw, own.tmp, tmp);
+  if (tmp && !tmpFirst) before.push(rw, own.tmp, tmp);
 
   // After the workspace: the stores and Keel's own folders, hidden inside whatever was bound. A store the owner's
   // list names, or one the workspace itself is in, is the owner's choice.
