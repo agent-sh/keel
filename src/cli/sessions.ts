@@ -4,7 +4,7 @@
 import { nested } from "../core/agent-tree.ts";
 import { zoned } from "../core/clock.ts";
 import { resolve } from "node:path";
-import type { StoredEvent } from "../core/types.ts";
+import type { Session, StoredEvent } from "../core/types.ts";
 import { stuckText, type After, type StuckItem } from "../core/stuck.ts";
 import { stateLine, WATCH_LABEL, type SessionState } from "../core/watch.ts";
 import { stopSays } from "../core/stoppers.ts";
@@ -793,7 +793,33 @@ const stuck = command("stuck", STUCK_USAGE, { after: { type: "string" } }, async
   return EXIT.ok;
 });
 
+// ---- keel new
+
+const NEW_USAGE = `keel new [--pr N|URL] [-C DIR] [-m MODEL] [--title TITLE] [--json]
+  Starts a session with no prompt and prints its id. With --pr, in a worktree at the head of a
+  pull request of the folder's repository: its head is fetched from origin (refs/pull/N/head on
+  GitHub, refs/merge-requests/N/head on GitLab, by origin's host or the address given) with every
+  prompt off, and the worktree is made on a branch named pr-N. A fetch that fails is told with
+  the ref and origin's address.
+  -C, --cwd DIR      the folder (default: here)
+  -m, --model M      a model id, its provider's name for it, or its listed name
+      --provider P   the provider of --model
+      --pr N|URL     a pull request's number or address
+      --title T      the session's title`;
+const newCmd = command("new", NEW_USAGE, { cwd: { type: "string", short: "C" }, model: { type: "string", short: "m" }, provider: { type: "string" }, pr: { type: "string" }, title: { type: "string" } }, async (v, pos, c) => {
+  if (pos.length) return usageError("new", "it takes no prompt; start the session, then keel send or keel run -r ID", NEW_USAGE);
+  const model = v.model ? (await c.get<{ model: string }>(`/api/cli/model?model=${encodeURIComponent(v.model)}${v.provider ? `&provider=${encodeURIComponent(v.provider)}` : ""}`)).model : undefined;
+  const workspace = resolve(v.cwd ?? process.cwd());
+  const made = await c.post<{ session: Session; worktree?: { path: string; branch: string } }>(v.pr === undefined ? "/api/sessions" : "/api/worktrees", { workspace, model, title: v.title, ...(v.pr === undefined ? {} : { pr: v.pr }) });
+  const s = made.session;
+  if (v.json) return (printJson({ session_id: s.id, folder: s.workspace, url: c.url(s.id), ...(made.worktree ? { branch: made.worktree.branch } : {}) }), EXIT.ok);
+  console.log(`session ${s.id}`);
+  console.error(`folder ${tilde(s.workspace)}${made.worktree ? `, branch ${made.worktree.branch}` : ""}\nopen ${c.url(s.id)}`);
+  return EXIT.ok;
+});
+
 export const sessionCommands = {
+  new: newCmd,
   sessions,
   ls: sessions,
   search,

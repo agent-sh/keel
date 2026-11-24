@@ -60,10 +60,13 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         // The worktree holds the folder's content: the folder's rule decides, as for a plain session.
         const cross = crossingIn(routeOfFolder(workspace), "turn", made.info.id, made.provider.id);
         if (cross) return bad(`provider ${cross.provider} is not allowed for this folder (allowed: ${cross.allowed.join(", ") || "none"}): pick a model of an allowed provider`, 409);
-        const title = String(b.title || b.text || "").split("\n")[0]!.slice(0, 80);
+        const pr = b.pr === undefined || b.pr === null || b.pr === "" ? undefined : b.pr;
+        if (pr !== undefined && typeof pr !== "string" && typeof pr !== "number") return bad("pr is a number or an address");
+        if (pr !== undefined && b.base) return bad("give a pull request or a base branch, not both");
+        const title = String(b.title || b.text || (pr !== undefined ? `Pull request ${String(pr).replace(/^.*\/(?:pull|merge_requests)\/(\d+).*$/, "$1")}` : "")).split("\n")[0]!.slice(0, 80);
         const s = store.createSession({ model, workspace, title });
         try {
-          const { wt, cwd } = await wts.create(s.id, workspace, title, b.base);
+          const { wt, cwd } = pr !== undefined ? await wts.atPr(s.id, workspace, pr) : await wts.create(s.id, workspace, title, b.base);
           wts.adopt(s.id, wt);
           sweep().catch((e) => deps.errors.capture("server", e, { at: "worktree prune" }));
           const next = store.updateSession(s.id, { workspace: cwd });

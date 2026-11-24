@@ -50,6 +50,15 @@ export function setStartBase(workspace: string, base: string) {
   changed();
 }
 
+// A pull request to start at (its number or address), for one folder: it replaces the base branch.
+let pr: { workspace: string; value: string } = { workspace: "", value: "" };
+export const useStartPr = (workspace: string) => useSyncExternalStore(subscribe, () => (pr.workspace === workspace ? pr.value : ""));
+export const startPr = (workspace: string) => (pr.workspace === workspace ? pr.value.trim() : "");
+export function setStartPr(workspace: string, value: string) {
+  pr = { workspace, value };
+  changed();
+}
+
 // The branches to start from, read when the choice is shown.
 export const loadBranches = (dir: string) => api<BranchList>(`/api/worktrees/branches?workspace=${encodeURIComponent(dir)}`);
 
@@ -70,8 +79,8 @@ onFeature({
 });
 
 // A new session in a fresh worktree of `workspace`'s repository.
-export async function createInWorktree(text: string, model?: string, workspace?: string, images?: unknown[], base?: string) {
-  const r = await api<{ session: { id: string }; worktree: WorktreeStatus }>("/api/worktrees", { method: "POST", body: JSON.stringify({ text, model, workspace, images, base: base || undefined }) });
+export async function createInWorktree(text: string, model?: string, workspace?: string, images?: unknown[], base?: string, pr?: string) {
+  const r = await api<{ session: { id: string }; worktree: WorktreeStatus }>("/api/worktrees", { method: "POST", body: JSON.stringify({ text, model, workspace, images, ...(pr ? { pr } : { base: base || undefined }) }) });
   byId = { ...byId, [r.session.id]: r.worktree };
   changed();
   return r.session;

@@ -22,7 +22,7 @@ import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from
 import { fleet, useFleet } from "../lib/fleet.ts";
 import { isFailure } from "../lib/home.ts";
 import { useRail, useWidth } from "../lib/rail.ts";
-import { createInWorktree, isGitFolder, startBase, useStartInWorktree } from "../lib/worktree.ts";
+import { createInWorktree, isGitFolder, startBase, startPr, useStartInWorktree } from "../lib/worktree.ts";
 
 const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
 
@@ -85,7 +85,7 @@ export function StartBox({ onBack, beside }: { onBack?: () => void; beside?: boo
     const s = machine
       ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined, sshMachine ? remoteDir || undefined : undefined)
       : inWorktree && (await isGitFolder(workspace))
-      ? await createInWorktree(t, model || undefined, workspace || undefined, images, startBase(workspace))
+      ? await createInWorktree(t, model || undefined, workspace || undefined, images, startBase(workspace), startPr(workspace))
       : await actions.create(t, model || undefined, workspace || undefined, images, { project: startProject(workspace, newProject) });
     // The pick was for this conversation: the next New starts on the default
     // again. A failed create keeps it for the retry.

@@ -2327,3 +2327,62 @@ describe("keel plugin", () => {
     expect(existsSync(join(config, "plugins", "cli-kit"))).toBe(false);
   }, 60_000);
 });
+
+// keel new --pr: a session in a worktree at a pull request's head. The origin is a bare repository on
+// this machine that holds refs/pull/7/head; the head is fetched by name with every prompt off.
+describe("keel new --pr", () => {
+  const state = join(SCRATCH, "state-new-pr");
+  const config = join(SCRATCH, "new-pr-config");
+  const root = join(SCRATCH, "new-pr");
+  const repo = join(root, "repo");
+  let d: Bun.Subprocess<"ignore", "pipe", "ignore">;
+  const k = (args: string[], cwd = repo) => keel(args, { state, cwd, env: { KEEL_CONFIG_DIR: config } });
+  const git = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${p.stderr}`);
+    return p.stdout.toString().trim();
+  };
+  beforeAll(async () => {
+    mkdirSync(root, { recursive: true });
+    git(root, "init", "-q", "--bare", "-b", "main", "origin.git");
+    git(root, "clone", "-q", "origin.git", "repo");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "a");
+    git(repo, "push", "-q", "origin", "HEAD:main");
+    writeFileSync(join(repo, "pr.txt"), "pr\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "pr");
+    git(repo, "push", "-q", "origin", "HEAD:refs/pull/7/head");
+    git(repo, "reset", "-q", "--hard", "HEAD~1");
+    d = Bun.spawn([BIN, "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", WS], { cwd: WS, env: { ...ENV, KEEL_CONFIG_DIR: config }, stdout: "pipe", stderr: "ignore" });
+    const reader = d.stdout.getReader();
+    let seen = "";
+    while (!seen.includes("listening")) seen += new TextDecoder().decode((await reader.read()).value);
+    reader.releaseLock();
+  }, 30_000);
+  afterAll(() => d?.kill("SIGTERM"));
+
+  test("starts at the request's head by number or address, and names a fetch that fails", async () => {
+    const head = git(root, "--git-dir=origin.git", "rev-parse", "refs/pull/7/head");
+    const made = await k(["new", "--pr", "7", "--json"]);
+    expect(made.code).toBe(0);
+    const s = json(made.out);
+    expect(s.branch).toMatch(/^keel\/pr-7-/);
+    expect(git(s.folder, "rev-parse", "HEAD")).toBe(head);
+    expect(existsSync(join(s.folder, "pr.txt"))).toBe(true);
+    // The address names the number too (origin here is a folder: no host to compare).
+    const byUrl = json((await k(["new", "--pr", "https://github.com/o/r/pull/7", "--json"])).out);
+    expect(git(byUrl.folder, "rev-parse", "HEAD")).toBe(head);
+    const none = await k(["new", "--pr", "8"]);
+    expect(none.code).toBe(3);
+    expect(none.err).toContain("could not fetch refs/pull/8/head from origin");
+    const odd = await k(["new", "--pr", "main"]);
+    expect(odd.code).toBe(3);
+    expect(odd.err).toContain("not a pull request");
+    // No --pr: a plain session, with no worktree.
+    const plain = json((await k(["new", "--json"])).out);
+    expect(plain.folder).toBe(repo);
+    expect(plain.branch).toBeUndefined();
+  }, 60_000);
+});

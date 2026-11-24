@@ -2,6 +2,7 @@
 const GROUPS: [string, [string, string][]][] = [
   ["Run", [
     ["run", "send a prompt; -p prints the answer (text, json, stream-json), runs without a daemon"],
+    ["new", "a session with no prompt; --pr N|URL: in a worktree at a pull request's head"],
     ["resume", "continue a session with a prompt, or attach to it"],
     ["send", "text or files to a session, or into its draft; --wait prints the reply"],
     ["attach", "follow a session in this terminal and type into it"],

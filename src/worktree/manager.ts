@@ -10,6 +10,7 @@ import { Shadow, type DiffResult } from "../safety/shadow.ts";
 import { addAll, git as gitCall, gitEnv, gitReach, innerWork, locate, nestedIn, type GitFetch } from "../core/git.ts";
 import { readText } from "../core/proc.ts";
 import { contains, realOf } from "../core/paths.ts";
+import { prTarget } from "./pr-head.ts";
 
 export type Worktree = {
   session_id: string;
@@ -215,6 +216,36 @@ export class Worktrees {
       wt: { repo_root: repo.root, path, branch, base: ref === "HEAD" ? baseCommit : ref, base_commit: baseCommit, state: "active", snapshot_ref: null, created: now, updated: now },
       cwd: join(path, relative(repo.top, workspace)),
     };
+  }
+
+  // A new worktree at the head of a pull request (a merge request on GitLab) of the repository's origin:
+  // its head is fetched by name into a ref of Keel's own, the worktree is made on a new branch at that
+  // commit (pr-N in its name), and the ref is let go (the branch holds the commits). The fetch asks for
+  // nothing: no terminal, askpass or ssh prompt. The ref is the host's (src/worktree/pr-head.ts).
+  async atPr(sessionKey: string, workspace: string, pr: string | number, madeFor: string = sessionKey): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string; number: number; commit: string }> {
+    const repo = await this.repoOf(workspace);
+    if (!repo) throw new GitError(`not a git repository: ${workspace}`, 400);
+    const origin = (await git(repo.top, ["config", "--get", "remote.origin.url"], { ok: true })).trim();
+    if (!origin) throw new GitError("this repository has no remote named origin to fetch the pull request from", 409);
+    const t = prTarget(pr, origin);
+    if ("error" in t) throw new GitError(t.error, 400);
+    const own = `refs/keel/pr/${t.number}`;
+    const ssh = process.env.GIT_SSH_COMMAND || "ssh";
+    try {
+      await git(repo.top, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "origin", `+${t.ref}:${own}`], {
+        env: { GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "true", SSH_ASKPASS: "true", SSH_ASKPASS_REQUIRE: "never", GCM_INTERACTIVE: "never", GIT_SSH_COMMAND: `${ssh} -o BatchMode=yes` },
+      });
+    } catch (e) {
+      const said = (e as Error).message.replace(/^git fetch: /, "");
+      throw new GitError(`could not fetch ${t.ref} from origin (${origin.replace(/\/\/[^@/]*@/, "//")}): ${said}`, 409);
+    }
+    try {
+      const commit = (await git(repo.top, ["rev-parse", "--verify", `${own}^{commit}`])).trim();
+      const made = await this.create(sessionKey, workspace, `pr-${t.number}`, commit, madeFor);
+      return { ...made, number: t.number, commit };
+    } finally {
+      await git(repo.top, ["update-ref", "-d", own], { ok: true });
+    }
   }
 
   // What a new worktree can start from: the repository's default branch, the local branches by

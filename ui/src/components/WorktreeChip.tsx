@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
-import { isGitFolder, loadBranches, loadWorktree, setStartBase, setStartInWorktree, startBase, useStartBase, useStartInWorktree, useWorktree, type BranchList } from "../lib/worktree.ts";
+import { isGitFolder, loadBranches, loadWorktree, setStartBase, setStartInWorktree, setStartPr, startBase, useStartBase, useStartInWorktree, useStartPr, useWorktree, type BranchList } from "../lib/worktree.ts";
 import { loadOverlap, mineOf, useOverlap } from "../lib/overlap.ts";
 import { OverlapList } from "./BranchesPanel.tsx";
 import { stoppingShells } from "../lib/shells.ts";
@@ -203,6 +203,7 @@ export function WorktreeChip({ session }: { session: Session }) {
 // which branch.
 export function WorktreeToggle({ workspace }: { workspace: string }) {
   const on = useStartInWorktree();
+  const pr = useStartPr(workspace).trim();
   const [git, setGit] = useState(false);
   useEffect(() => { if (workspace) isGitFolder(workspace).then(setGit); }, [workspace]);
   if (!git) return null;
@@ -219,7 +220,8 @@ export function WorktreeToggle({ workspace }: { workspace: string }) {
       >
         <GitBranch /> {on ? "In a new worktree" : "New worktree"}
       </button>
-      {on && <WorktreeBase workspace={workspace} />}
+      {on && !pr && <WorktreeBase workspace={workspace} />}
+      {on && <WorktreePr workspace={workspace} />}
     </>
   );
 }
@@ -228,6 +230,26 @@ const ago = (at: number) => {
   const d = Math.max(0, Date.now() / 1000 - at);
   return d < 3600 ? `${Math.max(1, Math.round(d / 60))}m` : d < 86400 ? `${Math.round(d / 3600)}h` : `${Math.round(d / 86400)}d`;
 };
+
+// "or at pull request": a number or an address. With one, the worktree starts at that request's
+// head, fetched from origin, and not at the branch picked.
+function WorktreePr({ workspace }: { workspace: string }) {
+  const value = useStartPr(workspace);
+  return (
+    <label className="k-chip-pick" data-testid="worktree-pr" title="Start at the head of a pull request (a merge request on GitLab) of origin: its number or its address">
+      <GitPullRequest />
+      <input
+        value={value}
+        onChange={(e) => setStartPr(workspace, e.target.value)}
+        placeholder="Pull request"
+        aria-label="Pull request to start at: its number or address"
+        data-testid="worktree-pr-input"
+        spellCheck={false}
+        className="w-[7.5rem] min-w-0 bg-transparent font-medium text-fg outline-none placeholder:font-normal placeholder:text-faint"
+      />
+    </label>
+  );
+}
 
 // "from <branch>": the branch the new worktree starts from. Local branches by recency, then the
 // remote ones; a branch another session has out carries that session's name.
