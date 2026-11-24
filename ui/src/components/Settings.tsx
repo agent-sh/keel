@@ -132,11 +132,16 @@ function Models() {
         </SettingRow>
         <SettingRow
           label="Ask before a model switch that adds at least"
-          hint="A switch to another model reads the cached conversation again without the cache, and the model picker shows on each row what that adds. A switch asks first when it adds at least this much, when the new model has no price, or when the conversation is past where the new model compacts. 0 asks before every switch that loses a warm cache."
+          hint="A switch that loses the cache asks first when it adds at least this much."
+          help="A switch to another model reads the cached conversation again without the cache, and the model picker shows on each row what that adds. A switch asks first when it adds at least this much, when the new model has no price, or when the conversation is past where the new model compacts. 0 asks before every switch that loses a warm cache."
         >
           <SwitchAskField />
         </SettingRow>
-        <SettingRow label="Small models" hint="They read long material for every session (files and logs handed to readers, a long page, new mail) and write session titles, best first; the next one reads when one is not listed or fails. Empty: the cheapest model of the session's own provider, and a session's title only from a model cheaper than its own.">
+        <SettingRow
+          label="Small models"
+          hint="They read long material and write session titles, best first."
+          help="They read long material for every session (files and logs handed to readers, a long page, new mail) and write session titles, best first; the next one reads when one is not listed or fails. Empty: the cheapest model of the session's own provider, and a session's title only from a model cheaper than its own."
+        >
           <SmallModels />
         </SettingRow>
         <SettingRow label="Listings" hint={`${models.length} models from ${byProvider.length} providers, as each provider lists them.`}>
@@ -214,8 +219,9 @@ const FIND: Record<string, string[]> = settingsFind();
 // The groups the rail keeps folded at rest: what the owner rarely comes for. A group opens when the
 // section shown is in it, when it is opened by its head, and while a word is searched.
 const FOLDED = new Set(["This computer", "Advanced"]);
-// Sections of figures and lists use the width; forms keep a reading measure.
-const WIDE = new Set(["usage", "lessons", "routes", "network", "telemetry", "observability", "experiments", "resources", "storage", "leftovers", "health", "machines", "models", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
+// One width rule: a page keeps the reading measure (rows, lists, forms), and takes the width only when it
+// holds what needs it (a chart, a table of many columns, a list beside its detail). Its id is listed here.
+const WIDE = new Set(["usage", "lessons", "routes", "network", "telemetry", "observability", "experiments", "resources", "storage", "leftovers", "health", "machines", "mcp", "lsp", "skills", "commands", "agents", "plugins", "hooks", "instructions", "logs", "port"]);
 
 // A row found by its name is brought into view and marked a moment, once its
 // section has drawn it (a section loads on its own: it is watched for, not waited).
@@ -404,7 +410,7 @@ export function Settings({ kind = "settings", section }: { kind?: Kind; section:
         </nav>
         <div className="k-settings-scroll" data-testid="settings-scroll">
           <div className="k-settings-body" data-wide={WIDE.has(cur.id) || undefined}>
-            <h2 className="mb-5 text-title font-semibold tracking-[-0.015em]" data-testid="settings-title">{cur.label}</h2>
+            <h2 className="k-set-page-title" data-testid="settings-title">{cur.label}</h2>
             {missing && <p className="k-notice mb-4 text-caption text-muted" role="status" data-testid="settings-missing"><span><span className="text-fg">{missing}</span> is not on this page now: it shows when there is one to show.</span></p>}
             <Body />
           </div>

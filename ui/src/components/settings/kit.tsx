@@ -13,6 +13,8 @@
 //   More     the "show all" line under a list cut short.
 //   Status   a status in a chip: one of six tones, a word of the vocabulary
 //            (src/core/state-words.ts) where it has one.
+//   Help     the explanation of a setting or a group behind a small mark beside its name: a page
+//            opens on what it holds, not on paragraphs.
 //   Disclosure  more words behind one line.
 //   Empty    nothing to show, where the rows would be.
 //   Notice   what the page cannot do or see, with its tone.
@@ -22,6 +24,8 @@
 //
 // A section uses these and draws no box, group head, status tag or empty line of
 // its own (src/ui-conventions.test.ts holds it to that).
+import { Popover } from "@base-ui/react/popover";
+import { CircleHelp } from "lucide-react";
 import { Children, Fragment, createContext, isValidElement, useContext, type MouseEvent, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../lib/utils.ts";
 
@@ -37,8 +41,8 @@ export function Page({ intro, children, testid, className, ...data }: { intro?: 
 }
 
 // `title` is the group's name; a search for it finds the group (lib/settings-find.macro.ts reads it).
-export function Group({ title, count, hint, actions, children, bare, pad, testid, className, ...data }: {
-  title?: ReactNode; count?: ReactNode; hint?: ReactNode; actions?: ReactNode; children?: ReactNode;
+export function Group({ title, count, hint, help, actions, children, bare, pad, testid, className, ...data }: {
+  title?: ReactNode; count?: ReactNode; hint?: ReactNode; help?: ReactNode; actions?: ReactNode; children?: ReactNode;
   bare?: boolean; pad?: boolean; testid?: string; className?: string;
 } & Data) {
   const head = title !== undefined || hint !== undefined || actions !== undefined;
@@ -47,7 +51,7 @@ export function Group({ title, count, hint, actions, children, bare, pad, testid
       {head && (
         <div className="k-set-head">
           <div>
-            {title !== undefined && <div className="k-set-title"><h3>{title}</h3>{count !== undefined && <span className="k-set-count">{count}</span>}</div>}
+            {title !== undefined && <div className="k-set-title"><h3>{title}</h3>{count !== undefined && <span className="k-set-count">{count}</span>}{help && <Help label={title}>{help}</Help>}</div>}
             {hint && <div className="k-set-hint">{hint}</div>}
           </div>
           {actions && <div className="k-set-actions">{actions}</div>}
@@ -63,15 +67,29 @@ export function Card({ children }: { children: ReactNode }) {
   return <div className="k-card rounded-lg border border-line bg-raised px-5 shadow-1">{children}</div>;
 }
 
-export function SettingRow({ label, hint, children, testid, ...data }: { label: ReactNode; testid?: string; hint?: ReactNode; children: ReactNode } & Data) {
+export function SettingRow({ label, hint, help, children, testid, ...data }: { label: ReactNode; testid?: string; hint?: ReactNode; help?: ReactNode; children: ReactNode } & Data) {
   return (
     <div data-testid={testid} {...data} className="k-setting flex flex-col gap-3 border-b border-line py-4 last:border-0 sm:flex-row sm:items-center sm:gap-8">
       <div className="min-w-0 flex-1">
-        <div className="text-base font-medium">{label}</div>
+        <div className="flex items-center gap-1.5 text-base font-medium">{label}{help && <Help label={label}>{help}</Help>}</div>
         {hint && <div className="mt-0.5 text-ui text-muted">{hint}</div>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
+  );
+}
+
+// The words behind a name, opened by its mark. `label` names what it explains, for a screen reader.
+export function Help({ label, children }: { label: ReactNode; children: ReactNode }) {
+  return (
+    <Popover.Root>
+      <Popover.Trigger className="k-set-help" aria-label={`About ${typeof label === "string" ? label.toLowerCase() : "this"}`} data-testid="set-help"><CircleHelp aria-hidden /></Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner sideOffset={6} align="start" collisionPadding={8}>
+          <Popover.Popup className="k-set-helptip" data-testid="set-help-text">{children}</Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

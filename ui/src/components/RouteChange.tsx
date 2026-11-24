@@ -41,7 +41,8 @@ export function RouteChange() {
   return (
     <Group
       testid="route-change" title="When a route is out" pad
-      hint="An agent whose provider cannot be reached waits for it, and one whose model is overloaded keeps trying. Say how long, and the agents of a type resume on a model of another provider with their context, tell their parent once, and finish there. Your own sessions always wait."
+      hint="Agents of a type go on with another provider after it has been out this long."
+      help="An agent whose provider cannot be reached waits for it, and one whose model is overloaded keeps trying. Say how long, and the agents of a type resume on a model of another provider with their context, tell their parent once, and finish there. Your own sessions always wait."
     >
       {rules.length > 0 && (
         <List>

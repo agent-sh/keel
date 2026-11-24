@@ -5,7 +5,7 @@
 // (prices from the listings; an unknown price stays unknown), timings, cache
 // and error rates from the local telemetry.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Group } from "./settings/kit.tsx";
+import { Group, Help } from "./settings/kit.tsx";
 import { composing } from "../lib/keys.ts";
 import { api, reportError, useStore, useModels } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
@@ -209,7 +209,7 @@ export function UsagePanel() {
           { value: "compactions", label: "Compactions" }, { value: "memory", label: "Memory" }, { value: "compare", label: "Compare" },
         ]} />
         {ranged && <Segmented<Range> label="Range" value={range} onChange={setRange} options={RANGE_OPTIONS} />}
-        <span className="text-caption text-faint">Measured on this machine. Nothing is sent anywhere.</span>
+        <Help label="where it is measured">Measured on this machine. Nothing is sent anywhere.</Help>
       </div>
       {view === "overview" ? <Overview range={range} go={setView} /> : view === "causes" ? <CostDrivers range={range} /> : view === "sessions" ? <SpendRank range={range} /> : view === "calls" ? <CallsView range={range} /> : view === "tokens" ? <TokensView range={range} />
         : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "memory" ? <MemoryView key={link.n} range={range} session={link.session} given={link.memory} onTab={setMemoryTab} /> : <CompareView />}

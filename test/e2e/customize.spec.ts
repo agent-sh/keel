@@ -83,3 +83,44 @@ test("on a phone Customize is a list of its sections, as Settings is", async ({ 
   await expect(page).toHaveURL(/\/customize\/plugins$/);
   await expect(page.getByTestId("settings-title")).toHaveText("Plugins");
 });
+
+// Every page of Settings and Customize is headed in the UI face; a page opens on its controls, with the
+// explanation of a long row behind a help mark, and the pages of rows share one width.
+test("Settings and Customize share one heading face and one width, and open on their controls", async ({ page }) => {
+  const face = (sel: string) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).fontFamily.split(",")[0]!.replace(/["']/g, "").trim());
+  const body = () => page.locator(".k-settings-body").evaluate((el) => Math.round(el.getBoundingClientRect().width));
+  const widths: Record<string, number> = {};
+  for (const path of ["settings/models", "settings/providers", "settings/usage", "customize/agents", "customize/hooks"]) {
+    await page.goto(`/${path}`);
+    await expect(page.getByTestId("settings-title")).toBeVisible();
+    const ui = await face(".k-settings-nav > button");
+    expect(ui, "the UI face").toMatch(/Plex Sans/);
+    expect(await face("[data-testid=settings-title]"), `${path} title`).toBe(ui);
+    expect(await face(".k-settings .k-surface-title"), `${path} bar`).toBe(ui);
+    widths[path] = await body();
+  }
+  expect(widths["settings/models"], "Models and Providers are one width").toBe(widths["settings/providers"]);
+  await page.goto("/customize/agents");
+  await expect(page.getByTestId("reader-title").first()).toBeVisible();
+  expect(await face("[data-testid=reader-title]")).toBe(await face(".k-settings-nav > button"));
+
+  // Models opens on its control with one short line a row; the long words are behind a help mark.
+  await page.goto("/settings/models");
+  const rows = page.locator(".k-setting");
+  await expect(rows.first()).toBeVisible();
+  for (const hint of await rows.locator(".text-muted").allInnerTexts()) expect(hint.length, hint).toBeLessThan(110);
+  const marks = page.getByTestId("set-help");
+  expect(await marks.count()).toBeGreaterThanOrEqual(3);
+  await marks.first().click();
+  await expect(page.getByTestId("set-help-text")).toContainText("reads the cached conversation again");
+  await shoot(page, "settings-heading-1-models-help");
+  await page.keyboard.press("Escape");
+
+  // Usage: the controls first, the note behind a mark instead of a 12px line.
+  await page.goto("/settings/usage");
+  await expect(page.getByTestId("usage-panel")).toBeVisible();
+  await expect(page.getByText("Measured on this machine")).toHaveCount(0);
+  await page.getByTestId("usage-panel").getByTestId("set-help").first().click();
+  await expect(page.getByTestId("set-help-text")).toContainText("Measured on this machine");
+  await shoot(page, "settings-heading-2-usage");
+});

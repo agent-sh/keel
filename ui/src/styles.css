@@ -389,7 +389,7 @@
 .k-hour-inferred { background-image: repeating-linear-gradient(135deg, transparent 0 0.1875rem, var(--hour-hatch) 0.1875rem 0.3125rem); }
 .k-tick-code, .k-dock-code { font-family: var(--font-inst); font-stretch: 75%; }
 /* 4. The name of a surface: the product, a page, a panel, a dialog. */
-.k-face-title, .text-display, .text-title, .k-page h1, .k-surface-title, .k-settings-jump-label, .k-reader-title h3 {
+.k-face-title, .text-display, .text-title, .k-page h1, .k-surface-title {
   font-family: var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.02em;
 }
 /* At a page's size the narrow face is drawn at a book weight: bold it read as a stamp. A surface's
