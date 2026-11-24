@@ -12,9 +12,20 @@ import { createHmac, randomBytes } from "node:crypto";
 import { homedir, hostname, userInfo } from "node:os";
 import { messageFacts } from "../core/message-facts.ts";
 
-export type SecretMeta = { id: string; kind: string; name?: string; source: Source; sessions: string[]; created: number; placeholder: string };
+// `ordinary`: why ordinary text holds the value as it is (ordinaryValue), when it does.
+export type SecretMeta = { id: string; kind: string; name?: string; source: Source; sessions: string[]; created: number; placeholder: string; ordinary?: string };
 type Source = "prompt" | "output" | "card" | "command";
-type Entry = { id: string; value: string; kind: string; name?: string; source: Source; sessions: Set<string>; created: number };
+// `plain`: why the value is ordinary text (ordinaryValue). `found`: a plain
+// value Keel only found where a credential stands (a URL's password), never
+// given by the owner: it is hidden where detect() finds it, and nowhere else.
+type Entry = { id: string; value: string; kind: string; name?: string; source: Source; sessions: Set<string>; created: number; plain?: string; found?: boolean };
+// Whose words a text is. "own": written by a model or the owner (a reply, a
+// tool call's input, a prompt, an agent's prompt, the system prompt). "output":
+// what a tool, a command or a server produced. A secret whose value is an
+// ordinary word is hidden in output only, as a whole word: in someone's own
+// words it is that word, and a placeholder there would be expanded into a
+// command the model never wrote it in.
+export type Words = "own" | "output";
 
 // Token formats with a fixed shape (gitleaks' rules, the common ones). The
 // whole match is the secret unless the rule has a group.
@@ -97,6 +108,45 @@ function machineNames(): string[] {
   return out.filter((n): n is string => !!n);
 }
 
+// Why ordinary text holds `value` as it is, or null for a value that looks
+// like a key. A word (letters, in one of the cases words are written in, up
+// to 20 letters, or a phrase of up to three), a number of up to ten digits,
+// anything under six characters, or a run of few characters (low entropy for
+// its length). A dictionary word is a word by this rule: no list is needed.
+// A token format, a long random value or a mixed-case run is none of these.
+const WORD = String.raw`(?:\p{Ll}+|\p{Lu}\p{Ll}*|\p{Lu}+)(?:['\u2019-](?:\p{Ll}+|\p{Lu}\p{Ll}*|\p{Lu}+))*`;
+const ONE_WORD = new RegExp(`^${WORD}$`, "u");
+const PHRASE = new RegExp(`^${WORD}(?: ${WORD}){1,2}$`, "u");
+export function ordinaryValue(value: string): string | null {
+  const v = value.trim();
+  // A token format's whole match is a key, whatever its letters.
+  for (const r of RULES) { const re = new RegExp(r.re.source, r.re.flags.replace("g", "")); const m = re.exec(v); if (m && m[0] === v) return null; }
+  if ([...v].length < 6) return "is shorter than six characters";
+  if (/^\d{1,10}$/.test(v)) return "is a short number";
+  if (v.length <= 20 && ONE_WORD.test(v)) return "is a word";
+  if (v.length <= 24 && PHRASE.test(v)) return "is a phrase of words";
+  if (entropy(v) < Math.min(2.5, 0.75 * Math.log2(v.length))) return "repeats a few characters";
+  return null;
+}
+
+// Whether the `n` characters at `i` stand as a whole word in `text`: no
+// letter, digit or _ joined to them on either side.
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+const charBefore = (t: string, i: number) => (i <= 0 ? "" : String.fromCodePoint(t.codePointAt(i >= 2 && /[\udc00-\udfff]/.test(t[i - 1]!) ? i - 2 : i - 1)!));
+const charAfter = (t: string, i: number) => (i >= t.length ? "" : String.fromCodePoint(t.codePointAt(i)!));
+export const wholeAt = (text: string, i: number, n: number): boolean => !WORD_CHAR.test(charBefore(text, i)) && !WORD_CHAR.test(charAfter(text, i + n));
+// Each place `value` stands as a whole word in `text` replaced by `by`.
+export function wordSwap(text: string, value: string, by: string): string {
+  if (!value || !text.includes(value)) return text;
+  let out = "", at = 0;
+  for (let i = text.indexOf(value); i >= 0; i = text.indexOf(value, i + 1)) {
+    if (i < at || !wholeAt(text, i, value.length)) continue;
+    out += text.slice(at, i) + by;
+    at = i + value.length;
+  }
+  return at ? out + text.slice(at) : text;
+}
+
 export type Hit = { start: number; end: number; value: string; kind: string };
 
 // Every secret in the text, longest first where they overlap.
@@ -138,7 +188,9 @@ export const nameError = (name: string): string | null =>
   !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name) ? "a name is letters, digits and _, not starting with a digit"
     : RESERVED.test(name) ? `${name} decides how commands start; pick another name` : null;
 
-type Listener = (ev: { type: "found"; session_id: string; secret: SecretMeta } | { type: "changed"; secret: SecretMeta } | { type: "forgotten"; id: string }) => void;
+// "ordinary": a value given to Keel (a card, a plugin's setting) is ordinary
+// text (SecretMeta.ordinary says why), told once per value.
+type Listener = (ev: { type: "found"; session_id: string; secret: SecretMeta } | { type: "changed"; secret: SecretMeta } | { type: "forgotten"; id: string } | { type: "ordinary"; secret: SecretMeta }) => void;
 
 // A shell script with each placeholder replaced by a reference to the
 // variable `name` returns, quoted for where it stands: bare text and $( )
@@ -231,7 +283,8 @@ export function shellRefs(text: string, name: (id: string | undefined, varName: 
 }
 
 // What is kept of the placeholders issued: ids and names, never a value.
-export type Ledger = { issued(id: string, kind: string, name?: string): void; has(id: string): boolean };
+// `warned`, `warn`: the ids whose value the owner was told is ordinary text.
+export type Ledger = { issued(id: string, kind: string, name?: string): void; has(id: string): boolean; warned?(id: string): boolean; warn?(id: string): void };
 // What is kept of the messages a model was sent with a value masked (maskSent):
 // the message as it went, by the mark of the message it was made from. Only
 // placeholders are in it, never a value. `key`: the session and the route.
@@ -260,21 +313,46 @@ export class Vault {
   }
 
   placeholder = (e: Pick<Entry, "id" | "name">) => (e.name ? `[value of $${e.name}]` : `[secret:${e.id}]`);
-  meta = (e: Entry): SecretMeta => ({ id: e.id, kind: e.kind, name: e.name, source: e.source, sessions: [...e.sessions], created: e.created, placeholder: this.placeholder(e) });
+  meta = (e: Entry): SecretMeta => ({ id: e.id, kind: e.kind, name: e.name, source: e.source, sessions: [...e.sessions], created: e.created, placeholder: this.placeholder(e), ...(e.plain && { ordinary: e.plain }) });
+  // Whether an entry is matched as text in words of this kind, and how:
+  // "all" anywhere it stands (a key), "word" as a whole word, null nowhere.
+  private match(e: Entry, words: Words): "all" | "word" | null {
+    if (!e.plain) return "all";
+    return e.found || words === "own" ? null : "word";
+  }
+  private swap(text: string, e: Entry, words: Words): string {
+    const m = this.match(e, words);
+    return m === "all" ? text.split(e.value).join(this.placeholder(e)) : m === "word" ? wordSwap(text, e.value, this.placeholder(e)) : text;
+  }
+  // The ids told of being ordinary text in this process (the ledger keeps them across restarts).
+  private warned = new Set<string>();
 
   list(sessionId?: string): SecretMeta[] {
     return [...this.byId.values()].filter((e) => !sessionId || this.holds(e, sessionId)).map(this.meta);
   }
 
   // Keep a value: the same value is the same entry for the life of the process.
-  add(value: string, kind: string, source: Source, sessionId: string | null, name?: string): Entry {
+  // `found`: detect() found it in text (where a credential stands). `given`:
+  // the owner gave it (a card, a plugin's setting); an ordinary one is told
+  // once (`confirmed`: the owner already said to keep it).
+  add(value: string, kind: string, source: Source, sessionId: string | null, name?: string, o: { found?: boolean; given?: boolean; confirmed?: boolean } = {}): Entry {
     let e = this.byValue.get(value);
     const fresh = !e;
     if (!e) {
       const id = createHmac("sha256", this.key).update(value).digest("hex").slice(0, 8);
-      e = { id, value, kind, source, sessions: new Set(), created: Date.now(), name };
+      const plain = ordinaryValue(value) ?? undefined;
+      e = { id, value, kind, source, sessions: new Set(), created: Date.now(), name, ...(plain && { plain, found: !!o.found }) };
       this.byValue.set(value, e);
       this.byId.set(id, e);
+    }
+    if (o.given && e.found) e.found = false;
+    if (e.plain && !e.found && !this.warned.has(e.id)) {
+      this.warned.add(e.id);
+      if (o.confirmed) this.ledger?.warn?.(e.id);
+      else if (!this.ledger?.warned?.(e.id)) {
+        this.ledger?.warn?.(e.id);
+        this.tell({ type: "ordinary", secret: this.meta(e) });
+      }
     }
     if (name && !e.name) e.name = name;
     if (fresh || name) this.ledger?.issued(e.id, e.kind, e.name);
@@ -320,19 +398,22 @@ export class Vault {
   }
 
   // Text with every known value and every newly found secret replaced.
-  redact(text: string, sessionId: string | null, source: Source): string {
+  // `words`: whose words the text is (Words): an ordinary value is matched in output only.
+  redact(text: string, sessionId: string | null, source: Source, words: Words = "output"): string {
     if (!text) return text;
     let out = text;
     // Known values first (longest first, so a value inside another stays whole).
     if (this.byValue.size) {
-      const known = [...this.byValue.values()].filter((e) => out.includes(e.value)).sort((a, b) => b.value.length - a.value.length);
+      const known = [...this.byValue.values()].filter((e) => out.includes(e.value) && this.match(e, words)).sort((a, b) => b.value.length - a.value.length);
       for (const e of known) {
-        out = out.split(e.value).join(this.placeholder(e));
-        if (sessionId && !e.sessions.has(sessionId)) this.add(e.value, e.kind, source, sessionId);
+        const was = out;
+        out = this.swap(out, e, words);
+        if (out !== was && sessionId && !e.sessions.has(sessionId)) this.add(e.value, e.kind, source, sessionId);
       }
     }
-    // Text cut short (a title) can end in the first part of a known value.
+    // Text cut short (a title) can end in the first part of a known value (a key's: a word's start is a word).
     for (const e of this.byValue.values()) {
+      if (e.plain) continue;
       for (let n = Math.min(e.value.length - 1, out.length); n >= 8; n--) {
         if (out.endsWith(e.value.slice(0, n))) { out = out.slice(0, -n) + this.placeholder(e); break; }
       }
@@ -343,7 +424,7 @@ export class Vault {
     let at = 0;
     const found = new Set<Entry>();
     for (const h of hits) {
-      const e = this.add(h.value, h.kind, source, sessionId);
+      const e = this.add(h.value, h.kind, source, sessionId, undefined, { found: true });
       found.add(e);
       r += out.slice(at, h.start) + this.placeholder(e);
       at = h.end;
@@ -355,7 +436,7 @@ export class Vault {
     // request would carry the text masked and a request after a restart, which
     // no longer knows the value, the text as stored: the history the provider
     // cached would change there.
-    for (const e of [...found].sort((a, b) => b.value.length - a.value.length)) if (r.includes(e.value)) r = r.split(e.value).join(this.placeholder(e));
+    for (const e of [...found].sort((a, b) => b.value.length - a.value.length)) if (r.includes(e.value)) r = this.swap(r, e, words);
     return r;
   }
 
@@ -363,6 +444,7 @@ export class Vault {
   knownStart(text: string): { n: number; e: Entry } | undefined {
     let best: { n: number; e: Entry } | undefined;
     for (const e of this.byValue.values()) {
+      if (e.plain) continue;
       for (let n = Math.min(e.value.length - 1, text.length); n >= 8 && n > (best?.n ?? 0); n--) {
         if (text.endsWith(e.value.slice(0, n))) { best = { n, e }; break; }
       }
@@ -377,16 +459,18 @@ export class Vault {
   // text that arrives in pieces (StreamScan below): each piece is redacted
   // with the pieces before it in view.
   // `found`: what detect() gave for the text, when the caller has it already.
-  redactTail(text: string, from: number, sessionId: string | null, source: Source, found?: Hit[]): string {
-    if (from <= 0 && !found) return this.redact(text, sessionId, source);
+  redactTail(text: string, from: number, sessionId: string | null, source: Source, found?: Hit[], words: Words = "output"): string {
+    if (from <= 0 && !found) return this.redact(text, sessionId, source, words);
     if (from >= text.length) return "";
     // What is replaced, and by what: known values (the longest first where they overlap), then what detect() finds outside them.
     const ranges: { start: number; end: number; by: () => string }[] = [];
     const free = (start: number, end: number) => !ranges.some((r) => start < r.end && end > r.start);
-    const known = [...this.byValue.values()].filter((e) => text.includes(e.value)).sort((a, b) => b.value.length - a.value.length);
+    const known = [...this.byValue.values()].filter((e) => text.includes(e.value) && this.match(e, words)).sort((a, b) => b.value.length - a.value.length);
     for (const e of known) {
+      const whole = this.match(e, words) === "word";
       for (let at = text.indexOf(e.value); at >= 0; at = text.indexOf(e.value, at + e.value.length)) {
         if (at + e.value.length <= from || !free(at, at + e.value.length)) continue;
+        if (whole && !wholeAt(text, at, e.value.length)) continue;
         ranges.push({ start: at, end: at + e.value.length, by: () => {
           if (sessionId && !e.sessions.has(sessionId)) this.add(e.value, e.kind, source, sessionId);
           return this.placeholder(e);
@@ -395,7 +479,7 @@ export class Vault {
     }
     for (const h of found ?? detect(text)) {
       if (h.end <= from || !free(h.start, h.end)) continue;
-      ranges.push({ start: h.start, end: h.end, by: () => this.placeholder(this.add(h.value, h.kind, source, sessionId)) });
+      ranges.push({ start: h.start, end: h.end, by: () => this.placeholder(this.add(h.value, h.kind, source, sessionId, undefined, { found: true })) });
     }
     // Text that ends in the first part of a known value (cut short there): replaced, as redact() does.
     const cut = this.knownStart(text);
@@ -411,16 +495,16 @@ export class Vault {
 
   // A JSON value with every string redacted, except what must stay byte-exact
   // (images, provider signatures and opaque reasoning).
-  redactDeep<T>(v: T, sessionId: string | null, source: Source): T {
+  redactDeep<T>(v: T, sessionId: string | null, source: Source, words: Words = "output"): T {
     const known = this.byValue.size;
-    const out = this.redactWalk(v, sessionId, source);
+    const out = this.redactWalk(v, sessionId, source, words);
     // A value found in one of its strings is replaced in the strings before it
     // too: the whole value is stored as a request would carry it (see redact).
-    return this.byValue.size > known ? this.redactWalk(out, sessionId, source) : out;
+    return this.byValue.size > known ? this.redactWalk(out, sessionId, source, words) : out;
   }
-  private redactWalk<T>(v: T, sessionId: string | null, source: Source): T {
+  private redactWalk<T>(v: T, sessionId: string | null, source: Source, words: Words): T {
     const walk = (x: any, key?: string): any => {
-      if (typeof x === "string") return key === "data" || key === "signature" || key === "opaque" ? x : this.redact(x, sessionId, source);
+      if (typeof x === "string") return key === "data" || key === "signature" || key === "opaque" ? x : this.redact(x, sessionId, source, words);
       if (Array.isArray(x)) {
         let changed = false;
         const a = x.map((y) => { const z = walk(y); if (z !== y) changed = true; return z; });
@@ -478,48 +562,51 @@ export class Vault {
   // lose a value is dropped by the request builder, never edited) and a tool
   // call's signature. What holds no known value is returned as it
   // is (the same objects, the same bytes).
+  // A secret whose value is ordinary text is masked in a tool's result only,
+  // as a whole word (as the store keeps it: Words); `messages` that are not a
+  // list (a tool's output) are output.
   mask<T>(messages: T): T {
     if (!this.byValue.size) return messages;
     const known = [...this.byValue.values()].sort((a, b) => b.value.length - a.value.length);
-    const str = (x: string) => {
+    const str = (x: string, words: Words) => {
       let out = x;
-      for (const e of known) if (out.includes(e.value)) out = out.split(e.value).join(this.placeholder(e));
+      for (const e of known) if (out.includes(e.value)) out = this.swap(out, e, words);
       return out;
     };
     // Any JSON value, every string in it.
-    const all = (x: any): any => {
-      if (typeof x === "string") return str(x);
-      if (Array.isArray(x)) { let c = false; const a = x.map((y) => { const z = all(y); if (z !== y) c = true; return z; }); return c ? a : x; }
-      if (x && typeof x === "object") { let c = false; const o: any = {}; for (const [k, y] of Object.entries(x)) { const z = all(y); if (z !== y) c = true; o[k] = z; } return c ? o : x; }
+    const all = (x: any, w: Words = "own"): any => {
+      if (typeof x === "string") return str(x, w);
+      if (Array.isArray(x)) { let c = false; const a = x.map((y) => { const z = all(y, w); if (z !== y) c = true; return z; }); return c ? a : x; }
+      if (x && typeof x === "object") { let c = false; const o: any = {}; for (const [k, y] of Object.entries(x)) { const z = all(y, w); if (z !== y) c = true; o[k] = z; } return c ? o : x; }
       return x;
     };
     // An object with some of its own fields left as they are.
-    const except = (x: any, keep: string[]) => {
+    const except = (x: any, keep: string[], w: Words = "own") => {
       let c = false;
       const o: any = {};
-      for (const [k, y] of Object.entries(x)) { const z = keep.includes(k) ? y : all(y); if (z !== y) c = true; o[k] = z; }
+      for (const [k, y] of Object.entries(x)) { const z = keep.includes(k) ? y : all(y, w); if (z !== y) c = true; o[k] = z; }
       return c ? o : x;
     };
-    const block = (b: any): any => {
-      if (!b || typeof b !== "object" || Array.isArray(b)) return all(b);
+    const block = (b: any, w: Words = "own"): any => {
+      if (!b || typeof b !== "object" || Array.isArray(b)) return all(b, w);
       switch (b.type) {
-        case "image": case "document": return except(b, ["data"]);
+        case "image": case "document": return except(b, ["data"], w);
         case "thinking": case "redacted_thinking": return b;
-        case "tool_use": return except(b, ["signature"]);
+        case "tool_use": return except(b, ["signature"], w);
         case "tool_result": {
-          const o = except(b, ["content"]);
-          const content = Array.isArray(b.content) ? b.content.map(block) : all(b.content);
+          const o = except(b, ["content"], "output");
+          const content = Array.isArray(b.content) ? b.content.map((y: any) => block(y, "output")) : all(b.content, "output");
           const moved = Array.isArray(b.content) ? content.some((y: any, k: number) => y !== b.content[k]) : content !== b.content;
           return o === b && !moved ? b : { ...o, content: moved ? content : b.content };
         }
-        default: return all(b);
+        default: return all(b, w);
       }
     };
-    if (!Array.isArray(messages)) return all(messages);
+    if (!Array.isArray(messages)) return all(messages, "output");
     let changed = false;
     const out = (messages as any[]).map((m) => {
       if (!m || typeof m !== "object" || !Array.isArray(m.content)) { const z = all(m); if (z !== m) changed = true; return z; }
-      const content = m.content.map(block);
+      const content = m.content.map((b: any) => block(b));
       const same = content.every((y: any, k: number) => y === m.content[k]);
       if (same) return m;
       changed = true;
@@ -648,9 +735,19 @@ export class Vault {
     return { value: out as T, env };
   }
 
-  // Every known value with its placeholder (a stream filter replaces them).
-  pairs(): [string, string][] {
-    return [...this.byValue.values()].map((e) => [e.value, this.placeholder(e)]);
+  // Every known value with its placeholder (a stream filter replaces them):
+  // the keys. A value that is ordinary text is not one of them (a call's
+  // input or a model's words hold it as that word); `words` adds those the
+  // owner gave, marked to be replaced as whole words in output (wordSwap).
+  pairs(): [string, string][];
+  pairs(words: true): [string, string, boolean?][];
+  pairs(words = false): [string, string, boolean?][] {
+    const out: [string, string, boolean?][] = [];
+    for (const e of this.byValue.values()) {
+      if (!e.plain) out.push([e.value, this.placeholder(e)]);
+      else if (words && !e.found) out.push([e.value, this.placeholder(e), true]);
+    }
+    return out;
   }
 
   // Named secrets of the session, for the environment of its commands.
@@ -729,7 +826,8 @@ export class StreamScan {
     st.held = all.slice(cut);
     if (!cut) return "";
     const whole = st.seen + all.slice(0, cut);
-    const out = this.v.redactTail(whole, st.seen.length, sessionId, "output", found);
+    // (A reply is the model's own words: Words.)
+    const out = this.v.redactTail(whole, st.seen.length, sessionId, "output", found, "own");
     st.seen = whole.slice(-SEEN);
     return out;
   }

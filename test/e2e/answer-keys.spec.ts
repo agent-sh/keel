@@ -576,7 +576,7 @@ test("a secret typed at the card goes nowhere: not into the message box, and not
   await page.keyboard.press("Alt+a");
   await expect(page).toHaveURL(new RegExp(`/s/${third}$`));
   await expect(field).toBeFocused();
-  await page.keyboard.type("too-soon");
+  await page.keyboard.type("too-s00n-7q"); // (A value no ordinary text holds: a word is asked about first.)
   await page.keyboard.press("Enter");
   await page.waitForTimeout(300);
   expect(await secretsAsked(request, third)).toBe(1);

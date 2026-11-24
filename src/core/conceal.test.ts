@@ -84,3 +84,16 @@ test("ordinary lines pass the scrub unchanged", async () => {
   expect(ordinary.length).toBeGreaterThanOrEqual(60);
   expect(ordinary.filter((l) => keyShaped(l) !== l).map((l) => `${l}  ->  ${keyShaped(l)}`)).toEqual([]);
 });
+
+// A value that is ordinary text (a word the owner gave) is replaced only where
+// it stands as a whole word, wherever the chunks are cut.
+test("a word is replaced as a whole word only, across chunks", () => {
+  const text = "the lantern, lanterns, xlantern, lantern_x and lantern";
+  for (let a = 1; a < text.length; a++) {
+    const sc = streamConcealer([["lantern", "[P]", true]]);
+    const out = Buffer.concat([sc.push(Buffer.from(text.slice(0, a))), sc.push(Buffer.from(text.slice(a))), sc.end()]).toString();
+    expect({ a, out }).toEqual({ a, out: "the [P], lanterns, xlantern, lantern_x and [P]" });
+  }
+  const sc = streamConcealer([["lantern", "[P]", true]]);
+  expect(Buffer.concat([sc.push(Buffer.from("élantern lantern")), sc.end()]).toString()).toBe("élantern [P]");
+});

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { detect, publicNames, StreamScan, Vault } from "./secrets.ts";
+import { detect, ordinaryValue, publicNames, StreamScan, Vault } from "./secrets.ts";
 
 const GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const AWS = "AKIA" + "QWERTYUIOPASDFGH";
@@ -323,4 +323,80 @@ test("a secret cut by a piece's end is caught: a stream in pieces reads as the w
   expect(v.redactTail(`token ${GH} here`, 0, "s", "output")).toBe(v.redact(`token ${GH} here`, "s", "output"));
   expect(v.redactTail(`API_KEY=${AWS} here`, 8, "s", "output")).toBe(v.redact(`API_KEY=${AWS} here`, "s", "output").slice(8));
   expect(v.redactTail(`token ${GH} here`, 10, "s", "output")).toBe(`${v.redact(GH, "s", "output")} here`);
+});
+
+// A value ordinary text holds as it is: a word, a short number, a run of a
+// few characters. Real keys (token formats, long random values) are none.
+test("a value that ordinary text holds is told apart from a key", () => {
+  for (const v of ["lantern", "Harbor", "SESAME", "changeme", "well-known", "don't", "café", "1234", "20261121", "abc", "aaaabbbb", "121212121212", "blue moon"]) expect({ v, plain: !!ordinaryValue(v) }).toEqual({ v, plain: true });
+  for (const v of [GH, AWS, "s3cretPa55w0rd", "deploy-k2j4h5-Zx9", "qWeRtYzXcV", "Xk9#q2", "0123456789abcdef0123456789abcdef01234567", "correct horse battery staple"]) expect({ v, plain: ordinaryValue(v) }).toEqual({ v, plain: null });
+});
+
+const PH = /\[secret:[0-9a-f]{8}\]/;
+
+// A secret whose value is a word (the owner gave "lantern"): the model's own
+// words keep it (a reply, a tool call's input, an agent's prompt), so nothing
+// the model wrote turns into a placeholder that a command would expand. Tool
+// output still hides it, as a whole word only.
+test("a secret that is an ordinary word never replaces the model's own words", () => {
+  const v = new Vault();
+  v.add("lantern", "given secret", "card", "s1", undefined, { given: true });
+  const ph = v.list("s1")[0]!.placeholder;
+  const call = { blocks: [{ type: "text", text: "I will ask an agent about the lantern." }, { type: "tool_use", id: "t1", name: "Agent", input: { description: "Check the lantern", prompt: "Read the lantern folder and report." } }] };
+  expect(v.redactDeep(call, "s1", "output", "own")).toEqual(call);
+  expect(v.redact("Look at the lantern notes", "s1", "prompt", "own")).toBe("Look at the lantern notes");
+  expect(v.redact("the lantern is lit; lanterns and lanternfish stay", "s1", "output")).toBe(`the ${ph} is lit; lanterns and lanternfish stay`);
+  const msgs = [
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Agent", input: { prompt: "the lantern folder" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "lantern: on" }, { type: "text", text: "about the lantern" }] },
+  ];
+  const masked = v.mask(msgs) as any[];
+  expect(masked[0]).toBe(msgs[0]);
+  expect(masked[1].content[0].content).toBe(`${ph}: on`);
+  expect(masked[1].content[1].text).toBe("about the lantern");
+  expect(v.pairs().map(([x]) => x)).not.toContain("lantern");
+  // A reply as it streams is the model's own words too.
+  const scan = new StreamScan(v);
+  expect(scan.piece("k", "s1", "the lan") + scan.piece("k", "s1", "tern is fine") + scan.end("k", "s1")).toBe("the lantern is fine");
+  // A placeholder the model wrote itself still runs with the value.
+  expect(Object.values(v.reveal({ command: `echo ${ph}` }, "s1", new Set(["command"])).env)).toEqual(["lantern"]);
+  // A real key stays hidden in the model's own words, as before.
+  expect(v.redact(`run with ${GH}`, "s1", "output", "own")).toMatch(/^run with \[secret:[0-9a-f]{8}\]$/);
+});
+
+// A word found where a credential stands (a password in a URL) is hidden
+// there, and only there: the word elsewhere is ordinary text.
+test("a word found as a URL's password is hidden in the URL only", () => {
+  const v = new Vault();
+  const url = v.redact("connect to redis://app:sesame@db.internal:6379/0", "s1", "output");
+  expect(url).toMatch(/^connect to redis:\/\/app:\[secret:[0-9a-f]{8}\]@db\.internal:6379\/0$/);
+  expect(v.redact("open sesame now", "s1", "output")).toBe("open sesame now");
+  expect(v.redact("say sesame", "s1", "prompt", "own")).toBe("say sesame");
+  expect(JSON.stringify(v.mask([{ role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "sesame up" }] }]))).toContain("sesame up");
+  expect(PH.test(url)).toBe(true);
+});
+
+// The owner is told once that a value they gave will match ordinary text,
+// and not again after a restart (the same value has the same id).
+test("a secret that is an ordinary word is warned of once", () => {
+  const key = new Uint8Array(32).fill(3);
+  const warned = new Set<string>();
+  const ledger = { issued: () => {}, has: () => false, warned: (id: string) => warned.has(id), warn: (id: string) => void warned.add(id) };
+  const told: string[] = [];
+  const v = new Vault();
+  v.useKey(key);
+  v.ledger = ledger;
+  v.on((ev) => { if (ev.type === "ordinary") told.push(ev.secret.id); });
+  v.add("harbor", "a setting", "card", null, undefined, { given: true });
+  v.add("harbor", "a setting", "card", "s1", undefined, { given: true });
+  v.add(GH, "a setting", "card", null, undefined, { given: true });
+  v.add("meadow", "given secret", "card", "s1", undefined, { given: true, confirmed: true });
+  expect(told.length).toBe(1);
+  expect(v.list().find((m) => m.id === told[0])!.ordinary).toBeTruthy();
+  const again = new Vault();
+  again.useKey(key);
+  again.ledger = ledger;
+  again.on((ev) => { if (ev.type === "ordinary") told.push(ev.secret.id); });
+  again.add("harbor", "a setting", "card", null, undefined, { given: true });
+  expect(told.length).toBe(1);
 });

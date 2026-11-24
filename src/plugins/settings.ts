@@ -21,7 +21,7 @@ const know = (id: string, key: string, value: string) => {
   if (!m) held.set(id, (m = new Map()));
   m.set(key, value);
   lost.get(id)?.delete(key);
-  vault.add(value, `a setting of the plugin ${id}`, "card", null);
+  vault.add(value, `a setting of the plugin ${id}`, "card", null, undefined, { given: true });
 };
 
 // Reads the sensitive values the record says were given and are not held yet.

@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
+import { HAIKU, SCRIPTED, shoot, ask, scriptBash } from "./shots.ts";
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const output = async (request: APIRequestContext, id: string) =>
@@ -88,4 +88,55 @@ test("secrets stay out of history and still work", async ({ page, request }) => 
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
+});
+
+// A secret whose value is an ordinary word. The owner is asked once before it
+// is kept; the model's own words keep the word (an agent's prompt goes out and
+// is shown as the word, never as the secret's placeholder that a command would
+// expand); what a tool prints still hides it, as a whole word.
+test("a secret that is an ordinary word stays out of the model's own words", async ({ page, request }) => {
+  const word = "lantern";
+  // (Put together here: written whole, the placeholder of a secret no daemon holds yet.)
+  const placeholder = "[value of $" + "LAMP_WORD]";
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `secret-word-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  // (The stand-in of a Claude model, whose tools hold Agent, where the daemon is scripted.)
+  const model = SCRIPTED ? "scripted:claude-stand-in" : HAIKU;
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  await page.goto(`/s/${session.id}`);
+  const agent = { name: "Agent", input: { description: `Read the ${word} notes`, prompt: ask(`Reply with exactly: The ${word} notes are fine.`, `script:say The ${word} notes are fine.`) } };
+  const bash = { name: "Bash", input: { command: `echo ${word} ${word}s` } };
+  await page.getByTestId("composer").fill(ask(
+    `Call request_secret with name LAMP_WORD. Then start one agent with the Agent tool, description "Read the ${word} notes", prompt "Reply with exactly: The ${word} notes are fine.". Then run exactly: echo ${word} ${word}s`,
+    `script:calls ${JSON.stringify([{ name: "request_secret", input: { name: "LAMP_WORD", purpose: "a word" } }, agent, bash])}`,
+  ));
+  await page.keyboard.press("Enter");
+  const card = page.getByTestId("secret-request");
+  await expect(card).toContainText("LAMP_WORD", { timeout: 60_000 });
+  await card.getByTestId("secret-value").fill(word);
+  await card.getByTestId("secret-give").click();
+  // Asked once: it is a word, so ordinary text holds it.
+  await expect(card.getByTestId("secret-ordinary")).toContainText("ordinary text");
+  await expect(card.getByTestId("secret-give")).toHaveText("Keep it");
+  await shoot(page, "secrets-04-ordinary");
+  await card.getByTestId("secret-give").click();
+  await turnsDone(request, session.id, 1);
+
+  const { events } = await (await request.get(`/api/sessions/${session.id}`)).json();
+  const calls = events.filter((e: any) => e.kind === "assistant").flatMap((e: any) => e.data.blocks.filter((b: any) => b.type === "tool_use"));
+  const sent = calls.find((b: any) => b.name === "Agent");
+  // The agent's prompt as the model wrote it: the word, not the secret.
+  expect(sent.input.description).toBe(`Read the ${word} notes`);
+  expect(JSON.stringify(sent.input)).not.toContain("[value of");
+  const { agents } = await (await request.get(`/api/sessions/${session.id}/agents`)).json();
+  const child = (await (await request.get(`/api/sessions/${agents[0].session_id}`)).json()).events;
+  const prompt = child.find((e: any) => e.kind === "user");
+  expect(JSON.stringify(prompt.data)).toContain(`The ${word} notes are fine.`);
+  expect(JSON.stringify(child.filter((e: any) => e.kind === "assistant"))).toContain(`The ${word} notes are fine.`);
+  await expect(page.getByTestId("agent-call").first()).toContainText(`Read the ${word} notes`);
+  // What the command printed hides the word where it stands whole, and only there.
+  const printed = JSON.stringify(events.filter((e: any) => e.kind === "tool_result").map((e: any) => e.data.results));
+  expect(printed).toContain(`${placeholder} ${word}s`);
+  await shoot(page, "secrets-05-ordinary-used");
 });

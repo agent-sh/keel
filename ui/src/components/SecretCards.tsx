@@ -79,12 +79,19 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // The value given is ordinary text (a word, a short number): what the daemon said, for that value. Given again, it is kept.
+  const [plain, setPlain] = useState<{ value: string; text: string } | null>(null);
   const act = async (f: () => Promise<unknown>) => {
     setBusy(true);
     setErr("");
     noteAnswer(r.id);
-    try { await f(); } catch (e) { setErr((e as Error).message); reportError(e, { at: "secret request" }); } finally { setBusy(false); }
+    try { await f(); } catch (e) {
+      const body = (e as any).body;
+      if ((e as any).status === 409 && body?.ordinary) setPlain({ value, text: (e as Error).message });
+      else { setErr((e as Error).message); reportError(e, { at: "secret request" }); }
+    } finally { setBusy(false); }
   };
+  const warned = plain?.value === value ? plain : null;
   return (
     <div
       ref={root}
@@ -123,7 +130,7 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
     >
       <Head title={`The model asks for ${r.name}`} />
       {r.purpose && <p className="px-4 pt-1.5 text-caption text-muted">{r.purpose}</p>}
-      <form className="flex items-center gap-1.5 px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (value) act(() => secrets.give(r.session_id, r.id, value)); }}>
+      <form className="flex items-center gap-1.5 px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (value) act(() => secrets.give(r.session_id, r.id, value, !!warned)); }}>
         <input
           ref={field}
           type="password"
@@ -140,11 +147,12 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
           placeholder="Paste the value: it goes to commands only, never to the model"
           className={input}
         />
-        <button type="submit" disabled={busy || !value} data-testid="secret-give" className={`k-secret-give ${primary}`}>Give</button>
+        <button type="submit" disabled={busy || !value} data-testid="secret-give" className={`k-secret-give ${primary}`}>{warned ? "Keep it" : "Give"}</button>
         <button type="button" disabled={busy} data-testid="secret-decline" onClick={() => act(() => secrets.decline(r.session_id, r.id))} className={quiet}>Decline</button>
       </form>
       <p className="px-4 pb-3 -mt-1 text-micro text-faint">
         {err ? <span className="text-danger" role="alert" data-testid="secret-error">{err}</span>
+          : warned ? <span className="text-warn" role="alert" data-testid="secret-ordinary">{warned.text}</span>
           // While the keyboard is on the card itself, what gets it into the field. Marked once a key typed here went nowhere.
           : onCard ? <span className={cn("pointer-coarse:hidden", dropped && "text-warn")} role="status" data-testid="secret-hint" data-dropped={dropped || undefined}>{TO_FIELD}{dropped ? ": what is typed here goes nowhere" : ""}</span>
           : `Held in memory for this session as $${r.name}; a restart forgets it.`}

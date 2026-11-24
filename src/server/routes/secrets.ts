@@ -7,7 +7,7 @@ import { chmodSync, closeSync, openSync, readFileSync, writeSync } from "node:fs
 import { join } from "node:path";
 import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
-import { nameError, SHELL_FIELDS, StreamScan, vault } from "../../safety/secrets.ts";
+import { nameError, ordinaryValue, SHELL_FIELDS, StreamScan, vault, type Words } from "../../safety/secrets.ts";
 import { dropCallEnv, registerEnv, setCallEnv } from "../../tools/jobs.ts";
 import { declareAsksOwner, registerShared } from "../../tools/registry.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
@@ -71,7 +71,14 @@ const RequestSecret: Tool = {
 
 // Files written outside the Store (job sidecars and logs, spill files, trace
 // rows) keep placeholders too. Set at load, before any route adopts old jobs.
-setConcealer({ text: (s, sessionId) => vault.redact(s, sessionId, "output"), pairs: () => vault.pairs() });
+setConcealer({ text: (s, sessionId, words) => vault.redact(s, sessionId, "output", words), pairs: () => vault.pairs(true) });
+
+// Whose words an event of a kind holds (Words): a tool's results and an error
+// are output; a reply, a prompt, a note and a summary are someone's own words.
+const wordsOf = (kind: string): Words => (kind === "tool_result" || kind === "error" ? "output" : "own");
+// What the owner is told of a value ordinary text holds.
+export const ordinaryWarning = (why: string) =>
+  `This value ${why}, so ordinary text holds it. Keel would hide it as a whole word in what tools print, and leave it as it is in the model's words and yours. Give another value, or keep this one.`;
 
 // The fields of a shell tool's input that hold the script (Bash, exec_command, run_shell_command).
 
@@ -104,12 +111,18 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
   vault.useKey(placeholderKey(store.stateDir));
   store.migrate(`CREATE TABLE IF NOT EXISTS secret_placeholders (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT, created INTEGER NOT NULL)`);
   const issued = store.db.query("SELECT 1 FROM secret_placeholders WHERE id = ?");
+  // The placeholders whose value the owner was told is ordinary text: told once, a restart included.
+  store.migrate(`CREATE TABLE IF NOT EXISTS secret_warned (id TEXT PRIMARY KEY, at INTEGER NOT NULL)`);
+  const warnedRow = store.db.query("SELECT 1 FROM secret_warned WHERE id = ?");
+  const warnSave = store.db.query("INSERT OR IGNORE INTO secret_warned (id, at) VALUES (?, ?)");
   // A placeholder issued while the store takes no writes is owed (its id and kind, never the value):
   // the result that holds the new secret is then stored redacted like any other, not thrown away.
   const owed = new Set<string>();
   vault.ledger = {
     issued: (id, kind, name) => { if (!store.sqlOrLater("placeholder", [id, kind, name ?? null, Date.now()], "a secret's placeholder")) owed.add(id); },
     has: (id) => owed.has(id) || !!issued.get(id),
+    warned: (id) => !!warnedRow.get(id),
+    warn: (id) => { try { warnSave.run(id, Date.now()); } catch {} },
   };
 
   // The messages that went to a model masked, as they went (vault.maskSent): a
@@ -126,8 +139,8 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
 
   // Everything stored is redacted; images, signatures and reasoning stay byte-exact.
   store.redact = (sessionId, kind, value) => {
-    if (typeof value === "string") return vault.redact(value, sessionId, kind === "title" || kind === "queue" ? "prompt" : "output");
-    return vault.redactDeep(value, sessionId, kind === "user" ? "prompt" : "output");
+    if (typeof value === "string") return vault.redact(value, sessionId, kind === "title" || kind === "queue" ? "prompt" : "output", wordsOf(kind));
+    return vault.redactDeep(value, sessionId, kind === "user" ? "prompt" : "output", wordsOf(kind));
   };
   // A reply's text as it streams is scanned before it is a frame, each piece with the ones before it
   // in view (a key cut by a piece's end is caught when the next piece completes it).
@@ -138,17 +151,24 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     end: (session, index) => streams.end(`${session} ${index}`, session),
   };
   // Live frames: feature frames (approval cards). The streamed text was scanned before it
-  // became a frame (above); stored events were redacted on the way in.
+  // became a frame (above); stored events were redacted on the way in. A frame says what
+  // the harness and the models do (an agent's title, a call on a card): their own words,
+  // where a secret that is an ordinary word stays that word. (A command's output on a
+  // frame is concealed where it is made: jobs.ts jobView.)
   bus.use((f) => {
-    if (f.t === "feature" && f.name !== "secret") return { ...f, data: vault.redactDeep(f.data, f.session_id ?? null, "output") };
+    if (f.t === "feature" && f.name !== "secret") return { ...f, data: vault.redactDeep(f.data, f.session_id ?? null, "output", "own") };
     return f;
   });
-  if (gate) gate.redact = (a) => vault.redactDeep(a, a.session_id, "output");
+  // (An approval card shows a call: the model's own words.)
+  if (gate) gate.redact = (a) => vault.redactDeep(a, a.session_id, "output", "own");
   emitRequest = (r, state) => bus.emit({ t: "feature", name: "secret", session_id: r.session_id, data: { request: r, state } });
   vault.on((ev) => {
     if (ev.type === "found") bus.emit({ t: "feature", name: "secret", session_id: ev.session_id, data: { found: ev.secret } });
     else if (ev.type === "changed") for (const s of ev.secret.sessions) bus.emit({ t: "feature", name: "secret", session_id: s, data: { changed: ev.secret } });
-    else bus.emit({ t: "feature", name: "secret", data: { forgotten: ev.id } });
+    else if (ev.type === "forgotten") bus.emit({ t: "feature", name: "secret", data: { forgotten: ev.id } });
+    // A value given elsewhere (a plugin's setting) that ordinary text holds: told once, in the Errors panel.
+    // (A card asks before it gives one: the route below.)
+    else deps.errors?.capture("server", new Error(`A secret (${ev.secret.kind}, ${ev.secret.placeholder}) ${ev.secret.ordinary}, so ordinary text holds it: Keel hides it as a whole word in what tools print and leaves it as it is in the model's words. Change it where it was given if that is wrong.`), { secret: ev.secret.id, kind: "ordinary secret" });
   });
   registerEnv((sessionId) => vault.env(sessionId));
   registerShared(RequestSecret);
@@ -161,7 +181,7 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     // it does not reach a model. History already sent to that model goes as it
     // went (vault.maskSent): stored events are redacted when written, so only a
     // value found later is in an earlier one, and that model has it already.
-    beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output"), messages: vault.maskSent(`${s.id} ${req.route ?? req.model}`, req.messages) }),
+    beforeRequest: (s, req) => ({ ...req, system: vault.redact(req.system, s.id, "output", "own"), messages: vault.maskSent(`${s.id} ${req.route ?? req.model}`, req.messages) }),
     // A value is put back only where a credential is used: a shell command on
     // this machine, as a quoted variable set on that command's process alone
     // (and named secrets in the environment of the session's jobs). Every
@@ -223,7 +243,10 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
         const value = typeof b.value === "string" ? b.value.replace(/\r?\n$/, "") : "";
         if (!value) return bad("give the value, or deny");
         if (value.length > 16_384) return bad("the value is over 16 KB");
-        vault.add(value, "given secret", "card", w.session_id, w.name);
+        // A value ordinary text holds (a word, a short number) is asked about once: given again, it is kept.
+        const why = ordinaryValue(value);
+        if (why && !b.confirm) return json({ error: ordinaryWarning(why), ordinary: why }, 409);
+        vault.add(value, "given secret", "card", w.session_id, w.name, { given: true, confirmed: !!why });
         w.resolve({ given: true });
         return json({ ok: true, name: w.name });
       },

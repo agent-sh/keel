@@ -29,7 +29,8 @@ export const secrets = {
     const r = await api<{ secrets: SecretMeta[]; requests: SecretRequest[] }>(`/api/sessions/${sessionId}/secrets`);
     set({ secrets: { ...state.secrets, [sessionId]: r.secrets }, requests: { ...state.requests, [sessionId]: r.requests } });
   },
-  give: (sessionId: string, id: string, value: string) => api(`/api/sessions/${sessionId}/secrets/${id}`, { method: "POST", body: JSON.stringify({ value }) }),
+  // `confirm`: keep a value the daemon said ordinary text holds (a 409 with `ordinary`).
+  give: (sessionId: string, id: string, value: string, confirm = false) => api(`/api/sessions/${sessionId}/secrets/${id}`, { method: "POST", body: JSON.stringify({ value, ...(confirm && { confirm }) }) }),
   decline: (sessionId: string, id: string, reason?: string) => api(`/api/sessions/${sessionId}/secrets/${id}`, { method: "POST", body: JSON.stringify({ deny: true, reason }) }),
   rename: (id: string, name: string | null) => api<{ secret: SecretMeta }>(`/api/secrets/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   forget: (id: string) => api(`/api/secrets/${id}`, { method: "DELETE" }),

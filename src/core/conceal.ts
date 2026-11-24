@@ -1,20 +1,22 @@
 // Secret values kept out of what is written outside the Store: job sidecars and
 // logs, spill files, trace rows. The secrets feature registers the redactor
 // (src/server/routes/secrets.ts); without it text passes through unchanged.
-import { credentialName, detect, entropy } from "../safety/secrets.ts";
+import { credentialName, detect, entropy, wordSwap, type Words } from "../safety/secrets.ts";
 
 export type Concealer = {
   // Text with every known secret value (and anything that looks like one) as its placeholder.
-  text(s: string, sessionId: string | null): string;
+  // `words`: whose words the text is (src/safety/secrets.ts Words; output when not said).
+  text(s: string, sessionId: string | null, words?: Words): string;
   // The known values and their placeholders, for a stream filtered outside the daemon.
-  pairs(): [value: string, placeholder: string][];
+  // `word`: a value that is ordinary text, replaced only where it stands as a whole word.
+  pairs(): [value: string, placeholder: string, word?: boolean][];
 };
 
 let current: Concealer | null = null;
 export const setConcealer = (c: Concealer | null) => void (current = c);
 // (A test puts back what was there.)
 export const getConcealer = () => current;
-export const conceal = (s: string, sessionId: string | null = null): string => (current && s ? current.text(s, sessionId) : s);
+export const conceal = (s: string, sessionId: string | null = null, words?: Words): string => (current && s ? current.text(s, sessionId, words) : s);
 // Every string of a JSON value concealed (a record written to disk or sent whole).
 export function concealDeep<T>(v: T, sessionId: string | null = null): T {
   if (!current) return v;
@@ -22,7 +24,7 @@ export function concealDeep<T>(v: T, sessionId: string | null = null): T {
     typeof x === "string" ? conceal(x, sessionId) : Array.isArray(x) ? x.map(walk) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y)])) : x;
   return walk(v);
 }
-export const secretPairs = (): [string, string][] => current?.pairs() ?? [];
+export const secretPairs = (): [string, string, boolean?][] => current?.pairs() ?? [];
 
 // Anything shaped like a credential, whoever's it is and whether or not Keel
 // knows it. This runs on text that is read (a failure's line, a sample, a
@@ -78,7 +80,10 @@ export const scrubbed = (text: string, sessionId: string | null = null): string 
 export function scrubbedLine(text: string): string {
   if (!text) return text;
   let out = text;
-  for (const [value, placeholder] of secretPairs()) if (value.length >= 8 && out.includes(value)) out = out.split(value).join(placeholder);
+  for (const [value, placeholder, word] of secretPairs()) {
+    if (word) out = wordSwap(out, value, placeholder);
+    else if (value.length >= 8 && out.includes(value)) out = out.split(value).join(placeholder);
+  }
   return keyShaped(out);
 }
 export function keyShapedDeep<T>(v: T): T {
@@ -89,30 +94,47 @@ export function keyShapedDeep<T>(v: T): T {
 
 // A byte stream with known values replaced as it passes, a value split across
 // chunks included: only the end of a chunk that could start a value is held
-// back until the next chunk (or the end) says what it is. Self-contained (it
+// back until the next chunk (or the end) says what it is. A value marked as a
+// word (ordinary text) is replaced only where it stands as a whole word: no
+// letter, digit or _ (or a byte of a longer character) joined to it, so a
+// whole one at a chunk's end waits for the next byte too. Self-contained (it
 // runs as the source of a filter process too, see jobs.ts).
-export function streamConcealer(pairs: [string, string][]) {
-  const list = pairs.map(([v, p]) => [Buffer.from(v).toString("latin1"), Buffer.from(p).toString("latin1")] as const).filter(([v]) => v.length > 0);
-  let held = "";
-  const swap = (s: string) => {
-    for (const [v, p] of [...list].sort((a, b) => b[0].length - a[0].length)) s = s.split(v).join(p);
+export function streamConcealer(pairs: [string, string, boolean?][]) {
+  const list = pairs.map(([v, p, w]) => [Buffer.from(v).toString("latin1"), Buffer.from(p).toString("latin1"), !!w] as const).filter(([v]) => v.length > 0).sort((a, b) => b[0].length - a[0].length);
+  // `prev`: the last character given out, what stands before what is held.
+  let held = "", prev = "";
+  const wordy = (c: string | undefined) => !!c && (c.charCodeAt(0) >= 0x80 || /[A-Za-z0-9_]/.test(c));
+  const swap = (s: string, atEnd: boolean) => {
+    for (const [v, p, w] of list) {
+      if (!w) { s = s.split(v).join(p); continue; }
+      let out = "", at = 0;
+      for (let i = s.indexOf(v); i >= 0; i = s.indexOf(v, i + 1)) {
+        const j = i + v.length;
+        if (i < at || wordy(i > 0 ? s[i - 1] : prev) || (j < s.length ? wordy(s[j]) : !atEnd)) continue;
+        out += s.slice(at, i) + p;
+        at = j;
+      }
+      if (at) s = out + s.slice(at);
+    }
     return s;
   };
-  // The longest end of s that is the start of some value.
+  // The longest end of s that is the start of some value (all of a word's: the next byte decides).
   const pending = (s: string) => {
     let keep = 0;
-    for (const [v] of list) for (let n = Math.min(v.length - 1, s.length); n > keep; n--) if (s.endsWith(v.slice(0, n))) { keep = n; break; }
+    for (const [v, , w] of list) for (let n = Math.min(w ? v.length : v.length - 1, s.length); n > keep; n--) if (s.endsWith(v.slice(0, n))) { keep = n; break; }
     return keep;
   };
   return {
     push(chunk: Uint8Array): Buffer {
-      const s = swap(held + Buffer.from(chunk).toString("latin1"));
+      const s = swap(held + Buffer.from(chunk).toString("latin1"), false);
       const keep = pending(s);
       held = s.slice(s.length - keep);
-      return Buffer.from(s.slice(0, s.length - keep), "latin1");
+      const out = s.slice(0, s.length - keep);
+      if (out) prev = out[out.length - 1]!;
+      return Buffer.from(out, "latin1");
     },
     end(): Buffer {
-      const s = held;
+      const s = swap(held, true);
       held = "";
       return Buffer.from(s, "latin1");
     },

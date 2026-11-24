@@ -1003,7 +1003,8 @@ export class Engine {
   // title is saved only if nobody renamed the session meanwhile.
   private async writeTitle(id: string, s: Session, line: readonly StoredEvent[], gen: number) {
     const prompts = ownerPrompts(line);
-    const prompt = conceal(titlePrompt(prompts, firstReply(line)), id);
+    // (The owner's prompts and the model's reply: their own words, src/safety/secrets.ts Words.)
+    const prompt = conceal(titlePrompt(prompts, firstReply(line)), id, "own");
     const [models, cur] = await Promise.all([this.providers.models(), this.providers.resolve(s.model).then((r) => r.info)]);
     // The session's own model is a reader's last choice, never a title's (unless the owner named it a
     // small model): a title is not worth a request at the working model's price. With no other
@@ -1823,7 +1824,8 @@ export class Engine {
     const extra = await Promise.all(allHooks().map((h) => h.system?.(session, info) ?? ""));
     // Each block as the model is sent it, secrets as placeholders: the kept
     // prompt and its fingerprints never hold a secret's value.
-    const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id), ...(p.data !== undefined && { data: conceal(p.data, session.id) }), ...(p.same !== undefined && { same: conceal(p.same, session.id) }) });
+    // (The owner's instructions and Keel's: their own words, where a secret that is an ordinary word stays that word.)
+    const sent = (p: PromptPart): PromptPart => ({ name: p.name, text: conceal(p.text, session.id, "own"), ...(p.data !== undefined && { data: conceal(p.data, session.id, "own") }), ...(p.same !== undefined && { same: conceal(p.same, session.id, "own") }) });
     // A block of the owner's data keeps its place while it is empty, so its data can be compared (hooks.ts SystemBlock).
     const part = (b: string | SystemBlock, wrap: (t: string) => string): PromptPart[] =>
       typeof b === "string" ? (b ? [sent({ name: blockName(b), text: wrap(b) })] : []) : [sent({ name: b.name, text: b.text ? wrap(b.text) : "", data: b.data, ...(b.same !== undefined && { same: b.same ? wrap(b.same) : "" }) })];
