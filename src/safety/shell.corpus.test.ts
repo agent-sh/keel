@@ -32,7 +32,7 @@ const CHANGES: string[] = [
   "cat <<EOF > f\nhello\nEOF", "cat > f <<'EOF'\nhello\nEOF", "cat <<EOF\n$(touch f)\nEOF", "cat <<EOF\n`touch f`\nEOF", "cat <<EOF\necho '$(touch f)'\nEOF",
   "cat <<-EOF\n\t$(rm x)\n\tEOF", "cat <<EOF\nhi\nEOF\ntouch f", 'cat <<< "$(touch f)"', "cat <<< hi > f", "tee f <<< hi", "echo $(echo a > f)", "echo `echo a > f`",
   'echo "$(echo a > f)"', 'echo "`touch f`"', "ls $(touch f)", "cat <(echo a > f)", "cat <(touch f)", "ls > >(tee f)", "cat a | tee >(wc -l > count)",
-  "diff <(sort a > f) b", "echo ${x:-$(touch f)}", 'echo "${x:-$(touch f)}"', "echo $(( $(touch f) + 1 ))", "echo `echo \\`touch f\\``", "echo $(echo $(rm x))",
+  "diff <(sort a > f) b", "echo ${x:-$(touch f)}", 'echo "${x:-$(touch f)}"', "echo $(( $(touch f) + 1 ))", "X=$(( $(touch f) + 1 ))", 'echo "$(( $(touch f) + 1 ))"', "(( $(touch f) > 1 ))", "A=($(touch f))", 'A=("$(touch f)" b)', "for ((i=$(touch f); i<1; i++)); do ls; done", "echo `echo \\`touch f\\``", "echo $(echo $(rm x))",
   // Builtins that write or run text.
   "exec > f", "exec 3> f", "exec 2>> err.log", ": > f", "true > f", "printf '' > f", 'eval "echo a > f"', "eval 'rm x'", "source ./setup.sh", ". ./env.sh",
   "trap 'rm x' EXIT", "alias ls='rm -rf x'; ls", "ls() { rm x; }; ls", "function ls { rm x; }; ls", "history -w f", "fc -ln > f", "declare -p > f",

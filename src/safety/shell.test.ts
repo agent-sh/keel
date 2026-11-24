@@ -357,3 +357,23 @@ test("rules match like Claude Code's", () => {
   expect(suggestRule(s("bun test src/x.test.ts"))).toBe("bun test *");
   expect(suggestRule(s("./run.sh --fast"))).toBe("./run.sh *");
 });
+
+test("an arithmetic expansion, an arithmetic command and an array assignment are not commands of their own: the substitutions in them are", () => {
+  const words = (c: string) => splitCommand(c)!.map((p) => p.words.join(" "));
+  // The body of $(( )) is no program: only the commands inside it are parts.
+  expect(words("X=$(( $(date +%s%3N) + 100000 ))")).toEqual(["date +%s%3N", "X=$(...)"]);
+  expect(words('echo "t $(( $(date +%s) + 1 ))"')).toEqual(["date +%s", "echo t $(...)"]);
+  expect(words("VAR=x cmd $(( $(date +%s) + 1 ))")).toEqual(["date +%s", "VAR=x cmd $(...)"]);
+  expect(words("(( n = $(date +%s) + 1 ))")).toEqual(["date +%s", ""]);
+  expect(words("A=(\"${B[@]}\")")).toEqual(["A=(...)"]);
+  expect(words("A=(a $(date +%s) c)")).toEqual(["date +%s", "A=(...)"]);
+  // What runs inside is still read as a command, and nothing of them is a read.
+  for (const c of ["echo $(( $(rm -rf ~) ))", "X=$(( $(rm -rf ~) + 1 ))", "(( $(rm -rf ~) ))", "A=($(rm -rf ~))", "echo $(( `rm -rf ~` ))", "echo $(( 1 + $(( $(rm -rf ~) )) ))"]) {
+    const parts = splitCommand(c)!;
+    expect([c, parts.some((p) => p.words.join(" ") === "rm -rf ~")]).toEqual([c, true]);
+    expect([c, parts.every(isReadOnly)]).toEqual([c, false]);
+  }
+  // Parentheses that do not close as )) are a subshell in a substitution, read as one.
+  expect(words("echo $(( (rm -rf ~) ) )")).toContain("rm -rf ~");
+  expect(words("echo $((cd x; rm y) )")).toContain("rm y");
+});

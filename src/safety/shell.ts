@@ -34,6 +34,8 @@ const OPS = ["&&", "||", "|&", ";;", ";", "|", "&", "\n"];
 const OPS_START = "&|;\n"; // the characters an operator starts with: most characters start none
 // A variable's name that neither the shell nor a program reads for itself: small letters, and not one of KEPT.
 const PLAIN = /^[a-z_][a-z0-9_]*$/;
+// What stands before the ( of an array assignment: NAME=, NAME+=, or an element's NAME[n]=.
+const ARRAY_NAME = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/;
 // Leading words that are syntax, not commands.
 const CONTROL = /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/;
 // What a redirect may write to without changing anything.
@@ -58,12 +60,14 @@ export function splitCommand(cmd: string): Simple[] | null {
 // that closes the substitution they are in.
 // Nesting deeper than this is not followed: the cost of reading it grows with the square of its depth.
 let level = 0;
-function scan(cmd: string, start: number, inner: boolean, flow = false): { parts: Simple[]; end: number } | null {
+// `bare`: the text is the elements of an array assignment, A=( ... ): words, not a command. What the shell
+// runs in them (the substitutions) is read as commands; the words themselves are not one.
+function scan(cmd: string, start: number, inner: boolean, flow = false, bare = false): { parts: Simple[]; end: number } | null {
   if (level >= 64) return null;
   level++;
-  try { return scanIn(cmd, start, inner, flow); } finally { level--; }
+  try { return scanIn(cmd, start, inner, flow, bare); } finally { level--; }
 }
-function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { parts: Simple[]; end: number } | null {
+function scanIn(cmd: string, start: number, inner: boolean, flow: boolean, bare: boolean): { parts: Simple[]; end: number } | null {
   const out: Simple[] = [];
   let words: string[] = [];
   let dyn: number[] = [];
@@ -116,6 +120,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
   const flushCmd = (sep?: string) => {
     flushWord();
     if (want) { bad = true; want = null; }
+    // The elements of an array assignment are values: nothing of them is a program word.
+    if (bare && !unknown && !redirects && !inputs.length) { words = []; dyn = []; how = []; splits = false; text = ""; return; }
     // `for x in ...`, `select x in ...` and `case ... in` headers run nothing themselves.
     if (/^(for|select|case)$/.test(words[0] ?? "")) {
       // A loop gives its variable each value in turn, as an assignment would: PATH, HOME or a name a program
@@ -150,10 +156,49 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
   // $( at j: the commands inside, and where its ) is. $(( is arithmetic: it
   // evaluates the names in it, and a name's value can hold a substitution.
   // Arithmetic on numbers alone names nothing: its result is a number.
+  // The text of an arithmetic expansion or command from `from` (just after its `((`) to its `))`: what the shell
+  // runs there is its command substitutions, read as commands, and the names it evaluates (unknown, as for a
+  // $(( with names). The body is no command: no word of it is a program. Returns where the last `)` is; undefined when
+  // the text is not read as arithmetic here (a quote, ${, $[, a backslash, parentheses that do not close as `))`: bash
+  // may read it as a command substitution of a subshell then), which is read as it always was; null: not shell text.
+  const arithmetic = (from: number): number | null | undefined => {
+    let paren = 0;
+    for (let k = from; k < cmd.length; k++) {
+      const c = cmd[k]!;
+      if (c === "$" && cmd[k + 1] === "(" && cmd[k + 2] !== "(") {
+        const r = scan(cmd, k + 2, true, flow);
+        if (!r) return null;
+        out.push(...nestedIn(r.parts));
+        k = r.end;
+      } else if (c === "$" && cmd[k + 1] === "(") {
+        const end = arithmetic(k + 3);
+        if (end === undefined || end === null) return end;
+        k = end;
+      } else if (c === "`") {
+        const end = backquoted(k, false);
+        if (end === null) return null;
+        // (backquoted gave its commands to the word: they are the arithmetic's, not what it is made of)
+        cur.subs.pop();
+        k = end;
+      } else if (c === "$" && /[{\[]/.test(cmd[k + 1] ?? "")) return undefined;
+      else if (c === "'" || c === '"' || c === "\\" || c === "\n") return undefined;
+      else if (c === "(") paren++;
+      else if (c === ")") {
+        if (paren > 0) { paren--; continue; }
+        return cmd[k + 1] === ")" ? k + 1 : undefined;
+      }
+    }
+    return undefined;
+  };
   const substitution = (j: number): number | null => {
     if (cmd[j] === "$") {
       const sum = /^\$\(\([0-9+\-*\/% \t]*\)\)/.exec(cmd.slice(j, j + 200));
       if (sum) { cur.rest = true; return j + sum[0].length - 1; }
+      if (cmd[j + 2] === "(") {
+        const end = arithmetic(j + 3);
+        if (end === null) return null;
+        if (end !== undefined) { cur.rest = true; unknown = true; return end; }
+      }
     }
     const r = scan(cmd, j + 2, true, flow);
     if (!r) return null;
@@ -321,6 +366,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
       continue;
     }
     if (c === ">" || c === "<" || (c === "&" && cmd[i + 1] === ">")) {
+      if (bare) return null; // a syntax error in an array's elements
       // A redirection: [n]>file, >>, >|, &>, &>>, >&n, >&file, <file, <&n, <>file, <<<word, <<[-]WORD.
       // Digits right before it name the descriptor and are no word.
       if (c !== "&" && inWord && !quoted && /^\d+$/.test(word)) { word = ""; inWord = false; }
@@ -343,6 +389,7 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
     }
     const op = OPS_START.includes(c) ? OPS.find((o) => cmd.startsWith(o, i)) : undefined;
     if (op) {
+      if (bare && op !== "\n") return null; // a syntax error in an array's elements; a newline only separates them
       flushCmd(op);
       i += op.length - 1;
       if (op === "\n" && docs.length) {
@@ -354,6 +401,22 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
     }
     // Parentheses always end a word: a subshell, a function's (), a case pattern's ).
     if (c === "(" || c === ")") {
+      if (bare && c === "(") return null; // no group in an array's elements
+      // A name and = right before it: an array assignment, A=( ... ). Its elements are words; the commands inside them run.
+      if (c === "(" && inWord && !quoted && !made && !want && ARRAY_NAME.test(word)) {
+        const r = scan(cmd, i + 1, true, flow, true);
+        if (!r) return null;
+        out.push(...nestedIn(r.parts));
+        if (/[$`]/.test(cmd.slice(i + 1, r.end))) { expands(word.length, true); cur.rest = true; }
+        word += "(...)"; text += cmd.slice(i, r.end + 1); i = r.end;
+        continue;
+      }
+      // (( ... )) where a command starts (or after for, while, if): arithmetic, its substitutions run, its words are no command.
+      if (c === "(" && cmd[i + 1] === "(" && !inWord && !bare && words.every((w) => CONTROL.test(w) || w === "for")) {
+        const end = arithmetic(i + 2);
+        if (end === null) return null;
+        if (end !== undefined) { flushCmd(); unknown = true; i = end; continue; }
+      }
       flushCmd();
       if (c === ")" && inner && depth === 0) return bad ? null : { parts: out, end: i };
       depth = Math.max(0, depth + (c === "(" ? 1 : -1));

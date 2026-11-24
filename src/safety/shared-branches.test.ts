@@ -128,3 +128,24 @@ test("git archive reads: a candidate's tree is built in another checkout, and an
     "git -C /r archive --prefix --output=/r/.git/x HEAD",
   ]) expect([line, refused(line) !== null]).toEqual([line, true]);
 });
+
+test("arithmetic and array assignments are read as what they are, not as a program word, and what runs inside them is still judged", () => {
+  for (const line of [
+    "X=$(( $(date +%s%3N) + 100000 ))",
+    'echo "t=$(( $(date +%s) - 5 ))"',
+    "VAR=x echo $(( $(date +%s) + 2 ))",
+    "VAR=x cmd $((1+2))",
+    'A=("${B[@]}")',
+    "A=(a b $(date +%s) c)",
+    "(( n = $(date +%s) + 1 ))",
+    "for ((i=0; i<3; i++)); do echo $i; done",
+  ]) expect([line, refused(line)]).toEqual([line, null]);
+  // The commands in them run, so the rules judge them: a branch it does not own is still not deleted from inside one.
+  for (const line of [
+    "X=$(( $(git branch -D keel/agent-2) + 1 ))",
+    'echo "$(( $(git branch -D keel/agent-2) ))"',
+    "A=($(git branch -D old-work))",
+    "(( $(git branch -D release/1.0) ))",
+    "X=$(( $(git branch -D keel/agent-2; echo 1) ))",
+  ]) expect([line, refused(line) !== null]).toEqual([line, true]);
+});
