@@ -76,7 +76,7 @@ export class Provenance {
       if (o.model && b.unbounded && o.seq >= b.unbounded.seq) continue;
       if (o.cls === "owner") return o;
       // (A host that outside text named in one session and a search listed in another is the web's: a plain read of it goes on.)
-      if (!best || (best.cls === "inside" && o.cls !== "inside") || (best.cls === "outside" && o.cls === "listed")) best = o;
+      if (!best || (best.cls === "inside" && o.cls !== "inside") || (best.cls === "outside" && o.cls === "listed") || (best.cls === "listed" && best.page && o.cls === "listed" && !o.page)) best = o;
     }
     return best;
   }
@@ -92,7 +92,7 @@ export class Provenance {
       (key) => this.lookup(books, key),
       (key) => ids.some((id) => this.cleared.get(id)?.has(key)),
       workspace,
-      (key, pathq) => books.some((b) => b.covers(key, pathq)),
+      (key, pathq, exact) => books.some((b) => b.covers(key, pathq, exact)),
       () => this.unread(books),
     );
     // What is held before the repository is asked; it is asked (off the loop) only for those.

