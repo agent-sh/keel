@@ -15,6 +15,7 @@ import { ago, cn } from "../lib/utils.ts";
 import { useToldStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { STATE_WORD, agentState } from "../../../src/core/state-words.ts";
 import { Mark as StateMark } from "./Mark.tsx";
+import { PicturesArea } from "./Pictures.tsx";
 
 // The tree review: every agent's branch as one diff by area (TreeReview.tsx), read when it opens.
 const TreeReviewDialog = lazy(() => import("./TreeReview.tsx").then((m) => ({ default: m.TreeReviewDialog })));
@@ -198,6 +199,7 @@ function Card({ r, below, indent, w }: { r: BoardRow; below: Board["rows"]; inde
         </div>
       )}
       {r.branch && !branchGone(r) && <Together r={r} below={below} />}
+      {r.branch && !branchGone(r) && r.pictures && <PicturesArea fact={r.pictures} sessionId={r.session_id} repo={r.repo} />}
       {r.review?.line && <Quote by={r.review.by} how={r.review.how} title={r.review.title} line={r.review.line} below={below} testid="board-verdict" />}
       {r.review?.against && <Quote by={r.review.against.by} how={r.review.against.how} title={r.review.against.title} line={r.review.against.line || "(no words)"} below={below} testid="board-verdict-against" />}
     </li>

@@ -217,7 +217,7 @@ async function changedFiles(repo: Repo, mb: string): Promise<string[]> {
 
 // A program that lowers the run's priority, when the machine has it: a low weight (it takes spare time at full
 // speed and yields when other work wants the machine), not the idle class.
-const LOW = () => [...(existsSync("/usr/bin/nice") ? ["/usr/bin/nice", "-n", "10"] : []), ...(existsSync("/usr/bin/ionice") ? ["/usr/bin/ionice", "-c2", "-n7"] : [])];
+export const LOW = () => [...(existsSync("/usr/bin/nice") ? ["/usr/bin/nice", "-n", "10"] : []), ...(existsSync("/usr/bin/ionice") ? ["/usr/bin/ionice", "-c2", "-n7"] : [])];
 
 async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof testsOf>[number] & { bytes: Uint8Array | null })[], again: boolean): Promise<BeforeRun> {
   const scratch = join(dir(), `${run.id}`);
@@ -300,7 +300,7 @@ async function execute(run: BeforeRun, repo: Repo, tests: (ReturnType<typeof tes
 
 // The kernel leaves a folder with no permissions in an overlay's work folder (the run's layers, in its tool
 // folder): opened up, so the tool folder can go.
-function openLayers(tool: string) {
+export function openLayers(tool: string) {
   let names: string[] = [];
   try { names = readdirSync(join(tool, "layers")); } catch { return; } // the run had none
   for (const n of names) try { chmodSync(join(tool, "layers", n, "work", "work"), 0o700); } catch {} // none made: nothing written
@@ -419,6 +419,8 @@ export async function readsIn(wrap: (argv: string[]) => string[], p: string, cwd
 // How long the output of a run is still read after its end: what a process it started outside its group still
 // holds open (a `setsid` child) is not waited for after that.
 export const DRAIN_MS = 2_000;
+// How often a scoped run's processor time is read from its cgroup.
+const CPU_EVERY_MS = 2_000;
 // Seconds a run's scope may outlive the run's own limit: its kill and the read of its pipes (DRAIN_MS), with room.
 const SCOPE_SLACK_S = 10;
 
@@ -458,9 +460,16 @@ export async function runCommand(o: One): Promise<Ran | { error: string }> {
   }
   const stop = () => { try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill("SIGKILL"); } catch {} } };
   const timer = setTimeout(() => { timedOut = true; stop(); }, o.limitMs);
+  // In a scope, its processor time is its cgroup's, read every few seconds while it runs (the scope goes with
+  // its last process): what bash's times sees leaves out what its children did not wait for (a browser).
+  const stat = slice ? `/sys/fs/cgroup${slice}/${o.unit}.scope/cpu.stat` : undefined;
+  let scopeCpu: number | null = null;
+  const look = () => { try { const u = /usage_usec (\d+)/.exec(readFileSync(stat!, "utf8"))?.[1]; if (u) scopeCpu = Math.round(Number(u) / 1000); } catch {} };
+  const sampler = stat ? setInterval(look, CPU_EVERY_MS) : undefined;
   // Its end: what is left of its group and its scope goes, and its pipes are read for DRAIN_MS more at most.
   const ended = p.exited.then(async () => {
     clearTimeout(timer);
+    if (sampler) { clearInterval(sampler); look(); }
     stop();
     if (scoped) try { await Bun.spawn(["systemctl", "--user", "kill", "--signal=SIGKILL", `${o.unit}.scope`], { stdout: "ignore", stderr: "ignore" }).exited; } catch {} // gone with its last process
     await Bun.sleep(DRAIN_MS);
@@ -477,6 +486,7 @@ export async function runCommand(o: One): Promise<Ran | { error: string }> {
   const ms = Math.round(performance.now() - started);
   let cpu_ms: number | null = null;
   try { cpu_ms = timesCpu(readFileSync(times, "utf8")); } catch {} // stopped before its end: not known
+  if (scopeCpu !== null) cpu_ms = Math.max(cpu_ms ?? 0, scopeCpu);
   rmSync(times, { force: true });
   return { code, signal: timedOut || p.signalCode == null ? null : String(p.signalCode), timedOut, out: out.slice(-OUT_MAX), ms, cpu_ms };
 }

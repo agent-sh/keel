@@ -41,6 +41,7 @@ export type TreeBranch = {
   verdict: Verdict | null; review_by: string | null; review_line: string;
   checks: BoardRow["checks"]; ready: boolean; working: boolean; base_conflict: boolean | null;
   files: number; added: number; removed: number; cut: boolean; error?: string; queue: BoardRow["queue"];
+  pictures: BoardRow["pictures"] | null; // its head's before and after pictures, when its repository names them
 };
 export type AreaFile = { path: string; branches: { branch: string; status: DiffFile["status"]; added: number; removed: number }[] };
 export type TreeArea = {
@@ -209,7 +210,7 @@ export class TreeReview {
         checks: r.checks, ready: verdict === "approved" && v?.current !== false && checksOk,
         working: r.state === "running" || r.state === "waiting", base_conflict: againstBase[i]!,
         files: files.length, added: files.reduce((n, f) => n + f.added, 0), removed: files.reduce((n, f) => n + f.removed, 0),
-        cut: k.parsed.cut, ...(k.error ? { error: k.error } : {}), queue: r.queue,
+        cut: k.parsed.cut, ...(k.error ? { error: k.error } : {}), queue: r.queue, pictures: r.pictures ?? null,
       };
     });
     const byBranch = new Map(branches.map((b) => [b.branch, b]));

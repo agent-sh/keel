@@ -101,6 +101,10 @@ const netProxyJs = await netProxy.outputs[0]!.text();
 const searchFill = await Bun.build({ entrypoints: [join(root, "src/server/routes/search-fill-worker.ts")], target: "bun", minify: true, define });
 if (!searchFill.success) fail(searchFill);
 const searchFillJs = await searchFill.outputs[0]!.text();
+// The thread a branch's pictures are compared on (src/pictures/run.ts), carried the same way.
+const pictures = await Bun.build({ entrypoints: [join(root, "src/pictures/diff-worker.ts")], target: "bun", minify: true, define });
+if (!pictures.success) fail(pictures);
+const picturesJs = await pictures.outputs[0]!.text();
 // The stall watcher's thread (src/admin/stall-watch.ts), carried the same way.
 const stallWatch = await Bun.build({ entrypoints: [join(root, "src/admin/stall-watch-worker.ts")], target: "bun", minify: true, define });
 if (!stallWatch.success) fail(stallWatch);
@@ -138,7 +142,7 @@ try {
     plugins: [embeddedPage],
     define: {
       ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs),
-      __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs), __KEEL_BACKUP_WORKER_JS__: JSON.stringify(workerJs), __KEEL_STALLWATCH_JS__: JSON.stringify(stallWatchJs), __KEEL_NETPROXY_JS__: JSON.stringify(netProxyJs), __KEEL_SEARCHFILL_JS__: JSON.stringify(searchFillJs),
+      __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs), __KEEL_BACKUP_WORKER_JS__: JSON.stringify(workerJs), __KEEL_STALLWATCH_JS__: JSON.stringify(stallWatchJs), __KEEL_NETPROXY_JS__: JSON.stringify(netProxyJs), __KEEL_SEARCHFILL_JS__: JSON.stringify(searchFillJs), __KEEL_PICTURES_JS__: JSON.stringify(picturesJs),
       __KEEL_REVISION__: JSON.stringify(revision), __KEEL_TARGET__: JSON.stringify((target ?? `bun-${process.platform}-${process.arch}`).replace(/^bun-/, "")),
     },
   });

@@ -79,6 +79,8 @@ export function route(f: Frame): Route {
       if (f.name === "pairs" && f.session_id) return one(f.session_id);
       // A plan of lanes of the session changed (src/automation/lane-plans.ts): its Lane plan panel reads it.
       if (f.name === "lane_plan" && f.session_id) return one(f.session_id);
+      // A branch's before and after pictures (src/pictures/run.ts): the agent's Review and its tree's Board read it.
+      if (f.name === "pictures" && f.session_id) return one(f.session_id);
       if (f.name === "artifacts") return { topics: [feedTopic("artifacts"), EVERY, ...(f.session_id ? [sessionTopic(f.session_id)] : [])] };
       if (f.name === "awake") return { topics: [feedTopic("awake"), EVERY] };
       // A lesson proposed, drafted or decided (src/automation/lessons.ts): Settings > Lessons reads it.

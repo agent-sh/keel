@@ -1,0 +1,11 @@
+{
+  "run": "bash scripts/pictures.sh",
+  "pages": ["ui/"],
+  "specs": ["test/e2e/*.spec.ts"],
+  "sizes": ["1920x1040", "390x844"],
+  "themes": ["light", "dark"],
+  "global": ["test/e2e/chat.spec.ts"],
+  "harness": ["test/e2e/*.ts", "test/e2e/fixtures/**", "scripts/smoke.sh", "playwright.config.ts"],
+  "max_specs": 4,
+  "timeout_s": 900
+}

@@ -6,6 +6,7 @@ import { cn } from "../lib/utils.ts";
 import { DiffView, parsePatch, type Comment, type FileChange } from "./DiffView.tsx";
 import { ReviewFindings } from "./ReviewFindings.tsx";
 import { FailsBefore } from "./FailsBefore.tsx";
+import { SessionPictures } from "./Pictures.tsx";
 
 type Branch = { is_git: boolean; missing?: boolean; branch: string | null; base: string | null; merge_base: string | null; commits: number; files: FileChange[]; diff: string; truncated: boolean; partial?: string };
 
@@ -125,6 +126,7 @@ export function BranchReview({ session }: { session: Session }) {
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="branch-review" data-quote-from="the branch review">
       <ReviewFindings session={session} />
       <FailsBefore session={session} />
+      <SessionPictures session={session} />
       <div className="flex items-start gap-2 px-1">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex min-w-0 items-center gap-2 text-ui">

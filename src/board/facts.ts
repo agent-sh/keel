@@ -140,3 +140,13 @@ export function boardChecks(db: Database, a: { trees: string[] }): TreeRun[] {
   try { for (const t of a.trees.slice(0, MAX_ROWS)) out.push(...st.all(t)); } finally { st.finalize(); }
   return out;
 }
+
+// The before and after pictures of each head given (src/pictures/run.ts), by the index on head.
+export type PictureRow = { id: number; repo: string; common: string; head: string; merge_base: string | null; state: string; why: string | null; selection: string | null; sides: string; pairs: string | null; kept: number };
+export function boardPictures(db: Database, a: { heads: string[] }): PictureRow[] {
+  const out: PictureRow[] = [];
+  const st = (() => { try { return db.prepare<PictureRow, [string]>("SELECT id, repo, common, head, merge_base, state, why, selection, sides, pairs, kept FROM pictures WHERE head = ? ORDER BY id DESC LIMIT 4"); } catch { return undefined; } })();
+  if (!st) return out;
+  try { for (const h of a.heads.slice(0, MAX_ROWS)) out.push(...st.all(h)); } finally { st.finalize(); }
+  return out;
+}

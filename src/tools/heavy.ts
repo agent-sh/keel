@@ -160,8 +160,9 @@ class Pool {
 
   // A slot for a command, given at once or when one frees; undefined when the
   // command is not heavy; "aborted" when the call was stopped while it waited.
-  async take(o: { session: string; who: Who; command: string; call?: string; signal?: AbortSignal }): Promise<Slot | "aborted" | undefined> {
-    const m = this.heavy(o.command);
+  // `as`: what a command costs that the patterns may not name (Keel's own heavy work).
+  async take(o: { session: string; who: Who; command: string; call?: string; signal?: AbortSignal; as?: Cost }): Promise<Slot | "aborted" | undefined> {
+    const m = this.heavy(o.command) ?? (o.as ? { pattern: "keel", cost: o.as, line: o.command.slice(0, 200) } : undefined);
     if (!m) return undefined;
     const key = `${o.session}:${o.call ?? `c${++this.n}`}:${++this.n}`;
     const pattern = m.pattern;
@@ -221,7 +222,7 @@ class Pool {
   // path or a name that is not the waiting session's to read.
   private holders(session: string): string[] {
     return [...this.held.values()].map((h) => {
-      const whose = h.who === "beside" ? (h.session === session ? "Keel's checks of this session's files" : "Keel's checks of an agent's files") : h.session === session ? "this session" : h.who === "agent" ? "an agent" : h.who === "owner" ? "the owner's terminal" : "another session";
+      const whose = h.who === "background" ? "Keel's pictures of a branch" : h.who === "beside" ? (h.session === session ? "Keel's checks of this session's files" : "Keel's checks of an agent's files") : h.session === session ? "this session" : h.who === "agent" ? "an agent" : h.who === "owner" ? "the owner's terminal" : "another session";
       return `${program(h.command)} (${whose})`;
     });
   }

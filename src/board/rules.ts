@@ -88,6 +88,18 @@ export type PairFact = {
   checks: { name: string; tests?: string[]; branch?: string }[]; error: string | null; at: number;
 };
 
+// The before and after pictures of the row's head (src/pictures/run.ts), as the board shows them: the run's state,
+// what differs, and up to a few of the pairs that differ (the rest are read by its id).
+export type PictureFact = {
+  // none: not taken yet (the head's repository names pictures and its branch changes the page); opening them takes them.
+  id: number; state: "none" | "queued" | "running" | "done" | "skipped" | "failed"; why: string | null; head: string; merge_base: string | null;
+  counts: { changed: number; unstable: number; new: number; gone: number; unread: number; same: number };
+  specs: string[];
+  sides: { before: { state: string; ms?: number | null; cpu_ms?: number | null; shots?: number; why?: string }; after: { state: string; ms?: number | null; cpu_ms?: number | null; shots?: number; why?: string } };
+  differ: { name: string; state: string; w?: number; h?: number; boxes?: { x: number; y: number; w: number; h: number }[] }[];
+  kept: boolean;
+};
+
 export type BoardRow = {
   id: string; session_id: string; parent_id: string; depth: number;
   title: string; type: string; model: string; state: string; created: number; ended: number | null;
@@ -103,6 +115,7 @@ export type BoardRow = {
   live: Live | null;            // null: no branch, or not landed
   work: Work | null;            // what its worktree changes; null: not read
   together: PairFact[] | null;  // null: no branch; the pairs it was checked in at its head
+  pictures?: PictureFact | null; // the before and after pictures of its head, when its repository names them
 };
 
 export type Board = {
@@ -394,6 +407,16 @@ function togetherWords(t: PairFact[] | null, full: boolean): string {
   return [...reds, green.length ? `green together with ${green.join(", ")}` : "", running.length ? `checking together with ${running.join(", ")}` : "", broken.length ? `not checked together with ${broken.join(", ")}: red on both sides alone, the setup or the base is broken` : ""].filter(Boolean).join(" · ");
 }
 
+function picturesWords(p: PictureFact | null | undefined): string {
+  if (!p || p.state === "skipped") return "";
+  if (p.state === "none") return "pictures not taken (taken when opened)";
+  if (p.state === "queued" || p.state === "running") return `pictures ${p.state}`;
+  if (p.state === "failed") return `pictures failed (${clip(p.why ?? "", 60)})`;
+  const c = p.counts, n = c.changed + c.new + c.gone, all = n + c.unstable + c.same + c.unread;
+  const shaky = c.unstable ? `, ${c.unstable} unstable` : "";
+  return n ? `pictures: ${n} of ${all} differ${shaky}` : `pictures: none of ${all} differs${shaky}`;
+}
+
 function queueWords(q: QueueFact | null, full: boolean): string {
   if (!q || (!q.current && q.state === "landed")) return "";
   return `queue ${q.state}${q.current ? "" : " (an older head)"}${q.why ? ` (${clip(q.why, full ? LINE_MAX : 60)})` : ""}`;
@@ -411,6 +434,7 @@ export function rowLine(r: BoardRow, full = false): string {
     landedWords(r, full),
     queueWords(r.queue, full),
     togetherWords(r.together, full),
+    picturesWords(r.pictures),
   ].filter(Boolean);
   return parts.join(" · ");
 }

@@ -72,6 +72,10 @@ const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => 
 // Before anything is claimed or opened: the daemon runs without the runtime's collector timer, and with
 // no secret in the environment it was started with (src/safety/closed-env.ts).
 if (!g.__keelSignals) (await import("./core/relaunch.ts")).startClean();
+// The scripted daemon of a pictures run: the same ids and clock in every run (src/core/fixed-world.ts).
+if (process.env.KEEL_PICTURES_FIXED && process.env.KEEL_SCRIPTED_PROVIDER === "1" && values["state-dir"]) {
+  (await import("./core/fixed-world.ts")).fixWorld(Number(process.env.KEEL_PICTURES_FIXED), values["state-dir"]);
+}
 const { startDaemon } = await import("./server/start.ts");
 // A daemon that could not start ends here, with what went wrong. Left alone it
 // serves nothing and stays: it holds the state folder, the modules it loaded

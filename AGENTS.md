@@ -425,6 +425,24 @@ under `~/.cache/keel-work/bun/research/`.
   it), to one that waits on its own at its next step, and of a finished one
   to its parent's failures notice (kind `check`, riding its next input): it
   never gives a finished agent new work. A green one says nothing.
+- A branch head that changes the page has before and after pictures, taken
+  when someone looks (`src/pictures/`): the Review panel, the tree review or a
+  work board card's pictures opening a head whose tree names them
+  (`.keel/pictures.json`: page folders, specs, a command, sizes, themes, the
+  harness) starts its one run, and Take again another. Nothing is told to the
+  agent's parent; the board's line says what it found. The fewest specs that
+  reach the changed files (by the test ids they render, through importers, or a
+  picture named after them; `select.ts`) run through the command on the merge
+  base with the head's harness and on the head, in the agent's sandbox, after a
+  heavy-pool slot that every other command goes before. The command runs with
+  `KEEL_PICTURES_FIXED`: this repository's scripted daemon then fixes its ids
+  and clock (`src/core/fixed-world.ts`) and each page's clock starts at the
+  daemon's (`test/e2e/isolate.ts`). A pair that still differs is checked
+  against a second run of the base with only the specs that took it; a pair
+  that moves only where the two base runs differ is unstable, never changed,
+  and a cell outside them is a change. Each side's result is kept in the row:
+  a restart goes on at the unfinished side. Only tests changed, or no page
+  file: no run.
 - A session's agent slots are its tree's and count the agents that work. An
   agent that waits on a wait of its own holds none. Its wake, and an agent
   asked for while every slot works, wait in line as owed and take the next

@@ -18,6 +18,14 @@
 import { test as base, type APIRequestContext } from "@playwright/test";
 import { stopStrays } from "./own-daemon.ts";
 import { isScratch } from "./scratch.ts";
+import { FIXED_ENV, seeded } from "../../src/core/fixed-world.ts";
+
+// A run of before and after pictures (src/pictures/run.ts) names its own instant: the daemon's ids and clock
+// are fixed from it (src/core/fixed-world.ts), the spec's random numbers are seeded by it, and each page's
+// clock starts at the daemon's own now and runs from there (the `page` fixture below), so two runs of one
+// commit draw the same times.
+const FIXED = Number(process.env[FIXED_ENV] ?? "") || 0;
+if (FIXED) Math.random = seeded(FIXED >>> 5);
 
 export * from "@playwright/test";
 
@@ -141,6 +149,14 @@ export const test = base.extend<{ daemonSettings: void; ownSessions: void; leftB
     },
     { scope: "worker", auto: true },
   ],
+  page: async ({ page, request }, use) => {
+    if (FIXED) {
+      const r = await request.get("/api/daemon", { timeout: 10_000 }).catch(() => null);
+      const d = r?.ok() ? await r.json() as { started_ms?: number; uptime_ms?: number } : {};
+      await page.clock.install({ time: d.started_ms != null && d.uptime_ms != null ? d.started_ms + d.uptime_ms : FIXED });
+    }
+    await use(page);
+  },
   // Set up first and looked at last, after the sessions went and the settings were put back.
   leftBehind: [
     async ({ request }, use, info) => {

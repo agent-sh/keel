@@ -5,7 +5,7 @@
 // quoted as its. The database is read on the read thread (src/board/facts.ts), git in processes of its
 // own, a few at a time; nothing waits on the loop. A board is kept for a few seconds, and what git said of
 // a pair of commits for as long as the daemon runs (a pair's answer never changes).
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
 import { checksOnTree, type ChecksOn } from "../automation/landing.ts";
@@ -13,9 +13,10 @@ import { namedFor, repoOf } from "../checks/ledger.ts";
 import { git, gitNames } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import { readsOf } from "../server/reads.ts";
-import type { AgentFact, Facts, PairCheckRow, TreeRun } from "./facts.ts";
+import type { AgentFact, Facts, PairCheckRow, PictureRow, TreeRun } from "./facts.ts";
 import { baseHolds } from "./held.ts";
-import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type PairFact, type Work } from "./rules.ts";
+import { FILE as PICTURES_FILE, readPictures } from "../pictures/config.ts";
+import { liveFrom, liveSha, pickReview, queueLanded, toLand, type Board, type BoardRow, type Change, type Deploy, type Landed, type PairFact, type PictureFact, type Work } from "./rules.ts";
 
 export type BoardDeps = {
   // The base a repository lands on, as a full ref (the landing queue's), or null when it has none.
@@ -97,6 +98,21 @@ export class WorkBoard {
     if (this.spans.size > PAIRS) this.spans.delete(this.spans.keys().next().value!);
     // (A git that failed or ran out of time is asked again next time.)
     p.then((c) => { if (c === undefined && this.spans.get(key) === p) this.spans.delete(key); }, () => this.spans.delete(key));
+    return p;
+  }
+
+  // Whether the commits of a branch change a file under some folders (the answer for a pair of commits never changes: kept).
+  private touched = new Map<string, Promise<boolean>>();
+  private touches(repo: string, base: string, head: string, folders: string[], by: number): Promise<boolean> {
+    const key = `${repo}\0${base}\0${head}\0${folders.join("\0")}`;
+    const kept = this.touched.get(key);
+    if (kept) return kept;
+    const p = this.git(repo, ["diff", "--quiet", "--no-renames", `${base}...${head}`, "--", ...folders], undefined, by).then((r) => {
+      if (r.code !== 0 && r.code !== 1) this.touched.delete(key);
+      return r.code === 1;
+    });
+    this.touched.set(key, p);
+    if (this.touched.size > PAIRS) this.touched.delete(this.touched.keys().next().value!);
     return p;
   }
 
@@ -208,6 +224,25 @@ export class WorkBoard {
       r.checks = checksOf(n, tree, tree ? runsOf.get(tree) ?? [] : []);
     }
 
+    // The before and after pictures of each head, by its repository (its main checkout or its common git directory).
+    const heads = [...new Set([...rows.values()].map((r) => r.head).filter((h): h is string => !!h))];
+    const pics = heads.length ? await reads.run("board.pictures", { heads }) as PictureRow[] : [];
+    for (const r of rows.values()) {
+      if (!r.head || !r.repo) continue;
+      const p = pics.find((x) => x.head === r.head && (x.repo === r.repo || x.common.startsWith(`${r.repo}/`) || x.common === r.repo));
+      if (p) r.pictures = pictureFact(p);
+    }
+    // A head with no run yet, in a repository that names pictures, whose branch changes its page: "none", taken
+    // when someone opens them (the card's pictures, the tree review's, the Review panel: src/pictures/run.ts).
+    const pagesOf = new Map<string, string[] | null>();
+    const pages = (repo: string) => {
+      if (!pagesOf.has(repo)) { let v: string[] | null = null; try { v = readPictures(readFileSync(join(repo, PICTURES_FILE), "utf8")).config?.pages ?? null; } catch {} pagesOf.set(repo, v); }
+      return pagesOf.get(repo)!;
+    };
+    await pool([...rows.values()].filter((r) => !r.pictures && r.head && r.repo && r.base && r.branch && pages(r.repo)), AT_ONCE, async (r) => {
+      if (await this.touches(r.repo!, r.base!, r.head!, pages(r.repo!)!, by)) r.pictures = noPictures(r.head!);
+    });
+
     // The latest review of each branch (never its own agent's or one it started), and its newest landing queue entry.
     for (const r of rows.values()) {
       if (!r.branch) continue;
@@ -282,7 +317,7 @@ function rowOf(a: AgentFact): BoardRow {
     checks: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
     review: null, reviews,
     landed: !branch ? null : remote ? { state: "unknown", why: "its branch is on another machine" } : !a.repo_root ? { state: "unknown", why: "no worktree record names its repository" } : null,
-    queue: null, live: null, work: null, together: branch ? [] : null,
+    queue: null, live: null, work: null, together: branch ? [] : null, pictures: null,
   };
 }
 
@@ -310,4 +345,23 @@ function checksOf(named: readonly { name: string; run: string; dir: string }[], 
   const by = new Map(named.map((c) => [c.name, c.dir]));
   const mine = runs.filter((r) => { const dir = by.get(r.name); return dir !== undefined && (dir === "*" || dir === r.dir); });
   return { state: "known", ...checksOnTree(named, mine) };
+}
+
+const noPictures = (head: string): PictureFact => ({
+  id: 0, state: "none", why: null, head, merge_base: null, counts: { changed: 0, unstable: 0, new: 0, gone: 0, unread: 0, same: 0 },
+  specs: [], sides: { before: { state: "none" }, after: { state: "none" } }, differ: [], kept: false,
+});
+
+function pictureFact(p: PictureRow): PictureFact {
+  const parse = <T>(t: string | null, none: T): T => { try { return t ? JSON.parse(t) as T : none; } catch { return none; } };
+  const pairs = parse<{ name: string; state: string; w?: number; h?: number; boxes?: PictureFact["differ"][number]["boxes"] }[]>(p.pairs, []);
+  const counts = { changed: 0, unstable: 0, new: 0, gone: 0, unread: 0, same: 0 };
+  for (const x of pairs) if (x.state in counts) counts[x.state as keyof typeof counts]++;
+  const sel = parse<{ specs?: { path: string }[] } | null>(p.selection, null);
+  const sides = parse<PictureFact["sides"]>(p.sides, { before: { state: "none" }, after: { state: "none" } });
+  return {
+    id: p.id, state: p.state as PictureFact["state"], why: p.why, head: p.head, merge_base: p.merge_base, counts,
+    specs: (sel?.specs ?? []).map((s) => s.path), sides, kept: !!p.kept,
+    differ: pairs.filter((x) => x.state === "changed" || x.state === "new" || x.state === "gone").slice(0, 4).map((x) => ({ name: x.name, state: x.state, w: x.w, h: x.h, boxes: x.boxes })),
+  };
 }

@@ -21,7 +21,7 @@ export type HeavyView = {
   quiet_freed?: number;
 };
 
-const WHO: Record<string, string> = { owner: "you", session: "session", agent: "agent" };
+const WHO: Record<string, string> = { owner: "you", session: "session", agent: "agent", background: "Keel, after the rest" };
 const gb = (mb: number) => `${(mb / 1024).toFixed(mb < 10_240 ? 1 : 0)} GB`;
 const ghost = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50 [&>svg]:size-3.5";
 

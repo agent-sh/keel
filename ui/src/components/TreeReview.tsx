@@ -12,6 +12,7 @@ import { usePhoneWidth } from "../lib/list-hold.ts";
 import { failed, onFeature, reportUnlessGone, scope } from "../lib/store.ts";
 import { decide, laneOf, readArea, readTree, type AreaDetail, type AreaHunk, type Decision, type TreeArea, type TreeBranch, type TreeOverlap, type TreeView } from "../lib/tree-review.ts";
 import { ago, cn } from "../lib/utils.ts";
+import { PicturesArea } from "./Pictures.tsx";
 
 const short = (b: string) => b.replace(/^keel\//, "");
 const sha = (s: string | null | undefined) => (s ? s.slice(0, 9) : "?");
@@ -363,6 +364,7 @@ function Branches({ view, lanes }: { view: TreeView; lanes: Lanes }) {
               {b.base_conflict && <span className="text-danger"> · conflicts with the base</span>}
               {b.error && <span className="text-danger"> · {b.error}</span>}
             </span>
+            {b.pictures && !(b.pictures.state === "skipped" && /^(no file of the page changed|only tests changed)$/.test(b.pictures.why ?? "")) && <div className="pl-4.5 pt-1"><PicturesArea fact={b.pictures} sessionId={b.session_id} repo={view.repo} testid="tree-pictures" /></div>}
           </li>
         ))}
       </ul>

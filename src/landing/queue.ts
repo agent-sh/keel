@@ -142,7 +142,8 @@ const NO_EDIT = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" };
 const MAX_MARKED = 2 * 1024 * 1024;
 type Sg = (args: string[], env?: Record<string, string>) => Promise<{ code: number; out: string; err: string }>;
 
-const newId = () => `lq-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+// (A UUIDv7's random part: the same each run under a fixed world, src/core/fixed-world.ts.)
+const newId = () => `lq-${Bun.randomUUIDv7().replace(/-/g, "").slice(-18)}`;
 const short = (b: string) => b.replace(/^refs\/(heads|remotes\/[^/]+)\//, "");
 const plural = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
 // A time limit as it is said: seconds under a minute, else whole minutes up.

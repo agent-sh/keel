@@ -6,6 +6,8 @@
 #   scripts/smoke.sh --keep ...           keep the run's folder (always kept when the run fails)
 #   scripts/smoke.sh --bin dist/keel ...  run a built binary instead of the sources
 #   scripts/smoke.sh --allow-network ...  where the kernel has no user namespaces (see below)
+#   scripts/smoke.sh --shots DIR ...      copy the run's screenshots to DIR at its end, green or not
+#   scripts/smoke.sh --installed ...      the dependencies are there already: no install
 #
 # One command starts a daemon of its own on the scripted provider
 # (src/providers/scripted.ts), runs the specs against it and stops it. The
@@ -34,13 +36,15 @@ TOP=$(cd "$(dirname "$0")/.." && pwd)
 
 if [ "${1:-}" != "__inside" ]; then
   # Stage one, in the caller's world: the folder, the clean environment, the namespaces.
-  net=1; keep=0; bin=""; args=()
+  net=1; keep=0; bin=""; shots=""; install=1; args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --allow-network) net=0 ;;
       --keep) keep=1 ;;
       --bin) bin=$(realpath "${2:?--bin takes the path of a built keel}"); shift ;;
-      -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      --shots) shots=$(realpath -m "${2:?--shots takes a folder}"); shift ;;
+      --installed) install=0 ;;
+      -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
       *) args+=("$1") ;;
     esac
     shift
@@ -52,15 +56,20 @@ if [ "${1:-}" != "__inside" ]; then
     echo "       --allow-network runs without them: no credentials, but traffic is not blocked." >&2
     exit 2
   fi
-  (cd "$TOP" && bun install --silent)
+  [ "$install" = 0 ] || (cd "$TOP" && bun install --silent)
   # Named as the specs know a scratch folder (several run only against paths that hold keel-work).
-  root=$(mktemp -d "${TMPDIR:-/tmp}/keel-work-smoke.XXXXXX")
+  # A pictures run (KEEL_PICTURES_FIXED, src/pictures/run.ts) gives each side a folder of its own as TMPDIR, the same
+  # path on every side: the run's folder is then named the same each time, and so is every path the page shows.
+  if [ -n "${KEEL_PICTURES_FIXED:-}" ] && [ -n "${TMPDIR:-}" ] && [ ! -e "$TMPDIR/keel-work-smoke.pictures" ]; then root="$TMPDIR/keel-work-smoke.pictures"; mkdir -m 700 "$root"
+  else root=$(mktemp -d "${TMPDIR:-/tmp}/keel-work-smoke.XXXXXX"); fi
   mkdir -p "$root/home/run" "$root/tmp"
   chmod 700 "$root/home/run"
   # Bun, Node and the system's tools only: no agent CLI or helper of the caller is on it.
   path="$(dirname "$(command -v bun)")"
   command -v node > /dev/null && path="$path:$(dirname "$(command -v node)")"
   path="$path:/usr/local/bin:/usr/bin:/bin"
+  dated=()
+  if [ -n "${KEEL_PICTURES_FIXED:-}" ]; then at="@$((KEEL_PICTURES_FIXED / 1000)) +0000"; dated=(GIT_AUTHOR_DATE="$at" GIT_COMMITTER_DATE="$at"); fi
   clean=(env -i
     PATH="$path" HOME="$root/home" TMPDIR="$root/tmp" LANG="${LANG:-C.UTF-8}" TERM="${TERM:-dumb}"
     KEEL_SMOKE_ROOT="$root" KEEL_BIN="$bin"
@@ -68,6 +77,12 @@ if [ "${1:-}" != "__inside" ]; then
     KEEL_KEYRING_SERVICE=keel-scratch-empty KEEL_CRED_GET=/bin/false
     DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR="$root/home/run"
     KEEL_DESKTOP_NOTIFY=off
+    # The sizes and themes each screenshot is taken at (test/e2e/shots.ts), when the caller names them.
+    KEEL_SHOT_SIZES="${KEEL_SHOT_SIZES:-}" KEEL_SHOT_THEMES="${KEEL_SHOT_THEMES:-}"
+    # A pictures run's instant: the scripted daemon's ids and clock are fixed from it (src/core/fixed-world.ts).
+    KEEL_PICTURES_FIXED="${KEEL_PICTURES_FIXED:-}"
+    # and every commit a spec makes is dated by it, so the same commit has the same id each time.
+    "${dated[@]}"
     # Read-only stores of the caller: the browsers Playwright installed and Bun's package cache.
     PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
     BUN_INSTALL_CACHE_DIR="${BUN_INSTALL_CACHE_DIR:-$HOME/.bun/install/cache}"
@@ -100,6 +115,7 @@ if [ "${1:-}" != "__inside" ]; then
   rc=0
   wait "$lead" || rc=$?
   [ -z "$(left)" ] || sweep
+  if [ -n "$shots" ]; then mkdir -p "$shots"; find "$root/shots" -maxdepth 1 \( -name '*.png' -o -name 'shots.tsv' \) -exec cp -t "$shots" {} + 2> /dev/null || true; fi
   if [ "$rc" = 0 ] && [ "$keep" = 0 ]; then rm -rf -- "$root"; else echo "smoke: the run's folder is kept at $root (daemon.log, shots, home/.cache/keel-work/bun/e2e-out)"; fi
   exit "$rc"
 fi
@@ -116,6 +132,9 @@ free() { ! (exec 3<> "/dev/tcp/127.0.0.1/$1") 2> /dev/null; }
 # port that was free can be taken before the daemon binds it.
 port=0
 for _ in 1 2 3 4 5 6 7 8; do port=$((20000 + RANDOM % 12000)); free "$port" && break; done
+# A pictures run takes the same port each time when it is free (the page can show its address): in a network
+# of its own every port is.
+if [ -n "${KEEL_PICTURES_FIXED:-}" ] && free 24680; then port=24680; fi
 export KEEL_DEV_DIR="$root/dev" KEEL_SCRIPTED_PROVIDER=1 KEEL_DEFAULT_MODEL=scripted:stand-in
 bash scripts/dev.sh "$port" > "$root/daemon.log" 2>&1 &
 launcher=$!

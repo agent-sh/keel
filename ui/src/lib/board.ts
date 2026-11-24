@@ -1,6 +1,6 @@
 // The work board of a session's tree (src/board/board.ts): read when the Board panel shows the
-// session, again when an agent of its tree changes state, its repository's landing queue moves or a
-// pair of its branches was checked together,
+// session, again when an agent of its tree changes state, its repository's landing queue moves, a
+// pair of its branches was checked together or a branch's pictures moved on,
 // and on the owner's Refresh. Nothing is read while the panel is closed.
 import { useEffect, useSyncExternalStore } from "react";
 import type { Board, BoardRow } from "../../../src/board/rules.ts";
@@ -59,7 +59,7 @@ export function useBoard(id: string): Board | undefined {
 
 onFeature({
   frame(f) {
-    if ((f.name === "landing" || f.name === "pairs") && f.session_id && shown.has(f.session_id)) loadBoard(f.session_id, true).catch(reportUnlessGone);
+    if ((f.name === "landing" || f.name === "pairs" || f.name === "pictures") && f.session_id && shown.has(f.session_id)) loadBoard(f.session_id, true).catch(reportUnlessGone);
   },
   reconnect() {
     for (const id of shown.keys()) loadBoard(id, true).catch(reportUnlessGone);

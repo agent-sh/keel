@@ -74,6 +74,7 @@ import { overviewRoutes } from "./overview.ts";
 import { stateRoutes } from "./state.ts";
 import { shellRoutes } from "./shell.ts";
 import { checkRoutes } from "./checks.ts";
+import { pictureRoutes } from "./pictures.ts";
 import { egressRoutes } from "./egress.ts";
 import { pressRoutes } from "./presses.ts";
 import { healthRoutes } from "./health.ts";
@@ -111,6 +112,7 @@ const modules: Record<string, RouteModule> = {
   boardRoutes, // after landingRoutes: the board reads the base the queue lands on
   treeReviewRoutes, // after boardRoutes: the tree review reads the board, the forecast and the queue
   lanePlanRoutes, // after overlapRoutes: a lane's branch is read through its forecast's bases
+  pictureRoutes, // after boardRoutes: a run's end makes its tree's board old
   reviewRoutes,
   prReviewRoutes, // after reviews: it reads the reviewer model they keep; after permissions: its sessions are read-only
   turnRoutes,

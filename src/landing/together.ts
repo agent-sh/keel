@@ -108,7 +108,8 @@ const KEEP_ROWS = 5_000;
 // What a pass waits after the forecast's, so the passes of one step make one.
 const SETTLE_MS = 500;
 const hashOf = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
-const newId = () => `pc-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+// (A UUIDv7's random part: the same each run under a fixed world, src/core/fixed-world.ts.)
+const newId = () => `pc-${Bun.randomUUIDv7().replace(/-/g, "").slice(-18)}`;
 const short = (b: string) => b.replace(/^refs\/(heads|remotes\/[^/]+)\//, "");
 
 // The process groups of the checks: killed with the daemon.

@@ -32,11 +32,12 @@
 // session's own command goes before an agent's, and an agent's before a check
 // Keel runs by itself beside an agent ("beside", src/checks/beside-run.ts);
 // each kind keeps its order. A session's command can still wait for the
-// agents' commands that run.
+// agents' commands that run. Work Keel starts for a later look (the pictures
+// of a branch, src/pictures/run.ts) goes after every command in line.
 import { basename } from "node:path";
 import type { Simple } from "../safety/shell.ts";
 
-export type Who = "owner" | "session" | "agent" | "beside";
+export type Who = "owner" | "session" | "agent" | "beside" | "background";
 // What a command is counted at: the cores and the memory it takes at its peak.
 export type Cost = { cores: number; memory_mb: number };
 // A pattern with its own cost; a pattern given as text costs `cost`.
@@ -229,7 +230,7 @@ export function room(r: Reading, held: Held[], cfg: PoolConfig, gone: Gone[] = [
   return { slots, free, limit, busy, cause, why };
 }
 
-const RANK: Record<Who, number> = { owner: 0, session: 1, agent: 2, beside: 3 };
+const RANK: Record<Who, number> = { owner: 0, session: 1, agent: 2, beside: 3, background: 4 };
 // How many in line go before one of this kind asking now.
 export const before = (line: Waiting[], who: Who) => line.filter((x) => RANK[x.who] <= RANK[who]).length;
 // The line in the order slots go: a session's own command before an agent's,

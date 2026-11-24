@@ -61,7 +61,8 @@ import { privateHost } from "./hosts.ts";
 import { defaultStateDir } from "./paths.ts";
 import { chunks, chunksUntil, readText } from "./proc.ts";
 
-export type GitResult = { code: number; out: string; err: string };
+// `bytes`: the output as git wrote it, for a call with `raw` (blobs: `out` is then empty).
+export type GitResult = { code: number; out: string; err: string; bytes?: Uint8Array };
 export type GitOpts = {
   // "repo" (the default): the repository `dir` is in, through its view.
   // "own": a git directory of Keel's own (`gitDir`), with `workTree` when it has one.
@@ -76,6 +77,8 @@ export type GitOpts = {
   signal?: AbortSignal;
   // Only reads: no optional lock is taken (a status never rewrites the index).
   read?: boolean;
+  // The output is bytes, not text (`cat-file --batch` of blobs): in `bytes`.
+  raw?: boolean;
   // The call puts files into a work tree (the fill of a new worktree, the
   // checkout of a restore): in a partial clone it may fetch the objects the
   // repository was promised. Through the view that fetch knows the remote's
@@ -605,6 +608,12 @@ function plan(dir: string, args: string[], o: GitOpts): Plan {
 
 const bytes = (input: GitOpts["input"]) => (input === undefined ? "ignore" as const : typeof input === "string" ? new TextEncoder().encode(input) : input);
 
+async function readBytes(s: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  for await (const c of chunks(s)) parts.push(c);
+  return Buffer.concat(parts);
+}
+
 // git in `dir`. Never throws for a failed command: the code says.
 export async function git(dir: string, args: string[], o: GitOpts = {}): Promise<GitResult> {
   let p: Plan;
@@ -621,7 +630,10 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
   } catch (e) {
     return { code: 127, out: "", err: `git could not start: ${(e as Error).message}` };
   }
-  const [out, err, code] = await Promise.all([readText(proc.stdout as ReadableStream<Uint8Array>), readText(proc.stderr as ReadableStream<Uint8Array>), proc.exited]);
+  const stdout = proc.stdout as ReadableStream<Uint8Array>;
+  const [got, err, code] = await Promise.all([o.raw ? readBytes(stdout) : readText(stdout), readText(proc.stderr as ReadableStream<Uint8Array>), proc.exited]);
+  const out = typeof got === "string" ? got : "";
+  if (typeof got !== "string") return { code: proc.signalCode ? -1 : code, out, err, bytes: got };
   if (p.pushTo) try { pushed?.({ to: p.pushTo, ok: code === 0, err }); } catch {} // a ledger row never fails the push
   if (code === 0 && p.after) {
     // The new worktree's files, as `git worktree add` itself puts them there.

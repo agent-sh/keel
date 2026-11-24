@@ -103,6 +103,9 @@
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --series-3: #1baf7a;
+  /* The outline of a changed area on a before and after picture (src/pictures): no color of the page's own,
+     seen over a light and a dark picture alike. */
+  --pic-mark: oklch(0.6 0.26 345);
 
   /* A branch's mark in the tree review (ui/src/components/TreeReview.tsx), in
      the order its branches are listed; made of the tokens above, so each theme
@@ -201,6 +204,7 @@
   --series-1: #3987e5;
   --series-2: #d95926;
   --series-3: #199e70;
+  --pic-mark: oklch(0.7 0.24 345);
 }
 
 @theme inline {
@@ -220,6 +224,7 @@
   --color-accent-soft: var(--accent-soft);
   --color-accent-ink: var(--accent-ink);
   --color-brass: var(--brass);
+  --color-pic-mark: var(--pic-mark);
   --text-color-brass: var(--brass-ink);
   --color-brass-soft: var(--brass-soft);
   --color-danger: var(--danger);

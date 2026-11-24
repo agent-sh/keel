@@ -1,19 +1,37 @@
-import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { relative } from "node:path";
 
 export const SHOTS = process.env.KEEL_SHOTS ?? `${process.env.HOME}/.cache/keel-work/bun/shots`;
 mkdirSync(SHOTS, { recursive: true });
 
-// A screenshot of the current page in light and dark.
+// A screenshot of the current page in light and dark. A run that names sizes (KEEL_SHOT_SIZES, such as
+// "1920x1040,390x844": the before and after pictures of src/pictures) takes each at every size, the
+// spec's own first, named <name>-<W>x<H>-<theme>.png, and gives the page its own size back after.
+// KEEL_SHOT_THEMES ("light,dark") names the themes.
 export async function shoot(page: Page, name: string) {
-  for (const theme of ["light", "dark"] as const) {
-    await page.evaluate((t) => {
-      document.documentElement.classList.add("theme-switch");
-      document.documentElement.classList.toggle("dark", t === "dark");
-    }, theme);
-    await page.waitForTimeout(60);
-    await page.screenshot({ path: `${SHOTS}/${name}-${theme}.png` });
+  const themes = (process.env.KEEL_SHOT_THEMES || "light,dark").split(",").filter((t): t is "light" | "dark" => t === "light" || t === "dark");
+  const sizes = (process.env.KEEL_SHOT_SIZES ?? "").split(",").map((s) => /^(\d+)x(\d+)$/.exec(s.trim())).filter((m): m is RegExpExecArray => !!m).map((m) => ({ width: Number(m[1]), height: Number(m[2]) }));
+  const was = page.viewportSize();
+  const own = sizes.findIndex((s) => s.width === was?.width && s.height === was?.height);
+  const order = own > 0 ? [sizes[own]!, ...sizes.filter((_, i) => i !== own)] : sizes;
+  // (Two frames after a resize: the page has laid itself out at the new size.)
+  const settled = () => page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+  for (const size of order.length ? order : [null]) {
+    if (size && (size.width !== page.viewportSize()?.width || size.height !== page.viewportSize()?.height)) { await page.setViewportSize(size); await settled(); }
+    for (const theme of themes) {
+      await page.evaluate((t) => {
+        document.documentElement.classList.add("theme-switch");
+        document.documentElement.classList.toggle("dark", t === "dark");
+      }, theme);
+      await page.waitForTimeout(60);
+      const file = `${name}${size ? `-${size.width}x${size.height}` : ""}-${theme}.png`;
+      await page.screenshot({ path: `${SHOTS}/${file}` });
+      // (Which spec took it: a pictures run takes the base again with only the specs whose pictures differ.)
+      if (sizes.length) appendFileSync(`${SHOTS}/shots.tsv`, `${file}\t${relative(process.cwd(), test.info().file)}\n`);
+    }
   }
+  if (was && order.length && (was.width !== page.viewportSize()?.width || was.height !== page.viewportSize()?.height)) { await page.setViewportSize(was); await settled(); }
   await page.evaluate(() => document.documentElement.classList.remove("theme-switch"));
 }
 
