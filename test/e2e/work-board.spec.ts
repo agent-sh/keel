@@ -29,7 +29,8 @@ test("the work board keeps each agent's branch, checks, review, landed and live 
   const repo = join(top, "repo");
   mkdirSync(repo, { recursive: true });
   git(repo, "init", "-q", "-b", "main");
-  writeFileSync(join(repo, "notes.md"), Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+  writeFileSync(join(repo, "notes.md"), Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n") + `\nrun ${Date.now()}\n`);
+  // (The line makes the files of each run its own: a check that passed on the same files in an earlier run on this daemon is answered from the ledger, not run.)
   writeFileSync(join(repo, "check.sh"), "echo checking; grep -q 'line 1' notes.md\n");
   mkdirSync(join(repo, ".keel"));
   writeFileSync(join(repo, ".keel/checks.json"), JSON.stringify({ checks: { notes: "sh check.sh" }, land: { checks: ["notes"], after: "printf '%s\\n' \"$KEEL_LANDED\" >> ../after.log" } }));
