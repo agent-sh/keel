@@ -1082,34 +1082,38 @@ test("a memory block goes only to the call it was asked for, and never to a prog
 test("a kind of tool call the store has nothing for is asked only now and then, unwaited; one fact and it is asked in full again", () => inWorld("quiet", async (w, st, dir) => {
   const s = w.session();
   const asked = (id: string) => st.calls("pre-tool").filter((l) => l.includes(id)).length;
+  // A call of a quiet kind is asked beside its tool and not waited for, so the stand-in's log
+  // reaches a count a moment after the call returns: wait for the count, then it must be exactly it.
+  // (A call that is not asked adds nothing: the count is then checked at once, after the one before it.)
+  const asks = async (id: string, n: number) => { await until(() => asked(id) >= n); expect(asked(id)).toBe(n); };
   // Three shell commands answered with nothing: the kind is quiet.
   for (let i = 0; i < 3; i++) await w.run(s, "touch plain");
-  expect(asked(s)).toBe(3);
+  await asks(s, 3);
   // Then one call in two is asked, and the result of a change is not held for it.
   for (let i = 0; i < 4; i++) await w.run(s, "touch plain");
-  expect(asked(s)).toBe(5);
+  await asks(s, 5);
   expect(w.tacit.stats().tools).toMatchObject({ quiet_skipped: 2, quiet_asked: 2 });
   await until(() => w.tacit.stats().quiet[0]?.quiet === 5);
   expect(w.tacit.stats().quiet).toEqual([{ kind: "shell", quiet: 5 }]);
   // The session's first call of another command is asked (a rule tied to `git push` comes with
   // the first one), whatever the count; the same command again is not.
   await w.run(s, "git push origin");
-  expect(asked(s)).toBe(6);
+  await asks(s, 6);
   await w.run(s, "git push origin");
-  expect(asked(s)).toBe(6);
+  await asks(s, 6);
   // A command that goes on in other words is another topic (a rule tied to `git push origin x` is
   // not one tied to `git push origin main`): the first of each is asked.
   await w.run(s, "git push origin main"); // the one call in two the count asks
-  expect(asked(s)).toBe(7);
+  await asks(s, 7);
   await w.run(s, "git push origin x");
-  expect(asked(s)).toBe(8);
+  await asks(s, 8);
   // A new session's first call of the kind is asked; so is a call that names the store.
   const t = w.session();
   await w.run(t, "touch plain");
-  expect(asked(t)).toBe(1);
+  await asks(t, 1);
   await w.run(t, "touch plain");
   await w.run(t, "tacit fact some-name");
-  expect(asked(t)).toBe(2);
+  await asks(t, 2);
   // Another kind is asked in full, its own count.
   await w.say(t, "edit tools=g5");
   expect(w.names(w.last(t))).toContain("rule-kw5");
@@ -1122,7 +1126,7 @@ test("a kind of tool call the store has nothing for is asked only now and then, 
   const before = asked(t);
   await w.run(t, "touch plain");
   await w.run(t, "touch plain");
-  expect(asked(t)).toBe(before + 2);
+  await asks(t, before + 2);
   // How each kind answered is kept: a daemon that starts again goes on from it.
   await w.run(t, "touch plain");
   const again = new Tacit(w.store, w.bus, { capture: () => ({}) } as any, st.bin, SPEED, { quietAfter: 3, sampleEvery: 2 });
