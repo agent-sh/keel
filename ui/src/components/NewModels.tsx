@@ -59,7 +59,7 @@ export function NewModelNews() {
     <button type="button" data-testid="new-model-news" onClick={() => navigate({ name: "settings", section: "models" })}
       className="mt-2 flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-left text-caption text-muted hover:bg-hover hover:text-fg">
       <Sparkles className="size-3.5 shrink-0 text-accent" />
-      <span className="min-w-0 truncate">{n === 1 ? <><b className="font-medium text-fg">{first.name}</b> is new on {first.provider}</> : `${n} new models: ${first.name} and ${n - 1} more`}. Try it.</span>
+      <span className="min-w-0 truncate max-md:whitespace-normal max-md:break-words">{n === 1 ? <><b className="font-medium text-fg">{first.name}</b> is new on {first.provider}</> : `${n} new models: ${first.name} and ${n - 1} more`}. Try it.</span>
     </button>
   );
 }
@@ -92,7 +92,7 @@ function NewModelCard({ m, roles, metrics, reload }: { m: Listed; roles: Role[];
     <section data-testid="new-model" data-model={m.id} data-trial={t?.state ?? "none"} className="rounded-lg border border-line bg-raised p-4 shadow-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="rounded-xs bg-accent-soft px-1.5 text-micro font-medium uppercase tracking-wide text-accent-ink">New</span>
-        <h3 className="min-w-0 truncate text-base font-medium" data-testid="new-model-name">{m.name}</h3>
+        <h3 className="min-w-0 truncate text-base font-medium max-md:whitespace-normal max-md:break-words" data-testid="new-model-name">{m.name}</h3>
         <span className="text-caption text-faint">{m.provider} · {m.unlisted ? "no longer in its listing" : `listed ${ago(m.first_seen) === "now" ? "just now" : `${ago(m.first_seen)} ago`}`}</span>
       </div>
       <p className="mt-1 text-caption text-muted" data-testid="new-model-facts">

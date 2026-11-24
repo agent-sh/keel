@@ -216,5 +216,60 @@ for (const size of SIZES) {
         await drop(request, ...ids.reverse());
       }
     });
+
+    test("the new-model card on the home and in Settings > Models reads whole and is pressed by a finger", async ({ page }) => {
+      const now = Date.now();
+      const interval = (estimate: number) => ({ estimate, lo: estimate * 0.9, hi: estimate * 1.1, n: 12, method: "bootstrap" });
+      const metrics = { cost_usd: { label: "Cost per turn", unit: "usd" }, turn_ms: { label: "Time per turn", unit: "ms" } };
+      const model = (id: string, extra: Record<string, unknown>) => ({
+        id: `scripted:${id}`, provider: "a-provider-with-a-long-name", model: id, name: `Scripted ${id}`, context: 1_000_000, output: 64_000, efforts: ["low", "medium", "high", "xhigh"],
+        price: { input: 1.25, output: 10 }, billing: "api", first_seen: now - 3_600_000, ...extra,
+      });
+      const ended = {
+        id: "e1", role: "builder", state: "stopped", started_ms: now - 7_200_000, stopped_ms: now - 600_000, stop_reason: "the trial ran its length",
+        decision: { verdict: "keep", text: "It cost less per turn and took no longer: keep it as the builder, within what these trees show." },
+        sessions: [{ arm: "a", n: 6 }, { arm: "b", n: 6 }], per_arm: 6, arms: ["a", "b"],
+        report: {
+          arms: [{ arm: "a", clusters: 6, units: 40, metrics: { cost_usd: interval(0.42), turn_ms: interval(5200) } }, { arm: "b", clusters: 6, units: 38, metrics: { cost_usd: interval(0.31), turn_ms: interval(4900) } }],
+          effects: [{ metric: "cost_usd", diff: { ...interval(-0.11), significant: true }, better: true }, { metric: "turn_ms", diff: { ...interval(-300), significant: false }, better: null }],
+        },
+      };
+      const body = { roles: ["reader", "small", "builder"], metrics, models: [
+        model("a-model-with-a-rather-long-name-for-a-phone-1-pro-max", { trial: ended }),
+        model("plain-model", { price: undefined, refused: { builder: "plain-model lists no price, so the dollars an agent on it spends could not be counted" } }),
+      ] };
+      await page.route("**/api/models/new*", (route) => (route.request().method() === "GET" ? route.fulfill({ json: body }) : route.fallback()));
+      await page.goto("/");
+      const news = page.getByTestId("new-model-news");
+      await expect(news).toBeVisible();
+      // The line says all it says: it is not cut at the page's edge.
+      await inside(page, news);
+      expect(await news.evaluate((el) => [...el.querySelectorAll<HTMLElement>("span")].some((s) => s.scrollWidth > s.clientWidth + 1)), "the home's line is cut off").toBe(false);
+      await noSideScroll(page);
+      await shoot(page, `phone-surfaces-06-new-model-home-${size.width}`);
+      await news.tap();
+      const cards = page.getByTestId("new-models");
+      await expect(cards.getByTestId("new-model")).toHaveCount(2);
+      await noSideScroll(page);
+      for (const card of await cards.getByTestId("new-model").all()) {
+        await card.scrollIntoViewIfNeeded();
+        await inside(page, card.getByTestId("new-model-name").locator("xpath=.."));
+        expect(await small(card), "every control of the card is a finger's target").toEqual([]);
+        // Nothing the card says is cut off without a way to read it whole.
+        const cut = await card.evaluate((el) => [...el.querySelectorAll<HTMLElement>("h3, p, span")].filter((e) => !e.closest('[data-testid="new-model-table"]') && getComputedStyle(e).textOverflow === "ellipsis" && e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent?.slice(0, 40)));
+        expect(cut, "words cut off in the card").toEqual([]);
+        // A part of it that scrolls sideways is the table, and nothing else.
+        const wide = await card.evaluate((el) => { const c = el.getBoundingClientRect(); return [...el.querySelectorAll<HTMLElement>("*")].filter((e) => !e.closest('[data-testid="new-model-table"]') && e.getBoundingClientRect().right > c.right + 0.5).map((e) => e.dataset.testid ?? e.tagName); });
+        expect(wide, "parts of the card past its edge").toEqual([]);
+      }
+      const first = cards.getByTestId("new-model").first();
+      await first.scrollIntoViewIfNeeded();
+      await shoot(page, `phone-surfaces-07-new-model-card-${size.width}`);
+      // The result is a table that scrolls inside the card, which the page does not.
+      const table = first.getByTestId("new-model-table");
+      await expect(table).toBeVisible();
+      await inside(page, table);
+      await noSideScroll(page);
+    });
   });
 }
