@@ -541,6 +541,41 @@ test("a call waiting for approval says so, closed, and asks for no output", asyn
   await request.delete(`/api/sessions/${session.id}`);
 });
 
+test("a write or an edit waiting for approval shows its tool and path, and its lines only on the card", async ({ page, request }) => {
+  const ws = join(ROOT, `work-wait-edit-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  writeFileSync(join(ws, "notes.md"), "# notes\n");
+  const calls = [{ name: "Write", input: { file_path: join(ws, "retry.ts"), content: "export const retryLimit = 3;\n" } }, { name: "Edit", input: { file_path: join(ws, "notes.md"), old_string: "# notes", new_string: "# notes v2" } }];
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: ws } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  const card = page.getByTestId("approval");
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  const write = page.locator('[data-testid="tool-call"][data-tool="Write"]');
+  await expect(write).toHaveAttribute("data-state", "waiting");
+  // The step line is the tool, the waiting mark and the path. The lines are on the card, once.
+  await expect(write.locator(".k-line-what")).toHaveText("retry.ts");
+  await expect(write.getByTestId("small-change")).toHaveCount(0);
+  await expect(write).not.toContainText("retryLimit");
+  await expect(card).toContainText("retryLimit");
+  await shoot(page, "work-15-waiting-write");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shoot(page, "work-15-waiting-write-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await card.getByRole("button", { name: /Allow once/i }).click();
+  // Done, the step line shows the lines it wrote as before, and the next call waits the same way.
+  await expect(write).toHaveAttribute("data-state", "ok");
+  await expect(write.getByTestId("small-change")).toContainText("retryLimit");
+  const edit = page.locator('[data-testid="tool-call"][data-tool="Edit"]');
+  await expect(card).toContainText("notes v2", { timeout: 60_000 });
+  await expect(edit.locator(".k-line-what")).toHaveText("notes.md");
+  await expect(edit.getByTestId("small-change")).toHaveCount(0);
+  await card.getByRole("button", { name: /Allow once/i }).click();
+  await expect(edit.getByTestId("small-change")).toContainText("notes v2");
+  await request.delete(`/api/sessions/${session.id}`);
+});
+
 test("when more than one call of a step waits, each line names its call", async ({ page, request }) => {
   const long = "rm -rf second-build-output-folder-with-a-long-name another-folder-that-goes-on";
   const calls = [{ name: "Bash", input: { command: "rm -rf first-out" } }, { name: "Bash", input: { command: long } }];

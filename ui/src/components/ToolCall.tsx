@@ -265,7 +265,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
   const changed = state === "ok" || state === "running" || state === "live" || state === "waiting";
   // A small change shows its lines under the closed line, as a failure shows its reason.
-  const small = useMemo(() => (!open && !peek && change && changed ? smallChange(use) : null), [open, peek, change, changed, use]);
+  // (Not while its approval card is open: the card carries the lines, the call's line says the tool and the path.)
+  const small = useMemo(() => (!open && !peek && change && changed && state !== "waiting" ? smallChange(use) : null), [open, peek, change, changed, state, use]);
   return (
     <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-quote-from={`the ${use.name} call`} data-quote-out={`the output of ${use.name}`} data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined}>
       <Collapsible.Trigger className="k-line" title={isShell && input.description ? `The model's note: ${input.description}` : undefined}>
@@ -287,7 +288,8 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="warn" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
           {/* While its approval card is open the card carries what is asked: the line says only that it waits. */}
           {/* (When more than one call of its step waits, each line names its call, trimmed: it matches its card.) */}
-          {(state !== "waiting" || named) && <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{state === "waiting" && what.length > NAMED_CHARS ? `${what.slice(0, NAMED_CHARS).trimEnd()}…` : what}</span>}
+          {/* (A change's line keeps its path while its card is open: the card shows the lines, not where they go.) */}
+          {(state !== "waiting" || named || change) && <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{state === "waiting" && !change && what.length > NAMED_CHARS ? `${what.slice(0, NAMED_CHARS).trimEnd()}…` : what}</span>}
         </span>
         <span className="k-line-end">
           {(more > 0 || (plan && plan.length > 0) || (change && changed) || nested.length > 0 || shell.background || shell.session) && <Apart />}
