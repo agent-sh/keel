@@ -235,6 +235,42 @@ export function endpoint(c: McpServerConfig): string {
   return [basename(c.command ?? ""), ...(c.args ?? [])].join(" ");
 }
 
+// A server as the API shows it: what it is, with the values that make it someone's left out. A password in the
+// address, a query value that is a key or a token, an argument that is a key, a token or a name's value
+// (`--api-key KEY`, `TOKEN=value`). The file itself is the owner's alone (credentials.ts, Keel's own files).
+const SENSITIVE = /(?:key|token|secret|pass(?:word|wd)?|auth|sig(?:nature)?|credential|bearer|cookie|session)/i;
+const KEPT = "***";
+// A value the owner has not filled in (`${user_config.token}`, `$TOKEN`) is a name, not a secret.
+const placeholder = (v: string) => /^\$\{?[A-Za-z_][\w.]*\}?$/.test(v);
+// A value that looks like a token whatever it is called: long, letters and digits mixed, no spaces.
+const tokenLike = (v: string) => v.length >= 20 && !v.startsWith("/") && !v.startsWith("./") && /^[A-Za-z0-9+/=_~.-]+$/.test(v) && /[A-Za-z]/.test(v) && /\d/.test(v);
+export function maskedUrl(url: string): string {
+  const text = url.trim();
+  try {
+    const u = new URL(text);
+    if (u.password) u.password = KEPT;
+    for (const [k, v] of [...u.searchParams]) if (!placeholder(v) && (SENSITIVE.test(k) || tokenLike(v))) u.searchParams.set(k, KEPT);
+    return u.toString();
+  } catch {
+    return text.replace(/(:\/\/[^:/@\s]+:)[^@\s]+@/, `$1${KEPT}@`).replace(/([?&][^=&\s]*(?:key|token|secret|pass|auth|sig)[^=&\s]*=)[^&\s]+/gi, `$1${KEPT}`);
+  }
+}
+export function maskedArgs(words: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    const eq = /^(-{0,2}[A-Za-z_][\w.-]*)=(.*)$/s.exec(w);
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(w)) out.push(maskedUrl(w));
+    else if (eq) out.push(!placeholder(eq[2]!) && (SENSITIVE.test(eq[1]!) || tokenLike(eq[2]!)) ? `${eq[1]}=${KEPT}` : w);
+    else if (/^--?[A-Za-z][\w-]*$/.test(w) && SENSITIVE.test(w) && i + 1 < words.length && !words[i + 1]!.startsWith("-") && !placeholder(words[i + 1]!)) { out.push(w, KEPT); i++; }
+    else out.push(w);
+  }
+  return out;
+}
+export const maskedServer = (c: McpServerConfig): McpServerConfig => ({ ...c, ...(c.url ? { url: maskedUrl(c.url) } : {}), ...(c.args ? { args: maskedArgs(c.args) } : {}) });
+// What a list of servers shows of one: where it is, written as it is called.
+export const maskedTarget = (c: McpServerConfig): string => (c.url ? maskedUrl(c.url) : maskedArgs([c.command ?? "", ...(c.args ?? [])]).join(" "));
+
 // Who the server acts as: its environment, headers and the credentials it
 // names. Kept private: a keyed hash (the key lives only in this process), so
 // a low-entropy value such as an account letter cannot be read back from it.

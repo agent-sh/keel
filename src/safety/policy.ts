@@ -3,7 +3,8 @@
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
-import { credentialAt, homeOf, storesSaid, storesUnder, type Credential } from "./credentials.ts";
+import { shellCredentialReads, type DiskLook } from "./credential-reads.ts";
+import { credentialAt, homeOf, placesOf, type Credential } from "./credentials.ts";
 import type { Looked } from "./looked.ts";
 import { RULE_WORDS, codeGiven, laid, risksAt } from "./risk.ts";
 import type { PartRisk } from "./own-places.ts";
@@ -510,6 +511,9 @@ export type Facts = {
   // The credential a path is or is in (credentials.ts), as named and where it lands: the gate's, with Keel's own
   // folders. Without it the path as named is read against the home's stores and the names alone.
   credential?: (path: string) => Credential | null;
+  // What the disk adds to a command's words about credentials: the files named like them in a folder it searches,
+  // the files a wildcard of it matches (credential-reads.ts).
+  look?: DiskLook;
   // The session is an agent another session started: it reads no credential, in any mode.
   agent?: true;
   // Why a file (where it lands) is in Keel's own state folder, which no session's tool writes in any mode; nothing
@@ -558,14 +562,14 @@ export function decide(c: CallClass, f: Facts): Decision {
     // refused; the owner's sessions ask the owner, one read at a time (Full auto flags it and runs it). What such a
     // read returns is kept from every model by the secrets vault (the gate gives it the file's values first).
     const cred = credentialIn(c.paths ?? [], f);
-    if (cred && f.agent) return credentialRead(cred.what, f);
+    if (cred && f.agent) return credentialRead(cred.what, f, "it reads", cred.api);
     if (f.sandboxed && f.shown) for (const p of c.paths ?? []) {
       const v = f.shown(p);
       if (v.shown) continue;
       if (f.mode === "full-auto") return { deny: `Refused: ${v.why.replace(/\.$/, "")}. ${CONFINED} They read only what its commands can read. Say what you wanted it for and go on with the rest.` };
       return onlyOwner(v.why, v.store ? "a credential store or one of Keel's own files" : "outside what the sandbox shows");
     }
-    if (cred) return credentialRead(cred.what, f);
+    if (cred) return credentialRead(cred.what, f, "it reads", cred.api);
     return { allow: true };
   }
   if (c.kind === "control") return { allow: true };
@@ -672,105 +676,17 @@ function keelNamed(w: string, cwd: string, f: Facts, does: string, of: Facts["ke
 // high risk, so the activity list says so); elsewhere it is the owner's call.
 // The class of a read of where credentials are kept, in a few words.
 export const CREDENTIAL_RULE = "reads credentials";
-const credentialOf = (p: string, f: Facts) => (f.credential ? f.credential(p) : credentialAt(p, { home: f.home ?? homeOf() }));
+const credentialOf = (p: string, f: Facts) => (f.credential ? f.credential(p) : credentialAt(p, placesOf(f.home ?? homeOf())));
 const credentialIn = (paths: string[], f: Facts) => { for (const p of paths) { const c = credentialOf(p, f); if (c) return c; } return null; };
 // A read of a credential, by a file tool or a command: an agent's is refused, with what it can do instead; the
 // owner's sessions ask the owner (no grant answers it); Full auto, which asks nobody, flags it and runs it.
-function credentialRead(what: string, f: Facts, by = "it reads"): Decision {
-  if (f.agent) return { deny: `Refused: ${by} ${what}. An agent does not read the owner's credentials, in any mode. If the task needs what it holds, say so in your report: the session that started you can ask the owner. Go on with the rest.` };
+function credentialRead(what: string, f: Facts, by = "it reads", api?: string): Decision {
+  if (f.agent) return { deny: `Refused: ${by} ${what}. An agent does not read the owner's credentials, in any mode. ${api ? `Keel's API gives what the file holds with the values masked: ${api}. If the task needs a value it leaves out` : "If the task needs what it holds"}, say so in your report: the session that started you can ask the owner. Go on with the rest.` };
   if (f.mode === "full-auto") return { ask: { risk: "high", why: `${by} ${what}`, rule: CREDENTIAL_RULE, suggest: [] } };
   return onlyOwner(`${by} ${what}`, CREDENTIAL_RULE);
 }
 
-// Programs whose file operands are read for their content (a command of the shell's allow-list prints them, or
-// what they hold). A program that names files only (ls, stat, test, find, wc, a checksum) reads no credential.
-const CONTENT_READERS = new Set(["cat", "tac", "head", "tail", "less", "more", "most", "nl", "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "sed", "awk", "gawk", "mawk", "nawk",
-  "cut", "sort", "uniq", "strings", "xxd", "od", "hexdump", "hd", "base64", "base32", "basenc", "diff", "diff3", "sdiff", "cmp", "comm", "join", "paste", "fold", "fmt", "column",
-  "jq", "yq", "gojq", "bat", "batcat", "iconv", "expand", "unexpand", "rev", "look", "zcat", "zless", "zmore", "bzcat", "xzcat", "zstdcat", "lz4cat", "pr"]);
-// The searchers: their first operand is the pattern unless one is given as an option.
-const SEARCHERS = new Set(["grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack"]);
-// The options of each searcher whose value is the next word, from its manual: the pattern and pattern files (`-f`
-// reads a file), the globs, types, counts and the like. (`-r` is grep's recursion and ripgrep's replacement.)
-const SEARCH_VALUED: Record<string, RegExp> = {
-  grep: /^(-e|--regexp|-f|--file|-m|--max-count|-A|--after-context|-B|--before-context|-C|--context|-d|--directories|-D|--devices|--include|--exclude|--exclude-dir|--exclude-from|--label|--binary-files|--group-separator)$/,
-  rg: /^(-e|--regexp|-f|--file|-m|--max-count|-A|--after-context|-B|--before-context|-C|--context|-d|--max-depth|-g|--glob|--iglob|-t|--type|-T|--type-not|-M|--max-columns|-j|--threads|-E|--encoding|--pre|--pre-glob|--sort|--sortr|--type-add|--type-clear|--colors|--path-separator|-r|--replace|--ignore-file|--max-filesize|--context-separator|--field-match-separator|--field-context-separator|--dfa-size-limit|--regex-size-limit|--engine|--hostname-bin|--hyperlink-format)$/,
-  ag: /^(-A|--after|-B|--before|-C|--context|-m|--max-count|-G|--file-search-regex|--ignore|--ignore-dir|-p|--path-to-ignore|--depth|-W|--width)$/,
-  ack: /^(-A|--after-context|-B|--before-context|-C|--context|-m|--max-count|--type|--ignore-dir|--ignore-file|--output|--match)$/,
-};
-const valuedOf = (prog: string) => SEARCH_VALUED[prog === "egrep" || prog === "fgrep" || prog === "zgrep" ? "grep" : prog]!;
-const RECURSIVE = new Set(["rg", "ag", "ack"]);
-
-// What a command reads of where credentials are kept: a credential file or store it names to a program that reads
-// its operands (or through `<`), or a folder a searcher walks that holds the home's stores. `paths`: the
-// credential files and stores named, whose values the gate gives the vault when the owner allows the read.
-export function shellCredentialReads(parts: Simple[], cwd: string, home: string, credential: (p: string) => Credential | null, pre = laid(parts, cwd, home)): { what: string; by: string; paths: string[] } | null {
-  let first: { what: string; by: string } | null = null;
-  const paths: string[] = [];
-  const at = (w: string, dir: string | null): string | null => {
-    if (!w || w.length > 4096) return null;
-    let t = w.replace(/^(?:\$HOME|\$\{HOME\})(?=\/|$)/, "~");
-    t = t === "~" ? home : t.startsWith("~/") ? join(home, t.slice(2)) : t;
-    if (/[$`]/.test(t) || t.startsWith("~")) return null;
-    // (A pattern is read up to its first wildcard: the folder it lists.)
-    const wild = t.search(/[*?[{]/);
-    if (wild >= 0) t = dirname(`${t.slice(0, wild)}x`);
-    if (isAbsolute(t)) return resolve(t);
-    return dir === null ? null : resolve(dir, t);
-  };
-  const note = (p: string, by: string) => {
-    const c = credential(p);
-    if (!c) return false;
-    paths.push(c.path);
-    first ??= { what: c.what, by };
-    return true;
-  };
-  for (let i = 0; i < parts.length && paths.length < 64; i++) {
-    const part = parts[i]!;
-    if (part.heredoc) continue;
-    const dir = pre.dirs[i] ?? null;
-    for (const t of part.inputs ?? []) { const p = at(t, dir); if (p) note(p, "the command reads"); }
-    const run = pre.runs[i]!;
-    if (run.fed) continue;
-    const prog = baseName(run.words[0]);
-    if (!CONTENT_READERS.has(prog)) continue;
-    const args = run.words.slice(1);
-    const searcher = SEARCHERS.has(prog);
-    const recursive = RECURSIVE.has(prog) || (searcher && args.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive" || a === "--dereference-recursive" || a === "--directories=recurse"));
-    let patternGiven = false, ended = false;
-    const operands: string[] = [];
-    for (let k = 0; k < args.length; k++) {
-      const a = args[k]!;
-      if (!ended && a === "--") { ended = true; continue; }
-      if (!ended && a.startsWith("-") && a !== "-") {
-        if (searcher && valuedOf(prog).test(a)) {
-          const v = args[++k];
-          if (a === "-e" || a === "--regexp" || (prog === "ack" && a === "--match")) patternGiven = true;
-          if (a === "-f" || a === "--file") { patternGiven = true; if (v !== undefined) { const p = at(v, dir); if (p) note(p, "the command reads"); } }
-        } else if (searcher && /^(--regexp|--file)=/.test(a)) {
-          patternGiven = true;
-          if (a.startsWith("--file=")) { const p = at(a.slice(7), dir); if (p) note(p, "the command reads"); }
-        } else if (searcher && prog !== "ag" && prog !== "ack" && /^-[a-zA-Z]*[ef]$/.test(a) && a.length > 2) {
-          // (`-rf FILE`, `-ie PATTERN`: the last letter takes the next word.)
-          const v = args[++k];
-          patternGiven = true;
-          if (a.endsWith("f") && v !== undefined) { const p = at(v, dir); if (p) note(p, "the command reads"); }
-        }
-        continue;
-      }
-      operands.push(a);
-    }
-    if (searcher && !patternGiven) operands.shift();
-    // A searcher that walks folders and names none walks the folder it runs in.
-    if (recursive && !operands.length && dir !== null) operands.push(".");
-    for (const o of operands) {
-      const p = at(o, dir);
-      if (!p || note(p, "the command reads")) continue;
-      const stores = recursive ? storesUnder(p, home) : [];
-      if (stores.length) first ??= { what: `${p === home ? "the home folder" : contains(home, p) ? `~/${p.slice(home.length + 1)}` : p}, which holds the owner's credential stores (${storesSaid(stores, home)})`, by: "the command searches" };
-    }
-  }
-  return first ? { ...(first as { what: string; by: string }), paths } : null;
-}
+export { shellCredentialReads };
 
 const never = (why: string, f: Facts): Decision =>
   f.mode === "full-auto" ? { ask: { risk: "high", why: `the command ${why}`, rule: why, suggest: [] } }
@@ -780,7 +696,7 @@ const never = (why: string, f: Facts): Decision =>
 
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
   const parts = splitCommand(command);
-  const home = f.home ?? homedir();
+  const home = f.home ?? homeOf();
   // An agent in a worktree Keel made for it changes its own branch only, in every mode, Full auto included.
   // (A program of another language is not read as a shell line: the hook holds what git it starts, ref-guard.ts.)
   if (f.shared && (interpreter === undefined || /(^|\/)(sh|bash|zsh|dash|ksh)$/.test(interpreter))) { const why = sharedRefusal(command, cwd, home, f.shared); if (why) return { deny: sharedMessage(why, f.shared) }; }
@@ -920,8 +836,8 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   }
   // A credential file a reading command names, or a folder holding the home's stores that a searcher walks: the
   // same class as a file tool's read of it.
-  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre);
-  if (cred) return credentialRead(cred.what, f, cred.by);
+  const cred = shellCredentialReads(parts, cwd, f.home ?? homeOf(), (p) => credentialOf(p, f), pre, f.look);
+  if (cred) return credentialRead(cred.what, f, cred.by, cred.api);
   if (f.mode === "full-auto") return { allow: true };
   // A variable the line's first words give a value is read as that value.
   const reads = (p: Simple) => { if (isReadOnly(p)) return true; const program = f.real && shimmedRead(p); return !!program && f.real!(program); };

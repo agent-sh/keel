@@ -20,7 +20,7 @@ import { allHooks } from "../engine/hooks.ts";
 import { askFor, DECLINED } from "../tools/interact.ts";
 import type { Asked } from "../core/types.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
-import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
+import { binding, endpoint, maskedServer, maskedTarget, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
 import { reapLeft, track } from "./procs.ts";
 import { chunksUntil } from "../core/proc.ts";
@@ -261,7 +261,7 @@ export const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|SESSI
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export function shownTarget(c: McpServerConfig): string {
-  if (c.command) return [c.command, ...(c.args ?? [])].join(" ");
+  if (c.command) return maskedTarget(c);
   try {
     const u = new URL(c.url ?? "");
     return `${u.origin}${u.pathname}`;
@@ -1397,7 +1397,7 @@ export class McpManager {
       name: e.label ?? e.name,
       ...(e.session ? { session: e.session } : {}),
       transport: e.bundled?.live ? "socket" : e.config.url ? "http" : "stdio",
-      target: e.bundled?.live?.target ?? (e.session ? shownTarget(e.config) : shown.url ?? [shown.command, ...(shown.args ?? [])].join(" ")),
+      target: e.bundled?.live?.target ?? (e.session ? shownTarget(e.config) : maskedTarget(shown)),
       enabled: e.state !== "disabled",
       state: live?.state ?? e.state,
       // (Of a session's own server, the reason in one line: what its command printed is not shown.)
@@ -1415,7 +1415,7 @@ export class McpManager {
       ...(e.config.transport === "sse" || e.sse ? { sse: true as const } : {}),
       // Name, title and version; icons (data URIs of kilobytes) stay out of a list polled every second or two.
       server_info: e.client?.serverInfo ? { name: e.client.serverInfo.name, title: (e.client.serverInfo as any).title, version: e.client.serverInfo.version } : undefined,
-      endpoint: e.bundled ? undefined : endpoint(shown),
+      endpoint: e.bundled ? undefined : endpoint(maskedServer(shown)),
       sign_in: !!e.config.url && !e.config.bearer_env && !e.config.headers_helper,
       ...(e.plugin ? { plugin: e.plugin } : {}),
       sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,

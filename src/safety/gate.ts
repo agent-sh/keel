@@ -41,7 +41,8 @@ import { landing, type MarkArgs } from "./marks.ts";
 import { readOptsFor } from "./sandbox-config.ts";
 import { bindable, globBase, judgeWrite, ownerOpens, refusedWrites, scopes, shellWrites, type Base } from "./write-scope.ts";
 import { overlays, ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
-import { credentialAt, credentialValues, homeOf, type Credential } from "./credentials.ts";
+import { diskLook } from "./credential-reads.ts";
+import { credentialAt, credentialValues, homeOf, linkedCredential, placesOf, type Credential } from "./credentials.ts";
 
 // Whether a file is, by its inode, one of the files Keel keeps at the top of its state or config folders (and one
 // level into the config): asked only of a file that has more than one name.
@@ -1157,7 +1158,7 @@ export class Gate {
       ...((cls.kind === "shell" || cls.kind === "edit") && session.parent_id && !session.machine ? { shared: this.sharedOf(session) } : {}),
       // Where credentials are kept, as a path is named and where it lands, with Keel's own folders (credentials.ts).
       // An agent reads none. (A session on another machine is judged by the names and the home's stores alone.)
-      ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path) }),
+      ...(session.machine ? {} : { credential: (path: string) => this.credentialOf(path), look: diskLook() }),
       ...(session.parent_id ? { agent: true as const } : {}),
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
       ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, workspace, this.readOpts(session, "read-only"), this.spills(session), true) }),
@@ -1183,9 +1184,13 @@ export class Gate {
   // The credential a path is or is in: as it is named, and where it lands (a link in the folder to a key is the key).
   credentialOf(path: string): Credential | null {
     const home = homeOf();
-    const named = credentialAt(path, { home, state: this.store.stateDir, config: configDir() });
+    const as = placesOf(home, { state: this.store.stateDir, config: configDir() });
+    const named = credentialAt(path, as);
     if (named) return named;
-    return credentialAt(realOf(path), { home: realOf(home), state: realOf(this.store.stateDir), config: realOf(configDir()) });
+    const at = placesOf(realOf(home), { state: realOf(this.store.stateDir), config: realOf(configDir()) });
+    const landed = realOf(path);
+    // (Then by what it is: a file with another name that the disk keeps as one of the listed files.)
+    return credentialAt(landed, at) ?? linkedCredential(landed, at);
   }
 
   // A read of where credentials are kept that is about to run (the owner allowed it, or Full auto runs it): the
@@ -1197,7 +1202,7 @@ export class Gate {
     if (cls.kind === "read") paths = (cls.paths ?? []).map((p) => this.credentialOf(p)?.path).filter((p): p is string => !!p);
     else if (cls.kind === "shell" && cls.interpreter === undefined) {
       const parts = splitCommand(cls.command);
-      if (parts) paths = shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p))?.paths ?? [];
+      if (parts) paths = shellCredentialReads(parts, cls.cwd ?? session.workspace, homeOf(), (p) => this.credentialOf(p), undefined, diskLook())?.paths ?? [];
     }
     if (!paths.length) return;
     const files: string[] = [];

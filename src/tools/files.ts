@@ -12,7 +12,7 @@ import type { ToolContext } from "./types.ts";
 import { removedNote } from "./spill.ts";
 import { readText } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
-import { credentialAt, homeOf, storesUnder } from "../safety/credentials.ts";
+import { credentialAt, homeOf, placesOf, storesUnder } from "../safety/credentials.ts";
 
 // The file a tool's path names, as the kernel reaches it (links followed, `..` applied where the walk stands): the
 // path the gate judged (realOf), and the one every file tool opens, so the two cannot differ.
@@ -740,7 +740,7 @@ export type RgOpts = {
 // home's stores and the names alone. What is inside a credential the call names by itself is not one here: the
 // gate asked the owner for that path, and the vault was given its values.
 export function credentialFor(ctx: Pick<ToolContext, "credential" | "judged">): (path: string) => { what: string } | null {
-  const of = ctx.credential ?? ((p: string) => credentialAt(p, { home: homeOf() }) ?? credentialAt(realOf(p), { home: realOf(homeOf()) }));
+  const of = ctx.credential ?? ((p: string) => credentialAt(p, placesOf(homeOf())) ?? credentialAt(realOf(p), placesOf(realOf(homeOf()))));
   const asked = (ctx.judged ?? []).filter((j) => of(j));
   return (p) => (asked.some((j) => contains(j, p)) ? null : of(p));
 }
