@@ -8,7 +8,7 @@ const row = (o: Partial<BoardRow> = {}): BoardRow => ({
   created: 1000, ended: 2000, machine: null, branch: "keel/fix-retry", repo: "/r", base: "main", head: HEAD, ahead: 2, behind: 1, worktree: "here",
   checks: { state: "known", passed: ["typecheck", "unit"], failed: [], notRun: [] },
   review: { by: "rv1", title: "Review fix", how: "named", state: "completed", verdict: "approved", source: "verdict", line: "tests cover the retry", tip: HEAD, of: HEAD, current: true, at: 3000 },
-  reviews: [], landed: { state: "no", missing: 2 }, queue: null, live: null, ...o,
+  reviews: [], landed: { state: "no", missing: 2 }, queue: null, live: null, work: null, ...o,
 });
 const card = (r: BoardRow, report = "Done.\n(Checks after its last edit (2 min ago): typecheck passed 1 min ago.)\nLeft: nothing", numstat = "") =>
   landCard({ root: "s-root", title: "Coordinator", row: r, report, numstat });
