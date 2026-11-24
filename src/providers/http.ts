@@ -8,6 +8,7 @@ import { BILLING_WORDS } from "./account.ts";
 import { gatewayDown, neverSent } from "./unreachable.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
+import { avoidPool } from "./wake.ts";
 
 // "unreachable": evidence the model request could not be sent (src/providers/unreachable.ts).
 // "network": an ambiguous transport failure or a response that broke or went silent.
@@ -115,7 +116,9 @@ const redirected = (r: Response) => r.status >= 300 && r.status < 400 && !!r.hea
 async function apiFetch(url: string, request: RequestInit, sign?: (url: string) => Record<string, string> | undefined) {
   for (let hops = 0; ; hops++) {
     const headers = { ...request.headers, ...sign?.(url) };
-    const r = await fetch(url, { ...request, redirect: "manual", headers }).catch((e) => {
+    // After a sleep the pooled connections of a host may be dead: a request to it opens one of its own until they are out (wake.ts).
+    const own = avoidPool(new URL(url).origin);
+    const r = await fetch(url, { ...request, redirect: "manual", headers, ...(own ? { keepalive: false } : {}) }).catch((e) => {
       // A later-hop refusal did not happen at the original broker address.
       if (hops) throw new ProviderError("network", "the redirected provider request did not answer");
       throw e;

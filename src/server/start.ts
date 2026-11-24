@@ -2,6 +2,7 @@
 // its own process when none answers (runMode.client).
 import { buildBareIndex } from "./index-build.ts";
 import { sleptIn } from "../admin/stall.ts";
+import { watchWake } from "../providers/wake.ts";
 import { endStreams } from "./streams.ts";
 import { setGitViews } from "../core/git.ts";
 import { join, resolve } from "node:path";
@@ -129,6 +130,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     const seal = (threads.__keelSeal = { store });
     process.once("exit", () => seal.store.sealLog());
   }
+  // A sleep of the machine leaves dead connections in the pool of model requests: noticed on the tick, purged (providers/wake.ts).
+  watchWake();
   threads.__keelCheckpointer?.stop();
   const checkpointer = (threads.__keelCheckpointer = startCheckpointer(store, (e, group) => {
     errors.capture("server", e, { at: "checkpoint thread" }, group ? { group } : {});
