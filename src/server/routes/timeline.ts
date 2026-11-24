@@ -23,6 +23,7 @@
 // and titles, never a prompt, a tool's input or output or an error's message.
 import { buildBundle } from "../../admin/bundle.ts";
 import { sessionRef, sessionRefs } from "../../admin/session-ref.ts";
+import { seesOutside } from "../admission.ts";
 import { ONLY, PAGE, PAGE_MAX, parseSince, Timeline, type Live, type Only } from "../../admin/timeline.ts";
 import { newSince, timelineText } from "../../admin/timeline-rows.ts";
 import { hasPending } from "../../automation/core.ts";
@@ -160,7 +161,7 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
   return {
     "/api/sessions/:id/timeline": {
       GET: async (req: Request & { params: { id: string } }) => {
-        const s = sessionRef(store, req.params.id);
+        const s = sessionRef(store, req.params.id, seesOutside(req));
         const q = new URL(req.url).searchParams;
         const limit = q.get("limit");
         if (limit !== null && !/^[1-9]\d*$/.test(limit)) return bad(`limit is a whole number of rows from 1 up (${PAGE} by default, at most ${PAGE_MAX})`);

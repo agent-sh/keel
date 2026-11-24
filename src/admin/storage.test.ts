@@ -14,7 +14,7 @@ import { Store } from "../core/store.ts";
 import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/attachments.ts";
 import { adminCommands } from "../cli/admin.ts";
 import { mobileCommands } from "../cli/mobile.ts";
-import { HASH_CHUNK, hashFile, REPORT_MAX_AGE_MS, restore, Storage, undoCutRestore, verify } from "./storage.ts";
+import { HASH_CHUNK, hashFile, REPORT_MAX_AGE_MS, restore, shownReport, Storage, undoCutRestore, verify } from "./storage.ts";
 
 // These tests write a database of their own to disk; under a disk stall of a
 // shared machine a write waits seconds, and the 5 s default was passed in
@@ -595,6 +595,30 @@ test("the storage report adds up to du of the state folder and is measured again
     expect(asked.sessions.transcript_bytes).toBeGreaterThan(r.sessions.transcript_bytes + 30_000);
     src.db.query = query as typeof src.db.query;
     src.db.prepare = prepare as typeof src.db.prepare;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A caller not shown the sessions another harness runs (a linked machine, a session's command) is told the
+// counts and sizes of Keel's own sessions only.
+test("the storage report counts an outside session for the owner only", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-storage-outside-"));
+  try {
+    const src = new Store(join(root, "s"));
+    src.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id) ON DELETE CASCADE");
+    const mine = src.createSession({ model: "p:m", workspace: root, title: "mine" });
+    src.append(mine.id, "user", { text: "x".repeat(1_000) });
+    const out = src.createSession({ model: "p:m", workspace: root, title: "elsewhere" });
+    src.updateSession(out.id, { outside: { harness: "claude", source_id: "src-1", state: "done", since: 1, files: 0, failures: 0 } });
+    src.append(out.id, "user", { text: "y".repeat(5_000) });
+    const r = await new Storage(src, {} as any, new Bus(), {} as any).report();
+    expect(shownReport(r, true).sessions.count).toBe(2);
+    const blind = shownReport(r, false);
+    expect(blind.sessions.count).toBe(1);
+    expect(blind.sessions.transcript_bytes).toBeLessThan(5_000);
+    expect(blind.by_session.map((s) => s.id)).toEqual([mine.id]);
+    expect(JSON.stringify(blind)).not.toContain(out.id);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -26,6 +26,7 @@ import { secretsWaiting } from "./secrets.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { sessionRef } from "../../admin/session-ref.ts";
+import { seesOutside } from "../admission.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS cli_runs (key TEXT PRIMARY KEY, session_id TEXT NOT NULL, after_seq INTEGER NOT NULL, event_id TEXT, created INTEGER NOT NULL);`;
 
@@ -50,8 +51,9 @@ export function pickModel(models: ModelInfo[], want: string, provider?: string):
   throw fail(`no listed model is ${want}${provider ? ` on ${provider}` : ""} (keel models lists them)`);
 }
 
-// Also an agent's id or a prefix of it: the agent's session.
-export const resolveSession = (deps: Deps, id: string) => sessionRef(deps.store, id);
+// Also an agent's id or a prefix of it: the agent's session. A session another harness runs is one only
+// for a caller shown it (session-ref.ts).
+export const resolveSession = (deps: Deps, id: string, req: Request) => sessionRef(deps.store, id, seesOutside(req));
 
 const lastSeq = (deps: Deps, id: string) =>
   deps.store.db.query<{ n: number | null }, [string]>("SELECT max(seq) AS n FROM events WHERE session_id = ?").get(id)?.n ?? 0;
@@ -100,7 +102,7 @@ export const runRoutes: RouteModule = (deps) => {
     // What a command that stays needs on every tick, without the transcript.
     "/api/cli/state/:id": {
       GET: (req: any) => {
-        const s = resolveSession(deps, req.params.id);
+        const s = resolveSession(deps, req.params.id, req);
         const ids = family(s.id);
         const approvals = (gate?.approvals({ pending: true }) ?? []).filter((a) => ids.includes(a.session_id));
         // `asked`: a question an MCP server put on the call's card (the call's input does not hold it).
@@ -132,7 +134,7 @@ export const runRoutes: RouteModule = (deps) => {
       },
     },
     "/api/cli/resolve": {
-      GET: (req: Request) => json({ session: resolveSession(deps, new URL(req.url).searchParams.get("id") ?? "") }),
+      GET: (req: Request) => json({ session: resolveSession(deps, new URL(req.url).searchParams.get("id") ?? "", req) }),
     },
     "/api/cli/model": {
       GET: async (req: Request) => {
@@ -165,7 +167,7 @@ export const runRoutes: RouteModule = (deps) => {
         if (b.mode !== undefined && !["send", "steer", "queue"].includes(b.mode)) throw fail(`unknown mode ${b.mode}`);
 
         let s;
-        if (b.session_id) s = resolveSession(deps, String(b.session_id));
+        if (b.session_id) s = resolveSession(deps, String(b.session_id), req);
         else if (b.continue) {
           const cwd = resolve(b.cwd || deps.workspace);
           s = store.sessions({ archived: false }).find((x) => !x.parent_id && x.workspace === cwd);

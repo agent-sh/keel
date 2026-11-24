@@ -10,6 +10,7 @@
 // Read on the read thread: a tree's spans, turns and waits are many rows.
 // Content-free: ids, titles, classes and durations.
 import { sessionRef, sessionRefs } from "../../admin/session-ref.ts";
+import { seesOutside } from "../admission.ts";
 import { parseSince } from "../../admin/timeline.ts";
 import { hoursText, type TreeHours } from "../../admin/hours-rows.ts";
 import { registerShared } from "../../tools/registry.ts";
@@ -59,7 +60,7 @@ export const hoursRoutes: RouteModule = ({ store }) => {
   return {
     "/api/sessions/:id/hours": {
       GET: async (req: Request & { params: { id: string } }) => {
-        const s = sessionRef(store, req.params.id);
+        const s = sessionRef(store, req.params.id, seesOutside(req));
         const q = new URL(req.url).searchParams;
         let since: number | null = null, until: number | null = null;
         try {

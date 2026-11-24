@@ -229,15 +229,14 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         return await timed(label, () => compressJson(req, res));
       } catch (e) {
         // A write the store refused (it takes none right now): the refusal's own answer, not a failure of the daemon's.
-        if (refusedWrite(e) || diskFull(e)) return json({ error: checkpointerOf(store)?.refusalSays ?? STORE_REFUSES, store_refusing: true }, 503);
+        // (Every answer of a request a stand-in id was put in names the id it named: admission.ts standIn.)
+        const back = async (res: Response) => (stood ? await stood(res) : res);
+        if (refusedWrite(e) || diskFull(e)) return back(json({ error: checkpointerOf(store)?.refusalSays ?? STORE_REFUSES, store_refusing: true }, 503));
         const st = (e as any)?.status;
         // `code`: a machine-readable reason, when the refusal has one (off_branch).
-        if (typeof st === "number" && st >= 400 && st < 500) {
-          const res = json({ error: (e as Error).message, ...((e as any).code ? { code: (e as any).code } : {}) }, st);
-          return stood ? await stood(res) : res;
-        }
+        if (typeof st === "number" && st >= 400 && st < 500) return back(json({ error: (e as Error).message, ...((e as any).code ? { code: (e as any).code } : {}) }, st));
         const rec = errors.capture("server", e, { url: new URL(req.url).pathname, method: req.method });
-        return json({ error: rec.message, error_id: rec.id }, 500);
+        return back(json({ error: rec.message, error_id: rec.id }, 500));
       } finally {
         release?.();
         answered();

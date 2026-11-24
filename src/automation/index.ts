@@ -836,7 +836,8 @@ export const automationRoutes: RouteModule = (deps) => {
         if (b.ids !== undefined && !Array.isArray(b.ids)) return bad("ids is a list of alert ids");
         const away = unseen(req);
         // (A caller that is not shown a session another harness runs reads it as no such session: nothing of it is marked.)
-        const changed = away && typeof b.session_id === "string" && away.has(b.session_id) ? 0 : alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id, seen, auto: !!b.auto, touch: !!b.touch });
+        // (Nor by its alerts' ids, nor in a mark of all.)
+        const changed = away && typeof b.session_id === "string" && away.has(b.session_id) ? 0 : alerts.markRead({ ids: b.ids, session_id: b.session_id, all: !b.ids && !b.session_id, seen, auto: !!b.auto, touch: !!b.touch, ...(away ? { except: away } : {}) });
         return json({ ok: true, changed, unread: shownUnread(away, alerts.unreadCounts()) });
       },
     },
@@ -981,7 +982,7 @@ export const automationRoutes: RouteModule = (deps) => {
           const now = Date.now();
           const since = q.get("since") ? parseSince(q.get("since")!, now) : undefined;
           const until = q.get("until") ? parseSince(q.get("until")!, now) : undefined;
-          const session_id = q.get("session_id") ? sessionRef(deps.store, q.get("session_id")!).id : undefined;
+          const session_id = q.get("session_id") ? sessionRef(deps.store, q.get("session_id")!, seesOutside(req)).id : undefined;
           const opts: activity.ListOpts = { before: q.get("before") ?? undefined, limit, kinds, session_id, q: q.get("q") ?? undefined, since, until, failures: only === "failures", cap };
           // Read off the loop: the cap is a window over every row of the range.
           const sql = activity.listSql(opts, now);

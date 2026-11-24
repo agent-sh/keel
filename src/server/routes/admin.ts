@@ -30,7 +30,7 @@ import { logOwn } from "../../admin/logs.ts";
 import * as activity from "../../automation/activity.ts";
 import { tellCutAgents, tellEarlier } from "../../automation/restart-told.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
-import { Storage } from "../../admin/storage.ts";
+import { Storage, shownReport } from "../../admin/storage.ts";
 import { PROPOSED, Retention, retentionOf } from "../../admin/retention.ts";
 import { configDir } from "../../providers/config.ts";
 import type { Tracer } from "../../admin/trace.ts";
@@ -193,7 +193,7 @@ export const adminRoutes: RouteModule = (deps) => {
       GET: async (req: Request) => {
         const r = await storage.report(new URL(req.url).searchParams.has("refresh"));
         // A copy of another harness's session is named to the owner only (peer-scope.ts blindTo).
-        return json(seesOutside(req) ? r : { ...r, by_session: r.by_session.filter((s) => !s.outside) });
+        return json(shownReport(r, seesOutside(req)));
       },
     },
     "/api/storage/cleanup": {

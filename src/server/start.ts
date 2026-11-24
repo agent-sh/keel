@@ -1,5 +1,6 @@
 // Starting the daemon: `keel serve`, and the daemon a client command starts in
 // its own process when none answers (runMode.client).
+import { outsideSources } from "../core/outside.ts";
 import { buildBareIndex } from "./index-build.ts";
 import { sleptIn } from "../admin/stall.ts";
 import { watchWake } from "../providers/wake.ts";
@@ -154,7 +155,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // (Asked when a session's command calls: the grants are the agents module's, its table made after this line runs.)
   // And a session another harness runs exists for the owner only (peer-scope.ts blindTo): one indexed read by its id.
   const outsideOne = store.db.query<{ x: number }, [string]>("SELECT 1 AS x FROM sessions WHERE id = ? AND outside IS NOT NULL");
-  watchSessionCallers((id) => listReach(store.db, id), (id) => !!outsideOne.get(id));
+  // (An id of the agent view's, <harness>:<its own id>, names one by its source: peer-scope.ts namedSessions.)
+  watchSessionCallers((id) => listReach(store.db, id), (id) => (id.includes(":") ? outsideSources(store.db).has(id) : !!outsideOne.get(id)));
   addAdmission((req, path) => {
     if (!checkpointer.refusing || req.method === "GET" || req.method === "HEAD" || STORE_PASSES.test(path)) return;
     return Response.json({ error: checkpointer.refusalSays ?? STORE_REFUSES, store_refusing: true }, { status: 503 });

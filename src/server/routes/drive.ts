@@ -11,6 +11,8 @@ import { registerHooks } from "../../engine/hooks.ts";
 import { registerCatalog } from "../../tools/catalog.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { presence } from "./permissions.ts";
+import { seesOutside } from "../admission.ts";
+import { outsideSources } from "../../core/outside.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400, code?: string) => json({ error, code }, status);
@@ -44,14 +46,17 @@ export const driveRoutes: RouteModule = (deps: Deps) => {
         const configured = drive.configured();
         if (!configured) return json({ configured, sessions: [], not_listed: ["no agent view is set: name its program in Settings, Sessions elsewhere"] });
         const fresh = new URL(req.url).searchParams.has("refresh");
+        // A session Keel shows as its own outside session exists for the owner only (src/core/outside.ts).
+        const away = seesOutside(req) ? null : outsideSources(deps.store.db);
+        const shown = <R extends { id: string }>(rows: R[]) => (away ? rows.filter((r) => !away.has(r.id)) : rows);
         const c = drive.cached();
         if (c && !fresh) {
           drive.raws().catch((e) => deps.errors.capture("server", e, { at: "drive list" }));
-          return json({ configured, sessions: c.rows, at: c.at });
+          return json({ configured, sessions: shown(c.rows), at: c.at });
         }
         const r = await drive.list(fresh ? 0 : undefined);
         if (r.not_listed) deps.errors.capture("server", new Error(r.not_listed[0]), { at: "drive list" });
-        return json({ configured, ...r, at: Date.now() });
+        return json({ configured, ...r, sessions: shown(r.sessions), at: Date.now() });
       },
     },
     "/api/fleet/outside/settings": {

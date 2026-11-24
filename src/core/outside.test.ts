@@ -46,6 +46,7 @@ import { Handoffs } from "../fleet/handoff.ts";
 import { helperTool, useHelper } from "../helper/tools.ts";
 import { treesOf } from "../automation/lessons-mine.ts";
 import { outsideRefused } from "../server/app.ts";
+import { sessionRef, sessionRefs } from "../admin/session-ref.ts";
 
 const MARK = { harness: "claude" as const, source_id: "y", state: "waiting" as const, since: 1, files: 0, failures: 0 };
 function two() {
@@ -77,6 +78,44 @@ test("the store's sessions, the overview, the addressable sessions and the lesso
     expect(m.addressable().map((a) => a.session.id)).toEqual([mine.id]);
     expect([...treesOf(store.db, 0, Date.now(), (d) => d).values()].map((c) => c.trees)).toEqual([1]);
     void dir;
+  } finally { done(); }
+});
+
+// What the command line's routes and the timeline resolve a name with (/api/cli/resolve, /api/cli/state/:id,
+// POST /api/run, the timeline and hours routes): an outside session is one only for a caller shown it.
+test("a name means an outside session only to a caller shown it: by its id, a prefix or its short id", () => {
+  const { store, mine, out, done } = two();
+  try {
+    for (const name of [out.id, out.id.slice(0, 20), out.id.slice(-12)]) {
+      expect(sessionRefs(store, name)).toEqual([]);
+      expect(() => sessionRef(store, name)).toThrow(`no session ${name}`);
+      expect(sessionRef(store, name, true).id).toBe(out.id);
+    }
+    expect(sessionRef(store, mine.id).id).toBe(mine.id);
+    // A prefix both share names only the one of Keel's own to a blind caller, both to the owner.
+    const both = mine.id.slice(0, 8) === out.id.slice(0, 8) ? mine.id.slice(0, 8) : null;
+    if (both) {
+      expect(sessionRefs(store, both)).toEqual([mine.id]);
+      expect(sessionRefs(store, both, undefined, true).sort()).toEqual([mine.id, out.id].sort());
+    }
+  } finally { done(); }
+});
+
+// The command line's own routes, asked by another machine (a forwarded request): an outside session is no session,
+// by its id or a prefix; the owner's command line resolves it.
+test("the command line's routes resolve an outside session for the owner only", async () => {
+  const { store, out, done } = two();
+  try {
+    const { runRoutes } = await import("../server/routes/run.ts");
+    const { innerHeaders } = await import("../safety/presence.ts");
+    const routes = runRoutes({ store, bus: { emit() {} }, engine: {}, providers: {}, workspace: "/" } as any) as any;
+    const linked = (path: string) => Object.assign(new Request(`http://keel${path}`, { headers: innerHeaders({ local: false, enrolled: true, present: null }, "far box") }), { params: { id: out.id.slice(0, 20) } });
+    for (const name of [out.id, out.id.slice(0, 20)]) {
+      expect(() => routes["/api/cli/resolve"].GET(linked(`/api/cli/resolve?id=${name}`))).toThrow(`no session ${name}`);
+    }
+    expect(() => routes["/api/cli/state/:id"].GET(linked(`/api/cli/state/${out.id.slice(0, 20)}`))).toThrow(`no session ${out.id.slice(0, 20)}`);
+    const own = await routes["/api/cli/resolve"].GET(new Request(`http://keel/api/cli/resolve?id=${out.id.slice(0, 20)}`)).json();
+    expect(own.session.id).toBe(out.id);
   } finally { done(); }
 });
 
@@ -159,6 +198,7 @@ const READS_MORE = new Map<string, [number, string]>([
   ["src/safety/egress-report.ts", [1, "egress rows: made by Keel's own commands"]],
   ["src/automation/earlier-facts.ts", [1, "agents: started only under Keel's own sessions"]],
   ["src/automation/lessons-mine.ts", [1, "the sessions the hits name, and hitsOf leaves copies out"]],
+  ["src/core/outside.ts", [1, "the outside sessions' harness and own id (no words of theirs), to leave them out of the sessions elsewhere list for a blind caller"]],
 ]);
 // The columns a statement may read with no reason: none of them carries a session's words.
 const BARE = /^(DISTINCT\s+)?((\w+\.)?(id|parent_id|session_id|archived|created|updated|head|head_event_id)|\d+|\?|(COUNT|MIN|MAX)\([\w.*]*\))(\s+AS\s+\w+)?$/i;

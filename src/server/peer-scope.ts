@@ -122,14 +122,16 @@ export type PeerVerdict = { pass: true } | { account: true } | { refuse: string 
 // no such session, and a list leaves it out (seesOutside in admission.ts tells a route which caller it has).
 export const PHONE_API = /^\/v1\//;
 export const blindTo = (a: Authority, req: { path: string; linked?: boolean }): boolean => a.kind === "session" || !!req.linked || PHONE_API.test(req.path);
-// The sessions a request names: by its path (a segment after `sessions/`, wherever it stands) and by the
-// parameters routes read a session from.
+// The sessions a request names: by its path (a segment after `sessions/`, wherever it stands, and the
+// sessions elsewhere routes' id of one, src/server/routes/drive.ts) and by the parameters routes read a session from.
 const NAMING = ["session", "session_id", "of", "children_of", "agents_of"];
 export function namedSessions(path: string, search = ""): string[] {
   const out: string[] = [];
   let p = path;
   try { p = decodeURIComponent(path); } catch {} // a path that does not decode names what it spells
   for (const m of p.matchAll(/\/sessions\/([^/]+)/g)) out.push(m[1]!);
+  const far = /^\/api\/fleet\/outside\/([^/]+)/.exec(p);
+  if (far?.[1]?.includes(":")) out.push(far[1]);
   const q = new URLSearchParams(search);
   for (const k of NAMING) for (const v of q.getAll(k)) if (v) out.push(v);
   return out;

@@ -5,21 +5,29 @@
 // so an id copied from a row or a card opens what it names.
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
+import { isOutside } from "../core/outside.ts";
 
 const fail = (message: string, status: number) => Object.assign(new Error(message), { status });
 const HEX = /^[0-9a-f-]{4,}$/i;
 const SHORT = /^[0-9a-f]{12}$/;
 
+// A session another harness runs (src/core/outside.ts) is a session a name means only for a caller
+// shown it (`sees`: admission.ts seesOutside, the owner's page and command line); for any other caller,
+// and by default, it is no session at all, by its id, a prefix of it or its short id.
+//
 // The sessions a name could mean, exact matches first. `of`: only agents this
 // session started (and their sessions), for a tool that reads no one else's.
-export function sessionRefs(store: Store, ref: string, of?: string): string[] {
+export function sessionRefs(store: Store, ref: string, of?: string, sees = false): string[] {
   const db = store.db;
   const agents = !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agents'").get();
   const mine = of ? " AND parent_id = ?2" : "";
   const args = (v: string): [string] | [string, string] => (of ? [v, of] : [v]);
   const id = ref.trim();
   if (!id) return [];
-  if (!of && store.session(id)) return [id];
+  if (!of) {
+    const s = store.session(id);
+    if (s && (sees || !isOutside(s))) return [id];
+  }
   const agent = agents ? db.query<{ session_id: string }, [string] | [string, string]>(`SELECT session_id FROM agents WHERE (id = ?1 OR session_id = ?1)${mine}`).get(...args(id)) : undefined;
   if (agent) return [agent.session_id];
   if (!HEX.test(id)) return [];
@@ -28,7 +36,7 @@ export function sessionRefs(store: Store, ref: string, of?: string): string[] {
   // A prefix, then the short id: an id's start is its time, its last twelve characters are what
   // tells two sessions apart. No shorter ending names a session.
   for (const like of [`${part}%`, ...(SHORT.test(part) ? [`%${part}`] : [])]) {
-    if (!of) for (const r of db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE id LIKE ? LIMIT 6").all(like)) out.add(r.id);
+    if (!of) for (const r of db.query<{ id: string }, [string]>(`SELECT id FROM sessions WHERE id LIKE ?${sees ? "" : " AND outside IS NULL"} LIMIT 6`).all(like)) out.add(r.id);
     if (agents) for (const r of db.query<{ session_id: string }, [string] | [string, string]>(`SELECT session_id FROM agents WHERE (id LIKE ?1 OR session_id LIKE ?1)${mine} LIMIT 6`).all(...args(like))) out.add(r.session_id);
     if (out.size) break;
   }
@@ -36,8 +44,8 @@ export function sessionRefs(store: Store, ref: string, of?: string): string[] {
 }
 
 // The one session a name means; refused (404, 409) when it means none or several.
-export function sessionRef(store: Store, ref: string): Session {
-  const ids = sessionRefs(store, ref);
+export function sessionRef(store: Store, ref: string, sees = false): Session {
+  const ids = sessionRefs(store, ref, undefined, sees);
   if (ids.length > 1) throw fail(`${ref} names more than one session: ${ids.join(", ")}`, 409);
   const s = ids[0] ? store.session(ids[0]) : undefined;
   if (!s) throw fail(`no session ${ref}`, 404);

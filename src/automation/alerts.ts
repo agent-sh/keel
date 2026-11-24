@@ -975,7 +975,8 @@ export function hasOpenCard(sessionId: string): boolean {
 // opened. `touch` is the owner acting in that session's pane: that is opening it,
 // so it reads those too, and still leaves what they kept unread.
 // `tell`: the daemon an alert came from is told it was read here (false when it is that daemon saying so).
-export function markRead(opts: { ids?: string[]; session_id?: string; all?: boolean; seen?: number; auto?: boolean; touch?: boolean }, tell = true): number {
+// `except`: sessions whose alerts are left as they are (a caller that is not shown them: automation/index.ts unseen).
+export function markRead(opts: { ids?: string[]; session_id?: string; all?: boolean; seen?: number; auto?: boolean; touch?: boolean; except?: Iterable<string> }, tell = true): number {
   const db = D().store.db;
   const where = ["read = 0"];
   const args: (string | number)[] = [];
@@ -987,6 +988,8 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
   else if (!opts.all) return 0;
   if (Number.isFinite(opts.seen)) { where.push("rev <= ?"); args.push(Number(opts.seen)); }
   if (opts.auto || opts.touch) where.push("kept = 0");
+  const except = opts.except ? [...opts.except] : [];
+  if (except.length) { where.push("(session_id IS NULL OR session_id NOT IN (SELECT value FROM json_each(?)))"); args.push(JSON.stringify(except)); }
   if (opts.auto) where.push(`kind NOT IN (${CALLS.map((k) => `'${k}'`).join(", ")})`);
   const hit = db.query<{ id: string; session_id: string | null; far_id: string | null; machine: string | null }, any>(
     `SELECT id, COALESCE(session_id, far_session) AS session_id, json_extract(data, '$.far.alert') AS far_id, json_extract(data, '$.far.machine') AS machine FROM alerts WHERE ${where.join(" AND ")}`,

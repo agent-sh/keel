@@ -122,4 +122,35 @@ test("the door: a session another harness runs does not exist for anyone but the
   expect(blindTo(owner, { path: "/api/sessions", linked: true })).toBe(true);
   expect(blindTo(owner, { path: "/api/sessions" })).toBe(false);
   expect(namedSessions("/api/fleet/linked/sessions/o-1/events", "?of=x&session=y")).toEqual(["o-1", "y", "x"]);
+  // The sessions elsewhere routes name one by the agent view's id of it, <harness>:<its own id>.
+  expect(namedSessions("/api/fleet/outside/claude%3Ao-src")).toEqual(["claude:o-src"]);
+  expect(namedSessions("/api/fleet/outside/settings")).toEqual([]);
+  const far = (id: string) => id === "claude:o-src";
+  expect(peerVerdict(owner, req("/api/fleet/outside/claude:o-src", { linked: true }), tops, far)).toEqual({ absent: "no such session", ids: ["claude:o-src"], then: { account: true } });
+  expect(peerVerdict(owner, req("/api/fleet/outside/claude:o-src"), tops, far)).toEqual({ account: true });
+});
+
+// The door's stand-in (admission.ts standIn) for a request another machine forwarded: the agent view's id of an
+// outside session is swapped for one of the same harness no session has, and the phone's signed API is never
+// rewritten (its signature is over the url it sent; its routes leave such sessions out themselves).
+test("the stand-in: the sessions elsewhere id of an outside session is swapped, the phone's url never", async () => {
+  const { callerCheck, standIn, useSessionScopes } = await import("./admission.ts");
+  const { innerHeaders } = await import("../safety/presence.ts");
+  const OUT = "01a20000-0000-7000-8000-00000000000f";
+  useSessionScopes({ cgroups: () => new Map(), loose: () => false, holder: () => null, lists: () => ({ reads: false, why: "" }), outside: (id) => id === OUT || id === "claude:src-1" });
+  try {
+    const srv = { port: 1, hostname: "127.0.0.1", requestIP: () => ({ address: "127.0.0.1", port: 2, family: "IPv4" }) } as any;
+    const linked = (path: string) => new Request(`http://127.0.0.1:1${path}`, { headers: innerHeaders({ local: false, enrolled: true, present: null }, "far box") });
+    const far = linked("/api/fleet/outside/claude:src-1?lines=5");
+    await callerCheck(far, srv);
+    const back = standIn(far);
+    expect(typeof back).toBe("function");
+    expect(new URL(far.url).pathname).toMatch(/^\/api\/fleet\/outside\/claude:[0-9a-f-]{36}$/);
+    const said = await (back as (r: Response) => Promise<Response>)(Response.json({ error: `no session ${decodeURIComponent(new URL(far.url).pathname.split("/").pop()!)} is listed by the agent view now` }, { status: 404 }));
+    expect(await said.json()).toEqual({ error: "no session claude:src-1 is listed by the agent view now" });
+    const phone = new Request(`http://127.0.0.1:1/v1/chats/${OUT}/messages?session=${OUT}`);
+    await callerCheck(phone, srv);
+    expect(standIn(phone)).toBeNull();
+    expect(phone.url).toBe(`http://127.0.0.1:1/v1/chats/${OUT}/messages?session=${OUT}`);
+  } finally { useSessionScopes(undefined); }
 });

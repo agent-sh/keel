@@ -86,7 +86,17 @@ async function du(paths: string[]): Promise<Map<string, number>> {
 
 export type StorageReport = Awaited<ReturnType<Storage["measure"]>>;
 type OutsideHarness = OutsideMark["harness"];
-type ScanRow = { id: string; title: string; archived: number; updated: number; parent_id: string | null; bytes: number; attach: number };
+
+// The report as a caller is shown it: one not shown the sessions another harness runs (peer-scope.ts blindTo)
+// gets every count and size without them, and none of them by name.
+export function shownReport(r: StorageReport, sees: boolean) {
+  const { outside_share: o, ...rest } = r;
+  if (sees) return r;
+  const less = (g: { count: number; transcript_bytes: number }, x: { count: number; transcript_bytes: number }) => ({ count: g.count - x.count, transcript_bytes: g.transcript_bytes - x.transcript_bytes });
+  return { ...rest, sessions: less(r.sessions, o.sessions), archived_sessions: less(r.archived_sessions, o.archived_sessions), by_session: r.by_session.filter((s) => !s.outside) };
+}
+// `ext`: a copy of another harness's session (src/integrations/outside/); absent in a scan kept from before it was read.
+type ScanRow = { id: string; title: string; archived: number; updated: number; parent_id: string | null; bytes: number; attach: number; ext?: number };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 
 // The day's check (Storage.checkNow): how often it is made, how often it is looked at, and how
@@ -179,7 +189,7 @@ export class Storage {
   private async measure(kept?: { scanned_ms: number; rows: ScanRow[] }) {
     // Every event of the store is read for its size: off the loop (src/server/reads.ts).
     const rows = kept?.rows ?? await readsOf(this.store).sql<ScanRow>(`
-      SELECT s.id, s.title, s.archived, s.updated, s.parent_id,
+      SELECT s.id, s.title, s.archived, s.updated, s.parent_id, s.outside IS NOT NULL AS ext,
         COALESCE((SELECT SUM(length(e.data)) FROM events e WHERE e.session_id = s.id), 0) AS bytes,
         COALESCE((SELECT SUM(length(json_extract(i.value, '$.data'))) FROM events e, json_each(e.data, '$.images') i WHERE e.session_id = s.id AND e.kind = 'user'), 0) AS attach
       FROM sessions s`);
@@ -240,6 +250,9 @@ export class Storage {
       sessions: group((r) => !r.archived && !r.parent_id),
       archived_sessions: group((r) => !!r.archived && !r.parent_id),
       subagent_sessions: group((r) => !!r.parent_id),
+      // What of the two above is copies of another harness's sessions: taken out for a caller not shown them
+      // (src/server/routes/admin.ts, peer-scope.ts blindTo).
+      outside_share: { sessions: group((r) => !!r.ext && !r.archived && !r.parent_id), archived_sessions: group((r) => !!r.ext && !!r.archived && !r.parent_id) },
       attachments_bytes: Math.round(rows.reduce((n, r) => n + r.attach, 0) * 0.75), // base64 in the store
       ...dirs,
       leftovers: { count: leftovers.length, bytes: [...leftoverSizes.values()].reduce((n, b) => n + b, 0) },

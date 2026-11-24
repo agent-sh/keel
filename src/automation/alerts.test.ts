@@ -631,4 +631,19 @@ test("the helper's reply to a digest is never a push: its own notify is the deci
   turn(undefined, alerts.LONG_TURN_MS + 1000);
   await settle();
   expect(sent).toHaveLength(1);
+// A caller that is not shown a session another harness runs (automation/index.ts unseen) marks none of its
+// alerts read: neither by their ids nor in a mark of all, and the count it is told leaves them out.
+test("a mark of read leaves the sessions it is told to leave, by ids and in a mark of all", () => {
+  const { session } = scratch();
+  const a = session("Here"), b = session("Elsewhere");
+  alerts.raise("question", a, "Question: Here", "Which?", { call_id: "ra" });
+  alerts.raise("question", b, "Question: Elsewhere", "Which?", { call_id: "rb" });
+  const of = (s: string) => alerts.list({ unread: true }).filter((x) => x.session_id === s).map((x) => x.id);
+  const bIds = of(b);
+  expect(bIds.length).toBe(1);
+  expect(alerts.markRead({ ids: bIds, except: [b] })).toBe(0);
+  expect(alerts.markRead({ all: true, except: [b] })).toBe(1);
+  expect(of(a)).toEqual([]);
+  expect(of(b)).toEqual(bIds);
+  expect(alerts.markRead({ all: true })).toBe(1);
 });

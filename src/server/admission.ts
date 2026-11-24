@@ -406,8 +406,12 @@ const oauthReturn = (req: Request, path: string) =>
 export function standIn(req: Request & { params?: Record<string, string> }): null | Response | ((res: Response) => Promise<Response>) {
   const ids = peers.get(req)?.hidden;
   if (!ids?.length) return null;
-  const swap = new Map(ids.map((id) => [id, Bun.randomUUIDv7()]));
   const url = new URL(req.url);
+  // Not the phone's API: its request is signed over the url it sent, and its routes read a session only as
+  // one the phone is shown (src/integrations/mobile/v1.ts sessionShown).
+  if (PHONE_API.test(url.pathname)) return null;
+  // (An agent view's id keeps its harness, so the route reads it as an id of that harness no session has.)
+  const swap = new Map(ids.map((id) => [id, id.includes(":") ? `${id.slice(0, id.indexOf(":"))}:${Bun.randomUUIDv7()}` : Bun.randomUUIDv7()]));
   const seg = (raw: string) => { try { return swap.get(decodeURIComponent(raw)) ?? raw; } catch { return raw; } };
   url.pathname = url.pathname.split("/").map(seg).join("/");
   const q = new URLSearchParams(url.search);

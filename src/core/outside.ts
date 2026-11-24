@@ -22,6 +22,11 @@ export function frameSession(f: { t: string; [k: string]: any }): string | undef
 export const outsideIds = (db: { query: (sql: string) => { all: () => unknown[] } }): Set<string> =>
   new Set((db.query("SELECT id FROM sessions WHERE outside IS NOT NULL").all() as { id: string }[]).map((r) => r.id));
 
+// The same sessions by the id the agent view gives them on this machine (src/drive/agentview.ts rowId:
+// <harness>:<its own id>), so the sessions elsewhere routes leave them out for a caller blind to them too.
+export const outsideSources = (db: { query: (sql: string) => { all: () => unknown[] } }): Set<string> =>
+  new Set((db.query("SELECT json_extract(outside, '$.harness') || ':' || json_extract(outside, '$.source_id') AS k FROM sessions WHERE outside IS NOT NULL").all() as { k: string | null }[]).flatMap((r) => (r.k ? [r.k] : [])));
+
 // What another machine's relay of this daemon is shown: every session and frame but those of a session
 // another harness runs. The ids are read once, when the relay opens; one made after is known by its
 // first frame (the session frame that makes it comes before any other of it).
