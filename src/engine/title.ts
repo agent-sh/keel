@@ -19,7 +19,13 @@
 //     cheaper than the session's own (the readers' choices), never by the
 //     session's own model unless the owner named it a small model: with no
 //     such model the session keeps its first prompt's words.
+import { registerSettings, settings } from "../admin/settings.ts";
 import type { StoredEvent } from "../core/types.ts";
+
+// A title made by a model costs one small request a session. With `by_model` off no request is made:
+// the session keeps its first prompt's first line, cut (`firstLineTitle`).
+registerSettings("titles", { by_model: true }, (v) => (typeof v.by_model === "boolean" ? undefined : "by_model is true or false"));
+export const modelTitles = (): boolean => settings().titles?.by_model !== false;
 
 // Who wrote a session's title: "" given (the owner, the session's maker, or a
 // session from before), "prompt" the first prompt's first line, "model" a

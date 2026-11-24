@@ -117,3 +117,22 @@ test("a first prompt edited while its title is out is titled from the new prompt
   await titled("Count cart items");
   expect(store.session(s.id)!.title_by).toBe("model");
 });
+
+// A model-made title costs a request a session: with the setting off none is made, and the title stays
+// the first line of the first prompt, cut.
+test("with model titles off no title request is made", async () => {
+  const { loadSettings, patchSettings } = await import("../admin/settings.ts");
+  const { engine, s, asked, store } = rig([BIG, SMALL], async () => said("Should not be asked"));
+  loadSettings(store.stateDir, () => {});
+  try {
+    expect(patchSettings({ titles: { by_model: false } }).ok).toBe(true);
+    engine.send(s.id, `Fix the cart discount rounding in the checkout flow\nsecond line ${"x".repeat(200)}`);
+    await engine.idle(s.id);
+    await Bun.sleep(100);
+    expect(asked.map((r) => r.purpose ?? "turn")).toEqual(["turn"]);
+    expect(store.session(s.id)!.title).toBe("Fix the cart discount rounding in the checkout flow");
+    expect(store.session(s.id)!.title_by).toBe("prompt");
+  } finally {
+    patchSettings({ titles: { by_model: true } });
+  }
+});

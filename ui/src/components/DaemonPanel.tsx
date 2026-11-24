@@ -268,6 +268,14 @@ export function DaemonPanel() {
         </Card>
       )}
 
+      {settings && (
+        <Card>
+          <SettingRow label="Session titles" hint="A small model names each session after its first reply, one request a session. Off: a session is named by the first line of its first prompt.">
+            <Segmented label="Session titles" value={settings.titles?.by_model === false ? "prompt" : "model"} onChange={(v) => patch({ titles: { by_model: v === "model" } }).catch(reportError)} options={[{ value: "model", label: "By a small model" }, { value: "prompt", label: "First prompt" }]} />
+          </SettingRow>
+        </Card>
+      )}
+
       {settings && <BuildPinCard hours={Number(settings.build_pin?.max_age_hours ?? 0)} onHours={(v) => patch({ build_pin: { max_age_hours: v } })} />}
 
       <Card>
