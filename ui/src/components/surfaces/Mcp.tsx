@@ -16,6 +16,7 @@ import type { Outcome } from "../../../../src/mcp/channel.ts";
 import { ownerStop } from "../../../../src/core/stoppers.ts";
 import { Select } from "../Select.tsx";
 import { ago, clock, cn, when } from "../../lib/utils.ts";
+import { dur } from "../../../../src/admin/timeline-rows.ts";
 import { Connect } from "./McpConnect.tsx";
 import { inMs } from "../../lib/automation.ts";
 import { navigate } from "../../lib/ui.ts";
@@ -118,6 +119,9 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           ...(s.sync ? [["Follows", <span data-testid="mcp-sync" data-gone={s.sync.gone || undefined}>{s.sync.label}{s.sync.name !== s.name ? ` (${s.sync.name})` : ""}{s.sync.gone ? ", which no longer has it" : ""}</span>] as [string, React.ReactNode]] : []),
           ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),
           ...((s.state === "ready" || s.state === "idle") && s.last_connected ? [[s.state === "idle" ? "Last started" : "Connected", ago(s.last_connected)] as [string, string]] : []),
+          ...(s.ready_ms !== undefined ? [[s.state === "idle" ? "Last start took" : "Start", <span data-testid="mcp-start-time" data-ms={s.ready_ms}>{s.state === "idle" ? dur(s.ready_ms) : `ready in ${dur(s.ready_ms)}`}</span>] as [string, React.ReactNode]] : []),
+          ...(s.failed_after_ms !== undefined ? [["Start", <span data-testid="mcp-start-time" data-ms={s.failed_after_ms}>failed after {dur(s.failed_after_ms)}</span>] as [string, React.ReactNode]] : []),
+          ...(s.state === "connecting" && s.started_at ? [["Start", <span data-testid="mcp-start-time">connecting for {dur(Date.now() - s.started_at)}</span>] as [string, React.ReactNode]] : []),
           ...(s.retry ? [["Retry", <span data-testid="mcp-retry" data-attempt={s.retry.attempt}>try {s.retry.attempt} failed, next {inMs(s.retry.next_ms)}, until {clock(s.retry.until_ms, { weekday: true })}</span>] as [string, React.ReactNode]] : []),
         ]}
       >

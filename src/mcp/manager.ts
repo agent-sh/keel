@@ -40,6 +40,7 @@ import { changeDigest, defOf, diffTools, instructionsChange, offered, readPins, 
 import { envHint, maskProxy, proxyCredentials, serverEnv } from "./env.ts";
 import { classify, type ClassKey, type ServerClass } from "./class.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
+import { dur } from "../admin/timeline-rows.ts";
 
 // How often one call's server may ask (2025-11-25 client/elicitation, security
 // considerations: "Clients SHOULD implement rate limiting"). A question past
@@ -131,6 +132,11 @@ export type McpServerState = {
   // Tools that fit everywhere are not named.
   schema_fit: SchemaFitRow[];
   last_connected?: number;
+  // What its last start cost (src/mcp/manager.ts ensure): when it began (while it connects), how long it took to be
+  // ready, or how long it ran before it failed. A new start clears the figures of the one before.
+  started_at?: number;
+  ready_ms?: number;
+  failed_after_ms?: number;
   era?: "modern" | "legacy";
   version?: string;
   sse?: true;         // it speaks the older HTTP with SSE transport (its config says so, or it was found to)
@@ -262,6 +268,10 @@ type Entry = {
   // (`toolCache`), the next call or a search that finds one of its tools starts it, and what it lists then replaces them.
   cold?: boolean;
   caps?: { resources: boolean; prompts: boolean };
+  // The latest start: when it began, and how it ended (ready or failed, after so many ms).
+  startedAt?: number;
+  readyMs?: number;
+  failedMs?: number;
 };
 
 // What is kept of a command server's last listing: for the config it was listed under (`key`), what its tools,
@@ -864,7 +874,7 @@ export class McpManager {
         }
         return this.forModel(e).map((t) => this.catalogTool(e, t));
       },
-      pending: () => (e.state === "connecting" && !e.cold ? [e.label ?? name] : []),
+      pending: () => (e.state === "connecting" && !e.cold ? [`${e.label ?? name}${e.startedAt ? ` (connecting for ${dur(Date.now() - e.startedAt)})` : ""}`] : []),
       // Found by a search: a command server with no process is started now, as its tool is likely called next.
       warm: () => { if (e.cold && e.state === "idle" && this.entries.get(name) === e && !this.disposed) this.ensure(name).catch(() => {}); },
       failed: () => {
@@ -1051,6 +1061,8 @@ export class McpManager {
     if (!e.connecting) {
       e.state = "connecting";
       e.error = undefined;
+      const began = e.startedAt = Date.now();
+      e.readyMs = e.failedMs = undefined;
       if (e.bundled?.configure) e.config = e.bundled.configure() ?? e.config;
       const t = this.transport(e);
       const abort = (e.abort = new AbortController());
@@ -1163,6 +1175,7 @@ export class McpManager {
         e.client = client;
         e.era = client.era;
         e.state = "ready";
+        e.readyMs = Date.now() - began;
         e.ran = true;
         this.clearRetry(e);
         this.told(e, "started");
@@ -1196,6 +1209,7 @@ export class McpManager {
         .catch((err) => {
           // Dropped, or started again meanwhile: this attempt's end is not the server's state.
           if (this.entries.get(name) !== e || e.abort !== abort) throw err;
+          e.failedMs = Date.now() - began;
           if (err instanceof AuthRequired) {
             e.state = "needs_auth";
             e.www = err.wwwAuthenticate;
@@ -1843,6 +1857,9 @@ export class McpManager {
       ...(twins.get(e.name) ? { same_as: twins.get(e.name) } : {}),
       ...(e.bundled ? {} : { class: classify(shown, !!e.config.url && this.oauth.signedIn(e.name)) }),
       last_connected: e.last,
+      ...(e.state === "connecting" && e.startedAt ? { started_at: e.startedAt } : {}),
+      ...(e.readyMs !== undefined ? { ready_ms: e.readyMs } : {}),
+      ...(e.failedMs !== undefined ? { failed_after_ms: e.failedMs } : {}),
       era: e.client?.era,
       version: e.client?.version,
       ...(e.config.transport === "sse" || e.sse ? { sse: true as const } : {}),

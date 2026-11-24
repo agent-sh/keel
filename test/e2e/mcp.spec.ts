@@ -45,6 +45,7 @@ test("mcp servers", async ({ page, request }) => {
   const row = panel.locator('[data-testid="mcp-server"][data-name="echo"]');
   await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
   await expect(row.getByTestId("mcp-tool-count")).toHaveText("3 tools");
+  await expect(row.getByTestId("mcp-start-time")).toHaveText(/^ready in \d+(\.\d+)? (ms|s)$/);
   await shoot(page, "mcp-02-ready");
 
   // Reads are the owner's call per tool: the server's own read-only hint is offered, not taken.

@@ -10,6 +10,7 @@ const tools: { name: string; description: string; annotations?: object; inputSch
   { name: "add", description: "Add two numbers.", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } },
 ];
 const learns = process.argv.includes("--extras");
+let initDelay = Number(process.argv.find((a) => a.startsWith("--init-delay="))?.slice(13)) || 0;
 const LEVELS = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"];
 let level = "warning";
 const log = (at: string, data: unknown) => { if (LEVELS.indexOf(at) >= LEVELS.indexOf(level)) send({ jsonrpc: "2.0", method: "notifications/message", params: { level: at, logger: "echo", data } }); };
@@ -32,6 +33,13 @@ function handle(m: any) {
   const error = (code: number, message: string) => send({ jsonrpc: "2.0", id: m.id, error: { code, message } });
   switch (m.method) {
     case "initialize":
+      // --init-delay=MS: it answers the handshake late, like a server that is slow to start.
+      if (initDelay) {
+        const wait = initDelay;
+        initDelay = 0;
+        setTimeout(() => handle(m), wait);
+        return;
+      }
       return reply({
         protocolVersion: m.params?.protocolVersion ?? "2025-11-25",
         capabilities: { tools: {}, resources: {}, prompts: learns ? { listChanged: true } : {}, ...(learns ? { logging: {}, completions: {} } : {}) },
