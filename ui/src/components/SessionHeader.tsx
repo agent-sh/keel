@@ -1,6 +1,6 @@
 import { copyOrSay } from "../lib/copy.ts";
 import { Popover } from "@base-ui/react/popover";
-import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Copy, Ellipsis, Folder, FolderPlus, GitBranch, LayoutList, Link2, MailOpen, Menu as MenuIcon, Pencil, Pin, PinOff, Square, Trash2, X } from "lucide-react";
 import { Fragment, lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { headerActions } from "../lib/extend.ts";
@@ -317,6 +317,12 @@ export function SessionHeader({ session }: { session: Session }) {
     ...(alone ? [
       { id: "menu-pin", label: pinned ? "Unpin from the top of the list" : "Pin to the top of the list", icon: pinned ? <PinOff /> : <Pin />, command: "station.pin", run: () => runCommand("station.pin") },
       { id: "menu-close", label: "Close the session here", icon: <X />, command: "station.close", run: () => runCommand("station.close") },
+    ] : []),
+    // A phone's head holds no tools, and while a question waits not even the Panels button: the work board and
+    // Stop are here, so they stay a tap away (bridge.css, data-question).
+    ...(phone() ? [
+      { id: "menu-board", label: "Work board", icon: <LayoutList />, run: () => savePref("panel", "board") },
+      ...(session.phase === "working" ? [{ id: "menu-stop", label: "Stop the turn", icon: <Square />, run: () => void actions.interrupt(session.id).catch(reportError) }] : []),
     ] : []),
     { id: "menu-rename", label: "Rename", icon: <Pencil />, gap: alone, run: () => setEditing(true) },
     { id: "menu-link", label: "Copy link", icon: <Link2 />, run: () => void copyOrSay(location.href, menuButton.current) },

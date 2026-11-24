@@ -585,6 +585,40 @@ for (const size of SIZES) {
         await drop(request, coord);
       }
     });
+    test("an open question leaves one menu button in the title row, with the work board, Stop and Archive in it", async ({ page, request }) => {
+      test.skip(!(await scripted(request)), "requires the scripted provider");
+      const ws = folder(`phone-asks-${size.width}`);
+      const id = await create(request, "Ship the checkout refactor", ws);
+      try {
+        const question = { name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which store should I use?", options: [{ label: "SQLite" }, { label: "Valkey" }], multiSelect: false }] } };
+        await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([question]) } });
+        await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/questions`)).json()).pending.length, { timeout: 30_000 }).toBe(1);
+        await page.goto(`/s/${id}`);
+        const station = page.locator(`section.k-station[data-station="${id}"]`);
+        await expect(station).toHaveAttribute("data-question", "");
+        await expect(station.locator('.k-question[data-state="open"]')).toBeVisible();
+        // The menu button is in view, a finger's size, and in the title's own row, inside the page.
+        const menu = station.getByTestId("session-menu");
+        await expect(menu).toBeVisible();
+        const [m, t] = [(await menu.boundingBox())!, (await station.getByTestId("station-title").boundingBox())!];
+        const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+        expect(m.width, "a finger's width").toBeGreaterThanOrEqual(2.75 * rem - 1);
+        expect(m.x + m.width, "inside the page").toBeLessThanOrEqual(size.width);
+        expect(m.y < t.y + t.height && m.y + m.height > t.y, "in the title's row").toBe(true);
+        expect(t.x + t.width, "the title does not run under it").toBeLessThanOrEqual(m.x + 1);
+        await shoot(page, `phone-surfaces-21-question-menu-${size.width}`);
+        // What the tools row held is a tap away: the work board, Stop, and Archive.
+        await menu.tap();
+        const more = page.getByTestId("header-more");
+        await expect(more.getByTestId("menu-board")).toBeVisible();
+        await expect(more.getByTestId("menu-stop")).toBeVisible();
+        await expect(more.getByTestId("menu-archive")).toBeVisible();
+        await more.getByTestId("menu-board").tap();
+        await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", "board");
+      } finally {
+        await drop(request, id);
+      }
+    });
     test("the tree review reads as one column on a phone: areas, one area's diff, and its decisions by a finger", async ({ page, request }) => {
       test.skip(!(await scripted(request)), "requires the scripted provider");
       test.setTimeout(180_000);

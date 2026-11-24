@@ -1225,7 +1225,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
   .k-tray[data-asking] + .k-box[data-calm]:not(:focus-within) > .k-compose-tools { display: none; }
   /* An open question takes the room of the session's tools row and of the state line, which the card
      says (Composer marks the pane): the title stays above it, and both come back once it is answered. */
-  .k-station[data-question] :is(.k-session-header, .k-station-identity .k-station-rest) { display: none; }
+  .k-station[data-question] .k-station-identity .k-station-rest { display: none; }
+  /* The tools row folds into the session's one menu button, at the end of the title's row: Work board, Stop and
+     Archive stay a tap away while the card waits (the row's other tools stay mounted, hidden). */
+  .k-station[data-question] .k-session-header { position: absolute; inset: 0 0 0 auto; z-index: 1; width: auto; height: auto; padding: 0 0.25rem; border: 0; background: transparent; backdrop-filter: none; overflow: visible; container-type: normal; }
+  .k-station[data-question] .k-session-header > :not([data-more]) { display: none; }
+  .k-station[data-question] .k-top-in > .k-station-head { padding-right: var(--spacing-tap); }
   /* And the strip of the conversation gives the card its room too, where the card needs it. */
   .k-station[data-question] .k-session > .k-reading-room { min-height: 0; }
   /* What is asked comes first: the line of the other sessions that wait goes under the card. */
