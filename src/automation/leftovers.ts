@@ -13,6 +13,7 @@
 // carry. Not seen: a process that leaves both the session and the mark where there is no cgroup, one a command
 // hands to another manager (`systemd-run --user`, a container engine, ssh to another machine), and commands older
 // than the jobs the daemon keeps.
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -602,9 +603,10 @@ export function tellLeft(store: Store, sessionId: string, line: string, key: str
 }
 // A job scope that is not this daemon's job, said once for the scope and the mark of the record that names it,
 // across restarts (the told keys above). True the first time only.
-export function foreignFirst(store: Store, cgroup: string, mark: string): boolean {
+// A refusal for another reason is a new thing to say (the mark's own start changed, a state folder came and went).
+export function foreignFirst(store: Store, cgroup: string, mark: string, why = ""): boolean {
   const now = Date.now();
-  const first = store.db.query("INSERT OR IGNORE INTO scope_told (key, at) VALUES (?, ?)").run(`foreign:${cgroup}:${mark}`, now).changes > 0;
+  const first = store.db.query("INSERT OR IGNORE INTO scope_told (key, at) VALUES (?, ?)").run(`foreign:${cgroup}:${mark}:${createHash("sha1").update(why).digest("hex").slice(0, 12)}`, now).changes > 0;
   if (first) store.db.query("DELETE FROM scope_told WHERE at < ?").run(now - TOLD_DAYS * 86_400_000);
   return first;
 }

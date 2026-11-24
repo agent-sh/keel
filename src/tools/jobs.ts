@@ -1403,6 +1403,11 @@ export async function processesOf(list: Job[]): Promise<Map<string, JobProcess[]
 // Whether this daemon, or a process above it, is in the job's cgroup (a daemon a job started): a stop of the
 // whole scope would end it too.
 export const scopeHoldsSelf = (j: Job): boolean => { const self = selfLine(); return cgroupPids(j).some((p) => self.has(p)); };
+// The same for a scope known by its folder (a scope of another daemon).
+export const cgroupHoldsSelf = (cgroup: string): boolean => {
+  const self = selfLine();
+  try { return readFileSync(`${cgroup}/cgroup.procs`, "utf8").split("\n").filter(Boolean).some((p) => self.has(Number(p))); } catch { return false; }
+};
 // `fresh`: the process table is read now, not the snapshot the looks of the last few milliseconds share (a decision
 // that a job's end settled something must not see a process the snapshot kept after it ended).
 export const jobHasProcesses = (j: Job, fresh = false): boolean => jobLive(j) || members(j, { fresh }).length > 0;

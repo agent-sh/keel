@@ -105,7 +105,7 @@ function init(deps: Deps) {
     // Said once for the scope and its record's mark, across restarts; it is a notice (no spike of failures), and the scope
     // is listed in Settings > Leftovers with what it holds, where the owner stops it.
     refused: (file, why, scope) => {
-      if (!leftovers.foreignFirst(deps.store, scope.cgroup, scope.mark)) return;
+      if (!leftovers.foreignFirst(deps.store, scope.cgroup, scope.mark, why)) return;
       deps.errors.capture("tool", new Error(`A job scope was not taken over: ${why}. Nothing was signalled for it. It is listed in Settings > Leftovers, where you can stop it. The record: ${file}`), { at: "adopt scopes", notice: true, scope: scope.cgroup }, { group: "a job scope was not taken over" });
     },
   });

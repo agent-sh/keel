@@ -498,10 +498,14 @@ test("a job scope that is not this daemon's job is said once for the scope and i
   // Another record's mark over the same scope, and another scope with the same mark, are new.
   expect(leftovers.foreignFirst(store, cg, "b1.200")).toBe(true);
   expect(leftovers.foreignFirst(store, `${cg}x`, "b1.100")).toBe(true);
+  // The same scope and mark refused for another reason is a new thing to say, once.
+  expect(leftovers.foreignFirst(store, cg, "b1.100", "its scope carries another state folder's id")).toBe(true);
+  expect(leftovers.foreignFirst(store, cg, "b1.100", "its scope carries another state folder's id")).toBe(false);
   // Every start is a new daemon over the same store: it says nothing again.
   store.db.close();
   store = new Store(dir);
   for (let start = 0; start < 5; start++) expect(leftovers.foreignFirst(store, cg, "b1.100")).toBe(false);
+  expect(leftovers.foreignFirst(store, cg, "b1.100", "its scope carries another state folder's id")).toBe(false);
   store.db.close();
 });
 

@@ -1,6 +1,7 @@
 import { expect, test } from "./isolate.ts";
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
@@ -184,6 +185,12 @@ test("a job scope of another daemon is listed with what it holds and stopped by 
   const unit = `keel-job-e2e${tag}-abcdef`;
   const left = () => readdirSync("/proc").filter((n) => { try { return /^\d+$/.test(n) && readFileSync(`/proc/${n}/cmdline`, "utf8").includes(`sleep\u0000700.${tag}`); } catch { return false; } }).map(Number);
   const child = spawn("systemd-run", ["--user", "--scope", "--quiet", `--unit=${unit}`, "sleep", `700.${tag}`], { stdio: "ignore" });
+  // And one that carries this daemon's own state folder's id, as its commands would: a daemon is running over that folder.
+  const liveUnit = `keel-job-e2f${tag}-fedcba`;
+  const stateDir = ((await (await request.get("/api/daemon")).json()) as { state_dir: string }).state_dir;
+  const st = statSync(join(stateDir, "spill"), { bigint: true });
+  const stateId = createHash("sha256").update(`${st.ino}:${st.birthtimeNs}`).digest("hex").slice(0, 16);
+  const liveChild = spawn("systemd-run", ["--user", "--scope", "--quiet", `--unit=${liveUnit}`, `--setenv=KEEL_JOB_STATE=${stateId}`, `--setenv=KEEL_JOB=e2e${tag}.1`, "sleep", `701.${tag}`], { stdio: "ignore" });
   try {
     await new Promise((r) => setTimeout(r, 1_500));
     test.skip(left().length === 0, "needs a systemd user manager for this spec's own environment: systemd-run --user made no scope");
@@ -203,6 +210,15 @@ test("a job scope of another daemon is listed with what it holds and stopped by 
     // (A pass over the scopes is at most 15 seconds old when the page asks; the page is read again until it has the scope.)
     await expect.poll(async () => { await page.reload(); await expect(page.getByTestId("leftovers")).toBeVisible(); return row.count(); }, { timeout: 90_000, intervals: [3_000] }).toBe(1);
     await expect(row).toContainText(`sleep 700.${tag}`);
+    await expect(row.getByTestId("leftover-foreign-live")).toHaveCount(0);
+    // The live daemon's work is marked, listed under what a dead daemon left, and the dialog says it is live.
+    const liveRow = page.locator(`[data-testid="leftover-foreign"][data-unit="${liveUnit}.scope"]`);
+    await expect(liveRow.getByTestId("leftover-foreign-live")).toHaveText(/its daemon is running/);
+    await expect(page.getByTestId("leftover-foreign-live-group").locator(`[data-unit="${liveUnit}.scope"]`)).toHaveCount(1);
+    await expect(page.getByTestId("leftover-foreign-group").locator(`[data-unit="${liveUnit}.scope"]`)).toHaveCount(0);
+    await liveRow.getByTestId("leftover-foreign-stop").click();
+    await expect(page.getByRole("alertdialog")).toContainText("Its daemon is running");
+    await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
     await expect(row.getByTestId("leftover-foreign-tasks")).toHaveText("1 task");
     await expect(row.getByTestId("leftover-foreign-cpu")).toHaveText(/\d+ s CPU/);
     await shoot(page, "leftovers-06-foreign");
@@ -216,5 +232,7 @@ test("a job scope of another daemon is listed with what it holds and stopped by 
   } finally {
     for (const pid of left()) try { process.kill(pid, "SIGKILL"); } catch {}
     child.kill();
+    liveChild.kill();
+    for (const n of readdirSync("/proc")) try { if (/^\d+$/.test(n) && readFileSync(`/proc/${n}/cmdline`, "utf8").includes(`sleep\u0000701.${tag}`)) process.kill(Number(n), "SIGKILL"); } catch {}
   }
 });

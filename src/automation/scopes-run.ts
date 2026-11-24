@@ -59,7 +59,7 @@ if (phase === "a") {
   const ctx: scopes.Ctx = {
     spillRoot: spill, endedOf: (sid) => leftovers.endedOf(store, sid), keeps: () => leftovers.keeps(store),
     tell: (sid, line, key) => void leftovers.tellLeft(store, sid, line, key, (to, l) => lines.push(`${to}: ${l}`)),
-    refused: (_f, why, scope) => { refused.push(why); if (leftovers.foreignFirst(store, scope.cgroup, scope.mark)) said.push(scope.cgroup); }, loadIdle: () => leftovers.loadIdle(store), saveIdle: (m) => leftovers.saveIdle(store, m),
+    refused: (_f, why, scope) => { refused.push(why); if (leftovers.foreignFirst(store, scope.cgroup, scope.mark, why)) said.push(scope.cgroup); }, loadIdle: () => leftovers.loadIdle(store), saveIdle: (m) => leftovers.saveIdle(store, m),
   };
   const alive = (pid: number) => { try { const st = readFileSync(`/proc/${pid}/stat`, "utf8"); return !/^[ZX]$/.test(st.slice(st.lastIndexOf(") ") + 2).split(" ")[0] ?? ""); } catch { return false; } };
   const lingering = () => allJobs().filter((j) => j.cgroup && j.ended !== undefined && jobLive(j)).map((j) => j.id);

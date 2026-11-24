@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandOf, stop, summarize } from "./foreign-scopes.ts";
+import { claimState } from "../core/claim.ts";
+import { stateIdFrom } from "../tools/jobs.ts";
+import { commandOf, list, liveStates, look, stop, summarize } from "./foreign-scopes.ts";
 
 const cg = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/keel-job-b12k1z677-v9729n.scope";
 
@@ -45,4 +47,60 @@ test("a job's wrapper and its trace lines are not the command: what the owner wr
   // Anything else is as it was started.
   expect(commandOf(["sleep", "700"])).toBe("sleep 700");
   expect(commandOf(["bash", "-c", "echo hi"])).toBe("bash -c echo hi");
+});
+
+// A folder stands for a scope: its cgroup.procs names the processes.
+const fakeScope = (dir: string, name: string, pids: number[]) => {
+  const scope = join(dir, name);
+  mkdirSync(scope, { recursive: true });
+  writeFileSync(join(scope, "cgroup.procs"), pids.map((p) => `${p}\n`).join(""));
+  return scope;
+};
+const spawnWith = (env: Record<string, string>) => Bun.spawn(["sleep", "30"], { env: { PATH: process.env.PATH ?? "/usr/bin", ...env }, stdout: "ignore", stderr: "ignore" });
+
+test("a scope that holds this daemon or a process above it is marked, and never stopped", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-foreign-"));
+  const mine = fakeScope(dir, "keel-job-b1-abcdef.scope", [process.pid]);
+  const above = fakeScope(dir, "keel-job-b2-abcdef.scope", [process.ppid]);
+  const other = spawnWith({});
+  try {
+    const apart = fakeScope(dir, "keel-job-b3-abcdef.scope", [other.pid]);
+    expect((await look(mine))?.holds_self).toBe(true);
+    expect((await look(above))?.holds_self).toBe(true);
+    expect((await look(apart))?.holds_self).toBeUndefined();
+    await expect(stop(mine, { marks: [] }, new Set([mine]))).rejects.toThrow("this daemon runs in that scope");
+    await expect(stop(above, { marks: [] }, new Set([above]))).rejects.toThrow("this daemon runs in that scope");
+  } finally { other.kill(); }
+});
+
+test("a scope whose state folder has a running daemon says so, and is listed after those a dead daemon left", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-foreign-"));
+  const live = join(dir, "live-state"), dead = join(dir, "dead-state");
+  for (const d of [live, dead]) mkdirSync(join(d, "spill"), { recursive: true });
+  const idOf = (d: string) => stateIdFrom(statSync(join(d, "spill"), { bigint: true }));
+  // A daemon holds its folder's claim; the other folder's daemon is gone.
+  const claim = claimState(live);
+  const a = spawnWith({ KEEL_JOB: "b1.100", KEEL_JOB_STATE: idOf(live) });
+  const b = spawnWith({ KEEL_JOB: "b2.100", KEEL_JOB_STATE: idOf(dead) });
+  try {
+    const first = fakeScope(dir, "keel-job-b1-abcdef.scope", [a.pid]), second = fakeScope(dir, "keel-job-b2-abcdef.scope", [b.pid]);
+    expect((await liveStates()).has(idOf(live))).toBe(true);
+    expect((await liveStates()).has(idOf(dead))).toBe(false);
+    const rows = await list([first, second], new Map());
+    expect(rows.map((r) => [r.unit, r.daemon_live ?? false])).toEqual([["keel-job-b2-abcdef.scope", false], ["keel-job-b1-abcdef.scope", true]]);
+    claim?.release();
+    expect((await list([first], new Map()))[0]!.daemon_live).toBeUndefined();
+  } finally { claim?.release(); a.kill(); b.kill(); }
+});
+
+test("the marks a stop is checked against are read from every process of the scope the listing read, not the first dozen", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-foreign-"));
+  const procs = Array.from({ length: 20 }, (_, i) => spawnWith({ KEEL_JOB: i === 19 ? "b9.900" : "b1.100" }));
+  try {
+    const scope = fakeScope(dir, "keel-job-b1-abcdef.scope", procs.map((p) => p.pid));
+    const seen = await look(scope);
+    expect(seen?.marks).toEqual(["b1.100", "b9.900"]);
+    // The listing showed only the first mark: the scope holds another one, so the stop is refused.
+    await expect(stop(scope, { marks: ["b1.100"] }, new Set([scope]))).rejects.toThrow("other commands than the ones that were shown");
+  } finally { for (const p of procs) p.kill(); }
 });
