@@ -240,7 +240,8 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
           w.resolve({ given: false, reason: typeof b.reason === "string" && b.reason.trim() ? b.reason.trim().slice(0, 300) : undefined });
           return json({ ok: true });
         }
-        const value = typeof b.value === "string" ? b.value.replace(/\r?\n$/, "") : "";
+        // Spaces at either end are the paste's, not the value's: kept, a value would never match the text it stands in.
+        const value = typeof b.value === "string" ? b.value.trim() : "";
         if (!value) return bad("give the value, or deny");
         if (value.length > 16_384) return bad("the value is over 16 KB");
         // A value ordinary text holds (a word, a short number) is asked about once: given again, it is kept.

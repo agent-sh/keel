@@ -110,10 +110,15 @@ function machineNames(): string[] {
 
 // Why ordinary text holds `value` as it is, or null for a value that looks
 // like a key. A word (letters, in one of the cases words are written in, up
-// to 20 letters, or a phrase of up to three), a number of up to ten digits,
-// anything under six characters, or a run of few characters (low entropy for
-// its length). A dictionary word is a word by this rule: no list is needed.
-// A token format, a long random value or a mixed-case run is none of these.
+// to WORD_MAX letters, or a phrase of up to three), a number of up to ten
+// digits, anything under six characters, or a run of few characters (low
+// entropy for its length). A dictionary word is a word by this rule: no list
+// is needed. A token format, a long random value or a mixed-case run is none
+// of these.
+// WORD_MAX: nearly every word ordinary text holds is 12 letters or fewer, and
+// a random string of letters in one case is past that, as a key, likelier than
+// a word is: a 13-letter run is a key, hidden wherever it stands.
+const WORD_MAX = 12;
 const WORD = String.raw`(?:\p{Ll}+|\p{Lu}\p{Ll}*|\p{Lu}+)(?:['\u2019-](?:\p{Ll}+|\p{Lu}\p{Ll}*|\p{Lu}+))*`;
 const ONE_WORD = new RegExp(`^${WORD}$`, "u");
 const PHRASE = new RegExp(`^${WORD}(?: ${WORD}){1,2}$`, "u");
@@ -123,7 +128,7 @@ export function ordinaryValue(value: string): string | null {
   for (const r of RULES) { const re = new RegExp(r.re.source, r.re.flags.replace("g", "")); const m = re.exec(v); if (m && m[0] === v) return null; }
   if ([...v].length < 6) return "is shorter than six characters";
   if (/^\d{1,10}$/.test(v)) return "is a short number";
-  if (v.length <= 20 && ONE_WORD.test(v)) return "is a word";
+  if ([...v].length <= WORD_MAX && ONE_WORD.test(v)) return "is a word";
   if (v.length <= 24 && PHRASE.test(v)) return "is a phrase of words";
   if (entropy(v) < Math.min(2.5, 0.75 * Math.log2(v.length))) return "repeats a few characters";
   return null;
@@ -135,12 +140,18 @@ const WORD_CHAR = /[\p{L}\p{N}_]/u;
 const charBefore = (t: string, i: number) => (i <= 0 ? "" : String.fromCodePoint(t.codePointAt(i >= 2 && /[\udc00-\udfff]/.test(t[i - 1]!) ? i - 2 : i - 1)!));
 const charAfter = (t: string, i: number) => (i >= t.length ? "" : String.fromCodePoint(t.codePointAt(i)!));
 export const wholeAt = (text: string, i: number, n: number): boolean => !WORD_CHAR.test(charBefore(text, i)) && !WORD_CHAR.test(charAfter(text, i + n));
+// Whether `value` stands as a whole word anywhere in `text`, outside a placeholder.
+export const wordIn = (text: string, value: string): boolean => !!value && wordSwap(text, value, "\0") !== text;
+// The spans of the placeholders in `text`: a word inside one (`secret`,
+// `value`) is the placeholder's, never a value to hide.
+const placeSpans = (text: string): [number, number][] => (text.includes("[") ? [...text.matchAll(PLACE)].map((m) => [m.index, m.index + m[0].length]) : []);
 // Each place `value` stands as a whole word in `text` replaced by `by`.
 export function wordSwap(text: string, value: string, by: string): string {
   if (!value || !text.includes(value)) return text;
+  const spans = placeSpans(text);
   let out = "", at = 0;
   for (let i = text.indexOf(value); i >= 0; i = text.indexOf(value, i + 1)) {
-    if (i < at || !wholeAt(text, i, value.length)) continue;
+    if (i < at || !wholeAt(text, i, value.length) || spans.some(([a, b]) => i < b && i + value.length > a)) continue;
     out += text.slice(at, i) + by;
     at = i + value.length;
   }
@@ -748,6 +759,20 @@ export class Vault {
       else if (words && !e.found) out.push([e.value, this.placeholder(e), true]);
     }
     return out;
+  }
+
+  // Whether `text` holds a known value, for the permission gate's checks (a
+  // URL that carries a secret, a call Auto must not review): every key of
+  // `keyMin` characters or more anywhere, and an ordinary value of eight or
+  // more where it stands as a whole word. A real key the owner gave can look
+  // like a word, and the gate fails toward asking; a shorter word would ask at
+  // every call that writes it.
+  holdsValue(text: string, keyMin = 8): boolean {
+    for (const e of this.byValue.values()) {
+      if (e.value.length < (e.plain ? 8 : keyMin) || !text.includes(e.value)) continue;
+      if (!e.plain || wordIn(text, e.value)) return true;
+    }
+    return false;
   }
 
   // Named secrets of the session, for the environment of its commands.

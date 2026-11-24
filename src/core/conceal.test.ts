@@ -97,3 +97,19 @@ test("a word is replaced as a whole word only, across chunks", () => {
   const sc = streamConcealer([["lantern", "[P]", true]]);
   expect(Buffer.concat([sc.push(Buffer.from("élantern lantern")), sc.end()]).toString()).toBe("élantern [P]");
 });
+
+// The characters beside a word are read as characters, not bytes: a curly
+// quote, an ellipsis or a dash is a boundary, a letter of any script is not;
+// a word never cuts into a placeholder. The same at every cut point.
+test("a word's boundaries are characters of any script, and placeholders are left whole", () => {
+  // (Put together here: written whole, a placeholder of a secret no daemon holds.)
+  const id = "[sec" + "ret:ab12cd34]";
+  const text = `\u201clantern\u201d lantern\u2026 \u706flantern lantern\u706f \u2014lantern ${id}`;
+  const want = `\u201c[P]\u201d [P]\u2026 \u706flantern lantern\u706f \u2014[P] ${id}`;
+  const b = Buffer.from(text);
+  for (let a = 1; a < b.length; a++) {
+    const sc = streamConcealer([["lantern", "[P]", true], ["secret", "[Q]", true]]);
+    const out = Buffer.concat([sc.push(b.subarray(0, a)), sc.push(b.subarray(a)), sc.end()]).toString();
+    expect({ a, out }).toEqual({ a, out: want });
+  }
+});

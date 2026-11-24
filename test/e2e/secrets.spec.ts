@@ -114,7 +114,8 @@ test("a secret that is an ordinary word stays out of the model's own words", asy
   await page.keyboard.press("Enter");
   const card = page.getByTestId("secret-request");
   await expect(card).toContainText("LAMP_WORD", { timeout: 60_000 });
-  await card.getByTestId("secret-value").fill(word);
+  // (With the space a paste brings along: the value kept is the word.)
+  await card.getByTestId("secret-value").fill(`${word} `);
   await card.getByTestId("secret-give").click();
   // Asked once: it is a word, so ordinary text holds it.
   await expect(card.getByTestId("secret-ordinary")).toContainText("ordinary text");

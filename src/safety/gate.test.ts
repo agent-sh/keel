@@ -135,6 +135,28 @@ test("full auto runs a long action unread, for both families' way out of the san
   await asked;
 });
 
+// A key the owner gave that looks like a word (eight letters or more) is still
+// a secret to Auto: a call that holds it as a word is the owner's to approve,
+// not the judge's to review. A shorter word, or one inside a longer word, is not.
+test("Auto does not review a call that holds an ordinary value the owner gave as a whole word", async () => {
+  const { g, session, call } = scratchGate();
+  g.setSandboxCheck(() => false);
+  g.setPerm(session.id, { mode: "auto", sandbox: "off" });
+  const entry = vault.add("pinecones", "given secret", "card", session.id, undefined, { given: true });
+  const tool: Tool = { ...bash, cwdOf: () => session.workspace, autoShell: ({ command }) => ({ command, interpreter: "bash -c" }) };
+  const judged: string[] = [];
+  g.judge = async (r) => { judged.push(r.summary); return { allow: true, risk: "low", reason: "fixture", model: "m" }; };
+  try {
+    const held = await g.check(session, call(tool, { command: "printf pinecones > a.txt" }));
+    expect("deny" in held ? held.deny : "").toContain("Auto cannot review an action that contains a secret");
+    expect(judged).toEqual([]);
+    expect(await g.check(session, call(tool, { command: "printf pineconesx > a.txt" }))).not.toHaveProperty("deny");
+    expect(judged.length).toBe(1);
+  } finally {
+    vault.forget(entry.id);
+  }
+});
+
 test("Auto discards pending permission when policy or cwd changes and does not transfer a retry", async () => {
   const { g, session, call } = scratchGate();
   g.setSandboxCheck(() => false);

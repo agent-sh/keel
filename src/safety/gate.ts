@@ -251,10 +251,11 @@ export async function checkoutAt(dir: string, top = "/"): Promise<boolean> {
   return walk(dir, 1);
 }
 
-function hasSecret(input: unknown, values: string[]): boolean {
-  if (typeof input === "string") return !!(placeholdersIn(input).length || values.some((v) => input.includes(v)) || detect(input).length);
+// A placeholder, a known value (vault.holdsValue: an ordinary one as a whole word) or a key's shape anywhere in the input.
+function hasSecret(input: unknown): boolean {
+  if (typeof input === "string") return !!(placeholdersIn(input).length || vault.holdsValue(input, 1) || detect(input).length);
   if (!input || typeof input !== "object") return false;
-  return Object.entries(input).some(([k, v]) => hasSecret(k, values) || hasSecret(v, values));
+  return Object.entries(input).some(([k, v]) => hasSecret(k) || hasSecret(v));
 }
 
 // Keel's own config: the folder, and a hooks or MCP file the daemon was pointed at elsewhere.
@@ -391,7 +392,7 @@ export class Gate {
       books.push(b);
     }
     // A secret in a path: a known value or one shaped like a key (nothing is added to the vault), or a placeholder.
-    const secret = (text: string) => placeholdersIn(text).length > 0 || detect(text).length > 0 || vault.pairs().some(([v]) => v.length >= 8 && text.includes(v));
+    const secret = (text: string) => placeholdersIn(text).length > 0 || detect(text).length > 0 || vault.holdsValue(text);
     return {
       has: (address) => books.some((b) => b.has(address)),
       // `earlier`: the unseen addresses on its registered domain that the call being judged fetches before it.
@@ -1451,7 +1452,7 @@ export class Gate {
     }
     const d = dNow;
     if ("deny" in d) return { deny: d.deny };
-    if (mode === "auto" && cls.kind !== "read" && hasSecret([call.input, target?.input, cls, dir?.path], vault.pairs().map(([value]) => value))) return secretReview;
+    if (mode === "auto" && cls.kind !== "read" && hasSecret([call.input, target?.input, cls, dir?.path])) return secretReview;
     const checkShell = mode === "auto" && (cls.kind === "shell" || !!call.tool.autoShell);
     const shell = checkShell ? call.tool.autoShell?.(call.input ?? {}) : undefined;
     if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))

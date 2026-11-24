@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { detect, ordinaryValue, publicNames, StreamScan, Vault } from "./secrets.ts";
+import { detect, ordinaryValue, publicNames, StreamScan, Vault, wordSwap } from "./secrets.ts";
 
 const GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const AWS = "AKIA" + "QWERTYUIOPASDFGH";
@@ -330,6 +330,43 @@ test("a secret cut by a piece's end is caught: a stream in pieces reads as the w
 test("a value that ordinary text holds is told apart from a key", () => {
   for (const v of ["lantern", "Harbor", "SESAME", "changeme", "well-known", "don't", "café", "1234", "20261121", "abc", "aaaabbbb", "121212121212", "blue moon"]) expect({ v, plain: !!ordinaryValue(v) }).toEqual({ v, plain: true });
   for (const v of [GH, AWS, "s3cretPa55w0rd", "deploy-k2j4h5-Zx9", "qWeRtYzXcV", "Xk9#q2", "0123456789abcdef0123456789abcdef01234567", "correct horse battery staple"]) expect({ v, plain: ordinaryValue(v) }).toEqual({ v, plain: null });
+});
+
+// A word is 12 letters at most: a longer run of letters in one case is
+// likelier a key than a word, and is hidden wherever it stands.
+test("a run of letters past twelve is a key, not a word", () => {
+  for (const v of ["unbelievable", "Encyclopedia"]) expect({ v, plain: ordinaryValue(v) }).toEqual({ v, plain: "is a word" });
+  for (const v of ["qzmwkxjvbnprt", "QZMWKXJVBNPRTLA", "Unbelievablenesses"]) expect({ v, plain: ordinaryValue(v) }).toEqual({ v, plain: null });
+});
+
+// A secret whose value is the word a placeholder is made of ("secret",
+// "value") never cuts into a placeholder already in the text.
+test("an ordinary value inside a placeholder is the placeholder's", () => {
+  // (Put together here: written whole, a placeholder of a secret no daemon holds.)
+  const id = "[sec" + "ret:ab12cd34]", named = "[value of $" + "TOKEN_VALUE]";
+  expect(wordSwap(`see ${id} and the secret`, "secret", "[P]")).toBe(`see ${id} and the [P]`);
+  expect(wordSwap(`${named} value`, "value", "[P]")).toBe(`${named} [P]`);
+  const v = new Vault();
+  v.add(GH, "a setting", "card", "s1", undefined, { given: true });
+  v.add("secret", "a setting", "card", "s1", undefined, { given: true });
+  const out = v.redact(`key ${GH}; the secret`, "s1", "output");
+  expect(out).toMatch(/^key \[secret:[0-9a-f]{8}\]; the \[secret:[0-9a-f]{8}\]$/);
+});
+
+// The gate's checks (a URL that carries a secret, a call Auto must not
+// review) see a key anywhere and an ordinary value of eight or more where it
+// stands as a word: a real key that looks like a word still asks.
+test("the gate is told of an ordinary value of eight or more as a whole word", () => {
+  const v = new Vault();
+  v.add("pinecones", "given secret", "card", "s1", undefined, { given: true });
+  v.add("harbor", "given secret", "card", "s1", undefined, { given: true });
+  v.add(GH, "given secret", "card", "s1", undefined, { given: true });
+  expect(v.holdsValue("https://example.com/?q=pinecones")).toBe(true);
+  expect(v.holdsValue("curl -d \u201cpinecones\u201d")).toBe(true);
+  expect(v.holdsValue("https://example.com/pineconesx")).toBe(false);
+  expect(v.holdsValue("https://example.com/?q=harbor")).toBe(false);
+  expect(v.holdsValue(`x${GH}x`)).toBe(true);
+  expect(v.pairs().map(([x]) => x)).toEqual([GH]);
 });
 
 const PH = /\[secret:[0-9a-f]{8}\]/;

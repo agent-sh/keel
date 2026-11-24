@@ -96,21 +96,51 @@ export function keyShapedDeep<T>(v: T): T {
 // chunks included: only the end of a chunk that could start a value is held
 // back until the next chunk (or the end) says what it is. A value marked as a
 // word (ordinary text) is replaced only where it stands as a whole word: no
-// letter, digit or _ (or a byte of a longer character) joined to it, so a
-// whole one at a chunk's end waits for the next byte too. Self-contained (it
-// runs as the source of a filter process too, see jobs.ts).
+// letter, digit or _ of any script joined to it (the characters beside it are
+// decoded from their UTF-8 bytes, so a curly quote or an ellipsis is a
+// boundary and a CJK letter is not), and never inside a placeholder; a whole
+// one at a chunk's end waits for the next character, and the bytes of a
+// character a chunk cut wait for the rest of it. Self-contained (it runs as
+// the source of a filter process too, see jobs.ts).
 export function streamConcealer(pairs: [string, string, boolean?][]) {
   const list = pairs.map(([v, p, w]) => [Buffer.from(v).toString("latin1"), Buffer.from(p).toString("latin1"), !!w] as const).filter(([v]) => v.length > 0).sort((a, b) => b[0].length - a[0].length);
-  // `prev`: the last character given out, what stands before what is held.
+  const place = /\[secret:[0-9a-f]{8}\]|\[value of \$[A-Za-z_][A-Za-z0-9_]*\]/g;
+  const wordChar = /^[\p{L}\p{N}_]$/u;
+  // `prev`: the last character given out (decoded), what stands before what is held.
   let held = "", prev = "";
-  const wordy = (c: string | undefined) => !!c && (c.charCodeAt(0) >= 0x80 || /[A-Za-z0-9_]/.test(c));
+  const decode = (b: string) => [...Buffer.from(b, "latin1").toString("utf8")].pop() ?? "";
+  const width = (c: number) => (c < 0xc0 ? 1 : c < 0xe0 ? 2 : c < 0xf0 ? 3 : 4);
+  // The character that ends at byte i, and the one that starts at byte j (undefined: not here yet).
+  const before = (s: string, i: number) => {
+    if (i <= 0) return prev;
+    let k = i - 1;
+    while (k > 0 && i - k < 4 && (s.charCodeAt(k) & 0xc0) === 0x80) k--;
+    return decode(s.slice(k, i));
+  };
+  const after = (s: string, j: number) => (j >= s.length || j + width(s.charCodeAt(j)) > s.length ? undefined : decode(s.slice(j, j + width(s.charCodeAt(j)))));
+  const wordy = (c: string) => wordChar.test(c);
+  // The bytes at the end of s that start a character the chunk cut.
+  const cutChar = (s: string) => {
+    for (let k = s.length - 1; k >= 0 && k >= s.length - 3; k--) {
+      const c = s.charCodeAt(k);
+      if ((c & 0xc0) === 0x80) continue;
+      return c >= 0xc0 && s.length - k < width(c) ? s.length - k : 0;
+    }
+    return 0;
+  };
   const swap = (s: string, atEnd: boolean) => {
     for (const [v, p, w] of list) {
       if (!w) { s = s.split(v).join(p); continue; }
+      if (!s.includes(v)) continue;
+      // The placeholders in s, and one the chunk's end may still be writing.
+      const spans = [...s.matchAll(place)].map((m) => [m.index!, m.index! + m[0].length] as const);
+      const open = atEnd ? 0 : placeStart(s);
+      if (open) spans.push([s.length - open, s.length]);
       let out = "", at = 0;
       for (let i = s.indexOf(v); i >= 0; i = s.indexOf(v, i + 1)) {
         const j = i + v.length;
-        if (i < at || wordy(i > 0 ? s[i - 1] : prev) || (j < s.length ? wordy(s[j]) : !atEnd)) continue;
+        const next = after(s, j);
+        if (i < at || wordy(before(s, i)) || (next === undefined ? !atEnd : wordy(next)) || spans.some(([a, b]) => i < b && j > a)) continue;
         out += s.slice(at, i) + p;
         at = j;
       }
@@ -118,19 +148,30 @@ export function streamConcealer(pairs: [string, string, boolean?][]) {
     }
     return s;
   };
-  // The longest end of s that is the start of some value (all of a word's: the next byte decides).
+  // The end of s that may be the start of a placeholder, held with a word so the next chunk sees it whole.
+  const words = list.some(([, , w]) => w);
+  const placeStart = (s: string) => {
+    const k = s.lastIndexOf("[");
+    if (!words || k < 0 || s.length - k > 80) return 0;
+    const t = s.slice(k);
+    const open = "[secret:".startsWith(t) || /^\[secret:[0-9a-f]{0,8}$/.test(t) || "[value of $".startsWith(t) || /^\[value of \$[A-Za-z_][A-Za-z0-9_]*$/.test(t);
+    return open ? t.length : 0;
+  };
+  // The longest end of s that is the start of some value (all of a word's: the next character decides).
   const pending = (s: string) => {
-    let keep = 0;
+    let keep = placeStart(s);
     for (const [v, , w] of list) for (let n = Math.min(w ? v.length : v.length - 1, s.length); n > keep; n--) if (s.endsWith(v.slice(0, n))) { keep = n; break; }
     return keep;
   };
   return {
     push(chunk: Uint8Array): Buffer {
-      const s = swap(held + Buffer.from(chunk).toString("latin1"), false);
+      const all = held + Buffer.from(chunk).toString("latin1");
+      const cut = cutChar(all);
+      const s = swap(all.slice(0, all.length - cut), false);
       const keep = pending(s);
-      held = s.slice(s.length - keep);
+      held = s.slice(s.length - keep) + all.slice(all.length - cut);
       const out = s.slice(0, s.length - keep);
-      if (out) prev = out[out.length - 1]!;
+      if (out) prev = before(out, out.length);
       return Buffer.from(out, "latin1");
     },
     end(): Buffer {
