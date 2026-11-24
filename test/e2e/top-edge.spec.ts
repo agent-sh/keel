@@ -171,8 +171,8 @@ test("a head with a long title and a long reason is still one bar, the brand row
   };
   try {
     // An approval it waits on (never given): the card under the head says what is asked, so the bar does not say
-    // it again. The bar is the title, the state with its glyph and clock, and the tools: the folder is the title's
-    // tooltip, the whole reason the state's, and the session's menu wears no dot.
+    // it again. The bar is the title, the state with its glyph and clock, the folder in the room left, and the tools:
+    // the whole reason is the state's tooltip, and the session's menu wears no dot.
     const asks = await make("ask", { command });
     const pane = page.getByTestId("station").and(page.locator(`[data-station="${asks.id}"]`));
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -184,7 +184,9 @@ test("a head with a long title and a long reason is still one bar, the brand row
     await expect(head.getByTestId("station-clock")).toBeVisible();
     await expect(head.getByTestId("station-why"), "the bar says again what the approval card says").toHaveCount(0);
     expect(await head.getByTestId("station-word").getAttribute("title")).toContain("top-edge-long-reason.txt");
-    await expect(head.locator(".k-station-meta"), "the folder is a chip of the bar").toBeHidden();
+    const folder = asks.workspace.split("/").filter(Boolean).pop()!;
+    await expect(head.locator(".k-station-where"), "the pane names its folder nowhere").toBeVisible();
+    await expect(head.locator(".k-station-where")).toHaveText(folder);
     expect(await head.getByTestId("station-title").getAttribute("title")).toBe(`${title}\n${asks.workspace}`);
     await expect(pane.getByTestId("session-header").getByTestId("head-folder")).toBeHidden();
     await expect(pane.getByTestId("session-menu").locator("span")).toHaveCount(0);

@@ -872,8 +872,6 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-identity .k-station-meta { flex: 1 1 0; width: 0; max-width: 13rem; margin: 0; container-type: inline-size; }
 /* Set at the end of its room: the folder stands still while the state beside it says more or less. */
 .k-station:not([data-helm]) .k-station-identity .k-station-meta { display: flex; justify-content: flex-end; max-width: none; }
-/* The pane worked in names its folder in the title's tooltip: its bar is the title, the state and the tools. */
-.k-station[data-helm] .k-station-identity .k-station-meta { display: none; }
 .k-station:not([data-helm]) .k-station-identity .k-station-where { min-width: 0; max-width: 100%; }
 @container (max-width: 2.5rem) { .k-station-where { display: none; } }
 .k-station-identity .k-station-tools { flex-shrink: 0; margin-left: auto; }

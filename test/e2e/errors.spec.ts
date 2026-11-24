@@ -184,7 +184,7 @@ test("a session whose folder is gone is a state, not a failure", async ({ page, 
   page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/api/errors") posted.push(r.postData() ?? ""); });
   await page.goto(`/s/${s.id}`);
   await expect(page.getByTestId("folder-gone")).toBeVisible();
-  await expect(page.getByTestId("station-head").first()).toContainText("gone");
+  await expect(page.getByTestId("station-head").first().locator(".k-gone"), "the head does not show the folder is gone").toBeVisible();
   await openPanel(page, "changes");
   await expect(page.getByTestId("side-panel")).toContainText("notes.txt");
   // Nothing to put files back into: the reverts are not offered, and say why.
