@@ -147,6 +147,11 @@ const slug = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).
 // The branches Keel makes for its worktrees start with this.
 export const BRANCH_PREFIX = "keel/";
 
+export type BranchList = {
+  default: string | null;
+  branches: { name: string; kind: "local" | "remote"; at: number; session: { id: string; title: string } | null }[];
+};
+
 export class Worktrees {
   constructor(private store: Store, private root: string) {
     store.migrate(SCHEMA);
@@ -209,6 +214,41 @@ export class Worktrees {
     return {
       wt: { repo_root: repo.root, path, branch, base: ref === "HEAD" ? baseCommit : ref, base_commit: baseCommit, state: "active", snapshot_ref: null, created: now, updated: now },
       cwd: join(path, relative(repo.top, workspace)),
+    };
+  }
+
+  // What a new worktree can start from: the repository's default branch, the local branches by
+  // recency, then the remote ones a local branch does not stand for, by recency. A branch that a
+  // checkout has out names the newest open session working there. Nothing is fetched.
+  async branches(workspace: string): Promise<BranchList> {
+    const repo = await this.repoOf(workspace);
+    if (!repo) throw new GitError(`not a git repository: ${workspace}`, 400);
+    const refs = (await git(repo.top, ["for-each-ref", "--sort=-committerdate", "--format=%(refname)\t%(committerdate:unix)", "refs/heads", "refs/remotes"], { ok: true })).split("\n").filter(Boolean)
+      .map((l) => { const [ref, t] = l.split("\t"); return { ref: ref!, at: Number(t) || 0 }; });
+    const local = refs.filter((r) => r.ref.startsWith("refs/heads/")).map((r) => ({ name: r.ref.slice(11), at: r.at }));
+    const names = new Set(local.map((b) => b.name));
+    const remote = refs.filter((r) => r.ref.startsWith("refs/remotes/") && !r.ref.endsWith("/HEAD")).map((r) => ({ name: r.ref.slice(13), at: r.at }))
+      .filter((b) => !names.has(b.name.slice(b.name.indexOf("/") + 1)));
+    // Who has what out: every checkout of the repository, and the sessions working in each.
+    const out = await git(repo.top, ["worktree", "list", "--porcelain"], { ok: true });
+    const open = this.store.sessions();
+    const users = new Map<string, { id: string; title: string }>();
+    for (const block of out.split("\n\n")) {
+      const path = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+      if (!path || !branch) continue;
+      const at = open.find((s) => s.workspace === path || s.workspace.startsWith(`${path}/`));
+      if (at) users.set(branch, { id: at.id, title: at.title || at.id.slice(-6) });
+    }
+    const def = await this.defaultBase(repo.top);
+    const short = def?.replace(/^origin\//, "");
+    const fallback = (await git(repo.top, ["symbolic-ref", "--quiet", "--short", "HEAD"], { ok: true })).trim();
+    const pick = short && names.has(short) ? short : def ?? (fallback || null);
+    return {
+      default: pick,
+      branches: [
+        ...local.map((b) => ({ name: b.name, kind: "local" as const, at: b.at, session: users.get(b.name) ?? null })),
+        ...remote.map((b) => ({ name: b.name, kind: "remote" as const, at: b.at, session: null })),
+      ],
     };
   }
 

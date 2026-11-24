@@ -84,6 +84,14 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         return json({ git: !!repo, root: repo?.root ?? null });
       }),
     },
+    // The branches a new worktree can start from, and which one it starts from by default.
+    "/api/worktrees/branches": {
+      GET: (req: any) => guard(async () => {
+        const dir = new URL(req.url).searchParams.get("workspace") || deps.workspace;
+        if (!existsSync(dir)) return bad(`not a directory: ${dir}`);
+        return json(await wts.branches(dir));
+      }),
+    },
     "/api/worktrees/prune": {
       POST: (req: any) => guard(async () => {
         const b = await body(req);

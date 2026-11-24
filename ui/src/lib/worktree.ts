@@ -1,10 +1,10 @@
 // Client state of managed worktrees, per session; refreshed by "worktree"
 // feature frames. Also the start box's "in a new worktree" choice.
 import { useEffect, useSyncExternalStore } from "react";
-import type { WorktreeStatus } from "../../../src/worktree/manager.ts";
+import type { BranchList, WorktreeStatus } from "../../../src/worktree/manager.ts";
 import { api, onFeature, reportError, reportUnlessGone } from "./store.ts";
 
-export type { WorktreeStatus };
+export type { BranchList, WorktreeStatus };
 
 let byId: Record<string, WorktreeStatus | null> = {};
 let startInWorktree = localStorage.getItem("keel.startInWorktree") === "1";
@@ -40,6 +40,19 @@ export function setStartInWorktree(v: boolean) {
   changed();
 }
 
+// The branch a new worktree starts from, for one folder: set to the repository's default when the
+// choice is shown (WorktreeBase), so what the box says is what is sent.
+let picked: { workspace: string; base: string } = { workspace: "", base: "" };
+export const useStartBase = (workspace: string) => useSyncExternalStore(subscribe, () => (picked.workspace === workspace ? picked.base : ""));
+export const startBase = (workspace: string) => (picked.workspace === workspace ? picked.base : "");
+export function setStartBase(workspace: string, base: string) {
+  picked = { workspace, base };
+  changed();
+}
+
+// The branches to start from, read when the choice is shown.
+export const loadBranches = (dir: string) => api<BranchList>(`/api/worktrees/branches?workspace=${encodeURIComponent(dir)}`);
+
 // Whether a folder is in a git repository (cached per folder).
 const gitCache = new Map<string, Promise<boolean>>();
 export const isGitFolder = (dir: string) => {
@@ -57,8 +70,8 @@ onFeature({
 });
 
 // A new session in a fresh worktree of `workspace`'s repository.
-export async function createInWorktree(text: string, model?: string, workspace?: string, images?: unknown[]) {
-  const r = await api<{ session: { id: string }; worktree: WorktreeStatus }>("/api/worktrees", { method: "POST", body: JSON.stringify({ text, model, workspace, images }) });
+export async function createInWorktree(text: string, model?: string, workspace?: string, images?: unknown[], base?: string) {
+  const r = await api<{ session: { id: string }; worktree: WorktreeStatus }>("/api/worktrees", { method: "POST", body: JSON.stringify({ text, model, workspace, images, base: base || undefined }) });
   byId = { ...byId, [r.session.id]: r.worktree };
   changed();
   return r.session;

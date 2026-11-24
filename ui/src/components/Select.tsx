@@ -5,10 +5,10 @@ import { cn } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 
 // A select written like the native one (`value`, `onChange`, <option> and
-// <optgroup> children) and drawn by us: the native popup is the browser's or
+// <optgroup> children, an option's `label` for the closed field) and drawn by us: the native popup is the browser's or
 // the toolkit's, and follows neither theme. Its trigger is a field (.k-field), as tall
 // as the fields beside it; a page gives it only its width (k-field-sm in a dense row).
-type Opt = { value: string; label: string; disabled?: boolean; group?: string };
+type Opt = { value: string; label: string; short?: string; disabled?: boolean; group?: string };
 type Props = {
   value: string;
   onChange: (e: { target: { value: string } }) => void;
@@ -29,13 +29,14 @@ function options(children: ReactNode, group?: string): Opt[] {
     if (c.type === "optgroup") return options(c.props.children, c.props.label);
     if (c.type !== "option") return [];
     const label = text(c.props.children);
-    return [{ value: String(c.props.value ?? label), label, disabled: c.props.disabled, group }];
+    return [{ value: String(c.props.value ?? label), label, short: c.props.label, disabled: c.props.disabled, group }];
   });
 }
 
 export function Select({ value, onChange, children, className, disabled, ...rest }: Props) {
   const opts = options(children);
-  const label = opts.find((o) => o.value === value)?.label ?? value;
+  const picked = opts.find((o) => o.value === value);
+  const label = picked?.short ?? picked?.label ?? value; // (an option's `label` is what the closed field shows, as in a native select)
   let group: string | undefined;
   return (
     <Base.Root value={value} onValueChange={(v) => onChange({ target: { value: String(v ?? "") } })} disabled={disabled}>

@@ -4,12 +4,13 @@ import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
-import { isGitFolder, loadWorktree, setStartInWorktree, useStartInWorktree, useWorktree } from "../lib/worktree.ts";
+import { isGitFolder, loadBranches, loadWorktree, setStartBase, setStartInWorktree, startBase, useStartBase, useStartInWorktree, useWorktree, type BranchList } from "../lib/worktree.ts";
 import { loadOverlap, mineOf, useOverlap } from "../lib/overlap.ts";
 import { OverlapList } from "./BranchesPanel.tsx";
 import { stoppingShells } from "../lib/shells.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { popupClass } from "./ui.tsx";
+import { Select } from "./Select.tsx";
 
 type Pr = { number: number; url: string; title: string; state: string; isDraft: boolean; head_matches?: boolean; checks?: { summary: string; passed: number; failed: number; pending: number; rows: { name: string; status: string; url?: string }[] } };
 const CHECKS: Record<string, { text: string; cls: string }> = {
@@ -198,23 +199,60 @@ export function WorktreeChip({ session }: { session: Session }) {
   );
 }
 
-// The start box's choice: start the session in a new worktree (git folders only).
+// The start box's choice: start the session in a new worktree (git folders only), and from
+// which branch.
 export function WorktreeToggle({ workspace }: { workspace: string }) {
   const on = useStartInWorktree();
   const [git, setGit] = useState(false);
   useEffect(() => { if (workspace) isGitFolder(workspace).then(setGit); }, [workspace]);
   if (!git) return null;
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      data-testid="start-in-worktree"
-      onClick={() => setStartInWorktree(!on)}
-      title="Work on a new branch in its own folder, so this checkout stays as it is"
-      className="k-chip-pick"
-    >
-      <GitBranch /> {on ? "In a new worktree" : "New worktree"}
-    </button>
+    <>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        data-testid="start-in-worktree"
+        onClick={() => setStartInWorktree(!on)}
+        title="Work on a new branch in its own folder, so this checkout stays as it is"
+        className="k-chip-pick"
+      >
+        <GitBranch /> {on ? "In a new worktree" : "New worktree"}
+      </button>
+      {on && <WorktreeBase workspace={workspace} />}
+    </>
+  );
+}
+
+const ago = (at: number) => {
+  const d = Math.max(0, Date.now() / 1000 - at);
+  return d < 3600 ? `${Math.max(1, Math.round(d / 60))}m` : d < 86400 ? `${Math.round(d / 3600)}h` : `${Math.round(d / 86400)}d`;
+};
+
+// "from <branch>": the branch the new worktree starts from. Local branches by recency, then the
+// remote ones; a branch another session has out carries that session's name.
+function WorktreeBase({ workspace }: { workspace: string }) {
+  const base = useStartBase(workspace);
+  const [list, setList] = useState<BranchList | null>(null);
+  useEffect(() => {
+    let live = true;
+    loadBranches(workspace).then((l) => {
+      if (!live) return;
+      setList(l);
+      if (!l.branches.some((b) => b.name === startBase(workspace)) && l.default) setStartBase(workspace, l.default);
+    }).catch(reportError);
+    return () => { live = false; };
+  }, [workspace]);
+  if (!list?.branches.length) return null;
+  const row = (b: BranchList["branches"][number]) => <option key={b.name} value={b.name} label={b.name}>{`${b.name}${b.session ? ` · ${b.session.title}` : ""} · ${ago(b.at)}`}</option>;
+  const kind = (k: string) => list.branches.filter((b) => b.kind === k);
+  return (
+    <span className="k-chip-pick" data-testid="worktree-base">
+      <span className="text-faint">from</span>
+      <Select value={base} aria-label="Branch the new worktree starts from" data-testid="worktree-base-select" onChange={(e) => setStartBase(workspace, e.target.value)}>
+        <optgroup label="Local">{kind("local").map(row)}</optgroup>
+        {kind("remote").length > 0 && <optgroup label="Remote">{kind("remote").map(row)}</optgroup>}
+      </Select>
+    </span>
   );
 }

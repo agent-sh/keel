@@ -116,3 +116,52 @@ test("a parked worktree's saved state is the owner's commit, and Keel's where gi
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the branches a worktree can start from: the default, local by recency, then remote, with who has one out", async () => {
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `wt-branches-${process.pid}`);
+  const repo = join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd, encoding: "utf8", env: { ...process.env, GIT_COMMITTER_DATE: date.next } }).trim();
+  const date = { next: "2026-01-01T00:00:00Z" };
+  const at = (d: string, f: () => string) => { date.next = d; return f(); };
+  try {
+    g(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "a"), "a\n");
+    g(repo, "add", "-A");
+    at("2026-01-01T00:00:00Z", () => g(repo, "commit", "-qm", "init"));
+    // Each branch's tip is a commit of its own on a day of its own: old is the oldest, dev the newest.
+    for (const [name, day] of [["old", "02"], ["dev", "03"]] as const) {
+      g(repo, "checkout", "-q", "-b", name, "main");
+      writeFileSync(join(repo, name), `${name}\n`);
+      g(repo, "add", "-A");
+      at(`2026-01-${day}T00:00:00Z`, () => g(repo, "commit", "-qm", name));
+    }
+    g(repo, "checkout", "-q", "main");
+    // A remote-only branch, and one that a local branch stands for.
+    g(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    g(repo, "update-ref", "refs/remotes/origin/feature", "HEAD");
+    g(repo, "update-ref", "refs/remotes/origin/dev", "HEAD");
+    g(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    const store = new Store(join(root, "state"));
+    const wts = new Worktrees(store, join(root, "wts"));
+    const s = store.createSession({ workspace: repo, model: "m", title: "holds dev" });
+    const made = await wts.create(s.id, repo, "holds", "dev");
+    wts.adopt(s.id, made.wt);
+    store.updateSession(s.id, { workspace: made.cwd });
+    // The session works on a branch of its own: the list names it, a base it came from is not "out".
+    const r = await wts.branches(repo);
+    expect(r.default).toBe("main");
+    expect(r.branches.filter((b) => b.kind === "local").map((b) => b.name).sort()).toEqual(["dev", "keel/holds-" + s.id.replace(/-/g, "").slice(-6), "main", "old"].sort());
+    expect(r.branches.filter((b) => b.kind === "remote").map((b) => b.name)).toEqual(["origin/feature"]);
+    expect(r.branches.find((b) => b.name === made.wt.branch)?.session?.title).toBe("holds dev");
+    expect(r.branches.find((b) => b.name === "dev")?.session).toBe(null);
+    const local = r.branches.filter((b) => b.kind === "local");
+    expect(local.map((b) => b.name).filter((n) => ["old", "dev", "main"].includes(n))).toEqual(["dev", "old", "main"]);
+    // A base of its own names the commit the worktree starts from.
+    const from = await wts.create("s2", repo, "from dev", "dev");
+    expect(from.wt.base).toBe("dev");
+    await expect(wts.branches(join(root, "nowhere"))).rejects.toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
